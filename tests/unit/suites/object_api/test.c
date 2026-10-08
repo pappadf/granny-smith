@@ -39,7 +39,7 @@ static value_t a_set_pc(struct object *self, const member_t *m, value_t v) {
 }
 
 static const member_t a_members[] = {
-    {.kind = M_ATTR, .name = "pc", .doc = "pc", .attr = {.type = V_UINT, .get = a_get_pc, .set = a_set_pc}},
+    {.kind = MK_ATTR, .name = "pc", .doc = "pc", .attr = {.type = VK_UINT, .get = a_get_pc, .set = a_set_pc}},
 };
 static const class_desc_t a_class = {.name = "a", .members = a_members, .n_members = 1};
 
@@ -64,7 +64,7 @@ static value_t dev_get_id(struct object *self, const member_t *m) {
 }
 
 static const member_t dev_members[] = {
-    {.kind = M_ATTR, .name = "id", .doc = "id", .attr = {.type = V_INT, .get = dev_get_id}},
+    {.kind = MK_ATTR, .name = "id", .doc = "id", .attr = {.type = VK_INT, .get = dev_get_id}},
 };
 static const class_desc_t dev_class = {.name = "device", .members = dev_members, .n_members = 1};
 
@@ -88,7 +88,7 @@ static const collection_desc_t bucket_entries = {
 };
 
 static const member_t bucket_members[] = {
-    {.kind = M_CHILD, .name = "devices", .child = {.collection = &bucket_entries}},
+    {.kind = MK_CHILD, .name = "devices", .child = {.collection = &bucket_entries}},
 };
 static const class_desc_t bucket_class = {.name = "bucket", .members = bucket_members, .n_members = 1};
 
@@ -254,12 +254,12 @@ TEST(test_out_of_range_args_are_refused) {
     fixture_down(a, b);
 }
 
-// A hex-flagged V_INT renders its bit pattern at its width, and as a JSON
-// string like V_UINT; strings escape control characters.
+// A hex-flagged VK_INT renders its bit pattern at its width, and as a JSON
+// string like VK_UINT; strings escape control characters.
 TEST(test_value_format_hex_int_and_escapes) {
     char buf[64];
     value_t v = val_int(-1);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     v.width = 4;
     value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
     ASSERT_TRUE(strcmp(buf, "0xffffffff") == 0);

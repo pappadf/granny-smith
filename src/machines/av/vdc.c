@@ -462,32 +462,32 @@ static DEF_METHOD(videoin_method_load) {
 
 static const arg_decl_t videoin_load_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "640x480 PNG to use as the video source frame"},
 };
 
 static const member_t videoin_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "source",
      .doc = "Host video source: none | pattern | file | host (webcam)",
-     .attr = {.type = V_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}    },
+    {.kind = MK_ATTR,
      .name = "connected",
      .doc = "True when the source reports a signal (drives the DMSD lock status)",
-     .attr = {.type = V_BOOL, .get = videoin_attr_connected, .set = NULL}                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = videoin_attr_connected, .set = NULL}                          },
+    {.kind = MK_ATTR,
      .name = "fields",
      .doc = "Fields the capture engine has written since power-on",
-     .attr = {.type = V_UINT, .get = videoin_attr_fields, .set = NULL}                             },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = videoin_attr_fields, .set = NULL}                             },
+    {.kind = MK_METHOD,
      .name = "pattern",
      .doc = "Select the built-in deterministic test pattern as the source",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = videoin_method_pattern}          },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = videoin_method_pattern}          },
+    {.kind = MK_METHOD,
      .name = "load",
      .doc = "Load a 640x480 PNG and select it as the source frame",
-     .method = {.args = videoin_load_args, .nargs = 1, .result = V_NONE, .fn = videoin_method_load}},
+     .method = {.args = videoin_load_args, .nargs = 1, .result = VK_NONE, .fn = videoin_method_load}},
 };
 
 static const class_desc_t videoin_class = {

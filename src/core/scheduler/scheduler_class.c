@@ -104,8 +104,8 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
 }
 
 static DEF_SETTER(sched_attr_mode_set) {
-    // node_set has already coerced a name to V_ENUM against the table.
-    if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
+    // node_set has already coerced a name to VK_ENUM against the table.
+    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
         value_free(&in);
         return val_err("scheduler.mode: expected paced, accelerated or turbo");
     }
@@ -220,88 +220,89 @@ static DEF_METHOD(sched_method_stop) {
 
 static const arg_decl_t sched_run_args[] = {
     {.name = "instructions",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional instruction budget; 0 / omitted = run until stopped"},
 };
 
 static const member_t scheduler_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "running",
      .doc = "True while the scheduler is executing instructions",
-     .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = sched_attr_running, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
      .flags = 0,
-     .attr = {.type = V_ENUM, .enum_values = sched_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
-    {.kind = M_ATTR,
+     .attr =
+         {.type = VK_ENUM, .enum_values = sched_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
+    {.kind = MK_ATTR,
      .name = "cpi",
      .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
+    {.kind = MK_ATTR,
      .name = "speed",
      .doc = "Accelerated-mode CPU speed multiplier in force (live). Write 0 for auto (adaptive governor, "
             "capped by max_speed) or 1.0..8.0 to pin a fixed multiplier. Only takes effect while mode is "
             "'accelerated'; timebase (VBL/VIA/sound) stays real-time regardless", .flags = 0,
-     .attr = {.type = V_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
+    {.kind = MK_ATTR,
      .name = "speed_auto",
      .doc = "True while the adaptive governor is choosing the accelerated-mode speed (scheduler.speed = 0)",
-     .attr = {.type = V_BOOL, .get = sched_attr_speed_auto, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = sched_attr_speed_auto, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0): the adaptive governor's ceiling, and pinned "
             "speeds are clamped to it. The host's setting (pacing.max_speed)", .flags = 0,
-     .attr = {.type = V_FLOAT, .get = sched_attr_max_speed, .set = sched_attr_max_speed_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_FLOAT, .get = sched_attr_max_speed, .set = sched_attr_max_speed_set}},
+    {.kind = MK_ATTR,
      .name = "cycles",
      .doc = "Total CPU cycles executed so far",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_cycles, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_cycles, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "events_fired",
      .doc = "Total scheduler events dispatched since process start (diagnostic)",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_events_fired, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_events_fired, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "instr_count",
      .doc = "Total CPU instructions executed so far",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_instr_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_instr_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "frequency",
      .doc = "CPU clock frequency in Hz",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_frequency, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_frequency, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "host_user_ns",
      .doc = "Process user-CPU time since daemon start, ns (POSIX CLOCK_PROCESS_CPUTIME_ID). "
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
             "and multiply by 1e9 for emulator throughput in instructions per CPU-second.", .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_host_user_ns, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_host_user_ns, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "host_wall_ns",
      .doc = "Host monotonic wall-clock time, ns (POSIX CLOCK_MONOTONIC). "
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
             "and multiply by 1e9 for perceived emulator throughput in instructions per real second.", .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "events",
      .doc = "Pending event queue: {source, event, when, delta, data} per entry",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = sched_attr_events}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_LIST, .presentation_flags = VFLAG_VOLATILE, .get = sched_attr_events}},
+    {.kind = MK_METHOD,
      .name = "run",
      .examples = EXAMPLES("scheduler.run", "scheduler.run 20000000"),
      .doc = "Start execution; with an instruction budget, stop after that many",
-     .method = {.args = sched_run_args, .nargs = 1, .result = V_BOOL, .fn = sched_method_run}},
-    {.kind = M_METHOD,
+     .method = {.args = sched_run_args, .nargs = 1, .result = VK_BOOL, .fn = sched_method_run}},
+    {.kind = MK_METHOD,
      .name = "stop",
      .examples = EXAMPLES("scheduler.stop"),
      .doc = "Interrupt execution",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = sched_method_stop}},
 };
 
 static const class_desc_t scheduler_class = {
@@ -354,7 +355,7 @@ static DEF_GETTER(pacing_attr_mode_get) {
 
 static DEF_SETTER(pacing_attr_mode_set) {
     (void)self;
-    if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
+    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
         value_free(&in);
         return val_err("pacing.mode: expected paced, accelerated or turbo");
     }
@@ -395,19 +396,19 @@ static DEF_SETTER(pacing_attr_max_speed_set) {
 }
 
 static const member_t pacing_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
      .attr =
-         {.type = V_ENUM, .enum_values = sched_mode_names, .get = pacing_attr_mode_get, .set = pacing_attr_mode_set}},
-    {.kind = M_ATTR,
+         {.type = VK_ENUM, .enum_values = sched_mode_names, .get = pacing_attr_mode_get, .set = pacing_attr_mode_set}},
+    {.kind = MK_ATTR,
      .name = "speed",
      .doc = "Accelerated-mode speed: 0 for auto (the adaptive governor, capped by max_speed) or 1.0..8.0 pinned",
-     .attr = {.type = V_FLOAT, .get = pacing_attr_speed_get, .set = pacing_attr_speed_set}                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_FLOAT, .get = pacing_attr_speed_get, .set = pacing_attr_speed_set}                          },
+    {.kind = MK_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0)",
-     .attr = {.type = V_FLOAT, .get = pacing_attr_max_speed_get, .set = pacing_attr_max_speed_set}                  },
+     .attr = {.type = VK_FLOAT, .get = pacing_attr_max_speed_get, .set = pacing_attr_max_speed_set}                  },
 };
 
 static const class_desc_t pacing_class = {

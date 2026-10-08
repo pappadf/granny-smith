@@ -436,7 +436,7 @@ static DEF_METHOD(archive_method_extract) {
 // at `dst`, without extracting anything.  Answers {member, bytes_in,
 // stored_bytes, sectors}.
 static DEF_METHOD(archive_method_import) {
-    const char *member = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
+    const char *member = (argc >= 3 && argv[2].kind == VK_STRING && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
     io_leaf_t *j = io_leaf_new(argv[0].s, argv[1].s);
     import_job_t *u = calloc(1, sizeof *u);
     if (!j || !u) {
@@ -446,7 +446,7 @@ static DEF_METHOD(archive_method_import) {
         return val_err("files.archive.import: out of memory");
     }
     u->want = member ? strdup(member) : NULL;
-    if (argc >= 4 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+    if (argc >= 4 && argv[3].kind == VK_STRING && argv[3].s && *argv[3].s)
         u->origin = strdup(argv[3].s);
     j->ud = u;
     j->work = work_archive_import;
@@ -459,12 +459,12 @@ static const arg_decl_t archive_import_args[] = {
     ARG_PATH("path", "Archive file path"),
     ARG_PATH("dst", "The UDIF (.dmg) to write (must not exist)"),
     {.name = "member",
-                                                          .kind = V_STRING,
+                                                          .kind = VK_STRING,
                                                           .validation_flags = OBJ_ARG_OPTIONAL,
                                                           .doc = "The member to take (exact, case-blind, or by its last name component)",
                                                           .default_doc = "the largest file"},
     {.name = "origin",
-                                                          .kind = V_STRING,
+                                                          .kind = VK_STRING,
                                                           .validation_flags = OBJ_ARG_OPTIONAL,
                                                           .doc = "Where the archive came from (e.g. a URL), recorded in the image as is",
                                                           .default_doc = "none"            },
@@ -477,15 +477,15 @@ static const arg_decl_t archive_path_arg[] = {
 static const arg_decl_t archive_extract_args[] = {
     ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
-                                   .kind = V_STRING,
-                                   .presentation_flags = VAL_PATH,
+                                   .kind = VK_STRING,
+                                   .presentation_flags = VFLAG_PATH,
                                    .validation_flags = OBJ_ARG_OPTIONAL,
                                    .doc = "Output directory",
                                    .default_doc = "the current directory"},
 };
 
 static const member_t archive_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "identify",
      .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
      .doc = "Identify a Mac archive's format",
@@ -493,16 +493,19 @@ static const member_t archive_members[] = {
                     "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
                 .args = archive_path_arg,
                 .nargs = 1,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = archive_method_identify}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "extract",
      .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
      "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\""),
      .doc = "Extract a Mac archive into out_dir",
-     .method =
-         {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO,
+                .args = archive_extract_args,
+                .nargs = 2,
+                .result = VK_BOOL,
+                .fn = archive_method_extract}},
+    {.kind = MK_METHOD,
      .name = "import",
      .examples =
          EXAMPLES("files.archive.import \"/opfs/upload/disk.sit\" \"/opfs/upload/disk.dmg.part\"",
@@ -512,7 +515,7 @@ static const member_t archive_members[] = {
                 .ui_flags = MM_IO,
                 .args = archive_import_args,
                 .nargs = 4,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = archive_method_import}},
 };
 

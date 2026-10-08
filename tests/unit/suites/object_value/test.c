@@ -15,10 +15,10 @@
 TEST(test_inline_free_is_noop) {
     value_t v = val_uint(4, 0xDEADBEEF);
     value_free(&v);
-    ASSERT_EQ_INT(V_NONE, v.kind);
+    ASSERT_EQ_INT(VK_NONE, v.kind);
     // Safe second call.
     value_free(&v);
-    ASSERT_EQ_INT(V_NONE, v.kind);
+    ASSERT_EQ_INT(VK_NONE, v.kind);
 
     value_t b = val_bool(true);
     value_free(&b);
@@ -41,12 +41,12 @@ TEST(test_inline_free_is_noop) {
 TEST(test_string_ownership) {
     const char *src = "hello";
     value_t v = val_str(src);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(v.s != NULL);
     ASSERT_TRUE(v.s != src); // strdup'd, not borrowed
     ASSERT_TRUE(strcmp(v.s, src) == 0);
     value_free(&v);
-    ASSERT_EQ_INT(V_NONE, v.kind);
+    ASSERT_EQ_INT(VK_NONE, v.kind);
     ASSERT_TRUE(v.s == NULL);
 }
 
@@ -57,14 +57,14 @@ TEST(test_error_ownership) {
     ASSERT_TRUE(strstr(v.err, "42") != NULL);
     ASSERT_TRUE(strstr(v.err, "test") != NULL);
     value_free(&v);
-    ASSERT_EQ_INT(V_NONE, v.kind);
+    ASSERT_EQ_INT(VK_NONE, v.kind);
 }
 
 // Bytes: heap-allocated, freed by value_free.
 TEST(test_bytes_ownership) {
     const uint8_t buf[] = {0xDE, 0xAD, 0xBE, 0xEF};
     value_t v = val_bytes(buf, sizeof(buf));
-    ASSERT_EQ_INT(V_BYTES, v.kind);
+    ASSERT_EQ_INT(VK_BYTES, v.kind);
     ASSERT_EQ_INT(4, (int)v.bytes.n);
     ASSERT_TRUE(memcmp(v.bytes.p, buf, 4) == 0);
     value_free(&v);
@@ -73,7 +73,7 @@ TEST(test_bytes_ownership) {
 
     // Zero-length bytes are valid.
     value_t z = val_bytes(NULL, 0);
-    ASSERT_EQ_INT(V_BYTES, z.kind);
+    ASSERT_EQ_INT(VK_BYTES, z.kind);
     value_free(&z);
 }
 
@@ -84,7 +84,7 @@ TEST(test_list_recursive_free) {
     items[1] = val_str("second");
     items[2] = val_str("third");
     value_t list = val_list(items, 3);
-    ASSERT_EQ_INT(V_LIST, list.kind);
+    ASSERT_EQ_INT(VK_LIST, list.kind);
     ASSERT_EQ_INT(3, (int)list.list.len);
     value_free(&list);
     ASSERT_TRUE(list.list.items == NULL);
@@ -104,7 +104,7 @@ TEST(test_nested_list_free) {
     value_t outer_list = val_list(outer, 2);
 
     value_free(&outer_list);
-    ASSERT_EQ_INT(V_NONE, outer_list.kind);
+    ASSERT_EQ_INT(VK_NONE, outer_list.kind);
 }
 
 // value_dup duplicates heap kinds.  (value_copy, the second deep-copier,
@@ -112,7 +112,7 @@ TEST(test_nested_list_free) {
 TEST(test_value_dup_heap_kinds) {
     value_t s = val_str("original");
     value_t c = value_dup(&s);
-    ASSERT_EQ_INT(V_STRING, c.kind);
+    ASSERT_EQ_INT(VK_STRING, c.kind);
     ASSERT_TRUE(c.s != s.s);
     ASSERT_TRUE(strcmp(c.s, s.s) == 0);
     value_free(&s);
@@ -185,7 +185,7 @@ TEST(test_truthiness) {
     value_free(&t);
 }
 
-// Maps: builder → V_MAP with insertion order, unique keys, heap-owned
+// Maps: builder → VK_MAP with insertion order, unique keys, heap-owned
 // keys, recursively-owned values.
 TEST(test_map_builder) {
     value_map_builder_t *b = val_map_new();
@@ -193,7 +193,7 @@ TEST(test_map_builder) {
     val_map_put(b, "two", val_str("2"));
     val_map_put(b, "one", val_int(11)); // duplicate key replaces in place
     value_t m = val_map_finish(b);
-    ASSERT_EQ_INT(V_MAP, m.kind);
+    ASSERT_EQ_INT(VK_MAP, m.kind);
     ASSERT_EQ_INT(2, (int)m.map.len);
     // Insertion order preserved; the replaced key kept its slot.
     ASSERT_TRUE(strcmp(m.map.entries[0].key, "one") == 0);
@@ -204,12 +204,12 @@ TEST(test_map_builder) {
     ASSERT_TRUE(value_map_get(&m, "absent") == NULL);
     ASSERT_TRUE(val_as_bool(&m)); // non-empty map is truthy
     value_free(&m);
-    ASSERT_EQ_INT(V_NONE, m.kind);
+    ASSERT_EQ_INT(VK_NONE, m.kind);
     ASSERT_TRUE(m.map.entries == NULL);
 
     // Empty map: valid, falsy.
     value_t e = val_map_finish(val_map_new());
-    ASSERT_EQ_INT(V_MAP, e.kind);
+    ASSERT_EQ_INT(VK_MAP, e.kind);
     ASSERT_EQ_INT(0, (int)e.map.len);
     ASSERT_TRUE(!val_as_bool(&e));
     value_free(&e);
@@ -230,12 +230,12 @@ TEST(test_map_nested_free) {
     value_t m = val_map_finish(outer);
 
     const value_t *lst = value_map_get(&m, "list");
-    ASSERT_TRUE(lst && lst->kind == V_LIST && lst->list.len == 2);
+    ASSERT_TRUE(lst && lst->kind == VK_LIST && lst->list.len == 2);
     const value_t *deep = value_map_get(&lst->list.items[0], "s");
     ASSERT_TRUE(deep && strcmp(deep->s, "deep") == 0);
 
     value_free(&m); // recursive free of the whole tree (ASan-checked in CI)
-    ASSERT_EQ_INT(V_NONE, m.kind);
+    ASSERT_EQ_INT(VK_NONE, m.kind);
 }
 
 // value_dup deep-copies maps: independent lifetimes.
@@ -251,10 +251,10 @@ TEST(test_map_copy) {
     value_t cpy = value_dup(&src);
     value_free(&src);
 
-    ASSERT_EQ_INT(V_MAP, dup.kind);
+    ASSERT_EQ_INT(VK_MAP, dup.kind);
     ASSERT_TRUE(strcmp(value_map_get(&dup, "k")->s, "v") == 0);
     ASSERT_EQ_INT(3, (int)value_map_get(&dup, "nums")->list.items[0].i);
-    ASSERT_EQ_INT(V_MAP, cpy.kind);
+    ASSERT_EQ_INT(VK_MAP, cpy.kind);
     ASSERT_TRUE(strcmp(value_map_get(&cpy, "k")->s, "v") == 0);
     value_free(&dup);
     value_free(&cpy);
@@ -266,7 +266,7 @@ TEST(test_value_auto_cleanup) {
     {
         VALUE_AUTO v = val_str("scoped");
         (void)v;
-        ran = (v.kind == V_STRING);
+        ran = (v.kind == VK_STRING);
     }
     ASSERT_TRUE(ran);
     // No leak — confirmed by valgrind in CI; here we just verify the
@@ -314,7 +314,7 @@ TEST(test_parse_bool_is_case_sensitive_and_rejects_junk) {
 }
 
 // val_bytes holds `p != NULL whenever n > 0`, including when the allocation
-// fails.  value_copy's V_BYTES arm used to leave `n` at the source length
+// fails.  value_copy's VK_BYTES arm used to leave `n` at the source length
 // with `p` NULL, and the next reader -- format_value_default, same_kind_equal
 // -- dereferenced NULL with a non-zero length.
 TEST(test_bytes_invariant_holds) {
@@ -340,14 +340,14 @@ TEST(test_bytes_invariant_holds) {
 
 // === Lazy ranges ===========================================================
 //
-// range() used to materialise a V_LIST capped at 2^20 entries, which at
+// range() used to materialise a VK_LIST capped at 2^20 entries, which at
 // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
 // heap -- to run a loop.  A range now carries three integers and never
 // allocates, so range(a,b) and a..b are the SAME value and the two spellings
 // stop having opposite safety properties.
 TEST(test_range_is_lazy_and_counts_correctly) {
     value_t r = val_range(0, 10);
-    ASSERT_EQ_INT(V_RANGE, r.kind);
+    ASSERT_EQ_INT(VK_RANGE, r.kind);
     ASSERT_EQ_INT((int)val_range_count(&r), 10);
     ASSERT_EQ_INT((int)r.range.step, 1);
 

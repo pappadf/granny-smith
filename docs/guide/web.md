@@ -98,16 +98,16 @@ page: any number may be in flight.
 **The result contract.** `gsEval(path, args)` resolves to one of three
 shapes, and callers must tell them apart:
 
-- a **value** — the attribute's or method's result (a V_MAP arrives as an
-  object, a V_LIST as an array, a V_BOOL as `true`/`false`);
-- **`null`** — only a *successful* method that returns nothing (V_NONE);
-- **`{ error }`** — failure.  A V_ERROR from the core carries its message;
+- a **value** — the attribute's or method's result (a VK_MAP arrives as an
+  object, a VK_LIST as an array, a VK_BOOL as `true`/`false`);
+- **`null`** — only a *successful* method that returns nothing (VK_NONE);
+- **`{ error }`** — failure.  A VK_ERROR from the core carries its message;
   a failure of the bridge itself (the module not ready, a request too
   large, a dead worker) also sets `transport: true`.
 
 So `r !== null` is never a success test — `{ error }` passes it.  Use
-`gsOk(r)` for "did it work" (neither an error nor a V_BOOL `false`),
-`r === true` for a V_BOOL method, and a shape check for a read;
+`gsOk(r)` for "did it work" (neither an error nor a VK_BOOL `false`),
+`r === true` for a VK_BOOL method, and a shape check for a read;
 `gsErrorText(r)` gives the reason
 ([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
 
@@ -797,7 +797,7 @@ typed-dispatch and introspection surface.
   an auxiliary core listed in `capabilities.aux_cpus` has
   `machine.<name>.frame` (the AV DSP3210's `machine.dsp.frame`).
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
-  returns `V_BOOL` (truthy for shell `assert ${…}` use). The web2
+  returns `VK_BOOL` (truthy for shell `assert ${…}` use). The web2
   Disasm pane uses `debug.frame` instead.
 - **`debug.breakpoints.add(addr [, condition])`** — set (a second add at
   the same address returns the existing entry);
@@ -806,7 +806,7 @@ typed-dispatch and introspection surface.
   **`debug.breakpoints.entries[id].{addr,enabled,condition,hit_count}`** and
   **`.remove()`** — read, toggle, and clear one entry.
 - **`machine.memory.peek.{b,w,l}(addr)`** — single-byte / word / long read.
-- **`machine.memory.peek.bytes(addr, count)`** — bulk read, `V_BYTES`,
+- **`machine.memory.peek.bytes(addr, count)`** — bulk read, `VK_BYTES`,
   capped at 4 KB. The Memory pane uses this so a 128-byte refresh is one
   bridge call.
 - **`machine.floppy.drive[i].insert(path, writable)` / `.eject()` /

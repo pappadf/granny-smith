@@ -41,7 +41,7 @@ static void print_category(const char *category) {
 // `log.set(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem
 // logging, with real named arguments.
 //
-// The second slot used to be declared V_NONE -- no type at all -- and accept
+// The second slot used to be declared VK_NONE -- no type at all -- and accept
 // either an integer or a spec string like "level=5 file=tmp/foo.txt
 // stdout=off ts=on", which the body then parsed itself with strtok_r.  So the
 // framework validated nothing (it had been told nothing to validate),
@@ -54,13 +54,13 @@ static void print_category(const char *category) {
 // `log.set(cat)` with nothing else prints the category's current settings,
 // which is what the bare form always did.
 static DEF_METHOD(log_method_set) {
-    if (argv[0].kind != V_ENUM || !argv[0].enm.table)
+    if (argv[0].kind != VK_ENUM || !argv[0].enm.table)
         return val_err("log.set: category is required");
     const char *category = argv[0].enm.table[argv[0].enm.idx];
 
     bool touched = false;
 
-    if (argv[1].kind != V_NONE) {
+    if (argv[1].kind != VK_NONE) {
         bool ok = false;
         int64_t level = val_as_i64(&argv[1], &ok);
         if (!ok || level < 0)
@@ -69,20 +69,20 @@ static DEF_METHOD(log_method_set) {
             return val_err("log.set: cannot set level on '%s'", category);
         touched = true;
     }
-    if (argv[2].kind == V_BOOL) {
+    if (argv[2].kind == VK_BOOL) {
         log_set_category_stdout(category, argv[2].b);
         touched = true;
     }
-    if (argv[3].kind == V_STRING && argv[3].s) {
+    if (argv[3].kind == VK_STRING && argv[3].s) {
         if (log_set_category_file(category, argv[3].s) != 0)
             return val_err("log.set: cannot open log file '%s': %s", argv[3].s, strerror(errno));
         touched = true;
     }
-    if (argv[4].kind == V_BOOL) {
+    if (argv[4].kind == VK_BOOL) {
         log_set_category_timestamp(category, argv[4].b);
         touched = true;
     }
-    if (argv[5].kind == V_BOOL) {
+    if (argv[5].kind == VK_BOOL) {
         log_set_category_show_pc(category, argv[5].b);
         touched = true;
     }
@@ -121,24 +121,24 @@ static const char *const log_category_values[] = {
 // An optional slot with no default_value cannot be a HOLE before a later
 // given slot -- node_validate_args says so directly: "argc truncation only
 // works at the tail".  So `log.set(cpu, level=3, ts=on)` would fail on
-// `file`, which sits between them.  A V_NONE default is filled in and skips
+// `file`, which sits between them.  A VK_NONE default is filled in and skips
 // validation, which is precisely "the caller did not mention this one" and is
 // what the body below tests for.
 
 static const arg_decl_t log_set_args[] = {
-    {.name = "category", .kind = V_ENUM, .enum_values = log_category_values, .doc = "Subsystem to configure"},
+    {.name = "category", .kind = VK_ENUM, .enum_values = log_category_values, .doc = "Subsystem to configure"},
     {.name = "level",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Verbosity; 0 silences level-1-and-up sites"},
-    {.name = "stdout", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Emit to stdout"},
+    {.name = "stdout", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Emit to stdout"},
     {.name = "file",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Append to this path; \"off\" closes it"},
-    {.name = "ts", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with a timestamp"},
-    {.name = "pc", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with the guest PC"},
+    {.name = "ts", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with a timestamp"},
+    {.name = "pc", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with the guest PC"},
 };
 
 // === log.category["<name>"] =================================================
@@ -208,26 +208,26 @@ static DEF_SETTER(cat_attr_pc_set) {
 }
 
 static const member_t log_category_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "level",
      .doc = "Verbosity: 0 is silent, higher is more verbose",
-     .attr = {.type = V_UINT, .width = 4, .get = cat_attr_level_get, .set = cat_attr_level_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = cat_attr_level_get, .set = cat_attr_level_set}},
+    {.kind = MK_ATTR,
      .name = "stdout",
      .doc = "Emit this category's lines to stdout (the console)",
-     .attr = {.type = V_BOOL, .get = cat_attr_stdout_get, .set = cat_attr_stdout_set}          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = cat_attr_stdout_get, .set = cat_attr_stdout_set}          },
+    {.kind = MK_ATTR,
      .name = "file",
      .doc = "Also append to this path; \"off\" when closed (assigning \"off\" closes it)",
-     .attr = {.type = V_STRING, .get = cat_attr_file_get, .set = cat_attr_file_set}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = cat_attr_file_get, .set = cat_attr_file_set}            },
+    {.kind = MK_ATTR,
      .name = "ts",
      .doc = "Stamp each line with a timestamp",
-     .attr = {.type = V_BOOL, .get = cat_attr_ts_get, .set = cat_attr_ts_set}                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = cat_attr_ts_get, .set = cat_attr_ts_set}                  },
+    {.kind = MK_ATTR,
      .name = "pc",
      .doc = "Stamp each line with the guest PC",
-     .attr = {.type = V_BOOL, .get = cat_attr_pc_get, .set = cat_attr_pc_set}                  },
+     .attr = {.type = VK_BOOL, .get = cat_attr_pc_get, .set = cat_attr_pc_set}                  },
 };
 
 static const class_desc_t log_category_class = {
@@ -283,14 +283,14 @@ static const collection_desc_t log_categories = {
 };
 
 static const member_t log_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "levels",
      .doc = "Every registered log category and its level, as a map {<category>: <level>}",
-     .attr = {.type = V_MAP, .get = log_attr_levels}                                                            },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_MAP, .get = log_attr_levels}                                                            },
+    {.kind = MK_METHOD,
      .name = "set",
      .doc = "Configure a log category: log.set(cat, level=, stdout=, file=, ts=, pc=)",
-     .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = V_BOOL, .fn = log_method_set}},
+     .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = VK_BOOL, .fn = log_method_set}},
 };
 
 static const class_desc_t log_class = {

@@ -239,7 +239,7 @@ static gs_job_t *annotation_target_locked(void) {
 // The entries of map `m` as JSON object members, without the braces (tagged
 // JSON, the bridge's form); "" for none.  Malloc'd, NULL on failure.
 static char *annotation_fields(const value_t *m) {
-    if (!m || m->kind != V_MAP || m->map.len == 0)
+    if (!m || m->kind != VK_MAP || m->map.len == 0)
         return strdup("");
     vbuf_t b = {0};
     value_format(m, VFMT_JSON_TAGGED, &b);

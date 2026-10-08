@@ -316,7 +316,7 @@ static DEF_METHOD(vrom_method_identify) {
     switch (vrom_identify_core(path, &id, &size, &crc)) {
     case VROM_ID_UNREADABLE:
         // Distinguish "can't read the file" from "present, but not a vROM",
-        // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
+        // mirroring rom.identify: a missing/unreadable path is a VK_ERROR,
         // while a real file of the wrong size is simply unrecognised.
         return val_err("catalog.vroms.identify: cannot read '%s'", path);
     case VROM_ID_WRONG_SIZE: {
@@ -355,22 +355,22 @@ static DEF_METHOD(vrom_method_identify) {
 }
 
 static const arg_decl_t vrom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "VROM file path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "VROM file path"},
 };
 
 static const member_t vrom_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Expected VROM size in bytes (32 KB)",
-     .attr = {.type = V_UINT, .get = vrom_attr_size, .set = NULL}                              },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = vrom_attr_size, .set = NULL}                              },
+    {.kind = MK_METHOD,
      .name = "offer",
      .doc = "Offer a candidate VROM file; true iff recognised and registered",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_offer}  },
-    {.kind = M_METHOD,
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = VK_BOOL, .fn = vrom_method_offer}  },
+    {.kind = MK_METHOD,
      .name = "identify",
      .doc = "Typed map: {recognised, card_id?, compatible?, size, crc}.",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_MAP, .fn = vrom_method_identify}},
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = VK_MAP, .fn = vrom_method_identify}},
 };
 
 static const class_desc_t vrom_class = {

@@ -95,7 +95,7 @@ static void format_object_table(struct object *o) {
         const member_t *mb = &cls->members[i];
         if (!mb->name)
             continue;
-        if (mb->kind == M_METHOD)
+        if (mb->kind == MK_METHOD)
             continue;
         int len = (int)strlen(mb->name);
         if (len > width)
@@ -108,7 +108,7 @@ static void format_object_table(struct object *o) {
         const member_t *mb = &cls->members[i];
         if (!mb->name)
             continue;
-        if (mb->kind != M_ATTR)
+        if (mb->kind != MK_ATTR)
             continue;
         if (!mb->attr.get)
             continue;
@@ -121,7 +121,7 @@ static void format_object_table(struct object *o) {
     }
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *mb = &cls->members[i];
-        if (!mb->name || mb->kind != M_CHILD)
+        if (!mb->name || mb->kind != MK_CHILD)
             continue;
         const class_desc_t *ccls = mb->child.collection ? mb->child.collection->entry : mb->child.cls;
         const char *child_cls = (ccls && ccls->name) ? ccls->name : "object";
@@ -139,18 +139,18 @@ static void format_cell(const value_t *v, char *buf, size_t buf_size) {
 #define TABLE_MAX_COLS 12
 #define TABLE_CELL_MAX 48
 
-// A V_LIST whose elements are all objects of one class prints as a
+// A VK_LIST whose elements are all objects of one class prints as a
 // table — columns from the class's attributes. This is what lets
 // `debug.breakpoints.entries` at the prompt render the same table the
 // retired `list` methods used to print. Returns false when the list
 // isn't table-shaped (caller falls back to inline list rendering).
 static bool try_print_object_table(const value_t *v) {
-    if (v->kind != V_LIST || v->list.len == 0)
+    if (v->kind != VK_LIST || v->list.len == 0)
         return false;
     const class_desc_t *cls = NULL;
     for (size_t i = 0; i < v->list.len; i++) {
         const value_t *e = &v->list.items[i];
-        if (e->kind != V_OBJECT || !e->obj)
+        if (e->kind != VK_OBJECT || !e->obj)
             return false;
         const class_desc_t *c = object_class(e->obj);
         if (!c || (cls && c != cls))
@@ -164,7 +164,7 @@ static bool try_print_object_table(const value_t *v) {
     int n_cols = 0;
     for (size_t i = 0; i < cls->n_members && n_cols < TABLE_MAX_COLS; i++) {
         const member_t *mb = &cls->members[i];
-        if (mb->kind == M_ATTR && mb->name && mb->attr.get)
+        if (mb->kind == MK_ATTR && mb->name && mb->attr.get)
             cols[n_cols++] = (int)i;
     }
     if (n_cols == 0)
@@ -209,16 +209,16 @@ static bool try_print_object_table(const value_t *v) {
 // decisions about a terminal, not renderings of a value.
 //
 // Scalars render in VFMT_REPL, which differs from the VFMT_TEXT that `${x}`
-// uses in exactly one respect: V_BYTES carries its `0x` and is never capped,
+// uses in exactly one respect: VK_BYTES carries its `0x` and is never capped,
 // because asking for the value alone is asking for all of it.
 static void format_value_print(const value_t *v) {
     if (!v)
         return;
     switch (v->kind) {
-    case V_NONE:
+    case VK_NONE:
         break;
 
-    case V_LIST: {
+    case VK_LIST: {
         // A list of same-class objects renders as an attribute table.
         if (try_print_object_table(v))
             break;
@@ -234,7 +234,7 @@ static void format_value_print(const value_t *v) {
         break;
     }
 
-    case V_MAP: {
+    case VK_MAP: {
         // Aligned `key : value` rows; nested maps/lists show as compact
         // placeholders (drill in via map.key / map[i]).
         int width = 0;
@@ -255,13 +255,13 @@ static void format_value_print(const value_t *v) {
         break;
     }
 
-    case V_OBJECT:
+    case VK_OBJECT:
         // Bare-read of an object prints its attributes as a `name = value`
         // table. Methods are skipped; child nodes show as placeholders.
         format_object_table(v->obj);
         break;
 
-    case V_ERROR:
+    case VK_ERROR:
         // The one kind that goes to stderr: results are stdout, diagnostics
         // are stderr, and a script's captured output depends on the split.
         fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
@@ -290,7 +290,7 @@ static void format_value_print(const value_t *v) {
 // structured entry.  The text itself does not change.
 static void print_value_here(void *p) {
     const value_t *v = (const value_t *)p;
-    bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
+    bool annotate = v && v->kind != VK_NONE && v->kind != VK_ERROR;
     if (annotate)
         annotate = job_annotate("value_begin", NULL, NULL, NULL);
     format_value_print(v);

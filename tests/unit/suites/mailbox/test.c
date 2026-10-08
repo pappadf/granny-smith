@@ -871,7 +871,7 @@ static value_t blob_get_text(struct object *self, const member_t *m) {
 }
 
 static const member_t blob_members[] = {
-    {.kind = M_ATTR, .name = "text", .doc = "text", .attr = {.type = V_STRING, .get = blob_get_text}},
+    {.kind = MK_ATTR, .name = "text", .doc = "text", .attr = {.type = VK_STRING, .get = blob_get_text}},
 };
 static const class_desc_t blob_class = {.name = "blob", .members = blob_members, .n_members = 1};
 

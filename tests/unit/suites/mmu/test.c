@@ -799,7 +799,7 @@ static void fake_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mm
 TEST(test_debug_map_sweep) {
     value_t args[5] = {val_uint(4, 0), val_none(), val_none(), val_none(), val_none()};
     value_t r = debug_mmu_map(fake_xlate, NULL, true, 1ull << 32, 12, 1, args);
-    ASSERT_TRUE(r.kind == V_LIST);
+    ASSERT_TRUE(r.kind == VK_LIST);
     ASSERT_EQ_INT(2, (int)r.list.len);
     // Run 0: identity, [0, 1 MB).
     value_t *run0 = &r.list.items[0];
@@ -819,7 +819,7 @@ TEST(test_debug_map_sweep) {
     value_free(&r);
     value_t args3[2] = {val_uint(4, 0x5000), val_uint(4, 0x5000)};
     r = debug_mmu_map(fake_xlate, NULL, true, 1ull << 32, 12, 2, args3);
-    ASSERT_TRUE(r.kind == V_ERROR);
+    ASSERT_TRUE(r.kind == VK_ERROR);
     value_free(&r);
 }
 

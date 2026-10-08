@@ -1,7 +1,7 @@
 # Integration test: Debug tooling — `find` family (shell v2).
 #
-# `find.{str|bytes|word|long}` return a V_LIST of match addresses; failures
-# return V_ERROR. This script asserts on the typed results and echoes stable
+# `find.{str|bytes|word|long}` return a VK_LIST of match addresses; failures
+# return VK_ERROR. This script asserts on the typed results and echoes stable
 # markers that run.sh greps.
 
 # === find: introspection ================================================

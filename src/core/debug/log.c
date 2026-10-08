@@ -157,7 +157,7 @@ static int set_category_file(struct log_category *c, const char *path) {
 // was a flag grammar inside a string parsed with strtok_r -- the exact shape
 // docs/internals/core/object/object-model.md ("Library conventions") says named
 // arguments exist to retire.
-// The framework could not validate it (the slot was declared V_NONE, so it
+// The framework could not validate it (the slot was declared VK_NONE, so it
 // was told nothing to validate), completion could not offer the keys or their
 // values, and it carried its own boolean vocabulary and its own error wording.
 //

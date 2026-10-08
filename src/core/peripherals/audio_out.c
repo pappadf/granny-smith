@@ -416,33 +416,33 @@ static DEF_GETTER(capture_attr_peak) {
 
 static const arg_decl_t capture_stop_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional WAV path to write the capture to (golden regeneration)"},
 };
 
 static const member_t capture_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "active",
      .doc = "True while a capture is recording",
-     .attr = {.type = V_BOOL, .get = capture_attr_active, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = capture_attr_active, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "frames",
      .doc = "Frames accumulated in the current or last capture",
-     .attr = {.type = V_UINT, .get = capture_attr_frames, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = capture_attr_frames, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "peak",
      .doc = "Peak |sample - first sample| of the capture (signal presence check)",
-     .attr = {.type = V_UINT, .get = capture_attr_peak, .set = NULL}                               },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = capture_attr_peak, .set = NULL}                               },
+    {.kind = MK_METHOD,
      .name = "start",
      .doc = "Start recording producer audio at guest rate (deterministic)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = capture_method_start}            },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = capture_method_start}            },
+    {.kind = MK_METHOD,
      .name = "stop",
      .doc = "Stop recording; optionally write the capture as a PCM int16 WAV",
-     .method = {.args = capture_stop_args, .nargs = 1, .result = V_UINT, .fn = capture_method_stop}},
+     .method = {.args = capture_stop_args, .nargs = 1, .result = VK_UINT, .fn = capture_method_stop}},
 };
 
 static const class_desc_t audio_capture_class = {

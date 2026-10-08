@@ -128,9 +128,9 @@ void atalk_install_objects(void) {
 //
 // The design rules are: state is an attribute with a setter, methods are
 // verbs, constructive methods return the object they made, and failures come
-// back as V_ERROR carrying the real reason.
+// back as VK_ERROR carrying the real reason.
 
-// Turn a subsystem call's error buffer into the V_ERROR a script will see.
+// Turn a subsystem call's error buffer into the VK_ERROR a script will see.
 static value_t atalk_err(const char *fallback, const char *buf) {
     return val_err("%s", (buf && *buf) ? buf : fallback);
 }
@@ -191,20 +191,23 @@ static DEF_GETTER(atalk_nbp_attr_node) {
 }
 
 static const member_t atalk_nbp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "object",
      .doc = "NBP object name",
-     .attr = {.type = V_STRING, .get = atalk_nbp_attr_object}                                                        },
-    {.kind = M_ATTR, .name = "type", .doc = "NBP entity type", .attr = {.type = V_STRING, .get = atalk_nbp_attr_type}},
-    {.kind = M_ATTR, .name = "zone", .doc = "NBP zone",        .attr = {.type = V_STRING, .get = atalk_nbp_attr_zone}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_nbp_attr_object}                                                  },
+    {.kind = MK_ATTR,
+     .name = "type",
+     .doc = "NBP entity type",
+     .attr = {.type = VK_STRING, .get = atalk_nbp_attr_type}                                                    },
+    {.kind = MK_ATTR, .name = "zone", .doc = "NBP zone", .attr = {.type = VK_STRING, .get = atalk_nbp_attr_zone}},
+    {.kind = MK_ATTR,
      .name = "socket",
      .doc = "DDP socket the entity answers on",
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_socket}                                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_nbp_attr_socket}                                        },
+    {.kind = MK_ATTR,
      .name = "node",
      .doc = "LLAP node the entity lives on",
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_node}                                                },
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_nbp_attr_node}                                          },
 };
 
 static const class_desc_t atalk_nbp_entry_class = {
@@ -283,42 +286,42 @@ static DEF_METHOD(atalk_volume_method_remove) {
 }
 
 static const member_t atalk_volume_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "AFP volume name as clients see it",
-     .attr = {.type = V_STRING, .get = atalk_volume_attr_name}                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_volume_attr_name}                        },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Host directory backing the volume",
-     .attr = {.type = V_STRING, .get = atalk_volume_attr_path}                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_volume_attr_path}                        },
+    {.kind = MK_ATTR,
      .name = "vol_id",
      .doc = "Wire volume identifier",
-     .attr = {.type = V_UINT, .width = 2, .get = atalk_volume_attr_vol_id}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 2, .get = atalk_volume_attr_vol_id}            },
+    {.kind = MK_ATTR,
      .name = "open_forks",
      .doc = "Forks currently open on this volume",
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_open_forks}        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_volume_attr_open_forks}        },
+    {.kind = MK_ATTR,
      .name = "sessions_using",
      .doc = "Sessions that have this volume open",
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_sessions_using}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_volume_attr_sessions_using}    },
+    {.kind = MK_ATTR,
      .name = "catalog_generation",
      .doc = "CNID catalog generation; bumped by compaction and tombstone sweeps",
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_catalog_generation}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_volume_attr_catalog_generation}},
+    {.kind = MK_ATTR,
      .name = "cnid_count",
      .doc = "Live entries in the CNID catalog",
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_cnid_count}        },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_volume_attr_cnid_count}        },
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Withdraw this AFP volume",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = atalk_volume_method_remove,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                               },
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                },
 };
 
 static const class_desc_t atalk_volume_class = {
@@ -365,17 +368,17 @@ static DEF_METHOD(atalk_volumes_method_remove) {
 
 static const arg_decl_t atalk_volumes_add_args[] = {
     {.name = "name",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Volume name as clients see it (max 32 chars)"},
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Host directory to publish"},
 };
 static const arg_decl_t atalk_volumes_remove_args[] = {
-    {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
+    {.name = "name", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
 };
 
 static const collection_desc_t atalk_volumes_collection_entries = {
@@ -385,20 +388,20 @@ static const collection_desc_t atalk_volumes_collection_entries = {
 };
 
 static const member_t atalk_volumes_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .doc = "Publish a host directory as an AFP volume; returns the new volume",
      .method = {.args = atalk_volumes_add_args,
                 .nargs = 2,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = atalk_volumes_method_add,
                 .ui_flags = MM_MUTATE}                 },
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Withdraw an AFP volume by name",
      .method = {.args = atalk_volumes_remove_args,
                 .nargs = 1,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = atalk_volumes_method_remove,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
     OBJ_ENTRIES(&atalk_volumes_collection_entries, NULL),
@@ -435,26 +438,26 @@ static DEF_GETTER(atalk_session_attr_idle_ns) {
 }
 
 static const member_t atalk_session_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "session_ref",
      .doc = "ASP session reference",
-     .attr = {.type = V_UINT, .width = 2, .get = atalk_session_attr_ref}        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 2, .get = atalk_session_attr_ref}        },
+    {.kind = MK_ATTR,
      .name = "client_node",
      .doc = "LLAP node of the workstation",
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_session_attr_client_node}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_session_attr_client_node}},
+    {.kind = MK_ATTR,
      .name = "afp_version",
      .doc = "AFP version negotiated at login",
-     .attr = {.type = V_STRING, .get = atalk_session_attr_afp_version}          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_session_attr_afp_version}          },
+    {.kind = MK_ATTR,
      .name = "open_forks",
      .doc = "Forks this session holds open",
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_session_attr_open_forks} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_session_attr_open_forks} },
+    {.kind = MK_ATTR,
      .name = "idle_ns",
      .doc = "Emulated nanoseconds since the last packet from this client",
-     .attr = {.type = V_UINT, .width = 8, .get = atalk_session_attr_idle_ns}    },
+     .attr = {.type = VK_UINT, .width = 8, .get = atalk_session_attr_idle_ns}    },
 };
 
 static const class_desc_t atalk_session_class = {
@@ -516,14 +519,14 @@ static const member_t atalk_afp_stats_members[] = {
     OBJ_U64_FIELD(atalk_afp_stats_t, bytes_written, "Bytes accepted through FPWrite"),
     OBJ_U64_FIELD(atalk_afp_stats_t, errors, "Commands that returned a non-zero result"),
     OBJ_U64_FIELD(atalk_afp_stats_t, open_forks, "Forks currently open across all volumes"),
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
                                                                                 .name = "errors_by_code",
                                                                                 .doc = "Result code -> occurrence count, for the codes seen so far",
-                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
-    {.kind = M_ATTR,
+                                                                                .attr = {.type = VK_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
+    {.kind = MK_ATTR,
                                                                                 .name = "ok_by_command",
                                                                                 .doc = "Command name -> times it returned NoErr, for the commands that have",
-                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_ok_by_command} },
+                                                                                .attr = {.type = VK_MAP, .get = atalk_afp_stats_attr_ok_by_command} },
 };
 
 static const class_desc_t atalk_afp_stats_class = {
@@ -579,25 +582,25 @@ static DEF_GETTER(atalk_afp_attr_versions) {
 }
 
 static const member_t atalk_afp_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Serve AFP and advertise the server over NBP",
-     .attr = {.type = V_BOOL, .get = atalk_afp_attr_enabled, .set = atalk_afp_attr_set_enabled}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = atalk_afp_attr_enabled, .set = atalk_afp_attr_set_enabled}  },
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "NBP object name; the setter re-registers the advertisement",
-     .attr = {.type = V_STRING,
+     .attr = {.type = VK_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_afp_attr_name,
-              .set = atalk_afp_attr_set_name}                                                    },
-    {.kind = M_ATTR,
+              .set = atalk_afp_attr_set_name}                                                     },
+    {.kind = MK_ATTR,
      .name = "message",
      .doc = "Server message clients fetch with FPGetSrvrMsg",
-     .attr = {.type = V_STRING, .get = atalk_afp_attr_message, .set = atalk_afp_attr_set_message}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_afp_attr_message, .set = atalk_afp_attr_set_message}},
+    {.kind = MK_ATTR,
      .name = "versions",
      .doc = "AFP versions this server implements and advertises",
-     .attr = {.type = V_LIST, .get = atalk_afp_attr_versions}                                    },
+     .attr = {.type = VK_LIST, .get = atalk_afp_attr_versions}                                    },
 };
 
 static const class_desc_t atalk_afp_class = {
@@ -681,57 +684,57 @@ static const class_desc_t atalk_printer_stats_class = {
 };
 
 static const member_t atalk_printer_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Advertise the LaserWriter via NBP",
-     .attr = {.type = V_BOOL, .get = atalk_printer_attr_enabled, .set = atalk_printer_attr_set_enabled}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = atalk_printer_attr_enabled, .set = atalk_printer_attr_set_enabled}},
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "NBP entity name; the setter re-registers the advertisement",
-     .attr = {.type = V_STRING,
+     .attr = {.type = VK_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_printer_attr_name,
-              .set = atalk_printer_attr_set_name}                                                      },
-    {.kind = M_ATTR,
+              .set = atalk_printer_attr_set_name}                                                       },
+    {.kind = MK_ATTR,
      .name = "status",
      .doc = "PAP status string as the workstation reads it",
-     .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_printer_attr_status}                                      },
+    {.kind = MK_ATTR,
      .name = "interpreter",
      .doc = "True when the build links the PostScript interpreter (PLATEN=1)",
-     .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = atalk_printer_attr_interpreter}                                   },
+    {.kind = MK_ATTR,
      .name = "capture",
      .doc = "Also hand each job's PostScript to the host: a .ps beside the PDF, or a download",
-     .attr = {.type = V_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
+    {.kind = MK_ATTR,
      .name = "documents",
      .doc = "Documents the interpreter has handed to the platform",
-     .attr = {.type = V_INT, .get = atalk_printer_attr_documents}                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = atalk_printer_attr_documents}                                      },
+    {.kind = MK_ATTR,
      .name = "last_pages",
      .doc = "Pages of the last finished job",
-     .attr = {.type = V_INT, .get = atalk_printer_attr_last_pages}                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = atalk_printer_attr_last_pages}                                     },
+    {.kind = MK_ATTR,
      .name = "last_outcome",
      .doc = "Outcome of the last finished job: ok, error: <name> in <command>, budget",
-     .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = atalk_printer_attr_last_outcome}                                },
+    {.kind = MK_ATTR,
      .name = "interpreter_jobs",
      .doc = "Jobs the printer has served since it was created (0 until its first job)",
-     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_jobs}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = atalk_printer_attr_interpreter_jobs}                               },
+    {.kind = MK_ATTR,
      .name = "interpreter_permanent_jobs",
      .doc = "Of those, jobs whose changes exitserver made permanent (startjob is not counted)",
-     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_permanent_jobs}                     },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = atalk_printer_attr_interpreter_permanent_jobs}                     },
+    {.kind = MK_METHOD,
      .name = "restart",
      .doc = "Power-cycle the printer: a job in progress is cut off, and what jobs made permanent is lost",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = atalk_printer_method_restart,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                },
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                 },
 };
 
 static const class_desc_t atalk_printer_class = {
@@ -757,14 +760,14 @@ static DEF_GETTER(atalk_attr_node_id) {
 }
 
 static const member_t atalk_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Attach the AppleTalk stack to the SCC link",
-     .attr = {.type = V_BOOL, .get = atalk_attr_enabled, .set = atalk_attr_set_enabled}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = atalk_attr_enabled, .set = atalk_attr_set_enabled}},
+    {.kind = MK_ATTR,
      .name = "node_id",
      .doc = "Current LLAP node ID (0 while the stack is detached)",
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_attr_node_id}                   },
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_attr_node_id}                   },
 };
 
 static const class_desc_t atalk_class = {

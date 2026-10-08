@@ -71,7 +71,7 @@ static struct object *ref_lookup(struct object *self, const char *name) {
     return g_ref_target;
 }
 static const member_t reftoy_members[] = {
-    {.kind = M_CHILD,
+    {.kind = MK_CHILD,
      .name = "source",
      .doc = "Reference to a node this object points at but does not own",
      .child = {.reference = true, .lookup = ref_lookup}},
@@ -97,36 +97,36 @@ static value_t metmeta_shown_get(struct object *self, const member_t *m) {
     return val_uint(4, 42);
 }
 static const member_t metmeta_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "shown",
      .doc = "basic attribute",
-     .attr = {.type = V_UINT, .get = metmeta_shown_get, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = metmeta_shown_get, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "raw_reg",
      .flags = M_CAT_ADVANCED,
      .doc = "advanced attribute",
      .label = "Raw register",
-     .attr = {.type = V_UINT, .get = NULL, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = NULL, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "saved_phase",
      .flags = M_CAT_INTERNAL,
      .doc = "internal attribute",
-     .attr = {.type = V_UINT, .get = NULL, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = NULL, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "export",
      .doc = "mutating method with a verb label",
      .order = 5,
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = meta_method_stub,
                 .ui_flags = MM_MUTATE,
                 .verb_label = "Save image…"}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "destructive method",
      .method =
-         {.args = NULL, .nargs = 0, .result = V_NONE, .fn = meta_method_stub, .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
+         {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = meta_method_stub, .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 static const class_desc_t metmeta_class = {
     .name = "metmeta",
@@ -184,7 +184,7 @@ TEST(test_reference_not_cascaded) {
     node_t n = object_resolve(object_root(), "owner.source");
     ASSERT_TRUE(node_valid(n));
     value_t v = node_get(n);
-    ASSERT_TRUE(v.kind == V_OBJECT && v.obj == target);
+    ASSERT_TRUE(v.kind == VK_OBJECT && v.obj == target);
     value_free(&v);
 
     // Cascading the owner must not touch the referenced target.
@@ -302,13 +302,13 @@ TEST(test_meta_label_category) {
     node_t nl = object_resolve(object_root(), "widget.meta.label");
     ASSERT_TRUE(node_valid(nl));
     value_t vl = node_get(nl);
-    ASSERT_TRUE(vl.kind == V_STRING && strcmp(vl.s, "Widget 9000") == 0);
+    ASSERT_TRUE(vl.kind == VK_STRING && strcmp(vl.s, "Widget 9000") == 0);
     value_free(&vl);
 
     node_t nc = object_resolve(object_root(), "widget.meta.category");
     ASSERT_TRUE(node_valid(nc));
     value_t vc = node_get(nc);
-    ASSERT_TRUE(vc.kind == V_STRING && strcmp(vc.s, "advanced") == 0);
+    ASSERT_TRUE(vc.kind == VK_STRING && strcmp(vc.s, "advanced") == 0);
     value_free(&vc);
 
     object_root_reset();
@@ -319,7 +319,7 @@ TEST(test_meta_label_category) {
 static const value_t *member_entry(const value_t *list, const char *name) {
     for (size_t i = 0; i < list->list.len; i++) {
         const value_t *n = value_map_get(&list->list.items[i], "name");
-        if (n && n->kind == V_STRING && strcmp(n->s, name) == 0)
+        if (n && n->kind == VK_STRING && strcmp(n->s, name) == 0)
             return &list->list.items[i];
     }
     return NULL;
@@ -327,7 +327,7 @@ static const value_t *member_entry(const value_t *list, const char *name) {
 
 static bool entry_str(const value_t *e, const char *key, const char *want) {
     const value_t *v = value_map_get(e, key);
-    return v && v->kind == V_STRING && strcmp(v->s, want) == 0;
+    return v && v->kind == VK_STRING && strcmp(v->s, want) == 0;
 }
 
 // meta.members describes every member in one call: class members with their own
@@ -345,7 +345,7 @@ TEST(test_meta_members) {
     node_t n = object_resolve(object_root(), "gadget.meta.members");
     ASSERT_TRUE(node_valid(n));
     value_t list = node_call(n, 0, NULL);
-    ASSERT_TRUE(list.kind == V_LIST);
+    ASSERT_TRUE(list.kind == VK_LIST);
     ASSERT_EQ_INT((int)list.list.len, 6); // five class members + the attached child
 
     const value_t *raw = member_entry(&list, "raw_reg");
@@ -353,14 +353,14 @@ TEST(test_meta_members) {
     ASSERT_TRUE(entry_str(raw, "label", "Raw register"));
     ASSERT_TRUE(value_map_get(raw, "value") == NULL); // not asked for
     const value_t *ro = value_map_get(member_entry(&list, "shown"), "readonly");
-    ASSERT_TRUE(ro && ro->kind == V_BOOL && ro->b);
+    ASSERT_TRUE(ro && ro->kind == VK_BOOL && ro->b);
 
     const value_t *exp = member_entry(&list, "export");
     ASSERT_TRUE(exp && entry_str(exp, "kind", "method") && entry_str(exp, "verb", "Save image…"));
     const value_t *mut = value_map_get(exp, "mutate");
-    ASSERT_TRUE(mut && mut->kind == V_BOOL && mut->b);
+    ASSERT_TRUE(mut && mut->kind == VK_BOOL && mut->b);
     const value_t *des = value_map_get(member_entry(&list, "eject"), "destructive");
-    ASSERT_TRUE(des && des->kind == V_BOOL && des->b);
+    ASSERT_TRUE(des && des->kind == VK_BOOL && des->b);
 
     const value_t *lcd = member_entry(&list, "lcd");
     ASSERT_TRUE(lcd && entry_str(lcd, "kind", "child") && entry_str(lcd, "label", "Front Panel LCD"));
@@ -369,9 +369,9 @@ TEST(test_meta_members) {
 
     value_t yes = val_bool(true);
     value_t withv = node_call(n, 1, &yes);
-    ASSERT_TRUE(withv.kind == V_LIST);
+    ASSERT_TRUE(withv.kind == VK_LIST);
     const value_t *v = value_map_get(member_entry(&withv, "shown"), "value");
-    ASSERT_TRUE(v && v->kind == V_UINT && v->u == 42);
+    ASSERT_TRUE(v && v->kind == VK_UINT && v->u == 42);
     value_free(&withv);
 
     object_root_reset();

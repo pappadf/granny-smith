@@ -287,12 +287,12 @@ static void complete_class_members(struct object *target, const char *tail, stru
         const member_t *m = &cls->members[i];
         if (!m->name)
             continue;
-        comp_kind_t kind = m->kind == M_ATTR     ? COMP_KIND_ATTR
-                           : m->kind == M_METHOD ? COMP_KIND_METHOD
-                           : m->child.collection ? COMP_KIND_COLLECTION
-                                                 : COMP_KIND_OBJECT;
+        comp_kind_t kind = m->kind == MK_ATTR     ? COMP_KIND_ATTR
+                           : m->kind == MK_METHOD ? COMP_KIND_METHOD
+                           : m->child.collection  ? COMP_KIND_COLLECTION
+                                                  : COMP_KIND_OBJECT;
         set_detail(out, kind, m->doc);
-        push_name_match(out, m->name, m->kind == M_CHILD, tail);
+        push_name_match(out, m->name, m->kind == MK_CHILD, tail);
     }
 }
 
@@ -410,7 +410,7 @@ static void complete_path(const char *partial, struct completion *out) {
         // For an object node, the class is on the object itself; for a
         // child-member with index resolved, descend into the live child.
         struct object *target = n.obj;
-        if (n.member && n.member->kind == M_CHILD)
+        if (n.member && n.member->kind == MK_CHILD)
             target = n.member->child.collection ? object_entry_at(n.obj, n.member, n.index)
                                                 : object_named_child(n.obj, n.member);
         if (target) {
@@ -479,7 +479,7 @@ static void complete_commands(const char *partial, struct completion *out) {
 // slot's kind picks the candidates.
 
 static void complete_method_arg(const member_t *m, int slot, const char *partial, struct completion *out) {
-    if (!m || m->kind != M_METHOD || m->method.nargs <= 0)
+    if (!m || m->kind != MK_METHOD || m->method.nargs <= 0)
         return;
     int n = m->method.nargs;
     const arg_decl_t *args = m->method.args;
@@ -495,12 +495,12 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
         const char *nm = args[i].name;
         char buf[160];
         set_detail(out, COMP_KIND_VALUE, args[i].doc);
-        if (args[i].kind == V_ENUM && args[i].enum_values) {
+        if (args[i].kind == VK_ENUM && args[i].enum_values) {
             for (const char *const *ev = args[i].enum_values; *ev; ev++) {
                 snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
                 push_match(out, comp_strdup(out, buf), partial);
             }
-        } else if (args[i].kind == V_BOOL) {
+        } else if (args[i].kind == VK_BOOL) {
             for (const char *const *bv = bool_values; *bv; bv++) {
                 snprintf(buf, sizeof(buf), "%s=%s", nm, *bv);
                 push_match(out, comp_strdup(out, buf), partial);
@@ -513,19 +513,19 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
         return;
     const arg_decl_t *a = &args[slot];
     switch (a->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         complete_bool(partial, out);
         break;
-    case V_ENUM:
+    case VK_ENUM:
         complete_enum(a->enum_values, partial, out);
         break;
-    case V_OBJECT:
+    case VK_OBJECT:
         complete_path(partial, out);
         break;
-    case V_STRING:
-        // A string declared VAL_PATH names a filesystem path. Other strings
+    case VK_STRING:
+        // A string declared VFLAG_PATH names a filesystem path. Other strings
         // get nothing — guessing here would litter the menu.
-        if (a->presentation_flags & VAL_PATH)
+        if (a->presentation_flags & VFLAG_PATH)
             complete_paths(partial, out);
         break;
     default:
@@ -686,7 +686,7 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
     if (!node_valid(cmd) && !strpbrk(head, ".[") &&
         shell_word_resolve(head, strlen(head), &cmd, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
         cmd = (node_t){0};
-    if (!node_valid(cmd) || !cmd.member || cmd.member->kind != M_METHOD)
+    if (!node_valid(cmd) || !cmd.member || cmd.member->kind != MK_METHOD)
         return;
     const member_t *m = cmd.member;
     const char *eq = is_named_word(partial, strlen(partial)) ? strchr(partial, '=') : NULL;

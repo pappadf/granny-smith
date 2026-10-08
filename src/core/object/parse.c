@@ -114,7 +114,7 @@ value_t parse_string_literal(const char **p) {
         return val_err("unterminated string literal");
     }
     *p = q + 1;
-    // Wrap the heap buffer into a V_STRING. val_str strdups, so we then
+    // Wrap the heap buffer into a VK_STRING. val_str strdups, so we then
     // free our own buffer — slightly wasteful, but keeps the "constructors
     // copy" rule consistent.
     value_t v = val_str(buf ? buf : "");
@@ -124,7 +124,7 @@ value_t parse_string_literal(const char **p) {
 
 // Parse an integer literal: optional sign, optional base prefix, digits
 // (with `_` as a separator), optional `u`/`i` suffix. On success
-// advances *p and returns V_UINT (default) or V_INT (if signed/`i`).
+// advances *p and returns VK_UINT (default) or VK_INT (if signed/`i`).
 value_t parse_integer_literal(const char **p) {
     if (!p || !*p)
         return val_err("expected integer literal");
@@ -226,7 +226,7 @@ value_t parse_integer_literal(const char **p) {
     return val_int((int64_t)uv);
 }
 
-// Parse a float literal at *p. Returns V_ERROR if not a float; on
+// Parse a float literal at *p. Returns VK_ERROR if not a float; on
 // success advances *p. A literal qualifies as a float if it has a '.',
 // or an 'e'/'E' exponent, or starts with `0x` and contains a 'p'/'P'.
 static value_t parse_float_literal(const char **p) {
@@ -395,7 +395,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         if (maybe_float) {
             const char *save = *p;
             value_t fv = parse_float_literal(p);
-            if (fv.kind == V_FLOAT) {
+            if (fv.kind == VK_FLOAT) {
                 // No :bytes suffix on floats.
                 return fv;
             }
@@ -405,8 +405,8 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         // Integer.
         const char *save = *p;
         value_t iv = parse_integer_literal(p);
-        if (iv.kind == V_INT || iv.kind == V_UINT) {
-            // Optional bytes suffix: NUMBER:N → big-endian V_BYTES of N
+        if (iv.kind == VK_INT || iv.kind == VK_UINT) {
+            // Optional bytes suffix: NUMBER:N → big-endian VK_BYTES of N
             // bytes: "0xDEAD_BEEF:4" — N is the byte width, read with the
             // same integer grammar as the value (so `:010` is ten, not an
             // octal eight).
@@ -420,7 +420,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
                 value_free(&nv);
                 if (have_n && n > 0 && n <= 16) {
                     *p = after;
-                    uint64_t u = (iv.kind == V_INT) ? (uint64_t)iv.i : iv.u;
+                    uint64_t u = (iv.kind == VK_INT) ? (uint64_t)iv.i : iv.u;
                     uint8_t buf[16] = {0};
                     for (int i = (int)n - 1; i >= 0; i--) {
                         buf[i] = (uint8_t)(u & 0xFF);

@@ -66,7 +66,7 @@ static value_t id_label(const char *id, const char *label, const char *detail) {
 // The string member `key` of map `m`, or NULL when absent or not a string.
 static const char *map_str(const value_t *m, const char *key) {
     const value_t *v = m ? value_map_get(m, key) : NULL;
-    return (v && v->kind == V_STRING) ? v->s : NULL;
+    return (v && v->kind == VK_STRING) ? v->s : NULL;
 }
 
 // Copy into a fixed buffer; false when it does not fit.
@@ -1212,9 +1212,9 @@ static bool map_int(const value_t *m, const char *key, int64_t *out) {
     const value_t *v = m ? value_map_get(m, key) : NULL;
     if (!v)
         return false;
-    if (v->kind == V_INT)
+    if (v->kind == VK_INT)
         return (*out = v->i), true;
-    if (v->kind == V_UINT)
+    if (v->kind == VK_UINT)
         return (*out = (int64_t)v->u), true;
     return false;
 }
@@ -1234,7 +1234,7 @@ static value_t check_keys(const value_t *m, const char *node, const char *const 
 
 // options: memory and every scalar option (V1).
 static value_t read_options(const hw_profile_t *p, const value_t *m, doc_t *d) {
-    if (m->kind != V_MAP)
+    if (m->kind != VK_MAP)
         return bad("options: expected an object");
     const config_option_decl_t *decl[MACHINE_OPTIONS_MAX];
     int no = scalar_options(p, decl, MACHINE_OPTIONS_MAX);
@@ -1242,8 +1242,8 @@ static value_t read_options(const hw_profile_t *p, const value_t *m, doc_t *d) {
         const char *k = m->map.entries[i].key;
         const value_t *v = &m->map.entries[i].val;
         char num[24];
-        const char *s = v->kind == V_STRING ? v->s : NULL;
-        if (!s && v->kind == V_INT) {
+        const char *s = v->kind == VK_STRING ? v->s : NULL;
+        if (!s && v->kind == VK_INT) {
             snprintf(num, sizeof num, "%lld", (long long)v->i);
             s = num;
         }
@@ -1289,7 +1289,7 @@ static value_t check_requires(const hw_profile_t *p, const doc_t *d) {
 
 // floppies (V2).
 static value_t read_floppies(const hw_profile_t *p, const value_t *m, doc_t *d) {
-    if (m->kind != V_MAP)
+    if (m->kind != VK_MAP)
         return bad("floppies: expected an object");
     int n = floppy_positions(p);
     for (size_t i = 0; i < m->map.len; i++) {
@@ -1298,7 +1298,7 @@ static value_t read_floppies(const hw_profile_t *p, const value_t *m, doc_t *d) 
         int at = (k[0] == 'f' && k[1] == 'd' && k[2] >= '0' && k[2] <= '1' && !k[3]) ? k[2] - '0' : -1;
         if (at < 0 || at >= n)
             return bad("floppies: model '%s' has no floppy position '%s'", p->id, k);
-        if (v->kind != V_STRING)
+        if (v->kind != VK_STRING)
             return bad("floppies.%s: expected a drive type", k);
         const floppy_slot_t *s = &p->floppy_slots[at];
         bool ok = strcmp(v->s, floppy_type_id(s->kind)) == 0 || (s->optional && strcmp(v->s, "none") == 0);
@@ -1326,12 +1326,12 @@ static value_t floppy_count(const hw_profile_t *p, const doc_t *d, int *out) {
 
 // storage (V3).
 static value_t read_storage(const hw_profile_t *p, const value_t *l, doc_t *d) {
-    if (l->kind != V_LIST)
+    if (l->kind != VK_LIST)
         return bad("storage: expected a list");
     d->n_storage = 0;
     for (size_t i = 0; i < l->list.len; i++) {
         const value_t *e = &l->list.items[i];
-        if (e->kind != V_MAP)
+        if (e->kind != VK_MAP)
             return bad("storage[%zu]: expected an object", i);
         static const char *const keys[] = {"bus", "unit", "type", NULL};
         value_t err = check_keys(e, "storage[]", keys);
@@ -1433,11 +1433,11 @@ static value_t add_drives(const hw_profile_t *p, const char *spec, doc_t *d) {
 
 // startup (V9).
 static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
-    if (v->kind == V_NONE) {
+    if (v->kind == VK_NONE) {
         d->startup = (machine_startup_t){.none = true};
         return val_none();
     }
-    if (v->kind != V_MAP)
+    if (v->kind != VK_MAP)
         return bad("startup: expected {bus, unit} or null");
     static const char *const keys[] = {"bus", "unit", NULL};
     value_t err = check_keys(v, "startup", keys);
@@ -1466,7 +1466,7 @@ static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
 
 // cards (V4, V5 in part -- the bus checks the rest).
 static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
-    if (l->kind != V_LIST)
+    if (l->kind != VK_LIST)
         return bad("cards: expected a list");
     d->n_cards = 0;
     d->cards_given = true;
@@ -1474,7 +1474,7 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
     int ns = model_sockets(p, socks, SOCKETS_MAX);
     for (size_t i = 0; i < l->list.len; i++) {
         const value_t *e = &l->list.items[i];
-        if (e->kind != V_MAP)
+        if (e->kind != VK_MAP)
             return bad("cards[%zu]: expected an object", i);
         static const char *const keys[] = {"slot", "card", "options", NULL};
         value_t err = check_keys(e, "cards[]", keys);
@@ -1533,12 +1533,12 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
         if (!copy_str(c->card, sizeof c->card, card))
             return bad("cards[%zu]: card id '%s' is too long", i, card);
         const value_t *opts = value_map_get(e, "options");
-        if (opts && opts->kind != V_NONE) {
-            if (opts->kind != V_MAP)
+        if (opts && opts->kind != VK_NONE) {
+            if (opts->kind != VK_MAP)
                 return bad("cards[%zu].options: expected an object", i);
             for (size_t k = 0; k < opts->map.len; k++) {
                 const value_t *ov = &opts->map.entries[k].val;
-                if (ov->kind != V_STRING)
+                if (ov->kind != VK_STRING)
                     return bad("cards[%zu].options.%s: expected a value id", i, opts->map.entries[k].key);
                 if (c->n_options >= SLOT_OPTIONS_MAX)
                     return bad("cards[%zu].options: too many", i);
@@ -1585,14 +1585,14 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
 
 // displays (V7, the device/monitor half; modes are checked by the bus).
 static value_t read_displays(const hw_profile_t *p, const value_t *m, doc_t *d) {
-    if (m->kind != V_MAP)
+    if (m->kind != VK_MAP)
         return bad("displays: expected an object");
     // Which members were given, and whether any of them is connected: an
     // absent member then takes "none" (one monitor, D6), otherwise its default.
     bool any_connected = false;
     for (size_t i = 0; i < m->map.len; i++) {
         const value_t *x = &m->map.entries[i].val;
-        if (x->kind != V_MAP)
+        if (x->kind != VK_MAP)
             return bad("displays.%s: expected an object", m->map.entries[i].key);
         const char *mon = map_str(x, "monitor");
         if (mon && strcmp(mon, MONITOR_NONE) != 0)
@@ -1921,7 +1921,7 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         return bad("out of memory");
     value_t err = val_none();
     doc_defaults(p, d);
-    bool have = config && config->kind == V_MAP;
+    bool have = config && config->kind == VK_MAP;
     const value_t *v_opts = have ? value_map_get(config, "options") : NULL;
     const value_t *v_flop = have ? value_map_get(config, "floppies") : NULL;
     const value_t *v_stor = have ? value_map_get(config, "storage") : NULL;
@@ -1934,7 +1934,7 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
     bool legacy_monitor = legacy->monitor && *legacy->monitor;
 
     // V8: a legacy argument and the document node it rewrites into.
-    if (v_opts && legacy->ram_kb && v_opts->kind == V_MAP && value_map_get(v_opts, "memory")) {
+    if (v_opts && legacy->ram_kb && v_opts->kind == VK_MAP && value_map_get(v_opts, "memory")) {
         err = bad("ram= and config's options.memory both set the memory");
         goto done;
     }

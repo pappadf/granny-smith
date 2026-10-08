@@ -160,7 +160,7 @@ cap). Reads walk top-down and fall back to the alias table.
 - **`let` creates, `=` mutates.** `let x = 5` declares in the current
   scope; `$x = 6` mutates the innermost scope holding `x`; mutating an
   undeclared name is an error (no typo-shadowing).
-- **Aliases are reference bindings** (`V_REF`): they store *path text*
+- **Aliases are reference bindings** (`VK_REF`): they store *path text*
   and re-resolve on every access, so `$pc` keeps working across
   `machine.boot`. They read and write through: `$pc = 0x400128` sets
   `machine.cpu.pc`. Built-in register aliases (`$pc`, `$d0`, `$sr`, …)
@@ -174,7 +174,7 @@ cap). Reads walk top-down and fall back to the alias table.
 
 ## Errors
 
-`V_ERROR` propagates through expressions; any statement producing one
+`VK_ERROR` propagates through expressions; any statement producing one
 aborts the script after printing `line N: message`. Conditions do not
 treat errors as false — an error reaching `if`/`while`/`for` aborts.
 Code that expects failure says so:
@@ -352,7 +352,7 @@ argument get nothing.
   members of the resolved-so-far node.
 - **Method-argument position** — dispatched by the resolved method's
   `arg_decl_t[i]`: enums offer their values, bools `true`/`false`, and a
-  string argument declared `VAL_PATH` completes against the filesystem
+  string argument declared `VFLAG_PATH` completes against the filesystem
   (through the VFS).  The flag decides, not the argument's name: a
   `path` argument that names an object path gets no file candidates.
 

@@ -27,7 +27,7 @@ static DEF_METHOD(alias_method_remove) {
     return val_none();
 }
 
-// shell.alias.list builds a V_LIST of V_STRING entries: each "name=path".
+// shell.alias.list builds a VK_LIST of VK_STRING entries: each "name=path".
 typedef struct {
     value_t *items;
     size_t len;
@@ -51,29 +51,29 @@ static DEF_METHOD(alias_method_list) {
 }
 
 static const arg_decl_t alias_add_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"          },
-    {.name = "path", .kind = V_STRING, .doc = "object path the alias substitutes"},
+    {.name = "name", .kind = VK_STRING, .doc = "alias identifier (no $)"          },
+    {.name = "path", .kind = VK_STRING, .doc = "object path the alias substitutes"},
 };
 static const arg_decl_t alias_remove_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"},
+    {.name = "name", .kind = VK_STRING, .doc = "alias identifier (no $)"},
 };
 
 static const member_t shell_alias_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .doc = "Register a user alias",
      .flags = 0,
-     .method = {.args = alias_add_args, .nargs = 2, .result = V_NONE, .fn = alias_method_add}      },
-    {.kind = M_METHOD,
+     .method = {.args = alias_add_args, .nargs = 2, .result = VK_NONE, .fn = alias_method_add}      },
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove a user alias",
      .flags = 0,
-     .method = {.args = alias_remove_args, .nargs = 1, .result = V_NONE, .fn = alias_method_remove}},
-    {.kind = M_METHOD,
+     .method = {.args = alias_remove_args, .nargs = 1, .result = VK_NONE, .fn = alias_method_remove}},
+    {.kind = MK_METHOD,
      .name = "list",
      .doc = "List aliases as 'name=path' strings",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = alias_method_list}               },
+     .method = {.args = NULL, .nargs = 0, .result = VK_LIST, .fn = alias_method_list}               },
 };
 
 const class_desc_t shell_alias_class = {

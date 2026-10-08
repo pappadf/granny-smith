@@ -64,8 +64,8 @@ typedef struct boot_config {
 } boot_config_t;
 
 // Apply one boot document: validate, build, swap the new machine in
-// (machine.c; shared by machine.boot and headless startup).  Returns V_NONE
-// on success; V_ERROR — with the old machine still running — on rejection.
+// (machine.c; shared by machine.boot and headless startup).  Returns VK_NONE
+// on success; VK_ERROR — with the old machine still running — on rejection.
 value_t machine_boot_apply(const boot_config_t *doc);
 
 // Resolve the boot document's expansion-slot configuration -- slots= and the
@@ -73,7 +73,7 @@ value_t machine_boot_apply(const boot_config_t *doc);
 // pci_card= / pci_option= for the first PCI socket, vrom= / prom= for every
 // slot whose card the file provides) -- into validated per-slot entries in
 // out->slots / out->n_slots (machine_slots.c).  Every check runs here, before
-// the running machine is touched; V_ERROR names the slot on a rejection.
+// the running machine is touched; VK_ERROR names the slot on a rejection.
 value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *doc, machine_build_opts_t *out);
 
 #endif // MACHINE_H

@@ -49,7 +49,7 @@ expect "word" "methods(\"find\") should list 'word'"
 expect "long" "methods(\"find\") should list 'long'"
 
 # Typed find results: the script echoes stable markers derived from
-# the returned V_LIST values ($0040A714 is where "Apple" lives in the
+# the returned VK_LIST values ($0040A714 is where "Apple" lives in the
 # Plus ROM mirror).
 expect 'str-first=0040a714' "debug.find.str first hit should be the known ROM offset"
 expect 'word-first=0040a714' "debug.find.word should hit at the 'Apple' offset"

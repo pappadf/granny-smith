@@ -1387,7 +1387,7 @@ static DEF_GETTER(gc_attr_force_decline_get) {
     return val_bool(display_card_824gc_force_decline(node_card(self)));
 }
 static DEF_SETTER(gc_attr_force_decline_set) {
-    if (in.kind != V_BOOL) {
+    if (in.kind != VK_BOOL) {
         value_free(&in);
         return val_err("gc.force_decline: expected a boolean");
     }
@@ -1396,42 +1396,42 @@ static DEF_SETTER(gc_attr_force_decline_set) {
     return val_none();
 }
 static const member_t gc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "state",
      .doc = "Bring-up state: reset / booted / armed / gc-on / error",
-     .attr = {.type = V_STRING, .get = gc_attr_state}                                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = gc_attr_state}                                            },
+    {.kind = MK_ATTR,
      .name = "cb",
      .doc = "Published NuBus address of the command block (0 until booted)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_cb}                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = gc_attr_cb}                },
+    {.kind = MK_ATTR,
      .name = "seq",
      .doc = "Next expected RPC sequence word",
-     .attr = {.type = V_UINT, .get = gc_attr_seq}                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_seq}                                                },
+    {.kind = MK_ATTR,
      .name = "lastfunc",
      .doc = "Last dispatched RPC func code",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_lastfunc}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = gc_attr_lastfunc}          },
+    {.kind = MK_ATTR,
      .name = "rpc_count",
      .doc = "Total RPCs (Transport A doorbell) serviced",
-     .attr = {.type = V_UINT, .get = gc_attr_rpc_count}                                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_rpc_count}                                          },
+    {.kind = MK_ATTR,
      .name = "queue_bytes",
      .doc = "Total Transport-B (DrawMultiObject queue) bytes drained",
-     .attr = {.type = V_UINT, .get = gc_attr_queue_bytes}                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_queue_bytes}                                        },
+    {.kind = MK_ATTR,
      .name = "on",
      .doc = "Acceleration turned ON (Control $0D firmware kick observed)",
-     .attr = {.type = V_BOOL, .get = gc_attr_on}                                                 },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = gc_attr_on}                                                 },
+    {.kind = MK_ATTR,
      .name = "error",
      .doc = "Last posted accelerator error code (0 = none)",
-     .attr = {.type = V_INT, .get = gc_attr_error}                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = gc_attr_error}                                               },
+    {.kind = MK_ATTR,
      .name = "force_decline",
      .doc = "Decline the drawing funcs ($2D/$15/$30) so the ROM path renders everything (the differential oracle)",
-     .attr = {.type = V_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
+     .attr = {.type = VK_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
 };
 static const class_desc_t display_card_824gc_gc_class = {.name = "gc",
                                                          .doc = "The 8*24 GC card's accelerator: RPC state and queue",

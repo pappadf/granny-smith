@@ -32,23 +32,23 @@ LOG_USE_CATEGORY_NAME("object");
 // optional path string; empty / missing resolves to the root itself.
 
 static struct object *resolve_target(const value_t *path_arg) {
-    const char *path = (path_arg && path_arg->kind == V_STRING && path_arg->s) ? path_arg->s : "";
+    const char *path = (path_arg && path_arg->kind == VK_STRING && path_arg->s) ? path_arg->s : "";
     node_t n = object_resolve(object_root(), path);
     if (!node_valid(n))
         return NULL;
     // For attribute / method nodes we report on the parent object's
-    // class. For object-typed nodes (M_CHILD or named children) we
+    // class. For object-typed nodes (MK_CHILD or named children) we
     // descend to the target object.
     if (!n.member)
         return n.obj;
-    if (n.member->kind != M_CHILD)
+    if (n.member->kind != MK_CHILD)
         return n.obj;
     struct object *c =
         n.member->child.collection ? object_entry_at(n.obj, n.member, n.index) : object_named_child(n.obj, n.member);
     return c ? c : n.obj;
 }
 
-// Growable V_STRING list used to accumulate object/attribute/method
+// Growable VK_STRING list used to accumulate object/attribute/method
 // names for the introspection methods.
 typedef struct {
     value_t *items;
@@ -57,7 +57,7 @@ typedef struct {
     bool oom; // set when a push failed; the list must not be returned short
 } string_list_acc_t;
 
-// Append `name` as a V_STRING through the shared accumulator.
+// Append `name` as a VK_STRING through the shared accumulator.
 //
 // This was one of five near-identical {items, len, cap} doublers -- root.c,
 // meta.c, alias.c, an inline one in object.c and another in debug.c -- beside
@@ -89,7 +89,7 @@ static DEF_METHOD(method_root_objects) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_CHILD)
+            if (cls->members[i].kind == MK_CHILD)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -111,7 +111,7 @@ static DEF_METHOD(method_root_attributes) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_ATTR)
+            if (cls->members[i].kind == MK_ATTR)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -132,7 +132,7 @@ static DEF_METHOD(method_root_methods) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_METHOD)
+            if (cls->members[i].kind == MK_METHOD)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -151,7 +151,7 @@ static DEF_METHOD(method_root_methods) {
 static DEF_METHOD(method_root_help) {
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
     value_t v = object_usage_text(path);
-    if (v.kind == V_ERROR) {
+    if (v.kind == VK_ERROR) {
         value_free(&v);
         return val_err("help: path did not resolve");
     }
@@ -189,24 +189,24 @@ static DEF_METHOD(method_root_echo) {
         if (i > 0)
             gs_outc(' ');
         switch (argv[i].kind) {
-        case V_STRING:
+        case VK_STRING:
             gs_outs(argv[i].s ? argv[i].s : "");
             break;
-        case V_BOOL:
+        case VK_BOOL:
             gs_outs(argv[i].b ? "true" : "false");
             break;
-        case V_INT:
+        case VK_INT:
             gs_outf("%lld", (long long)argv[i].i);
             break;
-        case V_UINT:
+        case VK_UINT:
             gs_outf("%llu", (unsigned long long)argv[i].u);
             break;
-        case V_FLOAT:
+        case VK_FLOAT:
             gs_outf("%g", argv[i].f);
             break;
         default:
             // Fall back to a path-form-style label for the kinds we
-            // don't usually echo (V_OBJECT, V_LIST). Keeps output
+            // don't usually echo (VK_OBJECT, VK_LIST). Keeps output
             // deterministic for diff-based regression tests.
             gs_outs("<?>");
             break;
@@ -218,53 +218,53 @@ static DEF_METHOD(method_root_echo) {
 
 static const arg_decl_t root_path_args[] = {
     {.name = "path",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Object path; empty resolves to the root"},
 };
 static const arg_decl_t root_echo_args[] = {
     {.name = "values",
-     .kind = V_ANY,
+     .kind = VK_ANY,
      .validation_flags = OBJ_ARG_REST | OBJ_ARG_POLY,
      .doc = "Values to print, separated by spaces"},
 };
 static const arg_decl_t root_help_args[] = {
     {.name = "path",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to a member or object; empty resolves to the root"},
 };
 static const member_t emu_root_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_objects}   },
+    {.kind = MK_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_attributes}},
+    {.kind = MK_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_methods}   },
+    {.kind = MK_METHOD,
      .name = "help",
      .doc = "Usage text of a path: signature, arguments, type, value, doc",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
-    {.kind = M_METHOD,
+     .method = {.args = root_help_args, .nargs = 1, .result = VK_STRING, .fn = method_root_help}    },
+    {.kind = MK_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_UINT, .fn = method_root_time}                },
+    {.kind = MK_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_root_quit}                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = root_echo_args, .nargs = 1, .result = V_BOOL, .fn = method_root_echo}      },
+     .method = {.args = root_echo_args, .nargs = 1, .result = VK_BOOL, .fn = method_root_echo}      },
 };
 
 static const class_desc_t emu_root_class = {

@@ -566,7 +566,7 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint) {
 // exposed under `rtc.pram` as a child object with peek / poke / dump
 // / snapshot / restore / validate methods, mirroring the
 // memory.peek / memory.poke shape so anyone who knows that interface
-// knows this one.  `poke` takes a V_BYTES second argument (any width):
+// knows this one.  `poke` takes a VK_BYTES second argument (any width):
 // per-byte writes use the integer-with-width literal (`0xa8:1`),
 // 4-byte tokens like 'NuMc' use `0x4e754d63:4`, and the whole 8-byte
 // slot-9 sPRAMRec fits in `0x002780b6b6000000:8`.  All writes honour
@@ -593,7 +593,7 @@ static DEF_SETTER(rtc_attr_time_set) {
     }
     uint32_t mac_seconds = 0;
     bool resolved = false;
-    if (in.kind == V_STRING && in.s) {
+    if (in.kind == VK_STRING && in.s) {
         // Accept either a decimal unix-epoch string or an ISO-8601
         // "YYYY-MM-DDTHH:MM:SS" timestamp. Either way, the result is
         // unix seconds, then we shift to the Mac 1904 epoch.
@@ -631,7 +631,7 @@ static DEF_SETTER(rtc_attr_time_set) {
             return val_err("rtc.time: value is not numeric");
         }
         // Numeric input is treated as Mac-epoch seconds (matches the
-        // getter's V_UINT result). Use the string form for unix epochs
+        // getter's VK_UINT result). Use the string form for unix epochs
         // or ISO timestamps.
         mac_seconds = (uint32_t)s;
     }
@@ -646,18 +646,18 @@ static DEF_GETTER(rtc_attr_read_only) {
 }
 
 static const member_t rtc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "time",
      .doc = "Mac-epoch seconds (1904-based); writable",
      .flags = 0,
-     // .type = V_NONE: setter intentionally accepts either V_UINT (Mac
-     // seconds) or V_STRING (unix epoch / ISO-8601). Skip framework
+     // .type = VK_NONE: setter intentionally accepts either VK_UINT (Mac
+     // seconds) or VK_STRING (unix epoch / ISO-8601). Skip framework
      // kind validation; the body discriminates.
-     .attr = {.type = V_NONE, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_NONE, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
+    {.kind = MK_ATTR,
      .name = "read_only",
      .doc = "Write-protect bit",
-     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
+     .attr = {.type = VK_BOOL, .get = rtc_attr_read_only, .set = NULL}},
 };
 
 static const class_desc_t rtc_class = {
@@ -672,7 +672,7 @@ static const class_desc_t rtc_class = {
 // Modelled on memory.peek / memory.poke: per-cell read/write through
 // `peek`/`poke`, range read through `dump`, whole-buffer transfers
 // through `snapshot`/`restore`, and a domain-specific `validate` for
-// the boot-ROM cold-init tokens.  `poke` takes a V_BYTES second arg
+// the boot-ROM cold-init tokens.  `poke` takes a VK_BYTES second arg
 // (any length, big-endian) so the integer-literal width suffix from
 // parse.c (`0xa8:1`, `0x4e754d63:4`, `0x002780b6b6000000:8`) can stand
 // in for both per-byte writes and bulk seeds without polymorphism on
@@ -689,7 +689,7 @@ static DEF_METHOD(rtc_pram_method_peek) {
     if (addr > 0xFF)
         return val_err("rtc.pram.peek: addr must be 0..255");
     value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -699,8 +699,8 @@ static DEF_METHOD(rtc_pram_method_poke) {
         return val_err("rtc not available");
     uint64_t addr = argv[0].u;
     const value_t *bytes = &argv[1];
-    if (bytes->kind != V_BYTES || !bytes->bytes.p)
-        return val_err("rtc.pram.poke: bytes argument must be V_BYTES (use the :N width suffix, e.g. 0xa8:1)");
+    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
+        return val_err("rtc.pram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0xa8:1)");
     size_t n = bytes->bytes.n;
     if (n == 0)
         return val_err("rtc.pram.poke: bytes argument is empty");
@@ -744,9 +744,9 @@ static DEF_METHOD(rtc_pram_method_restore) {
     if (!rtc)
         return val_err("rtc not available");
     const value_t *bytes = &argv[0];
-    if (bytes->kind != V_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
-        return val_err("rtc.pram.restore: expected V_BYTES of length 256 (got len=%zu)",
-                       bytes->kind == V_BYTES ? bytes->bytes.n : 0);
+    if (bytes->kind != VK_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
+        return val_err("rtc.pram.restore: expected VK_BYTES of length 256 (got len=%zu)",
+                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
     for (int i = 0; i < 256; i++) {
         if (!rtc_pram_write(rtc, (uint8_t)i, bytes->bytes.p[i]))
             return val_err("rtc.pram.restore: PRAM is write-protected");
@@ -793,7 +793,7 @@ static DEF_GETTER(rtc_pram_attr_boot_device_get) {
 
 static DEF_SETTER(rtc_pram_attr_boot_device_set) {
     rtc_t *rtc = rtc_from(self);
-    int64_t id = in.kind == V_INT ? in.i : (int64_t)in.u;
+    int64_t id = in.kind == VK_INT ? in.i : (int64_t)in.u;
     value_free(&in);
     if (!rtc)
         return val_err("rtc not available");
@@ -809,49 +809,49 @@ static DEF_SETTER(rtc_pram_attr_boot_device_set) {
 }
 
 static const arg_decl_t rtc_pram_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
 };
 static const arg_decl_t rtc_pram_poke_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
-    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
 };
 static const arg_decl_t rtc_pram_dump_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
-    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "n", .kind = VK_UINT, .doc = "byte count"},
 };
 static const arg_decl_t rtc_pram_restore_args[] = {
-    {.name = "bytes", .kind = V_BYTES, .doc = "256-byte buffer (typically from rtc.pram.snapshot)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "256-byte buffer (typically from rtc.pram.snapshot)"},
 };
 
 static const member_t rtc_pram_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "peek",
      .doc = "Read one PRAM byte",
-     .method = {.args = rtc_pram_peek_args, .nargs = 1, .result = V_UINT, .fn = rtc_pram_method_peek}      },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_peek_args, .nargs = 1, .result = VK_UINT, .fn = rtc_pram_method_peek}      },
+    {.kind = MK_METHOD,
      .name = "poke",
      .doc = "Write 1..N PRAM bytes (honours write-protect)",
-     .method = {.args = rtc_pram_poke_args, .nargs = 2, .result = V_NONE, .fn = rtc_pram_method_poke}      },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_poke_args, .nargs = 2, .result = VK_NONE, .fn = rtc_pram_method_poke}      },
+    {.kind = MK_METHOD,
      .name = "dump",
      .doc = "Read N PRAM bytes starting at addr",
-     .method = {.args = rtc_pram_dump_args, .nargs = 2, .result = V_BYTES, .fn = rtc_pram_method_dump}     },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_dump_args, .nargs = 2, .result = VK_BYTES, .fn = rtc_pram_method_dump}     },
+    {.kind = MK_METHOD,
      .name = "snapshot",
      .doc = "Read all 256 PRAM bytes",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = rtc_pram_method_snapshot}               },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BYTES, .fn = rtc_pram_method_snapshot}               },
+    {.kind = MK_METHOD,
      .name = "restore",
      .doc = "Write all 256 PRAM bytes from a snapshot",
-     .method = {.args = rtc_pram_restore_args, .nargs = 1, .result = V_NONE, .fn = rtc_pram_method_restore}},
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_restore_args, .nargs = 1, .result = VK_NONE, .fn = rtc_pram_method_restore}},
+    {.kind = MK_METHOD,
      .name = "validate",
      .doc = "Stamp the XPRAM validity token ($0C-$0F: 'NuMc', or the Plus's 'Bugs')",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = rtc_pram_method_validate}                },
-    {.kind = M_ATTR,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = rtc_pram_method_validate}                },
+    {.kind = MK_ATTR,
      .name = "boot_device",
      .doc = "Start Manager default startup device, as a SCSI id (writes $77..$7B; -1 = none)",
-     .attr = {.type = V_INT, .get = rtc_pram_attr_boot_device_get, .set = rtc_pram_attr_boot_device_set}   },
+     .attr = {.type = VK_INT, .get = rtc_pram_attr_boot_device_get, .set = rtc_pram_attr_boot_device_set}   },
 };
 
 static const class_desc_t rtc_pram_class = {

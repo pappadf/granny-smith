@@ -24,7 +24,7 @@
 // === JSON formatting ========================================================
 //
 // The document is value_format's VFMT_JSON_TAGGED rendering (value_format.h):
-//   numeric / bool      → bare number / true / false (VAL_HEX → "0x…" string)
+//   numeric / bool      → bare number / true / false (VFLAG_HEX → "0x…" string)
 //   strings             → quoted string with the standard escapes
 //   bytes               → "0x..." hex string
 //   enum                → {"enum": "<name>", "index": <idx>}
@@ -433,7 +433,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     value_t v;
     node_t n = {0};
 
-    // Every failure is a V_ERROR rendered by the same encoder as a result,
+    // Every failure is a VK_ERROR rendered by the same encoder as a result,
     // so a JS caller always sees the {"error": ...} shape (object-model.md),
     // never a bare string.
     if (!path || !*path) {
@@ -443,12 +443,12 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
         v = val_err("path '%s' did not resolve", path);
     } else if (args_json && *args_json && json_parse_args(args_json, &argv, &argc, &arg_names) < 0) {
         v = val_err("args_json must be a JSON array of primitives or an object of named arguments");
-    } else if (arg_names && (!n.member || n.member->kind != M_METHOD)) {
+    } else if (arg_names && (!n.member || n.member->kind != MK_METHOD)) {
         // Method paths always dispatch via node_call. Attribute paths route
         // to node_set when args carry exactly one value, otherwise node_get.
-        // Bare object/child nodes go through node_get (a V_OBJECT reference).
+        // Bare object/child nodes go through node_get (a VK_OBJECT reference).
         v = val_err("path '%s' is not a method — named arguments require one", path);
-    } else if (n.member && n.member->kind == M_METHOD && arg_names) {
+    } else if (n.member && n.member->kind == MK_METHOD && arg_names) {
         // Object form: bind every entry by name, no positionals.
         named_arg_t named[OBJ_BIND_MAX_ARGS];
         if (argc > OBJ_BIND_MAX_ARGS) {
@@ -463,9 +463,9 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
             value_t err = node_bind_args(n, 0, NULL, argc, named, bound, &bound_n);
             v = val_is_error(&err) ? err : node_call(n, bound_n, bound);
         }
-    } else if (n.member && n.member->kind == M_METHOD) {
+    } else if (n.member && n.member->kind == MK_METHOD) {
         v = node_call(n, argc, argv);
-    } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
+    } else if (n.member && n.member->kind == MK_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
         // outer free_args() can still walk argv.
         v = node_set(n, value_dup(&argv[0]));

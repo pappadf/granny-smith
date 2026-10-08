@@ -27,7 +27,7 @@ interface VfsRawEntry {
 // emptiness.
 export async function vfsList(dir: string): Promise<OpfsEntry[]> {
   // files.list returns a native array of {name, kind, size, mtime, expandable}
-  // objects (V_LIST of V_MAP through the gsEval bridge) — no inner JSON.parse.
+  // objects (VK_LIST of VK_MAP through the gsEval bridge) — no inner JSON.parse.
   const parsed = await gsEval('files.list', [dir]);
   if (!Array.isArray(parsed)) throw new Error(gsErrorText(parsed));
   return (parsed as VfsRawEntry[]).map((e) => {

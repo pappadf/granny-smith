@@ -300,7 +300,7 @@ its `granny-smith` VendorId and BoardId (`vrom.c:158-191`). The generic
 kinds generate their declaration ROM when the card is built, and they never
 consult the registry ([nubus_generic_vrom.md](../../internals/core/peripherals/nubus_generic_vrom.md)).
 
-The identify surfaces answer from content alone. Each returns `V_ERROR` for
+The identify surfaces answer from content alone. Each returns `VK_ERROR` for
 an unreadable path and `recognised: false` for a file that does not
 identify:
 

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 // Unit tests for argument-value completion (src/core/shell/cmd_complete.c).
 //
-// Filesystem candidates are offered for a string argument declared VAL_PATH,
+// Filesystem candidates are offered for a string argument declared VFLAG_PATH,
 // and only for one: an argument merely NAMED `path` (an object path, say)
 // gets none.  The VFS is a stub directory holding `disk.img` and `roms/`.
 
@@ -82,28 +82,28 @@ static value_t method_none(struct object *self, const member_t *m, int argc, con
 }
 
 static const arg_decl_t load_args[] = {
-    {.name = "image", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file"},
+    {.name = "image", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file"},
 };
 static const arg_decl_t resolve_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Object path"},
+    {.name = "path", .kind = VK_STRING, .doc = "Object path"},
 };
 static const arg_decl_t copy_args[] = {
-    {.name = "src", .kind = V_STRING, .presentation_flags = VAL_PATH,       .doc = "Source"},
-    {.name = "dst", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Label" },
+    {.name = "src", .kind = VK_STRING, .presentation_flags = VFLAG_PATH,     .doc = "Source"},
+    {.name = "dst", .kind = VK_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Label" },
 };
 static const member_t tool_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "load",
      .doc = "Load",
-     .method = {.args = load_args, .nargs = 1, .result = V_NONE, .fn = method_none}   },
-    {.kind = M_METHOD,
+     .method = {.args = load_args, .nargs = 1, .result = VK_NONE, .fn = method_none}   },
+    {.kind = MK_METHOD,
      .name = "resolve",
      .doc = "Resolve",
-     .method = {.args = resolve_args, .nargs = 1, .result = V_NONE, .fn = method_none}},
-    {.kind = M_METHOD,
+     .method = {.args = resolve_args, .nargs = 1, .result = VK_NONE, .fn = method_none}},
+    {.kind = MK_METHOD,
      .name = "copy",
      .doc = "Copy",
-     .method = {.args = copy_args, .nargs = 2, .result = V_NONE, .fn = method_none}   },
+     .method = {.args = copy_args, .nargs = 2, .result = VK_NONE, .fn = method_none}   },
 };
 static const class_desc_t tool_class = {.name = "tool", .members = tool_members, .n_members = 3};
 
@@ -150,7 +150,7 @@ TEST(test_flag_not_name_decides_per_slot) {
     complete("tool.copy d");
     ASSERT_TRUE(g_opendir_calls == 1);
     ASSERT_TRUE(has("disk.img"));
-    // `dst` would have matched the old name heuristic; it is not VAL_PATH.
+    // `dst` would have matched the old name heuristic; it is not VFLAG_PATH.
     complete("tool.copy disk.img ");
     ASSERT_TRUE(g_opendir_calls == 0);
     ASSERT_TRUE(!has("disk.img"));
@@ -164,7 +164,7 @@ TEST(test_command_word_completes_and_takes_its_methods_arguments) {
     // A command is a word at the start of a line, with its method's doc.
     complete("l");
     ASSERT_TRUE(has("ld"));
-    // Its arguments are the method's: `image` is VAL_PATH.
+    // Its arguments are the method's: `image` is VFLAG_PATH.
     complete("ld ");
     ASSERT_TRUE(g_opendir_calls == 1);
     ASSERT_TRUE(has("disk.img"));

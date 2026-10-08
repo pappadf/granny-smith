@@ -175,7 +175,7 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
 
 ## Shell surface (`log.set`)
 
-The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a V_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
+The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a VK_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
 
 - Grammar
   - `log.levels` — every registered category and its current level, as a map

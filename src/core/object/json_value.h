@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // json_value.h
-// Parse a JSON text into a value_t tree (V_MAP / V_LIST / V_STRING / V_INT /
-// V_FLOAT / V_BOOL / V_NONE for null).  The one reader of whole JSON
+// Parse a JSON text into a value_t tree (VK_MAP / VK_LIST / VK_STRING / VK_INT /
+// VK_FLOAT / VK_BOOL / VK_NONE for null).  The one reader of whole JSON
 // documents: machine.boot's config= and the headless config=<file>.
 
 #ifndef GS_OBJECT_JSON_VALUE_H

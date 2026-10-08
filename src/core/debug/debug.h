@@ -94,7 +94,7 @@ extern const char *const debug_space_values[];
 // The `debug.find` class (memory search, cmd_find.c).
 extern const class_desc_t find_class;
 
-// Read the optional `space` argument at argv[idx] (V_ENUM over
+// Read the optional `space` argument at argv[idx] (VK_ENUM over
 // debug_space_values, or its string): "logical" (the default, also when
 // omitted) or "physical".  Returns false for anything else.
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);

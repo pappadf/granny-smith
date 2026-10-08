@@ -109,7 +109,7 @@ static void wrap(vbuf_t *b, const char *text, size_t indent, bool indent_first) 
 
 // REPL text of a value: its scalar text, or compact JSON for a list or map.
 static void value_text(vbuf_t *b, const value_t *v) {
-    if (v->kind == V_LIST || v->kind == V_MAP)
+    if (v->kind == VK_LIST || v->kind == VK_MAP)
         value_format(v, VFMT_JSON, b);
     else
         value_format(v, VFMT_REPL, b);
@@ -126,10 +126,10 @@ static void type_text(vbuf_t *b, value_kind_t kind, uint16_t presentation) {
     }
 }
 
-// An argument's kind for its type text: a V_NONE argument accepts any value
-// (the declaration's older spelling of V_ANY), so it reads "any".
+// An argument's kind for its type text: a VK_NONE argument accepts any value
+// (the declaration's older spelling of VK_ANY), so it reads "any".
 static value_kind_t arg_kind(const arg_decl_t *a) {
-    return a->kind == V_NONE ? V_ANY : a->kind;
+    return a->kind == VK_NONE ? VK_ANY : a->kind;
 }
 
 // The path of `obj` plus `.member` (no leading dot at the root).
@@ -172,7 +172,7 @@ static value_t method_signature(vbuf_t *b, struct object *obj, const member_t *m
         put(b, a->name ? a->name : "?");
         if (rest)
             put(b, "…");
-        if (a->kind == V_ENUM && a->enum_values && a->enum_values[0]) {
+        if (a->kind == VK_ENUM && a->enum_values && a->enum_values[0]) {
             put(b, ": ");
             for (size_t k = 0; a->enum_values[k]; k++) {
                 if (k)
@@ -247,16 +247,16 @@ static void method_text(vbuf_t *t, const char *sig, const member_t *m) {
 static void attr_text(vbuf_t *t, struct object *obj, const member_t *m) {
     full_path(t, obj, m->name);
     put(t, " : ");
-    if (m->attr.type == V_ENUM)
+    if (m->attr.type == VK_ENUM)
         put(t, "enum");
     else
         type_text(t, m->attr.type, m->attr.presentation_flags);
     if (member_is_readonly(m))
         put(t, " (read-only)");
     newline(t);
-    if (!(m->attr.presentation_flags & VAL_SENSITIVE)) {
+    if (!(m->attr.presentation_flags & VFLAG_SENSITIVE)) {
         value_t v = node_get((node_t){.obj = obj, .member = m, .index = -1});
-        if (v.kind != V_ERROR) {
+        if (v.kind != VK_ERROR) {
             put(t, " = ");
             value_text(t, &v);
             newline(t);
@@ -323,11 +323,11 @@ static void node_text(vbuf_t *t, struct object *obj) {
         const member_t *m = &cls->members[i];
         if (!member_is_listed(m))
             continue;
-        if (m->kind == M_ATTR)
+        if (m->kind == MK_ATTR)
             acc_add(&attrs, m->name);
-        else if (m->kind == M_METHOD)
+        else if (m->kind == MK_METHOD)
             acc_add(&methods, m->name);
-        else if (m->kind == M_CHILD)
+        else if (m->kind == MK_CHILD)
             acc_add(&children, m->name);
     }
     object_each_attached_ordered(obj, acc_attached, &children);
@@ -388,11 +388,11 @@ value_t object_usage(const char *path) {
         return val_err("usage: path '%s' did not resolve", path ? path : "");
     vbuf_t sig = {0}, text = {0};
     value_t spans = val_list(NULL, 0);
-    if (n.member && n.member->kind == M_METHOD) {
+    if (n.member && n.member->kind == MK_METHOD) {
         value_free(&spans);
         spans = method_signature(&sig, n.obj, n.member);
         method_text(&text, sig.p ? sig.p : "", n.member);
-    } else if (n.member && n.member->kind == M_ATTR) {
+    } else if (n.member && n.member->kind == MK_ATTR) {
         attr_text(&text, n.obj, n.member);
     } else {
         struct object *obj = path_object(path ? path : "");
@@ -419,7 +419,7 @@ value_t object_usage(const char *path) {
 
 value_t object_usage_text(const char *path) {
     value_t u = object_usage(path);
-    if (u.kind != V_MAP)
+    if (u.kind != VK_MAP)
         return u;
     value_t out = val_str("");
     for (size_t i = 0; i < u.map.len; i++)

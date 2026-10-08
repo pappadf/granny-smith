@@ -47,7 +47,7 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
 // boolean, a map or a list; anything else is `true`.  A map or a list is
 // formatted as gs_eval formats one, and is held to the same result limit.
 static void complete_with(uint32_t token, value_t *v) {
-    if (v->kind == V_MAP || v->kind == V_LIST) {
+    if (v->kind == VK_MAP || v->kind == VK_LIST) {
         vbuf_t b = {0};
         value_format(v, VFMT_JSON_TAGGED, &b);
         if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
@@ -62,7 +62,7 @@ static void complete_with(uint32_t token, value_t *v) {
         return;
     }
     char json[1100];
-    if (v->kind == V_STRING && v->s) {
+    if (v->kind == VK_STRING && v->s) {
         size_t o = (size_t)snprintf(json, sizeof json, "\"");
         for (const char *c = v->s; *c && o + 4 < sizeof json; c++) {
             if (*c == '"' || *c == '\\')
@@ -70,11 +70,11 @@ static void complete_with(uint32_t token, value_t *v) {
             json[o++] = *c;
         }
         snprintf(json + o, sizeof json - o, "\"");
-    } else if (v->kind == V_UINT) {
+    } else if (v->kind == VK_UINT) {
         snprintf(json, sizeof json, "%llu", (unsigned long long)v->u);
-    } else if (v->kind == V_INT) {
+    } else if (v->kind == VK_INT) {
         snprintf(json, sizeof json, "%lld", (long long)v->i);
-    } else if (v->kind == V_BOOL) {
+    } else if (v->kind == VK_BOOL) {
         snprintf(json, sizeof json, "%s", v->b ? "true" : "false");
     } else {
         snprintf(json, sizeof json, "true");

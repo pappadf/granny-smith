@@ -117,7 +117,7 @@ export async function loadDebugFrame(
   const args: Record<string, number> = { count };
   if (addr !== undefined) args.addr = addr >>> 0;
   else if (before > 0) args.before = before;
-  // The frame is a native nested object (V_MAP through the gsEval bridge) —
+  // The frame is a native nested object (VK_MAP through the gsEval bridge) —
   // no inner JSON.parse.
   const parsed = await gsEval(`machine.${core}.frame`, args);
   if (!parsed || typeof parsed !== 'object' || isGsError(parsed)) return null;
@@ -221,7 +221,7 @@ export async function peekL(addr: number): Promise<number | null> {
 // `count` bytes at `addr`, in one bridge round-trip.  `space` is passed
 // explicitly: "logical" reads through the CPU's own translation on every
 // architecture (68K MMU, Lisa segment MMU, PowerPC), "physical" reads the
-// physical address.  The C side serialises V_BYTES as "0x<hex>".
+// physical address.  The C side serialises VK_BYTES as "0x<hex>".
 export async function peekBytes(
   addr: number,
   count: number,

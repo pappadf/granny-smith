@@ -15,13 +15,13 @@
 
 value_t val_none(void) {
     value_t v = {0};
-    v.kind = V_NONE;
+    v.kind = VK_NONE;
     return v;
 }
 
 value_t val_bool(bool b) {
     value_t v = {0};
-    v.kind = V_BOOL;
+    v.kind = VK_BOOL;
     v.width = 1;
     v.b = b;
     return v;
@@ -29,7 +29,7 @@ value_t val_bool(bool b) {
 
 value_t val_int(int64_t i) {
     value_t v = {0};
-    v.kind = V_INT;
+    v.kind = VK_INT;
     v.width = 8;
     v.i = i;
     return v;
@@ -37,7 +37,7 @@ value_t val_int(int64_t i) {
 
 value_t val_uint(uint8_t width, uint64_t u) {
     value_t v = {0};
-    v.kind = V_UINT;
+    v.kind = VK_UINT;
     v.width = width; // 0 = unconstrained, kept as given
     v.u = u;
     return v;
@@ -45,7 +45,7 @@ value_t val_uint(uint8_t width, uint64_t u) {
 
 value_t val_float(double f) {
     value_t v = {0};
-    v.kind = V_FLOAT;
+    v.kind = VK_FLOAT;
     v.width = 8;
     v.f = f;
     return v;
@@ -53,14 +53,14 @@ value_t val_float(double f) {
 
 value_t val_str(const char *s) {
     value_t v = {0};
-    v.kind = V_STRING;
+    v.kind = VK_STRING;
     v.s = strdup(s ? s : "");
     return v;
 }
 
 value_t val_bytes(const void *p, size_t n) {
     value_t v = {0};
-    v.kind = V_BYTES;
+    v.kind = VK_BYTES;
     v.bytes.n = 0;
     v.bytes.p = NULL;
     if (n == 0)
@@ -79,7 +79,7 @@ value_t val_bytes(const void *p, size_t n) {
 
 value_t val_enum(int idx, const char *const *table, size_t n_table) {
     value_t v = {0};
-    v.kind = V_ENUM;
+    v.kind = VK_ENUM;
     v.enm.idx = idx;
     v.enm.table = table;
     v.enm.n_table = n_table;
@@ -89,7 +89,7 @@ value_t val_enum(int idx, const char *const *table, size_t n_table) {
 value_t val_list(value_t *items, size_t len) {
     GS_ASSERT(len == 0 || items != NULL);
     value_t v = {0};
-    v.kind = V_LIST;
+    v.kind = VK_LIST;
     v.list.items = items;
     v.list.len = len;
     return v;
@@ -98,7 +98,7 @@ value_t val_list(value_t *items, size_t len) {
 value_t val_map(struct value_entry *entries, size_t len) {
     GS_ASSERT(len == 0 || entries != NULL);
     value_t v = {0};
-    v.kind = V_MAP;
+    v.kind = VK_MAP;
     v.map.entries = entries;
     v.map.len = len;
     return v;
@@ -106,14 +106,14 @@ value_t val_map(struct value_entry *entries, size_t len) {
 
 value_t val_obj(struct object *o) {
     value_t v = {0};
-    v.kind = V_OBJECT;
+    v.kind = VK_OBJECT;
     v.obj = o;
     return v;
 }
 
 value_t val_err(const char *fmt, ...) {
     value_t v = {0};
-    v.kind = V_ERROR;
+    v.kind = VK_ERROR;
     char buf[512];
     va_list ap;
     buf[0] = '\0';
@@ -129,14 +129,14 @@ value_t val_err(const char *fmt, ...) {
 
 value_t val_ref(const char *path) {
     value_t v = {0};
-    v.kind = V_REF;
+    v.kind = VK_REF;
     v.ref = strdup(path ? path : "");
     return v;
 }
 
 value_t val_range_step(int64_t start, int64_t stop, int64_t step) {
     value_t v = {0};
-    v.kind = V_RANGE;
+    v.kind = VK_RANGE;
     v.range.start = start;
     v.range.stop = stop;
     v.range.step = step ? step : 1;
@@ -148,7 +148,7 @@ value_t val_range(int64_t start, int64_t stop) {
 }
 
 uint64_t val_range_count(const value_t *v) {
-    if (!v || v->kind != V_RANGE)
+    if (!v || v->kind != VK_RANGE)
         return 0;
     int64_t step = v->range.step ? v->range.step : 1;
     // Compute the span in UINT64 so INT64_MIN..INT64_MAX cannot overflow the
@@ -170,12 +170,12 @@ bool val_is_heap(const value_t *v) {
     if (!v)
         return false;
     switch (v->kind) {
-    case V_STRING:
-    case V_BYTES:
-    case V_LIST:
-    case V_MAP:
-    case V_ERROR:
-    case V_REF:
+    case VK_STRING:
+    case VK_BYTES:
+    case VK_LIST:
+    case VK_MAP:
+    case VK_ERROR:
+    case VK_REF:
         return true;
     default:
         return false;
@@ -185,7 +185,7 @@ bool val_is_heap(const value_t *v) {
 // === Map builder =============================================================
 
 // Growable entry array plus a sticky error flag (val_map_finish surfaces
-// it as V_ERROR so per-put checks aren't needed at call sites).
+// it as VK_ERROR so per-put checks aren't needed at call sites).
 struct value_map_builder {
     struct value_entry *entries;
     size_t len;
@@ -266,7 +266,7 @@ bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
 }
 
 const value_t *value_map_get(const value_t *v, const char *key) {
-    if (!v || v->kind != V_MAP || !key)
+    if (!v || v->kind != VK_MAP || !key)
         return NULL;
     for (size_t i = 0; i < v->map.len; i++) {
         if (v->map.entries[i].key && strcmp(v->map.entries[i].key, key) == 0)
@@ -279,24 +279,24 @@ void value_free(value_t *v) {
     if (!v)
         return;
     switch (v->kind) {
-    case V_STRING:
+    case VK_STRING:
         free(v->s);
         v->s = NULL;
         break;
-    case V_ERROR:
+    case VK_ERROR:
         free(v->err);
         v->err = NULL;
         break;
-    case V_REF:
+    case VK_REF:
         free(v->ref);
         v->ref = NULL;
         break;
-    case V_BYTES:
+    case VK_BYTES:
         free(v->bytes.p);
         v->bytes.p = NULL;
         v->bytes.n = 0;
         break;
-    case V_LIST:
+    case VK_LIST:
         if (v->list.items) {
             for (size_t i = 0; i < v->list.len; i++)
                 value_free(&v->list.items[i]);
@@ -305,7 +305,7 @@ void value_free(value_t *v) {
         v->list.items = NULL;
         v->list.len = 0;
         break;
-    case V_MAP:
+    case VK_MAP:
         if (v->map.entries) {
             for (size_t i = 0; i < v->map.len; i++) {
                 free(v->map.entries[i].key);
@@ -319,7 +319,7 @@ void value_free(value_t *v) {
     default:
         break;
     }
-    v->kind = V_NONE;
+    v->kind = VK_NONE;
     v->width = 0;
     v->flags = 0;
 }
@@ -332,15 +332,15 @@ value_t value_dup(const value_t *v) {
     if (!v)
         return val_none();
     switch (v->kind) {
-    case V_STRING:
+    case VK_STRING:
         return val_str(v->s ? v->s : "");
-    case V_ERROR:
+    case VK_ERROR:
         return val_err("%s", v->err ? v->err : "");
-    case V_REF:
+    case VK_REF:
         return val_ref(v->ref ? v->ref : "");
-    case V_BYTES:
+    case VK_BYTES:
         return val_bytes(v->bytes.p, v->bytes.n);
-    case V_LIST: {
+    case VK_LIST: {
         value_t *items = NULL;
         if (v->list.len > 0) {
             items = (value_t *)calloc(v->list.len, sizeof(value_t));
@@ -351,7 +351,7 @@ value_t value_dup(const value_t *v) {
         }
         return val_list(items, v->list.len);
     }
-    case V_MAP: {
+    case VK_MAP: {
         struct value_entry *entries = NULL;
         if (v->map.len > 0) {
             entries = (struct value_entry *)calloc(v->map.len, sizeof(*entries));
@@ -367,8 +367,8 @@ value_t value_dup(const value_t *v) {
         return r;
     }
     default:
-        // Inline kinds (V_NONE, V_BOOL, V_INT, V_UINT, V_FLOAT, V_ENUM,
-        // V_OBJECT) carry their payload by value — a structure copy is
+        // Inline kinds (VK_NONE, VK_BOOL, VK_INT, VK_UINT, VK_FLOAT, VK_ENUM,
+        // VK_OBJECT) carry their payload by value — a structure copy is
         // a complete duplicate.
         return *v;
     }
@@ -383,15 +383,15 @@ uint64_t val_as_u64(const value_t *v, bool *ok) {
     if (ok)
         *ok = true;
     switch (v->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         return v->b ? 1u : 0u;
-    case V_INT:
+    case VK_INT:
         return (uint64_t)v->i;
-    case V_UINT:
+    case VK_UINT:
         return v->u;
-    case V_FLOAT:
+    case VK_FLOAT:
         return (uint64_t)v->f;
-    case V_ENUM:
+    case VK_ENUM:
         return (uint64_t)v->enm.idx;
     default:
         if (ok)
@@ -409,15 +409,15 @@ int64_t val_as_i64(const value_t *v, bool *ok) {
     if (ok)
         *ok = true;
     switch (v->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         return v->b ? 1 : 0;
-    case V_INT:
+    case VK_INT:
         return v->i;
-    case V_UINT:
+    case VK_UINT:
         return (int64_t)v->u;
-    case V_FLOAT:
+    case VK_FLOAT:
         return (int64_t)v->f;
-    case V_ENUM:
+    case VK_ENUM:
         return (int64_t)v->enm.idx;
     default:
         if (ok)
@@ -435,15 +435,15 @@ double val_as_f64(const value_t *v, bool *ok) {
     if (ok)
         *ok = true;
     switch (v->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         return v->b ? 1.0 : 0.0;
-    case V_INT:
+    case VK_INT:
         return (double)v->i;
-    case V_UINT:
+    case VK_UINT:
         return (double)v->u;
-    case V_FLOAT:
+    case VK_FLOAT:
         return v->f;
-    case V_ENUM:
+    case VK_ENUM:
         return (double)v->enm.idx;
     default:
         if (ok)
@@ -457,33 +457,33 @@ bool val_as_bool(const value_t *v) {
     if (!v)
         return false;
     switch (v->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         return v->b;
-    case V_INT:
+    case VK_INT:
         return v->i != 0;
-    case V_UINT:
+    case VK_UINT:
         return v->u != 0;
-    case V_FLOAT:
+    case VK_FLOAT:
         return v->f != 0.0 && !isnan(v->f);
-    case V_STRING:
+    case VK_STRING:
         return v->s && v->s[0] != '\0';
-    case V_BYTES:
+    case VK_BYTES:
         return v->bytes.n > 0;
-    case V_ENUM:
+    case VK_ENUM:
         return v->enm.idx != 0;
-    case V_LIST:
+    case VK_LIST:
         return v->list.len > 0;
-    case V_MAP:
+    case VK_MAP:
         return v->map.len > 0;
-    case V_OBJECT:
+    case VK_OBJECT:
         return v->obj != NULL;
-    case V_NONE:
+    case VK_NONE:
         return false;
-    case V_ERROR:
+    case VK_ERROR:
         return false;
-    case V_REF:
+    case VK_REF:
         return v->ref != NULL; // a reference is truthy; deref happens before tests
-    case V_RANGE:
+    case VK_RANGE:
         return v->range.stop > v->range.start; // non-empty range
     }
     return false;
@@ -492,44 +492,44 @@ bool val_as_bool(const value_t *v) {
 const char *val_as_str(const value_t *v) {
     if (!v)
         return NULL;
-    if (v->kind == V_STRING)
+    if (v->kind == VK_STRING)
         return v->s;
-    if (v->kind == V_ERROR)
+    if (v->kind == VK_ERROR)
         return v->err;
     return NULL;
 }
 
 const char *value_kind_name(value_kind_t k) {
-    if (k == V_ANY) // a declaration-only sentinel outside the enum
+    if (k == VK_ANY) // a declaration-only sentinel outside the enum
         return "any";
     switch (k) {
-    case V_NONE:
+    case VK_NONE:
         return "none";
-    case V_BOOL:
+    case VK_BOOL:
         return "bool";
-    case V_INT:
+    case VK_INT:
         return "int";
-    case V_UINT:
+    case VK_UINT:
         return "uint";
-    case V_FLOAT:
+    case VK_FLOAT:
         return "float";
-    case V_STRING:
+    case VK_STRING:
         return "string";
-    case V_BYTES:
+    case VK_BYTES:
         return "bytes";
-    case V_ENUM:
+    case VK_ENUM:
         return "enum";
-    case V_LIST:
+    case VK_LIST:
         return "list";
-    case V_MAP:
+    case VK_MAP:
         return "map";
-    case V_OBJECT:
+    case VK_OBJECT:
         return "object";
-    case V_ERROR:
+    case VK_ERROR:
         return "error";
-    case V_REF:
+    case VK_REF:
         return "ref";
-    case V_RANGE:
+    case VK_RANGE:
         return "range";
     }
     return "?";

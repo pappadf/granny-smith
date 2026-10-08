@@ -14,11 +14,11 @@
 
 // {signature, arg_spans, text} for `path`: a method's signature (empty for
 // an attribute or node), the byte span [start, end) of each argument's
-// bracketed form in it, and the full usage text.  V_ERROR when the path
+// bracketed form in it, and the full usage text.  VK_ERROR when the path
 // does not resolve.
 value_t object_usage(const char *path);
 
-// Just the text (what `help <path>` prints), or V_ERROR.
+// Just the text (what `help <path>` prints), or VK_ERROR.
 value_t object_usage_text(const char *path);
 
 // How the shell reads a word that is no path (the object layer cannot ask

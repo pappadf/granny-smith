@@ -568,7 +568,7 @@ static uint32_t grk_decoded_bytes(const gos_grackle_t *g) {
         (void)m;                                                                                                       \
         const gos_grackle_t *g = grk_obj(self);                                                                        \
         value_t v = val_uint(4, g ? (EXPR) : 0u);                                                                      \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -592,22 +592,22 @@ static value_t grk_method_config(struct object *self, const member_t *m, int arg
     if (reg > 0xFCu || (reg & 3u))
         return val_err("grackle.config: register $%llX is not a dword offset in $00-$FC", (unsigned long long)reg);
     value_t v = val_uint(4, cfg32(g, (uint32_t)reg));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 #define GRK_RO_ATTR(NAME, DOC)                                                                                         \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                           \
-            .type = V_UINT,                                                                                            \
-            .presentation_flags = VAL_HEX,                                                                             \
+        .kind = MK_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                          \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = VFLAG_HEX,                                                                           \
             .get = grk_attr_##NAME,                                                                                    \
             .set = NULL                                                                                                \
         }                                                                                                              \
     }
 
 static const arg_decl_t grk_config_args[] = {
-    {.name = "reg", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "dword-aligned register offset ($00-$FC)"},
+    {.name = "reg", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "dword-aligned register offset ($00-$FC)"},
 };
 
 static const member_t grk_members[] = {
@@ -620,10 +620,10 @@ static const member_t grk_members[] = {
     GRK_RO_ATTR(bank_enable, "Memory bank enable ($A0)"),
     GRK_RO_ATTR(ram_decoded, "Bytes of RAM the enabled banks decode (0 while MEMGO is clear)"),
     GRK_RO_ATTR(config_address, "The CONFIG_ADDR latch (CF8 format)"),
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
                                                             .name = "config",
                                                             .doc = "Read one of Grackle's own configuration dwords (device 0)",
-                                                            .method = {.args = grk_config_args, .nargs = 1, .result = V_UINT, .fn = grk_method_config}},
+                                                            .method = {.args = grk_config_args, .nargs = 1, .result = VK_UINT, .fn = grk_method_config}},
 };
 
 static const class_desc_t grk_class = {

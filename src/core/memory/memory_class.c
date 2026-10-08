@@ -81,11 +81,11 @@ static DEF_METHOD(method_mem_read_cstring) {
     return v;
 }
 
-static const value_t mem_def_max_chars = {.kind = V_INT, .i = 96};
+static const value_t mem_def_max_chars = {.kind = VK_INT, .i = 96};
 static const arg_decl_t mem_read_cstring_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "guest memory address"},
     {.name = "max_chars",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &mem_def_max_chars,
      .doc = "max chars to read (1..4096)"},
@@ -97,14 +97,14 @@ static const arg_decl_t mem_read_cstring_args[] = {
 // rich-parser). Output goes to stdout in the legacy `x` layout; the method
 // returns true on dispatch success.
 static DEF_METHOD(method_mem_dump) {
-    // addr is V_NONE-kind: an integer, or a string symbol/alias the
+    // addr is VK_NONE-kind: an integer, or a string symbol/alias the
     // address parser resolves (parse_address handles $hex / 0x / symbol).
     uint32_t addr = 0;
     bool addr_ok = false;
     uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
     if (addr_ok) {
         addr = (uint32_t)addr_u;
-    } else if (argv[0].kind == V_STRING && argv[0].s) {
+    } else if (argv[0].kind == VK_STRING && argv[0].s) {
         addr_space_t sp;
         if (!parse_address(argv[0].s, &addr, &sp))
             return val_err("memory.dump: cannot resolve address '%s'", argv[0].s);
@@ -145,14 +145,14 @@ static DEF_METHOD(method_mem_dump) {
     return val_none();
 }
 
-static const value_t mem_def_dump_count = {.kind = V_INT, .i = 64};
+static const value_t mem_def_dump_count = {.kind = VK_INT, .i = 64};
 static const arg_decl_t mem_dump_args[] = {
     {.name = "addr",
-     .kind = V_NONE,
+     .kind = VK_NONE,
      .validation_flags = OBJ_ARG_POLY,
      .doc = "guest memory address: an integer, or a symbol / alias name"},
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &mem_def_dump_count,
      .doc = "byte count (max 512)"},
@@ -202,7 +202,7 @@ static DEF_METHOD(method_mem_translate) {
 }
 
 static const arg_decl_t mem_translate_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical guest address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical guest address"},
 };
 
 static DEF_GETTER(attr_mem_slowpath_count) {
@@ -219,46 +219,46 @@ static DEF_GETTER(attr_mem_slowpath_hist) {
 }
 
 static const member_t memory_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "ram_size",
      .doc = "Installed RAM in bytes, as the machine's memory map reports it",
-     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_mem_ram_size, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "slowpath_count",
      .flags = M_CAT_ADVANCED,
      .doc = "CPU memory accesses taken through the slow path since process start (diagnostic)",
-     .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "slowpath_hist",
      .flags = M_CAT_ADVANCED,
      .doc = "Slow-path accesses bucketed by MB of (masked) address (diagnostic)",
-     .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "rom_size",
      .doc = "Size in bytes of the loaded ROM image",
-     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = attr_mem_rom_size, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "read_cstring",
      .examples = EXAMPLES("machine.memory.read_cstring 0x910"),
      .doc = "Read a quoted, escape-encoded C string at addr",
      .method = {.result_doc = "the string, quoted, with non-printable bytes escaped as \\xNN",
                 .args = mem_read_cstring_args,
                 .nargs = 2,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = method_mem_read_cstring}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "dump",
      .examples = EXAMPLES("machine.memory.dump 0x400", "machine.memory.dump $pc 32"),
      .doc = "Hex-dump count bytes at addr",
-     .method = {.args = mem_dump_args, .nargs = 2, .result = V_NONE, .fn = method_mem_dump}},
-    {.kind = M_METHOD,
+     .method = {.args = mem_dump_args, .nargs = 2, .result = VK_NONE, .fn = method_mem_dump}},
+    {.kind = MK_METHOD,
      .name = "translate",
      .examples = EXAMPLES("machine.memory.translate 0x400"),
      .doc = "Show the debug-path MMU translation of a logical address",
      .method = {.result_doc = "one line: MMU state, the supervisor and user walks, and the physical page's backing",
                 .args = mem_translate_args,
                 .nargs = 1,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = method_mem_translate}},
 };
 
@@ -277,22 +277,22 @@ static const class_desc_t memory_class = {
 
 static DEF_METHOD(method_mem_peek_b) {
     value_t v = val_uint(1, memory_debug_read_uint8((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_METHOD(method_mem_peek_w) {
     value_t v = val_uint(2, memory_debug_read_uint16((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_METHOD(method_mem_peek_l) {
     value_t v = val_uint(4, memory_debug_read_uint32((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 // `memory.peek.bytes(addr, count)` — bulk byte read. Returns a
-// V_BYTES blob, capped to 4 KB so the bridge output slot can hold the
+// VK_BYTES blob, capped to 4 KB so the bridge output slot can hold the
 // JSON-encoded payload. Replaces the per-byte fan-out the debug UI's
 // memory pane used to do (128 separate gsEval calls → 128 bridge
 // round-trips → noticeable lag while stepping). One call now suffices.
@@ -321,7 +321,7 @@ static DEF_METHOD(method_mem_peek_bytes) {
     uint64_t count = argv[1].u;
     // `space` omitted keeps the historical meaning (through the 68K MMU;
     // physical on PowerPC); given, it means the same on every architecture.
-    bool have_space = argc >= 3 && argv[2].kind == V_ENUM;
+    bool have_space = argc >= 3 && argv[2].kind == VK_ENUM;
     bool physical;
     if (!debug_parse_space(argc, argv, 2, &physical))
         return val_err("memory.peek.bytes: space must be \"logical\" or \"physical\"");
@@ -329,7 +329,7 @@ static DEF_METHOD(method_mem_peek_bytes) {
         return val_err("memory.peek.bytes: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
     if (count == 0)
         return val_bytes(NULL, 0);
-    // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
+    // Cap at 4 KB. The bridge serialises VK_BYTES as a base64-ish JSON
     // string; 4 KB × 4/3 ≈ 5.5 KB, well under the mailbox result limit (GS_MBX_RESULT_MAX).
     if (count > 4096)
         count = 4096;
@@ -345,14 +345,14 @@ static DEF_METHOD(method_mem_peek_bytes) {
 }
 
 static const arg_decl_t mem_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "guest memory address"},
 };
 
 static const arg_decl_t mem_peek_bytes_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "count", .kind = V_UINT, .doc = "byte count (max 4096)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "guest memory address"},
+    {.name = "count", .kind = VK_UINT, .doc = "byte count (max 4096)"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"logical\" (through the CPU's translation) or \"physical\"",
@@ -360,26 +360,26 @@ static const arg_decl_t mem_peek_bytes_args[] = {
 };
 
 static const member_t mem_peek_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "b",
      .examples = EXAMPLES("machine.memory.peek.b 0x12f"),
      .doc = "Read 1 byte at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}           },
-    {.kind = M_METHOD,
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_b}           },
+    {.kind = MK_METHOD,
      .name = "w",
      .examples = EXAMPLES("machine.memory.peek.w 0x28e"),
      .doc = "Read 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}           },
-    {.kind = M_METHOD,
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_w}           },
+    {.kind = MK_METHOD,
      .name = "l",
      .examples = EXAMPLES("machine.memory.peek.l 0x16a"),
      .doc = "Read 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}           },
-    {.kind = M_METHOD,
+     .method = {.args = mem_peek_args, .nargs = 1, .result = VK_UINT, .fn = method_mem_peek_l}           },
+    {.kind = MK_METHOD,
      .name = "bytes",
      .examples = EXAMPLES("machine.memory.peek.bytes 0x400 16"),
      .doc = "Read count bytes at addr (bulk; max 4096 bytes per call)",
-     .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = V_BYTES, .fn = method_mem_peek_bytes}},
+     .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = VK_BYTES, .fn = method_mem_peek_bytes}},
 };
 
 static const class_desc_t mem_peek_class = {
@@ -409,26 +409,26 @@ static DEF_METHOD(method_mem_poke_l) {
 }
 
 static const arg_decl_t mem_poke_args[] = {
-    {.name = "addr",  .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"      },
+    {.name = "addr",  .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "guest memory address"},
+    {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "value to write"      },
 };
 
 static const member_t mem_poke_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "b",
      .examples = EXAMPLES("machine.memory.poke.b 0x12f 0"),
      .doc = "Write 1 byte at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_b}},
-    {.kind = M_METHOD,
+     .method = {.args = mem_poke_args, .nargs = 2, .result = VK_NONE, .fn = method_mem_poke_b}},
+    {.kind = MK_METHOD,
      .name = "w",
      .examples = EXAMPLES("machine.memory.poke.w 0x28e 0x3fff"),
      .doc = "Write 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_w}},
-    {.kind = M_METHOD,
+     .method = {.args = mem_poke_args, .nargs = 2, .result = VK_NONE, .fn = method_mem_poke_w}},
+    {.kind = MK_METHOD,
      .name = "l",
      .examples = EXAMPLES("machine.memory.poke.l 0x16a 0"),
      .doc = "Write 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
+     .method = {.args = mem_poke_args, .nargs = 2, .result = VK_NONE, .fn = method_mem_poke_l}},
 };
 
 static const class_desc_t mem_poke_class = {

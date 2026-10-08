@@ -24,20 +24,20 @@ extern "C" {
 
 // Discriminator for the value_t union.
 typedef enum {
-    V_NONE = 0, // success, nothing to say (also default-init)
-    V_BOOL,
-    V_INT, // signed, up to 64-bit
-    V_UINT, // unsigned, up to 64-bit (default for addresses, registers)
-    V_FLOAT, // double
-    V_STRING, // heap-owned char*
-    V_BYTES, // heap-owned opaque byte buffer
-    V_ENUM, // integer + static name table
-    V_LIST, // heap-owned, recursively owned items
-    V_MAP, // heap-owned, ordered {key → recursively-owned value} entries
-    V_OBJECT, // non-owning reference to a tree node
-    V_ERROR, // heap-owned error message
-    V_REF, // heap-owned object-tree path text; re-resolved on every access
-    V_RANGE, // half-open integer range [start, stop)
+    VK_NONE = 0, // success, nothing to say (also default-init)
+    VK_BOOL,
+    VK_INT, // signed, up to 64-bit
+    VK_UINT, // unsigned, up to 64-bit (default for addresses, registers)
+    VK_FLOAT, // double
+    VK_STRING, // heap-owned char*
+    VK_BYTES, // heap-owned opaque byte buffer
+    VK_ENUM, // integer + static name table
+    VK_LIST, // heap-owned, recursively owned items
+    VK_MAP, // heap-owned, ordered {key → recursively-owned value} entries
+    VK_OBJECT, // non-owning reference to a tree node
+    VK_ERROR, // heap-owned error message
+    VK_REF, // heap-owned object-tree path text; re-resolved on every access
+    VK_RANGE, // half-open integer range [start, stop)
 } value_kind_t;
 
 // Declaration-only sentinel: "any kind" (see object.h). Valid in a typed
@@ -49,21 +49,21 @@ typedef enum {
 // range rather than another enumerator, so that switches over a live
 // value's kind stay exhaustive without a dead arm for a kind no value
 // ever carries.
-#define V_ANY ((value_kind_t)0x7F)
+#define VK_ANY ((value_kind_t)0x7F)
 
 // Display / semantic flags. Stored on attribute member_t and copied onto
 // value_t so formatters see the intent of the originating attribute.
-#define VAL_HEX       0x0001u // prefer hex output
-#define VAL_DEC       0x0002u // prefer decimal output
-#define VAL_VOLATILE  0x0004u // re-read every time (no caching)
-#define VAL_SENSITIVE 0x0008u // do not print payload (passwords, etc.)
-#define VAL_BIN       0x0020u // prefer binary output
-#define VAL_PATH      0x0040u // a string naming a VFS path (argument forms offer a file picker)
+#define VFLAG_HEX       0x0001u // prefer hex output
+#define VFLAG_DEC       0x0002u // prefer decimal output
+#define VFLAG_VOLATILE  0x0004u // re-read every time (no caching)
+#define VFLAG_SENSITIVE 0x0008u // do not print payload (passwords, etc.)
+#define VFLAG_BIN       0x0020u // prefer binary output
+#define VFLAG_PATH      0x0040u // a string naming a VFS path (argument forms offer a file picker)
 
 // Forward declaration; defined in object.h.
 struct object;
 
-// One V_MAP entry: heap-owned key plus recursively-owned value. Defined
+// One VK_MAP entry: heap-owned key plus recursively-owned value. Defined
 // after struct value (it embeds one by value); forward-declared here so
 // the union arm can carry the pointer.
 struct value_entry;
@@ -72,7 +72,7 @@ struct value_entry;
 typedef struct value {
     value_kind_t kind;
     uint8_t width; // bytes: 1, 2, 4, 8, 10 (FPU ext); 0 otherwise
-    uint16_t flags; // VAL_HEX | VAL_DEC | VAL_VOLATILE | ...
+    uint16_t flags; // VFLAG_HEX | VFLAG_DEC | VFLAG_VOLATILE | ...
     union {
         bool b;
         int64_t i;
@@ -98,7 +98,7 @@ typedef struct value {
         } map; // entries heap-owned; insertion-ordered, keys unique
         struct object *obj; // non-owning
         char *err; // heap-owned
-        char *ref; // heap-owned path text (V_REF); freed by value_free
+        char *ref; // heap-owned path text (VK_REF); freed by value_free
         struct {
             int64_t start;
             int64_t stop;
@@ -107,7 +107,7 @@ typedef struct value {
     };
 } value_t;
 
-// One {key → value} slot of a V_MAP. The key is heap-owned (strdup'd by
+// One {key → value} slot of a VK_MAP. The key is heap-owned (strdup'd by
 // the constructors); the value is recursively owned like a list item.
 struct value_entry {
     char *key;
@@ -127,7 +127,7 @@ value_t val_uint(uint8_t width, uint64_t u);
 value_t val_float(double f);
 value_t val_str(const char *s);
 // Copies n bytes from p. (NULL, 0) yields an empty buffer; (NULL, n > 0)
-// is rejected with a V_ERROR rather than zero-filled.
+// is rejected with a VK_ERROR rather than zero-filled.
 value_t val_bytes(const void *p, size_t n);
 value_t val_enum(int idx, const char *const *table, size_t n_table);
 value_t val_list(value_t *items, size_t len); // takes ownership of items array
@@ -140,7 +140,7 @@ value_t val_ref(const char *path); // node reference by path text (strdup'd)
 // Half-open [start, stop) with a stride.  `step` must not be 0.
 //
 // A range is LAZY: it carries three integers and never allocates, however
-// many values it denotes.  range() used to materialise a V_LIST instead,
+// many values it denotes.  range() used to materialise a VK_LIST instead,
 // capped at 2^20 entries -- which at sizeof(value_t) == 32 permitted a 32 MB
 // single calloc on the 32-bit wasm heap, to run a loop.  `for` over a real
 // collection legitimately walks a list that already exists; range() was the
@@ -153,22 +153,19 @@ value_t val_range(int64_t start, int64_t stop);
 // Number of values a range denotes, saturating rather than overflowing.
 uint64_t val_range_count(const value_t *v);
 
-// Convenience constants.
-#define V_NONE_VAL (val_none())
-
 // === Map builder =============================================================
 //
-// Incremental V_MAP construction mirroring the shape the retired JSON
+// Incremental VK_MAP construction mirroring the shape the retired JSON
 // builder had, so map-returning method bodies stay a flat put-sequence.
 // The builder owns everything handed to it; val_map_finish transfers the
-// finished map (or a V_ERROR after any OOM) and frees the builder either
+// finished map (or a VK_ERROR after any OOM) and frees the builder either
 // way. Errors are sticky: a failed put poisons the builder and finish
 // reports it.
 
 typedef struct value_map_builder value_map_builder_t;
 
 // Allocate a fresh builder. Returns NULL on OOM (val_map_finish(NULL)
-// yields a V_ERROR, so call sites may chain without checking).
+// yields a VK_ERROR, so call sites may chain without checking).
 value_map_builder_t *val_map_new(void);
 
 // Append {key → v}. The key is strdup'd; v is owned by the builder from
@@ -176,16 +173,16 @@ value_map_builder_t *val_map_new(void);
 // value in place, keeping keys unique and order stable.
 void val_map_put(value_map_builder_t *b, const char *key, value_t v);
 
-// Consume the builder and return the finished V_MAP (possibly empty),
-// or V_ERROR if any allocation failed along the way.
+// Consume the builder and return the finished VK_MAP (possibly empty),
+// or VK_ERROR if any allocation failed along the way.
 value_t val_map_finish(value_map_builder_t *b);
 
 // Borrowed lookup: pointer to the value stored under `key`, or NULL if
-// `v` is not a V_MAP or the key is absent. Valid only while *v lives.
+// `v` is not a VK_MAP or the key is absent. Valid only while *v lives.
 const value_t *value_map_get(const value_t *v, const char *key);
 
 // Append v to a growable value_t array (doubling capacity), the common
-// idiom for assembling a V_LIST of unknown length before val_list. On
+// idiom for assembling a VK_LIST of unknown length before val_list. On
 // OOM frees v and returns false; the array so far stays valid so the
 // caller can free the partial list.
 bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v);
@@ -200,7 +197,7 @@ void value_free(value_t *v);
 // Deep-copy a value.  The returned value owns its own heap storage so the
 // caller can free it independently of `v`.  Used by the shell-variable
 // binding to hand out owned copies to expression callers without sharing
-// pointer-typed payloads (V_STRING, V_BYTES, V_LIST, V_ERROR).
+// pointer-typed payloads (VK_STRING, VK_BYTES, VK_LIST, VK_ERROR).
 value_t value_dup(const value_t *v);
 
 // GCC/Clang cleanup attribute helper, used as:
@@ -214,9 +211,9 @@ void value_free_ptr(value_t *v); // wrapper compatible with cleanup attribute
 // === Accessors ===============================================================
 
 // Coerce to u64. For numeric kinds this is the natural conversion; for
-// V_BOOL it is 0/1; for V_ENUM it is the index. Returns 0 with *ok=false
-// on incompatible kinds (V_STRING, V_BYTES, V_LIST, V_OBJECT, V_ERROR,
-// V_NONE). Caller may pass ok=NULL to ignore the success flag.
+// VK_BOOL it is 0/1; for VK_ENUM it is the index. Returns 0 with *ok=false
+// on incompatible kinds (VK_STRING, VK_BYTES, VK_LIST, VK_OBJECT, VK_ERROR,
+// VK_NONE). Caller may pass ok=NULL to ignore the success flag.
 uint64_t val_as_u64(const value_t *v, bool *ok);
 int64_t val_as_i64(const value_t *v, bool *ok);
 double val_as_f64(const value_t *v, bool *ok);
@@ -241,18 +238,18 @@ bool val_parse_bool(const char *s, bool *out);
 
 // True if *v carries an error.
 static inline bool val_is_error(const value_t *v) {
-    return v && v->kind == V_ERROR;
+    return v && v->kind == VK_ERROR;
 }
 
 // True if *v is one of the heap-owning kinds.
 bool val_is_heap(const value_t *v);
 
-// Lower-case name of a kind ("uint", "enum", "any" for V_ANY): the one
+// Lower-case name of a kind ("uint", "enum", "any" for VK_ANY): the one
 // spelling used by type descriptors, usage text and validation errors.
 const char *value_kind_name(value_kind_t k);
 
 // (value_copy was a second deep-copier and is gone -- see value_dup.  It
-// reported OOM by silently returning a broken value, and for V_BYTES left
+// reported OOM by silently returning a broken value, and for VK_BYTES left
 // `n` at the source length with `p` NULL, breaking the invariant its readers
 // rely on.  Every new call site was a coin flip on error behaviour.)
 

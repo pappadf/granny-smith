@@ -79,18 +79,18 @@ static DEF_METHOD(func_method_remove) {
 }
 
 static const member_t func_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "Function name",
-     .attr = {.type = V_STRING, .get = func_get_name, .set = NULL}                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = func_get_name, .set = NULL}                   },
+    {.kind = MK_ATTR,
      .name = "params",
      .doc = "Declared parameter list",
-     .attr = {.type = V_STRING, .get = func_get_params, .set = NULL}                 },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = func_get_params, .set = NULL}                 },
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this function",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = func_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = func_method_remove}},
 };
 
 static const class_desc_t func_entry_class = {

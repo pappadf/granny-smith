@@ -329,7 +329,7 @@ static value_t debug_shell_binding(void *ud, const char *name) {
 //   memory.peek.l(0x1201D420) == 0xE000
 //   cpu.supervisor && cpu.pc >= 0x10000000
 //
-// Unknown / parse-failed / V_ERROR expressions evaluate to true so a
+// Unknown / parse-failed / VK_ERROR expressions evaluate to true so a
 // typo doesn't silently swallow hits.
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
@@ -348,25 +348,25 @@ static bool eval_breakpoint_condition(const char *expr) {
     value_t v = expr_eval(expr, &ctx);
     bool result;
     switch (v.kind) {
-    case V_BOOL:
+    case VK_BOOL:
         result = v.b;
         break;
-    case V_INT:
+    case VK_INT:
         result = (v.i != 0);
         break;
-    case V_UINT:
+    case VK_UINT:
         result = (v.u != 0);
         break;
-    case V_FLOAT:
+    case VK_FLOAT:
         result = (v.f != 0.0);
         break;
-    case V_STRING:
+    case VK_STRING:
         result = (v.s && *v.s);
         break;
-    case V_NONE:
+    case VK_NONE:
         result = false;
         break;
-    case V_ERROR:
+    case VK_ERROR:
         // Parse / resolution error — safer default is to fire so the
         // user notices the typo rather than missing the breakpoint.
         result = true;
@@ -558,18 +558,18 @@ static value_t lp_binding(void *ud, const char *name) {
         // print as full 32-bit words.
         int w = (lp->size == 1) ? 1 : (lp->size == 2) ? 2 : 4;
         value_t v = val_uint((uint8_t)w, lp->value & access_width_mask(lp->size));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     if (strcmp(name, "addr") == 0) {
         value_t v = val_uint(4, lp->addr);
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     if (strcmp(name, "size") == 0)
         return val_uint(1, lp->size);
     // Everything else falls through to the shell's binding store
-    // (scoped `let` bindings, then the alias table as V_REF).
+    // (scoped `let` bindings, then the alias table as VK_REF).
     return shell_binding_get(name);
 }
 
@@ -611,7 +611,7 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
     };
     value_t v = expr_interpolate_body(msg, &ctx);
 
-    const char *s = (v.kind == V_STRING && v.s) ? v.s : (v.kind == V_ERROR && v.err) ? v.err : "";
+    const char *s = (v.kind == VK_STRING && v.s) ? v.s : (v.kind == VK_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)
         n = buf_size - 1;
@@ -2236,13 +2236,13 @@ static breakpoint_t *bp_from(struct object *self) {
 
 // The address-space enumeration, declared ONCE.
 //
-// It was a V_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
-// V_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
+// It was a VK_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
+// VK_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
 // file.  So reads were typed and writes were not: an unrecognised string
 // silently meant "logical", nothing could complete the values, and
 // object-model.md explicitly lists enum membership as something bodies must
 // not re-check.
-// Indexed by addr_space_t, so an addr_space_t converts to its V_ENUM index
+// Indexed by addr_space_t, so an addr_space_t converts to its VK_ENUM index
 // unchanged; the assert keeps the table and the enum from drifting apart.
 const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
@@ -2254,7 +2254,7 @@ static DEF_GETTER(bp_attr_addr) {
     if (!bp)
         return val_err("breakpoint detached");
     value_t v = val_uint(4, breakpoint_get_addr(bp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -2333,37 +2333,37 @@ static DEF_METHOD(bp_method_remove) {
 }
 
 static const member_t bp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "Address this breakpoint watches, in the space named by `space`",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = bp_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "space",
      .doc = "\"logical\" or \"physical\" — which address `addr` is in (they coincide with the MMU off)",
-     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "condition",
      .flags = 0,
      .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
-     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the breakpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this breakpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = bp_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other breakpoints (indices do not)",
-     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = bp_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this breakpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = bp_method_remove}},
 };
 
 static const class_desc_t breakpoint_entry_class = {
@@ -2389,7 +2389,7 @@ static DEF_GETTER(lpe_attr_addr) {
     if (!lp)
         return val_err("logpoint detached");
     value_t v = val_uint(4, logpoint_get_addr(lp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(lpe_attr_end_addr) {
@@ -2397,7 +2397,7 @@ static DEF_GETTER(lpe_attr_end_addr) {
     if (!lp)
         return val_err("logpoint detached");
     value_t v = val_uint(4, logpoint_get_end_addr(lp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(lpe_attr_kind) {
@@ -2458,43 +2458,43 @@ static DEF_METHOD(lpe_method_remove) {
 }
 
 static const member_t lp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "end_addr",
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "kind",
      .doc = "What triggers it: \"pc\" on execution, or \"read\"/\"write\"/\"rw\" on a data access",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "level",
      .doc = "Log level each fire is emitted at",
-     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "category",
      .doc = "Log category each fire is emitted under",
-     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = lpe_attr_category, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "message",
      .doc = "Fire-time template; $value/$addr/$size bind per fire. Empty = the default one-line report",
-     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = lpe_attr_message, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this logpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other logpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this logpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t logpoint_entry_class = {
@@ -2540,40 +2540,40 @@ static DEF_SETTER(wpe_attr_enabled_set) {
 }
 
 static const member_t wp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "end_addr",
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "The access that stops the machine: \"read\", \"write\" or \"rw\"",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "space",
      .doc = "\"logical\" or \"physical\" -- which address `addr` is in",
-     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = wpe_attr_space, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the watchpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this watchpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other watchpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this watchpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t watchpoint_entry_class = {
@@ -2595,7 +2595,7 @@ static struct object *make_watchpoint_object(logpoint_t *lp) {
 // single helper recovers it whether you're holding the debug node
 // or one of its collection children. The collection class declares:
 //   - method members (add, clear) for the legacy mutation API;
-//   - one indexed M_CHILD member that exposes per-entry objects, so
+//   - one indexed MK_CHILD member that exposes per-entry objects, so
 //     `debug.breakpoints.0` and `[0]` both resolve via the integer-
 //     segment rule in node_child (object.c).
 
@@ -2635,11 +2635,11 @@ static DEF_METHOD(bp_method_add) {
     // Physical-space breakpoints are only meaningful on the 68030 with
     // the MMU active; on the Plus the two address spaces coincide.
     //
-    // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
+    // Read the enum index, not `.s`: on a VK_ENUM the string pointer shares
     // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
     // dereferenced an index as a pointer.
     addr_space_t space =
-        (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
+        (argc >= 3 && argv[2].kind == VK_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
     // stacking a duplicate that would fire twice and need removing twice.
@@ -2650,7 +2650,7 @@ static DEF_METHOD(bp_method_add) {
         bp = add_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+    if (argc >= 2 && argv[1].kind == VK_STRING && argv[1].s && *argv[1].s)
         breakpoint_set_condition(bp, argv[1].s);
     return val_obj(breakpoint_get_entry_object(bp));
 }
@@ -2686,7 +2686,7 @@ static DEF_METHOD(lp_method_add) {
     //       6 category, 7 value, 8 space
     uint32_t addr = (uint32_t)argv[0].u;
 
-    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "pc";
+    const char *mode = (argc > 1 && argv[1].kind == VK_STRING && argv[1].s) ? argv[1].s : "pc";
     int kind;
     if (strcmp(mode, "pc") == 0)
         kind = LP_KIND_PC;
@@ -2700,7 +2700,7 @@ static DEF_METHOD(lp_method_add) {
         return val_err("logpoints.add: mode must be pc, read, write, or rw");
 
     unsigned size = 0;
-    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+    if (argc > 2 && argv[2].kind == VK_STRING && argv[2].s && argv[2].s[0]) {
         const char *w = argv[2].s;
         if (strcmp(w, "b") == 0)
             size = 1;
@@ -2712,17 +2712,17 @@ static DEF_METHOD(lp_method_add) {
             return val_err("logpoints.add: width must be b, w, or l");
     }
 
-    // The slot is V_UINT, so validate_slot has already coerced anything the
-    // caller passed; V_NONE means it passed nothing.
+    // The slot is VK_UINT, so validate_slot has already coerced anything the
+    // caller passed; VK_NONE means it passed nothing.
     uint32_t end_addr = addr;
-    if (argc > 3 && argv[3].kind == V_UINT)
+    if (argc > 3 && argv[3].kind == VK_UINT)
         end_addr = (uint32_t)argv[3].u;
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
         end_addr = addr + size - 1;
 
-    const char *message = (argc > 4 && argv[4].kind == V_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
+    const char *message = (argc > 4 && argv[4].kind == VK_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
 
     int level = 0;
     if (argc > 5) {
@@ -2734,23 +2734,23 @@ static DEF_METHOD(lp_method_add) {
             return val_err("logpoints.add: level must be >= 0");
     }
 
-    const char *category_name = (argc > 6 && argv[6].kind == V_STRING && argv[6].s && argv[6].s[0])
+    const char *category_name = (argc > 6 && argv[6].kind == VK_STRING && argv[6].s && argv[6].s[0])
                                     ? argv[6].s
                                     : (kind == LP_KIND_PC ? "logpoint" : "memory");
 
     bool have_value_filter = false;
     uint32_t value_filter = 0;
-    if (argc > 7 && argv[7].kind == V_UINT) {
+    if (argc > 7 && argv[7].kind == VK_UINT) {
         have_value_filter = true;
         value_filter = (uint32_t)argv[7].u;
     }
     if (have_value_filter && kind == LP_KIND_PC)
         return val_err("logpoints.add: value filter is only supported on memory logpoints");
 
-    // The slot is V_ENUM against debug_space_values, so the index is the
+    // The slot is VK_ENUM against debug_space_values, so the index is the
     // answer -- validate_slot rejected anything that is not in the table.
     addr_space_t space =
-        (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
+        (argc > 8 && argv[8].kind == VK_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2776,63 +2776,63 @@ static DEF_METHOD(lp_method_add) {
 
 // "logical" — the default for every space= argument below.
 static const value_t def_space_logical = {
-    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
+    .kind = VK_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
 };
 
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "Address to stop at"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "Address to stop at"},
     {.name = "condition",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Expression; the breakpoint fires only when it is true"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
      .doc = "Address space"},
 };
 
-static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
-static const value_t lp_def_level = {.kind = V_INT, .i = 0};
+static const value_t lp_def_mode = {.kind = VK_STRING, .s = (char *)"pc"};
+static const value_t lp_def_level = {.kind = VK_INT, .i = 0};
 
 static const arg_decl_t lp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address (or range start)"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &lp_def_mode,
      .doc = "pc, read, write, or rw"},
     {.name = "width",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "access width for memory modes: b, w, or l"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "range end address, inclusive"},
     {.name = "message",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
      .doc = "fire-time template; $value/$addr/$size bind per fire"},
     {.name = "level",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &lp_def_level,
      .doc = "log level"},
     {.name = "category",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "log category",
      .default_doc = "logpoint (pc mode) or memory"},
     {.name = "value",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "only fire when the accessed value matches (memory modes)"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
@@ -2844,20 +2844,20 @@ static const collection_desc_t bp_collection_entries = {
 };
 
 static const member_t bp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.breakpoints.add 0x408986", "debug.breakpoints.add 0x408986 \"d0 == 0\" physical"),
      .doc = "Add a breakpoint; adding an address that already has one returns that entry. space=physical stops on a "
             "physical address (through the 68030 PMMU)", .method = {.result_doc = "the breakpoint entry",
                 .args = bp_add_args,
                 .nargs = 3,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = bp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.breakpoints.clear"),
      .doc = "Remove every breakpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = bp_method_clear}},
     // `list` retired: read `entries` — the REPL renders
     // an object list as a table.
     OBJ_ENTRIES(&bp_collection_entries, NULL),
@@ -2875,7 +2875,7 @@ static const collection_desc_t lp_collection_entries = {
 };
 
 static const member_t lp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.logpoints.add 0x40800000 message=\"reached\"",
      "debug.logpoints.add 0x16a mode=write width=l message=\"Ticks=${$value:08x}\""),
@@ -2883,13 +2883,13 @@ static const member_t lp_collection_members[] = {
             "message is a template filled in at each fire", .method = {.result_doc = "the logpoint entry",
                 .args = lp_add_args,
                 .nargs = 9,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = lp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.logpoints.clear"),
      .doc = "Remove every logpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lp_method_clear}},
     // `list` retired: read `entries`.
     OBJ_ENTRIES(&lp_collection_entries, NULL),
 };
@@ -2925,7 +2925,7 @@ static DEF_METHOD(wp_method_add) {
     // argv: 0 addr, 1 mode, 2 width, 3 end, 4 space
     uint32_t addr = (uint32_t)argv[0].u;
 
-    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
+    const char *mode = (argc > 1 && argv[1].kind == VK_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
     int kind;
     if (strcmp(mode, "read") == 0)
         kind = LP_KIND_READ;
@@ -2937,7 +2937,7 @@ static DEF_METHOD(wp_method_add) {
         return val_err("watchpoints.add: mode must be read, write, or rw");
 
     unsigned size = 0;
-    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+    if (argc > 2 && argv[2].kind == VK_STRING && argv[2].s && argv[2].s[0]) {
         const char *w = argv[2].s;
         if (strcmp(w, "b") == 0)
             size = 1;
@@ -2952,7 +2952,7 @@ static DEF_METHOD(wp_method_add) {
     // A width and no explicit range widen to every access overlapping the
     // address, as logpoints.add does.
     uint32_t end_addr = addr;
-    if (argc > 3 && argv[3].kind == V_UINT)
+    if (argc > 3 && argv[3].kind == VK_UINT)
         end_addr = (uint32_t)argv[3].u;
     if (size > 0 && end_addr == addr)
         end_addr = addr + size - 1;
@@ -2960,7 +2960,7 @@ static DEF_METHOD(wp_method_add) {
         return val_err("watchpoints.add: end must not precede addr");
 
     addr_space_t space =
-        (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
+        (argc > 4 && argv[4].kind == VK_ENUM && argv[4].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     // The hit is printed, not logged, so the category only labels the entry.
     log_category_t *category = log_get_category("memory");
@@ -2980,26 +2980,26 @@ static DEF_METHOD(wp_method_clear) {
     return val_none();
 }
 
-static const value_t wp_def_mode = {.kind = V_STRING, .s = (char *)"write"};
+static const value_t wp_def_mode = {.kind = VK_STRING, .s = (char *)"write"};
 
 static const arg_decl_t wp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address (or range start)"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &wp_def_mode,
      .doc = "write, read, or rw"},
     {.name = "width",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "b, w, or l: widen to every access overlapping addr"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "range end, inclusive"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
@@ -3011,20 +3011,20 @@ static const collection_desc_t wp_collection_entries = {
 };
 
 static const member_t wp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.watchpoints.add 0x16a", "debug.watchpoints.add 0x400 mode=rw end=0x4ff"),
      .doc = "Install a watchpoint: stop the machine after an instruction that accesses the address or range",
      .method = {.result_doc = "the watchpoint entry",
                 .args = wp_add_args,
                 .nargs = 5,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = wp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.watchpoints.clear"),
      .doc = "Remove every watchpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = wp_method_clear}},
     OBJ_ENTRIES(&wp_collection_entries, NULL),
 };
 
@@ -3039,10 +3039,10 @@ static const class_desc_t wp_collection_class = {
 // filter=0 prints everything; filter=1 skips routine traps (A/F-line, TRAP #N,
 // IRQ autovectors, trace) so fatal exceptions (bus error/addr error/illegal/
 // privilege) stand out.
-static const value_t k_int0 = {.kind = V_INT, .i = 0};
+static const value_t k_int0 = {.kind = VK_INT, .i = 0};
 static const arg_decl_t debug_exceptions_args[] = {
     {.name = "filter",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int0,
      .doc = "0 = print all; 1 = filter out routine traps/IRQs"},
@@ -3063,7 +3063,7 @@ static DEF_METHOD(debug_method_exceptions) {
 // debug.mac.* — debugger affordances that *use* the CPU's encoding
 // knowledge but aren't themselves part of running the CPU.
 // Prints `count` disassembled instructions to the output sink (one line each)
-// and returns V_BOOL so `${debug.disasm(5)}` is a truthy single-token
+// and returns VK_BOOL so `${debug.disasm(5)}` is a truthy single-token
 // predicate for shell-script asserts. The web2 UI does NOT consume
 // this method's return value — it pulls a structured snapshot via
 // `debug.frame` instead — so this can keep the historical
@@ -3073,14 +3073,14 @@ static DEF_METHOD(debug_method_disasm) {
     if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
-    // Either slot may be absent (V_NONE), so read by kind rather than argc:
+    // Either slot may be absent (VK_NONE), so read by kind rather than argc:
     // `disasm(20)` is a count, `disasm(0x400000, 20)` is address + count, and
     // `disasm(count=20)` -- which used to fail with "missing argument
     // 'addr_or_count'" -- is a count from the PC.
     uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
-    bool have_first = argc >= 1 && argv[0].kind == V_INT;
-    bool have_second = argc >= 2 && argv[1].kind == V_INT;
+    bool have_first = argc >= 1 && argv[0].kind == VK_INT;
+    bool have_second = argc >= 2 && argv[1].kind == VK_INT;
     if (have_first && have_second) {
         addr = (uint32_t)argv[0].i;
         count = argv[1].i;
@@ -3105,11 +3105,11 @@ static DEF_METHOD(debug_method_disasm) {
 
 static const arg_decl_t debug_disasm_args[] = {
     {.name = "addr_or_count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Alone: the instruction count, from the PC (16 when omitted). Followed by count: the start address"},
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Number of instructions, when the first argument is an address"                                    },
 };
@@ -3149,7 +3149,7 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
     value_map_builder_t *b = val_map_new();
     if (valid) {
         value_t p = val_uint(4, phys);
-        p.flags |= VAL_HEX;
+        p.flags |= VFLAG_HEX;
         val_map_put(b, "phys", p);
     }
     val_map_put(b, "valid", val_bool(valid));
@@ -3159,13 +3159,13 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
 
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     *physical = false;
-    if (argc <= idx || argv[idx].kind == V_NONE)
+    if (argc <= idx || argv[idx].kind == VK_NONE)
         return true; // omitted: logical
-    if (argv[idx].kind == V_ENUM) {
+    if (argv[idx].kind == VK_ENUM) {
         *physical = argv[idx].enm.idx == 1;
         return true;
     }
-    if (argv[idx].kind != V_STRING || !argv[idx].s)
+    if (argv[idx].kind != VK_STRING || !argv[idx].s)
         return false;
     if (strcmp(argv[idx].s, "logical") == 0)
         return true;
@@ -3206,7 +3206,7 @@ static void frame_split_disasm(const char *buf, char *mnem, size_t mnem_len, cha
 // 601/604 and the DSP3210; before, debug.frame read the 68K cpu_t and failed
 // on every PowerPC machine, and the DSP had no frame at all.
 //
-// Output (a V_MAP):
+// Output (a VK_MAP):
 //   {
 //     "arch": "m68k" | "ppc" | "dsp3210",
 //     "pc":   <int>,
@@ -3229,9 +3229,9 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
         return val_err("%s: CPU not initialised", who);
 
     uint32_t pc = dif->get_pc(dif->ctx);
-    bool have_addr = argc >= 1 && argv[0].kind == V_INT;
-    int64_t count = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 32;
-    int64_t before = (argc >= 3 && argv[2].kind == V_INT) ? argv[2].i : 0;
+    bool have_addr = argc >= 1 && argv[0].kind == VK_INT;
+    int64_t count = (argc >= 2 && argv[1].kind == VK_INT) ? argv[1].i : 32;
+    int64_t before = (argc >= 3 && argv[2].kind == VK_INT) ? argv[2].i : 0;
     if (count <= 0)
         count = 32;
     if (count > 256)
@@ -3294,21 +3294,21 @@ static DEF_METHOD(debug_method_frame) {
 }
 
 // The frame's default row count.
-static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
+static const value_t k_frame_count32 = {.kind = VK_INT, .i = 32};
 
 const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
     {.name = "addr",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Start address",
      .default_doc = "the PC"                                   },
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_frame_count32,
      .doc = "Number of rows"                                   },
     {.name = "before",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int0,
      .doc = "Rows to show ahead of the PC when addr is omitted"},
@@ -3340,22 +3340,22 @@ static DEF_METHOD(debug_method_step) {
     return val_bool(true);
 }
 
-static const value_t k_int1 = {.kind = V_INT, .i = 1};
+static const value_t k_int1 = {.kind = VK_INT, .i = 1};
 static const arg_decl_t debug_step_args[] = {
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int1,
      .doc = "Number of instructions"},
 };
 
 static const member_t debug_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "disasm",
      .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}},
-    {.kind = M_METHOD,
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_BOOL, .fn = debug_method_disasm}},
+    {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
      .doc = "The CPU's debug frame: registers, disassembly, per-row translation (= machine.cpu.frame)",
@@ -3364,18 +3364,18 @@ static const member_t debug_members[] = {
               "{arch, pc, regs, rows, fpu?}: registers, and a disassembly row per instruction with its translation",
           .args = debug_frame_args,
           .nargs = DEBUG_FRAME_NARGS,
-          .result = V_MAP,
+          .result = VK_MAP,
           .fn = debug_method_frame}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "step",
      .examples = EXAMPLES("debug.step", "debug.step 100"),
      .doc = "Run count instructions and stop, through the frame loop exactly as scheduler.run does (VBL and timers "
-            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
-    {.kind = M_METHOD,
+            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_step}},
+    {.kind = MK_METHOD,
      .name = "exceptions",
      .examples = EXAMPLES("debug.exceptions", "debug.exceptions 1"),
      .doc = "Dump the always-on 256-entry exception trace ring",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}},
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_exceptions}},
 };
 
 static const class_desc_t debug_class = {
@@ -3412,23 +3412,23 @@ static DEF_METHOD(method_mac_globals_read) {
     switch (sz) {
     case 1: {
         value_t v = val_uint(1, memory_debug_read_uint8(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     case 2: {
         value_t v = val_uint(2, memory_debug_read_uint16(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     case 4: {
         value_t v = val_uint(4, memory_debug_read_uint32(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     default: {
         // Wider entries (KeyMap 16, EventQueue 10, FileVars 184, …) come
         // back as a byte buffer; the method's result slot is declared
-        // V_ANY precisely so this branch is legal (issue #106).
+        // VK_ANY precisely so this branch is legal (issue #106).
         uint8_t buf[256];
         if (sz <= 0)
             return val_err("debug.mac.globals.read: '%s' is a region marker with no size — "
@@ -3485,7 +3485,7 @@ static DEF_METHOD(method_mac_globals_address) {
     if (!g)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
     value_t v = val_uint(4, g->address);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -3509,43 +3509,43 @@ static DEF_METHOD(method_mac_globals_list) {
 }
 
 static const arg_decl_t mac_globals_name_arg[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol (e.g. \"Ticks\")"},
+    {.name = "name", .kind = VK_STRING, .doc = "Mac low-memory global symbol (e.g. \"Ticks\")"},
 };
 static const arg_decl_t mac_globals_write_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol"},
-    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"},
+    {.name = "name", .kind = VK_STRING, .doc = "Mac low-memory global symbol"},
+    {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "value to write"},
 };
 
 static const member_t debug_mac_globals_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "read",
      .examples = EXAMPLES("debug.mac.globals.read \"Ticks\"", "debug.mac.globals.read \"KeyMap\""),
      .doc = "Read a Mac low-memory global by name",
-     // V_ANY, not V_UINT: the result kind follows the entry's width — 49
-     // of the 471 globals are wider than 4 bytes and read as V_BYTES.
+     // VK_ANY, not VK_UINT: the result kind follows the entry's width — 49
+     // of the 471 globals are wider than 4 bytes and read as VK_BYTES.
      .method = {.result_doc = "a hex uint for a 1-, 2- or 4-byte global; bytes for a wider one",
                 .args = mac_globals_name_arg,
                 .nargs = 1,
-                .result = V_ANY,
+                .result = VK_ANY,
                 .fn = method_mac_globals_read}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "write",
      .examples = EXAMPLES("debug.mac.globals.write \"CrsrNew\" 1"),
      .doc = "Write a 1/2/4-byte Mac low-memory global by name",
-     .method = {.args = mac_globals_write_args, .nargs = 2, .result = V_NONE, .fn = method_mac_globals_write}},
-    {.kind = M_METHOD,
+     .method = {.args = mac_globals_write_args, .nargs = 2, .result = VK_NONE, .fn = method_mac_globals_write}},
+    {.kind = MK_METHOD,
      .name = "address",
      .examples = EXAMPLES("debug.mac.globals.address \"Ticks\""),
      .doc = "Return the address of a named Mac low-memory global",
-     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_address}},
-    {.kind = M_METHOD,
+     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = VK_UINT, .fn = method_mac_globals_address}},
+    {.kind = MK_METHOD,
      .name = "list",
      .examples = EXAMPLES("debug.mac.globals.list"),
      .doc = "List all known Mac low-memory global names",
      .method = {.result_doc = "the global names, as strings",
                 .args = NULL,
                 .nargs = 0,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = method_mac_globals_list}},
 };
 
@@ -3568,18 +3568,18 @@ static DEF_METHOD(method_mac_atrap) {
 }
 
 static const arg_decl_t mac_atrap_args[] = {
-    {.name = "opcode", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
+    {.name = "opcode", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
 };
 
 static const member_t debug_mac_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),
      .doc = "Resolve an A-trap opcode to its symbolic name",
      .method = {.result_doc = "the trap name, e.g. \"_GetResource\"",
                 .args = mac_atrap_args,
                 .nargs = 1,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = method_mac_atrap}},
 };
 
@@ -3671,7 +3671,7 @@ static DEF_METHOD(screen_method_match) {
 
 // `screen.matches(reference[, top, left, bottom, right])` — the non-fatal
 // twin of `screen.match`: same comparison (including the optional exclude
-// rectangle), V_BOOL result, no abort, no diff artifacts, and no per-call
+// rectangle), VK_BOOL result, no abort, no diff artifacts, and no per-call
 // output (it is a polling primitive — wait_match() in the integration
 // library calls it every few million cycles).  An unreadable reference is
 // still a hard error: polling against a missing golden would spin to the
@@ -3789,128 +3789,128 @@ static struct object *screen_source_lookup(struct object *self, const char *name
 }
 
 static const arg_decl_t screen_save_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output PNG path (must end in .png)"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output PNG path (must end in .png)"},
 };
 static const arg_decl_t screen_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "top",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region top edge"},
     {.name = "left",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region bottom edge"},
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region right edge"},
     {.name = "top2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region top edge"},
     {.name = "left2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
     {.name = "right2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
     {.name = "top3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region top edge"},
     {.name = "left3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region left edge"},
     {.name = "bottom3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region bottom edge"},
     {.name = "right3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "top",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region top edge"},
     {.name = "left",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region bottom edge"},
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region right edge"},
     {.name = "top2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region top edge"},
     {.name = "left2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
     {.name = "right2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
     {.name = "top3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region top edge"},
     {.name = "left3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region left edge"},
     {.name = "bottom3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region bottom edge"},
     {.name = "right3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "actual",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to write current screen on miss"},
 };
 static const arg_decl_t screen_checksum_args[] = {
-    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
-    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
+    {.name = "top",    .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
+    {.name = "left",   .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Region bottom edge"                                                                                       },
+     .doc = "Region bottom edge"                                                                                        },
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Region right edge"                                                                                        },
+     .doc = "Region right edge"                                                                                         },
 };
 // Stride and format: every per-card framebuffer node has had these, and the
 // generic `screen` node -- the one node that exists on EVERY machine,
@@ -3925,63 +3925,63 @@ static DEF_GETTER(screen_attr_format) {
 }
 
 static const member_t screen_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "width",
      .doc = "Active display width in pixels",
-     .attr = {.type = V_INT, .get = screen_attr_width, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_width, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "height",
      .doc = "Active display height in pixels",
-     .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_height, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "depth",
      .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
-     .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_depth, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "stride",
      .flags = M_CAT_ADVANCED,
      .doc = "Row stride in bytes (rowBytes) of the active display",
-     .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = screen_attr_stride, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "format",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel encoding of the active display",
-     .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = screen_attr_format, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "par_w",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
-     .attr = {.type = V_INT, .get = screen_attr_par_w, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_par_w, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "par_h",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio denominator (display pixel height; 1 = square)",
-     .attr = {.type = V_INT, .get = screen_attr_par_h, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = screen_attr_par_h, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "save",
      .doc = "Save the current framebuffer to a PNG file",
-     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}},
-    {.kind = M_METHOD,
+     .method = {.args = screen_save_args, .nargs = 1, .result = VK_BOOL, .fn = screen_method_save}},
+    {.kind = MK_METHOD,
      .name = "match",
      .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_match}},
-    {.kind = M_METHOD,
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_match}},
+    {.kind = MK_METHOD,
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_matches}},
-    {.kind = M_METHOD,
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
+    {.kind = MK_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
-     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = V_BOOL, .fn = screen_method_match_or_save}},
-    {.kind = M_METHOD,
+     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = VK_BOOL, .fn = screen_method_match_or_save}},
+    {.kind = MK_METHOD,
      .name = "checksum",
      .flags = M_CAT_ADVANCED,
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
-     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_UINT, .fn = screen_method_checksum}},
-    {.kind = M_CHILD,
+     .method = {.args = screen_checksum_args, .nargs = 4, .result = VK_UINT, .fn = screen_method_checksum}},
+    {.kind = MK_CHILD,
      .name = "source",
      .flags = M_CAT_ADVANCED,
      .doc = "Reference to the active card's framebuffer node driving this screen",

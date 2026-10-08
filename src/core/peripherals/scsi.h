@@ -338,7 +338,7 @@ int scsi_eject_device(scsi_t *scsi, int id);
 // Read-only views over the SCSI controller and its 8 device slots used
 // by the `scsi` / `scsi.bus` / `scsi.devices` object classes. Phase is
 // exposed as an integer with the canonical name table living in the
-// object class so the V_ENUM display works without leaking
+// object class so the VK_ENUM display works without leaking
 // the internal phase enum across the public header.
 //
 // Slot index is 0..7 (the SCSI ID). Reads on an unpopulated slot

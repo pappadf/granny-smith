@@ -7,7 +7,7 @@
 // One namespace, one sigil: `$name` resolves through a stack of scopes
 // (function frame(s) → script top level → process globals) and then
 // falls back to the built-in/user alias table, whose entries surface as
-// V_REF reference values (path text, re-resolved per access).
+// VK_REF reference values (path text, re-resolved per access).
 // `let` creates in the top scope, `$x =` mutates the innermost holding
 // scope, and mutating an undeclared name is a loud error.
 
@@ -30,9 +30,9 @@
 void shell_var_init(void);
 
 // `$name` lookup: walk scopes top-down, then the alias table (aliases
-// come back as V_REF). Returns an OWNED value; V_ERROR("no such
+// come back as VK_REF). Returns an OWNED value; VK_ERROR("no such
 // binding …") when the name is nowhere. A binding holding a destroyed
-// V_OBJECT reads as V_ERROR (snapshot semantics).
+// VK_OBJECT reads as VK_ERROR (snapshot semantics).
 value_t shell_binding_get(const char *name);
 
 // `let NAME = v` — create (or overwrite) in the current top scope.
@@ -66,7 +66,7 @@ bool shell_binding_save_top(const char *name, value_t *saved_out);
 void shell_binding_remove_top(const char *name);
 
 // Legacy string API — process-start bindings (`--var FOO=BAR`) and
-// internal init code. Stores V_STRING in the global scope.
+// internal init code. Stores VK_STRING in the global scope.
 int shell_var_set(const char *name, const char *value);
 const char *shell_var_get(const char *name);
 

@@ -310,13 +310,13 @@ static DEF_GETTER(oss_attr_source_levels) {
 
 static DEF_GETTER(oss_attr_rom_ctrl) {
     value_t v = val_uint(1, ((const oss_t *)object_data(self))->rom_ctrl);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(oss_attr_counter_ctl) {
     value_t v = val_uint(1, ((const oss_t *)object_data(self))->counter_ctl);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -326,22 +326,22 @@ static DEF_GETTER(oss_attr_counter) {
 
 static const member_t oss_members[] = {
     IRQ_CONTROLLER_MEMBERS(&oss_irq_ops){
-                                         .kind = M_ATTR,
+                                         .kind = MK_ATTR,
                                          .name = "source_levels",
                                          .doc = "Programmed CPU level per OSS source, source order (0 = disabled)",
-                                         .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = oss_attr_source_levels, .set = NULL}},
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_LIST, .presentation_flags = VFLAG_VOLATILE, .get = oss_attr_source_levels, .set = NULL}},
+    {.kind = MK_ATTR,
                                          .name = "rom_ctrl",
                                          .doc = "ROM control register ($204)",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_rom_ctrl, .set = NULL}          },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = oss_attr_rom_ctrl, .set = NULL}          },
+    {.kind = MK_ATTR,
                                          .name = "counter_ctl",
                                          .doc = "Free-running counter control ($20C)",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_counter_ctl, .set = NULL}       },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = oss_attr_counter_ctl, .set = NULL}       },
+    {.kind = MK_ATTR,
                                          .name = "counter",
                                          .doc = "Free-running counter, derived from emulated time",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = oss_attr_counter, .set = NULL}      },
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_VOLATILE, .get = oss_attr_counter, .set = NULL}      },
 };
 
 static const class_desc_t oss_class = {

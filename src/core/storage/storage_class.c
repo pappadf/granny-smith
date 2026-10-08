@@ -114,42 +114,42 @@ static DEF_GETTER(files_image_attr_type) {
 }
 
 static const member_t files_image_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "Position in files.images; stable only while no image is added or removed",
-     .attr = {.type = V_INT, .get = files_image_attr_index, .set = NULL}                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = files_image_attr_index, .set = NULL}                                        },
+    {.kind = MK_ATTR,
      .name = "filename",
      .doc = "Last path component, for display",
-     .attr = {.type = V_STRING, .get = files_image_attr_filename, .set = NULL}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = files_image_attr_filename, .set = NULL}                                  },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Full host path or storage URI the image was opened from",
-     .attr = {.type = V_STRING, .get = files_image_attr_path, .set = NULL}                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = files_image_attr_path, .set = NULL}                                      },
+    {.kind = MK_ATTR,
      .name = "raw_size",
      .doc = "Logical size of the image in bytes, before any container or compression layer",
-     .attr = {.type = V_UINT, .get = files_image_attr_raw_size, .set = NULL}                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = files_image_attr_raw_size, .set = NULL}                                    },
+    {.kind = MK_ATTR,
      .name = "writable",
      .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
-     .attr = {.type = V_BOOL, .get = files_image_attr_writable, .set = NULL}                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = files_image_attr_writable, .set = NULL}                                    },
+    {.kind = MK_ATTR,
      .name = "type",
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
-     .attr = {.type = V_ENUM, .get = files_image_attr_type, .set = NULL}                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = files_image_attr_type, .set = NULL}                                        },
+    {.kind = MK_ATTR,
      .name = "format",
      .doc = "Wrapper layers peeled to reach the disk, outermost first: raw, dc42, udif, bin+ndif, gz+dc42, ...",
-     .attr = {.type = V_STRING, .get = files_image_attr_format, .set = NULL}                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = files_image_attr_format, .set = NULL}                                    },
+    {.kind = MK_ATTR,
      .name = "reads",
      .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
-     .attr = {.type = V_UINT, .get = files_image_attr_reads, .set = NULL, .presentation_flags = VAL_VOLATILE} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = files_image_attr_reads, .set = NULL, .presentation_flags = VFLAG_VOLATILE} },
+    {.kind = MK_ATTR,
      .name = "writes",
      .doc = "Drive writes to the image since it was opened",
-     .attr = {.type = V_UINT, .get = files_image_attr_writes, .set = NULL, .presentation_flags = VAL_VOLATILE}},
+     .attr = {.type = VK_UINT, .get = files_image_attr_writes, .set = NULL, .presentation_flags = VFLAG_VOLATILE}},
 };
 
 static const class_desc_t files_image_class = {
@@ -233,7 +233,7 @@ static int work_profile_create(io_leaf_t *j) {
     return rc == 0 ? 0 : -EIO;
 }
 
-// Returns the destination path as a V_STRING.
+// Returns the destination path as a VK_STRING.
 static DEF_METHOD(files_method_import) {
     const char *host_path = argv[0].s;
     const char *dst_path = argv[1].s;
@@ -265,7 +265,7 @@ static const collection_desc_t files_images = {
 };
 
 // `files.list_dir(path)` — list directory entries via the VFS as a
-// V_LIST<V_STRING>. Used by url-media.js to enumerate ROMs in OPFS.
+// VK_LIST<VK_STRING>. Used by url-media.js to enumerate ROMs in OPFS.
 static DEF_METHOD(files_method_list_dir) {
     vfs_dir_t *d = NULL;
     const vfs_backend_t *be = NULL;
@@ -336,7 +336,7 @@ static void release_cached_mounts(const char *path) {
 static DEF_METHOD(files_method_cp) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
-    bool recursive = argc > 2 && argv[2].kind == V_BOOL && argv[2].b;
+    bool recursive = argc > 2 && argv[2].kind == VK_BOOL && argv[2].b;
     if (destination_attached(dst))
         return val_err("files.cp: '%s' is attached to a device (E_BUSY)", dst);
     release_cached_mounts(dst);
@@ -380,17 +380,17 @@ static DEF_METHOD(files_method_find_media) {
 }
 
 // `files.hd_create(path, size)` — create a blank SCSI HD image.
-// size is a V_NONE-kind slot, so the body discriminates between
-// V_STRING (label/size string) and integer (byte count). The size
+// size is a VK_NONE-kind slot, so the body discriminates between
+// VK_STRING (label/size string) and integer (byte count). The size
 // string that system_hd_create parses accepts model labels, human
 // sizes, and byte counts alike, so integers stringify cleanly.
 static DEF_METHOD(files_method_hd_create) {
     char size_str[64];
-    if (argv[1].kind == V_STRING) {
+    if (argv[1].kind == VK_STRING) {
         snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
-    } else if (argv[1].kind == V_INT) {
+    } else if (argv[1].kind == VK_INT) {
         snprintf(size_str, sizeof(size_str), "%lld", (long long)argv[1].i);
-    } else if (argv[1].kind == V_UINT) {
+    } else if (argv[1].kind == VK_UINT) {
         snprintf(size_str, sizeof(size_str), "%llu", (unsigned long long)argv[1].u);
     } else {
         return val_err("files.hd_create: size must be string or integer");
@@ -487,7 +487,7 @@ static DEF_METHOD(files_method_fd_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.fd_create: empty path");
-    bool high_density = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : false;
+    bool high_density = (argc >= 2 && argv[1].kind == VK_BOOL) ? argv[1].b : false;
     io_leaf_t *j = io_leaf_new(path, NULL);
     if (!j)
         return val_err("files.fd_create: out of memory");
@@ -500,20 +500,20 @@ static DEF_METHOD(files_method_fd_create) {
 // ProFile image: a raw, all-zero file of `blocks` 532-byte blocks. Unlike
 // hd_create (which builds a 512-byte/block SCSI image), the ProFile is a
 // parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
-// is a V_NONE slot accepting an integer or numeric string. Standard sizes:
+// is a VK_NONE slot accepting an integer or numeric string. Standard sizes:
 // 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
 static DEF_METHOD(files_method_profile_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.profile_create: empty path");
     unsigned long blocks;
-    if (argv[1].kind == V_STRING) {
+    if (argv[1].kind == VK_STRING) {
         if (!argv[1].s)
             return val_err("files.profile_create: missing block count");
         blocks = strtoul(argv[1].s, NULL, 10);
-    } else if (argv[1].kind == V_INT) {
+    } else if (argv[1].kind == VK_INT) {
         blocks = (argv[1].i > 0) ? (unsigned long)argv[1].i : 0;
-    } else if (argv[1].kind == V_UINT) {
+    } else if (argv[1].kind == VK_UINT) {
         blocks = (unsigned long)argv[1].u;
     } else {
         return val_err("files.profile_create: blocks must be an integer");
@@ -727,16 +727,16 @@ static DEF_METHOD(files_method_path_compare) {
 }
 
 static const arg_decl_t files_compare_args[] = {
-    {.name = "a", .kind = V_STRING, .doc = "First path (host or VFS)" },
-    {.name = "b", .kind = V_STRING, .doc = "Second path (host or VFS)"},
+    {.name = "a", .kind = VK_STRING, .doc = "First path (host or VFS)" },
+    {.name = "b", .kind = VK_STRING, .doc = "Second path (host or VFS)"},
 };
 
-static const value_t files_cp_not_recursive = {.kind = V_BOOL, .b = false};
+static const value_t files_cp_not_recursive = {.kind = VK_BOOL, .b = false};
 static const arg_decl_t files_cp_args[] = {
     ARG_PATH("src", "Source path (host or VFS)"),
     ARG_PATH("dst", "Destination path"),
     {.name = "recursive",
-                                 .kind = V_BOOL,
+                                 .kind = VK_BOOL,
                                  .validation_flags = OBJ_ARG_OPTIONAL,
                                  .default_value = &files_cp_not_recursive,
                                  .doc = "Copy a directory and everything under it"},
@@ -852,8 +852,8 @@ static DEF_METHOD(files_method_xfer_read) {
 
 static const arg_decl_t files_xfer_args[] = {
     ARG_PATH("path", "File path"),
-    {.name = "offset", .kind = V_UINT, .doc = "Byte offset in the file"             },
-    {.name = "len",    .kind = V_UINT, .doc = "Byte count (at most files.xfer_size)"},
+    {.name = "offset", .kind = VK_UINT, .doc = "Byte offset in the file"             },
+    {.name = "len",    .kind = VK_UINT, .doc = "Byte count (at most files.xfer_size)"},
 };
 
 // === UDIF: the writer, conversion and verification ==========================
@@ -1165,13 +1165,13 @@ static value_t udif_dispatch(const char *a, const char *b, udif_job_t *u, int (*
     return io_leaf_dispatch(j, what);
 }
 
-// An integer argument that may be absent (V_NONE) or given as a string.
+// An integer argument that may be absent (VK_NONE) or given as a string.
 static int64_t opt_int(const value_t *v, int64_t dflt) {
-    if (v->kind == V_INT)
+    if (v->kind == VK_INT)
         return v->i;
-    if (v->kind == V_UINT)
+    if (v->kind == VK_UINT)
         return (int64_t)v->u;
-    if (v->kind == V_STRING && v->s && *v->s)
+    if (v->kind == VK_STRING && v->s && *v->s)
         return strtoll(v->s, NULL, 10);
     return dflt;
 }
@@ -1262,9 +1262,9 @@ static DEF_METHOD(files_method_udif_open) {
         u->handle = -1;
         u->chunk_kb = (uint32_t)kb;
         u->level = (int)level;
-        if (argc > 3 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+        if (argc > 3 && argv[3].kind == VK_STRING && argv[3].s && *argv[3].s)
             u->source_name = gs_strdup(argv[3].s);
-        if (argc > 4 && argv[4].kind == V_STRING && argv[4].s && *argv[4].s)
+        if (argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s)
             u->origin = gs_strdup(argv[4].s);
     }
     return udif_dispatch(argv[0].s, NULL, u, work_udif_open, answer_udif_handle, "files.udif_open");
@@ -1309,7 +1309,7 @@ static DEF_METHOD(files_method_udif_abort) {
 static DEF_METHOD(files_method_convert) {
     int64_t kb = argc > 2 ? opt_int(&argv[2], 64) : 64;
     int64_t level = argc > 3 ? opt_int(&argv[3], 1) : 1;
-    const char *fmt = argc > 4 && argv[4].kind == V_STRING && argv[4].s && *argv[4].s ? argv[4].s : "udif";
+    const char *fmt = argc > 4 && argv[4].kind == VK_STRING && argv[4].s && *argv[4].s ? argv[4].s : "udif";
     if (!chunk_kb_ok(kb))
         return val_err("files.convert: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
     if (level < 0 || level > 9)
@@ -1323,9 +1323,9 @@ static DEF_METHOD(files_method_convert) {
         u->chunk_kb = (uint32_t)kb;
         u->level = (int)level;
         u->raw = strcmp(fmt, "raw") == 0;
-        if (argc > 5 && argv[5].kind == V_STRING && argv[5].s && *argv[5].s)
+        if (argc > 5 && argv[5].kind == VK_STRING && argv[5].s && *argv[5].s)
             u->source_name = gs_strdup(argv[5].s);
-        if (argc > 6 && argv[6].kind == V_STRING && argv[6].s && *argv[6].s)
+        if (argc > 6 && argv[6].kind == VK_STRING && argv[6].s && *argv[6].s)
             u->origin = gs_strdup(argv[6].s);
     }
     return udif_dispatch(argv[0].s, argv[1].s, u, work_convert, answer_udif_stats, "files.convert");
@@ -1382,58 +1382,58 @@ static DEF_SETTER(files_attr_udif_max_chunk_kb_set) {
 static const arg_decl_t files_udif_open_args[] = {
     ARG_PATH("path", "The image to create (must not exist)"),
     {.name = "chunk_kb",
-                                                      .kind = V_NONE,
+                                                      .kind = VK_NONE,
                                                       .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                       .doc = "Chunk size in KB, a power of two in 4..1024",
                                                       .default_doc = "64"  },
     {.name = "level",
-                                                      .kind = V_NONE,
+                                                      .kind = VK_NONE,
                                                       .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                       .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
                                                       .default_doc = "1"   },
     {.name = "source_name",
-                                                      .kind = V_STRING,
+                                                      .kind = VK_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
                                                       .doc = "The original file name, recorded in the image",
                                                       .default_doc = "none"},
     {.name = "origin",
-                                                      .kind = V_STRING,
+                                                      .kind = VK_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
                                                       .doc = "Where the bytes came from (e.g. a URL), recorded in the image as is",
                                                       .default_doc = "none"},
 };
 static const arg_decl_t files_udif_append_args[] = {
-    {.name = "handle", .kind = V_INT,  .doc = "What udif_open answered"                                         },
-    {.name = "len",    .kind = V_UINT, .doc = "Bytes of the transfer window to append (at most files.xfer_size)"},
+    {.name = "handle", .kind = VK_INT,  .doc = "What udif_open answered"                                         },
+    {.name = "len",    .kind = VK_UINT, .doc = "Bytes of the transfer window to append (at most files.xfer_size)"},
 };
 static const arg_decl_t files_udif_handle_args[] = {
-    {.name = "handle", .kind = V_INT, .doc = "What udif_open answered"},
+    {.name = "handle", .kind = VK_INT, .doc = "What udif_open answered"},
 };
 static const arg_decl_t files_convert_args[] = {
     ARG_PATH("src", "Any disk image the emulator reads (raw, DiskCopy, NDIF, UDIF, ...)"),
     ARG_PATH("dst", "The image to write (must not exist)"),
     {.name = "chunk_kb",
-                                                    .kind = V_NONE,
+                                                    .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Chunk size in KB, a power of two in 4..1024",
                                                     .default_doc = "64"            },
     {.name = "level",
-                                                    .kind = V_NONE,
+                                                    .kind = VK_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
                                                     .default_doc = "1"             },
     {.name = "format",
-                                                    .kind = V_STRING,
+                                                    .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "udif, or raw for a flat image",
                                                     .default_doc = "udif"          },
     {.name = "source_name",
-                                                    .kind = V_STRING,
+                                                    .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "The original file name, recorded in a UDIF",
                                                     .default_doc = "src's own name"},
     {.name = "origin",
-                                                    .kind = V_STRING,
+                                                    .kind = VK_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "Where the image came from (e.g. a URL), recorded in a UDIF as is",
                                                     .default_doc = "none"          },
@@ -1446,15 +1446,15 @@ static const arg_decl_t files_export_raw_args[] = {
 static const arg_decl_t files_find_media_args[] = {
     ARG_PATH("dir", "Directory to scan"),
     {.name = "dst",
-                                  .kind = V_STRING,
-                                  .presentation_flags = VAL_PATH,
+                                  .kind = VK_STRING,
+                                  .presentation_flags = VFLAG_PATH,
                                   .validation_flags = OBJ_ARG_OPTIONAL,
                                   .doc = "Optional path to copy match into"},
 };
 static const arg_decl_t files_hd_create_args[] = {
     ARG_PATH("path", "Image output path"),
     {.name = "size",
-                                   .kind = V_NONE,
+                                   .kind = VK_NONE,
                                    .validation_flags = OBJ_ARG_POLY,
                                    .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
@@ -1465,11 +1465,11 @@ static const arg_decl_t files_mv_args[] = {
     ARG_PATH("src", "Source path"),
     ARG_PATH("dst", "Destination path"),
 };
-static const value_t files_false = {.kind = V_BOOL, .b = false};
+static const value_t files_false = {.kind = VK_BOOL, .b = false};
 static const arg_decl_t files_fd_create_args[] = {
     ARG_PATH("path", "Image output path"),
     {.name = "high_density",
-                                   .kind = V_BOOL,
+                                   .kind = VK_BOOL,
                                    .validation_flags = OBJ_ARG_OPTIONAL,
                                    .default_value = &files_false,
                                    .doc = "true = 1.4 MB, false = 800 KB"},
@@ -1477,7 +1477,7 @@ static const arg_decl_t files_fd_create_args[] = {
 static const arg_decl_t files_profile_create_args[] = {
     ARG_PATH("path", "Image output path"),
     {.name = "blocks",
-                                   .kind = V_NONE,
+                                   .kind = VK_NONE,
                                    .validation_flags = OBJ_ARG_POLY,
                                    .doc = "ProFile block count, a number or a numeric string (532-byte blocks; 5 MB = 9728)"},
 };
@@ -1493,8 +1493,8 @@ static const arg_decl_t files_any_path_arg[] = {
 
 static const arg_decl_t files_path_arg_optional[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Directory path",
      .default_doc = "the current directory"},
@@ -1511,41 +1511,44 @@ static DEF_METHOD(files_method_download) {
 }
 
 static const member_t files_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "xfer_buffer",
      .flags = M_CAT_INTERNAL,
      .doc = "Address of the file-transfer window in wasm memory (the web page's upload path)",
-     .attr = {.type = V_UINT, .get = files_attr_xfer_buffer, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = files_attr_xfer_buffer, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "xfer_size",
      .flags = M_CAT_INTERNAL,
      .doc = "Size of the file-transfer window in bytes",
-     .attr = {.type = V_UINT, .get = files_attr_xfer_size, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = files_attr_xfer_size, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "xfer_write",
      .flags = M_CAT_INTERNAL,
      .doc = "Write the transfer window's first len bytes to path at offset (offset 0 creates the file)",
      .method =
-         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_BOOL, .fn = files_method_xfer_write}},
-    {.kind = M_METHOD,
+         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = VK_BOOL, .fn = files_method_xfer_write}},
+    {.kind = MK_METHOD,
      .name = "xfer_read",
      .flags = M_CAT_INTERNAL,
      .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
      .method =
-         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read}},
-    {.kind = M_METHOD,
+         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = VK_UINT, .fn = files_method_xfer_read}},
+    {.kind = MK_METHOD,
      .name = "xfer_read_disk",
      .flags = M_CAT_INTERNAL,
      .doc = "Read up to len bytes of an image's decoded disk at offset into the transfer window; answers the count",
-     .method =
-         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read_disk}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO,
+                .args = files_xfer_args,
+                .nargs = 3,
+                .result = VK_UINT,
+                .fn = files_method_xfer_read_disk}},
+    {.kind = MK_METHOD,
      .name = "udif_open",
      .flags = M_CAT_INTERNAL,
      .doc = "Start writing a UDIF (.dmg) image from decoded bytes; answers a handle for udif_append",
      .method =
-         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 5, .result = V_INT, .fn = files_method_udif_open}},
-    {.kind = M_METHOD,
+         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 5, .result = VK_INT, .fn = files_method_udif_open}},
+    {.kind = MK_METHOD,
      .name = "udif_append",
      .flags = M_CAT_INTERNAL,
      .doc = "Append the transfer window's first len bytes to the image being written",
@@ -1553,9 +1556,9 @@ static const member_t files_members[] = {
                 .ui_flags = MM_IO,
                 .args = files_udif_append_args,
                 .nargs = 2,
-                .result = V_UINT,
+                .result = VK_UINT,
                 .fn = files_method_udif_append}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "udif_finish",
      .flags = M_CAT_INTERNAL,
      .doc = "Complete the image being written (block map and trailer)",
@@ -1563,18 +1566,18 @@ static const member_t files_members[] = {
                 .ui_flags = MM_IO,
                 .args = files_udif_handle_args,
                 .nargs = 1,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = files_method_udif_finish}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "udif_abort",
      .flags = M_CAT_INTERNAL,
      .doc = "Abandon the image being written and remove the partial file",
      .method = {.ui_flags = MM_IO,
                 .args = files_udif_handle_args,
                 .nargs = 1,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = files_method_udif_abort}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "convert",
      .examples = EXAMPLES("files.convert \"/opfs/images/hd/system.img\" \"/opfs/images/hd/system.dmg\"",
      "files.convert \"/opfs/images/hd/system.dmg\" \"/opfs/raw/system.img\" format=raw"),
@@ -1583,9 +1586,9 @@ static const member_t files_members[] = {
                 .ui_flags = MM_IO,
                 .args = files_convert_args,
                 .nargs = 7,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = files_method_convert}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "verify",
      .examples = EXAMPLES("files.verify \"/opfs/images/hd/system.dmg\""),
      .doc = "Decode every chunk of a UDIF (.dmg) image and check its checksums",
@@ -1593,9 +1596,9 @@ static const member_t files_members[] = {
                 .ui_flags = MM_IO,
                 .args = files_path_arg,
                 .nargs = 1,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = files_method_verify}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "udif_info",
      .examples = EXAMPLES("files.udif_info \"/opfs/images/hd/system.dmg\""),
      .doc = "What a UDIF (.dmg) image's block map says, without decoding it",
@@ -1603,14 +1606,14 @@ static const member_t files_members[] = {
                               "gs_profile, in_place, source_name, origin}",
                 .args = files_path_arg,
                 .nargs = 1,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = files_method_udif_info}},
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "udif_max_chunk_kb",
      .flags = M_CAT_ADVANCED,
      .doc = "Largest decoded chunk, in KB, a UDIF from another tool is read in place with (larger: convert it)",
-     .attr = {.type = V_UINT, .get = files_attr_udif_max_chunk_kb, .set = files_attr_udif_max_chunk_kb_set}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = files_attr_udif_max_chunk_kb, .set = files_attr_udif_max_chunk_kb_set}},
+    {.kind = MK_METHOD,
      .name = "import",
      .examples = EXAMPLES("files.import \"/tmp/upload.img\" \"/opfs/images/hd/upload.img\""),
      .doc = "Copy a host file to a destination path",
@@ -1618,132 +1621,138 @@ static const member_t files_members[] = {
                 .ui_flags = MM_IO,
                 .args = files_import_args,
                 .nargs = 2,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = files_method_import}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "list_dir",
      .examples = EXAMPLES("files.list_dir \"/opfs/images\""),
      .doc = "List a directory's entry names",
      .method = {.result_doc = "the entry names, as strings",
                 .args = files_list_dir_args,
                 .nargs = 1,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = files_method_list_dir}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "cp",
      .examples = EXAMPLES("files.cp \"/opfs/images/fd/tools.dsk\" \"/opfs/backup/tools.dsk\"",
      "files.cp \"/opfs/images\" \"/opfs/backup\" recursive=true"),
      .doc = "Copy a host or VFS path to another VFS path",
-     .method = {.ui_flags = MM_IO, .args = files_cp_args, .nargs = 3, .result = V_BOOL, .fn = files_method_cp}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO, .args = files_cp_args, .nargs = 3, .result = VK_BOOL, .fn = files_method_cp}},
+    {.kind = MK_METHOD,
      .name = "export_raw",
      .examples = EXAMPLES("files.export_raw \"/opfs/images/fd/disk.image\" \"/opfs/raw/disk.raw\""),
      .doc = "Decode a disk image (incl. NDIF nested in a mounted image) to a flat raw image on the host",
      .method = {.ui_flags = MM_IO,
                 .args = files_export_raw_args,
                 .nargs = 2,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = files_method_export_raw}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "find_media",
      .examples = EXAMPLES("files.find_media \"/opfs/unpacked\"",
      "files.find_media \"/opfs/unpacked\" \"/opfs/images/fd/found.dsk\""),
      .doc = "Find a recognised floppy/disk image in a directory",
-     .method = {.args = files_find_media_args, .nargs = 2, .result = V_BOOL, .fn = files_method_find_media}},
-    {.kind = M_METHOD,
+     .method = {.args = files_find_media_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_find_media}},
+    {.kind = MK_METHOD,
      .name = "hd_create",
      .examples = EXAMPLES("files.hd_create \"/opfs/images/hd/new.img\" \"40M\"",
      "files.hd_create \"/opfs/images/hd/hd20.img\" \"HD20SC\""),
      .doc = "Create a blank SCSI HD image",
-     .method =
-         {.ui_flags = MM_IO, .args = files_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_hd_create}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO,
+                .args = files_hd_create_args,
+                .nargs = 2,
+                .result = VK_BOOL,
+                .fn = files_method_hd_create}},
+    {.kind = MK_METHOD,
      .name = "fd_create",
      .examples = EXAMPLES("files.fd_create \"/opfs/images/fd/blank.dsk\"",
      "files.fd_create \"/opfs/images/fd/blank-hd.dsk\" true"),
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
-     .method =
-         {.ui_flags = MM_IO, .args = files_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_fd_create}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO,
+                .args = files_fd_create_args,
+                .nargs = 2,
+                .result = VK_BOOL,
+                .fn = files_method_fd_create}},
+    {.kind = MK_METHOD,
      .name = "profile_create",
      .examples = EXAMPLES("files.profile_create \"/opfs/images/hd/profile.img\" 9728"),
      .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
-     .method = {.args = files_profile_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_profile_create}},
-    {.kind = M_METHOD,
+     .method = {.args = files_profile_create_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_profile_create}},
+    {.kind = MK_METHOD,
      .name = "rm",
      .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
-     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = V_BOOL, .fn = files_method_rm}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = VK_BOOL, .fn = files_method_rm}},
+    {.kind = MK_METHOD,
      .name = "mv",
      .examples = EXAMPLES("files.mv \"/opfs/images/hd/new.img\" \"/opfs/images/hd/work.img\""),
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
-     .method = {.args = files_mv_args, .nargs = 2, .result = V_BOOL, .fn = files_method_mv}},
-    {.kind = M_METHOD,
+     .method = {.args = files_mv_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_mv}},
+    {.kind = MK_METHOD,
      .name = "partmap",
      .examples = EXAMPLES("files.partmap \"/opfs/images/hd/system.img\""),
      .doc = "Print the Apple Partition Map of an image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_partmap}},
-    {.kind = M_METHOD,
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
+    {.kind = MK_METHOD,
      .name = "probe",
      .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
      .doc = "Identify the format of a disk image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_probe}},
-    {.kind = M_METHOD,
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_probe}},
+    {.kind = MK_METHOD,
      .name = "path_exists",
      .examples = EXAMPLES("files.path_exists \"/opfs/images/hd/system.img\""),
      .doc = "True if the path resolves in the shell VFS",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_path_exists}},
-    {.kind = M_METHOD,
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_path_exists}},
+    {.kind = MK_METHOD,
      .name = "path_size",
      .examples = EXAMPLES("files.path_size \"/opfs/images/hd/system.img\""),
      .doc = "File size in bytes (0 on stat failure)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_UINT, .fn = files_method_path_size}},
-    {.kind = M_METHOD,
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_UINT, .fn = files_method_path_size}},
+    {.kind = MK_METHOD,
      .name = "path_compare",
      .flags = M_CAT_ADVANCED,
      .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
-     .method = {.args = files_compare_args, .nargs = 2, .result = V_INT, .fn = files_method_path_compare}},
-    {.kind = M_METHOD,
+     .method = {.args = files_compare_args, .nargs = 2, .result = VK_INT, .fn = files_method_path_compare}},
+    {.kind = MK_METHOD,
      .name = "ls",
      .examples = EXAMPLES("files.ls", "files.ls \"/opfs/images\""),
      .doc = "Print a directory listing",
-     .method = {.args = files_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = files_method_ls}},
-    {.kind = M_METHOD,
+     .method = {.args = files_path_arg_optional, .nargs = 1, .result = VK_BOOL, .fn = files_method_ls}},
+    {.kind = MK_METHOD,
      .name = "list",
      .examples = EXAMPLES("files.list", "files.list \"/opfs/images/hd/system.img/System Folder\""),
      .doc = "List a directory, descending into disk images and archives",
      .method = {.result_doc = "a list of {name, kind, size, expandable} maps",
                 .args = files_path_arg_optional,
                 .nargs = 1,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = files_method_list}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "mkdir",
      .examples = EXAMPLES("files.mkdir \"/opfs/images/cd\""),
      .doc = "Create a directory",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_mkdir}},
-    {.kind = M_METHOD,
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_mkdir}},
+    {.kind = MK_METHOD,
      .name = "cd",
      .examples = EXAMPLES("files.cd \"/opfs/images\"", "files.cd .."),
      .doc = "Make a directory the current one: where relative paths start, and what ls lists by default",
-     .method = {.args = files_dir_arg, .nargs = 1, .result = V_NONE, .fn = files_method_cd}},
-    {.kind = M_METHOD,
+     .method = {.args = files_dir_arg, .nargs = 1, .result = VK_NONE, .fn = files_method_cd}},
+    {.kind = MK_METHOD,
      .name = "pwd",
      .examples = EXAMPLES("files.pwd"),
      .doc = "The current directory",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = files_method_pwd}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_STRING, .fn = files_method_pwd}},
+    {.kind = MK_METHOD,
      .name = "cat",
      .examples = EXAMPLES("files.cat \"/opfs/notes.txt\""),
      .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_cat}},
-    {.kind = M_METHOD,
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_cat}},
+    {.kind = MK_METHOD,
      .name = "download",
      .examples = EXAMPLES("files.download \"/opfs/images/hd/system.img\""),
      .doc = "Trigger a browser file download (WASM-only)",
      .method =
-         {.ui_flags = MM_IO, .args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_download}},
+         {.ui_flags = MM_IO, .args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_download}},
 };
 
 static const class_desc_t files_class = {
@@ -1819,45 +1828,45 @@ static DEF_METHOD(mount_method_unmount) {
 }
 
 static const member_t files_mount_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Canonical host path of the mounted image file",
-     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PATH}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PATH}            },
+    {.kind = MK_ATTR,
      .name = "format",
      .doc = "Container format: APM, HFS, UFS or raw",
-     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_FORMAT}          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_FORMAT}          },
+    {.kind = MK_ATTR,
      .name = "partitions",
      .doc = "Partitions the mount exposes",
      .attr =
-         {.type = V_UINT, .width = 4, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PARTITIONS}},
-    {.kind = M_ATTR,
+         {.type = VK_UINT, .width = 4, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PARTITIONS}},
+    {.kind = MK_ATTR,
      .name = "refcount",
      .doc = "Open handles into the mount",
-     .attr = {.type = V_UINT,
+     .attr = {.type = VK_UINT,
               .width = 4,
               .get = mount_attr_get,
               .user_data = (const void *)(uintptr_t)MOUNT_REFCOUNT,
-              .presentation_flags = VAL_VOLATILE}                                                                   },
-    {.kind = M_ATTR,
+              .presentation_flags = VFLAG_VOLATILE}                                                                  },
+    {.kind = MK_ATTR,
      .name = "busy",
      .doc = "True while the mount refuses service (unmount pending, or the image is attached writable)",
-     .attr = {.type = V_BOOL,
+     .attr = {.type = VK_BOOL,
               .get = mount_attr_get,
               .user_data = (const void *)(uintptr_t)MOUNT_BUSY,
-              .presentation_flags = VAL_VOLATILE}                                                                   },
-    {.kind = M_ATTR,
+              .presentation_flags = VFLAG_VOLATILE}                                                                  },
+    {.kind = MK_ATTR,
      .name = "stale",
      .doc = "True once the image file changed: a newer mount serves it, this one only its open handles",
-     .attr = {.type = V_BOOL,
+     .attr = {.type = VK_BOOL,
               .get = mount_attr_get,
               .user_data = (const void *)(uintptr_t)MOUNT_STALE,
-              .presentation_flags = VAL_VOLATILE}                                                                   },
-    {.kind = M_METHOD,
+              .presentation_flags = VFLAG_VOLATILE}                                                                  },
+    {.kind = MK_METHOD,
      .name = "unmount",
      .doc = "Drop this cached image mount",
-     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = V_BOOL, .fn = mount_method_unmount}      },
+     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = VK_BOOL, .fn = mount_method_unmount}      },
 };
 
 static const class_desc_t files_mount_class = {
@@ -1909,11 +1918,11 @@ static DEF_METHOD(files_mounts_method_find) {
 }
 
 static const member_t files_mounts_verbs[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "find",
      .examples = EXAMPLES("files.mounts.find \"/opfs/images/hd/system.img\""),
      .doc = "Index of the mount caching an image path, or -1",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_INT, .fn = files_mounts_method_find}},
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_INT, .fn = files_mounts_method_find}},
 };
 
 static const collection_desc_t files_mounts = {
@@ -2017,27 +2026,27 @@ static DEF_GETTER(cache_attr_stat) {
 
 #define CACHE_STAT(nm, what)                                                                                           \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = nm, .doc = what, .attr = {                                                             \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = nm, .doc = what, .attr = {                                                            \
+            .type = VK_UINT,                                                                                           \
             .get = cache_attr_stat,                                                                                    \
             .set = NULL,                                                                                               \
-            .presentation_flags = VAL_VOLATILE                                                                         \
+            .presentation_flags = VFLAG_VOLATILE                                                                       \
         }                                                                                                              \
     }
 
 static const member_t files_cache_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "memory_mb",
      .doc = "Memory the chunk cache may hold, in MiB (decoded chunks of compressed images and archive members)",
-     .attr = {.type = V_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}},
+    {.kind = MK_ATTR,
      .name = "spill_mb",
      .doc = "Scratch space evicted chunks may spill to, in MiB; 0 is unbounded",
-     .attr = {.type = V_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
+    {.kind = MK_ATTR,
      .name = "image_mb",
      .doc = "Memory, in MiB, for decoded chunks of compressed disk images (UDIF, NDIF); never spilled",
-     .attr = {.type = V_UINT, .get = cache_attr_image_mb, .set = cache_attr_image_mb_set}  },
+     .attr = {.type = VK_UINT, .get = cache_attr_image_mb, .set = cache_attr_image_mb_set}  },
     CACHE_STAT("memory_bytes", "Bytes of chunks held in memory now"),
     CACHE_STAT("spill_bytes", "Bytes of chunks in spill files now"),
     CACHE_STAT("hits", "Reads served without decoding again (memory or spill)"),

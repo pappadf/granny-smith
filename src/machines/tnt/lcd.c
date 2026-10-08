@@ -251,34 +251,34 @@ static DEF_METHOD(lcd_method_line) {
 }
 
 static const arg_decl_t lcd_line_args[] = {
-    {.name = "line", .kind = V_INT, .doc = "display line, 0 (top) to 3 (bottom)"},
+    {.name = "line", .kind = VK_INT, .doc = "display line, 0 (top) to 3 (bottom)"},
 };
 
 static const member_t tnt_lcd_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "text",
      .doc = "All four display lines, newline-separated, trailing padding trimmed",
-     .attr = {.type = V_STRING, .get = lcd_attr_text, .set = NULL}                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = lcd_attr_text, .set = NULL}                           },
+    {.kind = MK_ATTR,
      .name = "cursor",
      .doc = "The controller's address counter (DDRAM address)",
-     .attr = {.type = V_UINT, .get = lcd_attr_cursor, .set = NULL}                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lcd_attr_cursor, .set = NULL}                           },
+    {.kind = MK_ATTR,
      .name = "writes",
      .doc = "Character writes to the data register since power-on",
-     .attr = {.type = V_UINT, .get = lcd_attr_writes, .set = NULL}                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lcd_attr_writes, .set = NULL}                           },
+    {.kind = MK_ATTR,
      .name = "commands",
      .doc = "Command-register writes since power-on",
-     .attr = {.type = V_UINT, .get = lcd_attr_commands, .set = NULL}                         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lcd_attr_commands, .set = NULL}                         },
+    {.kind = MK_ATTR,
      .name = "on",
      .doc = "Display enabled (HD44780 display on/off control)",
-     .attr = {.type = V_BOOL, .get = lcd_attr_on, .set = NULL}                               },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = lcd_attr_on, .set = NULL}                               },
+    {.kind = MK_METHOD,
      .name = "line",
      .doc = "One display line as a string (0 = top)",
-     .method = {.args = lcd_line_args, .nargs = 1, .result = V_STRING, .fn = lcd_method_line}},
+     .method = {.args = lcd_line_args, .nargs = 1, .result = VK_STRING, .fn = lcd_method_line}},
 };
 
 static const class_desc_t tnt_lcd_class = {

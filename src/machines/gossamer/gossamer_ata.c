@@ -423,32 +423,32 @@ static value_t ata_attr_devices(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t ata_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "image path"              },
-    {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
+    {.name = "path", .kind = VK_STRING, .doc = "image path"              },
+    {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
 };
 
 static const arg_decl_t ata_export_args[] = {
-    {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
-    {.name = "path", .kind = V_STRING, .doc = "destination file"        },
+    {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
+    {.name = "path", .kind = VK_STRING, .doc = "destination file"        },
 };
 
 static const member_t ata_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "devices",
      .doc = "What each unit holds (cell 0 device 0/1, cell 1 device 0/1): hd, atapi or -",
-     .attr = {.type = V_STRING, .get = ata_attr_devices, .set = NULL}                                },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = ata_attr_devices, .set = NULL}                                },
+    {.kind = MK_METHOD,
      .name = "attach_hd",
      .doc = "Attach a hard-disk image as an ATA disk at a unit",
-     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_hd}   },
-    {.kind = M_METHOD,
+     .method = {.args = ata_attach_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_attach_hd}   },
+    {.kind = MK_METHOD,
      .name = "attach_cdrom",
      .doc = "Attach a CD-ROM image as an ATAPI drive at a unit",
-     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_cdrom}},
-    {.kind = M_METHOD,
+     .method = {.args = ata_attach_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_attach_cdrom}},
+    {.kind = MK_METHOD,
      .name = "export",
      .doc = "Write a unit's hard-disk contents to a flat image file",
-     .method = {.args = ata_export_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_export}      },
+     .method = {.args = ata_export_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_export}      },
 };
 
 static const class_desc_t ata_class = {

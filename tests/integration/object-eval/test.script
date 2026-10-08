@@ -36,7 +36,7 @@ machine.cpu.ccr
 machine.cpu.sp
 
 # Setter form — write through node_set, then assert the round-trip.
-# sound.enabled is a writable V_BOOL attribute; the assert form is a
+# sound.enabled is a writable VK_BOOL attribute; the assert form is a
 # stronger check than a bare-read whose output used to be eyeballed.
 machine.sound.enabled = false
 assert machine.sound.enabled == false

@@ -1225,7 +1225,7 @@ static DEF_GETTER(attr_last_outcome) {
 
 static DEF_GETTER(attr_last_pdf_crc) {
     value_t v = val_uint(4, printer_from(self)->job.last_pdf_crc);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1244,7 +1244,7 @@ static DEF_GETTER(attr_line_spacing) {
 static DEF_GETTER(attr_soft_switches) {
     const iw_printer_t *p = printer_from(self);
     value_t v = val_uint(2, (uint64_t)p->interp.st.soft_a << 8 | p->interp.st.soft_b);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1264,17 +1264,17 @@ static DEF_METHOD(method_reset) {
 
 static DEF_METHOD(method_feed) {
     iw_printer_t *p = printer_from(self);
-    if (argv[0].kind == V_BYTES) {
+    if (argv[0].kind == VK_BYTES) {
         iw_printer_feed(p, argv[0].bytes.p, argv[0].bytes.n);
         return val_uint(4, argv[0].bytes.n);
     }
-    if (argv[0].kind == V_STRING) {
+    if (argv[0].kind == VK_STRING) {
         size_t n = argv[0].s ? strlen(argv[0].s) : 0;
         iw_printer_feed(p, (const uint8_t *)argv[0].s, n);
         return val_uint(4, n);
     }
-    if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
-        uint8_t b = (uint8_t)(argv[0].kind == V_INT ? (uint64_t)argv[0].i : argv[0].u);
+    if (argv[0].kind == VK_INT || argv[0].kind == VK_UINT) {
+        uint8_t b = (uint8_t)(argv[0].kind == VK_INT ? (uint64_t)argv[0].i : argv[0].u);
         iw_printer_feed(p, &b, 1);
         return val_uint(4, 1);
     }
@@ -1306,7 +1306,7 @@ static DEF_METHOD(method_feed_file) {
 }
 
 static const arg_decl_t feed_args[] = {
-    {.name = "data", .kind = V_NONE, .validation_flags = OBJ_ARG_POLY, .doc = "Bytes, a string, or one byte value"},
+    {.name = "data", .kind = VK_NONE, .validation_flags = OBJ_ARG_POLY, .doc = "Bytes, a string, or one byte value"},
 };
 
 static const arg_decl_t feed_file_args[] = {
@@ -1314,172 +1314,172 @@ static const arg_decl_t feed_file_args[] = {
 };
 
 static const member_t iw_printer_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "model",
      .doc = "Which printer: imagewriter (the original) or imagewriter2",
-     .attr = {.type = V_STRING, .get = attr_model, .set = attr_model_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_model, .set = attr_model_set}},
+    {.kind = MK_ATTR,
      .name = "connection",
      .doc = "Where it is plugged in: none, serial-a, serial-b, or localtalk (the ImageWriter II's LocalTalk "
             "Option card, printing over AppleTalk)", .examples = EXAMPLES("machine.imagewriter.connection = \"serial-b\""),
-     .attr = {.type = V_STRING, .get = attr_connection, .set = attr_connection_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_connection, .set = attr_connection_set}},
+    {.kind = MK_ATTR,
      .name = "localtalk_name",
      .doc = "The name the LocalTalk Option card publishes (NBP <name>:ImageWriter@*), what the Chooser lists",
-     .attr = {.type = V_STRING, .get = attr_localtalk_name, .set = attr_localtalk_name_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_localtalk_name, .set = attr_localtalk_name_set}},
+    {.kind = MK_ATTR,
      .name = "status",
      .doc = "What the printer is doing, as the UI shows it",
-     .attr = {.type = V_STRING, .get = attr_status}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_status}},
+    {.kind = MK_ATTR,
      .name = "busy",
      .doc = "True while a job is in progress",
-     .attr = {.type = V_BOOL, .get = attr_busy}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = attr_busy}},
+    {.kind = MK_ATTR,
      .name = "dip1",
      .flags = M_CAT_ADVANCED,
      .doc = "DIP switch bank 1, bit n-1 = switch 1-n closed (language, form length, perforation skip, pitch, "
-            "LF after CR); read at power-on", .attr = {.type = V_UINT, .width = 1, .presentation_flags = VAL_HEX, .get = attr_dip1, .set = attr_dip1_set}},
-    {.kind = M_ATTR,
+            "LF after CR); read at power-on", .attr = {.type = VK_UINT, .width = 1, .presentation_flags = VFLAG_HEX, .get = attr_dip1, .set = attr_dip1_set}},
+    {.kind = MK_ATTR,
      .name = "dip2",
      .flags = M_CAT_ADVANCED,
      .doc = "DIP switch bank 2, bit n-1 = switch 2-n closed (baud rate, XON/XOFF, option card)",
-     .attr = {.type = V_UINT, .width = 1, .presentation_flags = VAL_HEX, .get = attr_dip2, .set = attr_dip2_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .presentation_flags = VFLAG_HEX, .get = attr_dip2, .set = attr_dip2_set}},
+    {.kind = MK_ATTR,
      .name = "color_ribbon",
      .doc = "A colour ribbon is fitted (ImageWriter II)",
-     .attr = {.type = V_BOOL, .get = attr_color_ribbon, .set = attr_color_ribbon_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = attr_color_ribbon, .set = attr_color_ribbon_set}},
+    {.kind = MK_ATTR,
      .name = "sheet_feeder",
      .doc = "A SheetFeeder is fitted (reported by ESC ? and the AppleTalk status)",
-     .attr = {.type = V_BOOL, .get = attr_sheet_feeder, .set = attr_sheet_feeder_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = attr_sheet_feeder, .set = attr_sheet_feeder_set}},
+    {.kind = MK_ATTR,
      .name = "paper",
      .doc = "Paper loaded: fanfold-letter, letter, a4, legal or fanfold-15in",
-     .attr = {.type = V_STRING, .get = attr_paper, .set = attr_paper_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_paper, .set = attr_paper_set}},
+    {.kind = MK_ATTR,
      .name = "paper_mode",
      .doc = "continuous (fanfold) or cut-sheet (each form feed ejects the sheet)",
-     .attr = {.type = V_STRING, .get = attr_paper_mode, .set = attr_paper_mode_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_paper_mode, .set = attr_paper_mode_set}},
+    {.kind = MK_ATTR,
      .name = "idle_timeout_ms",
      .flags = M_CAT_ADVANCED,
      .doc = "Guest time with no input after which a serial job ends",
-     .attr = {.type = V_UINT, .get = attr_idle_timeout, .set = attr_idle_timeout_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_idle_timeout, .set = attr_idle_timeout_set}},
+    {.kind = MK_ATTR,
      .name = "buffer_model",
      .flags = M_CAT_ADVANCED,
      .doc = "Input buffer: unlimited (default), or a simulated 2k or 32k one that prints at about the printer's "
-            "speed and drops the ready line (or sends XOFF) when full, to test a driver's flow control", .attr = {.type = V_STRING, .get = attr_buffer_model, .set = attr_buffer_model_set}},
-    {.kind = M_ATTR,
+            "speed and drops the ready line (or sends XOFF) when full, to test a driver's flow control", .attr = {.type = VK_STRING, .get = attr_buffer_model, .set = attr_buffer_model_set}},
+    {.kind = MK_ATTR,
      .name = "resolution",
      .flags = M_CAT_ADVANCED,
      .doc = "Raster resolution of the PDF's pages: 288 or 576 dpi",
-     .attr = {.type = V_UINT, .get = attr_resolution, .set = attr_resolution_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_resolution, .set = attr_resolution_set}},
+    {.kind = MK_ATTR,
      .name = "dot_shape",
      .flags = M_CAT_ADVANCED,
      .doc = "disc (like the wires) or square (crisp, for diagnosis)",
-     .attr = {.type = V_STRING, .get = attr_dot_shape, .set = attr_dot_shape_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_dot_shape, .set = attr_dot_shape_set}},
+    {.kind = MK_ATTR,
      .name = "tof_offset",
      .flags = M_CAT_ADVANCED,
      .doc = "How far below the sheet's top edge the print line is at top of form, in 1/144 in (default 80, "
-            "what the drivers assume; the manual recommends 72); applies from the next reset", .attr = {.type = V_UINT, .get = attr_tof_offset, .set = attr_tof_offset_set}},
-    {.kind = M_ATTR,
+            "what the drivers assume; the manual recommends 72); applies from the next reset", .attr = {.type = VK_UINT, .get = attr_tof_offset, .set = attr_tof_offset_set}},
+    {.kind = MK_ATTR,
      .name = "selected",
      .doc = "The front panel's SELECT light: deselected, the printer drops its ready line and stops printing "
-            "(what it already received waits in its buffer)", .attr = {.type = V_BOOL, .get = attr_selected, .set = attr_selected_set}},
-    {.kind = M_ATTR,
+            "(what it already received waits in its buffer)", .attr = {.type = VK_BOOL, .get = attr_selected, .set = attr_selected_set}},
+    {.kind = MK_ATTR,
      .name = "paper_out",
      .doc = "Simulate running out of paper",
-     .attr = {.type = V_BOOL, .get = attr_paper_out, .set = attr_paper_out_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = attr_paper_out, .set = attr_paper_out_set}},
+    {.kind = MK_ATTR,
      .name = "capture",
      .flags = M_CAT_ADVANCED,
      .doc = "Also hand each job's raw input to the platform (<print-dir>/<printer>-<job>.iw in headless)",
-     .attr = {.type = V_BOOL, .get = attr_capture, .set = attr_capture_set}},
-    {.kind = M_ATTR, .name = "jobs", .doc = "Documents printed", .attr = {.type = V_UINT, .get = attr_jobs}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = attr_capture, .set = attr_capture_set}},
+    {.kind = MK_ATTR, .name = "jobs", .doc = "Documents printed", .attr = {.type = VK_UINT, .get = attr_jobs}},
+    {.kind = MK_ATTR,
      .name = "pages",
      .doc = "Pages printed, all documents",
-     .attr = {.type = V_UINT, .get = attr_pages}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_pages}},
+    {.kind = MK_ATTR,
      .name = "buffered",
      .flags = M_CAT_ADVANCED,
      .doc = "Bytes received and not yet printed",
-     .attr = {.type = V_UINT, .get = attr_buffered}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_buffered}},
+    {.kind = MK_ATTR,
      .name = "buffer_waits",
      .flags = M_CAT_ADVANCED,
      .doc = "Times the simulated buffer (buffer_model) filled and the printer told the host to wait",
-     .attr = {.type = V_UINT, .get = attr_buffer_waits}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_buffer_waits}},
+    {.kind = MK_ATTR,
      .name = "buffer_peak",
      .flags = M_CAT_ADVANCED,
      .doc = "The most bytes waiting to be printed at once since the current (or last) job began",
-     .attr = {.type = V_UINT, .get = attr_buffer_peak}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_buffer_peak}},
+    {.kind = MK_ATTR,
      .name = "dropped",
      .flags = M_CAT_ADVANCED,
      .doc = "Bytes lost because the host sent them into a full simulated buffer",
-     .attr = {.type = V_UINT, .get = attr_dropped}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_dropped}},
+    {.kind = MK_ATTR,
      .name = "bytes",
      .flags = M_CAT_ADVANCED,
      .doc = "Bytes received",
-     .attr = {.type = V_UINT, .get = attr_bytes}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_bytes}},
+    {.kind = MK_ATTR,
      .name = "last_job_pages",
      .doc = "Pages in the last document",
-     .attr = {.type = V_UINT, .get = attr_last_job_pages}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_last_job_pages}},
+    {.kind = MK_ATTR,
      .name = "last_outcome",
      .doc = "How the last job ended: \"\" before any, \"ok\", \"ok (placeholder font)\" or \"failed: <why>\"",
-     .attr = {.type = V_STRING, .get = attr_last_outcome}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_last_outcome}},
+    {.kind = MK_ATTR,
      .name = "last_pdf_crc",
      .flags = M_CAT_ADVANCED,
      .doc = "CRC-32 of the last document's PDF (byte-exact goldens)",
-     .attr = {.type = V_UINT, .get = attr_last_pdf_crc}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_last_pdf_crc}},
+    {.kind = MK_ATTR,
      .name = "last_pdf_bytes",
      .flags = M_CAT_ADVANCED,
      .doc = "Size of the last document's PDF",
-     .attr = {.type = V_UINT, .get = attr_last_pdf_bytes}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_last_pdf_bytes}},
+    {.kind = MK_ATTR,
      .name = "pitch",
      .flags = M_CAT_ADVANCED,
      .doc = "The character pitch selected now",
-     .attr = {.type = V_STRING, .get = attr_pitch}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = attr_pitch}},
+    {.kind = MK_ATTR,
      .name = "line_spacing",
      .flags = M_CAT_ADVANCED,
      .doc = "The line feed distance now, in 1/144 in",
-     .attr = {.type = V_UINT, .get = attr_line_spacing}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = attr_line_spacing}},
+    {.kind = MK_ATTR,
      .name = "soft_switches",
      .flags = M_CAT_ADVANCED,
      .doc = "Software switch registers A (high byte) and B (low byte), bit set = switch closed",
-     .attr = {.type = V_UINT, .get = attr_soft_switches}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = attr_soft_switches}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "End the job now: its document goes out",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_eject, .ui_flags = MM_MUTATE}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_eject, .ui_flags = MM_MUTATE}},
+    {.kind = MK_METHOD,
      .name = "reset",
      .doc = "Switch the printer off and on: settings from the DIP switches, custom characters gone",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_reset, .ui_flags = MM_MUTATE}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_reset, .ui_flags = MM_MUTATE}},
+    {.kind = MK_METHOD,
      .name = "feed",
      .flags = M_CAT_ADVANCED,
      .doc = "Give the printer bytes directly, as if they came down the cable",
-     .method = {.args = feed_args, .nargs = 1, .result = V_UINT, .fn = method_feed, .ui_flags = MM_MUTATE}},
-    {.kind = M_METHOD,
+     .method = {.args = feed_args, .nargs = 1, .result = VK_UINT, .fn = method_feed, .ui_flags = MM_MUTATE}},
+    {.kind = MK_METHOD,
      .name = "feed_file",
      .flags = M_CAT_ADVANCED,
      .doc = "Give the printer a file's bytes (a captured job)",
-     .method = {.args = feed_file_args, .nargs = 1, .result = V_UINT, .fn = method_feed_file, .ui_flags = MM_MUTATE}},
+     .method = {.args = feed_file_args, .nargs = 1, .result = VK_UINT, .fn = method_feed_file, .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t iw_printer_class = {

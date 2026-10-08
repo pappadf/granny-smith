@@ -3424,26 +3424,26 @@ static DEF_GETTER(mon_attr_probed) {
 }
 
 static const member_t monitor_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Strapped monitor id (see catalog.profile for the card's list)",
-     .attr = {.type = V_STRING, .get = mon_attr_id}                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = mon_attr_id}                                       },
+    {.kind = MK_ATTR,
      .name = "sense_code",
      .doc = "The monitor's 3-bit primary sense code",
-     .attr = {.type = V_UINT, .get = mon_attr_primary}                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mon_attr_primary}                                    },
+    {.kind = MK_ATTR,
      .name = "probed",
      .doc = "True once the guest has driven the monitor-ID pins",
-     .attr = {.type = V_BOOL, .get = mon_attr_probed}                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = mon_attr_probed}                                     },
+    {.kind = MK_ATTR,
      .name = "sensed_primary",
      .doc = "The primary code the guest actually read back",
-     .attr = {.type = V_UINT, .get = mon_attr_sensed_primary}                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mon_attr_sensed_primary}                             },
+    {.kind = MK_ATTR,
      .name = "sensed_extended",
      .doc = "The 6-bit extended code the guest's four-step walk assembled",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = mon_attr_sensed_ext}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = mon_attr_sensed_ext}},
 };
 static const class_desc_t mach64_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
@@ -3485,42 +3485,42 @@ static DEF_METHOD(regs_method_read) {
 }
 
 static const arg_decl_t regs_read_arg[] = {
-    {.name = "dword", .kind = V_INT, .doc = "Register DWORD offset (ATI RRG chapter 2)"},
+    {.name = "dword", .kind = VK_INT, .doc = "Register DWORD offset (ATI RRG chapter 2)"},
 };
 
 static const member_t regs_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "chip_id",
      .doc = "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_chip_id}    },
+    {.kind = MK_ATTR,
      .name = "config_cntl",
      .doc = "CONFIG_CNTL (I/O only): aperture size, location and VGA disable",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_config_cntl}},
+    {.kind = MK_ATTR,
      .name = "aperture_size",
      .doc = "Bytes of BAR0 the aperture currently covers (0 = disabled)",
-     .attr = {.type = V_UINT, .get = regs_attr_aperture}                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_aperture}                                    },
+    {.kind = MK_ATTR,
      .name = "vram_size",
      .doc = "Bytes of video memory on this card",
-     .attr = {.type = V_UINT, .get = regs_attr_vram}                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_vram}                                        },
+    {.kind = MK_ATTR,
      .name = "crtc_gen_cntl",
      .doc = "CRTC_GEN_CNTL: pixel width, extended-display and CRTC enables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_crtc_gen}   },
+    {.kind = MK_ATTR,
      .name = "mem_cntl",
      .doc = "MEM_CNTL: MEM_SIZE in bits 2:0",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_mem_cntl}   },
+    {.kind = MK_ATTR,
      .name = "dac_cntl",
      .doc = "DAC_CNTL, monitor-ID pins read live in bits 26:24",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}     },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_dac_cntl}   },
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read any register by its DWORD offset",
-     .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
+     .method = {.args = regs_read_arg, .nargs = 1, .result = VK_UINT, .fn = regs_method_read}},
 };
 static const class_desc_t mach64_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
@@ -3550,30 +3550,30 @@ static DEF_METHOD(dac_method_read) {
 }
 
 static const arg_decl_t dac_read_arg[] = {
-    {.name = "index", .kind = V_INT, .doc = "RGB514 indexed register ($00-$4FF)"},
+    {.name = "index", .kind = VK_INT, .doc = "RGB514 indexed register ($00-$4FF)"},
 };
 
 static const member_t dac_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "The RGB514's 16-bit indexed-register pointer",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_index}     },
+    {.kind = MK_ATTR,
      .name = "pixel_format",
      .doc = "Indexed $0A Pixel Format (3 = 8 bpp, 4 = 15/16, 5 = 24, 6 = 32)",
-     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = dac_attr_pixel_format}                               },
+    {.kind = MK_ATTR,
      .name = "misc_control_2",
      .doc = "Indexed $71: pixel-clock select, colour resolution, port select",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_misc2}     },
+    {.kind = MK_ATTR,
      .name = "pixel_mask",
      .doc = "The RS 010 pixel mask ($FF = no masking)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}  },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_pixel_mask}},
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read an RGB514 indexed register",
-     .method = {.args = dac_read_arg, .nargs = 1, .result = V_UINT, .fn = dac_method_read}},
+     .method = {.args = dac_read_arg, .nargs = 1, .result = VK_UINT, .fn = dac_method_read}},
 };
 static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
@@ -3582,7 +3582,7 @@ static const class_desc_t mach64_dac_class = {
 // The framebuffer node is display_class.c's, shared with the NuBus cards and
 // the built-in chips, so `machine.screen.source` reads the same on either bus.
 // This card used to re-implement it with `size` where NuBus said `raw_size`,
-// V_UINT where NuBus said V_INT, and no `format` at all -- the node was
+// VK_UINT where NuBus said VK_INT, and no `format` at all -- the node was
 // declared to mirror the NuBus one and did not.
 static display_t *mach64_fb_resolve(void *owner) {
     mach64_t *c = (mach64_t *)owner;

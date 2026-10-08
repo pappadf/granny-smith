@@ -3,7 +3,7 @@
 
 // cmd_find.c
 // `debug.find.*` memory search: debug.find.str / debug.find.bytes /
-// debug.find.word / debug.find.long return the complete V_LIST of match addresses
+// debug.find.word / debug.find.long return the complete VK_LIST of match addresses
 // (empty list = not found); optional start/end arguments bound the
 // scan, defaulting to the whole address space (g_address_mask).
 
@@ -43,7 +43,7 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
 
 // === Object-model class descriptor =========================================
 //
-// The `find.*` methods return data — a V_LIST of match
+// The `find.*` methods return data — a VK_LIST of match
 // addresses (empty list = not found) — and the REPL formats it. The
 // printed match report and the `all` hit cap are gone: the list is
 // always complete (bounded by FIND_MAX_HITS as a runaway guard).
@@ -56,8 +56,8 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
 #define FIND_CHUNK 65536
 
 // Scan of [start..end_incl] for every (possibly overlapping) occurrence of
-// the pattern; returns a V_LIST of V_UINT hit
-// addresses (hex-flagged), or V_ERROR on overflow/oom.
+// the pattern; returns a VK_LIST of VK_UINT hit
+// addresses (hex-flagged), or VK_ERROR on overflow/oom.
 static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t *pattern, size_t plen) {
     if (plen == 0)
         return val_err("find: empty pattern");
@@ -111,7 +111,7 @@ static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t
                 items = t;
             }
             value_t v = val_uint(4, (uint32_t)(base + i));
-            v.flags |= VAL_HEX;
+            v.flags |= VFLAG_HEX;
             items[len++] = v;
         }
     }
@@ -121,18 +121,18 @@ static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t
 
 // Decode the optional start/end argument pair shared by every method:
 // argv[i0] = start (default 0), argv[i0+1] = end inclusive (default
-// g_address_mask). A V_NONE hole means "not given".
+// g_address_mask). A VK_NONE hole means "not given".
 static bool find_range_args(int argc, const value_t *argv, int i0, uint32_t *start_out, uint32_t *end_out) {
     *start_out = 0;
     *end_out = g_address_mask;
-    if (argc > i0 && argv[i0].kind != V_NONE) {
+    if (argc > i0 && argv[i0].kind != VK_NONE) {
         bool ok = false;
         uint64_t s = val_as_u64(&argv[i0], &ok);
         if (!ok)
             return false;
         *start_out = (uint32_t)s;
     }
-    if (argc > i0 + 1 && argv[i0 + 1].kind != V_NONE) {
+    if (argc > i0 + 1 && argv[i0 + 1].kind != VK_NONE) {
         bool ok = false;
         uint64_t e = val_as_u64(&argv[i0 + 1], &ok);
         if (!ok)
@@ -216,90 +216,90 @@ static DEF_METHOD(find_method_long) {
 
 // `start` documents a default of 0, so declare it: without one, naming `end`
 // alone failed with "missing argument 'start'".
-static const value_t find_def_start = {.kind = V_UINT, .u = 0};
+static const value_t find_def_start = {.kind = VK_UINT, .u = 0};
 
 static const arg_decl_t find_str_args[] = {
-    {.name = "text", .kind = V_STRING, .doc = "Search text"},
+    {.name = "text", .kind = VK_STRING, .doc = "Search text"},
     {.name = "start",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .default_value = &find_def_start,
      .doc = "Scan start address"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "Scan end address, inclusive",
      .default_doc = "the address mask"},
 };
 static const arg_decl_t find_bytes_args[] = {
-    {.name = "hex", .kind = V_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
+    {.name = "hex", .kind = VK_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
     {.name = "start",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .default_value = &find_def_start,
      .doc = "Scan start address"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "Scan end address, inclusive",
      .default_doc = "the address mask"},
 };
 static const arg_decl_t find_int_args[] = {
-    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "Integer value to search for"},
+    {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "Integer value to search for"},
     {.name = "start",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .default_value = &find_def_start,
      .doc = "Scan start address"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "Scan end address, inclusive",
      .default_doc = "the address mask"},
 };
 
 static const member_t find_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "str",
      .examples = EXAMPLES("debug.find.str \"Finder\"", "debug.find.str \"Welcome\" 0 0x3fffff"),
      .doc = "Search memory for a UTF-8 string",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_str_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = find_method_str}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "bytes",
      .examples = EXAMPLES("debug.find.bytes \"4E 75\"", "debug.find.bytes \"A9 F4\" 0x40800000 0x4083ffff"),
      .doc = "Search memory for a byte sequence",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_bytes_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = find_method_bytes}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "long",
      .examples = EXAMPLES("debug.find.long 0x4e754e75"),
      .doc = "Search memory for a 32-bit big-endian value",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_int_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = find_method_long}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "word",
      .examples = EXAMPLES("debug.find.word 0xa9f4"),
      .doc = "Search memory for a 16-bit big-endian value",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_int_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = find_method_word}},
 };
 

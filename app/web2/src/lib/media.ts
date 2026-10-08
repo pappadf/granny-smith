@@ -100,7 +100,7 @@ interface PromIdentifyResult {
 }
 
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
-  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
+  // rom.identify returns a native object (VK_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
   if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as RomIdentifyResult;
@@ -111,7 +111,7 @@ async function parseCardRomIdentify(
   what: 'vrom' | 'prom',
   path: string,
 ): Promise<PromIdentifyResult | null> {
-  // catalog.vroms.identify / catalog.proms.identify return a native object (V_MAP).
+  // catalog.vroms.identify / catalog.proms.identify return a native object (VK_MAP).
   const r = await gsEval(`catalog.${what}s.identify`, [path]); // catalog.vroms / catalog.proms
   if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as PromIdentifyResult;

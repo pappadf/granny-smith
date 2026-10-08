@@ -299,12 +299,12 @@ export function isModuleReady(): boolean {
 
 // The result contract:
 //   - a value     — the method or attribute's result;
-//   - null        — ONLY a successful method that returns nothing (V_NONE);
-//   - { error }   — failure.  A C-side V_ERROR carries the core's message;
+//   - null        — ONLY a successful method that returns nothing (VK_NONE);
+//   - { error }   — failure.  A C-side VK_ERROR carries the core's message;
 //                   a failure of the bridge itself (module not ready, a
 //                   thrown request) also sets `transport: true`.
 // So `r !== null` is never a success test: `{ error }` satisfies it.  Use
-// gsOk() for "did it work", `=== true` for a V_BOOL method, and a shape check
+// gsOk() for "did it work", `=== true` for a VK_BOOL method, and a shape check
 // for a read.
 export interface GsError {
   error: string;
@@ -479,13 +479,13 @@ function routeErrLine(line: string): void {
   routeErrorLine(line);
 }
 
-// True for any failure shape — the core's V_ERROR or a transport failure.
+// True for any failure shape — the core's VK_ERROR or a transport failure.
 export function isGsError(res: unknown): res is GsError {
   return !!res && typeof res === 'object' && 'error' in res;
 }
 
-// "Did the call work?": not an error, and not a V_BOOL method's `false`.
-// A V_NONE success (null) counts as success.
+// "Did the call work?": not an error, and not a VK_BOOL method's `false`.
+// A VK_NONE success (null) counts as success.
 export function gsOk(res: unknown): boolean {
   return !isGsError(res) && res !== false;
 }

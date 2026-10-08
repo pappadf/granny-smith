@@ -76,10 +76,10 @@ static host_input_t *hi_from(struct object *self) {
 // mean an ADB keycode on a Mac and a raw COPS wire byte on a Lisa.  The wire
 // form has its own method now (`keyboard.raw`).
 static int keyboard_arg_keycode(const value_t *arg) {
-    if (arg->kind == V_STRING)
+    if (arg->kind == VK_STRING)
         return arg->s ? debug_mac_resolve_key_name(arg->s) : -1;
-    if (arg->kind == V_INT || arg->kind == V_UINT) {
-        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
+    if (arg->kind == VK_INT || arg->kind == VK_UINT) {
+        long long raw = (arg->kind == VK_INT) ? (long long)arg->i : (long long)arg->u;
         return (raw >= 0 && raw <= 0x7F) ? (int)raw : -1;
     }
     return -1;
@@ -87,10 +87,10 @@ static int keyboard_arg_keycode(const value_t *arg) {
 
 // How the key was spelled, for an error message.
 static const char *keyboard_arg_text(const value_t *arg, char *buf, size_t size) {
-    if (arg->kind == V_STRING)
+    if (arg->kind == VK_STRING)
         return arg->s ? arg->s : "";
-    if (arg->kind == V_INT || arg->kind == V_UINT) {
-        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
+    if (arg->kind == VK_INT || arg->kind == VK_UINT) {
+        long long raw = (arg->kind == VK_INT) ? (long long)arg->i : (long long)arg->u;
         snprintf(buf, size, "0x%02llx", raw);
         return buf;
     }
@@ -156,9 +156,9 @@ static value_t keyboard_method_raw(struct object *self, const member_t *m, int a
     (void)self;
     (void)m;
     (void)argc;
-    if (argv[0].kind != V_INT && argv[0].kind != V_UINT)
+    if (argv[0].kind != VK_INT && argv[0].kind != VK_UINT)
         return val_err("keyboard.raw: expected a byte");
-    long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
+    long long raw = (argv[0].kind == VK_INT) ? (long long)argv[0].i : (long long)argv[0].u;
     if (raw < 0 || raw > 0xFF)
         return val_err("keyboard.raw: 0x%llx is not a byte", raw);
     if (system_input_key_raw((uint8_t)raw) < 0)
@@ -187,7 +187,7 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
     host_input_t *hi = hi_from(self);
     if (!hi || !hi->sched)
         return val_err("keyboard.type: the machine has no keyboard");
-    if (argv[0].kind != V_STRING || !argv[0].s)
+    if (argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("keyboard.type: text must be a string");
     const char *text = argv[0].s;
 
@@ -240,43 +240,43 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t keyboard_raw_args[] = {
-    {.name = "byte", .kind = V_UINT, .doc = "Raw keyboard byte in the machine's own encoding"},
+    {.name = "byte", .kind = VK_UINT, .doc = "Raw keyboard byte in the machine's own encoding"},
 };
 
 static const arg_decl_t keyboard_type_args[] = {
-    {.name = "text", .kind = V_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
+    {.name = "text", .kind = VK_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
 };
 
 static const arg_decl_t keyboard_press_args[] = {
-    // V_NONE: body accepts either a name string or a numeric ADB keycode.
+    // VK_NONE: body accepts either a name string or a numeric ADB keycode.
     {.name = "key",
-     .kind = V_NONE,
+     .kind = VK_NONE,
      .validation_flags = OBJ_ARG_POLY,
      .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
 };
 
 static const member_t keyboard_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "press",
      .doc = "Tap a key (down + up) on the emulated keyboard",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
-    {.kind = M_METHOD,
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_press}},
+    {.kind = MK_METHOD,
      .name = "down",
      .doc = "Hold a key down on the emulated keyboard (pair with up)",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_down}},
-    {.kind = M_METHOD,
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_down}},
+    {.kind = MK_METHOD,
      .name = "up",
      .doc = "Release a key held by down",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_up}},
-    {.kind = M_METHOD,
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_up}},
+    {.kind = MK_METHOD,
      .name = "type",
      .doc = "Type a short line of text (US layout; newline = Return)",
-     .method = {.args = keyboard_type_args, .nargs = 1, .result = V_UINT, .fn = keyboard_method_type}},
-    {.kind = M_METHOD,
+     .method = {.args = keyboard_type_args, .nargs = 1, .result = VK_UINT, .fn = keyboard_method_type}},
+    {.kind = MK_METHOD,
      .name = "raw",
      .flags = M_CAT_ADVANCED,
      .doc = "Inject one byte in this machine's own keyboard encoding (Lisa COPS only)",
-     .method = {.args = keyboard_raw_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_raw}},
+     .method = {.args = keyboard_raw_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_raw}},
 };
 
 static const class_desc_t keyboard_class = {

@@ -1389,9 +1389,9 @@ static DEF_METHOD(floppy_method_identify) {
 static DEF_METHOD(floppy_method_create) {
     bool high_density = false;
     int preferred = -1;
-    // hd is V_NONE-kind: body discriminates string / bool / integer.
+    // hd is VK_NONE-kind: body discriminates string / bool / integer.
     if (argc >= 2) {
-        if (argv[1].kind == V_STRING && argv[1].s) {
+        if (argv[1].kind == VK_STRING && argv[1].s) {
             if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
                 high_density = true;
             } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
@@ -1399,10 +1399,10 @@ static DEF_METHOD(floppy_method_create) {
             } else if (*argv[1].s) {
                 return val_err("floppy.create: second arg must be \"hd\" or drive index 0/1");
             }
-        } else if (argv[1].kind == V_BOOL) {
+        } else if (argv[1].kind == VK_BOOL) {
             high_density = argv[1].b;
-        } else if (argv[1].kind == V_INT || argv[1].kind == V_UINT) {
-            int64_t d = (argv[1].kind == V_INT) ? argv[1].i : (int64_t)argv[1].u;
+        } else if (argv[1].kind == VK_INT || argv[1].kind == VK_UINT) {
+            int64_t d = (argv[1].kind == VK_INT) ? argv[1].i : (int64_t)argv[1].u;
             if (d != 0 && d != 1)
                 return val_err("floppy.create: drive index must be 0 or 1");
             preferred = (int)d;
@@ -1413,37 +1413,37 @@ static DEF_METHOD(floppy_method_create) {
 }
 
 static const arg_decl_t floppy_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Floppy image path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Floppy image path"},
 };
 
 static const arg_decl_t floppy_create_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output path"},
     {.name = "hd",
-     .kind = V_NONE,
+     .kind = VK_NONE,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                    },
+     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                       },
 };
 
 static const member_t floppy_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "type",
      .doc = "Controller type: iwm (Plus), swim (SE/30-class), swim3 (PowerMac) or new_age (AV Quadras)",
-     .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = floppy_attr_type, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "sel",
      .doc = "VIA-driven head-select signal",
-     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "identify",
      .flags = M_CAT_ADVANCED,
      .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
-     .method = {.args = floppy_path_arg, .nargs = 1, .result = V_STRING, .fn = floppy_method_identify}},
-    {.kind = M_METHOD,
+     .method = {.args = floppy_path_arg, .nargs = 1, .result = VK_STRING, .fn = floppy_method_identify}},
+    {.kind = MK_METHOD,
      .name = "create",
      .examples = EXAMPLES("machine.floppy.create \"/opfs/images/fd/blank.dsk\"",
      "machine.floppy.create \"/opfs/images/fd/blank-hd.dsk\" hd"),
      .doc = "Create a blank floppy image and auto-mount it",
-     .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
+     .method = {.args = floppy_create_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_method_create}},
 };
 
 static const class_desc_t floppy_class = {
@@ -1498,38 +1498,38 @@ static DEF_GETTER(floppy_ctrl_attr_iwm_mode) {
 }
 
 static const member_t floppy_controller_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "iwm_lines",
      .doc = "IWM state lines: CA0-CA2, LSTRB, ENABLE, SELECT, Q6, Q7 (IWM and SWIM)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "iwm_mode",
      .doc = "IWM mode register (IWM and SWIM)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "in_ism_mode",
      .doc = "SWIM: true once the 4-write entry sequence has switched the chip to ISM",
-     .attr = {.type = V_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "ism_mode",
      .doc = "SWIM: ISM mode/status register",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "ism_setup",
      .doc = "SWIM: ISM setup register (bit 2 = GCR framing)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_error",
      .doc = "SWIM: ISM error register (read-clears on the guest side; reading it here does not)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_phase",
      .doc = "SWIM: ISM phase register (drive control lines and their directions)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_fifo_count",
      .doc = "SWIM: bytes currently in the 2-byte ISM FIFO",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
 };
 
 static const class_desc_t floppy_controller_class = {
@@ -1650,34 +1650,34 @@ static DEF_METHOD(floppy_disk_method_eject) {
 }
 
 static const member_t floppy_disk_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True if a disk is inserted",
-     .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_present, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "writable",
      .doc = "False when the medium is write-protected",
-     .attr = {.type = V_BOOL, .get = floppy_disk_attr_writable, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_writable, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "density",
      .doc = "Medium capacity: 400k, 800k, 720k or 1440k",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_density, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_density, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_path, .set = NULL}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_path, .set = NULL}    },
+    {.kind = MK_ATTR,
      .name = "filename",
      .doc = "Source path the disk was loaded from",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Eject the disk from the owning drive",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = floppy_disk_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                       },
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                        },
 };
 
 static const class_desc_t floppy_disk_class = {
@@ -1719,53 +1719,53 @@ static DEF_METHOD(floppy_drive_method_insert) {
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
-static const value_t floppy_false = {.kind = V_BOOL, .b = false};
+static const value_t floppy_false = {.kind = VK_BOOL, .b = false};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "Host path or storage URI of the image to mount"},
     {.name = "writable",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &floppy_false,
      .doc = "Mount writable"},
 };
 
 static const member_t floppy_drive_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "Drive number on the controller (0 = internal, 1 = second internal or external)",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_index, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_index, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True when a disk image is inserted in this drive",
-     .attr = {.type = V_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "track",
      .doc = "Track the head is currently over (0 = outermost)",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_track, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_track, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "side",
      .doc = "Selected disk side, 0 or 1; always 0 on a single-sided 400K disk",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_side, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_side, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "motor_on",
      .doc = "True while the spindle is spinning — the guest keeps it off between accesses",
-     .attr = {.type = V_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Remove the inserted disk",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = floppy_drive_method_eject}},
-    {.kind = M_CHILD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = floppy_drive_method_eject}},
+    {.kind = MK_CHILD,
      .name = "disk",
      .doc = "The disk currently in this drive (present only when inserted)",
      .label = "Disk",
      .child = {.cls = &floppy_disk_class, .lookup = floppy_drive_disk_lookup}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into this drive",
-     .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = V_BOOL, .fn = floppy_drive_method_insert}},
+     .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_drive_method_insert}},
 };
 
 static const class_desc_t floppy_drive_class = {

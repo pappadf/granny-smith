@@ -303,13 +303,13 @@ value_t val_enum(int idx, const char *const *table, size_t n_table) {
 }
 value_t val_int(int64_t i) {
     value_t v = {0};
-    v.kind = V_INT;
+    v.kind = VK_INT;
     v.width = 8;
     v.i = i;
     return v;
 }
 
-// scheduler.events builds a V_LIST of V_MAPs, so the suite needs the map
+// scheduler.events builds a VK_LIST of V_MAPs, so the suite needs the map
 // builder and the list accumulator.  Minimal versions: this suite asserts on
 // queue COUNTS, not on the rendered list.
 struct value_map_builder {
@@ -345,7 +345,7 @@ bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
 }
 value_t val_list(value_t *items, size_t len) {
     value_t v = {0};
-    v.kind = V_LIST;
+    v.kind = VK_LIST;
     v.list.items = items;
     v.list.len = len;
     return v;

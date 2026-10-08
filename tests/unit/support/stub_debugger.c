@@ -64,7 +64,7 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
     (void)phys;
     (void)valid;
     (void)via;
-    return (value_t){.kind = V_NONE};
+    return (value_t){.kind = VK_NONE};
 }
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     (void)argc;
@@ -84,5 +84,5 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
     (void)who;
     (void)argc;
     (void)argv;
-    return (value_t){.kind = V_NONE};
+    return (value_t){.kind = VK_NONE};
 }

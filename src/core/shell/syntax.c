@@ -434,7 +434,7 @@ void script_line_split(const char *line, const char *end, script_line_t *out) {
 // === Arguments ================================================================
 
 int script_arg_slot(const member_t *m, int pos, const char *name, size_t name_len) {
-    if (!m || m->kind != M_METHOD || !m->method.args)
+    if (!m || m->kind != MK_METHOD || !m->method.args)
         return -1;
     int n = m->method.nargs;
     const arg_decl_t *a = m->method.args;

@@ -56,20 +56,20 @@ the same errors. There is no shadow API.
 ### Values are typed and self-describing
 
 Every value crossing an object-model boundary is a `value_t` — a tagged
-union with a discriminator (`V_NONE` / `V_BOOL` / `V_INT` / `V_UINT` /
-`V_FLOAT` / `V_STRING` / `V_BYTES` / `V_ENUM` / `V_LIST` / `V_MAP` /
-`V_OBJECT` / `V_ERROR`), a width hint for fixed-size integers, and display
-flags (`VAL_HEX`, `VAL_VOLATILE`, `VAL_SENSITIVE`, `VAL_PATH`, …). Errors are
-in-band: a `value_t` of kind `V_ERROR` carries a string message rather
+union with a discriminator (`VK_NONE` / `VK_BOOL` / `VK_INT` / `VK_UINT` /
+`VK_FLOAT` / `VK_STRING` / `VK_BYTES` / `VK_ENUM` / `VK_LIST` / `VK_MAP` /
+`VK_OBJECT` / `VK_ERROR`), a width hint for fixed-size integers, and display
+flags (`VFLAG_HEX`, `VFLAG_VOLATILE`, `VFLAG_SENSITIVE`, `VFLAG_PATH`, …). Errors are
+in-band: a `value_t` of kind `VK_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
 Ownership is single-owner: the receiver of a `value_t` owns it and
 must call `value_free` (which is safe on every kind, including the
-inline ones). Heap-owning kinds (`V_STRING`, `V_BYTES`, `V_ERROR`,
-`V_LIST` and `V_MAP` recursively) `strdup` their inputs at construction
+inline ones). Heap-owning kinds (`VK_STRING`, `VK_BYTES`, `VK_ERROR`,
+`VK_LIST` and `VK_MAP` recursively) `strdup` their inputs at construction
 time, so there is no borrowed-string path to confuse callers.
 
-`V_MAP` is the keyed sibling of `V_LIST`: an insertion-ordered sequence
+`VK_MAP` is the keyed sibling of `VK_LIST`: an insertion-ordered sequence
 of unique `{key → value}` entries with heap-owned keys and recursively
 owned values. Map-shaped method results (`catalog.profile`,
 `machine.rom.identify`, `debug.frame`, `meta.method_info`, …) return it
@@ -89,7 +89,7 @@ ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
 it between chunks (see [`../../guide/web.md`](../../../guide/web.md), "I/O
 jobs").
 
-Display flags follow the value: an attribute declared with `VAL_HEX`
+Display flags follow the value: an attribute declared with `VFLAG_HEX`
 emits values that the JSON encoder serialises as `"0x12345678"`; the
 shell formatter prints them in hex; the inspector panel renders them
 the same way. Each layer reads the intent off the value, not off the
@@ -101,7 +101,7 @@ formats correctly.
 A `class_desc_t` is a static description with a name and a member
 table. Each `member_t` is one of three kinds:
 
-- **`M_ATTR`** — a typed attribute with a getter and (optionally) a
+- **`MK_ATTR`** — a typed attribute with a getter and (optionally) a
   setter. The attribute slot declares the value's kind, optional
   `width` (1/2/4/8 for sized integers), optional `enum_values` table,
   and slot flags (`OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). Setters
@@ -131,7 +131,7 @@ table. Each `member_t` is one of three kinds:
   `type()` could only reach a machine that had an `adb_t` to borrow a
   source from; it is per-machine now (`host_input.c`). A container with no
   state of its own — `machine.adb` — can stay a singleton.
-- **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
+- **`MK_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
   optional `width`, optional `enum_values`, optional `default_value`
   (or, for a default that is computed, a `default_doc`), a doc string,
@@ -140,7 +140,7 @@ table. Each `member_t` is one of three kinds:
   argv against this declaration before invoking the body (see
   *Typed dispatch validation* below) and the completer reads the
   same metadata for argument-position suggestions.
-- **`M_CHILD`** — a child object. Children are either *named* (a fixed
+- **`MK_CHILD`** — a child object. Children are either *named* (a fixed
   name with its own class, attached or handed out by `lookup`) or a
   *collection's entries* (`child.collection`, see below). Collections are
   how `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without
@@ -228,7 +228,7 @@ class's.  A method may declare a `result_doc` and `examples`.
 `meta.members(values?)` describes each member with, besides name, kind,
 category, label and doc: for an attribute
 its `type` descriptor `{kind, width, presentation, enum}` (presentation is
-the first of sensitive / path / hex / bin / dec, `VAL_PATH` marking a string
+the first of sensitive / path / hex / bin / dec, `VFLAG_PATH` marking a string
 that names a VFS path); for a method its `args` (name, doc, type, optional,
 rest, default), `result` type and, when declared, `result_doc` and
 `examples`; for a child `collection` (and a container's live `indices` /
@@ -238,7 +238,7 @@ rest, default), `result` type and, when declared, `result_doc` and
 one walk that hands out every object once with its canonical path) and
 reports every documentation gap: per class, once, the members' own gaps
 (`object_member_doc_gaps`, beside `object_validate_class`: an undocumented
-basic-tier argument, an untyped argument without `OBJ_ARG_POLY`, a `V_ANY`
+basic-tier argument, an untyped argument without `OBJ_ARG_POLY`, a `VK_ANY`
 result without `result_doc`) and an example with a path that does not
 resolve (checked with `shell.highlight`); per node, a node shown in the
 basic tier with no doc. What a declaration gets outright wrong (an enum
@@ -314,7 +314,7 @@ error is `!`: it reads an error as false, so `!err` is true and
 `&&`, `||` and `?:` parse the side they do not take and discard its value
 and any error in it — a method call there still runs.
 
-Paths keep resolving *into* structured values (`V_MAP` / `V_LIST`):
+Paths keep resolving *into* structured values (`VK_MAP` / `VK_LIST`):
 when a path prefix names a node whose value is a map or list, the
 remaining segments index into that value — dotted `map.key`, bracket
 `map["key"]` (any string expression), and numeric `list[N]`. The same
@@ -363,11 +363,11 @@ bool-typed argument slots only.
   an indexed collection read without an index (`debug.breakpoints.entries`)
   returns the entry objects as a list, and the REPL renders a list of
   same-class objects as a table.
-- **Success/failure flows as value-or-`V_ERROR`**, never a printed
-  message plus a bool. `V_BOOL` returns are reserved for methods whose
+- **Success/failure flows as value-or-`VK_ERROR`**, never a printed
+  message plus a bool. `VK_BOOL` returns are reserved for methods whose
   *answer* is a boolean (`files.path_exists`).
 - **Absence is never `none`.** "Not found" is an empty collection;
-  failure is `V_ERROR`; `none` is the script-side no-value.
+  failure is `VK_ERROR`; `none` is the script-side no-value.
 - **Named arguments replace spec strings.** `debug.logpoints.add
   addr=0x16A width=l mode=write level=5 message="…"` — no flag
   grammars inside strings.
@@ -385,7 +385,7 @@ bool-typed argument slots only.
 each attribute's slot declaration before invoking the body. Bodies
 do not re-check kinds, arity, widths, non-emptiness, or enum
 membership; the framework rejects mismatches with a uniform
-`V_ERROR` and the body never runs.
+`VK_ERROR` and the body never runs.
 
 The same engine drives both surfaces — methods are N-tuples of
 typed slots, attributes are 1-tuples — so the validation vocabulary
@@ -402,30 +402,30 @@ arrived from.
   the size of the scratch buffer the validator works in.
 - **Kind match.** `argv[i].kind` must equal the slot's declared
   kind (with the coercion exceptions below).
-- **Width fit.** `V_INT` / `V_UINT` slots that declare `width=1/2/4/8`
+- **Width fit.** `VK_INT` / `VK_UINT` slots that declare `width=1/2/4/8`
   reject values whose bit pattern doesn't fit. Width `0` (or `10`,
   used by FPU extended-precision attributes) means "no explicit
   bound". Catches the silent truncation problem that used to hide
   in `machine.cpu.pc = 0x100000000` style writes.
 - **Non-empty strings.** Slots flagged `OBJ_ARG_NONEMPTY` require a
-  non-NULL, non-empty `V_STRING`.
+  non-NULL, non-empty `VK_STRING`.
 - **`none` as "unset".** A slot flagged `OBJ_ARG_NONE_OK` also takes
   `none`, which the setter reads as "clear it", and its getter may answer
   `none` while unset; every other kind still has to match. It is for an
   attribute that is either a value or nothing, such as
   `machine.scc.a.output` (a file path, or `none` when no output is
   attached).
-- **Enum membership.** `V_ENUM` slots validate the index is in
-  `enum_values`; `V_STRING` input is looked up against the same
-  table and rewritten to `V_ENUM` so the body always sees the
+- **Enum membership.** `VK_ENUM` slots validate the index is in
+  `enum_values`; `VK_STRING` input is looked up against the same
+  table and rewritten to `VK_ENUM` so the body always sees the
   enum form (see coercion below).
-- **`V_OBJECT` non-NULL.** `V_OBJECT` slots reject `argv[i].obj == NULL`.
+- **`VK_OBJECT` non-NULL.** `VK_OBJECT` slots reject `argv[i].obj == NULL`.
 - **Default fill.** Optional parameters that declare a `default_value`
   are synthesised into the rewritten argv when the caller omits them,
   so the body reads `argv[N]` without an `argc` check. An optional
   parameter with no default that the caller skips — at the tail, or as a
   hole before a later named argument — reaches the body as `none`
-  (`V_NONE`); every declared slot is readable, and `argc` counts through
+  (`VK_NONE`); every declared slot is readable, and `argc` counts through
   the last slot that was given or defaulted. A slot flagged
   `OBJ_ARG_GROUPED` belongs to an all-or-nothing group the body checks by
   count, and may not be skipped alone.
@@ -435,26 +435,26 @@ arrived from.
 Cross-kind input is accepted in a small, deliberate set of cases.
 The body always sees a value matching the declared slot kind:
 
-- **`V_INT` ↔ `V_UINT`.** Width fit is checked under the input's
+- **`VK_INT` ↔ `VK_UINT`.** Width fit is checked under the input's
   signedness, then the bit pattern is reinterpreted under the
   declared signedness. So `machine.cpu.pc = -1` succeeds and stores
   `0xFFFFFFFF`; `machine.cpu.d0 = 0xDEADBEEFCAFE` against `width=4` is
   rejected.
-- **`V_INT` / `V_UINT` → `V_FLOAT`.** Numeric input widens to
-  double. The reverse (`V_FLOAT` to integer slot) is rejected;
+- **`VK_INT` / `VK_UINT` → `VK_FLOAT`.** Numeric input widens to
+  double. The reverse (`VK_FLOAT` to integer slot) is rejected;
   callers needing truncation must cast in the expression.
-- **`V_INT` / `V_UINT` 0 / 1 → `V_BOOL`.** Other integers (`2`,
+- **`VK_INT` / `VK_UINT` 0 / 1 → `VK_BOOL`.** Other integers (`2`,
   `-1`, …) are rejected. Strings like `"true"` are the lexer's
   job — the framework does not re-interpret them.
-- **`V_STRING` → `V_ENUM`.** A string is matched against the slot's
-  `enum_values[]` table and the body receives a `V_ENUM`. Wrong
+- **`VK_STRING` → `VK_ENUM`.** A string is matched against the slot's
+  `enum_values[]` table and the body receives a `VK_ENUM`. Wrong
   names produce a `must be one of {...}` error.
 - **`OBJ_ARG_STRICT_KIND` opt-out.** A slot with this flag accepts
   exactly its declared kind and disables the coercions above.
 
-### `V_ANY` slots (and the `V_NONE` spelling on arguments)
+### `VK_ANY` slots (and the `VK_NONE` spelling on arguments)
 
-A slot declared with `kind = V_ANY` is the explicit "accept any
+A slot declared with `kind = VK_ANY` is the explicit "accept any
 kind" sentinel — the framework skips kind / width / enum checks
 and the body discriminates the input. Used for legitimately
 multi-kind attributes and parameters: `machine.rtc.time` accepts either an
@@ -465,13 +465,13 @@ either an address integer or an alias / expression string. Most
 slots should declare a concrete kind; the sentinel is reserved for
 genuine dual-input shapes.
 
-On an *argument* slot `V_NONE` means the same thing, and predates
-`V_ANY`; both spellings work and existing declarations were left
+On an *argument* slot `VK_NONE` means the same thing, and predates
+`VK_ANY`; both spellings work and existing declarations were left
 alone. On a method's *result* slot the two are not
-interchangeable: there `V_NONE` means "returns nothing" and `V_ANY`
+interchangeable: there `VK_NONE` means "returns nothing" and `VK_ANY`
 means "polymorphic" — see below.
 
-`V_ANY` is a declaration-only constant, deliberately outside
+`VK_ANY` is a declaration-only constant, deliberately outside
 `value_kind_t`'s enumerated range: it describes what a slot accepts
 or promises, never what a live value is, so switches over a value's
 kind stay exhaustive without a dead arm.
@@ -482,8 +482,8 @@ Validation copies the caller's argv into a stack-scratch buffer
 when any coercion fires or any default needs filling. The caller's
 argv is never mutated and the body must not call `value_free` on
 items in argv (the existing convention). When the caller passes a
-heap-owning value (e.g. `V_STRING`) to `node_set` and the validator
-coerces it to a different kind (e.g. `V_ENUM`), `node_set` frees
+heap-owning value (e.g. `VK_STRING`) to `node_set` and the validator
+coerces it to a different kind (e.g. `VK_ENUM`), `node_set` frees
 the orphaned heap memory before calling the setter.
 
 ### Class-registration invariants
@@ -497,14 +497,14 @@ call. Hard errors abort startup in every build configuration:
   last slot, or `OBJ_ARG_REST` combined with `OBJ_ARG_OPTIONAL`.
 - `default_value` set on a non-optional parameter, or whose kind
   doesn't match the slot; `default_value` and `default_doc` together.
-- `V_ENUM` slot with no `enum_values` table.
+- `VK_ENUM` slot with no `enum_values` table.
 - Arg-only flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `default_value`) set on an attribute slot.
 - Member `flags` outside the visibility category bits.
 - A method with `nargs != 0` but no `args[]` table. A method without a
   table skips validation altogether, so it may not claim an arity; a
   variadic method declares an `OBJ_ARG_REST` slot instead (root `echo`
-  takes a `V_ANY` rest).
+  takes a `VK_ANY` rest).
 - More than one collection member in a class, or a collection that hands
   out no entries (`by_index.get` or `by_key.lookup`), or a `next` /
   `next_key` without its `get` / `lookup`.
@@ -517,23 +517,23 @@ than first-call surprises.
 In debug builds the framework asserts that getter returns, method
 results, and setter returns match their declarations, through the
 project's `GS_ASSERTF` handler. A getter for
-a `V_UINT, width=4` attribute that returns `V_STRING` fails the
-assertion immediately; a method declared `result = V_NONE` that returns a
-non-error value also aborts. `V_ERROR` is always allowed (in-band
+a `VK_UINT, width=4` attribute that returns `VK_STRING` fails the
+assertion immediately; a method declared `result = VK_NONE` that returns a
+non-error value also aborts. `VK_ERROR` is always allowed (in-band
 error). Release builds compile the asserts out, so the production
 cost is zero. Integration and unit tests run with assertions
 enabled so cross-kind regressions surface in CI rather than only
 locally.
 
 A method whose result kind genuinely depends on its arguments
-declares `result = V_ANY` and is not checked. The one such surface
-today is `debug.mac.globals.read`, which hands back a `V_UINT` for a
-1/2/4-byte low-memory global and `V_BYTES` for a wider one
+declares `result = VK_ANY` and is not checked. The one such surface
+today is `debug.mac.globals.read`, which hands back a `VK_UINT` for a
+1/2/4-byte low-memory global and `VK_BYTES` for a wider one
 (`KeyMap`, `EventQueue`, `FileVars`, …). Declaring that method
-`V_UINT` aborted the process on every wide global (issue #106);
-`V_NONE` would have aborted on all of them, since a `V_NONE` result
+`VK_UINT` aborted the process on every wide global (issue #106);
+`VK_NONE` would have aborted on all of them, since a `VK_NONE` result
 slot asserts that the method returns nothing at all. Reach for
-`V_ANY` only when the polymorphism is real — a concrete kind is
+`VK_ANY` only when the polymorphism is real — a concrete kind is
 still the norm, and it is what makes the assertion useful.
 
 ## Foundation for shell and configuration
@@ -582,14 +582,14 @@ configure, and what the JS frontend operates on:
 
   **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
   resolves to): a value is the result; `null` is **only** a successful
-  method that returns nothing (V_NONE); every failure is an
-  `{error: "…"}` object — the core's V_ERROR message, or, for a failure of
+  method that returns nothing (VK_NONE); every failure is an
+  `{error: "…"}` object — the core's VK_ERROR message, or, for a failure of
   the bridge itself (module not ready, a thrown request), the same shape
   with `transport: true`. A result larger than the mailbox's limit
   (`GS_MBX_RESULT_MAX`, 256 KB) is such an error too, naming its size and
   the limit; it is never truncated. So `r !== null` is never a success
   test (an `{error}` satisfies it): use `gsOk(r)` for "did it work", `r === true`
-  for a V_BOOL method, and a shape check for a read. `gsErrorText(r)`
+  for a VK_BOOL method, and a shape check for a read. `gsErrorText(r)`
   gives the reason. A shell statement such as `machine.cpu.d0 = 1` is
   **not** a `gs_eval` path — write an attribute by passing the value as
   the single argument: `gsEval('machine.cpu.d0', [1])`.
@@ -760,7 +760,7 @@ JS bridge passes them as one JSON object (`initEmulator`,
 document as a JSON string. An empty string, `0`, or `0xFF` for
 `video_sense` means "not given". An explicitly empty value such as `rom=`
 is rejected by the grammar before binding (`machine.c:1256-1264`). On
-success the call returns `true`; otherwise it returns a `V_ERROR` and the
+success the call returns `true`; otherwise it returns a `VK_ERROR` and the
 old machine keeps running.
 
 | Argument | Kind | Default | Meaning and validation |
@@ -906,7 +906,7 @@ singleton or cfg-scoped:
    non-emptiness, or enum membership. Bodies still own *semantic*
    checks — value ranges that depend on runtime state ("HD already
    attached at id %d", "frequency must be a power of two") — and
-   discrimination on `V_ANY` / `V_NONE`-kind slots.
+   discrimination on `VK_ANY` / `VK_NONE`-kind slots.
 3. **Attach the object** at the right lifecycle point — for cfg-scoped
    classes, do it inside the existing `*_init` (next to the
    `cfg->foo = foo_init(...)` call), or register a root install hook

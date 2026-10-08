@@ -9,11 +9,11 @@
 // over `$(class.method(args))` to confirm the call form parses and
 // evaluates inside expressions.
 //
-// `math2.poly` covers the V_ANY result slot (issue #106): a method
+// `math2.poly` covers the VK_ANY result slot (issue #106): a method
 // whose result kind follows its argument, the shape
 // debug.mac.globals.read has. These tests only bite in an
 // assertion-enabled build — node_call's return-kind assert is what
-// used to abort the process on the V_BYTES branch.
+// used to abort the process on the VK_BYTES branch.
 
 #include "expr.h"
 #include "object.h"
@@ -72,7 +72,7 @@ static value_t math2_id(struct object *self, const member_t *m, int argc, const 
 
 // A polymorphic method: `poly(width)` returns a uint for a 1/2/4-byte
 // width and a byte buffer for anything wider — the same contract
-// debug.mac.globals.read has. Declared `.result = V_ANY`.
+// debug.mac.globals.read has. Declared `.result = VK_ANY`.
 static value_t math2_poly(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -91,7 +91,7 @@ static value_t math2_poly(struct object *self, const member_t *m, int argc, cons
     return val_bytes(buf, (size_t)width);
 }
 
-// Accepts any kind in its one slot (V_ANY on an argument slot) and
+// Accepts any kind in its one slot (VK_ANY on an argument slot) and
 // reports what it was handed, so the sentinel is exercised on the
 // input side too.
 static value_t math2_kind_of(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -103,45 +103,45 @@ static value_t math2_kind_of(struct object *self, const member_t *m, int argc, c
 }
 
 static const arg_decl_t close_args[] = {
-    {.name = "a",   .kind = V_FLOAT, .doc = "a"  },
-    {.name = "b",   .kind = V_FLOAT, .doc = "b"  },
-    {.name = "eps", .kind = V_FLOAT, .doc = "eps"},
+    {.name = "a",   .kind = VK_FLOAT, .doc = "a"  },
+    {.name = "b",   .kind = VK_FLOAT, .doc = "b"  },
+    {.name = "eps", .kind = VK_FLOAT, .doc = "eps"},
 };
 static const arg_decl_t pair_args[] = {
-    {.name = "a", .kind = V_FLOAT, .doc = "a"},
-    {.name = "b", .kind = V_FLOAT, .doc = "b"},
+    {.name = "a", .kind = VK_FLOAT, .doc = "a"},
+    {.name = "b", .kind = VK_FLOAT, .doc = "b"},
 };
 static const arg_decl_t one_arg[] = {
-    {.name = "x", .kind = V_INT, .doc = "x"},
+    {.name = "x", .kind = VK_INT, .doc = "x"},
 };
 static const arg_decl_t width_arg[] = {
-    {.name = "width", .kind = V_INT, .doc = "byte width"},
+    {.name = "width", .kind = VK_INT, .doc = "byte width"},
 };
 static const arg_decl_t any_arg[] = {
-    {.name = "v", .kind = V_ANY, .doc = "a value of any kind"},
+    {.name = "v", .kind = VK_ANY, .doc = "a value of any kind"},
 };
 
 static const member_t math2_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "close",
      .doc = "three args, bool result",
-     .method = {.args = close_args, .nargs = 3, .result = V_BOOL, .fn = math2_close}},
-    {.kind = M_METHOD,
+     .method = {.args = close_args, .nargs = 3, .result = VK_BOOL, .fn = math2_close}},
+    {.kind = MK_METHOD,
      .name = "min",
      .doc = "two args, int result",
-     .method = {.args = pair_args, .nargs = 2, .result = V_INT, .fn = math2_min}    },
-    {.kind = M_METHOD,
+     .method = {.args = pair_args, .nargs = 2, .result = VK_INT, .fn = math2_min}    },
+    {.kind = MK_METHOD,
      .name = "id",
      .doc = "one arg, int result",
-     .method = {.args = one_arg, .nargs = 1, .result = V_INT, .fn = math2_id}       },
-    {.kind = M_METHOD,
+     .method = {.args = one_arg, .nargs = 1, .result = VK_INT, .fn = math2_id}       },
+    {.kind = MK_METHOD,
      .name = "poly",
-     .doc = "declared V_ANY result",
-     .method = {.args = width_arg, .nargs = 1, .result = V_ANY, .fn = math2_poly}   },
-    {.kind = M_METHOD,
+     .doc = "declared VK_ANY result",
+     .method = {.args = width_arg, .nargs = 1, .result = VK_ANY, .fn = math2_poly}   },
+    {.kind = MK_METHOD,
      .name = "kind_of",
-     .doc = "V_ANY argument slot",
-     .method = {.args = any_arg, .nargs = 1, .result = V_INT, .fn = math2_kind_of}  },
+     .doc = "VK_ANY argument slot",
+     .method = {.args = any_arg, .nargs = 1, .result = VK_INT, .fn = math2_kind_of}  },
 };
 
 static const class_desc_t math2_class = {
@@ -167,11 +167,11 @@ TEST(test_node_call_succeeds) {
     install_math2();
     node_t n = object_resolve(object_root(), "math2.min");
     ASSERT_TRUE(node_valid(n));
-    ASSERT_TRUE(n.member && n.member->kind == M_METHOD);
+    ASSERT_TRUE(n.member && n.member->kind == MK_METHOD);
 
     value_t argv[2] = {val_int(3), val_int(7)};
     value_t r = node_call(n, 2, argv);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(3, (int)r.i);
     value_free(&r);
     for (int i = 0; i < 2; i++)
@@ -194,7 +194,7 @@ TEST(test_node_call_too_few_args) {
 TEST(test_call_form_inside_expr) {
     install_math2();
     value_t v = eval_with_root("math2.min(3, 7)");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(3, (int)v.i);
     value_free(&v);
     object_root_reset();
@@ -216,13 +216,13 @@ TEST(test_method_predicate) {
     install_math2();
     // close(1.0, 1.0001, 0.001) → true
     value_t v = eval_with_root("math2.close(1.0, 1.0001, 0.001)");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
 
     // close(1.0, 1.5, 0.001) → false
     v = eval_with_root("math2.close(1.0, 1.5, 0.001)");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(!v.b);
     value_free(&v);
     object_root_reset();
@@ -231,7 +231,7 @@ TEST(test_method_predicate) {
 TEST(test_method_error_propagates) {
     install_math2();
     // math2.id requires 1 arg; calling with zero args inside an
-    // expression should propagate as V_ERROR through arithmetic.
+    // expression should propagate as VK_ERROR through arithmetic.
     value_t v = eval_with_root("math2.id() + 1");
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
@@ -252,7 +252,7 @@ TEST(test_zero_arg_method_call_explicit) {
     object_root_reset();
 }
 
-// === Polymorphic (V_ANY) result slot — issue #106 =========================
+// === Polymorphic (VK_ANY) result slot — issue #106 =========================
 
 TEST(test_variant_result_uint_branch) {
     install_math2();
@@ -260,7 +260,7 @@ TEST(test_variant_result_uint_branch) {
     ASSERT_TRUE(node_valid(n));
     value_t four = val_int(4);
     value_t r = node_call(n, 1, &four);
-    ASSERT_EQ_INT(V_UINT, r.kind);
+    ASSERT_EQ_INT(VK_UINT, r.kind);
     ASSERT_EQ_INT(0x11223344, (int)r.u);
     value_free(&r);
     value_free(&four);
@@ -269,14 +269,14 @@ TEST(test_variant_result_uint_branch) {
 
 TEST(test_variant_result_bytes_branch) {
     install_math2();
-    // The regression: a V_BYTES result from a slot that also yields
-    // V_UINT used to trip node_call's return-kind assertion and abort
+    // The regression: a VK_BYTES result from a slot that also yields
+    // VK_UINT used to trip node_call's return-kind assertion and abort
     // the process (debug.mac.globals.read "KeyMap").
     node_t n = object_resolve(object_root(), "math2.poly");
     ASSERT_TRUE(node_valid(n));
     value_t sixteen = val_int(16);
     value_t r = node_call(n, 1, &sixteen);
-    ASSERT_EQ_INT(V_BYTES, r.kind);
+    ASSERT_EQ_INT(VK_BYTES, r.kind);
     ASSERT_EQ_INT(16, (int)r.bytes.n);
     ASSERT_EQ_INT(3, (int)r.bytes.p[3]);
     value_free(&r);
@@ -322,19 +322,19 @@ TEST(test_any_arg_slot_accepts_every_kind) {
 
     value_t s = val_str("hello");
     value_t r = node_call(n, 1, &s);
-    ASSERT_EQ_INT(V_STRING, (int)r.i); // passed through uncoerced
+    ASSERT_EQ_INT(VK_STRING, (int)r.i); // passed through uncoerced
     value_free(&r);
     value_free(&s);
 
     value_t b = val_bool(true);
     r = node_call(n, 1, &b);
-    ASSERT_EQ_INT(V_BOOL, (int)r.i);
+    ASSERT_EQ_INT(VK_BOOL, (int)r.i);
     value_free(&r);
     value_free(&b);
     object_root_reset();
 }
 
-// A V_ANY attribute slot is a class-author mistake: attributes need a
+// A VK_ANY attribute slot is a class-author mistake: attributes need a
 // concrete kind for the getter/setter round-trip. Registration rejects it.
 static value_t any_attr_get(struct object *self, const member_t *m) {
     (void)self;
@@ -342,7 +342,7 @@ static value_t any_attr_get(struct object *self, const member_t *m) {
     return val_uint(4, 0);
 }
 static const member_t any_attr_members[] = {
-    {.kind = M_ATTR, .name = "x", .doc = "V_ANY attribute slot", .attr = {.type = V_ANY, .get = any_attr_get}},
+    {.kind = MK_ATTR, .name = "x", .doc = "VK_ANY attribute slot", .attr = {.type = VK_ANY, .get = any_attr_get}},
 };
 static const class_desc_t any_attr_class = {
     .name = "anyattr",
@@ -359,7 +359,7 @@ TEST(test_any_attribute_slot_rejected) {
 // === A skipped optional reaches the body as none ============================
 //
 // An optional slot with no default that the caller leaves out -- even as a
-// hole before a later named slot -- is filled with V_NONE, so the body can
+// hole before a later named slot -- is filled with VK_NONE, so the body can
 // tell "not supplied" from "set to a default" (log.set(cat, level=3, ts=on)
 // skips `file`, which sits between them).  A grouped slot is the exception:
 // it cannot be skipped alone.
@@ -370,22 +370,22 @@ static value_t skippable_fn(struct object *self, const member_t *m, int argc, co
     // Report which slots arrived set, as a bitmask.
     int mask = 0;
     for (int i = 0; i < 3; i++)
-        if (argv[i].kind != V_NONE)
+        if (argv[i].kind != VK_NONE)
             mask |= 1 << i;
     return val_int(mask);
 }
 
 static const arg_decl_t skippable_args[] = {
-    {.name = "a", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "a"},
-    {.name = "b", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "b"},
-    {.name = "c", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "c"},
+    {.name = "a", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "a"},
+    {.name = "b", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "b"},
+    {.name = "c", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "c"},
 };
 
 static const member_t skippable_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "opt",
      .doc = "optional slots",
-     .method = {.args = skippable_args, .nargs = 3, .result = V_INT, .fn = skippable_fn}},
+     .method = {.args = skippable_args, .nargs = 3, .result = VK_INT, .fn = skippable_fn}},
 };
 
 static const class_desc_t skippable_class = {
@@ -420,15 +420,15 @@ TEST(test_interior_optional_slot_can_be_skipped) {
 }
 
 static const arg_decl_t grouped_args[] = {
-    {.name = "a", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "a"},
-    {.name = "b", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "b"},
+    {.name = "a", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "a"},
+    {.name = "b", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "b"},
 };
 
 static const member_t grouped_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "opt",
      .doc = "grouped slots",
-     .method = {.args = grouped_args, .nargs = 2, .result = V_INT, .fn = skippable_fn}},
+     .method = {.args = grouped_args, .nargs = 2, .result = VK_INT, .fn = skippable_fn}},
 };
 
 static const class_desc_t grouped_class = {.name = "grouped", .members = grouped_members, .n_members = 1};
@@ -511,7 +511,7 @@ static const collection_desc_t sparse_entries = {
 };
 
 static const member_t sparse_members[] = {
-    {.kind = M_CHILD, .name = "entries", .child = {.collection = &sparse_entries}},
+    {.kind = MK_CHILD, .name = "entries", .child = {.collection = &sparse_entries}},
 };
 static const class_desc_t sparse_class = {.name = "sparse", .members = sparse_members, .n_members = 1};
 

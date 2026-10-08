@@ -137,8 +137,8 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
   - Module-specific operations are exposed through a `class_desc_t`
     declared alongside the module's other code. The class names the
     path segment (`cpu`, `floppy`, `scsi`, …) and lists its members:
-    typed attributes (`M_ATTR`), methods (`M_METHOD`), and child
-    objects (`M_CHILD`, named or indexed).
+    typed attributes (`MK_ATTR`), methods (`MK_METHOD`), and child
+    objects (`MK_CHILD`, named or indexed).
   - The class is attached to the object root by the module's `_init`
     function (cfg-scoped subsystems) or by a dedicated
     `<module>_class_register` called from `core_init` (`src/core/core_init.c`)

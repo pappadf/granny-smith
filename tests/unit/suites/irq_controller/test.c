@@ -93,7 +93,7 @@ static value_t get(struct object *o, const char *name) {
 
 static uint64_t get_uint(struct object *o, const char *name) {
     value_t v = get(o, name);
-    ASSERT_EQ_INT(v.kind, V_UINT);
+    ASSERT_EQ_INT(v.kind, VK_UINT);
     uint64_t u = v.u;
     value_free(&v);
     return u;
@@ -108,7 +108,7 @@ TEST(test_shared_members_are_the_same_on_every_controller) {
     static const char *const want[] = {"chip", "pending", "enabled", "active", "ipl", "levels"};
     for (int i = 0; i < 6; i++) {
         ASSERT_TRUE(strcmp(toy_plain_members[i].name, want[i]) == 0);
-        ASSERT_EQ_INT(toy_plain_members[i].kind, M_ATTR);
+        ASSERT_EQ_INT(toy_plain_members[i].kind, MK_ATTR);
         ASSERT_TRUE(toy_plain_members[i].attr.set == NULL); // never writable
         ASSERT_TRUE(toy_full_members[i].attr.get == toy_plain_members[i].attr.get);
     }
@@ -120,7 +120,7 @@ TEST(test_active_defaults_to_pending_and_enabled) {
     ASSERT_TRUE(o != NULL);
 
     value_t chip = get(o, "chip");
-    ASSERT_EQ_INT(chip.kind, V_STRING);
+    ASSERT_EQ_INT(chip.kind, VK_STRING);
     ASSERT_TRUE(strcmp(chip.s, "TOY") == 0);
     value_free(&chip);
 
@@ -131,7 +131,7 @@ TEST(test_active_defaults_to_pending_and_enabled) {
 
     // No level map is a fact about the chip, not an error.
     value_t lv = get(o, "levels");
-    ASSERT_EQ_INT(lv.kind, V_LIST);
+    ASSERT_EQ_INT(lv.kind, VK_LIST);
     ASSERT_EQ_INT((int)lv.list.len, 0);
     value_free(&lv);
 
@@ -158,11 +158,11 @@ TEST(test_levels_report_cpu_levels_not_array_indices) {
     ASSERT_TRUE(o != NULL);
 
     value_t lv = get(o, "levels");
-    ASSERT_EQ_INT(lv.kind, V_LIST);
+    ASSERT_EQ_INT(lv.kind, VK_LIST);
     ASSERT_EQ_INT((int)lv.list.len, 4);
     for (int i = 0; i < 4; i++) {
         value_t *entry = &lv.list.items[i];
-        ASSERT_EQ_INT(entry->kind, V_MAP);
+        ASSERT_EQ_INT(entry->kind, VK_MAP);
         const value_t *ipl = value_map_get(entry, "ipl");
         const value_t *src = value_map_get(entry, "sources");
         ASSERT_TRUE(ipl != NULL && src != NULL);

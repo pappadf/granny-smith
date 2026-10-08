@@ -114,7 +114,7 @@ bool job_output_append(const char *text, size_t len);
 // Places an annotation record in the calling job's record stream at the
 // current output position (same context test as job_output_append): after
 // the text printed so far, before whatever is printed next.  Written as
-// {"event":<kind>,"id":req,"client":c,<fields>}, the entries of the V_MAP
+// {"event":<kind>,"id":req,"client":c,<fields>}, the entries of the VK_MAP
 // `fields` (plain data; tagged JSON) following the header; NULL for none.
 // When the full record would exceed the ring's record bound the `reduced`
 // map (optional; callers keep it small) is used instead, and

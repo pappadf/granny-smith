@@ -1188,7 +1188,7 @@ static DEF_GETTER(eng_attr_enabled_get) {
     return val_bool(display_card_24ac_engine_enabled(node_card(self)));
 }
 static DEF_SETTER(eng_attr_enabled_set) {
-    if (in.kind != V_BOOL) {
+    if (in.kind != VK_BOOL) {
         value_free(&in);
         return val_err("engine.enabled: expected a boolean");
     }
@@ -1215,34 +1215,34 @@ static DEF_GETTER(eng_attr_copy_bytes) {
     return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
 }
 static const member_t engine_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Acceleration gate; clear to force the software-fallback path (the oracle)",
-     .attr = {.type = V_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "Latched CONTROL op byte ($01 fill / $03 stretch / $7F copy / ROP)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = eng_attr_mode}   },
+    {.kind = MK_ATTR,
      .name = "operand",
      .doc = "Latched 32-bit fill/pattern operand",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = eng_attr_operand}},
+    {.kind = MK_ATTR,
      .name = "fill_ops",
      .doc = "Diagnostic: hardware run-length fills executed by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_fill_ops}                                },
+    {.kind = MK_ATTR,
      .name = "fill_bytes",
      .doc = "Diagnostic: total bytes filled by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_fill_bytes}                              },
+    {.kind = MK_ATTR,
      .name = "copy_ops",
      .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_copy_ops}                                },
+    {.kind = MK_ATTR,
      .name = "copy_bytes",
      .doc = "Diagnostic: total bytes copied by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}                              },
+     .attr = {.type = VK_UINT, .get = eng_attr_copy_bytes}                              },
 };
 static const class_desc_t display_card_24ac_engine_class = {
     .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};

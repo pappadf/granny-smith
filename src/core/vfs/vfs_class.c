@@ -56,7 +56,7 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
 // than guessing from the file's extension.  Descends into disk images and
 // archives through the same resolver as `files.ls`, so a bare image path
 // lists its partitions and a partition path lists the HFS/UFS volume.
-// Read-only throughout. Returns V_ERROR (falsy via the bridge) when the path
+// Read-only throughout. Returns VK_ERROR (falsy via the bridge) when the path
 // can't be opened as a directory.
 value_t files_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;

@@ -11,7 +11,7 @@ scheduler.run 50000
 machine.scsi
 assert machine.scsi.loopback == false
 
-# Bus child: phase is a V_ENUM, target / initiator are ints. After a
+# Bus child: phase is a VK_ENUM, target / initiator are ints. After a
 # brief warmup the bus has settled back to bus_free.
 machine.scsi.bus
 assert machine.scsi.bus.phase == "bus_free"

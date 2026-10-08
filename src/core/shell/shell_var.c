@@ -5,12 +5,12 @@
 // Scoped shell binding store. See shell_var.h for the contract.
 //
 // Storage: a fixed stack of scopes, each holding a small dynamic array
-// of heap-allocated binding entries (stable pointers, so the V_OBJECT
+// of heap-allocated binding entries (stable pointers, so the VK_OBJECT
 // invalidator hook can carry an entry pointer safely across growth).
 // Scope 0 is the process-global scope (--var bindings, TMP_DIR); scope
 // 1 is the script/session top level; function calls push above that.
 // The built-in/user alias table (alias.c) is the read-only fallback
-// behind every scope — its entries surface as V_REF values, which is
+// behind every scope — its entries surface as VK_REF values, which is
 // exactly the reference-binding semantics.
 //
 // Lookup is a linear scan of each scope: scopes hold a handful to a few
@@ -37,8 +37,8 @@
 typedef struct binding {
     char *name;
     value_t value;
-    struct object *watched; // non-NULL while value is a live V_OBJECT
-    bool stale; // watched object was destroyed; reads yield V_ERROR
+    struct object *watched; // non-NULL while value is a live VK_OBJECT
+    bool stale; // watched object was destroyed; reads yield VK_ERROR
 } binding_t;
 
 typedef struct scope {
@@ -71,11 +71,11 @@ static void binding_clear_value(binding_t *b) {
     value_free(&b->value);
 }
 
-// Store a value into an entry, arming the staleness watch for V_OBJECT.
+// Store a value into an entry, arming the staleness watch for VK_OBJECT.
 static void binding_store(binding_t *b, value_t v) {
     binding_clear_value(b);
     b->value = v;
-    if (v.kind == V_OBJECT && v.obj) {
+    if (v.kind == VK_OBJECT && v.obj) {
         b->watched = v.obj;
         object_register_invalidator(v.obj, binding_object_gone, b);
     }
@@ -265,7 +265,7 @@ static int shell_var_set_impl(const char *name, const char *value) {
 
 static const char *shell_var_get_impl(const char *name) {
     binding_t *b = name ? find_binding(name) : NULL;
-    if (!b || b->value.kind != V_STRING)
+    if (!b || b->value.kind != VK_STRING)
         return NULL;
     return b->value.s;
 }

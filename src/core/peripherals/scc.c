@@ -2037,7 +2037,7 @@ static DEF_SETTER(scc_ch_attr_output_set) {
     scc_channel_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
-    if (in.kind == V_NONE) {
+    if (in.kind == VK_NONE) {
         scc_set_output(c->scc, (unsigned)c->index, NULL);
         return val_none();
     }
@@ -2079,11 +2079,11 @@ static DEF_METHOD(scc_ch_method_receive) {
     const uint8_t *bytes;
     size_t len;
     uint8_t one;
-    if (argv[0].kind == V_STRING) {
+    if (argv[0].kind == VK_STRING) {
         bytes = (const uint8_t *)argv[0].s;
         len = argv[0].s ? strlen(argv[0].s) : 0;
-    } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
-        one = (uint8_t)(argv[0].kind == V_INT ? (uint64_t)argv[0].i : argv[0].u);
+    } else if (argv[0].kind == VK_INT || argv[0].kind == VK_UINT) {
+        one = (uint8_t)(argv[0].kind == VK_INT ? (uint64_t)argv[0].i : argv[0].u);
         bytes = &one;
         len = 1;
     } else {
@@ -2155,57 +2155,57 @@ static DEF_METHOD(scc_ch_method_sent) {
 
 static const arg_decl_t scc_ch_receive_args[] = {
     {.name = "data",
-     .kind = V_NONE,
+     .kind = VK_NONE,
      .validation_flags = OBJ_ARG_POLY,
      .doc = "String to deliver, or a single byte value"},
 };
 
 static const member_t scc_ch_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "Channel number: 0 = channel A (modem port), 1 = channel B (printer port)",
-     .attr = {.type = V_INT, .get = scc_ch_attr_index}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = scc_ch_attr_index}},
+    {.kind = MK_ATTR,
      .name = "dcd",
      .doc = "State of this channel's DCD input — on a Mac it is wired to the mouse/disk interrupt, not a modem",
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scc_ch_attr_dcd}},
+    {.kind = MK_ATTR,
      .name = "tx_empty",
      .doc = "True when the transmit buffer has drained and the guest may write the next byte",
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scc_ch_attr_tx_empty}},
+    {.kind = MK_ATTR,
      .name = "rx_pending",
      .doc = "Bytes queued for the guest to read, delivered by `receive` and not yet consumed",
-     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = scc_ch_attr_rx_pending}},
+    {.kind = MK_ATTR,
      .name = "sent_pending",
      .flags = M_CAT_ADVANCED,
      .doc = "Bytes the guest has transmitted that are waiting in the host-side capture buffer",
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = scc_ch_attr_sent_pending}},
+    {.kind = MK_ATTR,
      .name = "sent_dropped",
      .flags = M_CAT_ADVANCED,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
-            "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
-    {.kind = M_ATTR,
+            "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = VK_UINT, .get = scc_ch_attr_sent_dropped}},
+    {.kind = MK_ATTR,
      .name = "output",
      .doc = "Host file the channel's transmitted bytes stream into (asynchronous mode), or none; setting it "
-            "stands for a ready device on the cable", .attr = {.type = V_STRING,
+            "stands for a ready device on the cable", .attr = {.type = VK_STRING,
               .validation_flags = OBJ_ARG_NONE_OK,
               .get = scc_ch_attr_output,
               .set = scc_ch_attr_output_set}},
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "device",
      .doc = "The device plugged into this port (a printer), or none",
-     .attr = {.type = V_STRING, .validation_flags = OBJ_ARG_NONE_OK, .get = scc_ch_attr_device}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .validation_flags = OBJ_ARG_NONE_OK, .get = scc_ch_attr_device}},
+    {.kind = MK_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_method_receive}},
-    {.kind = M_METHOD,
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = VK_UINT, .fn = scc_ch_method_receive}},
+    {.kind = MK_METHOD,
      .name = "sent",
      .doc = "Drain and return the text this channel has transmitted since the last call",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_method_sent}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_STRING, .fn = scc_ch_method_sent}},
 };
 
 static const class_desc_t scc_channel_class = {
@@ -2216,24 +2216,24 @@ static const class_desc_t scc_channel_class = {
 };
 
 static const member_t scc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "loopback",
      .doc = "External loopback (port A TX → port B RX, port B TX → port A RX)",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = scc_attr_loopback_get, .set = scc_attr_loopback_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scc_attr_loopback_get, .set = scc_attr_loopback_set}},
+    {.kind = MK_ATTR,
      .name = "pclk_hz",
      .doc = "PCLK source frequency (Hz)",
-     .attr = {.type = V_UINT, .get = scc_attr_pclk_hz, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = scc_attr_pclk_hz, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "rtxc_hz",
      .doc = "RTxC source frequency (Hz)",
-     .attr = {.type = V_UINT, .get = scc_attr_rtxc_hz, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = scc_attr_rtxc_hz, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "reset",
      .doc = "Reset the SCC (both channels)",
      .flags = M_CAT_ADVANCED,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = scc_method_reset}},
 };
 
 static const class_desc_t scc_class = {

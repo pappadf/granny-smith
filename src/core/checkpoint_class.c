@@ -70,7 +70,7 @@ static DEF_METHOD(checkpoint_method_snapshot) {
     return val_bool(gs_background_checkpoint(argv[0].s) == 0);
 }
 
-// `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
+// `checkpoint.auto` (VK_BOOL, RW) — exposes the WASM background-checkpoint
 // loop's enabled flag.  A platform with no such loop (headless) reads false
 // and refuses the set.
 static DEF_GETTER(checkpoint_attr_auto_get) {
@@ -85,63 +85,63 @@ static DEF_SETTER(checkpoint_attr_auto_set) {
 
 static const arg_decl_t checkpoint_load_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
 
 static const arg_decl_t checkpoint_save_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Checkpoint output path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Checkpoint output path"},
 };
 
 static const arg_decl_t checkpoint_snapshot_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Snapshot label"},
+    {.name = "name", .kind = VK_STRING, .doc = "Snapshot label"},
 };
 
 static const member_t checkpoint_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "auto",
      .doc = "Automatic background checkpoints enabled: the periodic save and the tab-hidden save (WASM only)",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
+    {.kind = MK_METHOD,
      .name = "probe",
      .examples = EXAMPLES("checkpoint.probe"),
      .doc = "True if a valid checkpoint exists for the active machine",
      .method = {.result_doc = "true when one exists",
                 .args = NULL,
                 .nargs = 0,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = checkpoint_method_probe}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("checkpoint.clear"),
      .doc = "Remove all checkpoint files for the active machine, and the image deltas no open image holds",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = checkpoint_method_clear}},
+    {.kind = MK_METHOD,
      .name = "load",
      .examples = EXAMPLES("checkpoint.load", "checkpoint.load \"/opfs/checkpoints/before-install.gscp\""),
      .doc = "Load a checkpoint",
      .method = {.result_doc = "true when it loaded",
                 .args = checkpoint_load_args,
                 .nargs = 1,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = checkpoint_method_load}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "save",
      .examples = EXAMPLES("checkpoint.save \"/opfs/checkpoints/before-install.gscp\""),
      .doc = "Save the current machine state to a checkpoint file",
      .method = {.result_doc = "true when it was written",
                 .args = checkpoint_save_args,
                 .nargs = 1,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = checkpoint_method_save}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "snapshot",
      .examples = EXAMPLES("checkpoint.snapshot \"before-install\""),
      .doc = "Capture a quick (background) checkpoint under the given label",
-     .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
+     .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = VK_BOOL, .fn = checkpoint_method_snapshot}},
 };
 
 static const class_desc_t checkpoint_class = {

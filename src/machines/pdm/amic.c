@@ -975,7 +975,7 @@ static const irq_controller_ops_t amic_irq_ops = {
         const pdm_state_t *st = pdm_st((config_t *)object_data(self));                                                 \
         (void)st;                                                                                                      \
         value_t v = val_uint(1, (EXPR));                                                                               \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -988,30 +988,32 @@ AMIC_BYTE_ATTR(dev_ier, st->amic.via2.dev_ier)
 
 static const member_t amic_members[] = {
     IRQ_CONTROLLER_MEMBERS(&amic_irq_ops){
-                                          .kind = M_ATTR,
+                                          .kind = MK_ATTR,
                                           .name = "mode",
                                           .doc = "INTMODE: 0 = line follows the sources, 1 = line follows the CPUINT latch",
-                                          .attr = {.type = V_UINT, .get = amic_attr_mode, .set = NULL}                                                    },
-    {.kind = M_ATTR,
+                                          .attr = {.type = VK_UINT, .get = amic_attr_mode, .set = NULL}                                       },
+    {.kind = MK_ATTR,
                                           .name = "latch",
                                           .doc = "CPUINT latch (INTMODE 1 only)",
-                                          .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = amic_attr_latch, .set = NULL}               },
-    {.kind = M_ATTR,
+                                          .attr = {.type = VK_UINT, .presentation_flags = VFLAG_VOLATILE, .get = amic_attr_latch, .set = NULL}},
+    {.kind = MK_ATTR,
                                           .name = "slot_ifr",
                                           .doc = "Pseudo-VIA2 slot flags, ACTIVE LOW (a clear bit is an asserted /NMRQ)",
-                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_slot_ifr, .set = NULL}  },
-    {.kind = M_ATTR,
+                                          .attr =
+         {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = amic_attr_slot_ifr, .set = NULL}                          },
+    {.kind = MK_ATTR,
                                           .name = "slot_ier",
                                           .doc = "Pseudo-VIA2 slot enables (mask $78)",
-                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_slot_ier, .set = NULL}                 },
-    {.kind = M_ATTR,
+                                          .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = amic_attr_slot_ier, .set = NULL}  },
+    {.kind = MK_ATTR,
                                           .name = "dev_levels",
                                           .doc = "Pseudo-VIA2 device sources, active-high internal view",
-                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_dev_levels, .set = NULL}},
-    {.kind = M_ATTR,
+                                          .attr =
+         {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = amic_attr_dev_levels, .set = NULL}                        },
+    {.kind = MK_ATTR,
                                           .name = "dev_ier",
                                           .doc = "Pseudo-VIA2 device enables (mask $3B)",
-                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_dev_ier, .set = NULL}                  },
+                                          .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = amic_attr_dev_ier, .set = NULL}   },
 };
 
 static const class_desc_t amic_class = {

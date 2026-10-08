@@ -43,12 +43,12 @@ void expr_set_func_hook(expr_func_hook_fn fn, void *ud);
 // One namespace, one sigil: the callback is the single lookup path for
 // `$name` in expressions, command arguments, and string interpolation.
 // The shell wires this to its scoped binding store (which itself falls
-// back to the built-in alias table, returning V_REF reference values);
+// back to the built-in alias table, returning VK_REF reference values);
 // fire-time evaluators (logpoint templates) chain their per-fire
 // bindings (`$value`/`$addr`/`$size`) in front of the shell store.
 //
-// Contract: return V_ERROR("no such binding ...") for unknown names —
-// V_NONE is a *real* value (`let x = none` must read back as none).
+// Contract: return VK_ERROR("no such binding ...") for unknown names —
+// VK_NONE is a *real* value (`let x = none` must read back as none).
 // Returned value_t is OWNED by the caller of expr_eval; the binding fn
 // must produce a freshly-allocated value (or a self-contained inline
 // value like val_int that needs no free).
@@ -64,17 +64,17 @@ typedef struct expr_ctx {
 // Read a normalized path (`a.b`, `a.b[0]`, `a.b["key"]` segment text)
 // against `root`. Resolves the full path as a tree node when possible;
 // otherwise resolves the longest prefix that is a node, reads its value,
-// and descends the remaining segments into that V_MAP / V_LIST value —
+// and descends the remaining segments into that VK_MAP / VK_LIST value —
 // the access path behind `node.attr[0].key` when `attr` answers a map or a
 // list. Returns the
-// (owned) value or V_ERROR.
+// (owned) value or VK_ERROR.
 value_t expr_object_path_read(struct object *root, const char *path);
 
 // Evaluate the expression in `src` (the body of a `$(...)` form, with
-// no surrounding parens). Returns the resulting value_t (or V_ERROR on
+// no surrounding parens). Returns the resulting value_t (or VK_ERROR on
 // syntax/type/resolution errors). Caller frees with value_free.
 //
-// Errors: a V_ERROR operand propagates through every operator, with two
+// Errors: a VK_ERROR operand propagates through every operator, with two
 // exceptions. `!` treats an error as false, so `!err` is true (`assert
 // !machine.cpu.broken` passes when the attribute is missing or false); and
 // `&&` / `||` / `?:` parse the side they do not take and discard its value
@@ -102,7 +102,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 
 // Interpolate ${...} regions inside a string literal body. `src` is the
 // raw body of a "..." string with escapes already decoded. Returns a
-// V_STRING with all ${expr} regions replaced by their default-formatted
+// VK_STRING with all ${expr} regions replaced by their default-formatted
 // values. ${ that is not closed is an error.
 value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx);
 
@@ -110,14 +110,14 @@ value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx);
 // `body` is the text between the quotes with escapes
 // NOT yet decoded. Handles `\n \t \r \0 \\ \" \' \$ \xHH` escapes,
 // `${EXPR[:FMT]}` splices, and `$name` binding splices. Returns
-// V_STRING, or V_ERROR on an unterminated `${` or a failed splice.
+// VK_STRING, or VK_ERROR on an unterminated `${` or a failed splice.
 // This is also the fire-time evaluator for template-typed arguments
 // (logpoint messages): store the raw body, call this per fire.
 value_t expr_interpolate_body(const char *body, const expr_ctx_t *ctx);
 
 // Parse a double-quoted string literal at *p (cursor on the opening
 // `"`), advancing past the closing quote, then decode + interpolate its
-// body via expr_interpolate_body. Returns V_STRING or V_ERROR.
+// body via expr_interpolate_body. Returns VK_STRING or VK_ERROR.
 value_t expr_parse_dq_string(const char **p, const expr_ctx_t *ctx);
 
 // Scan a raw dq-string body starting just past the opening quote;

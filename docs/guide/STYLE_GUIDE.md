@@ -28,6 +28,11 @@ other compilers.
   symbols exported out of the WASM core, where `gs_` tells a JS caller the
   name is Granny Smith's.  Everything else (`checkpoint_t`, `status_t`, ...)
   is unprefixed.
+- The enumerators of a kind/discriminator enum carry a short prefix derived
+  from the type's name: `VK_*` (`value_kind_t`), `MK_*` (`member_kind_t`),
+  `AK_*` (`alias_kind_t`), `NK_*` (`num_kind_t`).  Flag bits get their own,
+  distinct prefix (`VFLAG_*` for the value display flags), so a kind and a
+  flag on the same struct never read alike.
 - Global variables: `g_` for an object shared across translation units
   (declared `extern` in a header), `s_` for a file-scope `static`.
 - Identifiers starting with an underscore are reserved for the implementation
