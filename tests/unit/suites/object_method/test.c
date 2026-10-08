@@ -17,6 +17,7 @@
 
 #include "expr.h"
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -352,7 +353,7 @@ static const class_desc_t any_attr_class = {
 
 TEST(test_any_attribute_slot_rejected) {
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&any_attr_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&any_attr_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "ANY") != NULL);
 }
 

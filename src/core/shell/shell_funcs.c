@@ -16,6 +16,7 @@
 #include "expr.h"
 #include "script.h"
 #include "shell_var.h"
+#include "status.h"
 #include "usage.h"
 #include "value.h"
 #include "job/job.h"
@@ -183,14 +184,14 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
         snprintf(err_buf, err_size, "function body was already consumed (def re-executed?)");
         return -1;
     }
-    if (!object_validate_name(name, err, sizeof(err))) {
+    if (object_validate_name(name, err, sizeof(err)) != STATUS_OK) {
         snprintf(err_buf, err_size, "%s", err);
         script_block_free(body);
         return -1;
     }
     // Duplicate parameter names are a definition error.
     for (int i = 0; i < n_params; i++) {
-        if (!object_validate_name(params[i], err, sizeof(err))) {
+        if (object_validate_name(params[i], err, sizeof(err)) != STATUS_OK) {
             snprintf(err_buf, err_size, "parameter %d: %s", i + 1, err);
             script_block_free(body);
             return -1;

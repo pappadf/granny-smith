@@ -24,6 +24,7 @@
 #include "shell_funcs.h"
 #include "shell_internal.h"
 #include "shell_var.h"
+#include "status.h"
 #include "syntax.h"
 #include "value.h"
 
@@ -1998,7 +1999,7 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
     case ST_ALIAS: {
         char err[SCRIPT_ERR_MAX];
-        if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
+        if (alias_add_user(st->name, st->text, err, sizeof(err)) != STATUS_OK)
             exec_error(cx, st->line, "alias: %s", err);
         return;
     }

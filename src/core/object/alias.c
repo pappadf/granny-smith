@@ -20,6 +20,7 @@
 
 #include "log.h"
 #include "object.h" // object_validate_name
+#include "status.h"
 
 LOG_USE_CATEGORY_NAME("alias");
 
@@ -79,28 +80,23 @@ static void free_entry(alias_entry_t *e) {
     e->path = NULL;
 }
 
-static int validate_name(const char *name, char *err_buf, size_t err_size) {
-    if (!object_validate_name(name, err_buf, err_size))
-        return -1;
-    return 0;
-}
-
-static int alias_register_builtin_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
+static status_t alias_register_builtin_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
-        return -1;
+        return STATUS_E_INVAL;
     }
-    if (validate_name(name, err_buf, err_size) < 0)
-        return -1;
+    status_t rc = object_validate_name(name, err_buf, err_size);
+    if (rc != STATUS_OK)
+        return rc;
 
     int idx = find_index(name);
     if (idx >= 0) {
         alias_entry_t *e = &g_table[idx];
         if (e->kind == AK_BUILTIN && e->path && strcmp(e->path, path) == 0)
-            return 0; // idempotent re-registration with same target
+            return STATUS_OK; // idempotent re-registration with same target
         if (e->kind == AK_BUILTIN) {
             set_err(err_buf, err_size, "built-in alias '%s' already maps to '%s'", name, e->path);
-            return -1;
+            return STATUS_E_INVAL;
         }
         // Replacing a user alias with a built-in is fine — built-ins
         // win when both are registered (the framework registers them
@@ -112,61 +108,62 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
         e->name = strdup(name);
         e->path = strdup(path);
         e->kind = AK_BUILTIN;
-        return 0;
+        return STATUS_OK;
     }
 
     if (grow(g_count + 1) < 0) {
         set_err(err_buf, err_size, "out of memory");
-        return -1;
+        return STATUS_E_NOMEM;
     }
     alias_entry_t *e = &g_table[g_count++];
     e->name = strdup(name);
     e->path = strdup(path);
     e->kind = AK_BUILTIN;
-    return 0;
+    return STATUS_OK;
 }
 
-static int alias_add_user_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
+static status_t alias_add_user_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
-        return -1;
+        return STATUS_E_INVAL;
     }
-    if (validate_name(name, err_buf, err_size) < 0)
-        return -1;
+    status_t rc = object_validate_name(name, err_buf, err_size);
+    if (rc != STATUS_OK)
+        return rc;
 
     int idx = find_index(name);
     if (idx >= 0) {
         alias_entry_t *e = &g_table[idx];
         if (e->kind == AK_BUILTIN) {
             set_err(err_buf, err_size, "'%s' is a built-in alias", name);
-            return -1;
+            return STATUS_E_INVAL;
         }
         // Replace existing user alias.
         free(e->path);
         e->path = strdup(path);
-        return 0;
+        return STATUS_OK;
     }
 
     if (grow(g_count + 1) < 0) {
         set_err(err_buf, err_size, "out of memory");
-        return -1;
+        return STATUS_E_NOMEM;
     }
     alias_entry_t *e = &g_table[g_count++];
     e->name = strdup(name);
     e->path = strdup(path);
     e->kind = AK_USER;
-    return 0;
+    return STATUS_OK;
 }
 
-static int alias_remove_user_impl(const char *name, char *err_buf, size_t err_size) {
+static status_t alias_remove_user_impl(const char *name, char *err_buf, size_t err_size) {
     int idx = find_index(name);
     if (idx < 0) {
         set_err(err_buf, err_size, "no such alias '%s'", name ? name : "(null)");
-        return -1;
+        return STATUS_E_NOENT;
     }
     if (g_table[idx].kind == AK_BUILTIN) {
         set_err(err_buf, err_size, "'%s' is a built-in alias and cannot be removed", name);
-        return -1;
+        return STATUS_E_INVAL;
     }
     free_entry(&g_table[idx]);
     // Close the gap by shifting the tail down one slot, keeping the
@@ -174,7 +171,7 @@ static int alias_remove_user_impl(const char *name, char *err_buf, size_t err_si
     memmove(&g_table[idx], &g_table[idx + 1], (g_count - 1 - (size_t)idx) * sizeof(alias_entry_t));
     memset(&g_table[g_count - 1], 0, sizeof(alias_entry_t));
     g_count--;
-    return 0;
+    return STATUS_OK;
 }
 
 static const char *alias_lookup_impl(const char *name, alias_kind_t *kind_out) {
@@ -230,23 +227,23 @@ static void alias_clear_user_impl(void) {
 // operation; the interpreter on the job thread and the emulator thread
 // (breakpoint conditions, completion, shell.vars) both read here. =========
 
-int alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
+status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
     job_tables_lock();
-    int r = alias_register_builtin_impl(name, path, err_buf, err_size);
+    status_t r = alias_register_builtin_impl(name, path, err_buf, err_size);
     job_tables_unlock();
     return r;
 }
 
-int alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
+status_t alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
     job_tables_lock();
-    int r = alias_add_user_impl(name, path, err_buf, err_size);
+    status_t r = alias_add_user_impl(name, path, err_buf, err_size);
     job_tables_unlock();
     return r;
 }
 
-int alias_remove_user(const char *name, char *err_buf, size_t err_size) {
+status_t alias_remove_user(const char *name, char *err_buf, size_t err_size) {
     job_tables_lock();
-    int r = alias_remove_user_impl(name, err_buf, err_size);
+    status_t r = alias_remove_user_impl(name, err_buf, err_size);
     job_tables_unlock();
     return r;
 }

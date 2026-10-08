@@ -4,6 +4,7 @@
 
 #include "object.h"
 #include "parse.h"
+#include "status.h"
 #include "test_assert.h"
 
 #include "value.h"
@@ -188,30 +189,30 @@ TEST(test_enum_lookup) {
 // Reserved-word rejection for object_validate_name.
 TEST(test_reserved_word_check) {
     char err[160];
-    ASSERT_TRUE(!object_validate_name("true", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("true", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
-    ASSERT_TRUE(!object_validate_name("while", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("if", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("else", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("def", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("none", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("assert", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("while", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("if", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("else", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("def", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("none", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("assert", err, sizeof(err)) != STATUS_OK);
 
     // `on`/`yes` were demoted from reserved words (shell v2 §3.11).
-    ASSERT_TRUE(object_validate_name("on", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("on", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)) == STATUS_OK);
 
     // Bad identifiers.
-    ASSERT_TRUE(!object_validate_name("", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("1abc", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("a.b", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("a-b", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("1abc", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("a.b", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("a-b", err, sizeof(err)) != STATUS_OK);
 
     // Acceptable.
-    ASSERT_TRUE(object_validate_name("pc", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("d0", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("MBState", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("pc", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("d0", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("MBState", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)) == STATUS_OK);
 }
 
 // Trailing garbage past a literal is an error.

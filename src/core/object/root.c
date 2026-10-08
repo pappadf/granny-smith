@@ -21,6 +21,7 @@
 #include "object.h"
 #include "shell.h"
 #include "shell_funcs.h"
+#include "status.h"
 #include "system.h"
 #include "usage.h"
 #include "value.h"
@@ -337,7 +338,7 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
         g_stub_cap = cap;
     }
     char err[200];
-    if (!object_validate_class(cls, err, sizeof(err))) {
+    if (object_validate_class(cls, err, sizeof(err)) != STATUS_OK) {
         LOG(0, "root: class '%s' invalid: %s", cls && cls->name ? cls->name : "?", err);
         object_delete(o);
         return NULL;

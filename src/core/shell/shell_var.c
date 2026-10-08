@@ -21,6 +21,7 @@
 
 #include "alias.h"
 #include "object.h"
+#include "status.h"
 #include "value.h"
 
 #include "job/job.h"
@@ -162,7 +163,7 @@ static value_t shell_binding_get_impl(const char *name) {
 
 static int shell_binding_let_impl(const char *name, value_t v, char *err_buf, size_t err_size) {
     char err[160];
-    if (!object_validate_name(name, err, sizeof(err))) {
+    if (object_validate_name(name, err, sizeof(err)) != STATUS_OK) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "let: %s", err);
         value_free(&v);

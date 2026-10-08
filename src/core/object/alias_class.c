@@ -11,18 +11,19 @@
 #include <stdio.h>
 
 #include "object.h"
+#include "status.h"
 #include "value.h"
 
 static DEF_METHOD(alias_method_add) {
     char err[160];
-    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
+    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) != STATUS_OK)
         return val_err("%s", err);
     return val_none();
 }
 
 static DEF_METHOD(alias_method_remove) {
     char err[160];
-    if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
+    if (alias_remove_user(argv[0].s, err, sizeof(err)) != STATUS_OK)
         return val_err("%s", err);
     return val_none();
 }

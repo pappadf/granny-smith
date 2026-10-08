@@ -17,6 +17,7 @@
 #include "lint.h"
 #include "meta.h"
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -202,7 +203,7 @@ TEST(test_class_with_meta_member_rejected) {
         .n_members = 1,
     };
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&bad_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&bad_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL || strstr(err, "meta") != NULL);
 }
 

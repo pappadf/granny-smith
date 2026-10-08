@@ -22,6 +22,7 @@
 #include "object.h"
 #include "ppc_disasm.h"
 #include "scheduler.h"
+#include "status.h"
 #include "system.h"
 #include "value.h"
 
@@ -906,7 +907,7 @@ void ppc_reset(ppc_t *p) {
 
 static void register_alias_or_warn(const char *name, const char *path) {
     char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
+    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
         LOG(0, "ppc: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
 }
 

@@ -15,6 +15,7 @@
 
 #include "common.h"
 #include "parse.h" // object_is_reserved_word, object_keyword*
+#include "status.h"
 #include "value.h"
 
 #ifdef __cplusplus
@@ -656,9 +657,9 @@ node_t node_child_key(node_t n, const char *key);
 // The reserved-word and keyword queries (object_is_reserved_word,
 // object_keyword*) live with the lexical layer: parse.h.
 
-// Validate a candidate member/alias name. Returns true if acceptable.
-// Diagnostic messages are written to err_buf (may be NULL).
-bool object_validate_name(const char *name, char *err_buf, size_t err_size);
+// Validate a candidate member/alias name: STATUS_OK if acceptable, else
+// STATUS_E_INVAL with a diagnostic in err_buf (may be NULL).
+status_t object_validate_name(const char *name, char *err_buf, size_t err_size);
 
 // === Per-object invalidation hooks ==========================================
 //
@@ -689,9 +690,9 @@ void object_fire_invalidators(struct object *o);
 
 // Verify class definition at registration time: every member name must
 // be a valid identifier, must not collide with a reserved word, and
-// must be unique within the class. Returns true on success; on failure
-// writes a one-line message into err_buf (may be NULL).
-bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
+// must be unique within the class. STATUS_OK on success; on failure
+// STATUS_E_INVAL with a one-line message in err_buf (may be NULL).
+status_t object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
 
 // Documentation gaps a member declares, beside the hard errors above: a
 // basic-tier method argument with no doc, an untyped (VK_ANY / VK_NONE)

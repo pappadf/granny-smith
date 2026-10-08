@@ -19,6 +19,7 @@
 
 #include "gs_assert.h"
 #include "meta.h"
+#include "status.h"
 #include "job/job.h"
 
 // === Object representation ==================================================
@@ -154,7 +155,7 @@ static void validate_class_once(const class_desc_t *cls) {
         if (g_validated[i] == cls)
             return;
     char err[200];
-    if (!object_validate_class(cls, err, sizeof(err)))
+    if (object_validate_class(cls, err, sizeof(err)) != STATUS_OK)
         fprintf(stderr, "object: class '%s' invalid: %s\n", cls->name ? cls->name : "(unnamed)", err);
     if (g_validated_count < OBJ_VALIDATED_CACHE)
         g_validated[g_validated_count++] = cls;
@@ -573,18 +574,18 @@ static bool is_valid_identifier(const char *name) {
     return true;
 }
 
-bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
+status_t object_validate_name(const char *name, char *err_buf, size_t err_size) {
     if (!is_valid_identifier(name)) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "not a valid identifier: '%s'", name ? name : "(null)");
-        return false;
+        return STATUS_E_INVAL;
     }
     if (object_is_reserved_word(name)) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "'%s' is a reserved word", name);
-        return false;
+        return STATUS_E_INVAL;
     }
-    return true;
+    return STATUS_OK;
 }
 
 // A VK_ENUM table must be NULL-terminated: validate_slot and the tab completer
@@ -620,37 +621,37 @@ static bool width_is_supported(uint8_t w) {
     // 0 = unconstrained, 1/2/4/8 = integer widths, 10 = FPU extended.
     return w == 0 || w == 1 || w == 2 || w == 4 || w == 8 || w == 10;
 }
-bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size) {
+status_t object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size) {
     if (!cls) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "class is NULL");
-        return false;
+        return STATUS_E_INVAL;
     }
     if (!cls->name || !is_valid_identifier(cls->name)) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "invalid class name");
-        return false;
+        return STATUS_E_INVAL;
     }
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *m = &cls->members[i];
         char sub_err[160];
-        if (!object_validate_name(m->name, sub_err, sizeof(sub_err))) {
+        if (object_validate_name(m->name, sub_err, sizeof(sub_err)) != STATUS_OK) {
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "class %s member[%zu]: %s", cls->name, i, sub_err);
-            return false;
+            return STATUS_E_INVAL;
         }
         // `meta` is reserved for the synthetic introspection node.
         if (m->name && strcmp(m->name, "meta") == 0) {
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "class %s: 'meta' is reserved for introspection", cls->name);
-            return false;
+            return STATUS_E_INVAL;
         }
         // Duplicate-name check within the class.
         for (size_t j = 0; j < i; j++) {
             if (cls->members[j].name && strcmp(cls->members[j].name, m->name) == 0) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "class %s: duplicate member '%s'", cls->name, m->name);
-                return false;
+                return STATUS_E_INVAL;
             }
         }
 
@@ -659,7 +660,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "%s.%s: flags 0x%x outside the category bits", cls->name, m->name,
                          (unsigned)m->flags);
-            return false;
+            return STATUS_E_INVAL;
         }
 
         // Every attribute and method carries doc text.  The object tree is the
@@ -672,7 +673,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "%s.%s: %s has no .doc text", cls->name, m->name,
                          m->kind == MK_ATTR ? "attribute" : "method");
-            return false;
+            return STATUS_E_INVAL;
         }
 
         // A method with no args[] table opts out of validation entirely, so
@@ -682,7 +683,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "%s.%s: nargs %d without an args[] table", cls->name, m->name,
                          m->method.nargs);
-            return false;
+            return STATUS_E_INVAL;
         }
 
         // Method-arg ordering / coercion invariants.
@@ -701,13 +702,13 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                         if (err_buf && err_size)
                             snprintf(err_buf, err_size, "%s.%s: rest arg '%s' must be the last parameter", cls->name,
                                      m->name, p->name ? p->name : "?");
-                        return false;
+                        return STATUS_E_INVAL;
                     }
                     if (is_opt) {
                         if (err_buf && err_size)
                             snprintf(err_buf, err_size, "%s.%s: rest arg '%s' must not also be optional", cls->name,
                                      m->name, p->name ? p->name : "?");
-                        return false;
+                        return STATUS_E_INVAL;
                     }
                 }
                 if (is_opt)
@@ -716,45 +717,45 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: required arg '%s' follows optional", cls->name, m->name,
                                  p->name ? p->name : "?");
-                    return false;
+                    return STATUS_E_INVAL;
                 }
                 if (p->default_value && !is_opt) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: arg '%s' has default but is not optional", cls->name,
                                  m->name, p->name ? p->name : "?");
-                    return false;
+                    return STATUS_E_INVAL;
                 }
                 if (p->default_value && p->default_value->kind != p->kind) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: default for arg '%s' is %s, declared %s", cls->name,
                                  m->name, p->name ? p->name : "?", value_kind_name(p->default_value->kind),
                                  value_kind_name(p->kind));
-                    return false;
+                    return STATUS_E_INVAL;
                 }
                 if (p->default_value && p->default_doc) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: arg '%s' has both a default and a default_doc", cls->name,
                                  m->name, p->name ? p->name : "?");
-                    return false;
+                    return STATUS_E_INVAL;
                 }
                 if (p->kind == VK_ENUM && !enum_table_ok(p->enum_values)) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size,
                                  "%s.%s: arg '%s' is VK_ENUM but has a missing or unterminated enum_values table",
                                  cls->name, m->name, p->name ? p->name : "?");
-                    return false;
+                    return STATUS_E_INVAL;
                 }
                 if (!width_is_supported(p->width)) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: arg '%s' has unsupported width %u (allowed: 0,1,2,4,8,10)",
                                  cls->name, m->name, p->name ? p->name : "?", p->width);
-                    return false;
+                    return STATUS_E_INVAL;
                 }
             }
             if (rest_count > 1) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: only one rest arg allowed", cls->name, m->name);
-                return false;
+                return STATUS_E_INVAL;
             }
         }
 
@@ -773,7 +774,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (why) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: %s", cls->name, m->name, why);
-                return false;
+                return STATUS_E_INVAL;
             }
         }
 
@@ -782,7 +783,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (m->attr.validation_flags & (OBJ_ARG_OPTIONAL | OBJ_ARG_REST)) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: arg-only flag set on attribute slot", cls->name, m->name);
-                return false;
+                return STATUS_E_INVAL;
             }
             // VK_ANY is a method-slot sentinel: an attribute needs a
             // concrete kind so the getter/setter round-trip and the
@@ -790,7 +791,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (m->attr.type == VK_ANY) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: VK_ANY is not a valid attribute kind", cls->name, m->name);
-                return false;
+                return STATUS_E_INVAL;
             }
             // A writable VK_ENUM slot needs the table: node_set's VK_STRING ->
             // VK_ENUM coercion is the only thing that reads `enum_values` on an
@@ -805,17 +806,17 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     snprintf(err_buf, err_size,
                              "%s.%s: writable VK_ENUM attribute has a missing or unterminated enum_values table",
                              cls->name, m->name);
-                return false;
+                return STATUS_E_INVAL;
             }
             if (!width_is_supported(m->attr.width)) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: attribute has unsupported width %u (allowed: 0,1,2,4,8,10)",
                              cls->name, m->name, m->attr.width);
-                return false;
+                return STATUS_E_INVAL;
             }
         }
     }
-    return true;
+    return STATUS_OK;
 }
 
 void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud) {

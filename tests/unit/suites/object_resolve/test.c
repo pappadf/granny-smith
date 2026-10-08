@@ -9,6 +9,7 @@
 //   - reserved-word rejection at registration
 
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -262,19 +263,19 @@ static const class_desc_t dup_class = {
 
 TEST(test_reserved_word_in_class_rejected) {
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&bad_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&bad_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
 }
 
 TEST(test_duplicate_member_rejected) {
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&dup_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&dup_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "duplicate") != NULL);
 }
 
 TEST(test_well_formed_class_accepted) {
     char err[200];
-    ASSERT_TRUE(object_validate_class(&a_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&a_class, err, sizeof(err)) == STATUS_OK);
 }
 
 // === Path edge cases ======================================================

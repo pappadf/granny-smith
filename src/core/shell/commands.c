@@ -8,6 +8,7 @@
 #include "commands.h"
 
 #include "shell_funcs.h"
+#include "status.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -76,7 +77,7 @@ static bool method_node(const char *path, node_t *out) {
 }
 
 int shell_command_define(const char *name, const char *target, char *err, size_t err_size) {
-    if (!object_validate_name(name, err, err_size))
+    if (object_validate_name(name, err, err_size) != STATUS_OK)
         return -1;
     if (strlen(name) >= SHELL_NAME_MAX) {
         snprintf(err, err_size, "'%s' is longer than %d characters", name, SHELL_NAME_MAX - 1);
