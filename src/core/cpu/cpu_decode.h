@@ -5,7 +5,7 @@
 // Instruction decoder for MC68000 opcodes.
 // Note: this header is a template intended for multiple inclusion with
 // different macro parameters; it intentionally has no include guard. Current
-// includers: cpu_68000.c, cpu_68030.c, cpu_disasm.c (which reuses the same
+// includers: cpu_68000.c, cpu_68030.c, cpu_68040.c, cpu_disasm.c (which reuses the same
 // dispatch table with disassembly-printing macros instead of execution).
 
 // Required macro configuration (provided by includer):
@@ -85,6 +85,8 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         case 0x18: OP_ADDI_B_DATA_EA; break;
         case 0x19: OP_ADDI_W_DATA_EA; break;
         case 0x1A: OP_ADDI_L_DATA_EA; break;
+        // RTM/CALLM (68020 only): both undefined in every executor, but kept
+        // apart for the disassembler, which shares this table.
         case 0x1B: if ((opcode & 0x30) == 0x00) { OP_RTM_RN; } else { OP_CALLM_DATA_EA; } break;
 
         case 0x20: if ((opcode & 0x38) == 0x00) { OP_BTST_L_DATA_DN; } else { OP_BTST_B_DATA_EA; } break;
@@ -187,8 +189,8 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         case 0x33: OP_MOVEM_L_EA_LIST;  break;
 
         case 0x39:
-            if ((opcode & 0xFFF0) == 0x4E40) { OP_TRAP_VECTOR; break; }
-            switch (opcode) {
+            if ((opcode & 0xFFF0) == 0x4E40) { OP_TRAP_VECTOR; }
+            else switch (opcode) {
             case 0x4E70: OP_RESET; break;
             case 0x4E71: OP_NOP; break;
             case 0x4E72: OP_STOP_DATA; break;
@@ -197,7 +199,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             case 0x4E75: OP_RTS; break;
             case 0x4E76: OP_TRAPV; break;
             case 0x4E77: OP_RTR; break;
-            case 0x4E7A: OP_MOVEC_RC_RN; break;
+            case 0x4E7A: OP_MOVEC_RC_RN; break; // 68010+; the 68000 maps both to OP_UNDEFINED
             case 0x4E7B: OP_MOVEC_RN_RC; break;
             default:
                 switch (opcode & 0xFFF8) {
@@ -257,17 +259,20 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         break;
 
     case 0x6: // 0110.xxxx.xxxx.xxxx
-        // Note: 68000 only supports Bcc.B (8-bit) and Bcc.W (16-bit) displacements
-        // The 0xFF case (32-bit displacement) is 68020+ only
+        // Note: 68000 only supports Bcc.B (8-bit) and Bcc.W (16-bit) displacements.
+        // The 0xFF case (32-bit displacement) is 68020+ only.  On a 68000, $xxFF
+        // is Bcc.B with displacement -1: an odd target, i.e. an address error,
+        // which this emulator does not model -- so every decoder executes the
+        // long form rather than branching to an odd PC.
         if ((((opcode) >> 8) & 0xF) == 0x1) {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BSR_L_LABEL; break; // todo: make this 68020+ only
+            case 0xFF: OP_BSR_L_LABEL; break; // 68020+ (see above for the 68000)
             case 0x00: OP_BSR_W_LABEL; break;
             default:   OP_BSR_B_LABEL; break;
             }
         } else {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BCC_L_DISPLACEMENT; break; // todo: make this 68020+ only
+            case 0xFF: OP_BCC_L_DISPLACEMENT; break; // 68020+ (see above for the 68000)
             case 0x00: OP_BCC_W_DISPLACEMENT; break;
             default:   OP_BCC_B_DISPLACEMENT; break;
             }
@@ -504,18 +509,19 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         // general); CpID=1,type=0 → 0x08 (FPU general); etc.
         switch (((opcode) >> 6) & 0x3F) {
         case 0x00: OP_PMMU_GENERAL; break;  // CpID=0, type=0: PMOVE/PFLUSH/PTEST/PLOAD
-        case 0x02: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_W; } else { OP_FTRAP; } break;
-        case 0x03: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_L; } else { OP_FTRAP; } break;
-        case 0x04: OP_PSAVE_EA;     break;
-        case 0x05: OP_PRESTORE_EA;  break;
+        case 0x02: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_W; } else { OP_FTRAP; } break;  // CpID=0, type=2: PBcc.W
+        case 0x03: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_L; } else { OP_FTRAP; } break;  // CpID=0, type=3: PBcc.L
+        case 0x04: OP_PSAVE_EA;     break;  // CpID=0, type=4: PSAVE
+        case 0x05: OP_PRESTORE_EA;  break;  // CpID=0, type=5: PRESTORE
         case 0x08: OP_FPU_GENERAL;  break;  // CpID=1, type=0: FPU arithmetic/move
         case 0x09: OP_FPU_SCCDBCC;  break;  // CpID=1, type=1: FScc/FDBcc/FTRAPcc
-        case 0x0A: OP_FBCC_W_DISPLACEMENT; break;
-        case 0x0B: OP_FBCC_L_DISPLACEMENT; break;
-        case 0x0C: OP_FSAVE_EA;     break;
-        case 0x0D: OP_FRESTORE_EA;  break;
+        case 0x0A: OP_FBCC_W_DISPLACEMENT; break;  // CpID=1, type=2: FBcc.W
+        case 0x0B: OP_FBCC_L_DISPLACEMENT; break;  // CpID=1, type=3: FBcc.L
+        case 0x0C: OP_FSAVE_EA;     break;  // CpID=1, type=4: FSAVE
+        case 0x0D: OP_FRESTORE_EA;  break;  // CpID=1, type=5: FRESTORE
 
-        case 0x10: case 0x11: case 0x12: case 0x13:
+        // CpID=2: the 68040's own line-F instructions (F-line traps on a 68030)
+        case 0x10: case 0x11: case 0x12: case 0x13:  // CINV/CPUSH
             switch ((opcode >> 3) & 7) {
             case 1: OP_CINVL_CACHES_AN;  break;
             case 2: OP_CINVP_CACHES_AN;  break;
@@ -527,7 +533,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             }
             break;
 
-        case 0x14:
+        case 0x14:  // PFLUSH (040)
             switch ((opcode >> 3) & 7) {
             case 0: OP_PFLUSHN_AN; break;
             case 1: OP_PFLUSH_AN;  break;
@@ -537,7 +543,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             }
             break;
 
-        case 0x15:
+        case 0x15:  // PTEST (040)
             switch ((opcode >> 3) & 7) {
             case 1: OP_PTESTW_AN; break;
             case 5: OP_PTESTR_AN; break;
@@ -545,7 +551,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             }
             break;
 
-        case 0x18:
+        case 0x18:  // CpID=3, type=0: MOVE16
             switch ((opcode >> 3) & 7) {
             case 0: OP_MOVE16_AN_P_XXX_L; break;
             case 1: OP_MOVE16_XXX_L_AN_P; break;
