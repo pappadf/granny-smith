@@ -501,8 +501,8 @@ static void cpu_dbgif_regs(void *ctx, struct value_map_builder *regs) {
 // human-readable display; tests/tools that need bit-exact bytes can
 // consume the hex form instead.
 static double fp80_to_display_double(float80_reg_t f) {
-    int sign = FP80_SIGN(f);
-    uint16_t exp = FP80_EXP(f);
+    int sign = fp80_sign(f);
+    uint16_t exp = fp80_exp(f);
     if (exp == 0 && f.mantissa == 0)
         return sign ? -0.0 : 0.0;
     if (exp == 0x7FFF) {
@@ -552,8 +552,8 @@ static bool cpu_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
         val_map_put(fpb, "hex", val_str(hexbuf));
         // Decimal display — handle special values explicitly and keep the
         // value a string (Inf/NaN aren't legal JSON numbers).
-        uint16_t e = FP80_EXP(fpu->fp[i]);
-        int sign = FP80_SIGN(fpu->fp[i]);
+        uint16_t e = fp80_exp(fpu->fp[i]);
+        int sign = fp80_sign(fpu->fp[i]);
         if (e == 0 && fpu->fp[i].mantissa == 0)
             snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
         else if (e == 0x7FFF)

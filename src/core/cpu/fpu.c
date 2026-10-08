@@ -163,9 +163,9 @@ static inline int clz64(uint64_t v) {
 // Unpack: float80_reg_t -> fpu_unpacked_t (lossless)
 fpu_unpacked_t fpu_unpack(float80_reg_t reg) {
     fpu_unpacked_t r;
-    r.sign = FP80_SIGN(reg) != 0;
+    r.sign = fp80_sign(reg) != 0;
     r.mantissa_lo = 0;
-    uint16_t exp = FP80_EXP(reg);
+    uint16_t exp = fp80_exp(reg);
 
     if (exp == 0) {
         if (reg.mantissa == 0) {
@@ -469,12 +469,12 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
 static void fpu_update_cc(fpu_state_t *fpu, float80_reg_t val) {
     uint32_t cc = 0;
     if (fp80_is_nan(val))
-        cc |= FPCC_NAN | (FP80_SIGN(val) ? FPCC_N : 0);
+        cc |= FPCC_NAN | (fp80_sign(val) ? FPCC_N : 0);
     else if (fp80_is_inf(val))
-        cc |= FPCC_I | (FP80_SIGN(val) ? FPCC_N : 0);
+        cc |= FPCC_I | (fp80_sign(val) ? FPCC_N : 0);
     else if (fp80_is_zero(val))
-        cc |= FPCC_Z | (FP80_SIGN(val) ? FPCC_N : 0);
-    else if (FP80_SIGN(val))
+        cc |= FPCC_Z | (fp80_sign(val) ? FPCC_N : 0);
+    else if (fp80_sign(val))
         cc |= FPCC_N;
     fpu->fpsr = (fpu->fpsr & ~(FPCC_N | FPCC_Z | FPCC_I | FPCC_NAN)) | cc;
 }
@@ -486,7 +486,10 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
     bool z = (cc & FPCC_Z) != 0;
     bool nan_bit = (cc & FPCC_NAN) != 0;
 
-    // IEEE-aware predicates (0x10-0x1F) set BSUN if NaN
+    // IEEE-aware predicates (0x10-0x1F) set BSUN if NaN.  Accrued IOP is set
+    // here directly rather than through fpu_update_accrued(): that helper
+    // re-derives every accrued bit from the whole exception byte, which
+    // would also re-accrue stale status bits left by an earlier instruction.
     if ((predicate & 0x10) && nan_bit)
         fpu->fpsr |= FPEXC_BSUN | FPACC_IOP;
 
@@ -745,8 +748,8 @@ static float80_reg_t fpu_from_single(uint32_t bits) {
 
 // Convert float80_reg_t to IEEE 754 single (32-bit)
 static uint32_t fpu_to_single(fpu_state_t *fpu, float80_reg_t val) {
-    int sign = FP80_SIGN(val);
-    uint16_t exp = FP80_EXP(val);
+    int sign = fp80_sign(val);
+    uint16_t exp = fp80_exp(val);
 
     if (exp == 0 && val.mantissa == 0) {
         return (uint32_t)sign << 31;
@@ -890,8 +893,8 @@ static float80_reg_t fpu_from_double(uint64_t bits) {
 
 // Convert float80_reg_t to IEEE 754 double (64-bit)
 static uint64_t fpu_to_double(fpu_state_t *fpu, float80_reg_t val) {
-    int sign = FP80_SIGN(val);
-    uint16_t exp = FP80_EXP(val);
+    int sign = fp80_sign(val);
+    uint16_t exp = fp80_exp(val);
 
     if (exp == 0 && val.mantissa == 0) {
         return (uint64_t)sign << 63;
@@ -1044,8 +1047,8 @@ static int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
     }
     if (fp80_is_zero(val))
         return 0;
-    int sign = FP80_SIGN(val);
-    uint16_t exp = FP80_EXP(val);
+    int sign = fp80_sign(val);
+    uint16_t exp = fp80_exp(val);
     int32_t true_exp = (int32_t)exp - FPU_EXP_BIAS;
 
     if (fp80_is_inf(val) || true_exp > 30) {
@@ -1186,8 +1189,6 @@ static inline unsigned bcd_nibble(uint32_t word, int pos) {
     return (word >> (28 - pos * 4)) & 0xF;
 }
 
-// Forward declaration (used by packed decimal conversion)
-
 // Compute 10^|n| as fpu_unpacked_t using the FMOVECR power-of-10 table.
 // Decomposes n into sum of powers of 2, multiplying corresponding table entries.
 static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
@@ -1201,19 +1202,48 @@ static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
     // FMOVECR offsets 0x33..0x3F = 10^1, 10^2, 10^4, ..., 10^4096
     fpu_unpacked_t result = {false, 0, 0x8000000000000000ULL, 0}; // 1.0
     bool first = true;
-    for (int bit = 0; bit < 13 && n > 0; bit++) {
-        if (n & (1 << bit)) {
-            fpu_unpacked_t pw = fpu_rom_constant(0x33 + bit);
-            if (first) {
-                result = pw;
-                first = false;
-            } else {
-                result = fpu_op_mul(fpu, result, pw);
-            }
-            n &= ~(1 << bit);
+    for (int bit = 0; bit < 13; bit++) {
+        if (!(n & (1 << bit)))
+            continue;
+        fpu_unpacked_t pw = fpu_rom_constant(0x33 + bit);
+        if (first) {
+            result = pw;
+            first = false;
+        } else {
+            result = fpu_op_mul(fpu, result, pw);
         }
     }
     return result;
+}
+
+// floor(log10(x)) for a finite, normalized, non-zero x (sign ignored).
+// With x in [2^e, 2^(e+1)), log10(x) lies in [e*log10(2), (e+1)*log10(2)),
+// so the answer is floor(e*log10(2)) or one more; a comparison against the
+// FMOVECR powers of ten picks between them.  log10(2) is taken as the 32-bit
+// fixed-point 0x4D104D42 / 2^32, whose error is far below the closest
+// approach of e*log10(2) to an integer over the extended exponent range.
+// Leaves FPSR untouched.
+static int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x) {
+    int32_t ilog = (int32_t)(((int64_t)x.exponent * 0x4D104D42LL) >> 32); // floor(e*log10(2))
+    int32_t m = ilog + 1;
+    uint32_t saved_fpsr = fpu->fpsr;
+    bool ge; // |x| >= 10^m ?
+    x.sign = false;
+    if (m >= 0) {
+        fpu_unpacked_t p = fpu_power_of_10(fpu, m);
+        if (x.exponent != p.exponent)
+            ge = x.exponent > p.exponent;
+        else if (x.mantissa_hi != p.mantissa_hi)
+            ge = x.mantissa_hi > p.mantissa_hi;
+        else
+            ge = x.mantissa_lo >= p.mantissa_lo;
+    } else {
+        // |x| >= 10^m  <=>  |x| * 10^-m >= 1
+        fpu_unpacked_t y = fpu_op_mul(fpu, x, fpu_power_of_10(fpu, -m));
+        ge = y.exponent >= 0;
+    }
+    fpu->fpsr = saved_fpsr;
+    return ge ? m : ilog;
 }
 
 // Convert 12-byte packed BCD from memory to float80_reg_t
@@ -1226,10 +1256,10 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
     if (yy != 0) {
         if (w1 == 0 && w2 == 0)
             return fp80_make(sm, 0x7FFF, 0); // infinity
-        // NaN: place mantissa bits as payload, set J-bit and quiet bit
+        // NaN: place mantissa bits as payload, set J-bit and quiet bit.
+        // The payload is non-zero here (the all-zero case is infinity above),
+        // so it never needs a substitute to stay a NaN.
         uint64_t nan_mant = ((uint64_t)w1 << 32) | w2;
-        if (nan_mant == 0)
-            nan_mant = 1;
         nan_mant |= 0xC000000000000000ULL;
         return fp80_make(sm, 0x7FFF, nan_mant);
     }
@@ -1305,7 +1335,7 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
 
 // Convert float80_reg_t to 12-byte packed BCD with k-factor
 static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *w0, uint32_t *w1, uint32_t *w2) {
-    int sm = FP80_SIGN(val);
+    int sm = fp80_sign(val);
 
     // Zero
     if (fp80_is_zero(val)) {
@@ -1338,16 +1368,10 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         return;
     }
 
-    // Compute ILOG = floor(log10(|val|)) via host double
+    // Compute ILOG = floor(log10(|val|)) in soft-float (no host libm)
     fpu_unpacked_t uv = fpu_unpack(val);
-    double approx = ldexp((double)uv.mantissa_hi, uv.exponent - 63);
-    if (approx < 0)
-        approx = -approx;
-    int32_t ilog;
-    if (approx == 0.0)
-        ilog = 0;
-    else
-        ilog = (int32_t)floor(log10(approx));
+    fpu_normalize(&uv); // unnormal inputs: same value, J-bit set
+    int32_t ilog = (uv.exponent == FPU_EXP_ZERO) ? 0 : fpu_floor_log10(fpu, uv);
 
     // Determine LEN (number of significant digits)
     int32_t len;
@@ -1505,122 +1529,39 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
 // FMOVECR - load FPU ROM constant
 // ============================================================================
 
-// ROM constant table: unpacked with extra precision for correct rounding
-// Transcendental and large-power constants include mantissa_lo for sub-64-bit
-// precision, so fpu_pack can round per FPCR mode.
+// FMOVECR ROM constants, indexed by offset.  Transcendental constants and
+// the large powers of ten carry extra bits in mantissa_lo, so fpu_pack can
+// round them per FPCR mode.  Offsets with no entry (mantissa_hi == 0) are
+// undefined ROM locations and read as +0.0, as does 0x0F (zero by design).
+static const fpu_unpacked_t fpu_rom_table[0x40] = {
+    [0x00] = {false, 1,     0xC90FDAA22168C234ULL, 0xC4C6628B80DC1CD1ULL}, // pi
+    [0x01] = {false, 2,     0xFE00068200000000ULL, 0                    }, // undocumented 68882 ROM offset 0x01
+    [0x0B] = {false, -2,    0x9A209A84FBCFF798ULL, 0x8F8959AC0B7C9178ULL}, // log10(2)
+    [0x0C] = {false, 1,     0xADF85458A2BB4A9AULL, 0                    }, // e (68882 RN value; math lo would over-round)
+    [0x0D] = {false, 0,     0xB8AA3B295C17F0BBULL, 0xBE87FED0691D3E88ULL}, // log2(e)
+    [0x0E] = {false, -2,    0xDE5BD8A937287195ULL, 0x355BAAAFAD33DC32ULL}, // log10(e)
+    [0x30] = {false, -1,    0xB17217F7D1CF79ABULL, 0xC9E3B39803F2F6AFULL}, // ln(2)
+    [0x31] = {false, 1,     0x935D8DDDAAA8AC16ULL, 0xEA56D62B82D30A28ULL}, // ln(10)
+    [0x32] = {false, 0,     0x8000000000000000ULL, 0                    }, // 10^0 = 1.0
+    [0x33] = {false, 3,     0xA000000000000000ULL, 0                    }, // 10^1
+    [0x34] = {false, 6,     0xC800000000000000ULL, 0                    }, // 10^2
+    [0x35] = {false, 13,    0x9C40000000000000ULL, 0                    }, // 10^4
+    [0x36] = {false, 26,    0xBEBC200000000000ULL, 0                    }, // 10^8
+    [0x37] = {false, 53,    0x8E1BC9BF04000000ULL, 0                    }, // 10^16
+    [0x38] = {false, 106,   0x9DC5ADA82B70B59DULL, 0xF020000000000000ULL}, // 10^32
+    [0x39] = {false, 212,   0xC2781F49FFCFA6D5ULL, 0x3CBF6B71C76B25FBULL}, // 10^64
+    [0x3A] = {false, 425,   0x93BA47C980E98CDFULL, 0xC66F336C36B10137ULL}, // 10^128
+    [0x3B] = {false, 850,   0xAA7EEBFB9DF9DE8DULL, 0xDDBB901B98FEEAB7ULL}, // 10^256
+    [0x3C] = {false, 1700,  0xE319A0AEA60E91C6ULL, 0xCC655C54BC5058F8ULL}, // 10^512
+    [0x3D] = {false, 3401,  0xC976758681750C17ULL, 0x650D3D28F18B50CEULL}, // 10^1024
+    [0x3E] = {false, 6803,  0x9E8B3B5DC53D5DE4ULL, 0xA74D28CE329ACE52ULL}, // 10^2048
+    [0x3F] = {false, 13606, 0xC46052028A20979AULL, 0                    }, // 10^4096 (68882 RN value; math lo would over-round)
+};
+
 fpu_unpacked_t fpu_rom_constant(unsigned offset) {
-    fpu_unpacked_t r = {0, FPU_EXP_ZERO, 0, 0};
-    switch (offset) {
-    // Transcendental constants (inexact: mantissa_hi truncated, _lo has extra bits)
-    case 0x00:
-        r.exponent = 1;
-        r.mantissa_hi = 0xC90FDAA22168C234ULL;
-        r.mantissa_lo = 0xC4C6628B80DC1CD1ULL;
-        break; // pi
-    case 0x01:
-        r.exponent = 2;
-        r.mantissa_hi = 0xFE00068200000000ULL;
-        break; // undocumented 68882 ROM offset 0x01
-    case 0x0B:
-        r.exponent = -2;
-        r.mantissa_hi = 0x9A209A84FBCFF798ULL;
-        r.mantissa_lo = 0x8F8959AC0B7C9178ULL;
-        break; // log10(2)
-    case 0x0C:
-        r.exponent = 1;
-        r.mantissa_hi = 0xADF85458A2BB4A9AULL;
-        break; // e (68882 RN value; math lo would over-round)
-    case 0x0D:
-        r.exponent = 0;
-        r.mantissa_hi = 0xB8AA3B295C17F0BBULL;
-        r.mantissa_lo = 0xBE87FED0691D3E88ULL;
-        break; // log2(e)
-    case 0x0E:
-        r.exponent = -2;
-        r.mantissa_hi = 0xDE5BD8A937287195ULL;
-        r.mantissa_lo = 0x355BAAAFAD33DC32ULL;
-        break; // log10(e)
-    case 0x0F:
-        return r; // zero
-    case 0x30:
-        r.exponent = -1;
-        r.mantissa_hi = 0xB17217F7D1CF79ABULL;
-        r.mantissa_lo = 0xC9E3B39803F2F6AFULL;
-        break; // ln(2)
-    case 0x31:
-        r.exponent = 1;
-        r.mantissa_hi = 0x935D8DDDAAA8AC16ULL;
-        r.mantissa_lo = 0xEA56D62B82D30A28ULL;
-        break; // ln(10)
-    // Exact integer powers of 10 (mantissa_lo = 0)
-    case 0x32:
-        r.exponent = 0;
-        r.mantissa_hi = 0x8000000000000000ULL;
-        break; // 10^0 = 1.0
-    case 0x33:
-        r.exponent = 3;
-        r.mantissa_hi = 0xA000000000000000ULL;
-        break; // 10^1
-    case 0x34:
-        r.exponent = 6;
-        r.mantissa_hi = 0xC800000000000000ULL;
-        break; // 10^2
-    case 0x35:
-        r.exponent = 13;
-        r.mantissa_hi = 0x9C40000000000000ULL;
-        break; // 10^4
-    case 0x36:
-        r.exponent = 26;
-        r.mantissa_hi = 0xBEBC200000000000ULL;
-        break; // 10^8
-    case 0x37:
-        r.exponent = 53;
-        r.mantissa_hi = 0x8E1BC9BF04000000ULL;
-        break; // 10^16
-    // Large powers of 10 (inexact: mantissa_lo has extra bits)
-    case 0x38:
-        r.exponent = 106;
-        r.mantissa_hi = 0x9DC5ADA82B70B59DULL;
-        r.mantissa_lo = 0xF020000000000000ULL;
-        break; // 10^32
-    case 0x39:
-        r.exponent = 212;
-        r.mantissa_hi = 0xC2781F49FFCFA6D5ULL;
-        r.mantissa_lo = 0x3CBF6B71C76B25FBULL;
-        break; // 10^64
-    case 0x3A:
-        r.exponent = 425;
-        r.mantissa_hi = 0x93BA47C980E98CDFULL;
-        r.mantissa_lo = 0xC66F336C36B10137ULL;
-        break; // 10^128
-    case 0x3B:
-        r.exponent = 850;
-        r.mantissa_hi = 0xAA7EEBFB9DF9DE8DULL;
-        r.mantissa_lo = 0xDDBB901B98FEEAB7ULL;
-        break; // 10^256
-    case 0x3C:
-        r.exponent = 1700;
-        r.mantissa_hi = 0xE319A0AEA60E91C6ULL;
-        r.mantissa_lo = 0xCC655C54BC5058F8ULL;
-        break; // 10^512
-    case 0x3D:
-        r.exponent = 3401;
-        r.mantissa_hi = 0xC976758681750C17ULL;
-        r.mantissa_lo = 0x650D3D28F18B50CEULL;
-        break; // 10^1024
-    case 0x3E:
-        r.exponent = 6803;
-        r.mantissa_hi = 0x9E8B3B5DC53D5DE4ULL;
-        r.mantissa_lo = 0xA74D28CE329ACE52ULL;
-        break; // 10^2048
-    case 0x3F:
-        r.exponent = 13806;
-        r.mantissa_hi = 0xC46052028A20979AULL;
-        break; // 10^4096 (68882 RN value; math lo would over-round)
-    default:
-        return r;
-    }
-    return r;
+    if (offset < 0x40 && fpu_rom_table[offset].mantissa_hi != 0)
+        return fpu_rom_table[offset];
+    return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
 }
 
 // ============================================================================
@@ -1699,7 +1640,7 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
         // (pseudo-denormals, unnormals) through the internal pipeline, applying
         // FPCR precision/rounding. Normal values are written directly.
         float80_reg_t store_val = val;
-        uint16_t bexp = FP80_EXP(val);
+        uint16_t bexp = fp80_exp(val);
         bool j_bit = (val.mantissa >> 63) & 1;
         bool is_abnormal = false;
         if (bexp == 0 && j_bit) {
@@ -2011,7 +1952,10 @@ static fpu_unpacked_t fpu_propagate_nan(fpu_state_t *fpu, fpu_unpacked_t a, fpu_
     return result;
 }
 
-// Add two unpacked values (both same sign, magnitude add)
+// Add magnitudes |a| + |b| (operands of the same sign); result has a's sign.
+// Post-condition: the only possible denormalization is a carry out of the
+// 128-bit sum, which is shifted back in here, so the result is normalized
+// whenever both inputs were — no fpu_normalize() pass needed.
 static fpu_unpacked_t fpu_op_add_mag(fpu_unpacked_t a, fpu_unpacked_t b) {
     // Align exponents: shift the smaller one right (sticky preserves lost bits)
     int32_t diff = a.exponent - b.exponent;
@@ -2038,8 +1982,10 @@ static fpu_unpacked_t fpu_op_add_mag(fpu_unpacked_t a, fpu_unpacked_t b) {
     return r;
 }
 
-// Subtract magnitudes: |a| - |b| (assumes |a| >= |b|)
-static fpu_unpacked_t fpu_op_sub_mag(fpu_unpacked_t a, fpu_unpacked_t b) {
+// Subtract magnitudes: |a| - |b| (assumes |a| > |b|), signed `result_sign`.
+// Post-condition: cancellation can clear any number of leading bits, so the
+// difference is always passed through fpu_normalize() before returning.
+static fpu_unpacked_t fpu_op_sub_mag(fpu_unpacked_t a, fpu_unpacked_t b, bool result_sign) {
     // Align exponents (sticky preserves lost bits)
     int32_t diff = a.exponent - b.exponent;
     if (diff > 0) {
@@ -2048,7 +1994,7 @@ static fpu_unpacked_t fpu_op_sub_mag(fpu_unpacked_t a, fpu_unpacked_t b) {
     }
 
     fpu_unpacked_t r;
-    r.sign = a.sign;
+    r.sign = result_sign;
     r.exponent = a.exponent;
     uint128_sub(&r.mantissa_hi, &r.mantissa_lo, a.mantissa_hi, a.mantissa_lo, b.mantissa_hi, b.mantissa_lo);
 
@@ -2130,11 +2076,10 @@ fpu_unpacked_t fpu_op_add(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
                 r.sign = true; // round toward -inf -> -0
             return r;
         }
+        // The result takes the sign of the larger magnitude
         if (cmp > 0)
-            return fpu_op_sub_mag(a, b);
-        fpu_unpacked_t r = fpu_op_sub_mag(b, a);
-        r.sign = b.sign; // result takes sign of larger magnitude
-        return r;
+            return fpu_op_sub_mag(a, b, a.sign);
+        return fpu_op_sub_mag(b, a, b.sign);
     }
 }
 
@@ -2182,25 +2127,33 @@ fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     r.sign = result_sign;
     r.exponent = a.exponent + b.exponent;
 
-    // Full 128-bit product of mantissa_hi values
-    uint64_t p_hi, p_lo;
-    uint64_mul128(a.mantissa_hi, b.mantissa_hi, &p_hi, &p_lo);
+    // Full 128x128 -> 256-bit product of {mantissa_hi, mantissa_lo}, as four
+    // limbs w3:w2:w1:w0 (w3 most significant):
+    //   HH*2^128 + (HL + LH)*2^64 + LL
+    // The top 128 bits become the result; the bottom 128 fold into sticky.
+    uint64_t hh_hi, hh_lo, hl_hi, hl_lo, lh_hi, lh_lo, ll_hi, ll_lo;
+    uint64_mul128(a.mantissa_hi, b.mantissa_hi, &hh_hi, &hh_lo);
+    uint64_mul128(a.mantissa_hi, b.mantissa_lo, &hl_hi, &hl_lo);
+    uint64_mul128(a.mantissa_lo, b.mantissa_hi, &lh_hi, &lh_lo);
+    uint64_mul128(a.mantissa_lo, b.mantissa_lo, &ll_hi, &ll_lo);
 
-    // Cross terms for extra precision
-    uint64_t cross1_hi, cross1_lo;
-    uint64_mul128(a.mantissa_hi, b.mantissa_lo, &cross1_hi, &cross1_lo);
-    uint64_t cross2_hi, cross2_lo;
-    uint64_mul128(a.mantissa_lo, b.mantissa_hi, &cross2_hi, &cross2_lo);
+    uint64_t w0 = ll_lo;
+    uint64_t w1 = ll_hi;
+    uint64_t w2 = hh_lo;
+    uint64_t w3 = hh_hi;
+    // Add HL and LH (each spanning w2:w1) with carries into w3:w2.  The
+    // full product is below 2^256, so w3 never overflows.
+    w1 += hl_lo;
+    uint128_add(&w3, &w2, w3, w2, 0, w1 < hl_lo);
+    uint128_add(&w3, &w2, w3, w2, 0, hl_hi);
+    w1 += lh_lo;
+    uint128_add(&w3, &w2, w3, w2, 0, w1 < lh_lo);
+    uint128_add(&w3, &w2, w3, w2, 0, lh_hi);
 
-    // Add cross terms (shifted right 64 bits) to main product
-    uint128_add(&p_hi, &p_lo, p_hi, p_lo, cross1_hi, 0);
-    uint128_add(&p_hi, &p_lo, p_hi, p_lo, cross2_hi, 0);
-    // Sticky from cross term low parts
-    if (cross1_lo || cross2_lo || a.mantissa_lo || b.mantissa_lo)
-        p_lo |= 1;
-
-    r.mantissa_hi = p_hi;
-    r.mantissa_lo = p_lo;
+    r.mantissa_hi = w3;
+    r.mantissa_lo = w2;
+    if (w1 || w0)
+        r.mantissa_lo |= 1; // sticky
 
     // Normalize and adjust exponent for implicit integer bit
     if (r.mantissa_hi == 0 && r.mantissa_lo == 0) {
@@ -2250,6 +2203,22 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     if (a_zero || b_inf) {
         fpu_unpacked_t r = {result_sign, FPU_EXP_ZERO, 0, 0};
         return r;
+    }
+
+    // The long division below needs both mantissas normalized (J-bit set):
+    // an unnormal divisor would overflow the 64-bit quotient.  Normalizing
+    // keeps the value, so do it for unnormal operands as the 68882 does.
+    if (!(a.mantissa_hi & 0x8000000000000000ULL)) {
+        fpu_normalize(&a);
+        if (a.exponent == FPU_EXP_ZERO)
+            return (fpu_unpacked_t){result_sign, FPU_EXP_ZERO, 0, 0};
+    }
+    if (!(b.mantissa_hi & 0x8000000000000000ULL)) {
+        fpu_normalize(&b);
+        if (b.exponent == FPU_EXP_ZERO) {
+            fpu->fpsr |= FPEXC_DZ;
+            return (fpu_unpacked_t){result_sign, FPU_EXP_INF, 0, 0};
+        }
     }
 
     // Shift-and-subtract division for 64+64 quotient bits
@@ -2324,6 +2293,12 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     }
     if (a.exponent == FPU_EXP_INF)
         return a; // sqrt(+inf) = +inf
+    if (!(a.mantissa_hi & 0x8000000000000000ULL)) {
+        // Unnormal (J-bit clear): normalize first, as the 68882 does
+        fpu_normalize(&a);
+        if (a.exponent == FPU_EXP_ZERO)
+            return a; // unnormal zero: sqrt(+-0) = +-0
+    }
 
     // Compute sqrt using exact integer arithmetic for IEEE 754 correct rounding.
     // For even exp: sqrt(M * 2^exp) = sqrt(M) * 2^(exp/2), where q²=S/2
@@ -2335,40 +2310,25 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
         exp -= 1;
     int32_t result_exp = exp / 2;
 
-    // Double precision seed for initial approximation
-    double v_d = (double)a.mantissa_hi * 0x1p-63; // M in [1.0, 2.0)
-    if (odd_exp)
-        v_d *= 2.0; // scale to [2.0, 4.0) for odd exponent
-    double sq = sqrt(v_d);
-    // Clamp to avoid uint64 overflow at exactly 2.0
-    if (sq >= 2.0)
-        sq = 2.0 - 0x1p-52;
-    uint64_t q = (uint64_t)(sq * 0x1p63);
-    if (!(q >> 63))
-        q = 0x8000000000000000ULL;
-
-    // Verify: q should be floor(sqrt(target)) where target = S (odd) or S/2 (even)
+    // q = floor(sqrt(target)) by integer Newton-Raphson, where target = S
+    // (odd exponent) or S/2 (even), S = {mantissa_hi, mantissa_lo} as a
+    // 128-bit integer.  Pure integer arithmetic keeps the result independent
+    // of the host libm.  The seed 2^ceil(bits/2) is >= sqrt(target), and from
+    // above the iteration x' = (x + target/x) / 2 decreases monotonically to
+    // floor(sqrt(target)); it stops at the first step that does not decrease.
+    // target >= 2^126 (normalized mantissa), so q lands in [2^63, 2^64).
     __uint128_t S = ((__uint128_t)a.mantissa_hi << 64) | a.mantissa_lo;
     __uint128_t target = odd_exp ? S : (S >> 1);
-    __uint128_t q128 = q;
-
-    // Two Newton-Raphson steps in 128-bit: q = (q + target/q) / 2
-    // Doubles precision each step: 53→106→>128 bits
-    for (int nr = 0; nr < 2 && q128 > 0; nr++) {
-        __uint128_t t_div_q = target / q128;
-        q128 = (q128 + t_div_q) >> 1;
-    }
-
-    // Fine adjust by at most a few steps (NR gives <1 ULP error)
-    for (int i = 0; i < 4 && q128 > 0 && q128 * q128 > target; i++)
-        q128--;
-    for (int i = 0; i < 4; i++) {
-        __uint128_t next_sq = (q128 + 1) * (q128 + 1);
-        if (next_sq == 0 || next_sq > target)
+    uint64_t target_hi = (uint64_t)(target >> 64);
+    int target_bits = target_hi ? 128 - clz64(target_hi) : 64 - clz64((uint64_t)target);
+    __uint128_t q128 = (__uint128_t)1 << ((target_bits + 1) / 2);
+    for (;;) {
+        __uint128_t next = (q128 + target / q128) >> 1;
+        if (next >= q128)
             break;
-        q128++;
+        q128 = next;
     }
-    q = (uint64_t)q128;
+    uint64_t q = (uint64_t)q128;
 
     // Check if result is exact; encode remainder for correct rounding.
     // The true sqrt lies between q and q+1. The rounding "halfway" point
@@ -2458,7 +2418,7 @@ bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu) {
     else
         vector = FPVEC_INEX;
 
-    LOG(1, "fpu exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
+    LOG(3, "fpu exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
 
     // Post-instruction exception: PC already points to next instruction
     exception(cpu, vector, cpu->pc, cpu_get_sr(cpu));
@@ -2501,7 +2461,7 @@ bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional) {
     else
         vector = FPVEC_INEX;
 
-    LOG(1, "fpu pre-instruction exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
+    LOG(3, "fpu pre-instruction exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
 
     // Mark these exception bits as acknowledged so the retried instruction
     // after the handler's RTE won't re-trigger the same exception.
@@ -2520,25 +2480,20 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
     // when a signaling NaN is encountered, regardless of FPCR enable bit.
     // If SNAN exception is enabled, abort the operation without storing result.
     // If not enabled, quiet the NaN and continue (except FMOVE to extended).
-    if (fp80_is_snan(src)) {
-        fpu->fpsr |= FPEXC_SNAN;
-        if (fpu->fpcr & FPEXC_SNAN) {
-            fpu_update_cc(fpu, src);
-            return;
-        }
-    }
-
-    // For dyadic operations, also check destination register for SNaN.
-    // Opcodes (MC68882UM table 4-5): FDIV (0x20), FADD (0x22), FMUL (0x23),
-    // FSGLDIV (0x24), FSUB (0x28), FCMP (0x38), FREM (0x25), FSGLMUL (0x27),
-    // FMOD (0x21), FSCALE (0x26).
+    // Dyadic operations also check the destination register.  Opcodes
+    // (MC68882UM table 4-5): FDIV (0x20), FMOD (0x21), FADD (0x22),
+    // FMUL (0x23), FSGLDIV (0x24), FREM (0x25), FSCALE (0x26),
+    // FSGLMUL (0x27), FSUB (0x28), FCMP (0x38).
+    // FPIAR has already been set by the caller: that is intended, an enabled
+    // SNAN trap reports this instruction's address in FPIAR.
     {
-        bool dyadic = (op == 0x20 || op == 0x21 || op == 0x22 || op == 0x23 || op == 0x24 || op == 0x25 || op == 0x26 ||
-                       op == 0x27 || op == 0x28 || op == 0x38);
-        if (dyadic && fp80_is_snan(fpu->fp[dst])) {
+        bool dyadic = (op >= 0x20 && op <= 0x28) || op == 0x38;
+        bool src_snan = fp80_is_snan(src);
+        bool dst_snan = dyadic && fp80_is_snan(fpu->fp[dst]);
+        if (src_snan || dst_snan) {
             fpu->fpsr |= FPEXC_SNAN;
             if (fpu->fpcr & FPEXC_SNAN) {
-                fpu_update_cc(fpu, fpu->fp[dst]);
+                fpu_update_cc(fpu, src_snan ? src : fpu->fp[dst]);
                 return;
             }
         }
@@ -2585,14 +2540,19 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu_update_cc(fpu, src);
             return;
         }
+        // Normalize unnormal inputs (J=0 with non-zero exponent) so every
+        // path below sees, and stores, a normalized value.  An unnormal with
+        // an all-zero mantissa is a zero.
+        if (!(uv.mantissa_hi & 0x8000000000000000ULL)) {
+            fpu_normalize(&uv);
+            if (uv.exponent == FPU_EXP_ZERO) {
+                fpu->fp[dst] = uv.sign ? FP80_NEG_ZERO : FP80_ZERO;
+                fpu_update_cc(fpu, fpu->fp[dst]);
+                return;
+            }
+        }
         // Already an integer if exponent >= 63 (all mantissa bits are integer)
         if (uv.exponent >= 63) {
-            // Normalize unnormal inputs (J=0 with non-zero exponent)
-            if (uv.mantissa_hi != 0 && !(uv.mantissa_hi & 0x8000000000000000ULL)) {
-                int shift = clz64(uv.mantissa_hi);
-                uv.mantissa_hi <<= shift;
-                uv.exponent -= shift;
-            }
             // Store directly without precision rounding
             int32_t biased = uv.exponent + FPU_EXP_BIAS;
             fpu->fp[dst] = fp80_make(uv.sign, (uint16_t)biased, uv.mantissa_hi);
@@ -2746,10 +2706,12 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu->fp[dst] = FP80_QNAN;
         } else if (uv.exponent == FPU_EXP_ZERO) {
             // Zero: result is zero (preserve sign)
-            fpu->fp[dst] = FP80_SIGN(src) ? FP80_NEG_ZERO : FP80_ZERO;
+            fpu->fp[dst] = fp80_sign(src) ? FP80_NEG_ZERO : FP80_ZERO;
         } else {
-            // Normal: convert unbiased exponent to FP
-            fpu->fp[dst] = fpu_pack(fpu, fpu_unpack(fpu_from_int32(uv.exponent)));
+            // Normal: the unbiased exponent as an FP integer.  |exponent| is
+            // below 2^15, so the conversion is exact in every FPCR precision
+            // and needs no rounding pass through fpu_pack.
+            fpu->fp[dst] = fpu_from_int32(uv.exponent);
         }
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
@@ -2770,11 +2732,11 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu->fp[dst] = FP80_QNAN;
         } else if (uv.exponent == FPU_EXP_ZERO) {
             // Zero: result is zero (preserve sign)
-            fpu->fp[dst] = FP80_SIGN(src) ? FP80_NEG_ZERO : FP80_ZERO;
+            fpu->fp[dst] = fp80_sign(src) ? FP80_NEG_ZERO : FP80_ZERO;
         } else {
             // Normal: set biased exponent to 3FFF, keep raw mantissa+sign
             // Preserves unnormalized mantissa bits (no normalization shift)
-            fpu->fp[dst] = fp80_make(FP80_SIGN(src), 0x3FFF, src.mantissa);
+            fpu->fp[dst] = fp80_make(fp80_sign(src), 0x3FFF, src.mantissa);
         }
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
@@ -3067,8 +3029,16 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             uint32_t magnitude = (uint32_t)(b.mantissa_hi >> shift);
             scale = b.sign ? (int32_t)(-magnitude) : (int32_t)magnitude;
         }
-        // Add scale to exponent
-        a.exponent += scale;
+        // Add scale to exponent in 64 bits, then clamp the sum: anything
+        // beyond +-20000 already over/underflows in fpu_pack (even for an
+        // unnormal mantissa), and clamping keeps clear of int32 overflow and
+        // of the FPU_EXP_ZERO/FPU_EXP_INF sentinel values.
+        int64_t new_exp = (int64_t)a.exponent + scale;
+        if (new_exp > 20000)
+            new_exp = 20000;
+        else if (new_exp < -20000)
+            new_exp = -20000;
+        a.exponent = (int32_t)new_exp;
         fpu->fp[dst] = fpu_pack(fpu, a);
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
@@ -3190,7 +3160,10 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         a = fpu_unpack(src);
         result = fpu_op_twotox(fpu, a, src);
         fpu->fp[dst] = fpu_pack(fpu, result);
-        // 68882 suppresses INEX2 when result exceeds extended range
+        // 68882 suppresses INEX2 when the result exceeds the *extended*
+        // range.  The test deliberately reads the pre-pack `result`: an
+        // overflow that only fpu_pack's single/double precision control
+        // produced (exponent still <= FPU_EXP_BIAS) keeps its INEX2.
         if ((fpu->fpsr & FPEXC_OVFL) && (result.exponent == FPU_EXP_INF || result.exponent > FPU_EXP_BIAS))
             fpu->fpsr &= ~FPEXC_INEX2;
         fpu_update_cc(fpu, fpu->fp[dst]);
@@ -3200,7 +3173,7 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         a = fpu_unpack(src);
         result = fpu_op_tentox(fpu, a, src);
         fpu->fp[dst] = fpu_pack(fpu, result);
-        // 68882 suppresses INEX2 when result exceeds extended range
+        // Same extended-range INEX2 suppression as FTWOTOX (pre-pack test)
         if ((fpu->fpsr & FPEXC_OVFL) && (result.exponent == FPU_EXP_INF || result.exponent > FPU_EXP_BIAS))
             fpu->fpsr &= ~FPEXC_INEX2;
         fpu_update_cc(fpu, fpu->fp[dst]);
@@ -3305,7 +3278,7 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
 // ============================================================================
 
 void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_word) {
-    LOG(1, "fpu op PC=%08X opcode=%04X ext=%04X", cpu->instruction_pc, opcode, ext_word);
+    LOG(4, "fpu op PC=%08X opcode=%04X ext=%04X", cpu->instruction_pc, opcode, ext_word);
 
     // Mark FPU as initialized (for FSAVE idle vs null frame)
     fpu->initialized = true;
