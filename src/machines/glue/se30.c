@@ -135,8 +135,8 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // RAM: $00000000-$3FFFFFFF (actual size from profile, mirrored)
 // ROM: $40000000-$4FFFFFFF (256 KB mirrored across 256 MB)
 // I/O: $50000000-$5FFFFFFF (dispatcher with $20000 mirroring)
-// VRAM: $FE000000-$FE00FFFF (64 KB, writable)
-// VROM: $FEFFE000-$FEFFFFFF (8 KB, read-only, synthesised declaration ROM)
+// VRAM: $FEE00000-$FEE0FFFF (64 KB, writable; mirrored across $FEE00000-$FEEFFFFF)
+// VROM: $FEFF8000-$FEFFFFFF (32 KB, read-only, declaration ROM)
 // ROM overlay at $00000000 is active on reset.
 // The SE/30's share of the memory layout: its built-in video.  RAM, the ROM
 // window and the I/O dispatcher are the family's (mac030_glue_memory_layout);
