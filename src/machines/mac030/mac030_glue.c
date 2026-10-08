@@ -345,7 +345,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     }
 }
 
-// Hardware RESET: ROM overlay back on, MMU disabled.
+// Hardware RESET: ROM overlay back on, shared devices reset.
 // The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
 // pulls Overlay high, so the memory controller uses the ROM overlay map
 // again (Guide p.256), plus the devices every board shares.
