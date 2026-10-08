@@ -391,14 +391,17 @@ static uint32_t afp_cmd_login(afp_req_t *r) {
     for (int i = 0; i < n_versions; i++)
         if (strcmp(ver, versions[i]) == 0)
             ver_ok = true;
+    // Every attempt leaves one line at level 2, accepted or not -- the
+    // record of who logged in that a real UAM would build on.
     if (!ver_ok) {
-        LOG(7, "AFP FPLogin: unsupported version → BadVersNum");
+        LOG(2, "AFP login refused: session 0x%04X version '%s' uam '%s': BadVersNum", r->ctx->session_id, ver, uam);
         return AFPERR_BadVersNum;
     }
     if (strcmp(uam, "No User Authent") != 0) {
-        LOG(7, "AFP FPLogin: unsupported UAM → BadUAM");
+        LOG(2, "AFP login refused: session 0x%04X version '%s' uam '%s': BadUAM", r->ctx->session_id, ver, uam);
         return AFPERR_BadUAM;
     }
+    LOG(2, "AFP login: session 0x%04X version '%s' as guest", r->ctx->session_id, ver);
     afp_session_t *s = afp_session(r->ctx->session_id);
     if (s) {
         s->state = AFP_SESS_LOGGED_IN;
