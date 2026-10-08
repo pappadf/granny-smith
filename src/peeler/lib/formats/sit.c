@@ -984,8 +984,7 @@ static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_l
         if (parent_off != 0) {
             for (int i = 0; i < dmap->count; ++i) {
                 if (dmap->items[i].offset == parent_off) {
-                    strncpy(ppath, dmap->items[i].path, sizeof(ppath) - 1);
-                    ppath[sizeof(ppath) - 1] = '\0';
+                    memcpy(ppath, dmap->items[i].path, sizeof(ppath)); // same size, NUL-terminated
                     break;
                 }
             }
