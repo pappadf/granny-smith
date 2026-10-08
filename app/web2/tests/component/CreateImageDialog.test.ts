@@ -139,4 +139,18 @@ describe('CreateImageDialog', () => {
     await waitFor(() => expect(container.textContent).toContain('Failed to create'));
     expect(onCreated).not.toHaveBeenCalled();
   });
+
+  it("shows the core's reason for a failed create", async () => {
+    gsEvalMock.mockImplementation(async (p: string) =>
+      p === 'files.fd_create' ? { error: 'quota exceeded' } : null,
+    );
+    const { getByText, container } = render(CreateImageDialog, {
+      open: true,
+      kind: 'fd',
+      onClose: () => {},
+      onCreated: () => {},
+    });
+    await fireEvent.click(getByText('Create'));
+    await waitFor(() => expect(container.textContent).toContain('quota exceeded'));
+  });
 });
