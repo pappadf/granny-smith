@@ -77,9 +77,9 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         // The image backend fills `st` during readdir; the host backend leaves
         // has_stat=false, so stat the child path to classify it (dir vs file)
         // and read its size and mtime.
-        uint16_t mode = 0;
+        uint32_t mode = 0;
         uint64_t size = 0;
-        uint32_t mtime = 0;
+        int64_t mtime = 0;
         if (entry.has_stat) {
             mode = entry.st.mode;
             size = entry.st.size;
@@ -108,7 +108,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         val_map_put(b, "name", val_str(entry.name));
         val_map_put(b, "kind", val_str((mode & VFS_MODE_DIR) ? "directory" : "file"));
         val_map_put(b, "size", val_int((int64_t)size));
-        val_map_put(b, "mtime", val_int((int64_t)mtime));
+        val_map_put(b, "mtime", val_int(mtime));
         val_map_put(b, "expandable", val_bool(expandable));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
@@ -155,15 +155,23 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
         gs_outf("cat: cannot open '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
-    uint8_t buf[4096];
+    // A heap chunk: this runs at the bottom of a deep shell call chain, and
+    // a WASM stack is small.
+    enum { CAT_CHUNK = 4096 };
+    uint8_t *buf = malloc(CAT_CHUNK);
+    if (!buf) {
+        be->close(f);
+        return val_err("cat: out of memory");
+    }
     uint64_t off = 0;
+    bool ok = true;
     for (;;) {
         size_t got = 0;
-        int rr = be->read(f, off, buf, sizeof(buf), &got);
+        int rr = be->read(f, off, buf, CAT_CHUNK, &got);
         if (rr < 0) {
             gs_outf("cat: read error on '%s': %s\n", path, strerror(-rr));
-            be->close(f);
-            return val_bool(false);
+            ok = false;
+            break;
         }
         if (got == 0)
             break;
@@ -171,8 +179,9 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
         gs_out((const char *)buf, got);
         off += got;
     }
+    free(buf);
     be->close(f);
-    return val_bool(true);
+    return val_bool(ok);
 }
 
 // `files.cd(path)` -- make a directory the current one: the directory
@@ -182,15 +191,13 @@ value_t files_method_cd(struct object *self, const member_t *m, int argc, const 
     (void)self;
     (void)m;
     (void)argc;
-    char abs[VFS_PATH_MAX];
-    if (vfs_normalise_path(argv[0].s, abs, sizeof(abs)) < 0)
+    int rc = vfs_set_cwd(argv[0].s);
+    if (rc == -ENAMETOOLONG)
         return val_err("cd: path too long");
-    vfs_stat_t st;
-    if (vfs_stat(abs, &st) < 0)
-        return val_err("cd: no such directory '%s'", argv[0].s);
-    if (!(st.mode & VFS_MODE_DIR))
+    if (rc == -ENOTDIR)
         return val_err("cd: not a directory '%s'", argv[0].s);
-    vfs_set_cwd(abs);
+    if (rc < 0)
+        return val_err("cd: no such directory '%s'", argv[0].s);
     return val_none();
 }
 

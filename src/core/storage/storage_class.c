@@ -1738,7 +1738,7 @@ static bool mount_entry_info(struct object *self, image_vfs_mount_info_t *info) 
 }
 
 // The fields of a mount entry, each attribute's user_data.
-enum { MOUNT_PATH, MOUNT_FORMAT, MOUNT_PARTITIONS, MOUNT_REFCOUNT, MOUNT_BUSY };
+enum { MOUNT_PATH, MOUNT_FORMAT, MOUNT_PARTITIONS, MOUNT_REFCOUNT, MOUNT_BUSY, MOUNT_STALE };
 
 // One getter for every mount attribute: the field its user_data names.
 static DEF_GETTER(mount_attr_get) {
@@ -1754,6 +1754,8 @@ static DEF_GETTER(mount_attr_get) {
         return val_uint(4, info.partitions);
     case MOUNT_REFCOUNT:
         return val_uint(4, info.refcount);
+    case MOUNT_STALE:
+        return val_bool(info.stale);
     default:
         return val_bool(info.busy);
     }
@@ -1806,6 +1808,13 @@ static const member_t files_mount_members[] = {
      .attr = {.type = V_BOOL,
               .get = mount_attr_get,
               .user_data = (const void *)(uintptr_t)MOUNT_BUSY,
+              .presentation_flags = VAL_VOLATILE}                                                                   },
+    {.kind = M_ATTR,
+     .name = "stale",
+     .doc = "True once the image file changed: a newer mount serves it, this one only its open handles",
+     .attr = {.type = V_BOOL,
+              .get = mount_attr_get,
+              .user_data = (const void *)(uintptr_t)MOUNT_STALE,
               .presentation_flags = VAL_VOLATILE}                                                                   },
     {.kind = M_METHOD,
      .name = "unmount",
