@@ -351,6 +351,39 @@ TEST(test_truncated_header) {
     ASSERT_TRUE(err != NULL);
 }
 
+// A resource length near 4 GB must not pass the bounds check by wrapping
+// (it did in wasm32's 32-bit size_t: do24 + 4 + rlen overflowed).
+TEST(test_huge_resource_length_rejected) {
+    uint8_t cc[1][4] = {
+        {'B', 'I', 'G', ' '}
+    };
+    size_t counts[1] = {1};
+    const uint8_t payload[3] = {1, 2, 3};
+    test_res_t res[1] = {
+        {.cc = {'B', 'I', 'G', ' '}, .id = 1, .name_off = -1, .data_len = 3, .data = payload}
+    };
+    size_t fork_len;
+    uint8_t *buf = build_fork(res, 1, cc, counts, 1, NULL, &fork_len);
+    w_u32(buf + 16, 0xFFFFFFF0u); // the resource's length word
+    const char *err = NULL;
+    rfork_t *rf = rfork_parse(buf, fork_len, &err);
+    ASSERT_TRUE(rf == NULL);
+    ASSERT_TRUE(err != NULL);
+    free(buf);
+}
+
+// The .info sidecar holds the worst-case name: 63 control characters, each
+// escaped to six bytes, still fit (the escape buffer used to be 256 bytes).
+TEST(test_info_format_worst_case_name) {
+    char name[64];
+    memset(name, 0x01, 63);
+    name[63] = 0;
+    char out[512];
+    int w = rfork_info_format(name, 0xFF, 16u << 20, out, sizeof(out));
+    ASSERT_TRUE(w > 6 * 63);
+    ASSERT_TRUE(strstr(out, "\\u0001") != NULL);
+}
+
 TEST(test_corrupt_offsets) {
     // Header fields claim data and map regions past the end of the buffer.
     uint8_t buf[64] = {0};
@@ -772,6 +805,8 @@ int main(void) {
     RUN(test_macroman_round_trips_every_byte);
     RUN(test_compressed_resource_inflates_on_lookup);
     RUN(test_inflation_is_budgeted_per_fork);
+    RUN(test_huge_resource_length_rejected);
+    RUN(test_info_format_worst_case_name);
     fprintf(stderr, "All resfork tests passed.\n");
     return 0;
 }
