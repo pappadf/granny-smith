@@ -1263,6 +1263,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     size_t idat_capacity = 0;
     while (pos + 12 <= (size_t)file_size) {
         uint32_t chunk_len = RD_BE32(file_data + pos);
+        // The chunk body plus its CRC must lie inside the file
+        if (chunk_len > (size_t)file_size - pos - 12) {
+            free(idat_data);
+            free(file_data);
+            gs_outf("Error: Truncated PNG chunk.\n");
+            return -1;
+        }
         char chunk_type[5];
         memcpy(chunk_type, file_data + pos + 4, 4);
         chunk_type[4] = '\0';
@@ -1451,6 +1458,9 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
             bottom = (int)d->height;
         if (right > (int)d->width)
             right = (int)d->width;
+        // A rect wholly off-screen or inverted after clamping masks nothing
+        if (right <= left || bottom <= top)
+            continue;
         for (int y = top; y < bottom; y++) {
             size_t off = ((size_t)y * d->width + left) * 4;
             size_t span = (size_t)(right - left) * 4;
