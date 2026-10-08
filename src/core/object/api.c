@@ -11,7 +11,9 @@
 
 #include "value_format.h"
 
+#include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -284,15 +286,19 @@ static int json_parse_value(const char **pp, value_t *out) {
                 is_float = true;
             q++;
         }
+        // Out-of-range numbers are refused rather than saturated: strtoll
+        // would turn 1e20-as-integer into INT64_MAX and strtod 1e999 into
+        // inf, both plausible-looking wrong arguments.
+        errno = 0;
         if (is_float) {
             double d = strtod(p, &endp);
-            if (!endp || endp == p)
+            if (!endp || endp == p || errno == ERANGE || !isfinite(d))
                 return -1;
             *out = val_float(d);
             *pp = endp;
         } else {
             long long ll = strtoll(p, &endp, 10);
-            if (!endp || endp == p)
+            if (!endp || endp == p || errno == ERANGE)
                 return -1;
             *out = val_int((int64_t)ll);
             *pp = endp;

@@ -11,6 +11,7 @@
 #include "object.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,7 +194,11 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
 
     case V_FLOAT:
-        vbuf_appendf(out, "%g", v->f);
+        // JSON has no inf/nan: a non-finite float is null there
+        if (mode_is_json(mode) && !isfinite(v->f))
+            vbuf_append(out, "null", 4);
+        else
+            vbuf_appendf(out, "%g", v->f);
         return;
 
     case V_STRING: {

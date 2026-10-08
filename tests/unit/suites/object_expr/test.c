@@ -9,6 +9,7 @@
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
+#include "value_format.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -91,6 +92,24 @@ TEST(test_division_and_modulo) {
     v = eval("1 / 0");
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
+
+    // So is float modulo by zero (fmod would answer NaN).
+    v = eval("1.5 % 0.0");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+// A non-finite float renders as null in the JSON modes (JSON has no inf or
+// nan) and as text elsewhere.
+TEST(test_nonfinite_float_json_is_null) {
+    char buf[32];
+    value_t v = val_float(1.0 / 0.0);
+    value_format_into(&v, VFMT_JSON, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "inf") == 0);
 }
 
 TEST(test_bitwise_ops) {
@@ -803,5 +822,6 @@ int main(void) {
     RUN(test_range_step_zero_is_refused);
     RUN(test_interpolate_long_splice_name_errors);
     RUN(test_deep_nesting_is_an_error);
+    RUN(test_nonfinite_float_json_is_null);
     return 0;
 }

@@ -1404,6 +1404,12 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             z = x / y;
             break;
         case '%':
+            // Same refusal as '/': fmod(x, 0) is a NaN, not an answer
+            if (y == 0) {
+                value_free(&pa);
+                value_free(&pb);
+                NUM_FAIL("division by zero");
+            }
             z = fmod(x, y);
             break;
         default:
