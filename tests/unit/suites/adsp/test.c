@@ -512,6 +512,35 @@ TEST(test_out_of_sequence_data_rejected) {
     pump();
 }
 
+// Data past the receive window is discarded, but an acknowledgment request
+// on it is still answered (12-8, 12-14).
+TEST(test_past_window_data_still_acked) {
+    setup();
+    open_a_to_b();
+    adsp_conn_t *cb = first_conn(g_b);
+    uint16_t cid = adsp_conn_remote_cid(cb);
+    atalk_socket_addr_t from = {.net = 0, .node = NODE_A, .socket = SOCK_A};
+
+    static uint8_t pkt[ADSP_HEADER_SIZE + ADSP_RECV_WINDOW + 1];
+    memset(pkt, 0, sizeof(pkt));
+    pkt[0] = (uint8_t)(cid >> 8);
+    pkt[1] = (uint8_t)cid;
+    pkt[11] = 0x40;
+    pkt[12] = ADSP_DESC_ACK_REQ; // in sequence, but one byte too many
+    int before = g_wire_tail;
+    adsp_input(g_b, &from, SOCK_B, pkt, (int)sizeof(pkt));
+
+    ASSERT_EQ_INT(g_rec_b.stream_len, 0);
+    ASSERT_EQ_INT((int)adsp_conn_recv_seq(cb), 0);
+    bool acked = false;
+    for (int i = before; i < g_wire_tail; i++) {
+        if (g_wire[i].buf[12] == (ADSP_DESC_CONTROL | ADSP_CTL_PROBE_ACK))
+            acked = true;
+    }
+    ASSERT_TRUE(acked);
+    pump();
+}
+
 // Attention messages ride their own sequence space and are acknowledged
 // separately (12-19 … 12-21).
 TEST(test_attention_message) {
@@ -747,6 +776,7 @@ int main(void) {
     RUN(test_multi_packet_stream);
     RUN(test_retransmit_after_loss);
     RUN(test_out_of_sequence_data_rejected);
+    RUN(test_past_window_data_still_acked);
     RUN(test_attention_message);
     RUN(test_attention_limits);
     RUN(test_close_advice);

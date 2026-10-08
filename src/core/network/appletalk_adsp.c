@@ -671,6 +671,8 @@ static void adsp_handle_data(adsp_stack_t *s, adsp_conn_t *c, uint8_t desc, uint
     if (body_len > (int)c->recv_wdw) {
         // Data beyond the advertised window is discarded (12-8).
         LOG(3, "ADSP: discarding %d bytes past the receive window on connection %d", body_len, c->id);
+        if (ack_req)
+            adsp_send_control(s, c, ADSP_CTL_PROBE_ACK, false); // the request is still answered (12-14)
         return;
     }
     c->recv_seq += (uint32_t)body_len;
