@@ -23,8 +23,8 @@
 
 include "../lib/mac.script"
 
-let mac_disk = "../../data/systems/system_7_6_170mb_beos_launcher.img"
-let be_disk = "../../data/systems/beos_5_0_3_ppc_500mb.img"
+let mac_disk = "../../data/systems/system_7_6_170mb_beos_launcher.dmg"
+let be_disk = "../../data/systems/beos_5_0_3_ppc_500mb.dmg"
 
 # The Deskbar's clock (top right, y 20-45 from x 520) moves with guest
 # time; everything else on the desktop is static once Tracker and Deskbar

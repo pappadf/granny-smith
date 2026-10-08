@@ -5,11 +5,14 @@
 # installed BFS disk at MESH id 1 to the Tracker desktop — on one 604, and
 # on the dual-processor card with both processors running the kernel.
 #
-# THE MEDIA IS IN gs-test-data: systems/system_7_6_170mb_beos_launcher.img.7z
+# THE MEDIA IS IN gs-test-data: systems/system_7_6_170mb_beos_launcher.dmg.7z
 # (the suite-tnt 7.6 image plus BeOS_Launcher from the BeOS 5.0.3 Professional
-# disc in Startup Items) and systems/beos_5_0_3_ppc_500mb.img.7z (a 500 MB
+# disc in Startup Items) and systems/beos_5_0_3_ppc_500mb.dmg.7z (a 500 MB
 # SCSI disk BeOS 5.0.3's own Installer initialised and filled on this
-# machine, booted once).  At an older pin the rows SKIP.
+# machine, booted once).  Both are UDIF images with uncompressed chunks
+# (files.convert level=0: the empty space is zero runs) inside 7z, so the
+# extracted disks open as they are, at a third of their raw size.  At an
+# older pin the rows SKIP.
 
 TEST_NAME := BeOS on the 9500 and 9500/180MP
 TEST_DESC := Mac OS 7.6 hands over to BeOS 5.0.3 through BeOS_Launcher; BeOS boots to the Tracker desktop on a 9500 and, with both processors, on a 9500/180MP
