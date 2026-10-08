@@ -78,8 +78,8 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     // DEC or external interrupt arriving between lwarx and stwcx. leaves the
     // reservation live across the handler and the rfi, so the conditional
     // store succeeds where hardware fails it -- the exact atomicity break the
-    // pair exists to prevent.  reserve_addr is deliberately left alone: the
-    // reservation-granule compare needs it.
+    // pair exists to prevent.  reserve_addr is left alone; nothing compares
+    // it (see ppc_do_stwcx).
     p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
@@ -558,7 +558,10 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->mq = v;
         break;
     case 1:
-        p->xer = v;
+        // MPC601UM 2.2.5.2: the 601's XER reserved bits (3-15, 24) read as
+        // zero.  The 604 leaves them implementation-defined (PEM), so it
+        // keeps what was written.
+        p->xer = ppc_is_604(p) ? v : (v & (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA | PPC_XER_CMPBYTE | PPC_XER_BYTES));
         break;
     case 8:
         p->lr = v;

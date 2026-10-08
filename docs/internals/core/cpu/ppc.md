@@ -27,7 +27,7 @@ drift out of sync and each cross-checks the other.
 | `ppc.h` | public surface: `ppc_t` (opaque), init/reset/run, sched-if and debug-if adapters, external-interrupt line |
 | `ppc_internal.h` | the `ppc_t` state (POD, pointers last), MSR/XER/vector constants, field macros, shared inline helpers |
 | `ppc.c` | lifecycle, checkpoint, exception machinery, SPR file, `machine.cpu` object class, `$` aliases |
-| `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (reserved fields, BO forms, strict `sc`) so both includers agree by construction |
+| `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (BO forms, the reserved fields of the rows that check them, `sc` and its 601-only POWER forms) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
 | `ppc_mmu.c` | the 601 MMU front end: T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
@@ -35,10 +35,13 @@ drift out of sync and each cross-checks the other.
 | `ppc_softfp.c/.h` | **the FPU arithmetic kernel**: integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
 | `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
 
-One consequence of the shared tree: invalid forms (reserved fields set,
-invalid BO encodings) take the illegal-instruction program exception in the
-interpreter, exactly where the disassembler prints `.long` — a legitimate
-deterministic choice for what the manual calls boundedly-undefined forms.
+One consequence of the shared tree: invalid forms (invalid BO encodings,
+reserved fields set on the rows that check them) take the
+illegal-instruction program exception in the interpreter, exactly where the
+disassembler prints `.long` — a legitimate deterministic choice for what the
+manual calls boundedly-undefined forms. Not every row checks its reserved
+fields: `rfi`, `mcrf`, `mtcrf`, `mfsr`/`mtsr` and the CR-logical and compare
+rows, among others, execute as if those bits were zero.
 
 ## Main-CPU status (vs the aux-core contract)
 

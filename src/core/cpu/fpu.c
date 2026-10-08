@@ -1048,7 +1048,9 @@ static int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
     uint16_t exp = FP80_EXP(val);
     int32_t true_exp = (int32_t)exp - FPU_EXP_BIAS;
 
-    if (fp80_is_inf(val) || true_exp > 30) {
+    // true_exp == 31 falls through: -2^31 (and roundings onto it) is exact
+    // INT32_MIN, and the range checks at the end catch everything else.
+    if (fp80_is_inf(val) || true_exp > 31) {
         fpu->fpsr |= FPEXC_OPERR;
         return sign ? INT32_MIN : INT32_MAX;
     }
@@ -1220,24 +1222,26 @@ static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
 static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1, uint32_t w2) {
     int sm = (w0 >> 31) & 1; // mantissa sign
     int se = (w0 >> 30) & 1; // exponent sign
-    int yy = (w0 >> 28) & 3; // special encoding
-
-    // Special values: YY != 0
-    if (yy != 0) {
-        if (w1 == 0 && w2 == 0)
-            return fp80_make(sm, 0x7FFF, 0); // infinity
-        // NaN: place mantissa bits as payload, set J-bit and quiet bit
-        uint64_t nan_mant = ((uint64_t)w1 << 32) | w2;
-        if (nan_mant == 0)
-            nan_mant = 1;
-        nan_mant |= 0xC000000000000000ULL;
-        return fp80_make(sm, 0x7FFF, nan_mant);
-    }
+    int yy = (w0 >> 28) & 3; // don't care, except in the infinity/NaN pattern
 
     // Extract 3 BCD exponent digits from w0 bits 27:16
     unsigned e1 = (w0 >> 24) & 0xF; // hundreds
     unsigned e2 = (w0 >> 20) & 0xF; // tens
     unsigned e3 = (w0 >> 16) & 0xF; // units
+
+    // Infinity and NaN are ONE pattern: SE and both y bits set with an
+    // exponent of $FFF (MC68881UM Table 3-4).  Everything else -- including
+    // a string with the y bits set and any other exponent -- is in-range or
+    // zero.  A NaN's 16-digit fraction "is moved bit-for-bit into the
+    // extended precision mantissa ... no decimal-to-binary conversion or any
+    // other conversion is performed" (Note 1 there), the integer bit being a
+    // don't care and bit 62 the signalling bit, so it is not quieted here.
+    if (se && yy == 3 && e1 == 0xF && e2 == 0xF && e3 == 0xF) {
+        uint64_t frac = ((uint64_t)w1 << 32) | w2;
+        if (frac == 0)
+            return fp80_make(sm, 0x7FFF, 0); // infinity
+        return fp80_make(sm, 0x7FFF, frac);
+    }
     int32_t bcd_exp = (int32_t)(e1 * 100 + e2 * 10 + e3);
     if (se)
         bcd_exp = -bcd_exp;
@@ -1315,9 +1319,10 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         return;
     }
 
-    // Infinity (YY=01)
+    // Infinity and NaN share one header: SE and both y bits set with an
+    // exponent of $FFF (MC68881UM Table 3-4); infinity has a zero fraction.
     if (fp80_is_inf(val)) {
-        *w0 = ((uint32_t)sm << 31) | (1u << 28);
+        *w0 = ((uint32_t)sm << 31) | (1u << 30) | (3u << 28) | 0x0FFF0000u;
         *w1 = 0;
         *w2 = 0;
         return;
@@ -1332,7 +1337,7 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
             fpu->fpsr |= FPEXC_SNAN;
             val.mantissa |= 0x4000000000000000ULL; // quiet the NaN
         }
-        *w0 = ((uint32_t)sm << 31) | (3u << 28);
+        *w0 = ((uint32_t)sm << 31) | (1u << 30) | (3u << 28) | 0x0FFF0000u;
         *w1 = (uint32_t)(val.mantissa >> 32);
         *w2 = (uint32_t)(val.mantissa & 0xFFFFFFFF);
         return;

@@ -836,10 +836,21 @@
         int32_t _disp = (int32_t)(int16_t)FETCH16();                                                                   \
         uint32_t _ay = AY;                                                                                             \
         PUSH32(_ay);                                                                                                   \
-        AY = SP;                                                                                                       \
-        SP += _disp;                                                                                                   \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            AY = SP;                                                                                                   \
+            SP += _disp;                                                                                               \
+        }                                                                                                              \
     })
-#define OP_UNLK               OP(SP = AY; uint32_t a; POP32(a); AY = a)
+// Read the saved An through AY and commit SP/An only if the read did not
+// fault, so a Format-$B retry re-runs UNLK from intact registers.
+#define OP_UNLK                                                                                                        \
+    OP({                                                                                                               \
+        uint32_t _a = READ32(AY);                                                                                      \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            SP = AY + 4;                                                                                               \
+            AY = _a;                                                                                                   \
+        }                                                                                                              \
+    })
 #define OP_NOP                OP(/* no-op */)
 #define OP_MOVE_AN_USP        OP(SUPER(SET_USP(A(EA_REG))))
 #define OP_MOVE_USP_AN        OP(SUPER(A(EA_REG) = GET_USP()))
@@ -1552,9 +1563,12 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         case 0x2:                                                                                                      \
             _offset += 4;                                                                                              \
             break; /* 6-word frame: +instruction address */                                                            \
-        case 0x3:                                                                                                      \
-            _offset += 4;                                                                                              \
-            break; /* 68040 FP post-instruction frame: +effective address */                                           \
+        case 0x3: /* 68040 FP post-instruction frame: +effective address */                                            \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _offset += 4;                                                                                          \
+            else                                                                                                       \
+                _fmterr = 1;                                                                                           \
+            break;                                                                                                     \
         case 0x7:                                                                                                      \
             /* MC68040 access error (30-word) frame.  Writebacks are never  */                                         \
             /* pending in this functional model, so the WBxS fields the     */                                         \
@@ -1564,15 +1578,26 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             else                                                                                                       \
                 _fmterr = 1;                                                                                           \
             break;                                                                                                     \
-        case 0x9:                                                                                                      \
-            _offset += 12;                                                                                             \
-            break; /* coprocessor mid-instruction (+12) */                                                             \
-        case 0xA:                                                                                                      \
-            _offset += 24;                                                                                             \
-            break; /* short bus fault (+24) */                                                                         \
-        case 0xB:                                                                                                      \
-            _offset += 84;                                                                                             \
-            break; /* long bus fault (+84) */                                                                          \
+        /* $9/$A/$B are 68020/030 frames; the 68040 defines only $0-$4 and */                                          \
+        /* $7 (MC68040UM §8.4) and takes a format error on anything else.  */                                         \
+        case 0x9: /* coprocessor mid-instruction (+12) */                                                              \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 12;                                                                                         \
+            break;                                                                                                     \
+        case 0xA: /* short bus fault (+24) */                                                                          \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 24;                                                                                         \
+            break;                                                                                                     \
+        case 0xB: /* long bus fault (+84) */                                                                           \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 84;                                                                                         \
+            break;                                                                                                     \
         default:                                                                                                       \
             _fmterr = 1;                                                                                               \
             break;                                                                                                     \
@@ -1871,8 +1896,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         int32_t _disp = (int32_t)FETCH32();                                                                            \
         uint32_t _a = AY;                                                                                              \
         PUSH32(_a);                                                                                                    \
-        AY = SP;                                                                                                       \
-        SP += _disp;                                                                                                   \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            AY = SP;                                                                                                   \
+            SP += _disp;                                                                                               \
+        }                                                                                                              \
     })
 
 // --- MMU branch conditionals: stub as not-taken (MMU conditions always false) ---
@@ -2082,6 +2109,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                     int _sz = _fpu->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
                     AY -= (uint32_t)_sz;                                                                               \
                     fpu_fsave(_fpu, AY);                                                                               \
+                    if (__builtin_expect(g_bus_error_pending, 0))                                                      \
+                        AY += (uint32_t)_sz; /* roll back for the Format $B retry */                                   \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_fsave(_fpu, _ea);                                                                              \
@@ -2101,7 +2130,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                 if (EA_MODE == 3) {                                                                                    \
                     /* (An)+ postincrement */                                                                          \
                     int _sz = fpu_frestore(_fpu, AY);                                                                  \
-                    AY += (uint32_t)_sz;                                                                               \
+                    if (__builtin_expect(!g_bus_error_pending, 1))                                                     \
+                        AY += (uint32_t)_sz;                                                                           \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_frestore(_fpu, _ea);                                                                           \
