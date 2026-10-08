@@ -226,6 +226,8 @@ static uint32_t afp_fork_status_to_err(afp_fork_status_t st) {
         return AFPERR_RangeNotLocked;
     case AFP_FORK_DISK_FULL:
         return AFPERR_DiskFull;
+    case AFP_FORK_PARAM_ERR:
+        return AFPERR_ParamErr;
     default:
         return AFPERR_MiscErr;
     }

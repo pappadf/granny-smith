@@ -522,6 +522,30 @@ void platform_machine_attached(void) {
     s_count_rebase = true;
 }
 
+// --cycles: the instruction budget for the session (0 = none), and what has
+// been spent of it.  Counts across every machine the session runs: a
+// machine.boot or checkpoint.load replaces the one being counted, and the
+// count carries on from the new one's start (platform_machine_attached)
+// rather than subtracting across them.
+static uint64_t s_max_cycles;
+static uint64_t s_spent_cycles;
+static uint64_t s_last_cycles;
+
+// True once the --cycles budget is spent (never without one).
+static bool cycle_budget_spent(void) {
+    if (!s_max_cycles)
+        return false;
+    uint64_t now = cpu_instr_count();
+    if (s_count_rebase) {
+        s_count_rebase = false;
+        s_last_cycles = now;
+    }
+    if (now > s_last_cycles)
+        s_spent_cycles += now - s_last_cycles;
+    s_last_cycles = now;
+    return s_spent_cycles >= s_max_cycles;
+}
+
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
 // One frame, when the machine runs.  Also what inline mode (job.h) calls
@@ -541,6 +565,13 @@ static void hl_inline_frame(void) {
 }
 
 static bool hl_pump_once(void) {
+    // Every loop pumps here -- the REPL, the daemon, a statement holding the
+    // line with a run -- so this is where --cycles ends the session: as
+    // `quit` does, which each of them already honours.
+    if (!quit_requested && cycle_budget_spent()) {
+        fprintf(stderr, "\nReached cycle limit (%llu cycles)\n", (unsigned long long)s_max_cycles);
+        gs_quit();
+    }
     bool did = hl_run_frame();
     if (gs_mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
@@ -1059,7 +1090,16 @@ static void daemon_handle_client(int client_fd) {
             break;
         }
         idle_since = host_time_ms();
-        if (pending_len + (size_t)n > STMT_MAX) {
+        if (skipping && !pending_len) {
+            // Still inside a line already reported as too long: drop up to
+            // its end, without reporting it again or buffering it
+            char *end = memchr(chunk, '\n', (size_t)n);
+            if (!end)
+                continue;
+            size_t rest = (size_t)n - (size_t)(end - chunk);
+            memmove(chunk, end, rest);
+            n = (ssize_t)rest;
+        } else if (pending_len + (size_t)n > STMT_MAX) {
             // A line longer than any statement may be: drop it up to its end.
             printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
             stmt_reset(&stmt);
@@ -1392,7 +1432,6 @@ int main(int argc, char *argv[]) {
     const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
-    uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
     const char *video_card_arg = NULL;
@@ -1482,7 +1521,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (strncmp(arg, "--cycles=", 9) == 0) {
-            max_cycles = strtoull(arg + 9, NULL, 10);
+            s_max_cycles = strtoull(arg + 9, NULL, 10);
             continue;
         }
 
@@ -1500,11 +1539,12 @@ int main(int argc, char *argv[]) {
         }
 
         // --var NAME=VALUE: set a shell variable before script execution
-        if (strncmp(arg, "--var", 5) == 0) {
+        // (exactly --var or --var=: a longer option such as --variant is not this one)
+        if (strcmp(arg, "--var") == 0 || strncmp(arg, "--var=", 6) == 0) {
             const char *def = NULL;
             if (arg[5] == '=') {
                 def = arg + 6;
-            } else if (arg[5] == '\0' && i + 1 < argc) {
+            } else if (i + 1 < argc) {
                 def = argv[++i];
             }
             if (!def || !strchr(def, '=')) {
@@ -1646,8 +1686,8 @@ int main(int argc, char *argv[]) {
         if (script_file)
             printf("Script: %s\n", script_file);
         printf("Speed:  %s\n", speed_mode);
-        if (max_cycles > 0)
-            printf("Cycles: %llu\n", (unsigned long long)max_cycles);
+        if (s_max_cycles > 0)
+            printf("Cycles: %llu\n", (unsigned long long)s_max_cycles);
         printf("\n");
     }
 
@@ -1666,15 +1706,19 @@ int main(int argc, char *argv[]) {
 
     // Apply --var definitions (after shell_init which calls shell_var_init)
     for (int i = 0; i < var_count; i++) {
-        // Split NAME=VALUE at first '='
-        char buf[256];
-        strncpy(buf, var_defs[i], sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-        char *eq = strchr(buf, '=');
-        if (eq) {
-            *eq = '\0';
-            shell_var_set(buf, eq + 1);
+        // Split NAME=VALUE at first '=' (validated when parsed); the value is
+        // used in place, so a long one is not cut short
+        const char *eq = strchr(var_defs[i], '=');
+        size_t name_len = (size_t)(eq - var_defs[i]);
+        char *name = malloc(name_len + 1);
+        if (!name) {
+            fprintf(stderr, "Error: out of memory applying --var\n");
+            return 1;
         }
+        memcpy(name, var_defs[i], name_len);
+        name[name_len] = '\0';
+        shell_var_set(name, eq + 1);
+        free(name);
     }
 
     setup_init();
@@ -1981,32 +2025,8 @@ int main(int argc, char *argv[]) {
             printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
     }
 
-    // Main loop.  --max-cycles counts instructions run, across every machine
-    // the session runs: a machine.boot or checkpoint.load replaces the one
-    // being counted, and the count carries on from the new one's start
-    // (platform_machine_attached) rather than subtracting across them.
-    uint64_t spent_cycles = 0;
-    uint64_t last_cycles = cpu_instr_count();
-    s_count_rebase = false;
-
+    // Main loop (hl_pump_once ends it when the --cycles budget is spent)
     while (g_running && !quit_requested) {
-        // Check for max cycles limit
-        if (max_cycles > 0) {
-            uint64_t now = cpu_instr_count();
-            if (s_count_rebase) {
-                s_count_rebase = false;
-                last_cycles = now;
-            }
-            if (now > last_cycles)
-                spent_cycles += now - last_cycles;
-            last_cycles = now;
-            if (spent_cycles >= max_cycles) {
-                if (!quiet)
-                    printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
-                break;
-            }
-        }
-
         // One frame-unit per iteration while the machine runs (the same
         // step web2's tick runs, unthrottled), then the drain; a REPL line
         // runs as a job, the loop pumping inside its wait.

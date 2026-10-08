@@ -462,6 +462,48 @@ TEST(test_malformed_streams_rejected) {
     put_code(&s, ";;;;");
     put_param(&s, "----", "list", items.b, items.len);
     assert_rejects(s.b, s.len, "prefix size 6");
+
+    // Zero-length factored items: a 16-byte descriptor claiming 32768 of them.
+    items = (sbuf_t){0};
+    put32(&items, 32768);
+    put32(&items, 8);
+    put_code(&items, "null");
+    put32(&items, 0);
+    s = (sbuf_t){0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    assert_rejects(s.b, s.len, "zero-length item count amplification");
+
+    // Fixed four-byte items: the count claims more than the data holds.
+    items = (sbuf_t){0};
+    put32(&items, 3);
+    put32(&items, 8);
+    put_code(&items, "type");
+    put32(&items, 4);
+    put_code(&items, "cwin");
+    s = (sbuf_t){0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    assert_rejects(s.b, s.len, "fixed-length count past the end");
+}
+
+// A short list of zero-length factored items is still legal.
+TEST(test_decode_zero_length_factored_items) {
+    sbuf_t items = {0};
+    put32(&items, 3);
+    put32(&items, 8);
+    put_code(&items, "null");
+    put32(&items, 0);
+    sbuf_t s = {0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    value_t ev = aevt_decode("aevt", "test", s.b, s.len);
+    ASSERT_TRUE(!val_is_error(&ev));
+    ASSERT_EQ_INT((int)leaf_data(&ev, "----")->list.len, 3);
+    value_free(&ev);
 }
 
 // Truncating a well-formed stream at every offset must never crash and must
@@ -743,6 +785,7 @@ int main(void) {
     RUN(test_decode_type_factored_list);
     RUN(test_decode_fully_factored_list);
     RUN(test_decode_packed_list);
+    RUN(test_decode_zero_length_factored_items);
     RUN(test_decode_object_specifier);
     RUN(test_unknown_descriptor_round_trips);
     RUN(test_wrong_length_scalar_kept_opaque);

@@ -102,6 +102,15 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
     }
 
     int pos = 8 + round_up_even((int)prefix);
+
+    // Bound the count by the bytes behind it, so a tiny descriptor cannot
+    // ask for thousands of items: each item takes at least its keyword, type,
+    // length and fixed data; zero-byte items are capped at one per byte.
+    uint32_t min_item = (keyed ? 4u : 0u) + (prefix == 0 ? 4u : 0u) + (prefix <= 4 ? 4u : (uint32_t)fixed_len);
+    uint32_t avail = pos < len ? (uint32_t)(len - pos) : 0u; // an odd prefix may pad one byte past len
+    if (min_item == 0 ? count > (uint32_t)len : (uint64_t)count * min_item > avail)
+        return (rd_fail(r, "item count %u exceeds the descriptor's %d bytes", (unsigned)count, len), val_none());
+
     value_map_builder_t *rec = keyed ? val_map_new() : NULL;
     value_t *items = NULL;
     size_t items_len = 0, items_cap = 0;

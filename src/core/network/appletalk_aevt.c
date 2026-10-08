@@ -233,9 +233,14 @@ static aevt_event_t *aevt_find_by_return_id(uint32_t return_id) {
 // hand it to the session layer.
 static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *id4, uint32_t return_id, bool is_reply,
                              const uint8_t *stream, int stream_len, char *err, size_t err_len) {
-    uint8_t msg[AEVT_HLE_HEADER_SIZE + AEVT_MAX_STREAM];
     if (stream_len < 0 || stream_len > AEVT_MAX_STREAM) {
         snprintf(err, err_len, "the event is too large to send");
+        return false;
+    }
+    // On the heap: 32 KB is too much for the wasm build's small stack
+    uint8_t *msg = (uint8_t *)malloc((size_t)AEVT_HLE_HEADER_SIZE + (size_t)stream_len);
+    if (!msg) {
+        snprintf(err, err_len, "out of memory");
         return false;
     }
     memset(msg, 0, AEVT_HLE_HEADER_SIZE);
@@ -254,8 +259,10 @@ static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *i
     if (stream_len > 0)
         memcpy(&msg[AEVT_HLE_HEADER_SIZE], stream, (size_t)stream_len);
 
-    if (atalk_ppc_send_block(s, fourcc_value(class4), fourcc_value(id4), return_id, msg,
-                             AEVT_HLE_HEADER_SIZE + stream_len) != 0) {
+    int rc = atalk_ppc_send_block(s, fourcc_value(class4), fourcc_value(id4), return_id, msg,
+                                  AEVT_HLE_HEADER_SIZE + stream_len);
+    free(msg);
+    if (rc != 0) {
         snprintf(err, err_len, "the session would not take the message");
         return false;
     }
@@ -264,11 +271,16 @@ static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *i
 
 // Encode and write a pending event on its (now open) session.
 static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len) {
-    uint8_t stream[AEVT_MAX_STREAM];
-    int len = aevt_encode(&ev->request, stream, (int)sizeof(stream), err, err_len);
-    if (len < 0)
+    uint8_t *stream = (uint8_t *)malloc(AEVT_MAX_STREAM); // heap: too big for the wasm stack
+    if (!stream) {
+        snprintf(err, err_len, "out of memory");
         return false;
-    if (!aevt_write_event(ev->session, ev->class4, ev->id4, ev->return_id, false, stream, len, err, err_len))
+    }
+    int len = aevt_encode(&ev->request, stream, AEVT_MAX_STREAM, err, err_len);
+    bool sent =
+        len >= 0 && aevt_write_event(ev->session, ev->class4, ev->id4, ev->return_id, false, stream, len, err, err_len);
+    free(stream);
+    if (!sent)
         return false;
     ev->state = ev->no_reply ? AEVT_STATE_REPLIED : AEVT_STATE_SENT;
     ev->sent_at_instr = cpu_instr_count();
@@ -389,10 +401,11 @@ static void aevt_send_auto_reply(ppc_session_t *s, uint32_t return_id) {
         value_free(&reply);
         return;
     }
-    uint8_t stream[AEVT_MAX_STREAM];
-    int len = aevt_encode(&reply, stream, (int)sizeof(stream), err, sizeof(err));
+    uint8_t *stream = (uint8_t *)malloc(AEVT_MAX_STREAM); // heap: too big for the wasm stack
+    int len = stream ? aevt_encode(&reply, stream, AEVT_MAX_STREAM, err, sizeof(err)) : -1;
     if (len < 0) {
-        LOG(2, "AE: the auto-reply will not encode — %s", err);
+        LOG(2, "AE: the auto-reply will not encode — %s", stream ? err : "out of memory");
+        free(stream);
         value_free(&reply);
         return;
     }
@@ -400,6 +413,7 @@ static void aevt_send_auto_reply(ppc_session_t *s, uint32_t return_id) {
         g_aevt->stats.auto_replies++;
     else
         LOG(2, "AE: the auto-reply could not be sent — %s", err);
+    free(stream);
     value_free(&reply);
 }
 

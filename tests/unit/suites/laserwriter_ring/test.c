@@ -546,6 +546,47 @@ TEST(lost_worker_fails_the_outstanding_request) {
     ASSERT_TRUE(!worker_read(&kind, &p, &len));
 }
 
+// A FED too short for its fixed words fails the feed instead of reading
+// the missing words from past the record.
+TEST(short_fed_record_fails_the_feed) {
+    open_and_ack(16);
+    ASSERT_TRUE(laserwriter_transport_feed(16, 7, (const uint8_t *)"abc", 3));
+    uint32_t kind, len;
+    const uint8_t *p;
+    ASSERT_TRUE(worker_read(&kind, &p, &len));
+    ASSERT_EQ_INT(kind, LWRING_R_FEED);
+    uint32_t w[1] = {16}; // the job id and nothing else
+    ASSERT_TRUE(worker_write(LWRING_R_FED, w, 1, NULL, NULL, 0));
+    int fed = g_ev.fed;
+    laserwriter_transport_poll();
+    ASSERT_EQ_INT(g_ev.fed, fed + 1);
+    ASSERT_EQ_INT(g_ev.seq, 7);
+    ASSERT_EQ_INT(g_ev.status, LASERWRITER_FEED_FAILED);
+    ASSERT_EQ_INT(g_ev.reply_len, 0);
+    // The job was dropped with the failure
+    ASSERT_TRUE(!laserwriter_transport_feed(16, 8, (const uint8_t *)"x", 1));
+}
+
+// An OPEN_FAILED text length near 4 GiB must not wrap the bounds check: the
+// text is capped at what the record holds.
+TEST(open_failed_huge_text_len_is_capped) {
+    laserwriter_job_config_t cfg;
+    config(&cfg);
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, 17, &cfg));
+    uint32_t kind, len;
+    const uint8_t *p;
+    ASSERT_TRUE(worker_read(&kind, &p, &len));
+    ASSERT_EQ_INT(kind, LWRING_R_OPEN);
+    uint32_t w[LWRING_OPEN_FAILED_WORDS] = {17, 0xFFFFFFFCu};
+    const uint8_t *t[1] = {(const uint8_t *)"ab"};
+    uint32_t l[1] = {2};
+    ASSERT_TRUE(worker_write(LWRING_R_OPEN_FAILED, w, LWRING_OPEN_FAILED_WORDS, t, l, 1));
+    int failed = g_ev.open_failed;
+    laserwriter_transport_poll();
+    ASSERT_EQ_INT(g_ev.open_failed, failed + 1);
+    ASSERT_TRUE(strcmp(g_ev.text, "ab") == 0);
+}
+
 // ---- wrap-around and PAD, both rings ---------------------------------------
 
 TEST(outbound_ring_wraps_with_pads_and_keeps_every_byte) {
@@ -819,6 +860,8 @@ int main(void) {
     RUN(printer_free_writes_the_record);
     RUN(abandon_writes_the_record_and_drops_late_answers);
     RUN(lost_worker_fails_the_outstanding_request);
+    RUN(short_fed_record_fails_the_feed);
+    RUN(open_failed_huge_text_len_is_capped);
     RUN(outbound_ring_wraps_with_pads_and_keeps_every_byte);
     RUN(inbound_ring_wraps_with_pads_and_keeps_every_byte);
     RUN(inbound_record_larger_than_the_remaining_space_is_padded_past_the_end);
