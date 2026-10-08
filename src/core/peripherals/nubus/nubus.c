@@ -190,9 +190,25 @@ bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h,
         reason = "expected WxHxD (e.g. 800x600x8)";
         goto done;
     }
+    // Width and height have ceilings: the generated sResource stores both as
+    // uint16_t (gsvrom_data.c make_mode, declrom.c's put16), so a larger
+    // raster would leave the declaration ROM and the scanout descriptor
+    // describing different pictures -- 70000 truncates to 4464 in the ROM
+    // while display.height stays 70000.  2048 is the height ceiling DAFB and
+    // the Mach64 already enforce; at 1 bpp the rowBytes rule below admits
+    // widths up to 131071, so the width needs its own.  Checked on the parsed
+    // longs, before the narrowing casts can wrap a huge value small.
+    if (lw > UINT16_MAX) {
+        reason = "width must be <= 65535";
+        goto done;
+    }
+    if (lh > 2048) {
+        reason = "height must be <= 2048";
+        goto done;
+    }
     w = (uint32_t)lw;
     h = (uint32_t)lh;
-    d = (uint32_t)ld;
+    d = ld > 32 ? 0 : (uint32_t)ld; // 0 fails the depth check below
     // Depth must be a supported indexed/direct bit depth.
     if (d != 1 && d != 2 && d != 4 && d != 8 && d != 16 && d != 32) {
         reason = "depth must be 1/2/4/8/16/32";
@@ -207,15 +223,6 @@ bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h,
     }
     if ((uint64_t)w * d / 8 >= 0x4000) {
         reason = "rowBytes (width*depth/8) must be < 0x4000";
-        goto done;
-    }
-    // Height has a ceiling too: the generated sResource stores it as a
-    // uint16_t (gsvrom_data.c make_mode), so a taller raster would leave the
-    // declaration ROM and the scanout descriptor describing different
-    // pictures -- 70000 truncates to 4464 in the ROM while display.height
-    // stays 70000.  2048 is the ceiling DAFB and the Mach64 already enforce.
-    if (h > 2048) {
-        reason = "height must be <= 2048";
         goto done;
     }
 done:

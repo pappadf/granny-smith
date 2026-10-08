@@ -252,11 +252,17 @@ static char mouse_mode_char(const value_t *v) {
     return input_mouse_mode_parse(v->s);
 }
 
+#define MOUSE_MOVE_ARG_MAX 1000000
+
 static DEF_METHOD(mouse_method_move) {
     if (!global_emulator)
         return val_err("mouse.move: no machine");
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
+    // The substrate takes int: reject rather than truncate (0x100000004 would
+    // otherwise move 4 pixels).  1e6 is far beyond any screen or useful delta.
+    if (x < -MOUSE_MOVE_ARG_MAX || x > MOUSE_MOVE_ARG_MAX || y < -MOUSE_MOVE_ARG_MAX || y > MOUSE_MOVE_ARG_MAX)
+        return val_err("mouse.move: x/y out of range");
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
     if ((argc >= 3) && !mouse_mode_char(&argv[2]))

@@ -118,7 +118,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // its FPS-overlay draw exactly this way.)
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, p->queue_base);
     uint32_t cb_local = GC824_DRAM_OFFSET + GC824_DRAM_CB; // card-local 0x0C007000
-    uint32_t free_size = (0x0C00FFFCu - (cb_local + GC824_CB_FREEAREA) - 8u);
+    uint32_t free_size = (GC824_CB_FREE_END_LOCAL - (cb_local + GC824_CB_FREEAREA) - 8u);
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 0, free_size);
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 4, 0);
 

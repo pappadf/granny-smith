@@ -1713,14 +1713,49 @@ static void mach64_engine_run(mach64_t *m) {
     uint32_t cntl = m->reg[DW_DST_CNTL];
     bool x_inc = (cntl & DST_X_DIR) != 0;
     bool y_inc = (cntl & DST_Y_DIR) != 0;
-    for (uint32_t row = 0; row < height; row++) {
+    // One DST_WIDTH write can start a 65535 x 65535 trajectory.  Iterate only
+    // the pixels mach64_emit would not reject outright -- inside the scissor,
+    // inside VRAM -- so a large operation clipped down to the screen costs the
+    // screen.  The per-pixel path is unchanged; the rejects are skipped and
+    // counted in bulk.  A surface whose pitch is smaller than its row can
+    // still overdraw the same VRAM without end, so the emitted pixels are also
+    // capped, at twice the pixels VRAM can hold.
+    uint64_t budget = 2u * ((uint64_t)m->vram_size / op.bpp);
+    for (uint32_t row = 0; row < height && budget; row++) {
         uint32_t y = y_inc ? dst_y + row : dst_y - row;
-        for (uint32_t col = 0; col < width; col++) {
+        // Columns [c0, c1) whose x lies in [sc_left, sc_right] and whose pixel
+        // is inside VRAM (the offset rises with x, so that is x < xlim).  The
+        // scissor is 16-bit, so a y or x that wrapped below 0 never passes.
+        uint64_t row_off = (uint64_t)op.dst.base + (uint64_t)y * op.dst.pitch;
+        uint64_t xlim = row_off + op.bpp <= m->vram_size ? (m->vram_size - op.bpp - row_off) / op.bpp + 1 : 0;
+        uint64_t lo = op.sc_left, hi = (uint64_t)op.sc_right + 1; // x range [lo, hi)
+        if (hi > xlim)
+            hi = xlim;
+        int64_t c0 = 0, c1 = 0;
+        if (y >= op.sc_top && y <= op.sc_bottom && lo < hi) {
+            if (x_inc) { // x = dst_x + col
+                c0 = (int64_t)lo - dst_x;
+                c1 = (int64_t)hi - dst_x;
+            } else { // x = dst_x - col
+                c0 = (int64_t)dst_x - (int64_t)hi + 1;
+                c1 = (int64_t)dst_x - (int64_t)lo + 1;
+            }
+            if (c0 < 0)
+                c0 = 0;
+            if (c1 > (int64_t)width)
+                c1 = width;
+        }
+        if (c1 < c0)
+            c1 = c0;
+        m->tally.scissor += width - (uint32_t)(c1 - c0); // off-VRAM folded in
+        for (uint32_t col = (uint32_t)c0; col < (uint32_t)c1 && budget; col++, budget--) {
             uint32_t x = x_inc ? dst_x + col : dst_x - col;
             bool mono = mach64_mono_bit(m, &op, x, y, col, row);
             mach64_emit(m, &op, x, y, col, row, mono);
         }
     }
+    if (!budget)
+        LOG(0, "Mach64: %ux%u operation overdraws VRAM past its pixel budget; the rest is dropped", width, height);
     m->blits++;
     m->display.fb_dirty = true;
     if (op.frgd_sel == DP_SRC_BLIT || op.bkgd_sel == DP_SRC_BLIT || op.mono_sel == DP_MONO_BLIT)

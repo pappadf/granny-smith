@@ -2968,16 +2968,28 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v->swap_issue_frame = c.swap_issue_frame;
     // A checkpoint from a 12 MB board must not restore into 8 MB
     // buffers: resize rather than truncate (the mach64gx.c pattern).
+    // All TMUs resize or none do, and tex_size moves only with them: setting
+    // it after a failed calloc made the read below overflow the old, smaller
+    // buffer.  On failure (or a size no board has) the card stays as it was
+    // and the size-tagged read below fails the restore, as in mach64gx.c.
     if (c.tex_size != v->tex_size) {
-        for (int t = 0; t < V2_NUM_TMUS; t++) {
-            uint8_t *grown = (uint8_t *)calloc(1, c.tex_size);
-            if (grown) {
+        uint8_t *grown[V2_NUM_TMUS] = {0};
+        bool ok = c.tex_size == V2_TMU_2MB || c.tex_size == V2_TMU_4MB;
+        for (int t = 0; ok && t < V2_NUM_TMUS; t++)
+            ok = (grown[t] = (uint8_t *)calloc(1, c.tex_size)) != NULL;
+        if (ok) {
+            for (int t = 0; t < V2_NUM_TMUS; t++) {
                 free(v->tex_ram[t]);
-                v->tex_ram[t] = grown;
-                v->tgt.tex[t] = grown;
+                v->tex_ram[t] = grown[t];
+                v->tgt.tex[t] = grown[t];
             }
+            v->tex_size = c.tex_size;
+        } else {
+            for (int t = 0; t < V2_NUM_TMUS; t++)
+                free(grown[t]);
+            LOG(0, "Voodoo2: restore: cannot resize texture RAM %u -> %u bytes; the restore will fail", v->tex_size,
+                c.tex_size);
         }
-        v->tex_size = c.tex_size;
     }
     v->displayed_buffer = c.displayed_buffer;
     v->driving = c.driving != 0;
