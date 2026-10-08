@@ -30,7 +30,6 @@
 #include "nubus.h"
 #include "object.h"
 #include "pci.h"
-#include "root.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "shell_var.h"
@@ -159,6 +158,11 @@ static uint16_t cpu_get_uint16(uint32_t addr) {
     return memory_debug_read_uint16(addr);
 }
 
+// Per-entry object factories for debug.breakpoints[id] / debug.logpoints[id]
+// (defined with their entry classes below).
+static struct object *make_breakpoint_object(breakpoint_t *bp);
+static struct object *make_logpoint_object(logpoint_t *lp);
+
 // ============================================================================
 // Operations
 // ============================================================================
@@ -175,9 +179,9 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     bp->condition = NULL;
     bp->hit_count = 0;
     bp->id = debug->next_breakpoint_id++;
-    // The entry object is created lazily by the root install path the first time
-    // someone resolves debug.breakpoints[id]; we just hold the slot.
-    bp->entry_object = gs_classes_make_breakpoint_object(bp);
+    // The per-entry object exposed as debug.breakpoints[id]; object_delete
+    // fires its invalidator hooks when the breakpoint is removed.
+    bp->entry_object = make_breakpoint_object(bp);
     object_set_logical_parent(bp->entry_object, debug->bp_collection_object, NULL, bp->id, NULL);
 
     // add bp to a linked list
@@ -303,7 +307,7 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     lp->value_filter_active = false;
     lp->value_filter = 0;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = gs_classes_make_logpoint_object(lp);
+    lp->entry_object = make_logpoint_object(lp);
     object_set_logical_parent(lp->entry_object, debug->lp_collection_object, NULL, lp->id, NULL);
 
     // add lp to a linked list
@@ -356,7 +360,7 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     lp->value_filter = 0;
     lp->stops = stops;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = stops ? make_watchpoint_object(lp) : gs_classes_make_logpoint_object(lp);
+    lp->entry_object = stops ? make_watchpoint_object(lp) : make_logpoint_object(lp);
     object_set_logical_parent(lp->entry_object, stops ? debug->wp_collection_object : debug->lp_collection_object, NULL,
                               lp->id, NULL);
     lp->next = debug->logpoints;
@@ -2306,7 +2310,7 @@ static const class_desc_t breakpoint_entry_class = {
     .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
 };
 
-struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp) {
+static struct object *make_breakpoint_object(breakpoint_t *bp) {
     if (!bp)
         return NULL;
     return object_new(&breakpoint_entry_class, bp, NULL);
@@ -2435,7 +2439,7 @@ static const class_desc_t logpoint_entry_class = {
     .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
 };
 
-struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
+static struct object *make_logpoint_object(logpoint_t *lp) {
     if (!lp)
         return NULL;
     return object_new(&logpoint_entry_class, lp, NULL);
