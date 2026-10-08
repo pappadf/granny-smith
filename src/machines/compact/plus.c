@@ -80,7 +80,7 @@ static void plus_update_ipl(config_t *cfg, int source, bool active);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Interrupt source bits in cfg->irq, matching the MAC030_GLUE_IRQ_* /
+// Interrupt source bits in cfg->rt.irq, matching the MAC030_GLUE_IRQ_* /
 // AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
 // derive the level from the set of asserted sources (plus_update_ipl).  The
 // Lisa's identically-named lisa_update_ipl() really does take a level, so two
@@ -403,7 +403,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.
     if (!checkpoint) {
-        cfg->irq = 0;
+        cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
     return 0;
@@ -470,12 +470,12 @@ static void plus_teardown(config_t *cfg) {
 // re-derive the CPU IPL -- the same (cfg, source, active) shape as
 // mac030_glue_update_ipl.
 static void plus_update_ipl(config_t *cfg, int source, bool active) {
-    int old_irq = cfg->irq;
+    int old_irq = cfg->rt.irq;
     int old_ipl = cpu_get_ipl(cfg->cpu);
     if (active)
-        cfg->irq |= source;
+        cfg->rt.irq |= source;
     else
-        cfg->irq &= ~source;
+        cfg->rt.irq &= ~source;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -487,15 +487,15 @@ static void plus_update_ipl(config_t *cfg, int source, bool active) {
     // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
     // the same test only because these are the only two sources.
     uint32_t new_ipl;
-    if (cfg->irq & PLUS_IRQ_SCC)
+    if (cfg->rt.irq & PLUS_IRQ_SCC)
         new_ipl = 2;
-    else if (cfg->irq & PLUS_IRQ_VIA)
+    else if (cfg->rt.irq & PLUS_IRQ_VIA)
         new_ipl = 1;
     else
         new_ipl = 0;
     cpu_set_ipl(cfg->cpu, new_ipl);
 
-    LOG(1, "plus_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq, cfg->irq,
+    LOG(1, "plus_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq, cfg->rt.irq,
         old_ipl, new_ipl);
 
     cpu_reschedule(cfg->scheduler);
@@ -555,12 +555,12 @@ static void plus_via_shift_out(void *context, uint8_t byte) {
     keyboard_input(cfg->keyboard, byte);
 }
 
-// Plus-specific VIA IRQ callback: the VIA drives cfg->irq bit 0
+// Plus-specific VIA IRQ callback: the VIA drives cfg->rt.irq bit 0
 static void plus_via_irq(void *context, bool active) {
     plus_update_ipl((config_t *)context, PLUS_IRQ_VIA, active);
 }
 
-// Plus-specific SCC IRQ callback: the SCC drives cfg->irq bit 1
+// Plus-specific SCC IRQ callback: the SCC drives cfg->rt.irq bit 1
 static void plus_scc_irq(void *context, bool active) {
     plus_update_ipl((config_t *)context, PLUS_IRQ_SCC, active);
 }

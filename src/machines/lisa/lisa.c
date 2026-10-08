@@ -204,12 +204,12 @@ static display_t *lisa_display(config_t *cfg) {
 // fixed levels: SCC=6, COPS(VIA1)=2, floppy/parallel(VIA2)/VBL=1.
 static void lisa_update_ipl(config_t *cfg, int level, bool active) {
     if (active)
-        cfg->irq |= (1u << level);
+        cfg->rt.irq |= (1u << level);
     else
-        cfg->irq &= ~(1u << level);
+        cfg->rt.irq &= ~(1u << level);
     int ipl = 0;
     for (int l = 7; l >= 1; l--) {
-        if (cfg->irq & (1u << l)) {
+        if (cfg->rt.irq & (1u << l)) {
             ipl = l;
             break;
         }
@@ -1081,7 +1081,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->debugger = debug_init();
 
     if (!checkpoint) {
-        cfg->irq = 0;
+        cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
     return 0;

@@ -48,7 +48,7 @@ void part_save_cuda(void *obj, checkpoint_t *cp); // av_cuda_t
 // both ports when a printer is plugged in.
 void machine_part_imagewriter(struct config *cfg, checkpoint_t *cp, bool lisa);
 
-// cfg->irq, the 68k families' aggregated interrupt-source bitmap: read it
+// cfg->rt.irq, the 68k families' aggregated interrupt-source bitmap: read it
 // on a restore, and register it.
 void machine_part_irq(struct config *cfg, checkpoint_t *cp);
 

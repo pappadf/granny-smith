@@ -1275,7 +1275,7 @@ static uint32_t iifx_io_read_uint32(void *ctx, uint32_t addr) {
 static void iifx_oss_irq_changed(void *context) {
     config_t *cfg = (config_t *)context;
     iifx_state_t *st = iifx_state(cfg);
-    cfg->irq = oss_pending(st->oss);
+    cfg->rt.irq = oss_pending(st->oss);
     cpu_set_ipl(cfg->cpu, oss_highest_ipl(st->oss));
     cpu_reschedule(cfg->scheduler);
 }

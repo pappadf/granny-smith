@@ -77,7 +77,7 @@ struct scsi_53c96;
 #define AV_MUNI_INTCNTRL 0x00
 #define AV_MUNI_CONTROL  0x08
 
-// IRQ source bits driven into cfg->irq (one per 68k IPL).
+// IRQ source bits driven into cfg->rt.irq (one per 68k IPL).
 #define AV_IRQ_VIA1 (1 << 0) // IPL 1: VIA1 (60 Hz tick, Cuda SR, one-second)
 #define AV_IRQ_VIA2 (1 << 1) // IPL 2: PSC VIA2 window (SCSI, FDC, slots, VBL)
 #define AV_IRQ_L3   (1 << 2) // IPL 3: MACE

@@ -172,7 +172,7 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) 
     mac030_io_validate(io, cfg->machine->id);
     cfg->debugger = debug_init();
     if (!cp) {
-        cfg->irq = 0;
+        cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
 }
@@ -389,18 +389,18 @@ void mac030_glue_via2_irq(void *context, bool active) {
 // is the data-driven glue_irq_routes table + mac030_irq_resolve_ipl engine
 // (both in mac030_glue_io.c — the GLUE family's dispatch tables).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
-    int old_irq = cfg->irq;
+    int old_irq = cfg->rt.irq;
     if (active)
-        cfg->irq |= source;
+        cfg->rt.irq |= source;
     else
-        cfg->irq &= ~source;
+        cfg->rt.irq &= ~source;
 
     // Highest-priority active source wins (table ordered high→low IPL).
-    int new_ipl = mac030_irq_resolve_ipl(mac030_glue_irq_routes(), (uint32_t)cfg->irq);
+    int new_ipl = mac030_irq_resolve_ipl(mac030_glue_irq_routes(), (uint32_t)cfg->rt.irq);
 
     cpu_set_ipl(cfg->cpu, new_ipl);
-    LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq, cfg->irq,
-        new_ipl);
+    LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq,
+        cfg->rt.irq, new_ipl);
     cpu_reschedule(cfg->scheduler);
 }
 

@@ -34,6 +34,15 @@ typedef struct nubus_bus nubus_bus_t;
 // a restored checkpoint's image list is checked against.
 #define MAX_IMAGES 10
 
+// The machine's mutable runtime state, kept apart from the fields that say
+// what the machine is made of: written by interrupt sources and read on
+// dispatch while the composition above it stays fixed after construction.
+typedef struct system_runtime {
+    // Active interrupt-source bitmask; the bits are the family's own
+    // (PLUS_IRQ_*, MAC030_GLUE_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
+    uint32_t irq;
+} system_runtime_t;
+
 // Full definition of the opaque config_t handle.
 // The forward declaration (`struct config;`) in system.h makes this type
 // visible externally; this definition adds the fields for internal use.
@@ -99,7 +108,9 @@ struct config {
     int n_images;
 
     scheduler_t *scheduler;
-    uint32_t irq; // active interrupt bitmask
+
+    // Runtime state (system_runtime_t above)
+    system_runtime_t rt;
 
     // NuBus subsystem. NULL on machines without NuBus.
     nubus_bus_t *nubus;

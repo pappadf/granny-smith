@@ -344,7 +344,7 @@ static DEF_GETTER(attr_machine_ram) {
 // `machine.irq` and `machine.ipl` — the family's raw interrupt-source
 // bitmap and the level the CPU is actually seeing.
 //
-// Every family aggregates its controllers into cfg->irq and resolves one
+// Every family aggregates its controllers into cfg->rt.irq and resolves one
 // IPL from it, and neither was readable from anywhere: an investigation
 // could see a controller's own view through machine.<chip> and the CPU's
 // behaviour, with the step between them invisible.  The bit meanings are
@@ -354,7 +354,7 @@ static DEF_GETTER(attr_machine_irq) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.irq: no machine");
-    value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->irq);
+    value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->rt.irq);
     v.flags |= VAL_HEX;
     return v;
 }

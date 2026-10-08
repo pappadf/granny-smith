@@ -243,7 +243,7 @@ extern const machine_substrate_t glue_substrate;
 // substrate.init is a one-liner that calls this with its board.
 int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
 
-// IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
+// IRQ source bits driven into cfg->rt.irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The one set for the whole family (the
 // per-machine SE30_IRQ_* / IICX_IRQ_* aliases are gone).
 #define MAC030_GLUE_IRQ_VIA1 (1 << 0)

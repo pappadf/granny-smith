@@ -278,10 +278,10 @@ const mac030_irq_route_t *av_irq_routes(void) {
 
 void av_update_ipl(config_t *cfg, int source, bool active) {
     if (active)
-        cfg->irq |= source;
+        cfg->rt.irq |= source;
     else
-        cfg->irq &= ~source;
-    int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->irq);
+        cfg->rt.irq &= ~source;
+    int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->rt.irq);
     cpu_set_ipl(cfg->cpu, new_ipl);
     cpu_reschedule(cfg->scheduler);
 }

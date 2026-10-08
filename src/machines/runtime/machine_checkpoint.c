@@ -161,13 +161,13 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
 
 static void part_save_irq(void *obj, checkpoint_t *cp) {
     const config_t *cfg = obj;
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    system_write_checkpoint_data(cp, &cfg->rt.irq, sizeof(cfg->rt.irq));
 }
 
 void machine_part_irq(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "irq");
     if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+        system_read_checkpoint_data(cp, &cfg->rt.irq, sizeof(cfg->rt.irq));
     machine_part(cfg, cp, "irq", part_save_irq, cfg);
 }
 
