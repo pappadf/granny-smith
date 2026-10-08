@@ -413,6 +413,43 @@ TEST(test_mac_loopback_two_fragments_and_rde) {
     ASSERT_TRUE(sonic_reg_read(s, S_ISR) & I_RDE);
 }
 
+// A packet that does not fit in what is left of the RBA (datasheet 3.4.7):
+// buffered only up to the RBA's end, no RDA set up, RBAE raised and the next
+// resource fetched.  It used to be written whole, past the RBA the driver
+// sized, into whatever guest memory followed.
+TEST(test_loopback_packet_larger_than_the_rba_raises_rbae) {
+    sonic_t *s = fresh();
+    lb_setup(s);
+    // Shrink the primed RBA to 100 words (200 bytes) and mark what follows.
+    sonic_reg_write(s, S_RBWC0, 100);
+    for (int i = 0; i < 64; i++)
+        mem[(LB_RBA1 - MOCK_BASE) + 200 + i] = 0xEE;
+
+    for (int i = 0; i < 1500; i++)
+        mem[(LB_TBA - MOCK_BASE) + i] = 0x33;
+    poke_field(LB_TDA + 0x00, 0);
+    poke_field(LB_TDA + 0x04, 0x0000);
+    poke_field(LB_TDA + 0x08, 1500);
+    poke_field(LB_TDA + 0x0C, 1);
+    poke_field(LB_TDA + 0x10, (uint16_t)(LB_TBA & 0xFFFF));
+    poke_field(LB_TDA + 0x14, (uint16_t)(LB_TBA >> 16));
+    poke_field(LB_TDA + 0x18, 1500);
+    poke_field(LB_TDA + 0x1C, (uint16_t)((LB_TDA & 0xFFFF) | 1));
+    sonic_reg_write(s, S_UTDA, (uint16_t)(LB_TDA >> 16));
+    sonic_reg_write(s, S_CTDA, (uint16_t)(LB_TDA & 0xFFFF));
+    sonic_reg_write(s, S_RCR, 0xFA00);
+    sonic_reg_write(s, S_CR, 0x0008);
+    sonic_reg_write(s, S_CR, 0x000A);
+
+    ASSERT_EQ_INT(mem[(LB_RBA1 - MOCK_BASE) + 199], 0x33); // the part that fit
+    for (int i = 0; i < 64; i++)
+        ASSERT_EQ_INT(mem[(LB_RBA1 - MOCK_BASE) + 200 + i], 0xEE); // untouched
+    ASSERT_TRUE(sonic_reg_read(s, S_ISR) & 0x0010); // RBAE
+    ASSERT_TRUE(!(sonic_reg_read(s, S_ISR) & I_PKTRX));
+    ASSERT_EQ_INT(peek_field(LB_RDA1 + 0x18), 0xFFFF); // no RDA consumed
+    ASSERT_EQ_INT(sonic_reg_read(s, S_CRBA0), (int)(LB_RBA2 & 0xFFFF)); // next RBA
+}
+
 // ============================================================
 // Checkpoint and power-on defaults
 // ============================================================
@@ -511,6 +548,7 @@ int main(void) {
     RUN(test_interrupt_mask_gating);
     RUN(test_mac_loopback_single_fragment);
     RUN(test_mac_loopback_two_fragments_and_rde);
+    RUN(test_loopback_packet_larger_than_the_rba_raises_rbae);
     printf("All sonic tests passed\n");
     return 0;
 }
