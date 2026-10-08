@@ -1862,6 +1862,10 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
 
     if (nargs > OBJ_VALIDATE_MAX_ARGS)
         return val_err("%s: declared arg count %d exceeds limit %d", prefix, nargs, OBJ_VALIDATE_MAX_ARGS);
+    // Every given argument lands in scratch[] (a rest tail included), so the
+    // count is bounded by its capacity -- refused, never clamped or overrun.
+    if (in_argc > OBJ_VALIDATE_MAX_ARGS)
+        return val_err("%s: too many arguments (got %d, limit %d)", prefix, in_argc, OBJ_VALIDATE_MAX_ARGS);
 
     // Locate the rest slot, if any (must be last per registration check).
     bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
