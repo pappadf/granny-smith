@@ -58,11 +58,11 @@ void atalk_timer_cancel_all(atalk_timer_t *t);
 #define ATALK_TIMER_MIN_NS 1000u
 
 // Shared AppleTalk constants
-#define LLAP_HOST_NODE         33
-#define HOST_AFP_SOCKET        8
-#define HOST_AFP_COMPAT_SOCKET 54
-#define HOST_PAP_SOCKET        6
-#define HOST_IW_PAP_SOCKET     9 // the ImageWriter's LocalTalk Option card
+#define ATALK_HOST_NODE              33
+#define ATALK_HOST_AFP_SOCKET        8
+#define ATALK_HOST_AFP_COMPAT_SOCKET 54
+#define ATALK_HOST_PAP_SOCKET        6
+#define ATALK_HOST_IW_PAP_SOCKET     9 // the ImageWriter's LocalTalk Option card
 
 // DDP protocol type field values (Inside AppleTalk 4-11).  ADSP is 7 — the
 // stack doc claimed 10 until the ADSP work corrected it.
@@ -115,7 +115,11 @@ typedef struct {
     uint8_t type;
 } llap_header_t;
 
-// DDP short header (subset of extended fields for our use)
+// A parsed DDP header: host byte order, in memory only.  It is not a wire
+// layout and must never be copied to or from a frame; ddp_send serializes
+// one and ddp_short_in parses one.  It carries the short-header fields plus
+// the extended header's network numbers, which a short header (all this
+// stack sends or accepts) does not carry: zero when parsed.
 typedef struct {
     llap_header_t llap;
     uint8_t hop;
@@ -128,15 +132,27 @@ typedef struct {
     uint8_t type;
 } ddp_header_t;
 
-// Parsed ATP frame used internally by the stack
+// A parsed ATP frame.  `data` is borrowed: it points into the received
+// frame and is valid only while the handler that was given the packet runs.
+// A copy kept past that -- a request held to be answered later -- either
+// deep-copies the data or keeps just the header (atp_packet_header_only).
 typedef struct {
     uint8_t ctl;
     uint8_t bitmap;
     uint16_t tid;
     uint8_t user[4];
-    const uint8_t *data;
+    const uint8_t *data; // borrowed, see above
     int data_len;
 } atp_packet_t;
+
+// `atp` without its data: the copy to keep when only the header (TID, user
+// bytes, control) is needed after the handler returns.
+static inline atp_packet_t atp_packet_header_only(const atp_packet_t *atp) {
+    atp_packet_t held = *atp;
+    held.data = NULL;
+    held.data_len = 0;
+    return held;
+}
 
 // Minimal address descriptor for targeting remote AppleTalk sockets
 typedef struct {

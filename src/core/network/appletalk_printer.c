@@ -674,9 +674,7 @@ static bool pap_status_queue_enqueue(const ddp_header_t *ddp, const atp_packet_t
     pap_status_credit_t *slot = &g_pap->session.pending_status_reads[idx];
     slot->in_use = true;
     slot->ddp = *ddp;
-    slot->atp = *atp;
-    slot->atp.data = NULL;
-    slot->atp.data_len = 0;
+    slot->atp = atp_packet_header_only(atp);
     g_pap->session.pending_status_count++;
     pap_log_session_state("queue-status");
     return true;
@@ -836,7 +834,7 @@ static void pap_issue_close_conn(uint8_t conn_id, const atalk_socket_addr_t *add
         return;
     uint8_t user[4] = {conn_id, PAP_FUNC_CLOSE, 0, 0};
     atp_request_params_t params = {.dest = *addr,
-                                   .src_socket = HOST_PAP_SOCKET,
+                                   .src_socket = ATALK_HOST_PAP_SOCKET,
                                    .bitmap = 0x01,
                                    .mode = ATP_TRANSACTION_XO,
                                    .trel_timer_hint = 2,
@@ -992,7 +990,7 @@ static bool pap_issue_senddata_request(void) {
     uint8_t user[4] = {g_pap->session.conn_id, PAP_FUNC_SENDDATA, (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF)};
 
     atp_request_params_t params = {.dest = g_pap->session.client_addr,
-                                   .src_socket = HOST_PAP_SOCKET,
+                                   .src_socket = ATALK_HOST_PAP_SOCKET,
                                    .bitmap = bitmap,
                                    .mode = ATP_TRANSACTION_XO,
                                    .trel_timer_hint = 2,
@@ -1211,7 +1209,8 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     }
 
     uint8_t payload[5 + PRINTER_STATUS_MAX];
-    int payload_len = pap_build_status_payload(HOST_PAP_SOCKET, PAP_MAX_FLOW_QUANTUM, result, payload, sizeof(payload));
+    int payload_len =
+        pap_build_status_payload(ATALK_HOST_PAP_SOCKET, PAP_MAX_FLOW_QUANTUM, result, payload, sizeof(payload));
     if (payload_len < 0)
         payload_len = 0;
     uint8_t user[4] = {conn_id, PAP_FUNC_OPEN_REPLY, 0, 0};
@@ -1234,7 +1233,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
 static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t payload[5 + PRINTER_STATUS_MAX];
     int payload_len =
-        pap_build_status_payload(HOST_PAP_SOCKET, PAP_MAX_FLOW_QUANTUM, PAP_RESULT_OK, payload, sizeof(payload));
+        pap_build_status_payload(ATALK_HOST_PAP_SOCKET, PAP_MAX_FLOW_QUANTUM, PAP_RESULT_OK, payload, sizeof(payload));
     if (payload_len < 0)
         payload_len = 0;
     uint8_t user[4] = {0, PAP_FUNC_STATUS, 0, 0};
@@ -1321,7 +1320,7 @@ static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp) 
         pap_session_record_activity();
 }
 
-// Central ATP socket handler for PAP requests arriving on HOST_PAP_SOCKET.
+// Central ATP socket handler for PAP requests arriving on ATALK_HOST_PAP_SOCKET.
 static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *request, void *ctx) {
     (void)ctx;
     if (!ddp || !request)
@@ -1596,7 +1595,7 @@ pap_printer_t *atalk_printer_register(void) {
     laserwriter_job_set_listener(pap_platen_event, NULL);
 #endif
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
-    atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
+    atp_register_socket_handler(ATALK_HOST_PAP_SOCKET, &handler, NULL);
     if (atalk_printer_enable(NULL) != 0)
         LOG(1, "pap: failed to auto-enable printer");
     return printer;
@@ -1687,8 +1686,8 @@ int atalk_printer_enable(const char *object_name) {
     atalk_nbp_service_desc_t desc = {.object = name,
                                      .type = PRINTER_ENTITY_TYPE,
                                      .zone = "*",
-                                     .socket = HOST_PAP_SOCKET,
-                                     .node = LLAP_HOST_NODE,
+                                     .socket = ATALK_HOST_PAP_SOCKET,
+                                     .node = ATALK_HOST_NODE,
                                      .net = 0};
     if (atalk_nbp_publish(&g_printer->nbp_entry, &desc) != 0) {
         LOG(1, "atalk: failed to publish printer '%s'", name);

@@ -97,7 +97,7 @@ static uint16_t status_bits(const iw_printer_t *p) {
 // driver reads: with bit 13 set it reports the printer out of paper.)
 static int status_payload(uint16_t result, uint8_t out[7]) {
     uint16_t bits = status_bits(iw_printer_localtalk());
-    out[0] = HOST_IW_PAP_SOCKET;
+    out[0] = ATALK_HOST_IW_PAP_SOCKET;
     out[1] = PAP_MAX_FLOW_QUANTUM;
     out[2] = (uint8_t)(result >> 8);
     out[3] = (uint8_t)result;
@@ -143,7 +143,7 @@ static void issue_senddata(void) {
     if (g_s.next_seq == 0)
         g_s.next_seq = 1;
     atp_request_params_t params = {.dest = g_s.client,
-                                   .src_socket = HOST_IW_PAP_SOCKET,
+                                   .src_socket = ATALK_HOST_IW_PAP_SOCKET,
                                    .bitmap = (uint8_t)(q >= 8 ? 0xFF : (1u << q) - 1u),
                                    .mode = ATP_TRANSACTION_XO,
                                    .trel_timer_hint = 2,
@@ -232,7 +232,7 @@ static void iw_pap_close(bool notify) {
     }
     if (notify && g_s.client.socket) {
         atp_request_params_t params = {.dest = g_s.client,
-                                       .src_socket = HOST_IW_PAP_SOCKET,
+                                       .src_socket = ATALK_HOST_IW_PAP_SOCKET,
                                        .bitmap = 1,
                                        .mode = ATP_TRANSACTION_XO,
                                        .retry_timeout_ms = 2000,
@@ -318,7 +318,7 @@ static void handle_request(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx
         // is held and answered with EOF when the job ends
         if (is_session(ddp, atp) && g_s.n_credits < IW_PAP_MAX_CREDITS) {
             g_s.credits[g_s.n_credits].ddp = *ddp;
-            g_s.credits[g_s.n_credits].atp = *atp;
+            g_s.credits[g_s.n_credits].atp = atp_packet_header_only(atp);
             g_s.n_credits++;
         } else {
             uint8_t user[4] = {atp->user[0], PAP_FUNC_DATA, 1, 0};
@@ -334,7 +334,7 @@ void atalk_imagewriter_register(void) {
     if (g_iw.registered)
         return;
     static const atp_socket_handler_t handler = {.handle_request = handle_request};
-    atp_register_socket_handler(HOST_IW_PAP_SOCKET, &handler, NULL);
+    atp_register_socket_handler(ATALK_HOST_IW_PAP_SOCKET, &handler, NULL);
     g_iw.registered = true;
 }
 
@@ -365,8 +365,8 @@ int atalk_imagewriter_publish(bool on) {
     atalk_nbp_service_desc_t desc = {.object = g_iw.object,
                                      .type = IW_PAP_TYPE,
                                      .zone = "*",
-                                     .socket = HOST_IW_PAP_SOCKET,
-                                     .node = LLAP_HOST_NODE,
+                                     .socket = ATALK_HOST_IW_PAP_SOCKET,
+                                     .node = ATALK_HOST_NODE,
                                      .net = 0};
     if (atalk_nbp_publish(&g_iw.nbp, &desc) != 0) {
         LOG(1, "imagewriter pap: cannot publish '%s'", g_iw.object);
@@ -397,8 +397,8 @@ int atalk_imagewriter_set_name(const char *name) {
     atalk_nbp_service_desc_t desc = {.object = g_iw.object,
                                      .type = IW_PAP_TYPE,
                                      .zone = "*",
-                                     .socket = HOST_IW_PAP_SOCKET,
-                                     .node = LLAP_HOST_NODE,
+                                     .socket = ATALK_HOST_IW_PAP_SOCKET,
+                                     .node = ATALK_HOST_NODE,
                                      .net = 0};
     if (atalk_nbp_publish(&g_iw.nbp, &desc) != 0) {
         memcpy(g_iw.object, old, sizeof(old));

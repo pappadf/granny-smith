@@ -661,10 +661,10 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
         }
         LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
-        if (header.dst == LLAP_HOST_NODE) {
+        if (header.dst == ATALK_HOST_NODE) {
             llap_header_t ack;
             ack.dst = header.src;
-            ack.src = LLAP_HOST_NODE;
+            ack.src = ATALK_HOST_NODE;
             ack.type = LLAP_ACK;
             LOG_LLAP(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
             llap_send(c, &ack, NULL, 0);
@@ -678,10 +678,10 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
         }
         LOG_LLAP(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Respond with CTS for directed traffic addressed to us so the sender may transmit.
-        if (header.dst == LLAP_HOST_NODE) {
+        if (header.dst == ATALK_HOST_NODE) {
             llap_header_t cts;
             cts.dst = header.src;
-            cts.src = LLAP_HOST_NODE;
+            cts.src = ATALK_HOST_NODE;
             cts.type = LLAP_CTS;
             LOG_LLAP(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
             llap_send(c, &cts, NULL, 0);
@@ -696,7 +696,7 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
         }
         // The receiver granted our lapRTS: transmit the parked data frame.
         LOG_LLAP(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        if (c->llap_rts.rts_out && c->llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
+        if (c->llap_rts.rts_out && c->llap_rts.count > 0 && header.dst == ATALK_HOST_NODE &&
             header.src == c->llap_rts.q[c->llap_rts.head].dst) {
             llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
             c->llap_rts.rts_out = false;
@@ -785,7 +785,7 @@ static void ddp_log_summary(int level, const char *direction, const ddp_header_t
 // Construct a DDP reply header by reversing source and destination
 static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
     reply->llap.dst = request->llap.src;
-    reply->llap.src = LLAP_HOST_NODE;
+    reply->llap.src = ATALK_HOST_NODE;
     reply->llap.type = request->llap.type;
 
     reply->len = request->len;
@@ -1008,10 +1008,10 @@ int atalk_set_enabled(bool enabled, char *err, size_t err_len) {
     return 0;
 }
 
-// Our LLAP node address is fixed (LLAP_HOST_NODE) rather than acquired by the
+// Our LLAP node address is fixed (ATALK_HOST_NODE) rather than acquired by the
 // dynamic-node-assignment probe, so it is known as soon as the stack is up.
 unsigned atalk_node_id(void) {
-    return atalk_get_enabled() ? LLAP_HOST_NODE : 0;
+    return atalk_get_enabled() ? ATALK_HOST_NODE : 0;
 }
 
 const atalk_stats_t *atalk_get_stats(void) {
@@ -1060,7 +1060,7 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     ddp_header_t ddp;
     memset(&ddp, 0, sizeof(ddp));
     ddp.llap.dst = dest->node;
-    ddp.llap.src = LLAP_HOST_NODE;
+    ddp.llap.src = ATALK_HOST_NODE;
     ddp.llap.type = LLAP_DDP_SHORT;
     ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
     ddp.dst_net = dest->net;
@@ -1162,7 +1162,7 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
         return;
     }
     // Data for another node, or from us: nobody else is on this wire.
-    if (llap->dst != LLAP_HOST_NODE && llap->dst != 0xFF) {
+    if (llap->dst != ATALK_HOST_NODE && llap->dst != 0xFF) {
         atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP for node %02X", (unsigned)llap->dst);
         return;
     }
@@ -1477,7 +1477,7 @@ static int nbp_populate_entry(atalk_nbp_entry_t *dst, const atalk_nbp_service_de
     atalk_nbp_entry_t temp;
     memset(&temp, 0, sizeof(temp));
     temp.net = desc->net;
-    temp.node = desc->node ? desc->node : LLAP_HOST_NODE;
+    temp.node = desc->node ? desc->node : ATALK_HOST_NODE;
     temp.socket = desc->socket;
 
     int obj_len = nbp_copy_field(temp.object, sizeof(temp.object), desc->object, false);
@@ -1881,7 +1881,7 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
     buf[n++] = c->nbp_next_lookup_id;
     buf[n++] = 0; // net high
     buf[n++] = 0; // net low
-    buf[n++] = LLAP_HOST_NODE;
+    buf[n++] = ATALK_HOST_NODE;
     buf[n++] = reply_socket;
     buf[n++] = 0; // enumerator
     buf[n++] = (uint8_t)obj_len;
@@ -2084,7 +2084,7 @@ static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     ddp_header_t ddp;
     memset(&ddp, 0, sizeof(ddp));
     ddp.llap.dst = req->dest.node;
-    ddp.llap.src = LLAP_HOST_NODE;
+    ddp.llap.src = ATALK_HOST_NODE;
     ddp.llap.type = LLAP_DDP_SHORT;
     ddp.len = (uint16_t)(DDP_SHORT_HEADER_SIZE + sizeof(buffer));
     ddp.dst_socket = req->dest.socket;
@@ -2109,7 +2109,7 @@ static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req,
     ddp_header_t ddp;
     memset(&ddp, 0, sizeof(ddp));
     ddp.llap.dst = req->dest.node;
-    ddp.llap.src = LLAP_HOST_NODE;
+    ddp.llap.src = ATALK_HOST_NODE;
     ddp.llap.type = LLAP_DDP_SHORT;
     ddp.len = (uint16_t)(total + DDP_SHORT_HEADER_SIZE);
     ddp.dst_socket = req->dest.socket;

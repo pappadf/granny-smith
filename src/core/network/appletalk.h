@@ -36,7 +36,7 @@ typedef struct scheduler scheduler_t;
 // server (AFPServer), the LaserWriter, the ImageWriter's LocalTalk card and
 // the program-linking peer (PPCToolBox); the rest is headroom.
 #define ATALK_NBP_MAX_ENTRIES  16
-#define ATALK_ASP_MAX_SESSIONS 4 // ASP sessions (and AFP's session table)
+#define ATALK_ASP_MAX_SESSIONS 8 // ASP sessions (and AFP's session table)
 #define ATALK_AFP_MAX_VOLUMES  8 // published AFP volumes
 
 // === Stack-level state (object model: `appletalk`) ==========================
@@ -260,7 +260,7 @@ typedef struct {
     const char *type; // required, UTF-8, at most 32 MacRoman characters
     const char *zone; // optional, defaults to "*"
     uint8_t socket; // required destination socket
-    uint8_t node; // optional, defaults to LLAP_HOST_NODE
+    uint8_t node; // optional, defaults to ATALK_HOST_NODE
     uint16_t net; // optional, defaults to 0 (unknown)
 } atalk_nbp_service_desc_t;
 

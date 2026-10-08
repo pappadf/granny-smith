@@ -362,8 +362,8 @@ static int afp_nbp_publish(const char *object) {
     atalk_nbp_service_desc_t desc = {.object = object,
                                      .type = AFP_ENTITY_TYPE,
                                      .zone = "*",
-                                     .socket = HOST_AFP_SOCKET,
-                                     .node = LLAP_HOST_NODE,
+                                     .socket = ATALK_HOST_AFP_SOCKET,
+                                     .node = ATALK_HOST_NODE,
                                      .net = 0};
     return atalk_nbp_publish(&g_afp->nbp_entry, &desc);
 }
