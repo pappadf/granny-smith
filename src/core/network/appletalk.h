@@ -317,7 +317,7 @@ void atalk_nbp_lookup_cancel(void);
 typedef struct atalk_network atalk_network_t;
 typedef struct atalk_conn atalk_conn_t;
 
-// Create the network (once; later calls return it).  Called from setup_init.
+// Create the network (once; later calls return it).  Called from system_init.
 atalk_network_t *appletalk_network_init(void);
 // The network, or NULL before appletalk_network_init.
 atalk_network_t *appletalk_network(void);

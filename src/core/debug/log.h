@@ -27,7 +27,7 @@ void log_init(void);
 log_category_t *log_register_category(const char *name);
 
 // Create every category GS_LOG_CATEGORIES declares.  Called once from
-// setup_init so `log.levels` and `log.category` list the complete set rather
+// system_init so `log.levels` and `log.category` list the complete set rather
 // than only what has been hit so far.
 void log_register_manifest(void);
 

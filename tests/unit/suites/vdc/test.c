@@ -158,6 +158,9 @@ uint32_t rtc_get_seconds(const rtc_t *rtc) {
     (void)rtc;
     return 0;
 }
+// The Cuda's CMD_RESET restarts the machine; no machine here, so a no-op.
+void system_machine_reset(void) {}
+
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t secs) {
     (void)rtc;
     (void)secs;

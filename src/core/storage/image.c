@@ -878,10 +878,6 @@ int image_create_blank_profile(const char *filename, uint32_t block_count) {
 // Tracking / module lifecycle
 // ============================================================================
 
-void add_image(config_t *sim, image_t *image) {
-    config_add_image(sim, image);
-}
-
 void image_tick_all(config_t *config) {
     if (!config)
         return;

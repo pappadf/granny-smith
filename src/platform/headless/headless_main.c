@@ -1677,7 +1677,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    setup_init();
+    system_init();
 
     // Apply --no-prompt default so every client connection inherits it
     if (no_prompt)
@@ -1952,8 +1952,7 @@ int main(int argc, char *argv[]) {
         g_listen_fd = daemon_create_listener(g_daemon_port);
         if (g_listen_fd < 0) {
             fprintf(stderr, "Error: Failed to create daemon listener on port %d\n", g_daemon_port);
-            system_destroy(global_emulator);
-            global_emulator = NULL;
+            system_destroy(global_emulator); // clears global_emulator
             return 1;
         }
 
@@ -1966,8 +1965,7 @@ int main(int argc, char *argv[]) {
         // The agent sends "run" or "s" commands to control execution.
         daemon_loop();
 
-        system_destroy(global_emulator);
-        global_emulator = NULL;
+        system_destroy(global_emulator); // clears global_emulator
         return headless_exit_code();
     }
 
@@ -2027,8 +2025,7 @@ int main(int argc, char *argv[]) {
     if (!quiet)
         printf("\nShutting down...\n");
 
-    system_destroy(global_emulator);
-    global_emulator = NULL;
+    system_destroy(global_emulator); // clears global_emulator
 
     return headless_exit_code();
 }

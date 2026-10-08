@@ -225,13 +225,16 @@ initialized in the correct order, dependencies are satisfied, and cross-module
 interactions are handled cleanly.
 
 - **Global instance management:**
-  - The global emulator state is referenced via a single pointer, defined in
-    `system.c` and declared in `system.h`.
+  - The global emulator state is referenced via a single pointer,
+    `global_emulator`, defined in `system.c` and declared in `system.h`.
+    `system.c` is its only writer (`system_swap_in` publishes a built
+    machine, `system_destroy` clears it); readers are expected to run on the
+    emulator thread.  This is a convention, not an enforced lock.
   - All other modules avoid global variables, instead receiving context through
     constructor parameters or referencing global state for read-only needs.
 
 - **Lifecycle management:**
-  - `setup_init()`: Performs one-time, machine-independent setup — log
+  - `system_init()`: Performs one-time, machine-independent setup — log
     category and process-singleton class registration — run once at startup.
   - `system_create(const hw_profile_t *profile, const machine_build_opts_t
     *opts, checkpoint_t *)`: Allocates the `config_t`, wires the selected
@@ -273,20 +276,21 @@ hardware-level interactions.
 
 ### Dependency Injection and Accessor Functions
 
-To reduce coupling between modules and enable testability, the emulator uses a
-combination of explicit dependency injection and system accessor functions:
+Both patterns are in use, each where it fits:
 
-- **Explicit dependencies (preferred pattern):**
-  - When a module needs another subsystem, it receives a pointer during
-    construction and stores it internally. For example, the sound module
-    receives a `memory_map_t*` pointer during `sound_init()` and stores it for
-    later use.
-  - This pattern makes dependencies explicit, supports testing with mock
-    implementations, and avoids hidden global state access.
+- **Explicit dependencies (constructors):**
+  - When a module needs another subsystem at construction, it receives a
+    pointer and stores it internally. For example, the sound module receives
+    a `memory_map_t*` pointer during `sound_init()`.  Constructors MUST use
+    this pattern: the machine being built is not yet the active one, and the
+    accessors below assert when called during construction.
 
-- **System accessor functions:**
-  - For convenience and backward compatibility, `system.c` provides accessor
-    functions that return pointers to core subsystems:
+- **System accessor functions (everything else):**
+  - Shell and object-model handlers, debug surfaces, logging and other
+    cross-cutting code reach the active machine through accessors.  This is
+    the established pattern, not a fallback; `system.c` provides accessor
+    functions that return pointers to core subsystems (noun-named, no `get_`
+    prefix; each is one `DEFINE_SUBSYSTEM_ACCESSOR` line in `system.c`):
     - `system_scheduler()` — Returns the current scheduler
     - `system_memory()` — Returns the memory map (use `memory_map_interface()` to get read/write functions)
     - `system_cpu()` — Returns the CPU instance
@@ -302,6 +306,13 @@ combination of explicit dependency injection and system accessor functions:
   - `system_mouse_update(button, dx, dy)` — Routes mouse events to the device
   - `system_keyboard_update(event, key)` — Routes keyboard events to the device
   - These wrappers hide the global emulator reference from external callers.
+
+- **Platform seams** (`src/core/platform_hooks.h`):
+  - The `gs_*` hooks the core calls and a platform may provide (camera,
+    microphone, GPU worker, auto-checkpoint flag, quit, download).  Each has
+    a weak default in `platform_hooks.c` modelling "this host has none of
+    it" (answering -2, "not supported", where asked to act); a platform
+    links a strong definition to override it.
 
 This design keeps the `config_t` struct mostly opaque to external code while
 providing controlled access to subsystems. The platform layer and core modules

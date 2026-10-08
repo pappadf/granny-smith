@@ -12,7 +12,7 @@
 #include "image_wrap.h"
 #include "source.h"
 #include "storage.h"
-#include "system.h" // MAX_IMAGES -- the real bound on the restored list
+#include "system_config.h" // MAX_IMAGES -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>
@@ -30,11 +30,16 @@
 //     uint32_t instance_len, instance_bytes...
 //     uint32_t key_len, key_bytes... (the base's source key, source.h)
 //     <storage-specific blob via image_checkpoint>
+// A NULL slot is skipped -- and left out of the count, so the count always
+// says how many entries follow (image_checkpoint writes nothing for NULL).
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
-    uint32_t count = (uint32_t)cfg->n_images;
+    uint32_t count = 0;
+    for (int i = 0; i < cfg->n_images; ++i)
+        count += cfg->images[i] != NULL;
     system_write_checkpoint_data(cp, &count, sizeof(count));
-    for (uint32_t i = 0; i < count; ++i)
-        image_checkpoint(cfg->images[i], cp);
+    for (int i = 0; i < cfg->n_images; ++i)
+        if (cfg->images[i])
+            image_checkpoint(cfg->images[i], cp);
 }
 
 // Restore the image list from a checkpoint stream and attach each image
@@ -80,10 +85,11 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             // A .dmg is recreated as UDIF (a few KB of zero run), not as a
             // raw file of the full size under that name.
             size_t nl = strlen(name);
-            if (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0)
-                image_create_empty_udif(name, raw_size);
-            else
-                image_create_empty(name, (size_t)raw_size);
+            int rc = (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0) ? image_create_empty_udif(name, raw_size)
+                                                                         : image_create_empty(name, (size_t)raw_size);
+            // The open below then fails and flags the checkpoint; this says why.
+            if (rc != 0)
+                gs_outf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);
         }
         if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
@@ -107,7 +113,11 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             checkpoint_set_error(cp);
         }
     }
-    if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
+    // A NULL storage consumes and discards the blob (an entry with no image),
+    // keeping the stream in step.  Once the checkpoint is flagged, though, the
+    // restore is over -- the caller stops at the first damaged entry -- and
+    // reading on would only repeat the failure under another name.
+    if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
         gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
@@ -146,6 +156,6 @@ void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
         // Generic image list is all flat 512-byte disks (block_size 0 ⇒ 512).
         image_t *img = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
         if (img)
-            add_image(cfg, img);
+            config_add_image(cfg, img);
     }
 }

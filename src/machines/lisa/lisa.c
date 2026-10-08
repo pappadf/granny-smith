@@ -502,7 +502,7 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     case MEDIA_BUS_FLOPPY:
         if (lisa_fd_insert(cfg, slot->unit, slot->img) != 0)
             return -1;
-        add_image(cfg, slot->img);
+        config_add_image(cfg, slot->img);
         return 0;
     case MEDIA_BUS_PROFILE:
         if (!ls || !ls->profile || !lisa_profile_attach_image(ls->profile, slot->img))
@@ -1236,7 +1236,7 @@ static const uint32_t lisa_ram_options_kb[] = {512, 1024, 1536, 2048, 0};
 // Untested, though: every Lisa image in the tree is 400 KB, so the two-sided
 // branch has never run under a test.  Declaring 400K was the stronger claim
 // to have wrong -- it understated a drive the model demonstrably serves.
-static const struct floppy_slot lisa_floppy_slots[] = {
+static const floppy_slot_t lisa_floppy_slots[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_800K},
     {0},
 };
