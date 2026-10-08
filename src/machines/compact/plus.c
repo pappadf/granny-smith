@@ -112,7 +112,7 @@ static void plus_use_video_buffer(config_t *cfg, bool main) {
     plus_state_t *ps = plus_state(cfg);
     uint32_t top = cfg->ram_size;
     uint32_t addr = main ? (top - PLUS_SCREEN_FROM_TOP) : (top - PLUS_SCREEN_FROM_TOP - PLUS_ALT_SCREEN_BELOW);
-    ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
+    ps->display.bits = ram_native_pointer(cfg->memory_map, addr);
     ps->display.fb_dirty = true;
 }
 
@@ -166,7 +166,7 @@ static void plus_set_rom_overlay(config_t *cfg, bool on) {
     if (ps->rom_overlay == on)
         return;
     ps->rom_overlay = on;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++)
         plus_map_read_page(p, on ? ram + cfg->ram_size + (p << PAGE_SHIFT) : ram + (p << PAGE_SHIFT));
@@ -200,7 +200,7 @@ static uint32_t plus_phase_read_uint32(void *dev, uint32_t addr) {
 // to verify that high-frequency timing signals are in phase.
 static void plus_memory_layout_init(config_t *cfg) {
     // Map RAM and ROM pages into the global page table
-    memory_populate_pages(cfg->mem_map, PLUS_ROM_START, PLUS_ROM_END);
+    memory_populate_pages(cfg->memory_map, PLUS_ROM_START, PLUS_ROM_END);
 
     // Mirror RAM into the unmapped gap [ram_size, PLUS_ROM_START).  On real
     // Plus hardware the address decoder doesn't gate accesses in this range,
@@ -210,7 +210,7 @@ static void plus_memory_layout_init(config_t *cfg) {
     // the mirror, the first interrupt/exception corrupts CPU state on any
     // sub-4-MB configuration.
     if (cfg->ram_size < PLUS_ROM_START)
-        memory_populate_ram_mirror(cfg->mem_map, cfg->ram_size, PLUS_ROM_START);
+        memory_populate_ram_mirror(cfg->memory_map, cfg->ram_size, PLUS_ROM_START);
 
     // Register the Phase Read device for the Plus I/O region
     memory_interface_t phase_read;
@@ -218,7 +218,7 @@ static void plus_memory_layout_init(config_t *cfg) {
     phase_read.read_uint8 = &plus_phase_read_uint8;
     phase_read.read_uint16 = &plus_phase_read_uint16;
     phase_read.read_uint32 = &plus_phase_read_uint32;
-    memory_map_add(cfg->mem_map, 0x00F00000, 0x00080000, "Phase Read", &phase_read, NULL);
+    memory_map_add(cfg->memory_map, 0x00F00000, 0x00080000, "Phase Read", &phase_read, NULL);
 }
 
 // ============================================================
@@ -239,9 +239,9 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Initialise parameterised memory: 24-bit address space, configured RAM, 128 KB ROM
     machine_part_begin(cfg, checkpoint, "memory");
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
-                                   MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
-    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
+    cfg->memory_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
+                                      MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
+    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->memory_map);
 
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);
@@ -291,7 +291,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "rtc", part_save_rtc, cfg->rtc);
 
     machine_part_begin(cfg, checkpoint, "scc");
-    cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(cfg->memory_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
 
     // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
@@ -305,7 +305,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     machine_part_begin(cfg, checkpoint, "via1");
-    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
+    cfg->via1 = via_init(cfg->memory_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     // The RTC's data line rides VIA1 PB0: wired right after the VIA is built,
@@ -313,7 +313,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     rtc_set_via(cfg->rtc, cfg->via1);
 
     machine_part_begin(cfg, checkpoint, "sound");
-    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
+    ps->sound = sound_init(cfg->memory_map, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "sound", part_save_sound, ps->sound);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound
@@ -349,7 +349,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // this address compiled into the chip model.  Every other 5380 machine
     // already took scsi_get_memory_interface() and placed it with its own
     // decode (mac030_glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
-    memory_map_add(cfg->mem_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
+    memory_map_add(cfg->memory_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
                    (memory_interface_t *)scsi_get_memory_interface(cfg->scsi), cfg->scsi);
 
     setup_images(cfg);
@@ -363,7 +363,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // FLOPPY_800K is the drive in each position.  They are different facts:
     // the IWM drives 400K/800K GCR drives, which is what plus_floppy_slots
     // declares.
-    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
+    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->memory_map, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
                               CONFIG_IMAGES(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
@@ -392,7 +392,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         uint8_t fill = display_black_fill(ps->display.format);
         for (int main_buf = 0; main_buf <= 1; main_buf++) {
             uint32_t addr = cfg->ram_size - PLUS_SCREEN_FROM_TOP - (main_buf ? 0 : PLUS_ALT_SCREEN_BELOW);
-            uint8_t *p = ram_native_pointer(cfg->mem_map, addr);
+            uint8_t *p = ram_native_pointer(cfg->memory_map, addr);
             if (p)
                 memset(p, fill, screen_bytes);
         }

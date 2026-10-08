@@ -219,9 +219,9 @@ __attribute__((weak)) void system_machine_reset(void) {
 // the vector fetch reads a cold machine.
 void system_machine_power_cycle(void) {
     config_t *cfg = global_emulator;
-    if (!cfg || !cfg->mem_map)
+    if (!cfg || !cfg->memory_map)
         return;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     if (ram && cfg->ram_size)
         memset(ram, 0, cfg->ram_size); // DRAM loses its contents
     // The ADB bus is powered by the machine: its devices lose power too.
@@ -313,7 +313,7 @@ __attribute__((weak)) void system_reset_devices(void) {
     }
 
 DEFINE_SUBSYSTEM_ACCESSOR(scheduler_t, system_scheduler, scheduler) // the scheduler
-DEFINE_SUBSYSTEM_ACCESSOR(memory_map_t, system_memory, mem_map) // the memory map
+DEFINE_SUBSYSTEM_ACCESSOR(memory_map_t, system_memory, memory_map) // the memory map
 DEFINE_SUBSYSTEM_ACCESSOR(debug_t, system_debug, debugger) // the debugger
 DEFINE_SUBSYSTEM_ACCESSOR(cpu_t, system_cpu, cpu) // the 68K main CPU (NULL on PowerPC)
 DEFINE_SUBSYSTEM_ACCESSOR(rtc_t, system_rtc, rtc) // the RTC / PRAM chip
@@ -1063,7 +1063,7 @@ static void events_part_save(void *obj, checkpoint_t *cp) {
 // chosen, which selection resets to supervisor (a 68000 re-picks it only on a
 // mode change).
 static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write) {
-    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+    memory_map_select(global_emulator ? global_emulator->memory_map : NULL);
     if (global_emulator) {
         g_active_read = active_read;
         g_active_write = active_write;
@@ -1189,7 +1189,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing) {
     config_t *old = global_emulator;
     global_emulator = cfg;
-    memory_map_select(cfg->mem_map);
+    memory_map_select(cfg->memory_map);
 
     // Label the machine container node with the active model name so the
     // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"

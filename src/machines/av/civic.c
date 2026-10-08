@@ -683,7 +683,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     uint32_t start = AV_CIVIC_VRAM_BASE >> PAGE_SHIFT;
     for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
         mac030_fill_page(start + i, cv->vram + (i << PAGE_SHIFT), true);
-    memory_map_host_region(cfg->mem_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
+    memory_map_host_region(cfg->memory_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);
 
     // The low CIVIC register alias at $50036000 (the island row at $36000
@@ -694,7 +694,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     cv->lo_iface.write_uint8 = civic_lo_write8;
     cv->lo_iface.write_uint16 = civic_lo_write16;
     cv->lo_iface.write_uint32 = civic_lo_write32;
-    memory_map_add(cfg->mem_map, 0x50036000u, 0x00002000u, "CIVIC", &cv->lo_iface, cv);
+    memory_map_add(cfg->memory_map, 0x50036000u, 0x00002000u, "CIVIC", &cv->lo_iface, cv);
 }
 
 // ============================================================

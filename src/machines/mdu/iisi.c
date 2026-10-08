@@ -81,8 +81,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A (soldered 1 MB)
     // at physical 0 — its bottom is the on-board video frame buffer — and Bank B
@@ -111,7 +111,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->memory_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
     // of Bank A (physical 0).  The OS reaches the screen through its PMMU tree
@@ -307,7 +307,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_blank_callback(st->rbv, iisi_rbv_blank, cfg);
     asc_set_irq_handler(st->asc, iisi_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
     st->mmu = mac030_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
     if (!st->mmu)
@@ -346,7 +346,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint) {
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }

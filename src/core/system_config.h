@@ -69,7 +69,7 @@ struct config {
     cpu_t *cpu; // 68K main CPU (NULL on PPC machines)
     struct ppc *ppc; // PowerPC main CPU (NULL on 68K machines)
     cpu_debug_if_t cpu_dbg; // main-CPU debug seam (populated by system_create)
-    memory_map_t *mem_map;
+    memory_map_t *memory_map;
 
     // VIA chips (via1 = primary; via2 = NULL on Plus)
     via_t *via1;

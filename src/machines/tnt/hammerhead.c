@@ -171,7 +171,7 @@ static uint32_t hh_bank_base(const tnt_hammerhead_t *hh, unsigned k) {
 // depends on).
 void tnt_hh_remap(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (uint32_t p = 0; p < (HH_DECODE_TOP >> PAGE_SHIFT); p++)
         tnt_clear_page(p);
     for (unsigned k = 0; k < TNT_HH_BANKS; k++) {

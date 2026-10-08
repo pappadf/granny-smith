@@ -58,7 +58,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     }
     cfg->machine_context = st;
 
-    // Shared II-family core (mem_map, cpu-from-profile, scheduler) + RTC + SCC +
+    // Shared II-family core (memory_map, cpu-from-profile, scheduler) + RTC + SCC +
     // VIA1.  Note: no VIA2 (the RBV replaces it), and rtc_set_via is left to the
     // machine (IIci bit-bangs the RTC on VIA1; the IIsi drives it via Egret).
     mac030_build_core(cfg, board->desc, cp);
@@ -116,7 +116,7 @@ static void mdu_power_on(config_t *cfg) {
 
 // MDU delete-chain (no VIA2; RBV instead; Egret on the IIsi).  Order matches
 // the former iici/iisi teardowns: scheduler_stop → egret → rbv → mmu → floppy →
-// asc → adb → scsi → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.
+// asc → adb → scsi → via1 → scc → rtc → scheduler → cpu → memory_map → debugger.
 static void mdu_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);

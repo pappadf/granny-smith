@@ -265,15 +265,15 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Bus-side physical resolver for the 040 walker (flat RAM model +
     // ROM-aperture mirrors; identical to the Q700 arrangement).
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
                            desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
+    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     setup_images(cfg);

@@ -19,7 +19,7 @@ struct config;
 // Free every config_t-owned device, in the one canonical order:
 //
 //   scsi -> via2 -> via1 -> atalk -> scc -> rtc -> scheduler ->
-//   cpu | ppc -> mem_map -> debugger
+//   cpu | ppc -> memory_map -> debugger
 //
 // Any NULL handle is skipped, so a machine with one VIA or no SCSI passes
 // straight through those steps, and the 68k/PowerPC split falls out of which

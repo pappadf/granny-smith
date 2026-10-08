@@ -798,7 +798,7 @@ static inline bool swim_addressing_is_24bit(void) {
 // would extend past the configured RAM size.
 static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
     config_t *cfg = global_emulator;
-    if (!cfg || !cfg->mem_map)
+    if (!cfg || !cfg->memory_map)
         return NULL;
     // In 24-bit mode the buffer the .Sony driver hands us is a Memory Manager
     // master pointer whose high byte carries the lock/purge/resource flags —
@@ -810,7 +810,7 @@ static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
         host_addr &= 0x00FFFFFFu;
     if ((uint64_t)host_addr + byte_count > (uint64_t)cfg->ram_size)
         return NULL;
-    return ram_native_pointer(cfg->mem_map, host_addr);
+    return ram_native_pointer(cfg->memory_map, host_addr);
 }
 
 // Block size of the .Sony block interface, in bytes.

@@ -121,8 +121,8 @@ static void iici_memory_layout_init(config_t *cfg) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
 
     // Two physical RAM banks, each a socket group of four 30-pin SIMMs:
     // Bank A at physical 0, Bank B at $04000000.  Each bank mirrors its
@@ -155,7 +155,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->memory_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // Wire any registered host regions (a socketed card's VRAM) and their
     // Mode-24 slot aliases into the page table — same machinery as the IIcx
@@ -376,7 +376,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
     }
     machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);

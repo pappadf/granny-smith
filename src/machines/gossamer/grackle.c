@@ -124,7 +124,7 @@ static void bank_window(const gos_grackle_t *g, unsigned n, uint32_t *lo, uint32
 void gos_grackle_remap(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     gos_grackle_t *g = &st->grackle;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     // The whole RAM decode space goes quiet first: an access outside every
     // enabled bank reads all-ones and drops writes (§6), which an empty
     // page gives by default.
@@ -510,10 +510,10 @@ void gos_grackle_init(config_t *cfg, checkpoint_t *cp) {
     iface_set(&st->cfg_data_if, cdata_read8, cdata_read16, cdata_read32, cdata_write8, cdata_write16, cdata_write32);
     iface_set(&st->intack_if, ia_read8, ia_read16, ia_read32, ia_write8, ia_write16, ia_write32);
     iface_set(&st->board_if, board_read8, board_read16, board_read32, board_write8, board_write16, board_write32);
-    memory_map_add(cfg->mem_map, GOS_CFG_ADDR_BASE, GOS_CFG_ADDR_SIZE, "Grackle CONFIG_ADDR", &st->cfg_addr_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_CFG_DATA_BASE, GOS_CFG_DATA_SIZE, "Grackle CONFIG_DATA", &st->cfg_data_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_INTACK_BASE, 0x00100000u, "Grackle INT ACK", &st->intack_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_BOARD_BASE, GOS_BOARD_SIZE, "board register", &st->board_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_CFG_ADDR_BASE, GOS_CFG_ADDR_SIZE, "Grackle CONFIG_ADDR", &st->cfg_addr_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_CFG_DATA_BASE, GOS_CFG_DATA_SIZE, "Grackle CONFIG_DATA", &st->cfg_data_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_INTACK_BASE, 0x00100000u, "Grackle INT ACK", &st->intack_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_BOARD_BASE, GOS_BOARD_SIZE, "board register", &st->board_if, cfg);
 
     // The one PCI bus, and Grackle's own header at device 0.
     st->bus = pci_bus_create(cfg->pci, "Grackle", GOS_PCI_BUS);

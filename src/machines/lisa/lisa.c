@@ -166,7 +166,7 @@ static void lisa_refresh_framebuffer(config_t *cfg) {
     // smaller than the alignment.  A base the RAM cannot back
     // scans nothing -- lisa_display() then reports no display for that frame,
     // and the next latch write that lands in range brings it back.
-    display_set_scanout(&ls->display, ram_native_pointer(cfg->mem_map, 0), memory_ram_size(cfg->mem_map), base,
+    display_set_scanout(&ls->display, ram_native_pointer(cfg->memory_map, 0), memory_ram_size(cfg->memory_map), base,
                         board->screen_w / 8u, board->screen_w, board->screen_h, NULL, 0);
     ls->display.fb_dirty = true; // contents change every frame
     if (ls->display.bits != prev)
@@ -912,9 +912,9 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
     machine_part_begin(cfg, checkpoint, "memory");
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
-                                   MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
-    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
+    cfg->memory_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
+                                      MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
+    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->memory_map);
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as mac030_build_core states for the II families.  Both
@@ -948,11 +948,11 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // flat RAM+ROM image the memory map allocated, ROM already in place.
     bool ram_high = lisa_board_of(cfg)->ram_high;
     machine_part_begin(cfg, checkpoint, "lisa_mmu");
-    ls->mmu =
-        lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
-                      memory_rom_size(cfg->mem_map), ram_high, checkpoint);
+    ls->mmu = lisa_mmu_init(ram_native_pointer(cfg->memory_map, 0), cfg->ram_size,
+                            (uint8_t *)memory_rom_bytes(cfg->memory_map), memory_rom_size(cfg->memory_map), ram_high,
+                            checkpoint);
     machine_part(cfg, checkpoint, "lisa_mmu", lisa_mmu_checkpoint_part, ls->mmu);
-    memory_map_set_lisa_mmu(cfg->mem_map, ls->mmu); // the slow path's g_lisa_mmu
+    memory_map_set_lisa_mmu(cfg->memory_map, ls->mmu); // the slow path's g_lisa_mmu
     lisa_mmu_attach_object(ls->mmu, cfg->cpu); // machine.cpu.mmu, like every MMU kind
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit

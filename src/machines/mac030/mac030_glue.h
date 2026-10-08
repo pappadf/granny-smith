@@ -307,7 +307,7 @@ void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active);
 
 // Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
-// adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.
+// adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → memory_map → debugger.
 // The machine-owned devices (which live in its private state, not config_t)
 // are passed in; the caller frees its own state struct afterwards.  Any NULL
 // handle is skipped.

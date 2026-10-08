@@ -90,7 +90,7 @@ void pdm_hmc_init(config_t *cfg) {
 static void map_bank_window(config_t *cfg, uint32_t base, uint32_t window, uint32_t host_off, uint32_t size) {
     if (!size)
         return;
-    uint8_t *host = ram_native_pointer(cfg->mem_map, 0) + host_off;
+    uint8_t *host = ram_native_pointer(cfg->memory_map, 0) + host_off;
     uint32_t pages = window >> PAGE_SHIFT;
     uint32_t first = base >> PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
@@ -172,7 +172,7 @@ void pdm_hmc_remap(config_t *cfg) {
 // see the penalty.)
 
 static uint8_t *pdm_wait_ram(void *ctx) {
-    return ram_native_pointer(((config_t *)ctx)->mem_map, 0);
+    return ram_native_pointer(((config_t *)ctx)->memory_map, 0);
 }
 
 static uint8_t wait_read8(void *ctx, uint32_t offset) {
@@ -235,7 +235,7 @@ static void pdm_hmc_wait_state(config_t *cfg, bool on) {
         g_page_table[0].dev_context = cfg;
         g_page_table[0].base_addr = 0;
     } else {
-        pdm_fill_page(0, ram_native_pointer(cfg->mem_map, 0), true);
+        pdm_fill_page(0, ram_native_pointer(cfg->memory_map, 0), true);
     }
 }
 

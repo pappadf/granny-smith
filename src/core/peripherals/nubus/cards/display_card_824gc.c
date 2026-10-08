@@ -1064,18 +1064,18 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     card->priv = p;
 
     // --- Standard slot space: VRAM, framebuffer alias, declrom, display regs.
-    memory_map_host_region(cfg->mem_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
-    memory_map_host_region(cfg->mem_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region_alias(cfg->memory_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
+    memory_map_host_region(cfg->memory_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
                            GC824_DECLROM_BUS_SIZE, /*writable*/ false);
     p->ctx_jmfb = (gc_reg_ctx_t){.p = p, .region_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET};
-    memory_map_add(cfg->mem_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
+    memory_map_add(cfg->memory_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
                    &s_gc824_mem_iface, &p->ctx_jmfb);
     // GCQD command-block window (standard slot, card+$16C+$8C00) — a device
     // region so CB writes fire the trigger engine; added after the FB alias so
     // its page-table entries win over the alias for the (unused) pages it spans.
     p->ctx_gcp = (gc_reg_ctx_t){.p = p, .region_base = p->gcp_base};
-    memory_map_add(cfg->mem_map, p->gcp_base, GC824_GCP_WINDOW, "gc824_gcp", &s_gc824_mem_iface, &p->ctx_gcp);
+    memory_map_add(cfg->memory_map, p->gcp_base, GC824_GCP_WINDOW, "gc824_gcp", &s_gc824_mem_iface, &p->ctx_gcp);
 
     // --- Super-slot space: one catch-all device region over the whole
     // 256 MB slot super-space.  The driver reaches the accelerator (SRAM,
@@ -1087,7 +1087,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // writes are observed; SRAM/DRAM are backed by real buffers so the guest
     // dereferences card addresses faithfully.
     p->ctx_super = (gc_reg_ctx_t){.p = p, .region_base = p->super_base};
-    memory_map_add(cfg->mem_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
+    memory_map_add(cfg->memory_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
 
     return 0;
 }

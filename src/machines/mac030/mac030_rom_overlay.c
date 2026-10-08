@@ -17,7 +17,7 @@ LOG_USE_CATEGORY_NAME("board");
 
 // Base of the ROM image inside the RAM+ROM allocation.
 static uint8_t *overlay_rom_data(const mac030_rom_overlay_t *ov) {
-    return ram_native_pointer(ov->cfg->mem_map, ov->cfg->ram_size);
+    return ram_native_pointer(ov->cfg->memory_map, ov->cfg->ram_size);
 }
 
 // Point the aperture at direct ROM pages, mirroring the image across it.

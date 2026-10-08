@@ -178,15 +178,15 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // aperture — RAM-sizing probes above installed memory read $FF rather
     // than bus-erroring (flat functional model).
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
                            desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
+    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
     // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)

@@ -339,10 +339,11 @@ static void se30_post_nubus(config_t *cfg) {
     // media handles went with it.  (The card always comes up: without Apple's
     // onboard-video ROM it runs its substitute.)
     GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
-    memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_BASE, SE30_VROM_SIZE, /*writable*/ false);
-    memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
-    memory_map_host_region_alias(cfg->mem_map, SE30_VROM_PHYS_ALT, SE30_VROM_BASE);
+    memory_map_host_region(cfg->memory_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region(cfg->memory_map, "se30_vrom", se30->vrom, SE30_VROM_BASE, SE30_VROM_SIZE,
+                           /*writable*/ false);
+    memory_map_host_region_alias(cfg->memory_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
+    memory_map_host_region_alias(cfg->memory_map, SE30_VROM_PHYS_ALT, SE30_VROM_BASE);
 }
 
 // Restore the card-owned VRAM/VROM bytes from a checkpoint (before the shared

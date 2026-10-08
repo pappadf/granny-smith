@@ -72,16 +72,16 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
 
 // Create + attach the 68030 PMMU over a board's ROM window — see header.
 struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end) {
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
     mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
     if (!mmu) {
         LOG(0, "Error: out of memory constructing the PMMU");
         return NULL; // mac030_build_mmu returns the MMU, not a status
     }
-    memory_map_set_pmmu(cfg->mem_map, mmu);
+    memory_map_set_pmmu(cfg->memory_map, mmu);
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
 }
@@ -103,8 +103,8 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size); // ROM follows RAM in the flat buffer
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size); // ROM follows RAM in the flat buffer
 
     // --- RAM, with the SIMM address-line wrap the ROM's test depends on ---
     //
@@ -135,7 +135,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 
     // --- I/O dispatcher, the window directly above the ROM window ---
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
+    memory_map_add(cfg->memory_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
 }
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
@@ -237,7 +237,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
     if (cp) {
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
         via_redrive_outputs(cfg->via2);
@@ -253,9 +253,9 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     // The board's NuBus bus-error window is part of the bus it builds.
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
-                                   &cfg->build_opts.rom, cp);
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    cfg->memory_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
+                                      &cfg->build_opts.rom, cp);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     machine_part_begin(cfg, cp, "cpu");
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
@@ -339,7 +339,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+        uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
     }

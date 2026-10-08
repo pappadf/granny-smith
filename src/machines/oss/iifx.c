@@ -421,7 +421,7 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     uint32_t rom_size = cfg->machine->rom_size;
     if (rom_size == 0)
         return;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     if (!st->fmc_inverted_rom) {
         st->fmc_inverted_rom = malloc(rom_size);
         if (!st->fmc_inverted_rom) {
@@ -480,8 +480,8 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
 
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     // Dropping the overlay restores the same wrapped RAM mapping
     // iifx_memory_layout_init installs (identical to a linear one while
@@ -523,8 +523,8 @@ static uint8_t iifx_rom_byte(void *ctx, uint32_t addr, bool peek) {
     config_t *cfg = (config_t *)ctx;
     if (!peek)
         iifx_set_rom_overlay(cfg, false);
-    const uint8_t *rom = memory_rom_bytes(cfg->mem_map);
-    uint32_t rom_size = memory_rom_size(cfg->mem_map);
+    const uint8_t *rom = memory_rom_bytes(cfg->memory_map);
+    uint32_t rom_size = memory_rom_size(cfg->memory_map);
     if (!rom || rom_size == 0)
         return 0xff;
     return rom[addr % rom_size];
@@ -1427,7 +1427,7 @@ static void iifx_trigger_vbl(config_t *cfg) {
 static void iifx_memory_layout_init(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     // Installed RAM is one contiguous region at physical 0 that mirrors
     // itself throughout the 64 MB RAM decode window.  The boot ROM sizes
@@ -1455,7 +1455,8 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint32 = iifx_rom_write_uint32,
         .peek_uint8 = iifx_rom_peek_uint8,
     };
-    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface, cfg);
+    memory_map_add(cfg->memory_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface,
+                   cfg);
 
     // Reads keep the machID pre-check (above the mirror) then delegate to the
     // shared engine; writes go straight to the engine.  ctx is the engine's
@@ -1469,7 +1470,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint32 = mac030_io_write_uint32,
         .peek_uint8 = iifx_io_peek_uint8,
     };
-    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
+    memory_map_add(cfg->memory_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
 
     // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
     // slot aliases into the page table (shared helper; see iicx.c).
@@ -1560,7 +1561,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     }
     cfg->machine_context = st;
 
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    // Build the shared II-family core (memory_map, cpu-from-profile, scheduler).
     mac030_build_core(cfg, &iifx_board_desc, checkpoint);
     machine_part_irq(cfg, checkpoint);
 
@@ -1673,7 +1674,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     if (checkpoint) {
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }

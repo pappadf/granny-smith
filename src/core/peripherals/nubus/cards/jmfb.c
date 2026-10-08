@@ -381,11 +381,11 @@ static void map_regions(jmfb_priv_t *p, config_t *cfg) {
     // the declaration ROM is read-only.  The register window goes
     // through memory_map_add with a memory_interface_t since it needs
     // I/O dispatch on every access.
-    memory_map_host_region(cfg->mem_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region(cfg->memory_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
                            JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
-    memory_map_add(cfg->mem_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs", &s_jmfb_mem_iface,
-                   p);
+    memory_map_add(cfg->memory_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs",
+                   &s_jmfb_mem_iface, p);
 
     // VRAM mirror at slot+$900000 — the Mac IIcx ROM, when running in
     // 24-bit Memory Manager Mode, builds framebuffer pointers with the
@@ -397,7 +397,7 @@ static void map_regions(jmfb_priv_t *p, config_t *cfg) {
     // multiple base offsets; the slot $900000 region is one of those
     // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
     // unmapped memory and QuickDraw bus-errors.
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
+    memory_map_host_region_alias(cfg->memory_map, p->slot_base + 0x900000u, p->slot_base);
 }
 
 // The power-on picture: registers at PrimaryInit's starting point (1 bpp,
