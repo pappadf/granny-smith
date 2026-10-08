@@ -154,11 +154,15 @@ static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *m
     // Two-bank RAM (e.g. IIsi): resolve through the bank windows.  Page tables
     // the walker reads from live in Bank B (system RAM), so this must cover it.
     if (mmu->ram_b_size) {
+        // Size guards: an empty (or sub-longword) bank must neither divide
+        // by zero nor wrap the `size - 4` bound.
         if (phys_addr < mmu->ram_b_phys_base) {
-            uint32_t off = phys_addr % mmu->ram_a_size;
-            if (off <= mmu->ram_a_size - 4)
-                return LOAD_BE32(mmu->physical_ram + off);
-        } else if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window) {
+            if (mmu->ram_a_size >= 4) {
+                uint32_t off = phys_addr % mmu->ram_a_size;
+                if (off <= mmu->ram_a_size - 4)
+                    return LOAD_BE32(mmu->physical_ram + off);
+            }
+        } else if (mmu->ram_b_size >= 4 && phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window) {
             uint32_t off = (phys_addr - mmu->ram_b_phys_base) % mmu->ram_b_size;
             if (off <= mmu->ram_b_size - 4)
                 return LOAD_BE32(mmu->physical_ram_b + off);
@@ -422,6 +426,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // of the `1u << 32` UB threshold. Defensive guard so a future widening
         // of the field doesn't silently invoke UB.
         if (index_bits >= 32) {
+            result.mmusr |= MMUSR_I;
+            return result;
+        }
+
+        // A degenerate TC (IS + TIA..TID > 32, only rejected for E=1) would
+        // underflow bit_pos and shift by a huge count: invalid translation.
+        if (index_bits > bit_pos) {
             result.mmusr |= MMUSR_I;
             return result;
         }
@@ -932,7 +943,11 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         const mmu_host_region_t *r = &g_mmu->host_regions[i];
         if (r->phys_base == original_phys_base) {
             mmu_register_host_region(g_mmu, r->host, alias_phys_base, r->size, r->writable);
-            g_mmu->host_regions[g_mmu->host_region_count - 1].alias = true;
+            // Flag the entry the call created or replaced -- found by its
+            // window, not assumed to be the last one (a full list drops it)
+            for (int j = 0; j < g_mmu->host_region_count; j++)
+                if (g_mmu->host_regions[j].phys_base == alias_phys_base && g_mmu->host_regions[j].size == r->size)
+                    g_mmu->host_regions[j].alias = true;
             return;
         }
     }
@@ -1353,10 +1368,10 @@ uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr) {
 uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr) {
     if (!mmu)
         return 0;
-    uint8_t *host = phys_to_host(mmu, phys_addr);
-    if (!host)
-        return 0;
-    return (uint16_t)(host[0] << 8 | host[1]);
+    // Byte by byte: the two bytes may sit in different regions (or the
+    // second past the end of the first), and each is resolved on its own.
+    return (uint16_t)(((uint16_t)mmu_read_physical_uint8(mmu, phys_addr) << 8) |
+                      mmu_read_physical_uint8(mmu, phys_addr + 1));
 }
 
 // Read a 32-bit big-endian value from physical memory for debug commands.
