@@ -853,6 +853,13 @@ export function getModule(): EmscriptenModule | null {
   return Module;
 }
 
+// The WebGPU device went away after startup: answer "no GPU" from now on,
+// so a Voodoo2 created later picks the thread backend at once instead of
+// waiting out an attach the page can no longer serve.
+export function setGpuUnavailable(): void {
+  mailbox?.setGpuAvailable(false);
+}
+
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
 // buffer can be replaced, so callers must never cache these.
