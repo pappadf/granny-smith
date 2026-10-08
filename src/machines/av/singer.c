@@ -28,6 +28,7 @@
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "sound_surface.h"
 #include "system.h"

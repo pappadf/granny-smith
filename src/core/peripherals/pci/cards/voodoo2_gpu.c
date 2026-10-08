@@ -37,6 +37,7 @@
 
 #include "display.h" // display_expand5/6 -- the shared channel expansion
 #include "log.h"
+#include "platform_hooks.h"
 #include "system.h"
 #include "voodoo2_gpu_protocol.h"
 

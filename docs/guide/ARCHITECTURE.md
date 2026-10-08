@@ -315,7 +315,8 @@ Both patterns are in use, each where it fits:
     microphone, GPU worker, auto-checkpoint flag, quit, download).  Each has
     a weak default in `platform_hooks.c` modelling "this host has none of
     it" (answering -2, "not supported", where asked to act); a platform
-    links a strong definition to override it.
+    links a strong definition to override it.  A caller includes
+    `platform_hooks.h` itself; `system.h` does not re-export it.
 
 This design keeps the `config_t` struct mostly opaque to external code while
 providing controlled access to subsystems. The platform layer and core modules

@@ -35,6 +35,7 @@
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"

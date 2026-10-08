@@ -51,6 +51,7 @@
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
+#include "platform_hooks.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"

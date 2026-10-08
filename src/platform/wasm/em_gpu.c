@@ -19,6 +19,7 @@
 // no adapter).
 
 #include "em.h"
+#include "platform_hooks.h"
 
 #include "system.h"
 

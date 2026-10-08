@@ -31,6 +31,7 @@
 #include "mouse.h"
 #include "nubus.h"
 #include "pci.h"
+#include "platform_hooks.h"
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"

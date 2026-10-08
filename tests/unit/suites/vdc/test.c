@@ -23,6 +23,7 @@
 #include "civic.h"
 #include "cuda.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "psc.h"
 #include "value.h"
 #include "vdc.h"

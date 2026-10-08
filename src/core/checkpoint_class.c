@@ -10,6 +10,7 @@
 #include "checkpoint.h"
 
 #include "object.h"
+#include "platform_hooks.h"
 #include "status.h"
 #include "system.h"
 #include "value.h"

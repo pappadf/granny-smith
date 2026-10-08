@@ -68,6 +68,7 @@
 #include "memory.h"
 #include "object.h"
 #include "pci.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"

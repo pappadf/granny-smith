@@ -24,6 +24,7 @@
 
 #include "em.h"
 #include "em_shm_layout.h"
+#include "platform_hooks.h"
 
 #include "system.h"
 

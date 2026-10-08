@@ -23,6 +23,7 @@
 #include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
+#include "platform_hooks.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "rom.h"

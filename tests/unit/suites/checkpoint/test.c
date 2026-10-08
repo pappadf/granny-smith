@@ -43,6 +43,7 @@
 #include "checkpoint.h"
 #include "gs_assert.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "status.h"
 #include "test_assert.h"
 #include "value.h"

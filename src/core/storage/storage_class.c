@@ -31,6 +31,7 @@
 #include "image_udif.h"
 #include "image_vfs.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "root.h"
 #include "shell.h"
 #include "storage_util.h"

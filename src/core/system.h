@@ -321,8 +321,4 @@ int gs_find_media(const char *dir_path, const char *dest);
 // NULL when there is none.
 const char *find_valid_checkpoint_path(void);
 
-// The platform seams (gs_* hooks with weak defaults) -- see platform_hooks.h.
-// Included here until their callers include it themselves.
-#include "platform_hooks.h"
-
 #endif // SYSTEM_H
