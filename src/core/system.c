@@ -617,7 +617,7 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
-        if (rc == -2)
+        if (rc == IMAGE_CREATE_EXISTS)
             gs_outf("fd create: file already exists: %s (won't overwrite)\n", path);
         else
             gs_outf("fd create: failed to create blank floppy file: %s\n", path);
@@ -729,8 +729,6 @@ void setup_init() {
     // "appletalk" that existed for exactly this reason -- and whose presence
     // was the tell that a manifest was missing.
     log_register_manifest();
-
-    image_init(NULL);
 
     // The AppleTalk network: host state, one per process.  Machines plug into
     // it as they are built (atalk_conn_new) and never tear it down.
@@ -1352,7 +1350,7 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // on checkpoint restore — the manifest is fixed at original creation
     // time and is purely informational.  Failure is non-fatal.
     if (!restored && checkpoint_machine_dir())
-        checkpoint_machine_write_manifest();
+        checkpoint_machine_write_manifest(cfg);
 
     // The machine it replaces goes last; its teardown leaves the new
     // machine's object tree alone (root_uninstall_if).
