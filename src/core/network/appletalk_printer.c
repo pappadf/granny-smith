@@ -26,6 +26,7 @@ LOG_USE_CATEGORY_NAME("pap");
 #define PRINTER_STATUS_MAX       255
 #define PRINTER_DEFAULT_OBJECT   "Virtual LaserWriter"
 #define PRINTER_STATUS_IDLE      "status: idle"
+#define PRINTER_STATUS_OFFLINE   "status: offline" // disabled: not advertised, takes no jobs
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
 #define PAP_SENDDATA_RETRY_MS    8000u
@@ -38,7 +39,13 @@ LOG_USE_CATEGORY_NAME("pap");
 // driver before its write completion had propagated, and it answered the
 // new sequence number with the buffer it had already sent (Inside AppleTalk
 // 2e, ch. 10, "Duplicate filtration": a new number means new data).
-#define PAP_SENDDATA_GAP_NS         10000000ull
+#define PAP_SENDDATA_GAP_NS 10000000ull
+// Spool-only builds: after answering a query, the driver may send bare
+// "%%EOF" writes while it decides what to do next; they are ignored while the
+// printer waits for the job.  This many in a row means no job is coming, and
+// the session is finished.  The bound only has to be past what a driver
+// sends between a query and its job (one or two); its equality with
+// PAP_MAX_FLOW_QUANTUM is a coincidence, not a relation.
 #define PAP_QUERY_PLACEHOLDER_LIMIT 8
 
 // The PostScript markers the spool-only printer answers queries by, found in
@@ -134,6 +141,8 @@ typedef struct {
     bool patch_active; // Currently ingesting a PatchPrep payload
     pap_query_mode_t query_mode;
     bool font_query_detected;
+    // The workstation's held reads, a ring.  Embedded rather than allocated:
+    // a flow quantum bounds them at eight, a few hundred bytes in all.
     pap_status_credit_t pending_status_reads[PAP_MAX_FLOW_QUANTUM];
     uint8_t pending_status_head;
     uint8_t pending_status_count;
@@ -228,7 +237,7 @@ static void pap_platen_flush_rx(pap_session_t *sess);
 static void pap_platen_finalize_job(void);
 static void pap_platen_event(laserwriter_event_t event, const char *detail, void *ctx);
 #endif
-static int pap_format_status_line(const char *text, char *out, size_t out_len);
+static int pap_append_crlf(const char *text, char *out, size_t out_len);
 static void pap_completion_set(uint8_t conn_id, const char *text, const atalk_socket_addr_t *addr);
 static void pap_completion_clear(void);
 static void pap_close_request_complete(atp_request_handle_t *handle, atp_request_result_t result, void *ctx);
@@ -362,7 +371,21 @@ static void pap_printer_set_status_idle(void) {
     pap_printer_set_status_fmt("%s", PRINTER_STATUS_IDLE);
 }
 
-// Sets the status string to the disabled/offline message.
+// Sets the status string to the disabled message, so a disabled printer is
+// told apart from one that is ready with nothing to do.
+static void pap_printer_set_status_offline(void) {
+    pap_printer_set_status_fmt("%s", PRINTER_STATUS_OFFLINE);
+}
+
+// Sets the status string for the printer's state when no job runs: idle, or
+// offline while disabled.
+static void pap_printer_set_status_resting(void) {
+    if (g_printer->enabled)
+        pap_printer_set_status_idle();
+    else
+        pap_printer_set_status_offline();
+}
+
 // Builds the OpenConn/Status reply payload per PAP spec.
 static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uint16_t result_code, uint8_t *out,
                                     size_t out_max) {
@@ -421,7 +444,7 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
 #endif
     pap_session_reset();
     if (!g_printer->enabled) {
-        pap_printer_set_status_idle();
+        pap_printer_set_status_offline();
         return;
     }
 #if GS_PLATEN
@@ -641,6 +664,9 @@ static bool pap_finalize_job(const char *reason) {
 }
 
 // Returns true when the fragment payload is just a "%%EOF" marker (optionally CR/LF).
+// Only asked while the printer waits for the job after a query, and only of
+// an EOF-flagged write of five or six bytes: a real document's closing
+// %%EOF comes after its body, whose first byte ends the wait.
 static bool pap_fragment_is_placeholder_eof(const atp_response_fragment_t *fragment) {
     if (!fragment || fragment->data_len < 5 || fragment->data_len > 6)
         return false;
@@ -697,8 +723,9 @@ static void pap_status_queue_pop(void) {
     g_pap->session.pending_status_count--;
 }
 
-// Formats a status or reply string with CRLF terminator for PAP reads.
-static int pap_format_status_line(const char *text, char *out, size_t out_len) {
+// Copies a status or reply string into `out` with the CRLF a PAP read's
+// text ends in; returns the bytes to send (0 for an empty string).
+static int pap_append_crlf(const char *text, char *out, size_t out_len) {
     if (!out || out_len == 0)
         return 0;
     if (!text || !*text) {
@@ -784,7 +811,7 @@ static bool pap_try_deliver_pending_reply(void) {
     if (!credit)
         return false;
     char line[PRINTER_STATUS_MAX + 3];
-    int len = pap_format_status_line(g_pap->session.pending_reply, line, sizeof(line));
+    int len = pap_append_crlf(g_pap->session.pending_reply, line, sizeof(line));
     LOG(2, "PAP -> Mac StatusData conn=%u bytes=%d source=postscript-reply", (unsigned)credit->atp.user[0], len);
     pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], (len > 0) ? (const uint8_t *)line : NULL,
                            len, false);
@@ -805,7 +832,7 @@ static void pap_status_queue_drain(const char *text, bool eof_on_last) {
     LOG(4, "pap: draining %u status credits (eof_on_last=%d) text='%s'", (unsigned)queued, eof_on_last ? 1 : 0,
         text ? text : "<empty>");
     char line[PRINTER_STATUS_MAX + 3];
-    int len = pap_format_status_line(text, line, sizeof(line));
+    int len = pap_append_crlf(text, line, sizeof(line));
     while (true) {
         pap_status_credit_t *credit = pap_status_queue_head();
         if (!credit)
@@ -833,6 +860,9 @@ static void pap_issue_close_conn(uint8_t conn_id, const atalk_socket_addr_t *add
     if (!addr || addr->socket == 0 || conn_id == 0)
         return;
     uint8_t user[4] = {conn_id, PAP_FUNC_CLOSE, 0, 0};
+    // Exactly-once, as every PAP request but Tickle is: the workstation's
+    // PAP keeps the CloseConnReply for a retransmission, which an ALO
+    // request would make it act on twice.  The release hint is SendData's.
     atp_request_params_t params = {.dest = *addr,
                                    .src_socket = ATALK_HOST_PAP_SOCKET,
                                    .bitmap = 0x01,
@@ -899,6 +929,10 @@ static void pap_log_session_state(const char *tag) {
 
 // Sends a CloseConn request to the remote workstation to mirror LaserWriter behavior.
 // Returns a readable label for a PAP function code or NULL when unknown.
+// The spec's names (Inside AppleTalk, PAP).  SendData runs both ways: the
+// printer sends it to read the job, and the workstation sends it to read
+// the printer's output (query answers, the job's status text); the trace
+// used to call the second "StatusRead", a name the spec does not have.
 static const char *pap_func_name(uint8_t func) {
     switch (func) {
     case PAP_FUNC_OPEN:
@@ -908,15 +942,15 @@ static const char *pap_func_name(uint8_t func) {
     case PAP_FUNC_CLOSE:
         return "CloseConn";
     case PAP_FUNC_SENDDATA:
-        return "StatusRead";
+        return "SendData";
     case PAP_FUNC_TICKLE:
         return "Tickle";
     case PAP_FUNC_OPEN_REPLY:
-        return "OpenReply";
+        return "OpenConnReply";
     case PAP_FUNC_CLOSE_REPLY:
-        return "CloseReply";
+        return "CloseConnReply";
     case PAP_FUNC_STATUS:
-        return "StatusReply";
+        return "Status";
     case PAP_FUNC_DATA:
         return "Data";
     default:
@@ -1029,8 +1063,8 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
     LOG(5, "pap: fragment seq=%u len=%d dup=%d eom=%d sts=%d bitmapRemaining=0x%02X", (unsigned)fragment->seq,
         fragment->data_len, fragment->duplicate ? 1 : 0, fragment->eom ? 1 : 0, fragment->sts ? 1 : 0,
         (unsigned)fragment->bitmap_remaining);
-    if (fragment->data && fragment->data_len > 0) {
-        // Show first 32 bytes of fragment content at level 10
+    if (fragment->data && fragment->data_len > 0 && log_would_log(_log_get_local_category(), 10)) {
+        // Show first 32 bytes of fragment content at level 10 (built only then)
         char preview[100];
         int plen = fragment->data_len > 32 ? 32 : fragment->data_len;
         int ppos = 0;
@@ -1167,28 +1201,44 @@ static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_r
     }
 }
 
-// Handles incoming PAP OpenConn requests.
+// Handles incoming PAP OpenConn requests.  The OpenConnReply's result is
+// zero or PrinterBusy ($FFFF) -- the spec has no other refusal -- and the
+// workstation answers busy by retrying, without end.  So busy is said only
+// when the printer is: a disabled printer stays silent, as one switched off
+// would (it is not advertised either), and a malformed request is dropped;
+// either way the workstation's open times out with an error instead of
+// waiting forever on a printer that will never take the job.
 static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
+    if (!ddp || !atp)
+        return;
     uint8_t conn_id = atp->user[0];
     uint16_t result = PAP_RESULT_OK;
     bool accepted = false;
 
     if (!g_printer->enabled) {
-        result = PAP_RESULT_BUSY;
-    } else if (g_pap->session.active) {
+        LOG(2, "pap: OpenConn conn=%u while disabled: no answer", (unsigned)conn_id);
+        return;
+    }
+    if (atp->data_len < 4) {
+        LOG(1, "pap: OpenConn conn=%u with %d bytes of data (4 expected): dropped", (unsigned)conn_id, atp->data_len);
+        return;
+    }
+    if (g_pap->session.active) {
         result = PAP_RESULT_BUSY;
     } else if (laserwriter_job_active()) {
         // The previous job still finishes after its close: the printer is busy
         LOG(2, "pap: OpenConn conn=%u while the last job finishes: busy", (unsigned)conn_id);
-        result = PAP_RESULT_BUSY;
-    } else if (!atp || atp->data_len < 4) {
         result = PAP_RESULT_BUSY;
     } else {
         pap_session_reset();
         g_pap->session.active = true;
         g_pap->session.conn_id = conn_id;
         g_pap->session.client_socket = atp->data[0];
-        g_pap->session.client_flow_quantum = atp->data[1] ? atp->data[1] : PAP_MAX_FLOW_QUANTUM;
+        // The workstation's flow quantum: 1..8 by spec (one ATP response is
+        // at most eight packets); 0 or more is taken as the maximum.
+        uint8_t quantum = atp->data[1];
+        g_pap->session.client_flow_quantum =
+            (quantum == 0 || quantum > PAP_MAX_FLOW_QUANTUM) ? PAP_MAX_FLOW_QUANTUM : quantum;
         g_pap->session.server_flow_quantum = PAP_MAX_FLOW_QUANTUM;
         g_pap->session.client_addr.net = ddp->src_net;
         g_pap->session.client_addr.node = ddp->llap.src;
@@ -1276,8 +1326,11 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
 
     if (same_conn) {
         if (!pap_status_queue_enqueue(ddp, atp)) {
-            LOG(1, "pap: status credit overflow conn=%u seq=%u", (unsigned)conn_id, (unsigned)seq);
-            pap_send_data_response(ddp, atp, conn_id, NULL, 0, false);
+            // More reads outstanding than a flow quantum allows.  It is left
+            // unanswered: the workstation's ATP retransmits it, by when a
+            // credit may have drained.  An empty non-EOF reply made it ask
+            // again at once, and hit the same overflow, without end.
+            LOG(1, "pap: status credit overflow conn=%u seq=%u: left for its retry", (unsigned)conn_id, (unsigned)seq);
         } else {
             LOG(3, "pap: queued SendData credit conn=%u seq=%u depth=%u", (unsigned)conn_id, (unsigned)seq,
                 (unsigned)g_pap->session.pending_status_count);
@@ -1292,6 +1345,9 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     }
 
     // When no session/completion is associated with this conn, immediately signal EOF with an empty reply.
+    // A read mid-job carries the session's connection id and never lands
+    // here; this one's connection is gone, and EOF ends its read rather than
+    // leaving the workstation to retry it forever.
     if (!completion_match) {
         LOG(3, "pap: answering stale SendData conn=%u with empty EOF", (unsigned)conn_id);
         pap_send_data_response(ddp, atp, conn_id, NULL, 0, true);
@@ -1301,7 +1357,7 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     if (completion_match) {
         if (!g_pap->completion.payload_sent) {
             char line[PRINTER_STATUS_MAX + 3];
-            int len = pap_format_status_line(g_pap->completion.text, line, sizeof(line));
+            int len = pap_append_crlf(g_pap->completion.text, line, sizeof(line));
             LOG(2, "PAP -> Mac StatusData conn=%u bytes=%d source=completion", (unsigned)conn_id, len);
             pap_send_data_response(ddp, atp, conn_id, (len > 0) ? (const uint8_t *)line : NULL, len, true);
             g_pap->completion.payload_sent = true;
@@ -1657,8 +1713,7 @@ void atalk_printer_plug(pap_link_t *link) {
 #if GS_PLATEN
         pap_platen_new_printer();
 #endif
-        if (g_printer->enabled)
-            pap_printer_set_status_idle();
+        pap_printer_set_status_resting();
     }
     g_pap = &g_no_link;
 }
@@ -1668,8 +1723,7 @@ void atalk_printer_link_down(void) {
         return;
     pap_session_reset();
     memset(&g_pap->completion, 0, sizeof(g_pap->completion));
-    if (g_printer->enabled)
-        pap_printer_set_status_idle();
+    pap_printer_set_status_resting();
 }
 
 // Enables (or renames) the emulated LaserWriter and registers its NBP entry.
@@ -1710,7 +1764,7 @@ int atalk_printer_disable(void) {
     pap_platen_forget_detached(); // a job finishing after its close goes too
 #endif
     pap_session_abort("printer disabled");
-    pap_printer_set_status_idle();
+    pap_printer_set_status_offline();
     LOG(1, "atalk: printer disabled");
     return 0;
 }
@@ -1809,7 +1863,7 @@ int atalk_printer_restart(char *err, size_t err_len) {
     if (g_pap->session.active)
         pap_session_abort("the printer was restarted");
     pap_platen_new_printer();
-    pap_printer_set_status_idle();
+    pap_printer_set_status_resting();
     LOG(2, "pap: printer restarted");
     return 0;
 #else

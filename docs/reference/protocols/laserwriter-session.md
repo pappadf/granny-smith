@@ -6,7 +6,7 @@ Classic Macintosh systems running the LaserWriter driver follow a repeatable seq
 
 1. **NBP lookups.** The workstation issues Name Binding Protocol lookups for type `LaserWriter` in the chosen AppleTalk zone until it finds the desired printer.
 2. **PAP OpenConn.** Once selected, the driver opens a Printer Access Protocol connection. The OpenConn payload specifies the client socket, desired flow quantum (usually 8), and optional status socket/interval. The printer replies with a status string such as `status: print spooler processing job` and both sides record the negotiated flow control parameters.
-3. **Initial SendData credit.** Immediately after OpenReply, the driver sends a PAP `StatusRead` (function code `SendData`) to provide the printer with a credit to deliver status text or PostScript query responses. Credits continue to be granted this way throughout the session.
+3. **Initial SendData credit.** Immediately after OpenReply, the driver sends a PAP `SendData` to provide the printer with a credit to deliver status text or PostScript query responses. Credits continue to be granted this way throughout the session.
 4. **Keepalives.** PAP tickles and explicit `SendStatus` calls are used to confirm the printer is alive and to fetch the current status text while no job data is pending.
 
 ## 2. PatchPrep Capability Query
@@ -58,7 +58,7 @@ systemdict/filenameforall known{(fonts/*){(.)search {pop pop pop}{dup length 6 s
 %%?EndFontListQuery: *
 ```
 
-The script prints each resident font name followed by a newline, then emits `*` to mark the end of the list. The driver continuously issues PAP `StatusRead` requests so the printer can deliver these strings over the status channel. A conventional LaserWriter reports the standard 13 built-in fonts (Courier, Helvetica, Times families, and Symbol) before the terminating asterisk.
+The script prints each resident font name followed by a newline, then emits `*` to mark the end of the list. The driver continuously issues PAP `SendData` requests so the printer can deliver these strings over the status channel. A conventional LaserWriter reports the standard 13 built-in fonts (Courier, Helvetica, Times families, and Symbol) before the terminating asterisk.
 
 ## 4. Document Transmission
 
@@ -66,12 +66,12 @@ With the environment prepared, the driver streams the actual PostScript job:
 
 1. **SendData requests.** The printer alternates between issuing PAP SendData transactions (requests for more PostScript) and waiting for responses. Each response corresponds to a segment of the document.
 2. **Placeholder EOFs.** While the driver is waiting to start the real job it may send `%%EOF` placeholders on the status channel; printers typically ignore a small number of these until true job data arrives.
-3. **Status updates.** Throughout the job the driver polls for status text (`StatusRead`) and may show progress messages to the user.
+3. **Status updates.** Throughout the job the driver polls for status text (`SendData`) and may show progress messages to the user.
 4. **Completion.** When the final `%%EOF` for the document arrives, the printer closes the job, returns `status: idle` on the next credit, and the driver either issues CloseConn or keeps the PAP session alive for the next print request.
 
 ## Summary of Expected Printer Behavior
 
-* **Status strings** should follow the PAP format (`status: …`) and be ready any time the driver issues a `StatusRead`.
+* **Status strings** should follow the PAP format (`status: …`) and be ready any time the driver issues a `SendData`.
 * **PatchPrep handshake** always precedes the first real page. Answer the initial query (`0` or `1`) and, if an upload follows, report completion with `1` before accepting subsequent queries.
 * **Font list reply** is newline-delimited, terminated by `*`, and delivered via the status channel using the credits supplied by the workstation.
 * **Flow control** relies entirely on the PAP SendData bitmap/credit scheme; the printer must not send unsolicited data.
