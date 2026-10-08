@@ -29,7 +29,7 @@ struct object;
 void root_install(struct config *cfg);
 
 // Attach just the `emu` class onto object_root(). Called early from
-// shell_init() so the top-level methods resolve before any machine is
+// core_init() so the top-level methods resolve before any machine is
 // created. Safe to call multiple times.
 void root_install_class(void);
 

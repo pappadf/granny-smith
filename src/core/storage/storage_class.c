@@ -193,7 +193,7 @@ static bool destination_attached(const char *dst) {
 }
 
 static int work_cp(io_leaf_t *j) {
-    return shell_cp(j->a, j->b, j->flag, j->err, sizeof j->err);
+    return shell_cp_to_host(j->a, j->b, j->flag, j->err, sizeof j->err);
 }
 
 static value_t answer_import(io_leaf_t *j) {
@@ -465,7 +465,7 @@ static DEF_METHOD(files_method_mv) {
     if (rename(src, dst) == 0)
         return val_bool(true);
     char err[256] = {0};
-    if (shell_cp(src, dst, true, err, sizeof(err)) < 0)
+    if (shell_cp_to_host(src, dst, true, err, sizeof(err)) < 0)
         return val_err("files.mv: %s", err[0] ? err : "move failed");
     // The copy succeeded; if the source can't be fully removed the operation
     // is a copy, not a move — report that instead of pretending success.
@@ -560,10 +560,18 @@ static DEF_METHOD(files_method_partmap) {
         return val_err("files.partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
     }
     gs_outf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
-    gs_outf("  #  Name                             Type                        Start        Size  FS\n");
+    // The index column is as wide as the largest index (at least 2), so a
+    // map with 100+ entries keeps its columns.
+    int iw = 2;
+    for (uint32_t i = 0; i < table->n_partitions; i++) {
+        int w = snprintf(NULL, 0, "%u", (unsigned)table->partitions[i].index);
+        if (w > iw)
+            iw = w;
+    }
+    gs_outf("  %-*s Name                             Type                        Start        Size  FS\n", iw, "#");
     for (uint32_t i = 0; i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
-        gs_outf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
+        gs_outf("  %-*u %-32s %-24s %10llu  %10llu  %s\n", iw, (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
                 p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
                 (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
     }
@@ -590,19 +598,24 @@ static DEF_METHOD(files_method_probe) {
     gs_source_t *isrc = image_source(img);
     bool iso = iso_probe_source(isrc, 0, size);
     gs_source_release(isrc);
-    bool hfs = false;
-    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
-        hfs = (block[0] == 0x42 && block[1] == 0x44);
+    // The volume header at 1024: 'BD' is HFS, 'H+' HFS Plus and 'HX' HFSX.
+    const char *hfs = NULL;
+    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0) {
+        if (block[0] == 'B' && block[1] == 'D')
+            hfs = "HFS";
+        else if (block[0] == 'H' && (block[1] == '+' || block[1] == 'X'))
+            hfs = "HFS+";
+    }
     if (apm && iso)
         gs_outf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
     else if (apm)
         gs_outf("format: APM (%zu bytes)\n", size);
     else if (hfs && iso)
-        gs_outf("format: HFS + ISO 9660 hybrid (bare, %zu bytes)\n", size);
+        gs_outf("format: %s + ISO 9660 hybrid (bare, %zu bytes)\n", hfs, size);
     else if (iso)
         gs_outf("format: ISO 9660 (%zu bytes)\n", size);
     else if (hfs)
-        gs_outf("format: HFS (bare, %zu bytes)\n", size);
+        gs_outf("format: %s (bare, %zu bytes)\n", hfs, size);
     else
         gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
     // What the format registry peeled to reach the disk, and what it finds

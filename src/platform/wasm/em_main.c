@@ -42,6 +42,7 @@
 #include "appletalk.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
+#include "core_init.h"
 #include "cpu.h"
 #include "host_keys.h"
 #include "keyboard.h"
@@ -317,7 +318,7 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // THREADING MODEL — read this before changing anything in this section.
 //
 // We build with -sPROXY_TO_PTHREAD, which spawns a worker pthread and runs
-// `main()` (and therefore `shell_init()`, `system_create()`,
+// `main()` (and therefore `core_init()`, `system_create()`,
 // `emscripten_set_main_loop(em_main_tick, ...)`) on that worker. The worker
 // owns every piece of emulator state: scheduler, machine, devices, RAM,
 // OPFS file handles. The JS main thread keeps its own Module instance for
@@ -359,7 +360,7 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // (shared memory grows in place, em_audio.c).  It is laid out by a
 // constructor, before main() and before the page can see it, so the MAGIC
 // and VERSION words are valid from the first read.  READY stays 0 until
-// main() has run shell_init/setup_init.
+// main() has run core_init/setup_init.
 static gs_mailbox_t g_mailbox;
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
@@ -1030,12 +1031,12 @@ int main(void) {
     // the pacing is scheduler.mode, both over the bridge like everything
     // else.  (--model and --speed used to be parsed here; nothing passed
     // them, and ?speed= documented as reaching --speed never did.)
-    shell_init();
+    core_init();
     setup_init();
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
     // Route every log_emit onto the event ring so the new-UI Logs
-    // view gets a structured stream parallel to stdout. shell_init has
+    // view gets a structured stream parallel to stdout. core_init has
     // already called log_init; setting the sink here also forwards any
     // categories registered later (setup_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);

@@ -46,7 +46,7 @@ void meta_node_release(struct object *inspected);
 void object_compute_path(struct object *obj, char *buf, size_t buf_size);
 
 // Provider for `meta.complete(line, cursor)`. The shell module
-// registers this at init time with a wrapper around shell_tab_complete.
+// registers this at init time with a wrapper around shell_complete.
 // When no provider is registered (e.g. unit tests that don't link the
 // shell), the method returns an empty list.
 typedef value_t (*meta_complete_fn)(const char *line, int cursor);

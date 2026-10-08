@@ -9,6 +9,7 @@
 #include "api.h"
 #include "appletalk.h"
 #include "checkpoint_machine.h"
+#include "core_init.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
@@ -1651,8 +1652,8 @@ int main(int argc, char *argv[]) {
         printf("\n");
     }
 
-    // Initialize shell and emulator
-    shell_init();
+    // Initialize the process core (shell, object root, singletons)
+    core_init();
 
     // The mailbox this process is a client of, and the job thread that runs
     // its scripts (falls back to inline scripts if the thread cannot start).
@@ -1664,7 +1665,7 @@ int main(int argc, char *argv[]) {
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 
-    // Apply --var definitions (after shell_init which calls shell_var_init)
+    // Apply --var definitions (after core_init, whose shell_init calls shell_var_init)
     for (int i = 0; i < var_count; i++) {
         // Split NAME=VALUE at first '='
         char buf[256];

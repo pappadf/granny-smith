@@ -22,7 +22,9 @@
 #include <stddef.h>
 
 // Initialize the store (creates the global + top-level scopes and the
-// default TMP_DIR binding).
+// default TMP_DIR binding: $TMPDIR when the host sets it, else /tmp --
+// absolute, so it names the same place whatever the working directory;
+// on WASM, /tmp is the in-memory scratch directory em_main creates).
 void shell_var_init(void);
 
 // `$name` lookup: walk scopes top-down, then the alias table (aliases
@@ -66,7 +68,11 @@ void shell_binding_remove_top(const char *name);
 int shell_var_set(const char *name, const char *value);
 const char *shell_var_get(const char *name);
 
-// Walk every scope binding, innermost scope first. Used by `shell.vars`.
+// Walk every scope binding, innermost scope first and, within a scope, in
+// the order the bindings were created.  Used by `shell.vars`.  `fn` returns
+// false to stop the walk.  The walk holds the table lock, so `fn` must not
+// create, change or remove bindings (or call any other shell_binding_* /
+// shell_var_* entry): it only reads what it is handed.
 typedef bool (*shell_var_iter_fn)(const char *name, const value_t *v, void *ud);
 void shell_var_each(shell_var_iter_fn fn, void *ud);
 

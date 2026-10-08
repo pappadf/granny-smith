@@ -174,6 +174,9 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         if (mode_is_json(mode))
             vbuf_appendf(out, "%" PRId64, v->i);
         else if (v->flags & VAL_HEX)
+            // Hex display is the 64-bit two's-complement bit pattern, by
+            // design: -1 shows as 0xffffffffffffffff, the way a register
+            // view reads it, never as -0x1.
             vbuf_appendf(out, "0x%" PRIx64, (uint64_t)v->i);
         else
             vbuf_appendf(out, "%" PRId64, v->i);

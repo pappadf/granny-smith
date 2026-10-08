@@ -9,9 +9,9 @@
 // methods (`shell.run`, `shell.complete`, `shell.expand`, …).
 //
 // The Shell class is a thin wrapper. Its method bodies forward to the
-// existing shell internals (the static `dispatch_command` in shell.c
-// reached via shell_internal.h, `shell_complete`, `shell_var_expand`,
-// the alias-table API). No business logic moves here.
+// existing shell internals (the script interpreter, `shell_complete`,
+// the expression interpolator, the alias-table API). No business logic
+// moves here.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -30,7 +30,9 @@
 #include "event/gs_event.h"
 #include "job/job.h"
 
-#include "shell_internal.h"
+#include "commands.h"
+#include "root.h"
+#include "shell_funcs.h"
 #include "shell_var.h"
 #include "system.h"
 #include "value.h"
@@ -120,16 +122,18 @@ static DEF_METHOD(shell_method_run) {
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
 
-    char err[128] = {0};
-    bool ok = shell_internal_dispatch_command(line, err, sizeof(err));
+    // REPL semantics: the interpreter prints results and errors.  This
+    // node is attached by core_init after shell_init has run, so the
+    // interpreter is always ready by the time it can be called.
+    int rc = script_run_line(line);
     free(line);
 
-    // The dispatcher already printed any error to stderr; on failure
+    // The interpreter already printed any error to stderr; on failure
     // return a V_ERROR carrying a brief reason so JS callers can branch
     // on success without parsing the streamed text. On success return
     // the new prompt text.
-    if (!ok)
-        return val_err("%s", err[0] ? err : "command failed");
+    if (rc != 0)
+        return val_err("command failed");
 
     char prompt[256];
     shell_build_prompt(prompt, sizeof(prompt));
@@ -137,11 +141,11 @@ static DEF_METHOD(shell_method_run) {
 }
 
 // `shell.complete(line, cursor)` — line-level tab completion. Returns
-// {candidates: V_LIST<V_STRING>, span: {start, end}} where span is the
-// half-open range of line text each candidate replaces (object-path
+// {candidates: V_LIST<V_STRING>, span: {start, end}, truncated} where span
+// is the half-open range of line text each candidate replaces (object-path
 // candidates cover the whole word; filesystem candidates only the
-// basename).  With detail, candidates are {text, kind, doc} and the map
-// adds `context` and `truncated`. The `meta.complete` method on the synthetic Meta overlay
+// basename) and truncated says candidates were dropped.  With detail,
+// candidates are {text, kind, doc} and the map adds `context`. The `meta.complete` method on the synthetic Meta overlay
 // delegates here through the provider hook in shell.c and keeps the
 // bare-list shape.
 static DEF_METHOD(shell_method_complete) {
@@ -160,8 +164,10 @@ static DEF_METHOD(shell_method_complete) {
     value_t *items = NULL;
     if (comp.count > 0) {
         items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
-        if (!items)
+        if (!items) {
+            completion_free(&comp);
             return val_err("shell.complete: out of memory");
+        }
         for (int i = 0; i < comp.count; i++) {
             const char *text = comp.items[i] ? comp.items[i] : "";
             if (!detail) {
@@ -191,9 +197,12 @@ static DEF_METHOD(shell_method_complete) {
                     comp.has_context && comp.ctx_arg_index >= 0 ? val_int(comp.ctx_arg_index) : val_none());
         val_map_put(ctx, "arg_name", comp.ctx_arg_name ? val_str(comp.ctx_arg_name) : val_none());
         val_map_put(b, "context", val_map_finish(ctx));
-        // Whether candidates were dropped (the item table or the pool filled).
-        val_map_put(b, "truncated", val_bool(comp.truncated));
     }
+    // Whether candidates were dropped (the item table or the pool filled),
+    // in both shapes, so a caller can say "more..." instead of implying
+    // the list is complete.
+    val_map_put(b, "truncated", val_bool(comp.truncated));
+    completion_free(&comp); // every string above was copied by val_str
     return val_map_finish(b);
 }
 
@@ -237,6 +246,12 @@ static DEF_METHOD(shell_method_eval) {
 // running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
 // route through `gs_eval` like every other interaction.
+//
+// Scope: what it stops is the scheduler and script loops (the caller's
+// job and modes when a client asks).  A single long-running native method
+// that neither runs the scheduler nor polls for cancellation (a large
+// files.cp, say) is not interrupted; it finishes, and the interrupt takes
+// effect at the next check.
 static DEF_METHOD(shell_method_interrupt) {
     // "Cancel my job, or stop my mode": the client being served owns what
     // it interrupts and nothing else.  Outside a request (client 0: the
@@ -414,7 +429,7 @@ static const member_t shell_members[] = {
      .method = {.args = shell_eval_args, .nargs = 1, .result = V_NONE, .fn = shell_method_eval}},
     {.kind = M_METHOD,
      .name = "interrupt",
-     .doc = "Stop the running scheduler (Ctrl-C path)",
+     .doc = "Stop the running scheduler and cancel the caller's running script (Ctrl-C path)",
      .method = {.ui_flags = MM_HIDDEN, .args = NULL, .nargs = 0, .result = V_NONE, .fn = shell_method_interrupt}},
     // `shell.alias` and `shell.command` are attached at runtime by
     // root_install (root.c); the resolver finds them through
@@ -427,3 +442,15 @@ const class_desc_t shell_class = {
     .n_members = sizeof(shell_members) / sizeof(shell_members[0]),
     .doc = "The shell: bindings, functions, aliases and scripts",
 };
+
+extern const class_desc_t shell_alias_class; // src/core/object/alias.c
+
+void shell_class_register(struct config *cfg) {
+    struct object *shell_obj = root_attach_stub(NULL, object_new(&shell_class, cfg, "shell"));
+    if (!shell_obj)
+        return;
+    object_set_order(shell_obj, 60);
+    shell_funcs_install(shell_obj); // `shell.functions` container
+    root_attach_stub(shell_obj, object_new(&shell_alias_class, cfg, "alias"));
+    root_attach_stub(shell_obj, object_new(&shell_command_class, cfg, "command"));
+}

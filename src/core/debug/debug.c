@@ -3987,7 +3987,7 @@ static const class_desc_t screen_class = {
 //
 // `screen` is a stateless facade — checksum/save read the framebuffer
 // from whatever machine is currently booted. Register once at
-// shell_init.
+// core_init.
 
 static struct object *s_screen_object = NULL;
 
