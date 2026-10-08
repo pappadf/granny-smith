@@ -381,6 +381,29 @@ TEST(test_vbl_ack_dance) {
     ASSERT_EQ_INT((int)slot_read(R_VBLINT), 0);
 }
 
+// 7. The video-in overlay composite reads the graphics plane with the
+//    guest's RowWords stride; one the 2 MB VRAM cannot back for every row
+//    (255 * 32 bytes x 480 rows ~ 3.9 MB) must draw a black underlay, not
+//    read past the store.
+TEST(test_overlay_stride_bounded) {
+    slot_write(R_ENABLE, 1); // unblank
+    civic_write_reg(R_ROWWORDS, 8, 255);
+    civic_write_reg(R_BASEADDR, 9, 0);
+    uint8_t *vram = av_civic_vram(s_st.civic);
+    memset(vram, 0xFF, 4); // a white first pixel: visible only if the plane is read
+    seb_write(SEB_PCBR, 0x95); // video-in enable + overlay, 32 bpp graphics
+    s_frame_cb(s_frame_src, 0); // composes the overlay frame
+    display_t *d = av_civic_display(s_st.civic);
+    ASSERT_TRUE(d->height > 0);
+    ASSERT_EQ_INT(0, d->bits[1] | d->bits[2] | d->bits[3]); // whole underlay refused
+    const uint8_t *last = d->bits + (size_t)(d->height - 1) * d->stride;
+    ASSERT_EQ_INT(0, last[1] | last[2] | last[3]);
+
+    memset(vram, 0, 4); // restore
+    seb_write(SEB_PCBR, 0x13);
+    civic_write_reg(R_ROWWORDS, 8, 32);
+}
+
 int main(void) {
     s_cfg.machine_context = &s_st;
     // civic.c only drives the slot-interrupt line when a PSC exists; the
@@ -397,6 +420,7 @@ int main(void) {
     RUN(test_sebastian_clut);
     RUN(test_vbl_ack_dance);
     RUN(test_stride_follows_rowwords);
+    RUN(test_overlay_stride_bounded);
 
     fprintf(stderr, "civic: all tests passed\n");
     return 0;
