@@ -814,6 +814,26 @@ TEST(enumerate_hides_sidecars_and_the_control_directory) {
     fixture_down();
 }
 
+// Host dotfiles are not listed, but they are not server state either: the
+// folder holding one is not empty, and deleting it is refused.
+TEST(enumerate_hides_host_dotfiles_without_deleting_them) {
+    fixture_up("enumdot");
+    write_file("Doc", "data");
+    write_file(".DS_Store", "x");
+    uint32_t dir_id = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Folder", &dir_id));
+    write_file("Folder/.git", "x");
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 100, 4096, &actual));
+    ASSERT_EQ_INT(2, (int)actual); // Doc and Folder
+    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder");
+    ASSERT_EQ_INT((int)ERR_DIR_NOT_EMPTY, (int)call(OP_DELETE));
+    char kept[512];
+    host_path("Folder/.git", kept, sizeof(kept));
+    ASSERT_EQ_INT(0, access(kept, F_OK));
+    fixture_down();
+}
+
 TEST(enumerate_rejects_an_empty_bitmap) {
     fixture_up("enumbm");
     write_file("Doc", "x");
@@ -1507,6 +1527,15 @@ TEST(set_fork_parms_truncates_and_flush_persists) {
     put16(0x0001);
     put32(0);
     ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_SET_FORK_PARMS));
+    // So is the other fork's length bit: a data fork's length is bit 9 only
+    req_reset();
+    put8(0);
+    put16(ref);
+    put16(0x0400); // resource fork length
+    put32(0);
+    ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_SET_FORK_PARMS));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(4, (int)st.st_size); // untouched
     close_fork(ref);
     fixture_down();
 }
@@ -3906,6 +3935,7 @@ int main(void) {
     RUN(enumerate_lists_every_entry_of_a_large_directory);
     RUN(enumerate_pages_are_served_from_a_snapshot);
     RUN(enumerate_hides_sidecars_and_the_control_directory);
+    RUN(enumerate_hides_host_dotfiles_without_deleting_them);
     RUN(enumerate_rejects_an_empty_bitmap);
 
     RUN(file_id_lifecycle);
