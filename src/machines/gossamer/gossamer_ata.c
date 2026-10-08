@@ -255,7 +255,7 @@ void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value) {
 
 void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
-    st->atapi = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "atapi");
+    st->atapi = scsi_init_named(cfg->scheduler, cp, config_images(cfg), "atapi");
     for (int c = 0; c < 2; c++) {
         ata_channel_t *ch = &st->ata[c];
         ata_channel_init(ch, c);
@@ -266,7 +266,7 @@ void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
         scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", ctx, "dma_pump", ata_pump_fn[c]);
         ata_set_atapi_bus(ch, st->atapi);
         if (cp)
-            ata_checkpoint_restore(ch, cp, CONFIG_IMAGES(cfg));
+            ata_checkpoint_restore(ch, cp, config_images(cfg));
         dbdma_port_t port = {.out = ata_dma_out, .in = ata_dma_in, .s_bits = NULL, .ctx = ch, .burst = ATA_DMA_BURST};
         dbdma_set_port(st->dbdma, ata_dma_chan[c], &port);
     }

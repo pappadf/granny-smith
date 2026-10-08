@@ -51,17 +51,13 @@
 // === Object-model class descriptors =========================================
 //
 // `files.images`
-// enumerates the cfg->images[] entries. Slot index in the collection
-// matches the slot in cfg->images[]; n_images is dense from
-// 0..n_images-1, so the collection's count() returns cfg->n_images.
-// Each entry's data is the cfg; its index is its slot.
+// enumerates the machine's tracked images (config_get_image). Slot index in
+// the collection matches the image's slot; the slots are dense from 0 to
+// config_get_n_images() - 1.  Each entry's data is the cfg; its index is its
+// slot.
 
 static image_t *files_image_at(struct object *self) {
-    config_t *cfg = (config_t *)object_data(self);
-    int slot = object_entry_index(self);
-    if (!cfg || slot < 0 || slot >= cfg->n_images)
-        return NULL;
-    return cfg->images[slot];
+    return config_get_image((config_t *)object_data(self), object_entry_index(self));
 }
 
 static DEF_GETTER(files_image_attr_index) {
@@ -168,11 +164,18 @@ static object_cache_t g_images = OBJECT_CACHE(&files_image_class, NULL);
 
 static struct object *files_images_get(struct object *self, int index) {
     config_t *cfg = (config_t *)object_data(self);
-    if (!cfg || index < 0 || index >= MAX_IMAGES)
-        return NULL;
-    if (index >= cfg->n_images || !cfg->images[index])
+    if (!config_get_image(cfg, index))
         return NULL;
     return object_cache_at(&g_images, index, cfg);
+}
+
+// The next tracked image's slot after `prev` (-1 to start), or -1 at the end.
+static int files_images_next(struct object *self, int prev) {
+    config_t *cfg = (config_t *)object_data(self);
+    for (int i = prev < 0 ? 0 : prev + 1; i < config_get_n_images(cfg); i++)
+        if (config_get_image(cfg, i))
+            return i;
+    return -1;
 }
 
 // `files.import(host_path, dst_path)` — copy `host_path` to `dst_path`
@@ -256,7 +259,7 @@ static const arg_decl_t files_import_args[] = {
 
 static const collection_desc_t files_images = {
     .entry = &files_image_class,
-    .by_index = {.get = files_images_get, .slots = MAX_IMAGES},
+    .by_index = {.get = files_images_get, .next = files_images_next},
     .name = "files_images",
     .doc = "The machine's configured disk images",
 };
@@ -304,7 +307,7 @@ static const arg_decl_t files_list_dir_args[] = {
 
 // === Disk-image probe / mount surface =======================================
 //
-// The methods below read or mutate `cfg->images[]` and the cached
+// The methods below read or mutate the machine's tracked images and the cached
 // image-VFS mount table.
 
 // `files.cp(src, dst, [recursive])` — copy host/VFS file to a VFS path.
@@ -1928,7 +1931,7 @@ static void files_images_teardown(void) {
     object_cache_clear(&g_images);
 }
 
-// files.images: the storage view of cfg->images, under the process singleton
+// files.images: the storage view of the machine's tracked images, under the process singleton
 // `files`, installed with every machine.
 static void files_images_install(struct config *cfg) {
     struct object *images = root_attach_stub(g_files_object, object_collection_new(&files_images, cfg, "images"));

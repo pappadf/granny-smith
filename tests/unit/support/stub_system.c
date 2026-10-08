@@ -205,18 +205,19 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, struct rom
 }
 
 // Image-tracking stubs: tests that link image.c (but not system.c) need these
-// to resolve config_add_image()/image_tick_all().  No real image list in the harness.
+// to resolve config_add_image()/image_tick_all().  No real image list in the
+// harness; the getters are weak so a suite can supply a list of its own.
 struct config;
 struct image;
 void config_add_image(struct config *cfg, struct image *image) {
     (void)cfg;
     (void)image;
 }
-int config_get_n_images(struct config *cfg) {
+__attribute__((weak)) int config_get_n_images(const struct config *cfg) {
     (void)cfg;
     return 0;
 }
-struct image *config_get_image(struct config *cfg, int index) {
+__attribute__((weak)) struct image *config_get_image(const struct config *cfg, int index) {
     (void)cfg;
     (void)index;
     return NULL;

@@ -830,7 +830,7 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     // Mirror the in-controller eject flow (see the IWM CA0/1/2=1 path
     // around line 240): flush modified tracks first while the image is
     // still valid, drop the cached GCR buffers, then null the slot.
-    // The image_t* itself is owned by cfg->images and freed at system
+    // The image_t* itself is owned by the machine's tracked images (system.c) and freed at system
     // teardown; calling image_close here would double-free.
     iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
     floppy_drive_drop_tracks(floppy, drive);

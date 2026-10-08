@@ -30,10 +30,6 @@ typedef struct adb adb_t;
 struct nubus_bus;
 typedef struct nubus_bus nubus_bus_t;
 
-// The most disk images one machine tracks (config_t.images); also the bound
-// a restored checkpoint's image list is checked against.
-#define MAX_IMAGES 10
-
 // The machine's mutable runtime state, kept apart from the fields that say
 // what the machine is made of: written by interrupt sources and read on
 // dispatch while the composition above it stays fixed after construction.
@@ -103,9 +99,10 @@ struct config {
 
     debug_t *debugger;
 
-    // Disk images tracked for checkpoint/restore
-    image_t *images[MAX_IMAGES];
-    int n_images;
+    // Disk images tracked for checkpoint/restore: owned by system.c, reached
+    // through config_get_image / config_get_n_images / config_images /
+    // config_add_image (system.h)
+    struct image_table *image_table;
 
     scheduler_t *scheduler;
 
@@ -121,9 +118,5 @@ struct config {
     // sibling card.h would shadow the NuBus one).
     struct pci_root *pci;
 };
-
-// The machine's image list as a construction argument (image_list_t): the
-// controllers a restore builds resolve their saved media in it.
-#define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
 
 #endif // SYSTEM_INTERNAL_H

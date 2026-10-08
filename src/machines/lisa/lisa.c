@@ -495,7 +495,7 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 
 // hw_profile_t.media_attach.  The Lisa has no cfg->floppy/cfg->scsi, so the
 // std core implementation covers nothing here: the Sony disk lives in the
-// 6504A FDC (owned by cfg->images) and the hard disk is the parallel ProFile
+// 6504A FDC (owned by the tracked images, system.c) and the hard disk is the parallel ProFile
 // (which owns its image itself, hence attach_image).
 static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     lisa_state_t *ls = lisa_state(cfg);
@@ -1009,7 +1009,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_images(cfg, checkpoint);
 
     machine_part_begin(cfg, checkpoint, "lisa_fdc");
-    ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint, CONFIG_IMAGES(cfg));
+    ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint, config_images(cfg));
     machine_part(cfg, checkpoint, "lisa_fdc", lisa_fdc_checkpoint_part, ls->fdc);
     lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
     // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives

@@ -14,8 +14,19 @@
 #include <string.h>
 #include <unistd.h>
 
-static config_t g_cfg;
+// checkpoint_machine.c reads the machine's images through system.c's
+// accessors; this suite stands in for system.c with a list of its own.
+static config_t g_cfg; // zeroed: no machine profile, so no model/RAM fields
+static image_t *g_images[8];
+static int g_n_images;
 config_t *global_emulator = NULL;
+
+image_t *config_get_image(const config_t *cfg, int index) {
+    return cfg && index >= 0 && index < g_n_images ? g_images[index] : NULL;
+}
+int config_get_n_images(const config_t *cfg) {
+    return cfg ? g_n_images : 0;
+}
 
 const char *build_id_get(void) {
     return "test-build";
@@ -46,17 +57,16 @@ TEST(test_image_list_is_well_formed) {
 
     static image_t imgs[6];
     static char names[6][300];
-    memset(&g_cfg, 0, sizeof(g_cfg));
-    g_cfg.images[0] = NULL; // an empty slot first
+    g_images[0] = NULL; // an empty slot first
     for (int i = 1; i <= 5; i++) {
         memset(names[i], 'a' + i, 280);
         names[i][0] = '/';
         names[i][280] = '\0';
         imgs[i].filename = names[i];
         imgs[i].raw_size = 512u * (unsigned)i;
-        g_cfg.images[i] = &imgs[i];
+        g_images[i] = &imgs[i];
     }
-    g_cfg.n_images = 6;
+    g_n_images = 6;
 
     ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     char path[128];
@@ -68,7 +78,7 @@ TEST(test_image_list_is_well_formed) {
     ASSERT_TRUE(strstr(text, "}\n  ]\n}\n") != NULL);
 
     // An empty list closes cleanly too.
-    g_cfg.n_images = 0;
+    g_n_images = 0;
     ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     text = read_text(path);
     ASSERT_TRUE(strstr(text, "\"images\": []\n}\n") != NULL);

@@ -757,7 +757,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // only carries the drive and its media.
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     machine_part_begin(cfg, cp, "new_age");
     st->fdc = av_new_age_init(cfg, cp);

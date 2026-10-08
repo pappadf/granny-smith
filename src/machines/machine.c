@@ -182,7 +182,7 @@ int machine_floppy_count(const struct config *cfg) {
 }
 
 struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id) {
-    scsi_t *bus = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), bus_id);
+    scsi_t *bus = scsi_init_named(cfg->scheduler, cp, config_images(cfg), bus_id);
     if (!bus || cp)
         return bus; // a restored bus brings its drives in its own block
     // Power-on: the configuration's CD-ROM drives on this bus, empty.  SCSI is

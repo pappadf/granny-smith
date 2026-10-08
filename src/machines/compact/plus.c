@@ -365,7 +365,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // the IWM drives 400K/800K GCR drives, which is what plus_floppy_slots
     // declares.
     cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->memory_map, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
-                              CONFIG_IMAGES(cfg));
+                              config_images(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // Initialise the display descriptor before anything that might call

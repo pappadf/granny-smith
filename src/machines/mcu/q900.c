@@ -230,7 +230,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 

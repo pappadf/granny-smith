@@ -73,29 +73,66 @@ static const char *pick_delta_dir(const char *path) {
     return checkpoint_machine_dir();
 }
 
-// Config field accessors for opaque handle access
-image_t *config_get_image(config_t *cfg, int index) {
-    if (!cfg || index < 0 || index >= cfg->n_images)
-        return NULL;
-    return cfg->images[index];
+// The most disk images one machine tracks; also the bound a restored
+// checkpoint's image list is checked against (config_max_images).
+#define MAX_IMAGES 10
+
+// A machine's tracked disk images (config_t.image_table): system.c owns them
+// and closes them at teardown; everyone else goes through the accessors.
+// Slots are dense from 0 to view.n - 1, a slot NULL only if cleared.
+struct image_table {
+    image_t *items[MAX_IMAGES];
+    image_list_t view; // {items, n}: the list config_images hands out
+};
+
+// A new, empty image table, or NULL when out of memory.
+static struct image_table *image_table_new(void) {
+    struct image_table *t = calloc(1, sizeof(*t));
+    if (t)
+        t->view.items = t->items;
+    return t;
 }
-int config_get_n_images(config_t *cfg) {
-    return cfg ? cfg->n_images : 0;
+
+// Close every tracked image and free the table.
+static void image_table_free(config_t *cfg) {
+    struct image_table *t = cfg->image_table;
+    if (!t)
+        return;
+    for (int i = 0; i < t->view.n; ++i)
+        if (t->items[i])
+            image_close(t->items[i]);
+    free(t);
+    cfg->image_table = NULL;
+}
+
+// Config field accessors for opaque handle access
+image_t *config_get_image(const config_t *cfg, int index) {
+    if (!cfg || !cfg->image_table || index < 0 || index >= cfg->image_table->view.n)
+        return NULL;
+    return cfg->image_table->items[index];
+}
+int config_get_n_images(const config_t *cfg) {
+    return cfg && cfg->image_table ? cfg->image_table->view.n : 0;
+}
+int config_max_images(void) {
+    return MAX_IMAGES;
+}
+const image_list_t *config_images(config_t *cfg) {
+    return cfg && cfg->image_table ? &cfg->image_table->view : NULL;
 }
 
 // Add an image to the config's tracked image list.  Runtime-checked
 // rather than asserted because asserts compile out under release builds
-// and silent overflow into the next struct field would be a memory-
-// corruption bug.
+// and silent overflow past the table would be a memory-corruption bug.
 void config_add_image(config_t *cfg, image_t *image) {
-    if (!cfg || !image)
+    if (!cfg || !cfg->image_table || !image)
         return;
-    if (cfg->n_images >= MAX_IMAGES) {
+    struct image_table *t = cfg->image_table;
+    if (t->view.n >= MAX_IMAGES) {
         LOG(1, "config_add_image: image table full (max %d), dropping image", MAX_IMAGES);
         return;
     }
-    cfg->images[cfg->n_images] = image;
-    cfg->n_images++;
+    t->items[t->view.n++] = image;
 }
 
 // Set while system_create builds a machine.  The machine under construction
@@ -352,8 +389,8 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
     for (int k = 0; k < DRIVE_KIND_COUNT; k++)
         reads[k] = writes[k] = 0;
     config_t *cfg = global_emulator;
-    for (int i = 0; cfg && i < cfg->n_images; i++) {
-        const image_t *img = cfg->images[i];
+    for (int i = 0; i < config_get_n_images(cfg); i++) {
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
         int k = image_is_floppy(img->type) ? DRIVE_KIND_FD : img->type == image_cdrom ? DRIVE_KIND_CD : DRIVE_KIND_HD;
@@ -865,8 +902,8 @@ int gs_background_checkpoint(const char *reason) {
 // open: clearing must not pull a live file from under it.
 static bool image_file_in_use(const char *path) {
     config_t *cfg = global_emulator;
-    for (int i = 0; cfg && i < cfg->n_images; i++) {
-        const image_t *img = cfg->images[i];
+    for (int i = 0; i < config_get_n_images(cfg); i++) {
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
         if ((img->delta_path && strcmp(img->delta_path, path) == 0) ||
@@ -1087,6 +1124,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
+    cfg->image_table = image_table_new();
+    if (!cfg->image_table) {
+        free(cfg);
+        return NULL;
+    }
     cfg->build_opts = *opts;
 
     // The build selects its own memory map (memory_map_init); afterwards the
@@ -1126,6 +1168,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
+        image_table_free(cfg);
         machine_parts_free(cfg);
         free(cfg);
         reselect_active_map(active_read, active_write);
@@ -1298,13 +1341,7 @@ void system_destroy(config_t *config) {
     }
 
     // Free all tracked images (managed at the system level)
-    for (int i = 0; i < config->n_images; ++i) {
-        if (config->images[i]) {
-            image_close(config->images[i]);
-            config->images[i] = NULL;
-        }
-    }
-    config->n_images = 0;
+    image_table_free(config);
 
     // The process-global pointer dies with the config it names.  This used to
     // be every caller's job: five sites remembered and one -- system_restore's

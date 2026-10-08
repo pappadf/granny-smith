@@ -68,8 +68,16 @@ struct config;
 typedef struct config config_t;
 
 // Config field accessors (opaque handle access)
-image_t *config_get_image(config_t *cfg, int index);
-int config_get_n_images(config_t *cfg);
+// The machine's tracked disk images: slot `index` (NULL when out of range),
+// how many slots are in use, and the most a machine tracks.
+image_t *config_get_image(const config_t *cfg, int index);
+int config_get_n_images(const config_t *cfg);
+int config_max_images(void);
+// The tracked images as a list (image_list_t) for a media controller's
+// construction argument -- the controllers a restore builds resolve their
+// saved media in it.  Lives as long as cfg and follows later additions;
+// NULL for a NULL cfg.
+const image_list_t *config_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
 // Standard substrate implementation of media attach (cfg->floppy +
 // cfg->scsi); Mac substrates bind it into their vtables, the Lisa provides

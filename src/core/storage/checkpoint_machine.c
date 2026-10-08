@@ -305,16 +305,16 @@ int checkpoint_machine_write_manifest(const config_t *cfg) {
         return -1;
     }
 
-    // Image list, built by appending: at most MAX_IMAGES entries, so the
+    // Image list, built by appending: at most config_max_images() entries, so the
     // copying costs nothing, and there is no capacity arithmetic to get
     // wrong -- the hand-grown buffer this replaces overran on a failed
     // realloc.  A failure writes no manifest rather than
     // a truncated one.
     char *img_buf = gs_strdup("  \"images\": [");
     bool first = true;
-    int n = cfg ? cfg->n_images : 0;
+    int n = config_get_n_images(cfg);
     for (int i = 0; i < n && img_buf; i++) {
-        const image_t *img = cfg->images[i];
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
         char *base_esc = gs_json_escape_dup(img->filename ? img->filename : "");

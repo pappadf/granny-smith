@@ -14,7 +14,7 @@
 #include "source.h"
 #include "status.h"
 #include "storage.h"
-#include "system_internal.h" // MAX_IMAGES -- the real bound on the restored list
+#include "system.h" // config_max_images -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>
@@ -36,16 +36,19 @@
 // says how many entries follow (image_checkpoint writes nothing for NULL).
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
     uint32_t count = 0;
-    for (int i = 0; i < cfg->n_images; ++i)
-        count += cfg->images[i] != NULL;
+    int n = config_get_n_images(cfg);
+    for (int i = 0; i < n; ++i)
+        count += config_get_image(cfg, i) != NULL;
     system_write_checkpoint_data(cp, &count, sizeof(count));
-    for (int i = 0; i < cfg->n_images; ++i)
-        if (cfg->images[i])
-            image_checkpoint(cfg->images[i], cp);
+    for (int i = 0; i < n; ++i) {
+        image_t *img = config_get_image(cfg, i);
+        if (img)
+            image_checkpoint(img, cp);
+    }
 }
 
 // Restore the image list from a checkpoint stream and attach each image
-// back onto cfg->images.  Mirrors save layout; fails loudly via
+// back onto the machine's tracked images.  Mirrors save layout; fails loudly via
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
@@ -148,7 +151,7 @@ void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
     // restore, calling storage_restore_from_checkpoint and logging a line --
     // an effective hang plus a log flood rather than an error.
     uint32_t count = 0;
-    if (!checkpoint_read_count(cp, &count, MAX_IMAGES, "images"))
+    if (!checkpoint_read_count(cp, &count, (uint32_t)config_max_images(), "images"))
         return;
     for (uint32_t i = 0; i < count; ++i) {
         // Stop at the first damaged entry rather than grinding through the
