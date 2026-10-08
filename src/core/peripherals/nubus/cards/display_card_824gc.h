@@ -203,6 +203,9 @@
 #define GC824_CB_HEARTBEAT 0x1C4u // card heartbeat counter (ticked per VBL)
 #define GC824_CB_ARGSAREA  0x64Cu // default command args area
 #define GC824_CB_FREEAREA  0x6CCu // default free-list base
+// Card-local end of that free block (gc_boot): GCQD carves the Transport-B
+// drawing queue from it, so no queued stream extends past here.
+#define GC824_CB_FREE_END_LOCAL 0x0C00FFFCu
 // Cursor-protocol fields: the driver deposits the HOST addresses of the
 // low-memory cursor globals so the card can bus-master-read them; the card
 // raises the two status flags, which the host cursor stubs and GACursorTask
