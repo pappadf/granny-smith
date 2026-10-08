@@ -279,12 +279,12 @@ static const char *floppy_type_label(floppy_kind_t k) {
 
 static int floppy_positions(const hw_profile_t *p) {
     int n = 0;
-    for (const struct floppy_slot *s = p->floppy_slots; s && s->label; s++)
+    for (const floppy_slot_t *s = p->floppy_slots; s && s->label; s++)
         n++;
     return n;
 }
 
-static const char *floppy_default_type(const struct floppy_slot *s) {
+static const char *floppy_default_type(const floppy_slot_t *s) {
     return (s->optional && s->default_none) ? "none" : floppy_type_id(s->kind);
 }
 
@@ -1162,7 +1162,7 @@ void machine_config_put_tree(const hw_profile_t *p, value_map_builder_t *b) {
 
     vlist_t flops = {0};
     int i = 0;
-    for (const struct floppy_slot *s = p->floppy_slots; s && s->label; s++, i++) {
+    for (const floppy_slot_t *s = p->floppy_slots; s && s->label; s++, i++) {
         value_map_builder_t *fb = val_map_new();
         char id[16];
         snprintf(id, sizeof id, "fd%d", i);
@@ -1300,7 +1300,7 @@ static value_t read_floppies(const hw_profile_t *p, const value_t *m, doc_t *d) 
             return bad("floppies: model '%s' has no floppy position '%s'", p->id, k);
         if (v->kind != V_STRING)
             return bad("floppies.%s: expected a drive type", k);
-        const struct floppy_slot *s = &p->floppy_slots[at];
+        const floppy_slot_t *s = &p->floppy_slots[at];
         bool ok = strcmp(v->s, floppy_type_id(s->kind)) == 0 || (s->optional && strcmp(v->s, "none") == 0);
         if (!ok)
             return bad("floppies.%s: \"%s\" is not a drive type this position takes", k, v->s);

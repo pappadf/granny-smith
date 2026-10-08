@@ -62,7 +62,6 @@ LOG_USE_CATEGORY_NAME("board");
 // ============================================================
 
 static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
-static void iicx_via2_shift_out(void *context, uint8_t byte);
 
 // ============================================================
 // ROM overlay
@@ -115,8 +114,11 @@ void iicx_via1_output(void *context, uint8_t port, uint8_t output) {
     iicx_state_t *st = iicx_state(cfg);
 
     if (port == 0) {
+        // Bit 5: floppy head select → SWIM
         if (st->floppy)
             floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
+        // Bit 4: ROM overlay control (1 = ROM at $00000000, 0 = RAM) -- the
+        // same vOverlay pin as the SE/30's
         iicx_set_rom_overlay(cfg, (output & 0x10) != 0);
     } else {
         // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
@@ -136,20 +138,17 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
     if (port != 1)
         return;
 
+    // Two independent transitions: PB2 driven high arms the detector (the
+    // OS has taken the line), and PB2 low while armed is the power-off
+    // request.  One write can only do one of them -- the output is a level.
     bool new_pb2 = (output & 0x04) != 0;
-    if (!st->soft_power_armed && new_pb2) {
+    if (new_pb2)
         st->soft_power_armed = true;
-    } else if (st->soft_power_armed && !new_pb2) {
+    if (st->soft_power_armed && !new_pb2) {
         LOG(1, "IIcx soft power-off (VIA2 PB2 = 0)");
         if (cfg->scheduler)
             scheduler_stop(cfg->scheduler);
     }
-    st->last_via2_port_b = output;
-}
-
-static void iicx_via2_shift_out(void *context, uint8_t byte) {
-    (void)context;
-    (void)byte;
 }
 
 // (VBL is the default GLUE NuBus VBL in glue_substrate — CA1 heartbeat +
@@ -210,7 +209,7 @@ static const mac030_glue_board_t iicx_board = {
     // spuriously (BUG-004).  via.c tolerates a NULL here.
     .via1_shift_out = NULL,
     .via2_output = iicx_via2_output,
-    .via2_shift_out = iicx_via2_shift_out,
+    .via2_shift_out = mac030_glue_via_shift_out_ignored,
     .setup_id = iicx_setup_id,
     .memory_layout_tail = iicx_memory_layout_tail,
 };
@@ -219,7 +218,10 @@ static const mac030_glue_board_t iicx_board = {
 // Machine descriptor
 // ============================================================
 
-static const uint32_t iicx_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
+// Shared with the IIx (iicx_internal.h).  5120 is a real stepping, not a
+// typo: four 1 MB SIMMs in bank A plus four 256 KB SIMMs in bank B, a mixed
+// configuration both boards accept (the larger SIMMs must be in bank A).
+const uint32_t iicx_iix_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
 const hw_profile_t machine_iicx = {
     .name = "Macintosh IIcx",
@@ -230,24 +232,19 @@ const hw_profile_t machine_iicx = {
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
-    .ram_default = 0x800000, // 8 MB
-    .ram_max = 0x8000000, // 128 MB
+    .ram_default = MAC030_GLUE_RAM_DEFAULT,
+    .ram_max = MAC030_GLUE_RAM_MAX,
     .rom_size = 0x040000, // 256 KB
 
-    .ram_options = iicx_ram_options_kb,
+    .ram_options = iicx_iix_ram_options_kb,
     .floppy_slots = mac_floppy_slots_ext,
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
-    // The IIcx has no built-in video — its primary display comes from
-    // a NuBus video card seated in slot $9 (Apple Display Card 8•24 by
-    // default).  That card needs mdc-8-24-revb-d1629664.vrom to declare itself
-    // to the Slot Manager (without it, slot scan finds an empty slot
-    // and the boot ROM can't bring up a framebuffer).  We mark
-    // needs_vrom = true so the config dialog asks the user for a VROM
-    // file; the JMFB card driver picks it up from /opfs/images/vrom/
-    // by its canonical name during card init.
+    // No built-in video: the screen is the NuBus card in slot $9 (the
+    // Display Card 8•24 by default), whose declaration ROM the card kind
+    // requires (requires_vrom) -- see docs/reference/machines/glue/iicx.md.
 
     .nubus_slots = iicx_slots,
 

@@ -887,8 +887,8 @@ never fires, yet the OS tracks cursor position correctly.
 **System wiring** (`src/core/system.c`):
 
 - `system_mouse_update(button, dx, dy)` -> `adb_mouse_event()`
-- `system_mouse_move(dx, dy)` -> `adb_mouse_move()`
-- `system_mouse_move_adb(dx, dy)` -> ADB-only path for default `mouse.move`
+- `system_mouse_move(dx, dy)` -> `adb_mouse_move()` (the default `mouse.move`
+  path uses it once `system_mouse_pending_adb()` has said the machine is ADB)
 
 **Debug commands** (`src/core/debug/debug_mac.c`):
 

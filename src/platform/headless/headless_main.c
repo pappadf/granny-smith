@@ -1371,7 +1371,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    setup_init();
+    system_init();
 
     // Apply --no-prompt default so every client connection inherits it
     if (no_prompt)
@@ -1647,9 +1647,6 @@ int main(int argc, char *argv[]) {
     rc = headless_exit_code(script_rc);
 
 out:
-    if (global_emulator) {
-        system_destroy(global_emulator);
-        global_emulator = NULL;
-    }
+    system_destroy(global_emulator); // NULL-safe; clears global_emulator
     return rc;
 }

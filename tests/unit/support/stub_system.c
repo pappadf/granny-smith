@@ -160,12 +160,10 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
 // harness, so this is a no-op.
 void system_reset_devices(void) {}
 
-// The level-2 entry points are declared weak in system.h so a suite can link a
-// device without system.c.  A weak UNDEFINED symbol that is actually called is
-// a NULL call, though, so define them here too: a suite that reaches the Cuda
-// reset path gets a no-op rather than a segfault.
+// Level-2 machine reset stub: a suite that links a device which can restart
+// the machine (the Cuda's CMD_RESET) without system.c gets a no-op.  The real
+// definitions in system.c are weak, so these override them where both link.
 void system_machine_reset(void) {}
-void system_hardware_reset(void) {}
 
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;
@@ -183,12 +181,6 @@ void system_mouse_update(bool button_down, int dx, int dy) {
 
 // Mouse move stubs for set-mouse debugger command
 bool system_mouse_move(int dx, int dy) {
-    (void)dx;
-    (void)dy;
-    return false;
-}
-
-bool system_mouse_move_adb(int dx, int dy) {
     (void)dx;
     (void)dy;
     return false;
@@ -213,7 +205,7 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, struct rom
 }
 
 // Image-tracking stubs: tests that link image.c (but not system.c) need these
-// to resolve add_image()/image_tick_all().  No real image list in the harness.
+// to resolve config_add_image()/image_tick_all().  No real image list in the harness.
 struct config;
 struct image;
 void config_add_image(struct config *cfg, struct image *image) {

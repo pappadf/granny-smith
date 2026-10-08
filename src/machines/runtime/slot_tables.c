@@ -7,19 +7,19 @@
 #include "slot_tables.h"
 #include "scsi.h"
 
-const struct floppy_slot mac_floppy_slots_ext[] = {
+const floppy_slot_t mac_floppy_slots_ext[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_HD},
     {.label = "External floppy drive", .kind = FLOPPY_HD, .optional = true, .default_none = true},
     {0},
 };
 
-const struct floppy_slot mac_floppy_slots_2int[] = {
+const floppy_slot_t mac_floppy_slots_2int[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_HD},
     {.label = "Second internal floppy drive", .kind = FLOPPY_HD, .optional = true, .default_none = true},
     {0},
 };
 
-const struct floppy_slot mac_floppy_slots_1hd[] = {
+const floppy_slot_t mac_floppy_slots_1hd[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_HD},
     {0},
 };

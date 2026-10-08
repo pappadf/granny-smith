@@ -423,7 +423,7 @@ static int set_mouse_default(long x, long y) {
     // Non-ADB machines (Plus) fall through to global writes.
     if (has_adb) {
         if (dx != 0 || dy != 0)
-            system_mouse_move_adb(dx, dy);
+            system_mouse_move(dx, dy); // routes through ADB on an ADB machine
         return 0;
     }
     return set_mouse_global(x, y);

@@ -124,7 +124,7 @@ exactly as it did before this landed: the vdig still opens, and reports no
 signal lock.
 
 `host` reaches the browser through the `gs_video_in_*` seam in
-[src/core/system.h](../../../../src/core/system.h) — weak defaults model "no
+[src/core/platform_hooks.h](../../../../src/core/platform_hooks.h) — weak defaults model "no
 camera", and [src/platform/wasm/em_camera.c](../../../../src/platform/wasm/em_camera.c)
 overrides them with a double-buffered frame slot pair in the shared wasm heap
 (the audio-ring pattern inverted; see [../../guide/web.md](../../../guide/web.md)).

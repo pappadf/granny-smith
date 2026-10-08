@@ -24,16 +24,16 @@
 
 // Internal + External floppy drive, both SuperDrive; the external port ships
 // without a drive.  The IIcx, IIci and IIsi.
-extern const struct floppy_slot mac_floppy_slots_ext[];
+extern const floppy_slot_t mac_floppy_slots_ext[];
 
 // Internal + Second internal floppy drive, both SuperDrive; the second bay
 // ships empty.  The IIx and IIfx, which have two internal bays and no
 // external port.
-extern const struct floppy_slot mac_floppy_slots_2int[];
+extern const floppy_slot_t mac_floppy_slots_2int[];
 
 // Internal floppy drive only, SuperDrive.  Machines with no external floppy
 // port: the Quadras, the PDM, TNT and G3 Power Macs, the Network Servers.
-extern const struct floppy_slot mac_floppy_slots_1hd[];
+extern const floppy_slot_t mac_floppy_slots_1hd[];
 
 // A narrow SCSI bus with the one bay every 68k Mac desktop names, the
 // internal hard disk bay at ID 0, and an external connector: the SE/30, the

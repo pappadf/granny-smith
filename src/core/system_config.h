@@ -32,6 +32,10 @@
 #include "system.h"
 #include "via.h"
 
+// The most disk images one machine tracks (config_t.images); also the bound
+// a restored checkpoint's image list is checked against.
+#define MAX_IMAGES 10
+
 // Full definition of the opaque config_t handle.
 // The forward declaration (`struct config;`) in system.h makes this type
 // visible externally; this definition adds the fields for internal use.

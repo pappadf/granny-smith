@@ -27,7 +27,7 @@
 #include "nubus/card.h"
 #include "pci/pci.h"
 
-LOG_USE_CATEGORY_NAME("setup");
+LOG_USE_CATEGORY_NAME("system");
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,10 +36,39 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <string.h>
 #include <time.h>
 
+// The built-in machine profiles, each defined in its family's machine file
+// (compact/plus.c, glue/{se30,iicx,iix}.c, mdu/{iici,iisi}.c, oss/iifx.c,
+// mcu/, av/, pdm/, tnt/, gossamer/, lisa/lisa.c).  Declared here, not in
+// machine.h: the registry below is their only reader, so no other file has
+// to see every machine.
+extern const hw_profile_t machine_plus;
+extern const hw_profile_t machine_se30;
+extern const hw_profile_t machine_iicx;
+extern const hw_profile_t machine_iix;
+extern const hw_profile_t machine_iifx;
+extern const hw_profile_t machine_iici;
+extern const hw_profile_t machine_lisa;
+extern const hw_profile_t machine_macxl;
+extern const hw_profile_t machine_iisi;
+extern const hw_profile_t machine_q700;
+extern const hw_profile_t machine_q900;
+extern const hw_profile_t machine_q950;
+extern const hw_profile_t machine_q840av;
+extern const hw_profile_t machine_q660av;
+extern const hw_profile_t machine_pm6100;
+extern const hw_profile_t machine_pm7100;
+extern const hw_profile_t machine_pm8100;
+extern const hw_profile_t machine_pm7500;
+extern const hw_profile_t machine_pm8500;
+extern const hw_profile_t machine_pm9500;
+extern const hw_profile_t machine_ans500;
+extern const hw_profile_t machine_ans700;
+extern const hw_profile_t machine_pmg3dt;
+extern const hw_profile_t machine_pmg3mt;
+
 // Registry of built-in machine profiles.  A static const array iterated
-// directly: adding a machine is one line here, no runtime
-// machine_register(), no MAX_MACHINES cap.  The profiles are defined in each
-// family's machine file (glue/se30.c, mdu/iici.c, …).
+// directly: adding a machine is its extern above plus one entry here (this
+// file only), no runtime machine_register(), no MAX_MACHINES cap.
 static const hw_profile_t *const builtin_machines[] = {
     &machine_plus,   &machine_se30,   &machine_iicx,   &machine_iix,    &machine_iifx,   &machine_iici,
     &machine_iisi,   &machine_q700,   &machine_q900,   &machine_q950,   &machine_q840av, &machine_q660av,
@@ -142,7 +171,7 @@ bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
 
 int profile_floppy_count(const hw_profile_t *p) {
     int n = 0;
-    for (const struct floppy_slot *s = p ? p->floppy_slots : NULL; s && s->label; s++)
+    for (const floppy_slot_t *s = p ? p->floppy_slots : NULL; s && s->label; s++)
         n++;
     return n;
 }
@@ -194,6 +223,15 @@ const hw_profile_t *const *machine_list(size_t *out_count) {
     return builtin_machines;
 }
 
+// Pulse the machine's vertical-blanking line (system.h): the scheduler's
+// per-frame tick, dispatched to the substrate.  Here rather than in system.c
+// so the scheduler need not know hw_profile_t and system.c carries no
+// per-machine dispatch wrappers.
+void trigger_vbl(struct config *restrict config) {
+    if (config && config->machine && config->machine->substrate->trigger_vbl)
+        config->machine->substrate->trigger_vbl(config);
+}
+
 // === Object-model class descriptor =========================================
 //
 // machine is a process-singleton namespace: registered once at shell_init
@@ -203,16 +241,23 @@ const hw_profile_t *const *machine_list(size_t *out_count) {
 // and how many cfg lifetimes have come and gone since.  Pre-boot reads
 // return V_ERROR — no soft fallbacks; callers gate on `machine.created`.
 
-extern config_t *global_emulator;
-
-// Resolve the active profile or return V_ERROR for the named attribute.
-static const hw_profile_t *active_profile_or_error(const char *attr_name, value_t *out_err) {
+// Resolve the active machine's config or return V_ERROR for the named
+// attribute.  Every machine.* getter that reads the running machine goes
+// through this (or active_profile_or_error), so the "no machine" answer is
+// worded once.
+static config_t *active_cfg_or_error(const char *attr_name, value_t *out_err) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine) {
         *out_err = val_err("machine.%s: no machine booted; check machine.created first", attr_name);
         return NULL;
     }
-    return cfg->machine;
+    return cfg;
+}
+
+// Resolve the active profile or return V_ERROR for the named attribute.
+static const hw_profile_t *active_profile_or_error(const char *attr_name, value_t *out_err) {
+    config_t *cfg = active_cfg_or_error(attr_name, out_err);
+    return cfg ? cfg->machine : NULL;
 }
 
 static DEF_GETTER(attr_machine_id) {
@@ -242,9 +287,10 @@ static DEF_GETTER(attr_catalog_models) {
 // type hd or cd as machine.attach_media takes them, present when an image is
 // in it.
 static DEF_GETTER(attr_machine_storage) {
-    config_t *cfg = global_emulator;
-    if (!cfg || !cfg->machine)
-        return val_err("machine.storage: no machine booted; check machine.created first");
+    value_t err;
+    config_t *cfg = active_cfg_or_error("storage", &err);
+    if (!cfg)
+        return err;
     size_t n = (size_t)cfg->n_storage;
     value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
     if (n && !items)
@@ -287,10 +333,11 @@ static DEF_GETTER(attr_machine_freq) {
 }
 
 static DEF_GETTER(attr_machine_ram) {
-    config_t *cfg = global_emulator;
-    if (!cfg || !cfg->machine)
-        return val_err("machine.ram: no machine booted; check machine.created first");
-    return val_uint(4, cfg->ram_size / 1024u);
+    value_t err;
+    config_t *cfg = active_cfg_or_error("ram", &err);
+    if (!cfg)
+        return err;
+    return val_uint(4, cfg->ram_size / 1024u); // exact: ram_size is built as ram_kb * 1024
 }
 
 // `machine.irq` and `machine.ipl` — the family's raw interrupt-source
@@ -386,9 +433,7 @@ static value_t build_profile(const hw_profile_t *p) {
 // Card availability follows the ROMs offered now, so a reader re-reads it
 // after an upload.  Errors when id is empty or names no registered profile.
 static DEF_METHOD(catalog_method_profile) {
-    const char *id = argv[0].s;
-    if (!id || !*id)
-        return val_err("catalog.profile: id must be non-empty");
+    const char *id = argv[0].s; // non-empty: the argument is OBJ_ARG_NONEMPTY
     const hw_profile_t *p = machine_find(id);
     if (!p)
         return val_err("catalog.profile: unknown model '%s'", id);
@@ -590,7 +635,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // 4. The swap: the new machine becomes the active one, and the one it
     // replaces is destroyed.
     system_swap_in(cfg, false, platform_pacing());
-    LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
+    // ram_size is ram_kb * 1024 (system_create), so the division is exact.
+    LOG(1, "Machine booted: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
 out:
     value_free(&config);
     return result;
@@ -611,9 +657,14 @@ static uint64_t boot_uint(const value_t *v, uint64_t unset) {
 // grammar.  Use machine.restart to power-cycle the running machine.
 static DEF_METHOD(machine_method_boot) {
     uint64_t sense = boot_uint(&argv[5], 0xFF);
+    // ram= is a V_UINT; a value past 32 bits would truncate to some other
+    // size (2^32 + 4096 KB reading as 4 MB), so refuse it rather than cast.
+    uint64_t ram_kb = boot_uint(&argv[1], 0);
+    if (ram_kb > UINT32_MAX)
+        return val_err("machine.boot: ram %llu KB is out of range", (unsigned long long)ram_kb);
     boot_config_t doc = {
         .model = boot_str(&argv[0]),
-        .ram_kb = (uint32_t)boot_uint(&argv[1], 0),
+        .ram_kb = (uint32_t)ram_kb,
         .rom = boot_str(&argv[2]),
         .vrom = boot_str(&argv[3]),
         .video_card = boot_str(&argv[4]),

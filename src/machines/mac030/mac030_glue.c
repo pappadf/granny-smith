@@ -34,7 +34,7 @@
 #include <assert.h>
 #include <stdlib.h>
 
-LOG_USE_CATEGORY_NAME("setup");
+LOG_USE_CATEGORY_NAME("system");
 
 // Construct the GLUE peripheral set in canonical order — see header.
 int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
@@ -188,7 +188,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         return -1;
     }
     cfg->machine_context = st;
-    st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
 
     mac030_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
@@ -222,7 +221,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
+    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER;
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (board->post_nubus)
@@ -359,6 +358,19 @@ void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start
     *overlay_flag = false; // force the set_rom_overlay toggle below
     mac030_glue_set_rom_overlay(cfg, overlay_flag, rom_start, true);
     system_reset_common_devices(cfg);
+}
+
+// A VIA output the board does not observe.
+void mac030_glue_via_output_ignored(void *context, uint8_t port, uint8_t output) {
+    (void)context;
+    (void)port;
+    (void)output;
+}
+
+// A VIA shift-out the board does not observe.
+void mac030_glue_via_shift_out_ignored(void *context, uint8_t byte) {
+    (void)context;
+    (void)byte;
 }
 
 // Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.

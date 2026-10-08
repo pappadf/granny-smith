@@ -338,7 +338,7 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // (shared memory grows in place, em_audio.c).  It is laid out by a
 // constructor, before main() and before the page can see it, so the MAGIC
 // and VERSION words are valid from the first read.  READY stays 0 until
-// main() has run core_init/setup_init.
+// main() has run core_init/system_init.
 static gs_mailbox_t g_mailbox;
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
@@ -1022,13 +1022,13 @@ int main(void) {
         fprintf(stderr, "core initialisation failed\n");
         abort();
     }
-    setup_init();
+    system_init();
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
     // Route every log_emit onto the event ring so the new-UI Logs
     // view gets a structured stream parallel to stdout. The sink is
     // process-wide, so it also forwards any categories registered later
-    // (setup_init, machine boot, …).
+    // (system_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on

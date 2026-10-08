@@ -710,9 +710,10 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
         // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
         // space at $Fs000000 (GLUE/BBU decode both to the same slot).
         if (mode24_alias && r->writable) {
-            uint32_t high = r->phys_base & 0xFF000000u;
-            if (high >= 0xF9000000u && high <= 0xFE000000u) {
-                int slot = (int)((r->phys_base >> 24) & 0xFu);
+            // A region in standard slot space $Fs000000 for slot s = $9..$E.
+            uint32_t slot_nibble = r->phys_base >> 28; // $F for slot space
+            int slot = (int)((r->phys_base >> 24) & 0xFu);
+            if (slot_nibble == 0xFu && slot >= 0x9 && slot <= 0xE) {
                 uint32_t alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
                 if (alias_bytes > r->size)
                     alias_bytes = r->size;
