@@ -23,7 +23,8 @@
 // past the opcode, and MOVES genuinely needs that word -- so this is a real
 // access, not the speculative one the manual says must not fault.  The
 // disassembler overrides it, having its own ext_word from the caller's buffer
-// and no live CPU to read through.  Three sites, all 68010+.
+// and no live CPU to read through, and the 68000 decoder overrides it with a
+// constant (no MOVES there).  Three sites, all 68010+.
 #ifndef CPU_MOVES_DIR
 #define CPU_MOVES_DIR() (memory_read_uint16(cpu->pc) & 0x0800)
 #endif

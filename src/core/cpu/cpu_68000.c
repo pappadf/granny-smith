@@ -161,4 +161,9 @@
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)
 
+// MOVES does not exist on the 68000: both direction arms are OP_UNDEFINED, so
+// don't let cpu_decode.h's live extension-word read issue a bus cycle the
+// real chip never makes.
+#define CPU_MOVES_DIR() 0
+
 #include "cpu_decode.h"
