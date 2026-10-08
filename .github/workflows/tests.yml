@@ -186,15 +186,18 @@ jobs:
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 15
         run: |
-          make integration-test PLATEN=1 WERROR=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          make integration-test PLATEN=1 WERROR=1 TIER=unit -j"$(nproc)" --output-sync=target 2>&1 | tee /tmp/it-unit.log
           exit "${PIPESTATUS[0]}"
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         # ~20 min on a fast runner, ~28 on the slower class -- too close to 30.
         timeout-minutes: 40
+        # --output-sync=target keeps each test's output together: the
+        # coverage check attributes a row's "skip:" line to the test whose
+        # header precedes it (scripts/test-matrix.py).
         run: |
-          make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" --output-sync=target 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"
 
       # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
