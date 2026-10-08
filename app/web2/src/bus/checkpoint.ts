@@ -10,7 +10,7 @@
 //      machine.status from scheduler.running.
 
 import { scratchPath } from '@/lib/opfsPaths';
-import { gsEval, gsErrorText } from './emulator';
+import { gsEval, gsErrorText, gsOk } from './emulator';
 import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
 import {
@@ -35,14 +35,19 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
 
   const accept = await showCheckpointPrompt();
   if (!accept) {
-    await gsEval('checkpoint.clear');
-    showNotification('Starting fresh (checkpoint discarded)', 'info');
+    const cleared = await gsEval('checkpoint.clear');
+    if (gsOk(cleared)) showNotification('Starting fresh (checkpoint discarded)', 'info');
+    else
+      showNotification(
+        `Starting fresh, but the checkpoint could not be discarded: ${gsErrorText(cleared)}`,
+        'warning',
+      );
     return false;
   }
 
-  const ok = (await gsEval('checkpoint.load')) === true;
-  if (!ok) {
-    showNotification('Checkpoint load failed', 'error');
+  const ok = await gsEval('checkpoint.load');
+  if (ok !== true) {
+    showNotification(`Checkpoint load failed: ${gsErrorText(ok)}`, 'error');
     return false;
   }
   await reconcileUiWithMachine('restore');
