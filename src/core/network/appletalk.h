@@ -22,6 +22,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "checkpoint.h"
+
 // === Forward Declarations ===
 typedef struct checkpoint checkpoint_t;
 typedef struct scc scc_t;

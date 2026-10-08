@@ -16,6 +16,7 @@
 
 #include "av.h"
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "log.h"
 #include "system.h"

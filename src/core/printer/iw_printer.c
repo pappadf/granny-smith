@@ -17,6 +17,7 @@
 
 #include "appletalk.h"
 #include "byteq.h"
+#include "checkpoint.h"
 #include "crc32.h"
 #include "iw_interp.h"
 #include "log.h"

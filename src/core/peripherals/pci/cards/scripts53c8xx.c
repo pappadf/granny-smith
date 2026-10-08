@@ -33,6 +33,7 @@
 
 #include "sym53c8xx.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "memory.h"
 #include "pci.h"

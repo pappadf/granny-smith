@@ -46,6 +46,7 @@
 
 #include "gossamer.h"
 
+#include "checkpoint.h"
 #include "davbus.h"
 #include "dbdma.h"
 #include "irq_controller.h"

@@ -21,6 +21,7 @@
 // via_t, scc_t and rtc_t do.  This suite exists so the next field added to
 // that region is caught if it does not survive.
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"

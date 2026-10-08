@@ -9,9 +9,9 @@
 // codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
 // the libc headers it uses itself.
 //
-// Transitional: the libc includes, status.h and the checkpoint_t
-// forward declaration below are still pulled in here because many TUs rely on
-// getting them transitively; they go once those TUs include what they use.
+// Transitional: the libc includes and status.h below are still pulled in here
+// because many TUs rely on getting them transitively; they go once those TUs
+// include what they use.
 
 #ifndef COMMON_H
 #define COMMON_H
@@ -79,11 +79,5 @@ static inline uint32_t fourcc_value(const char *s) {
     }
     return v;
 }
-
-// Transitional: checkpoint_t belongs to checkpoint.h (which declares it too);
-// kept here until the TUs relying on it transitively include checkpoint.h or
-// forward-declare `struct checkpoint` themselves.
-struct checkpoint;
-typedef struct checkpoint checkpoint_t;
 
 #endif // COMMON_H

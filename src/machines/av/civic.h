@@ -16,6 +16,7 @@
 #ifndef GS_MACHINES_AV_CIVIC_H
 #define GS_MACHINES_AV_CIVIC_H
 
+#include "checkpoint.h"
 #include "display.h"
 #include "system_internal.h"
 

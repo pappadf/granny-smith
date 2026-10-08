@@ -8,6 +8,7 @@
 #define SCSI_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "image.h"
 #include "memory.h"

@@ -29,6 +29,7 @@
 // so that changing it there without looking here fails this test rather
 // than silently widening the bound it is supposed to pin.
 
+#include "checkpoint.h"
 #include "gs_assert.h"
 #include "scc.h"
 

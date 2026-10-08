@@ -26,6 +26,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "config_seed.h"
 #include "debug.h"
 #include "floppy.h"

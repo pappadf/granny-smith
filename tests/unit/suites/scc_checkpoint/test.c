@@ -31,6 +31,7 @@
 // save "the way via_t, scc_t and rtc_t do". scc_t was the one doing it
 // wrong.)
 
+#include "checkpoint.h"
 #include "scc.h"
 
 #include "scheduler.h"

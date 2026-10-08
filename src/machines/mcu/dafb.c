@@ -23,6 +23,7 @@
 
 #include "dafb.h"
 
+#include "checkpoint.h"
 #include "display_class.h"
 #include "log.h"
 #include "scheduler.h"

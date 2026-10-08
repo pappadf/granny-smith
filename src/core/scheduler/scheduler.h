@@ -8,6 +8,7 @@
 #define SCHEDULE_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "cpu.h"
 

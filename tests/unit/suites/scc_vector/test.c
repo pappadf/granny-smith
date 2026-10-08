@@ -27,6 +27,7 @@
 // glue does: write the register number to the control port, then read or
 // write the value.
 
+#include "checkpoint.h"
 #include "scc.h"
 
 #include "scheduler.h"

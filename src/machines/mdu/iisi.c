@@ -31,6 +31,7 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "egret.h"
 #include "floppy.h"

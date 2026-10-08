@@ -6,6 +6,7 @@
 
 #include "sound.h"
 #include "audio_out.h"
+#include "checkpoint.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "memory.h"

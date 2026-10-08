@@ -17,6 +17,7 @@
 #ifndef GS_MACHINES_AV_SINGER_H
 #define GS_MACHINES_AV_SINGER_H
 
+#include "checkpoint.h"
 #include "system_internal.h"
 
 #include <stdbool.h>

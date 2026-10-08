@@ -5,6 +5,7 @@
 // Implements Macintosh Plus mouse quadrature signal generation for the SCC (X1/Y1) and VIA (X2/Y2).
 
 #include "mouse.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "log.h"
 #include "system.h"

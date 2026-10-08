@@ -19,6 +19,7 @@
 //
 // Driven through the memory interface, as the machine glue does.
 
+#include "checkpoint.h"
 #include "scc.h"
 
 #include "scheduler.h"

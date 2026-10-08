@@ -18,6 +18,7 @@
 #define SCSI_MESH_H
 
 #include "byte_fifo.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "scsi_msgsession.h"
 

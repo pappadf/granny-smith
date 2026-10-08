@@ -21,6 +21,7 @@
 // 100,000-access register trace diffed against the pre-move build to find it.
 // A test at this level would have said so in a second.
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_internal.h"

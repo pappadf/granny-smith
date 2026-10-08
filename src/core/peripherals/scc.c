@@ -6,6 +6,7 @@
 
 #include "scc.h"
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "gs_assert.h"
 #include "log.h"

@@ -12,6 +12,7 @@
 #include "adb.h"
 #include "appletalk.h"
 #include "build_id.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "display.h"

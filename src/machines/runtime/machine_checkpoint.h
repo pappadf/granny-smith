@@ -12,6 +12,7 @@
 #ifndef GS_MACHINES_RUNTIME_MACHINE_CHECKPOINT_H
 #define GS_MACHINES_RUNTIME_MACHINE_CHECKPOINT_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "machine_parts.h"
 

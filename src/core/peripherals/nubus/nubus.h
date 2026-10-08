@@ -9,6 +9,7 @@
 #define NUBUS_H
 
 #include "card.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "value.h"
 #include <stdbool.h>

@@ -10,6 +10,7 @@
 #include "gossamer.h"
 
 #include "bmac.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "machine.h"
 #include "object.h"

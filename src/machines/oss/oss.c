@@ -6,6 +6,7 @@
 
 #include "oss.h"
 
+#include "checkpoint.h"
 #include "irq_controller.h"
 #include "machine.h"
 #include "object.h"

@@ -19,6 +19,7 @@
 
 #include "ata.h"
 
+#include "checkpoint.h"
 #include "image.h"
 #include "log.h"
 #include "scsi.h"

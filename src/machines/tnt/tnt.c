@@ -34,6 +34,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"

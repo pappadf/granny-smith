@@ -19,6 +19,7 @@
 #ifndef COPS_H
 #define COPS_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

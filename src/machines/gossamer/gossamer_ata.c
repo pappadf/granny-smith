@@ -25,6 +25,7 @@
 #include "gossamer.h"
 
 #include "ata.h"
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "image.h"
 #include "log.h"

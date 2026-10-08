@@ -8,6 +8,7 @@
 #define RTC_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "scheduler.h"
 

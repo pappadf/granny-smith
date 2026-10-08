@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "checkpoint.h"
 #include "common.h"
 
 #ifdef __cplusplus

@@ -12,6 +12,7 @@
 #ifndef GS_MACHINES_AV_DSP_H
 #define GS_MACHINES_AV_DSP_H
 
+#include "checkpoint.h"
 #include "system_internal.h"
 
 #include <stdbool.h>

@@ -23,6 +23,7 @@
 //     cmdptr write protection while running, partial-residual write-back
 //     on stop.
 
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "test_assert.h"
 

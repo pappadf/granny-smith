@@ -11,6 +11,7 @@
 // two symbols the shared isolated-harness stubs don't provide rather than drag
 // in checkpoint_machine.c / checkpoint_images.c.
 
+#include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 

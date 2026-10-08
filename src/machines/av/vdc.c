@@ -30,6 +30,7 @@
 #include "av.h"
 #include "civic.h"
 
+#include "checkpoint.h"
 #include "debug.h"
 #include "log.h"
 #include "machine_profile.h"

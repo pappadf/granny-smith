@@ -46,6 +46,7 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
+#include "checkpoint.h"
 #include "display.h"
 #include "display_class.h"
 #include "log.h"

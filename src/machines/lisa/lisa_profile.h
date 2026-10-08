@@ -18,6 +18,7 @@
 #ifndef LISA_PROFILE_H
 #define LISA_PROFILE_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

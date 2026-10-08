@@ -13,6 +13,7 @@
 
 #include "lisa_fdc.h"
 
+#include "checkpoint.h"
 #include "cpu.h" // cpu_get_pc — guest PC for the floppy command trace
 #include "floppy_geometry.h" // Sony zone geometry (public API, not the controller internals)
 #include "image.h"

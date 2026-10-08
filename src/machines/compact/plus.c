@@ -16,6 +16,7 @@
 #include "system_internal.h" // full config_t definition
 
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"

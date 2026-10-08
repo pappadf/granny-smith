@@ -24,6 +24,7 @@
 #include "av.h"
 #include "singer.h" // AV_SINGER_STAT presentation
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "irq_controller.h"
 #include "log.h"

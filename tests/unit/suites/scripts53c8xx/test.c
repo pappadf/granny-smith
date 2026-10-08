@@ -35,6 +35,7 @@
 // Every class gets a negative case, because "the engine executed
 // something" is not the same claim as "the engine rejected what it should".
 
+#include "checkpoint.h"
 #include "sym53c8xx.h"
 #include "test_assert.h"
 

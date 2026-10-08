@@ -14,6 +14,7 @@
 #include "machine_teardown.h"
 #include "system_internal.h"
 
+#include "checkpoint.h"
 #include "cops.h"
 #include "cpu.h"
 #include "debug.h"

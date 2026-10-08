@@ -55,6 +55,7 @@
 
 #include "tnt.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "pci.h"
 

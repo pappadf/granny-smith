@@ -8,6 +8,7 @@
 #define VIA_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "memory.h"
 #include "scheduler.h"

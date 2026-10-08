@@ -25,6 +25,7 @@
 
 #include "asc.h"
 #include "audio_out.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "machine_profile.h" // machine_object()
 #include "object.h"

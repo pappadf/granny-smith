@@ -23,6 +23,7 @@
 #include "dsp3210.h" // DSP3210_VEC_EXT1
 
 #include "audio_out.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "mmu.h"

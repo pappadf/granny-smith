@@ -30,6 +30,7 @@
 #include "psc.h"
 #include "vdc.h"
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "log.h"
 #include "memory.h"

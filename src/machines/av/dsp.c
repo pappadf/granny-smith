@@ -32,6 +32,7 @@
 #include "dsp3210.h"
 #include "dsp3210_disasm.h"
 
+#include "checkpoint.h"
 #include "debug.h"
 #include "log.h"
 #include "machine_profile.h"

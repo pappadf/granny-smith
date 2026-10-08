@@ -7,6 +7,7 @@
 // CD-ROM whose PACKET commands run on the real SCSI CD-ROM model.
 
 #include "ata.h"
+#include "checkpoint.h"
 #include "image.h"
 #include "scheduler.h"
 #include "scsi.h"

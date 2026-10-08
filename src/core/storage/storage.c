@@ -29,6 +29,7 @@
 
 #include "storage.h"
 
+#include "checkpoint.h"
 #include "source.h"
 #include "io/io_worker.h"
 

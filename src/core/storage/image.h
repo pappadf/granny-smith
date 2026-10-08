@@ -8,6 +8,7 @@
 #define IMAGE_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "storage.h"
 

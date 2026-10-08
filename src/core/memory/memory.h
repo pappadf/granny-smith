@@ -8,6 +8,7 @@
 #define MEMORY_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "machine_build_opts.h" // rom_image_t
 

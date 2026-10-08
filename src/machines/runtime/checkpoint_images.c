@@ -7,6 +7,7 @@
 #include "checkpoint_images.h"
 #include "gs_out.h"
 
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "image.h"
 #include "image_wrap.h"

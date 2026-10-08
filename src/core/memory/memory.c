@@ -15,6 +15,7 @@
 #include "mmu.h"
 
 #include "addr_format.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "cpu.h"
 #include "debug.h"

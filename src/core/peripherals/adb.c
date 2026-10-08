@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "debug_mac.h"
 #include "keyboard.h"
 #include "log.h"

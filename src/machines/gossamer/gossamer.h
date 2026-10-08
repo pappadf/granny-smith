@@ -40,6 +40,7 @@
 #define GS_MACHINES_GOSSAMER_H
 
 #include "ata.h" // the two ATA cells
+#include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
 #include "machine.h"
 #include "machine_profile.h"

@@ -8,6 +8,7 @@
 #define MOUSE_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "debug_mac.h" // mouse_route_t
 #include "scc.h"

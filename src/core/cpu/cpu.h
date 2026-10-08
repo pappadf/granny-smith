@@ -8,6 +8,7 @@
 #define CPU_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "debug.h" // cpu_debug_if_t (the main-CPU debug seam)
 #include "platform.h"

@@ -22,6 +22,7 @@
 #ifndef GS_MACHINES_MCU_H
 #define GS_MACHINES_MCU_H
 
+#include "checkpoint.h"
 #include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
 #include "mac030_glue_io.h" // the shared I/O dispatch engine
 #include "mac030_rom_overlay.h"

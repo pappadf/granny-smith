@@ -19,6 +19,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu — the CPU-owned 040 MMU register file

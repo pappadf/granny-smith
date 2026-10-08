@@ -15,6 +15,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"

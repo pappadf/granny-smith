@@ -27,6 +27,7 @@
 
 #include "tnt.h"
 
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "irq_controller.h"
 #include "log.h"

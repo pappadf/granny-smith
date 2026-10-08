@@ -45,6 +45,7 @@
 
 #include "gossamer.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "machine.h"
 #include "object.h"

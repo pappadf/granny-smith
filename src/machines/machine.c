@@ -8,6 +8,7 @@
 #include "machine_config.h"
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "gs_out.h"
 #include "image.h"

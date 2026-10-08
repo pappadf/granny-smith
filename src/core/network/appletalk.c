@@ -17,6 +17,7 @@
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
 #include "atalk_id.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "gs_assert.h"
 #include "laserwriter_job.h"

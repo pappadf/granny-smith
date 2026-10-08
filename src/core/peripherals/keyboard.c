@@ -5,6 +5,7 @@
 // Implements Mac Plus keyboard emulation via VIA shift register interface.
 
 #include "keyboard.h"
+#include "checkpoint.h"
 #include "gs_assert.h"
 #include "log.h"
 #include "scheduler.h"

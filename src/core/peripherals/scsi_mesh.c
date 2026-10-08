@@ -41,6 +41,7 @@
 
 #include "scsi_mesh.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "scheduler.h"
 #include "scsi.h"

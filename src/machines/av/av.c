@@ -30,6 +30,7 @@
 #include "mmu040.h"
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "debug.h"

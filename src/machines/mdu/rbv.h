@@ -17,6 +17,7 @@
 #ifndef RBV_H
 #define RBV_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "memory.h"
 

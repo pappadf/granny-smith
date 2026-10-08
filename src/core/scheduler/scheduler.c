@@ -11,6 +11,7 @@
 #include "scheduler.h"
 #include "scheduler_internal.h"
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
 #include "gs_assert.h"

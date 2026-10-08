@@ -7,6 +7,7 @@
 #include "cpu_internal.h"
 
 #include "alias.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "debug_mmu.h"
 #include "fpu.h"

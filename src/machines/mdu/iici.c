@@ -32,6 +32,7 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "iici_internal.h"

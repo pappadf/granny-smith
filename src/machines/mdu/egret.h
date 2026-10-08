@@ -30,6 +30,7 @@
 #ifndef EGRET_H
 #define EGRET_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

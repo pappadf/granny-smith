@@ -15,6 +15,7 @@
 #ifndef GS_CORE_MACHINE_PROFILE_H
 #define GS_CORE_MACHINE_PROFILE_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "machine_build_opts.h"
 #include "machine_config_decl.h"

@@ -13,6 +13,7 @@
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "debug_mmu.h"
 #include "log.h"

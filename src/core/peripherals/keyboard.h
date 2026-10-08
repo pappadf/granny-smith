@@ -9,6 +9,7 @@
 
 // === Includes ===
 
+#include "checkpoint.h"
 #include "common.h"
 #include "scc.h"
 #include "scheduler.h"

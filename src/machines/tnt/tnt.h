@@ -35,6 +35,7 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
+#include "checkpoint.h"
 #include "davbus.h" // the DAVbus sound cell (core/peripherals/)
 #include "display.h"
 #include "display_class.h" // scanout descriptor (control.c presents through it)

@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "via.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "cpu.h"
 #include "gs_assert.h"

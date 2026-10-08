@@ -9,6 +9,7 @@
 #include "adb.h"
 #include "appletalk.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "cpu.h"
 #include "cuda.h"
