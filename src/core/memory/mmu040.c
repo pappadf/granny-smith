@@ -406,7 +406,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     bool fill_user = (!supervisor || shared_roots) && !r.supervisor_only;
 
     mmu_fill_soa_page(bus, emu_page, phys_page, fill_super, fill_user, writable);
-    return mmu_fault_epilogue(bus, emu_page, phys_page, write);
+    return mmu_fault_epilogue(bus, emu_page, phys_page, write, supervisor);
 }
 
 // Side-effect-free translation for debugger reads and memory.c dispatch

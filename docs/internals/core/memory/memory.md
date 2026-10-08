@@ -81,7 +81,21 @@ The slow-path functions (`memory_read_uint16_slow`, etc.) handle two cases:
    `pe->base_addr` so the device sees offsets relative to its own address range.
 
 2. **Cross-page access:** A 16-bit or 32-bit access spans two pages. The slow
-   path splits it into byte-sized reads/writes across the page boundary.
+   path splits it into two halves (bytes for a word, words for a long) and
+   issues each through the inline accessors, so a half that lands on host
+   memory takes the SoA fast path and only a half that needs the slow path
+   re-enters it.
+
+#### The faulting function code
+
+A slow path that latches a bus error records the function code of the
+access in `g_bus_error_fc` (5 supervisor data, 1 user data) so the exception
+frame's SSW carries the FC the access was really issued with.  That FC is
+read from which SoA pair is active, not from SR.S: `MOVES` points the active
+pair at the SFC/DFC's arrays for its one access, so a kernel probing user
+space with `MOVES` (A/UX's `copyin` / `copyout` / `copyinstr`) faults with a
+user-data FC.  Reporting supervisor-data instead makes the kernel's page-fault
+arbiter treat the fault as its own and skip the demand fill.
 
 ### Byte Order
 
@@ -168,6 +182,12 @@ discarded rather than delivered to the guest.
 
 ### Per-Instance Ownership
 
+One map is active at a time, by design: the fast path reads the `g_*`
+globals rather than taking a `memory_map_t *`, because threading a context
+pointer through every guest access would cost the hot path for a use — two
+maps live at once — that nothing needs.  Each map owns its arrays and the
+globals alias the selected one (`memory_map_select`).
+
 Each `memory_map_t` instance stores its own `page_table` and `page_count`.
 The global `g_page_table` pointer is set to the active instance's table during
 initialization. During checkpoint restore, when a new memory map replaces the
@@ -185,7 +205,12 @@ to physical addresses. The page table serves as the translation layer:
   them: an earlier design walked the guest's tables eagerly on every
   invalidation and that loop alone cost **37% of an SE/30 boot**
   (`docs/notes/mmu-tlb-invalidate-perf.md`). Entries are refilled lazily, one
-  page per fault.
+  page per fault. The invalidation zeroes only the entries populated since the
+  last one: the memory map, which owns the SoA arrays, keeps that list
+  (`tlb_track_page`, `memory_soa_invalidate`), growing it on demand and
+  falling back to zeroing the whole arrays only past 128K tracked pages. The
+  list starts overflowed, because the layout fills write entries before
+  anything tracks them.
 - The fault path is `mmu_handle_fault`: a zero SoA entry takes the slow path,
   which walks the guest's translation tables, maintains the architectural U/M
   history bits in them, and fills the entry. A page becomes writable through
@@ -276,6 +301,7 @@ Hooks and helpers:
 |------|---------|
 | `src/core/memory/memory.h` | Page table types, inline accessors, public API |
 | `src/core/memory/memory.c` | Page table allocation, population, slow-path handlers |
+| `src/core/memory/memory_class.c` | The `machine.memory` object node and its `peek` / `poke` children |
 | `src/core/memory/mmu.h` | 68030 PMMU state struct and API (`mmu.c`) |
 | `src/core/memory/mmu_trace.h` | The debugger's translation answer and walk trace, shared by every MMU kind |
 

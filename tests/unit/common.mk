@@ -143,6 +143,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
               $(EMU_ROOT)/core/memory/memory.c \
+              $(EMU_ROOT)/core/memory/memory_class.c \
               $(EMU_ROOT)/core/memory/mmu.c \
               $(EMU_ROOT)/core/memory/mmu040.c \
               $(EMU_ROOT)/core/debug/debug_mmu.c \
