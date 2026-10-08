@@ -2658,6 +2658,9 @@ static DEF_METHOD(lp_method_add) {
     uint32_t end_addr = addr;
     if (argc > 3 && argv[3].kind == V_UINT)
         end_addr = (uint32_t)argv[3].u;
+    // An inverted range could never fire
+    if (end_addr < addr)
+        return val_err("logpoints.add: end must not be below addr");
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
@@ -2692,11 +2695,11 @@ static DEF_METHOD(lp_method_add) {
     // answer -- validate_slot rejected anything that is not in the table.
     addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
 
+    // Every manifest category is registered at startup, so a miss is a
+    // user typo -- never hand it to log_register_category, which asserts.
     log_category_t *category = log_get_category(category_name);
     if (!category)
-        category = log_register_category(category_name);
-    if (!category)
-        return val_err("logpoints.add: cannot register category '%s'", category_name);
+        return val_err("logpoints.add: unknown log category '%s'", category_name);
 
     logpoint_t *lp;
     if (kind == LP_KIND_PC)
