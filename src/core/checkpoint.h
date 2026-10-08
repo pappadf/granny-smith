@@ -167,7 +167,7 @@ bool checkpoint_validate_build_id(const char *filename);
 
 // === Object-model class descriptor =========================================
 //
-// `checkpoint` is a process-singleton namespace registered at shell_init
+// `checkpoint` is a process-singleton namespace registered by core_init
 // (alongside rom / vrom / machine). It exposes save / load / clear /
 // probe / snapshot methods plus the auto_checkpoint attribute so
 // callers can drive the checkpoint subsystem without going through the

@@ -1299,7 +1299,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
     // Object-tree binding — instance_data is the scsi itself, with bus
     // and devices children plus the per-slot device entries that the
     // indexed-child get() returns on demand. The pre-machine static
-    // singleton (mounted by scsi_class_register from shell_init) shares
+    // singleton (mounted by scsi_class_register from core_init) shares
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;

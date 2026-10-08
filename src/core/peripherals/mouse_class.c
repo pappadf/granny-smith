@@ -140,8 +140,8 @@ static const class_desc_t mouse_class = {
 // === Process-singleton lifecycle ============================================
 //
 // `mouse` is a stateless facade: every method forwards to whatever machine
-// is current, so the node itself outlives machines.  Register once at
-// shell_init time (idempotent).
+// is current, so the node itself outlives machines.  Register once from
+// core_init (idempotent).
 
 static struct object *s_mouse_object = NULL;
 

@@ -31,8 +31,8 @@ int archive_extract_file(const char *path, const char *out_dir);
 
 // === Object-model class descriptor =========================================
 //
-// `files.archive` is a process-singleton node created with `files` at
-// shell_init. It exposes `identify` and `extract` methods.  `parent` is the
+// `files.archive` is a process-singleton node created with `files` by
+// core_init. It exposes `identify` and `extract` methods.  `parent` is the
 // node it is attached under (`files`).
 
 struct object;

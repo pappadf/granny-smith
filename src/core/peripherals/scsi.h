@@ -43,7 +43,7 @@ typedef enum scsi_phase {
 // Mount a pre-machine `scsi` singleton at root carrying just the static
 // helpers — hd_models, identify_hd, identify_cdrom — so file-shape
 // validation works before any machine has been booted. Called from
-// shell_init alongside rom_init. Idempotent.
+// core_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
 // The CD-ROM drive a machine takes: the identity it answers INQUIRY with and

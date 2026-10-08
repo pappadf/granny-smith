@@ -235,7 +235,7 @@ void trigger_vbl(struct config *restrict config) {
 
 // === Object-model class descriptor =========================================
 //
-// machine is a process-singleton namespace: registered once at shell_init
+// machine is a process-singleton namespace: registered once by core_init
 // (machine_init below) and never torn down.  Per-instance attribute getters
 // read from `global_emulator` rather than `object_data(self)` so the live
 // machine state is reflected regardless of when the object was attached
@@ -1040,7 +1040,7 @@ static const class_desc_t machine_class = {
 
 // === Lifecycle ============================================================
 //
-// machine is a process-singleton — registered once at shell_init time and
+// machine is a process-singleton — registered once by core_init and
 // never detached.  Attribute getters read from global_emulator so the live
 // state is reflected regardless of how many cfg lifetimes have come and
 // gone since the object was attached.  Both functions are idempotent.
@@ -1052,7 +1052,7 @@ static struct object *s_machine_object = NULL;
 // (scheduler/debug/storage/…) and the simulated network (appletalk) stay at
 // the root as its siblings. Created lazily on first use because some
 // hardware singletons (rom_init, vrom_init) run before machine_init in
-// shell_init and attach to it. The node is a process-singleton: per-cfg
+// core_init and attach to it. The node is a process-singleton: per-cfg
 // hardware attaches/detaches across machine.boot cycles, but the container
 // itself persists for the process lifetime.
 struct object *machine_object(void) {

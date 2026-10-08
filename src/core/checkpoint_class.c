@@ -21,7 +21,7 @@
 // Object-model class descriptor
 // ============================================================================
 //
-// `checkpoint` is a process-singleton (registered at shell_init), so its
+// `checkpoint` is a process-singleton (registered by core_init), so its
 // methods resolve before any machine has been booted — that matters for
 // the `checkpoint.probe` / `checkpoint.load` calls the WASM startup path
 // uses to detect and resume from a quick-saved state. None of the methods

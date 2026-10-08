@@ -27,7 +27,7 @@
 //   [8]  EVT_HEAD   (core writes)    [9] EVT_TAIL (client writes)
 //   [10] STATUS     DETACHED / ATTACHED / LOST
 //   [11] HEARTBEAT  core: bumped once per tick and once per idle drain
-//   [12] READY      core: 1 once requests can be served (after shell_init)
+//   [12] READY      core: 1 once requests can be served (after core_init)
 //   [13] GPU_AVAILABLE  client -> core, before any machine boots
 //   [14..] statistics (see GS_MBX_C_STAT_*)
 //
