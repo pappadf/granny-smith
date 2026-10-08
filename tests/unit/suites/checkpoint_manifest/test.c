@@ -6,7 +6,7 @@
 #include "checkpoint_machine.h"
 #include "image.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdio.h>

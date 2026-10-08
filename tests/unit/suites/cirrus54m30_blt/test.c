@@ -23,7 +23,7 @@
 #include "config_space.h"
 #include "display.h"
 #include "pci.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>

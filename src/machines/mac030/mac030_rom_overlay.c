@@ -11,7 +11,7 @@
 #include "log.h"
 #include "mac030_glue.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 LOG_USE_CATEGORY_NAME("board");
 

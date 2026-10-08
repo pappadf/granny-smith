@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// system_config.h
+// system_internal.h
 // Private config_t struct definition for machine implementations.
 //
 // This header exposes the full `struct config` layout to machine code
@@ -9,8 +9,8 @@
 // headless_main.c) must NOT include this header — they interact with
 // config_t only through the opaque handle declared in system.h.
 
-#ifndef SYSTEM_CONFIG_H
-#define SYSTEM_CONFIG_H
+#ifndef SYSTEM_INTERNAL_H
+#define SYSTEM_INTERNAL_H
 
 #include "adb.h"
 #include "card.h"
@@ -117,4 +117,4 @@ struct config {
 // controllers a restore builds resolve their saved media in it.
 #define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
 
-#endif // SYSTEM_CONFIG_H
+#endif // SYSTEM_INTERNAL_H

@@ -14,7 +14,7 @@
 #include "keyboard.h" // key_event_t
 #include "mouse.h" // input_mouse_mode_parse
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <string.h>
 

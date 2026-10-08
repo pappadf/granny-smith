@@ -46,7 +46,7 @@
 #include "memory.h"
 #include "pci.h"
 #include "swim3.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

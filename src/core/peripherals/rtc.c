@@ -9,7 +9,7 @@
 #include "log.h"
 #include "object.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 #include "via.h"
 

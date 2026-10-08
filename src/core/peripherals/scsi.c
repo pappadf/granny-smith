@@ -24,7 +24,7 @@ value_t io_leaf_export_image(struct image *img, const char *dest, const char *wh
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 // Forward declaration — defined alongside the static singleton near the

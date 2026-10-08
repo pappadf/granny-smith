@@ -8,7 +8,7 @@
 #include "cpu.h"
 #include "log.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h>
 #include <string.h>

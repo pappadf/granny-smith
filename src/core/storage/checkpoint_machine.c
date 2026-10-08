@@ -11,7 +11,7 @@
 #include "image.h"
 #include "log.h"
 #include "storage_util.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <ctype.h>
 #include <dirent.h>

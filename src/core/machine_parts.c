@@ -8,7 +8,7 @@
 
 #include "checkpoint.h"
 #include "log.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>

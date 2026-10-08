@@ -9,7 +9,7 @@
 #include "machine_profile.h"
 #include "nubus.h"
 #include "rtc.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <string.h>
 

@@ -24,7 +24,7 @@
 #include "mac030_glue.h"
 #include "machine.h"
 #include "slot_tables.h"
-#include "system_config.h" // full config_t
+#include "system_internal.h" // full config_t
 
 #include "adb.h"
 #include "asc.h"

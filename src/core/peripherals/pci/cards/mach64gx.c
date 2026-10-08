@@ -64,7 +64,7 @@
 #include "prom.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stdio.h>

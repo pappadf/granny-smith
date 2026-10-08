@@ -13,7 +13,7 @@
 #include "checkpoint.h"
 #include "mac030_glue_io.h"
 #include "memory.h" // memory_interface_t
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

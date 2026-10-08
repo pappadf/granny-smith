@@ -17,7 +17,7 @@
 #define GS_MACHINES_AV_PSC_H
 
 #include "dma_mem.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

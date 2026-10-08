@@ -34,7 +34,7 @@
 #include "memory.h"
 #include "nubus.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>

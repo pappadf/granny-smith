@@ -4,7 +4,7 @@
 // machine_profile.h
 // PUBLIC machine descriptor + capability types.  This is the one machine-
 // subsystem header the platform-agnostic core is allowed to include
-// (system.c / system_config.h store and read a `const hw_profile_t *`).  The
+// (system.c / system_internal.h store and read a `const hw_profile_t *`).  The
 // machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
 // layering check enforces that.

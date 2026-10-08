@@ -43,7 +43,7 @@
 #include "machine_profile.h"
 #include "memory.h"
 #include "pci.h" // the generic PCI core: bus, device, config header
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

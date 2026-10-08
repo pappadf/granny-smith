@@ -12,7 +12,7 @@
 #include "image_wrap.h"
 #include "source.h"
 #include "storage.h"
-#include "system_config.h" // MAX_IMAGES -- the real bound on the restored list
+#include "system_internal.h" // MAX_IMAGES -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>

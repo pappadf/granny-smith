@@ -79,7 +79,7 @@
 #include "log.h"
 #include "pci.h"
 #include "sym53c8xx.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdlib.h>
 #include <string.h>

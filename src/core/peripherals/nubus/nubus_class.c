@@ -13,7 +13,7 @@
 #include "nubus.h"
 #include "object.h"
 #include "root.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stddef.h>

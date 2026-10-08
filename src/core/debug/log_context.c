@@ -15,7 +15,7 @@
 #include "ppc.h" // PowerPC pc / r24 for the PC decoration
 #include "scheduler.h" // scheduler_instr_count
 #include "system.h" // system_running
-#include "system_config.h" // config_t::cpu / ppc / scheduler
+#include "system_internal.h" // config_t::cpu / ppc / scheduler
 
 #include <stdio.h>
 

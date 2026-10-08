@@ -21,7 +21,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 #include "vrom.h"
 #include "nubus/card.h"

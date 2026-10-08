@@ -39,7 +39,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h>
 #include <stdlib.h>

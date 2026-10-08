@@ -20,7 +20,7 @@
 #define GS_MACHINES_MAC030_GLUE_IO_H
 
 #include "memory.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

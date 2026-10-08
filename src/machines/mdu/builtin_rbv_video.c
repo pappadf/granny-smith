@@ -19,7 +19,7 @@
 #include "memory.h" // ram_native_pointer: the frame buffer in main RAM
 #include "nubus.h"
 #include "rbv.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>

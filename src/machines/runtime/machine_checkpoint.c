@@ -32,7 +32,7 @@
 #include "sonic.h"
 #include "sound.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "via.h"
 
 void part_save_memory(void *obj, checkpoint_t *cp) {

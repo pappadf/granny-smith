@@ -27,7 +27,7 @@
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"

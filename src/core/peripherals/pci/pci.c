@@ -25,7 +25,7 @@
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "prom.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdarg.h>
 #include <stdio.h>

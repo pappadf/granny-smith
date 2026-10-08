@@ -13,7 +13,7 @@
 #include "scheduler.h"
 #include "sound_surface.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 LOG_USE_CATEGORY_NAME("sound");

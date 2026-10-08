@@ -18,7 +18,7 @@
 #include "mac030_glue.h"
 #include "machine.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "asc.h"
 #include "iicx_internal.h"

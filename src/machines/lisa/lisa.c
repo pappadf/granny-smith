@@ -12,7 +12,7 @@
 #include "machine.h"
 #include "machine_checkpoint.h"
 #include "machine_teardown.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "cops.h"
 #include "cpu.h"

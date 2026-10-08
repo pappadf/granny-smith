@@ -18,7 +18,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "via.h"
 
 LOG_USE_CATEGORY_NAME("board");

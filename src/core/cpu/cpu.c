@@ -16,7 +16,7 @@
 #include "object.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but

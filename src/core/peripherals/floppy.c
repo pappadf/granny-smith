@@ -17,7 +17,7 @@ static void floppy_notify_present(int drive, bool present);
 #include "platform.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but

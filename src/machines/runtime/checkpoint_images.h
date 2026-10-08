@@ -12,7 +12,7 @@
 
 #include "checkpoint.h"
 #include "image.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 // Save the image list (count prefix + per-image blob via image_checkpoint).
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp);

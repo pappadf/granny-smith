@@ -12,7 +12,7 @@
 #include "display.h"
 #include "pci.h"
 #include "pci_card.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdlib.h>

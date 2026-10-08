@@ -7,7 +7,7 @@
 // the machine's own source file (e.g., src/machines/plus.c) and is invoked
 // through the hw_profile_t callback interface.
 
-#include "system_config.h" // full config_t definition (includes system.h transitively)
+#include "system_internal.h" // full config_t definition (includes system.h transitively)
 
 #include "adb.h"
 #include "appletalk.h"

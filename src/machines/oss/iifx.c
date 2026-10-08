@@ -12,7 +12,7 @@
 #include "machine_teardown.h"
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"

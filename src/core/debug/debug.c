@@ -35,7 +35,7 @@
 #include "shell.h"
 #include "shell_var.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 #include "event/gs_event.h"
 

@@ -34,7 +34,7 @@
 #include "shell.h"
 #include "storage_util.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "udif_writer.h"
 #include "value.h"
 #include "vfs.h"

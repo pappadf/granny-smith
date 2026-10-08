@@ -17,7 +17,7 @@
 
 #include "mac030_glue_io.h" // the shared engine (mac030_io_t + mac030_io_*)
 #include "memory.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

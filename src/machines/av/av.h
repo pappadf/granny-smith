@@ -36,7 +36,7 @@
 #include "mac030_glue_io.h" // the shared I/O dispatch engine
 #include "mac030_rom_overlay.h"
 #include "memory.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

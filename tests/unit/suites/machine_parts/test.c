@@ -13,7 +13,7 @@
 #include "build_id.h"
 #include "checkpoint.h"
 #include "machine_parts.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>

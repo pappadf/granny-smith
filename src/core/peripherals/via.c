@@ -15,7 +15,7 @@
 #include "object.h"
 #include "platform.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stdbool.h>

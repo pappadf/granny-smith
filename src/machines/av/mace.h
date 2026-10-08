@@ -12,7 +12,7 @@
 #ifndef GS_MACHINES_AV_MACE_H
 #define GS_MACHINES_AV_MACE_H
 
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdint.h>
 
