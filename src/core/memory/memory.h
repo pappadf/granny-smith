@@ -146,9 +146,6 @@ void memory_map_set_host_fill(memory_map_t *mem, void (*fill)(uint32_t page_inde
 void memory_map_set_pmmu(memory_map_t *mem, struct mmu_state *mmu);
 void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu);
 
-// The map's host-fill region table (mmu.c's, opaque here), owned by the map.
-void *memory_map_host_fill_regions(memory_map_t *mem);
-
 void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint);
 
 // === Operations ===
@@ -159,10 +156,11 @@ extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, cons
 // Register a host-backed region on the physical bus map.  `writable`
 // distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
 // regions.  The NuBus bus controller calls this once per card region
-// during nubus_init().  The name is deliberate: the storage still lives in
-// mmu_state_t (4-slot fixed layout in v1) but the call-site lie ("the MMU
-// manages mappings") is fixed by exposing the API on the memory map.  No
-// fast-path change.
+// during nubus_init().  Defined in memory.c: on a machine whose page table
+// no 68k MMU manages (the PowerPC families) the map fills the pages itself
+// through its page-fill hook and keeps the window in its own table; on a 68k
+// machine the region joins the PMMU's host-region list (mmu_state_t), which
+// its table walks resolve through.  No fast-path change.
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable);
 
@@ -283,7 +281,19 @@ extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only
 extern uintptr_t *g_user_read; // user-mode read mapping
 extern uintptr_t *g_user_write; // user-mode write mapping
 
-// Active pointers switched per sprint based on SR.S bit
+// SoA population tracking: the selected map lists the page indices written
+// into the SoA arrays since the last invalidation.  Every writer of a
+// fast-path entry outside a plain layout fill calls tlb_track_page (after the
+// store); memory_soa_invalidate -- the PMMU's TLB flush -- then zeroes just
+// those entries, or all four arrays when the list outgrew its capacity.
+void tlb_track_page(uint32_t page_index);
+void memory_soa_invalidate(void);
+
+// Active pointers switched per sprint based on SR.S bit.  The pair is the
+// function code of the access in flight, not just the CPU's mode: MOVES
+// points it at the SFC/DFC's arrays for the duration of its one access
+// (cpu_ops.h).  That is why the slow paths take "supervisor" from which pair
+// is active rather than from SR.S -- it is the access's own FC.
 extern uintptr_t *g_active_read;
 extern uintptr_t *g_active_write;
 
@@ -355,6 +365,9 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
     return (pen_x256 + 255) >> 8; // ceil to whole cycles
 }
 
+// Largest penalty one access may charge, in cycles (see memory_io_penalty).
+#define MEMORY_IO_PENALTY_MAX ((UINT32_MAX >> 8) - 0x10000u)
+
 // Apply an I/O bus cycle penalty (extra_cycles beyond the CPI baseline).
 // Called from machine I/O dispatchers (e.g. SE/30) in the slow path only.
 // The remainder accumulates x256 cycles so fractional effective CPIs
@@ -364,6 +377,11 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
         return; // penalties disabled
     if (__builtin_expect(g_sprint_burndown_ptr == NULL, 0))
         return; // outside a sprint (an inspection access): never touches guest timing
+    // Saturate so the x256 shift and the add stay inside 32 bits (the
+    // remainder is already under one CPI, < 2^16).  Real penalties are tens
+    // of cycles; the cap is ~16M.
+    if (__builtin_expect(extra_cycles > MEMORY_IO_PENALTY_MAX, 0))
+        extra_cycles = MEMORY_IO_PENALTY_MAX;
     g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
     uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
@@ -396,6 +414,12 @@ static inline void memory_io_esync_penalty(void) {
         now += ((uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi_x256 + g_sprint_frac_x256) >> 8;
     memory_io_penalty(memory_esync_penalty_cycles(now, g_esync_period_x256));
 }
+
+// Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses
+// taken through the slow path since process start, and a histogram of them by
+// address bucket (memory.c's MEM_SLOWPATH_BUCKET).
+extern uint64_t g_mem_slowpath_count;
+extern uint64_t g_mem_slowpath_hist[32];
 
 // Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
 uint8_t memory_read_uint8_slow(uint32_t addr);
@@ -502,24 +526,6 @@ extern void (*g_mem_map_changed)(void);
 extern uint32_t (*g_mem_logical_xlate)(void *ctx, uint32_t addr, bool *ok);
 extern void *g_mem_logical_xlate_ctx;
 
-// === Value Trap (fast-path needle search) ===
-// Catches writes of a specific (PA, size, value) combination without forcing
-// the page to slow path.  Controlled by `value-trap` shell command.  When
-// disabled (value_trap_active=0), the inline check is one cmovne and one
-// branch-not-taken — sub-1% overhead on the fast path.  When fired, the hook
-// is called with the access details; the hook can then disarm itself or stop.
-// Multiple writes across an instruction may all match; the hook is called for
-// each.  Use to find rare needles in haystacks (e.g. "the write that placed
-// these 4 specific bytes at this physical address").
-extern uint32_t g_value_trap_active; // 0 = disabled, nonzero = enabled
-extern uint32_t g_value_trap_pa; // physical address to match
-extern uint32_t g_value_trap_value; // value to match
-extern uint32_t g_value_trap_size; // 1, 2, or 4 (byte/word/long)
-typedef void (*value_trap_hook_t)(uint32_t logical_addr, uint32_t phys_addr, uint32_t value, unsigned size);
-extern value_trap_hook_t g_value_trap_hook;
-// Called by the fast path when the value matches; resolves PA and invokes hook.
-void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size);
-
 // Force/unforce the slow path for a page range (caller in debug.c).
 // Each page in [start_page, end_page] (inclusive) has its reference count
 // adjusted; if the count becomes non-zero the SoA entries are zeroed, and if
@@ -601,9 +607,6 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 1 && (uint8_t)value == (uint8_t)g_value_trap_value,
-                         0))
-        value_trap_check(masked, value, 1);
     if (__builtin_expect(base != 0, 1)) {
         STORE_BE8((uint8_t *)(base + masked), value);
         return;
@@ -614,9 +617,6 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
 static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(
-            g_value_trap_active && g_value_trap_size == 2 && (uint16_t)value == (uint16_t)g_value_trap_value, 0))
-        value_trap_check(masked, value, 2);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
         STORE_BE16((uint8_t *)(base + masked), value);
@@ -628,8 +628,6 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
 static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 4 && value == g_value_trap_value, 0))
-        value_trap_check(masked, value, 4);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         STORE_BE32((uint8_t *)(base + masked), value);

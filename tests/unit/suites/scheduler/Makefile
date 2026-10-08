@@ -10,6 +10,7 @@ TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/scheduler/scheduler.c \
+                ../../../../src/core/scheduler/scheduler_class.c \
                 ../../../../src/core/event/gs_event.c
 # $(CURDIR) comes FIRST so this suite's platform_clock.h (extern, controllable
 # host_time) shadows the support default (static inline, always 0.0).  That

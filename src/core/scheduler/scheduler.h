@@ -121,35 +121,39 @@ sched_cpu_if_t cpu_sched_if(struct cpu *cpu);
 struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkpoint);
 
 // Free all resources associated with a scheduler instance
-void scheduler_delete(struct scheduler *scheduler);
+void scheduler_delete(struct scheduler *s);
 
 // Save scheduler state to a checkpoint (everything but the event queue).
-void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+void scheduler_checkpoint(struct scheduler *restrict s, checkpoint_t *checkpoint);
 
 // Save / restore the event queue.  It is the LAST block of a machine
 // checkpoint: system_create restores it once the whole machine -- every event
 // source -- exists, so every saved event binds as it is read, or the restore
 // fails.
-void scheduler_checkpoint_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
-void scheduler_restore_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+void scheduler_checkpoint_events(struct scheduler *restrict s, checkpoint_t *checkpoint);
+void scheduler_restore_events(struct scheduler *restrict s, checkpoint_t *checkpoint);
 
 // === Operations ===
 
 // Event management
 
-// Check if an event with the given callback is currently scheduled
-bool has_event(struct scheduler *restrict scheduler, event_callback_t callback);
+// Check if an event with the given callback is currently scheduled.  A linear
+// walk of the queue -- O(n), deliberately: the queue is a handful of entries
+// deep, so no index is kept.  Fine for "arm unless already armed" checks;
+// keep it off per-instruction paths.
+bool has_event(struct scheduler *restrict s, event_callback_t callback);
 
 // When the last event still queued for this callback is due, in emulated
 // nanoseconds (the scheduler_time_ns clock); 0 if none is queued.  See the
 // definition for why keyboard.type wants this rather than a shadow copy of
 // the same instant.
-double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callback_t callback);
+double scheduler_last_event_ns(struct scheduler *restrict s, event_callback_t callback);
 
-// Schedule a new CPU event to fire after the specified cycles or nanoseconds
-// Arm an event.  Exactly one of `cycles` / `ns` must be non-zero; the other
-// unit is derived.  The (callback, source) pair must already be registered
-// with scheduler_new_event_type.
+// Arm an event to fire after `cycles` CPU cycles or `ns` nanoseconds.  Exactly
+// one of the two must be non-zero; a delay in ns is converted to cycles at the
+// machine's clock (truncating, except that a sub-cycle delay rounds up to one
+// cycle).  The (callback, source) pair must already be registered with
+// scheduler_new_event_type.
 //
 // An optional SEVENTH argument makes the event periodic: it re-arms itself
 // inside the scheduler at timestamp + the interval it was armed with, until
@@ -171,7 +175,7 @@ double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callb
 //
 // A handler MAY cancel its own event: the next occurrence is inserted before
 // the callback runs, so remove_event() from inside the handler finds it.
-event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_t callback, void *source, uint64_t data,
+event_t *scheduler_new_cpu_event_ex(struct scheduler *s, event_callback_t callback, void *source, uint64_t data,
                                     uint64_t cycles, uint64_t ns, bool periodic);
 
 #define SCHED_EV_SELECT_7(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
@@ -180,7 +184,6 @@ event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_
 #define SCHED_EV_ONESHOT(s, cb, src, d, cyc, ns) scheduler_new_cpu_event_ex((s), (cb), (src), (d), (cyc), (ns), false)
 #define scheduler_new_cpu_event(...)             SCHED_EV_SELECT_7(__VA_ARGS__, SCHED_EV_PERIODIC, SCHED_EV_ONESHOT)(__VA_ARGS__)
 
-// Remove all events matching the given callback (and optionally source) from the queue
 // Drop every queued event and the event-type registration held for `source`.
 // One call per destructor, keyed on the object alone, so the cleanup cannot be
 // half-done the way N-callbacks-N-remove_event calls repeatedly was.  Call it
@@ -193,31 +196,34 @@ event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_
 // sym53c8xx_chip_reset -- use remove_event, which leaves the registration
 // standing.  (Learned the hard way: routing scsi_cancel_drq_service through
 // here broke iici-format-hd on the first integration run.)
-void scheduler_forget_source(struct scheduler *restrict scheduler, void *source);
+void scheduler_forget_source(struct scheduler *restrict s, void *source);
 
 // Counts, for tests and introspection: queued events, and registered event
 // types.  The scheduler object nodes will want both; scheduler_forget_source
 // is untestable without them, since `struct scheduler` is opaque.
-int scheduler_pending_events(const struct scheduler *scheduler);
-int scheduler_pending_device_events(const struct scheduler *scheduler);
-int scheduler_event_type_count(const struct scheduler *scheduler);
+int scheduler_pending_events(const struct scheduler *s);
+int scheduler_pending_device_events(const struct scheduler *s);
+int scheduler_event_type_count(const struct scheduler *s);
 
-void remove_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source);
+// Remove all events matching the given callback (and optionally source) from the queue
+void remove_event(struct scheduler *restrict s, event_callback_t callback, void *source);
 
 // Remove events matching callback, source, and data value
-void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t callback, void *source, uint64_t data);
+void remove_event_by_data(struct scheduler *restrict s, event_callback_t callback, void *source, uint64_t data);
 
 // Register a new event type for checkpoint save/restore
-void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
-                              const char *event_name, event_callback_t callback);
+void scheduler_new_event_type(struct scheduler *s, const char *source_name, void *source, const char *event_name,
+                              event_callback_t callback);
 
 // Time and cycle queries
 
-// Returns the current cpu_cycles including in-progress sprint execution
-extern uint64_t scheduler_cpu_cycles(struct scheduler *restrict scheduler);
+// Returns the current cpu_cycles including in-progress sprint execution.  A
+// real function, not a header inline: struct scheduler is opaque outside the
+// scheduler, and unit suites substitute their own definition.
+extern uint64_t scheduler_cpu_cycles(struct scheduler *restrict s);
 
 // Get current emulated time in nanoseconds
-extern double scheduler_time_ns(struct scheduler *restrict scheduler);
+extern double scheduler_time_ns(struct scheduler *restrict s);
 
 // Execution control
 
@@ -247,9 +253,6 @@ void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *p
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 
-// Run the scheduler for a specified number of microseconds
-void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
-
 // Why a run ended.  A mode (a run started by scheduler_run_with_budget)
 // carries the reason it stopped and whose it was; scheduler_run_frame
 // reports both in a mode_ended event (gs_event.h) at the point where
@@ -266,34 +269,31 @@ typedef enum sched_stop_reason {
 const char *sched_stop_reason_name(sched_stop_reason_t reason);
 
 // Stop the scheduler immediately, halting CPU execution (reason: request)
-void scheduler_stop(struct scheduler *restrict scheduler);
+void scheduler_stop(struct scheduler *restrict s);
 
 // scheduler_stop with the reason the mode_ended event will carry.
-void scheduler_stop_reason(struct scheduler *restrict scheduler, sched_stop_reason_t reason);
+void scheduler_stop_reason(struct scheduler *restrict s, sched_stop_reason_t reason);
 
 // Stops only a mode owned by `owner` (0: any owner).  Returns whether it
 // stopped anything -- a client's stop must not end another's run.
-bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner);
+bool scheduler_stop_owned(struct scheduler *restrict s, uint32_t owner);
 
 // The client that started the current (or last) mode, 0 for none.
-uint32_t scheduler_run_owner(struct scheduler *restrict scheduler);
+uint32_t scheduler_run_owner(struct scheduler *restrict s);
 
 // The id of the current (or last) mode, counted from 1; 0 before any.
-uint32_t scheduler_mode_id(struct scheduler *restrict scheduler);
+uint32_t scheduler_mode_id(struct scheduler *restrict s);
 
 // Whether the current mode has an instruction budget (it ends by itself).
 // A job waits for a bounded mode it started; an unbounded run returns at
 // once -- there is nothing to wait for.
-bool scheduler_mode_bounded(struct scheduler *restrict scheduler);
+bool scheduler_mode_bounded(struct scheduler *restrict s);
 
 // Start running with a stop scheduled after `instructions` more instructions
 // (0 = until stopped).  scheduler_run_frame does the executing: the
 // platform's loop for scheduler.run N, a loop inside the call for debug.step N.
 // Returns false if the count overflows.
 bool scheduler_run_with_budget(struct scheduler *s, uint64_t instructions);
-
-// Set the scheduler running state
-void scheduler_set_running(struct scheduler *restrict scheduler, bool running);
 
 // Check if the scheduler is currently running
 bool scheduler_is_running(struct scheduler *restrict s);

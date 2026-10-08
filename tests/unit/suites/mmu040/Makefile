@@ -11,6 +11,7 @@ OMIT_STUBS   := memory
 STUBS        := cpu lisa_mmu
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/memory/memory.c \
+              ../../../../src/core/memory/memory_class.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \
                 ../../../../src/core/object/meta.c \

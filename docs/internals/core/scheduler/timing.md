@@ -81,7 +81,7 @@ before the next pending event:
 
 ```c
 cycles_to_event = event->timestamp - cpu_cycles;
-cycles_to_execute = MIN(cycles_to_event, remaining_cycles);
+cycles_to_execute = min(cycles_to_event, remaining_cycles);
 instr_to_exec = cycles_to_execute / CPI;
 ```
 
@@ -139,10 +139,12 @@ struct event {
 
 Events are created via `scheduler_new_cpu_event()`, which accepts a delay in
 either cycles or nanoseconds (exactly one must be non-zero). Nanosecond delays
-are converted to cycles using the machine's clock frequency:
+are converted to cycles using the machine's clock frequency (computed in two
+parts so the product cannot overflow), and a delay shorter than one cycle
+rounds up to one:
 
 ```c
-cycles = ns * frequency / 1e9
+cycles = max(1, floor(ns * frequency / 1e9))
 ```
 
 The event's absolute timestamp is `current_cpu_cycles() + delay_cycles`. The
@@ -336,7 +338,7 @@ Headless arms no VBL event. Its run loops call `scheduler_run_frame()`
 back-to-back as fast as the host allows, yielding between frame-units only for
 the heartbeat / daemon-poll (pump) or Ctrl-C / `--max-cycles` (REPL). An
 instruction-budget `scheduler.run N` schedules a `run_stop_event` that the inner
-`scheduler_run` clamps to, stopping mid-frame at exactly `N`; no argument runs
+`scheduler_run_instructions` clamps to, stopping mid-frame at exactly `N`; no argument runs
 until `scheduler.stop`. No `host_time()` feeds guest execution.
 
 Property: a frame-unit is a constant number of instructions with the VBL at its
