@@ -976,7 +976,10 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // ---- EM1BIG: |X| > 70*log2 ----
     if (compact > 0x4004C215u) {
         if (!src.sign) {
-            // Large positive: exp(X)-1 ≈ exp(X), delegate to FETOX
+            // Large positive: exp(X)-1 ≈ exp(X), delegate to FETOX (FPSP
+            // EM1BIG branches to setox the same way).  Hand back the user
+            // FPCR first: fpu_op_etox does its own save/clear/restore
+            // around its intermediates, so it must see the caller's value.
             fpu->fpcr = saved_fpcr;
             return fpu_op_etox(fpu, src, raw);
         }
@@ -1101,6 +1104,10 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 // Each entry: { sign+biased_exp<<16, mant_hi, mant_lo, fact2_compact }
 // FACT1 = first 3 words (extended T), FACT2 = 4th word (compact correction)
 // FACT2 format: upper 16 bits = sign+biased_exp, lower 16 bits = mant_hi>>48
+// Not shared with exptbl_data (FETOX): the FPSP keeps two distinct tables.
+// FETOX's T is rounded to 62 bits with a single-precision tail, this one
+// carries the full 64-bit T with a compact FACT2, so 48 of the 64 leading
+// values differ in their low bits and the tails have different formats.
 static const uint32_t stwotox_tbl[64 * 4] = {
     0x3FFF0000, 0x80000000, 0x00000000, 0x3F738000, 0x3FFF0000, 0x8164D1F3, 0xBC030773, 0x3FBEF7CA, 0x3FFF0000,
     0x82CD8698, 0xAC2BA1D7, 0x3FBDF8A9, 0x3FFF0000, 0x843A28C3, 0xACDE4046, 0x3FBCD7C9, 0x3FFF0000, 0x85AAC367,
@@ -2113,6 +2120,9 @@ static trig_reduced_t trig_reduce_general(fpu_state_t *fpu, fpu_unpacked_t x) {
     // one pi/2 step to avoid overflow
     uint16_t biased = (uint16_t)(x.exponent + FPU_EXP_BIAS);
     uint32_t compact = ((uint32_t)biased << 16) | (uint32_t)(x.mantissa_hi >> 48);
+    // FPSP REDUCEX pre-reduces only this exact compact value (the largest
+    // finite magnitudes, where X + N*pi/2 could overflow); every other input
+    // goes straight to the loop, whose iteration cap bounds it.
     if (compact == 0x7FFEFFFF) {
         // Create 2^16383 * pi/2 in two parts
         fpu_unpacked_t piby2_hi = fpsp_ext(0x7FFE0000, 0xC90FDAA2, 0x00000000);
@@ -2288,7 +2298,8 @@ static fpu_unpacked_t sin_poly(fpu_state_t *fpu, fpu_unpacked_t r, bool negate, 
     fp1 = fpu_round_to_64(fpu_op_add(fpu, fp2, fp1)); // [A1+...]+[S(A2+...)]
     fpu_unpacked_t fp0 = fpu_round_to_64(fpu_op_mul(fpu, fp1, rs)); // R'*S*(poly)
 
-    // Final add R' with user FPCR
+    // Final add R' with user FPCR: as in the FPSP, the last operation
+    // rounds under the caller's mode; all earlier steps ran under FPCR=0
     fpu->fpcr = saved_fpcr;
     fp0 = fpu_op_add(fpu, rp, fp0); // R' + R'*S*(poly)
     return fp0;
@@ -2328,7 +2339,7 @@ static fpu_unpacked_t cos_poly(fpu_state_t *fpu, fpu_unpacked_t r, bool negate, 
     fp0 = fpu_round_to_64(fpu_op_add(fpu, fp1, fp0)); // [B1+...]+[S(B2+...)]
     fp0 = fpu_round_to_64(fpu_op_mul(fpu, sp, fp0)); // S'*(poly)
 
-    // Final add SGN with user FPCR
+    // Final add SGN with user FPCR (FPSP pattern, see sin_poly)
     fpu->fpcr = saved_fpcr;
     fp0 = fpu_op_add(fpu, sgn, fp0); // SGN + S'*(poly)
     return fp0;

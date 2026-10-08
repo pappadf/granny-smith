@@ -18,7 +18,10 @@ System 7 probes for the FPU at boot via `FBcc`/`FSAVE` instructions and crashes 
 | File | Responsibility |
 |------|----------------|
 | `src/core/cpu/fpu.h` | `float80_reg_t`, `fpu_unpacked_t`, `fpu_state_t`, public API, predicate helpers |
-| `src/core/cpu/fpu.c` | Soft-float core: 128-bit primitives, pack/unpack, arithmetic, format conversions, FMOVE, FMOVEM, FMOVECR, FSAVE/FRESTORE, exception logic, operation dispatch |
+| `src/core/cpu/fpu.c` | Soft-float core: 128-bit primitives, pack/unpack, arithmetic, FMOVE, FMOVEM, FMOVECR, FSAVE/FRESTORE, exception logic, operation dispatch |
+| `src/core/cpu/fpu_format.c` | Memory-format conversions: 68882 extended, IEEE single/double (one shared rounding routine), byte/word/long integers |
+| `src/core/cpu/fpu_packed.c` | Packed decimal (FMOVE.P) conversions |
+| `src/core/cpu/fpu_internal.h` | Private interface between the FPU translation units |
 | `src/core/cpu/fpu_transc.c` | Transcendental functions: trig, exp/log, hyperbolic, inverse trig — FPSP-derived polynomial approximations |
 | `src/core/cpu/cpu_ops.h` | FPU instruction dispatch macros (`OP_FPU_GENERAL`, `OP_FPU_SCCDBCC`, `OP_FSAVE_EA`, `OP_FRESTORE_EA`) |
 | `src/core/cpu/cpu_decode.h` | F-line decode (cases `0x08`, `0x09` for CpID=1 type 0 and type 1) |
