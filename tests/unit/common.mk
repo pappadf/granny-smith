@@ -142,6 +142,8 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
+              $(EMU_ROOT)/core/cpu/fpu_format.c \
+              $(EMU_ROOT)/core/cpu/fpu_packed.c \
               $(EMU_ROOT)/core/memory/memory.c \
               $(EMU_ROOT)/core/memory/memory_class.c \
               $(EMU_ROOT)/core/memory/mmu.c \

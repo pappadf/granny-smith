@@ -218,6 +218,11 @@ extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, c
 
 extern void memory_map_print(memory_map_t *mem);
 
+// Host pointer to guest RAM byte `addr`: exactly mem->image + addr.  Never
+// NULL for a live map; no bounds check and no address folding (the caller
+// keeps addr inside installed RAM).  The image is heap-aligned, so the
+// pointer has addr's alignment -- an even addr may be read as uint16_t.
+// The bytes are guest (big-endian) order.
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
 // Installed RAM size in bytes (e.g. 0x100000 for a 1 MB Plus).

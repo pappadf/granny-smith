@@ -51,7 +51,7 @@ struct host_input;
 void debug_mac_mouse_trace_tick(void *source, uint64_t data);
 
 // How a mouse.move / mouse.click reaches the guest (the `mode` argument,
-// parsed by input_mouse_mode_parse in mouse.c).
+// parsed by input_mouse_mode_parse in mouse_class.c).
 typedef enum mouse_route {
     MOUSE_ROUTE_INVALID = 0, // not a mode (the parser's "bad argument")
     MOUSE_ROUTE_DEFAULT, // per-platform best route

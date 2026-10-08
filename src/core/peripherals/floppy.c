@@ -43,9 +43,32 @@ LOG_USE_CATEGORY_NAME("floppy");
 // Shared IWM Core Functions (used by both IWM and SWIM code paths)
 // ============================================================================
 
-// Forward declarations for scheduler callbacks
-static void floppy_step_settle_callback(void *src, uint64_t data);
-static void floppy_speed_settle_callback(void *src, uint64_t data);
+// Callback invoked when step settle period completes
+static void floppy_step_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
+        LOG(1, "Drive %d: Invalid drive in step settle callback", drive_index);
+        return;
+    }
+
+    // /STEP now returns 1 (settled)
+    floppy->drives[drive_index].step_settle_count = 0;
+    LOG(5, "Drive %d: Step settle complete", drive_index);
+}
+
+// Callback invoked when motor speed settle period completes after a zone change
+static void floppy_speed_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES)
+        return;
+
+    floppy->drives[drive_index].speed_settling = false;
+    LOG(5, "Drive %d: Speed settle complete", drive_index);
+}
 
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
@@ -280,9 +303,9 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         // sensor detecting the hub mark, followed by a long LOW phase.
         // The asymmetric duty cycle is critical: MacTest's MEASURE_SPEED
         // function uses VIA T2 overflow counting during the LOW phase.
-        bool ism_mode =
+        bool ism_index =
             (floppy->type == FLOPPY_TYPE_SWIM && floppy->in_ism_mode && (floppy->ism_mode & ISM_MODE_MOTOR_ON));
-        if (ism_mode) {
+        if (ism_index) {
             double now_ns = scheduler_time_ns(floppy->scheduler);
             double ns_per_rev = (60.0 / 300) * 1e9; // 200ms at 300 RPM
             // HD disks: 1 INDEX pulse per revolution (200ms cycle)
@@ -299,7 +322,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
             desc = "/TACH";
         }
-        LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_mode,
+        LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_index,
             floppy->ism_mode, floppy->in_ism_mode, drive->track);
         return ret;
     }
@@ -401,33 +424,6 @@ void floppy_motor_spinup_callback(void *source, uint64_t data) {
 
     floppy->drives[drive_index].motor_spinning_up = false;
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
-}
-
-// Callback invoked when step settle period completes
-static void floppy_step_settle_callback(void *source, uint64_t data) {
-    floppy_t *floppy = (floppy_t *)source;
-    int drive_index = (int)data;
-
-    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
-        LOG(1, "Drive %d: Invalid drive in step settle callback", drive_index);
-        return;
-    }
-
-    // /STEP now returns 1 (settled)
-    floppy->drives[drive_index].step_settle_count = 0;
-    LOG(5, "Drive %d: Step settle complete", drive_index);
-}
-
-// Callback invoked when motor speed settle period completes after a zone change
-static void floppy_speed_settle_callback(void *source, uint64_t data) {
-    floppy_t *floppy = (floppy_t *)source;
-    int drive_index = (int)data;
-
-    if (drive_index < 0 || drive_index >= NUM_DRIVES)
-        return;
-
-    floppy->drives[drive_index].speed_settling = false;
-    LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
 // The IWM state lines an access at `offset` leaves (even=clear, odd=set)
@@ -713,6 +709,16 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
         return -1;
     }
 
+    // Defence in depth: the shell validates sizes too, but the core API must
+    // not accept a medium no drive can present (the image layer classifies
+    // floppy images by size: 400K, 800K, 720K and 1440K).
+    floppy_media_t media;
+    if (disk && !floppy_media_from_image(disk, &media)) {
+        LOG(1, "Drive %d: Insert refused - '%s' is not a floppy-sized image", drive,
+            image_get_filename(disk) ? image_get_filename(disk) : "<unnamed>");
+        return -1;
+    }
+
     floppy->disk[drive] = disk;
     floppy_notify_present(drive, true);
 
@@ -922,9 +928,105 @@ int floppy_drive_count(const floppy_t *floppy) {
     return floppy ? floppy->n_drives : 0;
 }
 
+// ============================================================================
+// Mac Plus IWM memory-mapped I/O (address decoding)
+// ============================================================================
+//
+// The board-level wiring of the IWM-only controller: odd-byte lane, A9-A12
+// to the chip's A1-A4.  SWIM and the controller-driven chips are mapped by
+// their machines instead.
+
+// Memory interface handler for 8-bit reads from IWM address space
+static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
+    floppy_t *s = (floppy_t *)floppy;
+
+    // [3]: the IWM sits on the lower byte of the data bus, so only odd-addressed
+    // byte accesses reach it.  That is a property of how THIS board wired /LDS,
+    // which is why it is checked here and not in the chip -- and it is logged
+    // rather than asserted, because a guest must not be able to pause the
+    // emulator by executing a wrong instruction.
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte read at 0x%08X; the chip is on the low byte", addr);
+
+    // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
+    return floppy_iwm_read(s, (addr >> 9) & 0x0F);
+}
+
+// An inspection of the same register: the state lines stay where they are.
+static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
+    return floppy_iwm_peek((floppy_t *)floppy, (addr >> 9) & 0x0F);
+}
+
+// The chip is on one byte of the data bus, so a wide access reaches nothing.
+// These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
+// than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
+// halted the emulator and surfaced in CI as an unexplained hang.  Log it and
+// return open bus, as grand_central.c does.
+static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
+    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFF;
+}
+
+static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' open bus, without their log lines.
+static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFF;
+}
+static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFFFFFFu;
+}
+
+// Memory interface handler for 8-bit writes to IWM address space
+static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
+    floppy_t *s = (floppy_t *)floppy;
+
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte write at 0x%08X; the chip is on the low byte", addr);
+
+    // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
+    floppy_iwm_write(s, (addr >> 9) & 0x0F, value);
+}
+
+static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
+    (void)floppy;
+    (void)value;
+    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
+}
+
+static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
+    (void)floppy;
+    (void)value;
+    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
+}
+
+// Sets up the IWM memory interface callbacks on the floppy controller
+static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
+    floppy->memory_interface.read_uint8 = &iwm_read_uint8;
+    floppy->memory_interface.read_uint16 = &iwm_read_uint16;
+    floppy->memory_interface.read_uint32 = &iwm_read_uint32;
+    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
+    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
+    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
+    floppy->memory_interface.write_uint8 = &iwm_write_uint8;
+    floppy->memory_interface.write_uint16 = &iwm_write_uint16;
+    floppy->memory_interface.write_uint32 = &iwm_write_uint32;
+
+    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &floppy->memory_interface, floppy);
+}
+
 // Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
-                      const image_list_t *images) {
+floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
+                      checkpoint_t *checkpoint, const image_list_t *images) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
     if (!floppy) {
         LOG(1, "Floppy: Allocation failed");

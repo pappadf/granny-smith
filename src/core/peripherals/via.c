@@ -105,6 +105,10 @@ struct via {
         // a dead `expired` flag that was written in three places and read
         // nowhere -- what actually stops a one-shot re-firing is that its
         // callback schedules no follow-up event.
+        // Layout note: this struct is checkpointed as raw bytes (everything
+        // before `scheduler`, see via_checkpoint), so the bool's position and
+        // the padding after it are part of the checkpoint format -- add
+        // fields at the end, and expect a format change if you do.
         bool started;
     } timers[2];
 
@@ -213,10 +217,21 @@ static uint16_t read_timer(const via_t *restrict via, int timer) {
     return (uint16_t)(via->timers[timer].start_value - delta);
 }
 
-// Arm a VIA timer with the specified counter value and callback
-static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_callback_t cb) {
+// Timer 1 drove PB7 (ACR modes 2/3): publish the new port B pin levels to
+// the board, as an ORB/DDRB write does, so the timer output is visible.
+static void t1_pb7_changed(via_t *restrict via) {
+    via->output_cb(via->cb_context, PORT_B, via->ports[PORT_B].output & via->ports[PORT_B].direction);
+}
+
+// Arm a VIA timer with the specified counter value and callback.
+// `dequeued` is true when called from the timer's own callback: the
+// scheduler unlinks a one-shot event before running it, so there is nothing
+// to cancel and the O(n) remove_event() queue scan can be skipped on the
+// free-run re-arm path.  Every other caller must pass false.
+static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_callback_t cb, bool dequeued) {
     // Cancel any existing event
-    remove_event(via->scheduler, cb, via);
+    if (!dequeued)
+        remove_event(via->scheduler, cb, via);
 
     LOG(2, "arm_timer: timer=%d counter=0x%04x", timer, counter);
 
@@ -287,18 +302,22 @@ static void t1_callback(void *source, uint64_t data) {
         // the datasheet names for the running counter.
         break;
     case 1: // Free‑run
-        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
+        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback, true);
         break;
     case 2: // One-shot w/ PB7 output
         // DDRB bit 7 must be set for PB7 to function as a timer output
-        if (via->ports[PORT_B].direction & 0x80)
+        if (via->ports[PORT_B].direction & 0x80) {
             via->ports[PORT_B].output |= 0x80; // PB7 is set high when the timer expires
+            t1_pb7_changed(via);
+        }
         break;
     case 3: // Free‑run w/ PB7 output
-        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
+        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback, true);
         // DDRB bit 7 must be set for PB7 to function as a timer output
-        if (via->ports[PORT_B].direction & 0x80)
+        if (via->ports[PORT_B].direction & 0x80) {
             via->ports[PORT_B].output ^= 0x80; // PB7 toggles on each timeout
+            t1_pb7_changed(via);
+        }
         break;
     default:
         GS_ASSERT(0);
@@ -339,13 +358,15 @@ static void set_t1c_high(via_t *restrict via, uint8_t value) {
     switch (via->acr >> 6) {
     case 2: // One-shot w/ PB7 output
         // DDRB bit 7 must be set for PB7 to function as a timer output
-        if (via->ports[PORT_B].direction & 0x80)
+        if (via->ports[PORT_B].direction & 0x80) {
             via->ports[PORT_B].output &= 0x7F; // PB7 is set low when the timer starts
+            t1_pb7_changed(via);
+        }
         __attribute__((fallthrough));
     case 0: // One-shot mode - PB7 disabled
     case 1: // Free-running mode - PB7 disabled
     case 3: // Free‑run w/ PB7 output
-        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
+        arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback, false);
         break;
     default:
         GS_ASSERT(0);
@@ -361,7 +382,7 @@ static void set_t2c_high(via_t *restrict via, uint8_t value) {
     update_ifr(via, via->ifr & ~IFR_T2);
 
     if ((via->acr & 0x20) == 0) { // one-shot interval timer
-        arm_timer(via, TIMER_2, counter_value, &t2_callback);
+        arm_timer(via, TIMER_2, counter_value, &t2_callback, false);
     } else { // pulse counting timer
         via->timers[TIMER_2].counter = counter_value;
     }
@@ -407,6 +428,13 @@ static uint8_t read_port(via_t *restrict via, int port, bool peek) {
 // ============================================================================
 // Memory Interface
 // ============================================================================
+
+// True when a register access gets the generic "Read/Write register" log
+// line.  The timer counters are excluded on both paths: their cases log a
+// richer line of their own (latch and running state).
+static inline bool generic_reg_log(unsigned rs) {
+    return rs != T1C_L && rs != T1C_H && rs != T2C_L && rs != T2C_H;
+}
 
 // A register read: the guest's, or an inspection's (`peek`), which reports the
 // same value but clears no IFR flag and pulses no handshake.
@@ -502,6 +530,9 @@ static uint8_t via_reg_read(via_t *via, uint32_t addr, bool peek) {
         break;
 
     case IER:
+        // R6522: IER bit 7 always reads as 1.  On a write, bit 7 instead
+        // selects set (1) or clear (0) for the other bits -- so a guest that
+        // read-modify-writes IER sets bits, it cannot clear them that way.
         ret = via->ier | 0x80;
         break;
 
@@ -520,8 +551,7 @@ static uint8_t via_reg_read(via_t *via, uint32_t addr, bool peek) {
         break;
     }
 
-    // Log non-timer-counter register reads (timer counters have their own logging)
-    if (rs != T1C_L && rs != T1C_H && rs != T2C_L && rs != T2C_H)
+    if (generic_reg_log(rs))
         LOG(2, "Read register %s=0x%02x", via_reg_names[rs], ret);
 
     return ret;
@@ -709,8 +739,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         GS_ASSERT(0);
     }
 
-    // Log non-timer-counter register writes (timer counters have their own logging)
-    if (rs != T1C_L && rs != T1C_H && rs != T2C_L && rs != T2C_H)
+    if (generic_reg_log(rs))
         LOG(2, "Write register %s=0x%02x", via_reg_names[rs], value);
 }
 
@@ -1094,8 +1123,9 @@ void via_input(via_t *restrict via, int port, int pin, bool value) {
 // Called by external devices (keyboard, ADB transceiver) to deliver a byte
 // (mode 3: shift-in under external clock) or to signal that the external
 // device has finished clocking all 8 bits of a shift-out (mode 7: shift-out
-// under external clock).  On real 6522 hardware, CB1 edges from the external
-// device set IFR_SR after 8 clocks regardless of shift direction.
+// under external clock; `byte` is then ignored).  On real 6522 hardware,
+// CB1 edges from the external device set IFR_SR after 8 clocks regardless of
+// shift direction.
 void via_input_sr(via_t *restrict via, uint8_t byte) {
     uint8_t sr_mode = (via->acr >> 2) & 7;
 

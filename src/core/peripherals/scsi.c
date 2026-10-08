@@ -27,8 +27,6 @@ value_t io_leaf_export_image(struct image *img, const char *dest, const char *wh
 #include "system_config.h"
 #include "value.h"
 
-extern config_t *global_emulator;
-
 // Forward declaration — defined alongside the static singleton near the
 // end of the file. scsi_init calls this to detach the pre-machine
 // singleton before mounting the per-machine `scsi` object at root.
@@ -506,11 +504,16 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             if (scsi->bus.initiator >= 8)
                 scsi->bus.initiator = 7;
 
-            // ODR will contain the "OR" of target and initiator ID
-            scsi->bus.target = platform_ntz32(scsi->chip5380->reg.odr & ~(1 << scsi->bus.initiator));
+            // ODR will contain the "OR" of target and initiator ID.  With no
+            // target bit at all nothing answers the selection: the bus goes
+            // free, exactly as for an absent device.  (ntz32 of the empty mask
+            // is 32, and `& 7` used to turn that into target 0, selecting
+            // whatever was at ID 0.)
+            uint32_t target_bits = scsi->chip5380->reg.odr & ~(1u << scsi->bus.initiator) & 0xFFu;
+            scsi->bus.target = target_bits ? platform_ntz32(target_bits) : 7;
 
             // [6]: target will assert BSY - if no target, the bus will be free again
-            if (!scsi->device_images[scsi->bus.target & 7])
+            if (!target_bits || !scsi->device_images[scsi->bus.target])
                 phase_free(scsi);
             else
                 phase_command(scsi);

@@ -18,7 +18,10 @@ System 7 probes for the FPU at boot via `FBcc`/`FSAVE` instructions and crashes 
 | File | Responsibility |
 |------|----------------|
 | `src/core/cpu/fpu.h` | `float80_reg_t`, `fpu_unpacked_t`, `fpu_state_t`, public API, predicate helpers |
-| `src/core/cpu/fpu.c` | Soft-float core: 128-bit primitives, pack/unpack, arithmetic, format conversions, FMOVE, FMOVEM, FMOVECR, FSAVE/FRESTORE, exception logic, operation dispatch |
+| `src/core/cpu/fpu.c` | Soft-float core: 128-bit primitives, pack/unpack, arithmetic, FMOVE, FMOVEM, FMOVECR, FSAVE/FRESTORE, exception logic, operation dispatch |
+| `src/core/cpu/fpu_format.c` | Memory-format conversions: 68882 extended, IEEE single/double (one shared rounding routine), byte/word/long integers |
+| `src/core/cpu/fpu_packed.c` | Packed decimal (FMOVE.P) conversions |
+| `src/core/cpu/fpu_internal.h` | Private interface between the FPU translation units |
 | `src/core/cpu/fpu_transc.c` | Transcendental functions: trig, exp/log, hyperbolic, inverse trig — FPSP-derived polynomial approximations |
 | `src/core/cpu/cpu_ops.h` | FPU instruction dispatch macros (`OP_FPU_GENERAL`, `OP_FPU_SCCDBCC`, `OP_FSAVE_EA`, `OP_FRESTORE_EA`) |
 | `src/core/cpu/cpu_decode.h` | F-line decode (cases `0x08`, `0x09` for CpID=1 type 0 and type 1) |
@@ -157,9 +160,9 @@ All arithmetic operates on `fpu_unpacked_t` values using pure integer algorithms
 |----------|-------------|
 | `fpu_op_add()` | Addition with sign/special-case handling (NaN propagation, ∞±∞) |
 | `fpu_op_sub()` | Subtraction (negate + add) |
-| `fpu_op_mul()` | Multiply via 64×64→128, normalize, round |
-| `fpu_op_div()` | Division via iterative shift-and-subtract |
-| `fpu_op_sqrt()` | Square root via bit-by-bit algorithm |
+| `fpu_op_mul()` | Multiply: full 128×128→256-bit mantissa product (four 64×64 partial products); top 128 bits kept, the rest folded into sticky |
+| `fpu_op_div()` | Division via iterative shift-and-subtract; unnormal operands are normalized first |
+| `fpu_op_sqrt()` | Square root: exact integer `floor(sqrt)` of the 128-bit mantissa by integer Newton-Raphson (no host `sqrt()`), remainder encoded for correct rounding |
 | `fpu_op_rem()` / `fpu_op_mod()` | IEEE remainder (FREM) / modulo (FMOD) with quotient in FPSR |
 | `fpu_normalize()` | Shift mantissa left until J-bit set, decrementing exponent |
 
@@ -246,7 +249,7 @@ Packed decimal is a 96-bit (12-byte) format used by `FMOVE.P`:
 - Bytes 0–1: 12-bit BCD exponent (3 digits)
 - Bytes 2–11: 17-digit BCD mantissa (most significant digit in byte 2, two digits per byte thereafter)
 
-Conversion uses the FMOVECR power-of-10 table (10^1 through 10^4096) for scaling. Static or dynamic k-factor (from extension word or data register) controls the number of significant output digits.
+Conversion uses the FMOVECR power-of-10 table (10^1 through 10^4096) for scaling. Static or dynamic k-factor (from extension word or data register) controls the number of significant output digits. The decimal exponent ILOG = floor(log10|X|) is computed in soft-float as well: floor(e×log10(2)) from the binary exponent, then one comparison against the power-of-10 table picks between that and the next integer.
 
 ## FMOVEM
 
@@ -336,14 +339,16 @@ Transcendental functions are implemented in `fpu_transc.c` (~3400 lines) using a
 1. **Argument reduction** to a small primary range using Cody-Waite or table-driven techniques
 2. **Polynomial/rational approximation** using minimax coefficients from the FPSP
 3. **Reconstruction** from the reduced result
-4. **Precision maintenance** via `fp_rnd64()`, which rounds 128-bit mantissa to 64 bits after each intermediate step, simulating the 68882's register precision at each pipeline stage
+4. **Precision maintenance** via `fpu_round_to_64()`, which rounds 128-bit mantissa to 64 bits after each intermediate step, simulating the 68882's register precision at each pipeline stage
 
 ### Coefficient Tables
 
-FPSP coefficients are embedded as static constant arrays, constructed from the original FPSP source using helper functions:
+FPSP coefficients are written with the hex words of the FPSP listing, converted by helpers (exact, no rounding):
 - `fpsp_ext(w0, w1, w2)` — build `fpu_unpacked_t` from FPSP extended-precision triple
-- `fpsp_dbl(hi, lo)` — build from IEEE 754 double (two big-endian uint32 halves)
+- `fpsp_dbl(hi, lo)` — build from IEEE 754 double (two big-endian uint32 halves); normal numbers only
 - `fpsp_sgl(w)` — build from IEEE 754 single
+
+The `FPSP_EXT` / `FPSP_DBL` / `FPSP_SGL` macros are the same conversions as constant initialisers. Coefficient sets shared by several functions (the LOGMAIN `LOGA1`–`LOGA6` and LOGNEAR1 `LOGB1`–`LOGB5` sets, the sine `SINA1`–`SINA7` and cosine `COSB1`–`COSB8` sets, π/2 and π) are file-scope `static const` values built with the macros; the LOGMAIN and LOGNEAR1 polynomials are shared helpers (`logmain_poly`, `lognear1_poly`) used by both FLOGN and FLOGNP1.
 
 ### Key Lookup Tables
 
@@ -371,7 +376,7 @@ FPSP coefficients are embedded as static constant arrays, constructed from the o
 | FSIN | 0x0E | Argument reduction mod π/2, degree-7 sin or degree-8 cos poly selected by quadrant |
 | FCOS | 0x1D | Same reduction as FSIN, quadrant-shifted poly selection |
 | FSINCOS | 0x30–0x37 | Returns sin; stores cos in FP[cos_reg]. Interleaved Horner for both polys |
-| FTAN | 0x0F | Delegates to sin/cos division |
+| FTAN | 0x0F | sin(X)/cos(X), both evaluated from a single shared argument reduction |
 | FSINH | 0x02 | Large: exp(|X|−16381×ln2)×2^16380; normal: z=expm1(|X|), (z+z/(1+z))/2 |
 | FCOSH | 0x19 | Large: same as FSINH; normal: z=exp(|X|), (z/2)+(1/(2z)) |
 | FTANH | 0x09 | Bounds-based: tiny (→X), standard (expm1-based), large (→±1) |
@@ -398,4 +403,4 @@ The `fpu_pack()` function applies rounding when converting from the unpacked 128
 
 For single and double precision, the mantissa is rounded to the target width and excess bits are discarded. This matches the 68882 behavior where precision control affects the result stored in the FP register.
 
-The transcendental module also uses `fp_rnd64()` to round intermediate results to 64-bit mantissa precision after each step, faithfully simulating the 68882's internal pipeline rounding behavior.
+The transcendental module also uses `fpu_round_to_64()` to round intermediate results to 64-bit mantissa precision after each step, faithfully simulating the 68882's internal pipeline rounding behavior.
