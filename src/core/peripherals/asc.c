@@ -842,7 +842,7 @@ void asc_delete(asc_t *asc) {
         asc->object = NULL;
     }
     if (asc->map)
-        memory_map_remove(asc->map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
+        memory_map_remove(asc->map, 0, asc);
     free(asc);
 }
 

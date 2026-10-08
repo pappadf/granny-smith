@@ -56,9 +56,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }
-void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                       void *device) {
-    (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
+    (void)mem, (void)addr, (void)device;
 }
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;

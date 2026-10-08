@@ -1410,12 +1410,9 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
         g_mem_map_changed(); // ditto: a freed window may still be cached by PC
 }
 
-// Remove a memory-mapped device from the memory map
-void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, const char *name,
-                       memory_interface_t *iface, void *device) {
-    (void)size; // the mapping is found by device and address; its own size is used
-    (void)name;
-    (void)iface;
+// Remove a memory-mapped device from the memory map: the mapping is found by
+// device and address, and its own size is used
+void memory_map_remove(memory_map_t *memory_map, uint32_t addr, void *device) {
     if (!memory_map || !memory_map->map)
         return; // empty list — nothing to remove
     mapping_t *map = memory_map->map;

@@ -214,8 +214,9 @@ extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writ
 // is a BUS property, so it applies with the MMU on or off -- see memory.c.
 bool memory_addr_faults_when_unmapped(uint32_t addr);
 
-extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
-                              memory_interface_t *iface, void *device);
+// Remove `device`'s mapping that starts at `addr` (the mapping's own size is
+// used); no-op when there is none.
+extern void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device);
 
 extern void memory_map_print(memory_map_t *mem);
 
