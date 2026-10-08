@@ -30,10 +30,12 @@
 #include "common.h"
 #include "log.h"
 #include "macroman.h"
+#include "worker_thread.h"
 
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -274,8 +276,8 @@ static uint32_t afp_cmd_get_srvr_parms(afp_req_t *r) {
             continue;
         uint8_t name[255];
         size_t n = (size_t)afp_mac_name(g_afp->vols[i].name, name, sizeof(name));
-        if (n > 31)
-            n = 31; // HFS name limit
+        if (n > AFP_MAC_NAME_MAX)
+            n = AFP_MAC_NAME_MAX; // HFS name limit
         if (pos + 2 + (int)n > r->out_max)
             break;
         r->out[pos++] = 0x00; // flags: no volume password, not configured
@@ -443,7 +445,7 @@ static uint32_t afp_cmd_map_id(afp_req_t *r) {
     uint8_t subfunc = r->in[0];
     uint32_t id = RD_BE32(r->in + 1);
     const char *name = (id == 0) ? "" : (subfunc == 1 ? "guest" : "staff");
-    uint8_t name_len = (uint8_t)strlen(name);
+    uint8_t name_len = (uint8_t)strlen(name); // "", "guest" or "staff": a Pascal length cannot overflow
     r->out[0] = name_len;
     if (name_len)
         memcpy(r->out + 1, name, name_len);
@@ -569,6 +571,8 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_req_t *r) {
     bool is_dir = S_ISDIR(st.st_mode);
     WR_BE16(r->out + 0, file_bm);
     WR_BE16(r->out + 2, dir_bm);
+    // The FileDir byte: bit 7 set for a directory, clear for a file -- which
+    // of the two bitmaps the parameters that follow obey -- then a pad byte.
     r->out[4] = is_dir ? 0x80 : 0x00;
     r->out[5] = 0x00;
     int vpos = afp_emit_params(is_dir, vol, target_rel, &st, is_dir ? dir_bm : file_bm, r->out, 6, r->out_max);
@@ -909,9 +913,12 @@ static uint32_t afp_cmd_set_fork_parms(afp_req_t *r) {
     uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
-    if (bitmap & ~((1u << 9) | (1u << 10)))
-        return AFPERR_BitmapErr;
-    if (!(bitmap & ((1u << 9) | (1u << 10))))
+    // The one length bit that names the fork the refnum opened: bit 9 for a
+    // data fork, bit 10 for a resource fork.  Any other bit, or the other
+    // fork's, is BitmapErr (as Netatalk answers); either bit used to
+    // truncate the handle's own fork.
+    uint16_t own_bit = afp_fork_is_resource(fk) ? (1u << 10) : (1u << 9);
+    if (bitmap != own_bit)
         return AFPERR_BitmapErr;
     uint32_t new_len = RD_BE32(r->in + 5);
     afp_fork_status_t st = afp_fork_truncate(fk, new_len);
@@ -972,12 +979,39 @@ static uint32_t afp_cmd_byte_range_lock(afp_req_t *r) {
 // File and directory mutations
 // ============================================================================
 
-// Move a file's AppleDouble sidecar alongside it.
-static void afp_sidecar_rename(const char *old_full, const char *new_full) {
+// Move a file's AppleDouble sidecar alongside it.  True when it moved or
+// there was none to move; false leaves it where it was.
+static bool afp_sidecar_rename(const char *old_full, const char *new_full) {
     char old_sc[PATH_MAX], new_sc[PATH_MAX];
-    if (afp_meta_sidecar_path(old_full, old_sc, sizeof(old_sc)) &&
-        afp_meta_sidecar_path(new_full, new_sc, sizeof(new_sc)))
-        rename(old_sc, new_sc);
+    if (!afp_meta_sidecar_path(old_full, old_sc, sizeof(old_sc)) ||
+        !afp_meta_sidecar_path(new_full, new_sc, sizeof(new_sc)))
+        return false;
+    return rename(old_sc, new_sc) == 0 || errno == ENOENT;
+}
+
+// Remove a file's AppleDouble sidecar.  True when it is gone, or never was.
+static bool afp_sidecar_remove(const char *full) {
+    char sidecar[PATH_MAX];
+    if (!afp_meta_sidecar_path(full, sidecar, sizeof(sidecar)))
+        return false;
+    return remove(sidecar) == 0 || errno == ENOENT;
+}
+
+// Rename a file or directory and its sidecar together: the data first, then
+// the sidecar, and when the sidecar cannot follow, the data is put back, so
+// no file is left apart from its resource fork and Finder Info.  False, with
+// nothing moved, on failure (and a log line if even the undo failed).
+static bool afp_rename_with_sidecar(const char *old_full, const char *new_full) {
+    if (rename(old_full, new_full) != 0)
+        return false;
+    if (afp_sidecar_rename(old_full, new_full))
+        return true;
+    int err = errno;
+    if (rename(new_full, old_full) != 0)
+        LOG(1, "AFP: '%s' moved to '%s' but its sidecar did not (%s), and moving it back failed", old_full, new_full,
+            strerror(err));
+    errno = err;
+    return false;
 }
 
 // FPCreateDir (0x06)
@@ -1044,16 +1078,20 @@ static uint32_t afp_cmd_create_file(afp_req_t *r) {
         if (afp_inhibited(full, AFP_ATTR_WRITEINHIBIT))
             return AFPERR_ObjectLocked;
     }
-    FILE *f = fopen(full, "wb");
-    if (!f)
-        return errno == ENOSPC ? AFPERR_DiskFull : AFPERR_AccessDenied;
-    fclose(f);
-    if (exists) {
-        // A hard create resets the file completely, metadata included.
-        char sidecar[PATH_MAX];
-        if (afp_meta_sidecar_path(full, sidecar, sizeof(sidecar)))
-            remove(sidecar);
-    }
+    // A create resets the file completely, metadata included: the sidecar
+    // goes first (a hard create's, or one a deletion left behind), so a
+    // failure leaves the old file whole rather than truncated under its old
+    // resource fork.
+    if (!afp_sidecar_remove(full))
+        return AFPERR_AccessDenied;
+    // A soft create is O_EXCL: a file made between the stat and here is not
+    // overwritten.  (A symlink at the name of a hard create is followed, as
+    // every symlink in a share is: appletalk_server.md §4.)
+    int flags = O_WRONLY | O_CREAT | (exists ? O_TRUNC : O_EXCL);
+    int fd = open(full, flags, 0644);
+    if (fd < 0)
+        return errno == EEXIST ? AFPERR_ObjectExists : errno == ENOSPC ? AFPERR_DiskFull : AFPERR_AccessDenied;
+    close(fd);
 
     // A newly created file gets its dates from the server clock and a backup
     // date of "never" (appletalk_server.md FPCreateFile details).
@@ -1134,9 +1172,11 @@ static uint32_t afp_cmd_delete(afp_req_t *r) {
             return AFPERR_FileBusy;
         if (unlink(full) != 0)
             return AFPERR_AccessDenied;
-        char sidecar[PATH_MAX];
-        if (afp_meta_sidecar_path(full, sidecar, sizeof(sidecar)))
-            remove(sidecar);
+        // A sidecar left behind is hidden but not harmless: a file created
+        // under the name would inherit its fork.  FPCreateFile clears one;
+        // a failure here is logged.
+        if (!afp_sidecar_remove(full))
+            LOG(1, "AFP FPDelete: '%s' deleted, but not its sidecar (%s)", target_rel, strerror(errno));
     }
 
     const afp_cat_entry_t *entry = afp_catalog_resolve_path(vol->catalog, target_rel, false, false);
@@ -1194,9 +1234,8 @@ static uint32_t afp_cmd_rename(afp_req_t *r) {
         return AFPERR_NoErr;
     if (afp_name_taken(vol, parent_rel, new_name, old_rel))
         return AFPERR_ObjectExists;
-    if (rename(old_full, new_full) != 0)
+    if (!afp_rename_with_sidecar(old_full, new_full))
         return AFPERR_CantRename;
-    afp_sidecar_rename(old_full, new_full);
     afp_fork_repoint(old_full, new_full, new_rel);
 
     const afp_cat_entry_t *entry = afp_catalog_resolve_path(vol->catalog, old_rel, true, S_ISDIR(st.st_mode));
@@ -1270,9 +1309,8 @@ static uint32_t afp_cmd_move_and_rename(afp_req_t *r) {
         return AFPERR_ParamErr;
     if (afp_name_taken(vol, dst_dir_rel, final_name, src_rel))
         return AFPERR_ObjectExists;
-    if (rename(src_full, dst_full) != 0)
+    if (!afp_rename_with_sidecar(src_full, dst_full))
         return AFPERR_CantMove;
-    afp_sidecar_rename(src_full, dst_full);
     afp_fork_repoint(src_full, dst_full, dst_rel);
 
     // Resolve both ends to CNIDs before mutating: adoption can grow the
@@ -1288,7 +1326,11 @@ static uint32_t afp_cmd_move_and_rename(afp_req_t *r) {
     return AFPERR_NoErr;
 }
 
-// Copy one host file's bytes.  Returns an AFP result code.
+// Copy one host file's bytes.  Returns an AFP result code.  The copy is
+// synced before it is reported done -- the client takes NoErr as "the copy
+// exists" -- and it runs to completion on the worker thread: a large file
+// stalls the machine for as long as the host takes to copy it (forks are
+// capped at 2 GB, AFP_FORK_MAX_LENGTH).
 static uint32_t afp_copy_bytes(const char *src, const char *dst) {
     FILE *fin = fopen(src, "rb");
     if (!fin)
@@ -1308,6 +1350,8 @@ static uint32_t afp_copy_bytes(const char *src, const char *dst) {
         }
     }
     fclose(fin);
+    if (rc == AFPERR_NoErr && (fflush(fout) != 0 || fsync(fileno(fout)) != 0))
+        rc = AFPERR_DiskFull;
     if (fclose(fout) != 0 && rc == AFPERR_NoErr)
         rc = AFPERR_DiskFull;
     if (rc != AFPERR_NoErr)
@@ -1385,10 +1429,16 @@ static uint32_t afp_cmd_copy_file(afp_req_t *r) {
 
     rc = afp_copy_bytes(src_full, dst_full);
     if (rc == AFPERR_NoErr) {
+        // The sidecar carries the resource fork, Finder Info, dates and
+        // comment: a copy without it is not a copy, so its failure undoes
+        // the data fork's.
         char src_sc[PATH_MAX], dst_sc[PATH_MAX];
         if (afp_meta_sidecar_path(src_full, src_sc, sizeof(src_sc)) &&
-            afp_meta_sidecar_path(dst_full, dst_sc, sizeof(dst_sc)) && access(src_sc, R_OK) == 0)
-            afp_copy_bytes(src_sc, dst_sc); // forks, Finder Info, dates, comment
+            afp_meta_sidecar_path(dst_full, dst_sc, sizeof(dst_sc)) && access(src_sc, R_OK) == 0) {
+            rc = afp_copy_bytes(src_sc, dst_sc);
+            if (rc != AFPERR_NoErr)
+                remove(dst_full);
+        }
     }
     afp_fork_close(guard);
     if (rc != AFPERR_NoErr)
@@ -2374,6 +2424,8 @@ int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_coun
 // that the client must use its 2.0 fallbacks (AFP_21_22 result codes).
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                             int out_max, int *out_len) {
+    // The server's tables are unlocked globals: single worker thread only
+    worker_thread_assert("afp_handle_command");
     if (out_len)
         *out_len = 0;
     // Handlers write their fixed-size replies without checking the room: the

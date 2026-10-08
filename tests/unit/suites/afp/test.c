@@ -814,6 +814,26 @@ TEST(enumerate_hides_sidecars_and_the_control_directory) {
     fixture_down();
 }
 
+// Host dotfiles are not listed, but they are not server state either: the
+// folder holding one is not empty, and deleting it is refused.
+TEST(enumerate_hides_host_dotfiles_without_deleting_them) {
+    fixture_up("enumdot");
+    write_file("Doc", "data");
+    write_file(".DS_Store", "x");
+    uint32_t dir_id = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Folder", &dir_id));
+    write_file("Folder/.git", "x");
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 100, 4096, &actual));
+    ASSERT_EQ_INT(2, (int)actual); // Doc and Folder
+    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder");
+    ASSERT_EQ_INT((int)ERR_DIR_NOT_EMPTY, (int)call(OP_DELETE));
+    char kept[512];
+    host_path("Folder/.git", kept, sizeof(kept));
+    ASSERT_EQ_INT(0, access(kept, F_OK));
+    fixture_down();
+}
+
 TEST(enumerate_rejects_an_empty_bitmap) {
     fixture_up("enumbm");
     write_file("Doc", "x");
@@ -1507,6 +1527,15 @@ TEST(set_fork_parms_truncates_and_flush_persists) {
     put16(0x0001);
     put32(0);
     ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_SET_FORK_PARMS));
+    // So is the other fork's length bit: a data fork's length is bit 9 only
+    req_reset();
+    put8(0);
+    put16(ref);
+    put16(0x0400); // resource fork length
+    put32(0);
+    ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_SET_FORK_PARMS));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(4, (int)st.st_size); // untouched
     close_fork(ref);
     fixture_down();
 }
@@ -1995,6 +2024,33 @@ TEST(volume_add_reports_the_real_reason_it_failed) {
     write_file("PlainFile", "x");
     ASSERT_TRUE(atalk_afp_volume_add("NotADir", file, err, sizeof(err)) < 0);
     ASSERT_TRUE(strstr(err, "not a directory") != NULL);
+    fixture_down();
+}
+
+// With GS_AFP_SHARES_ROOT set, only that directory and what lies below it
+// can be published; a path outside, or one that only shares its prefix, is
+// refused with the reason.
+TEST(volume_add_honours_the_shares_root) {
+    fixture_up("sharesroot");
+    char err[256];
+    char inside[512], sibling[512];
+    host_path("Inside", inside, sizeof(inside));
+    ASSERT_EQ_INT(0, mkdir(inside, 0755));
+    host_path("InsideX", sibling, sizeof(sibling)); // same prefix, another directory
+    ASSERT_EQ_INT(0, mkdir(sibling, 0755));
+
+    ASSERT_EQ_INT(0, setenv("GS_AFP_SHARES_ROOT", inside, 1));
+    int slot = atalk_afp_volume_add("InsideVol", inside, err, sizeof(err));
+    ASSERT_TRUE(slot >= 0);
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("InsideVol", err, sizeof(err)));
+    ASSERT_TRUE(atalk_afp_volume_add("SiblingVol", sibling, err, sizeof(err)) < 0);
+    ASSERT_TRUE(strstr(err, "GS_AFP_SHARES_ROOT") != NULL);
+    ASSERT_TRUE(atalk_afp_volume_add("TmpVol", "/tmp", err, sizeof(err)) < 0);
+    ASSERT_EQ_INT(0, unsetenv("GS_AFP_SHARES_ROOT"));
+
+    // Unset, any directory can be published again
+    ASSERT_TRUE(atalk_afp_volume_add("SiblingVol", sibling, err, sizeof(err)) >= 0);
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("SiblingVol", err, sizeof(err)));
     fixture_down();
 }
 
@@ -3906,6 +3962,7 @@ int main(void) {
     RUN(enumerate_lists_every_entry_of_a_large_directory);
     RUN(enumerate_pages_are_served_from_a_snapshot);
     RUN(enumerate_hides_sidecars_and_the_control_directory);
+    RUN(enumerate_hides_host_dotfiles_without_deleting_them);
     RUN(enumerate_rejects_an_empty_bitmap);
 
     RUN(file_id_lifecycle);
@@ -3980,6 +4037,7 @@ int main(void) {
     RUN(get_srvr_parms_lists_every_volume);
 
     RUN(volume_add_reports_the_real_reason_it_failed);
+    RUN(volume_add_honours_the_shares_root);
     RUN(stats_track_commands_bytes_and_error_codes);
     RUN(disabling_the_server_refuses_commands);
     RUN(server_name_and_versions_are_readable_and_settable);

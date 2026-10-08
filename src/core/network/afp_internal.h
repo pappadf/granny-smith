@@ -30,8 +30,17 @@
 #define PATH_MAX 4096
 #endif
 
-#define AFP_MAX_REL_PATH AFP_CAT_MAX_PATH
+// The name limits, three different things kept apart:
+//  - AFP_MAC_NAME_MAX (31): a Mac name as clients see it, HFS's Str31 -- the
+//    length every name the server sends is held to (afp_params.c says how a
+//    longer host name is shortened);
+//  - AFP_MAX_NAME (255): the most a Pascal-string name on the wire can hold,
+//    and so what a parsed client name or a host name's MacRoman form is
+//    sized for (host buffers allow 3 UTF-8 bytes per character);
+//  - AFP_MAX_REL_PATH: a share-relative host path, the catalog's ceiling.
+#define AFP_MAC_NAME_MAX 31
 #define AFP_MAX_NAME     255
+#define AFP_MAX_REL_PATH AFP_CAT_MAX_PATH
 #define AFP_LOG_HEX_MAX  64
 
 #ifndef ARRAY_LEN
@@ -188,7 +197,7 @@ bool afp_name_fold_contains(const char *host_haystack, const char *host_needle);
 // moved, or NULL), which may change the case of its own name.
 bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const char *self_rel);
 // True if the server shows the host name `host_name` to clients: not one of
-// its own, and representable as a Mac name.
+// its own, not a host dotfile, and representable as a Mac name.
 bool afp_name_visible(const char *host_name);
 // A host name, or a host string, as the Mac bytes that go on the wire (at most
 // `cap`); the length.  Names go through the name codec; text only through

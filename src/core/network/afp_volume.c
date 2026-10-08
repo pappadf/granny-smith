@@ -43,9 +43,16 @@
 
 LOG_USE_CATEGORY_NAME("afp");
 
+// The status block's Machine Type: what a real server reports (the hardware
+// it runs on), not the emulator's name, which it used to put on the wire.
+#define AFP_MACHINE_TYPE "Macintosh"
+
 // AFP versions we speak.  "AFPVersion 2.1" is only advertised because every
 // 2.1 command below is implemented; the honest-negotiation rule is
-// that this list and the dispatch table move together.
+// that this list and the dispatch table move together.  2.2 and 3.x are not
+// offered: what they add (Unicode and long names, 64-bit offsets) does not
+// map onto this server's HFS-style catalog, and the System 6/7 clients the
+// project targets speak 2.1 at most; a newer client falls back to 2.1.
 static const char *const k_afp_versions[] = {"AFPVersion 2.0", "AFPVersion 2.1"};
 
 // ============================================================================
@@ -190,6 +197,29 @@ static bool vol_id_in_use(uint32_t id, const void *ctx) {
     return find_vol_by_id((uint16_t)id) != NULL;
 }
 
+// The server is unauthenticated (FPLogin takes "No User Authent" only), so
+// a volume hands its whole tree to anyone on the cable.  When this variable
+// names a directory, only it and what lies below it can be published; unset,
+// any directory can, as the platform's default share and the test suites
+// expect.  Whether the default should be an allow-list is the owner's call.
+#define AFP_SHARES_ROOT_ENV "GS_AFP_SHARES_ROOT"
+
+// May the resolved directory `root` be published?
+static bool vol_path_allowed(const char *root) {
+    const char *allowed = getenv(AFP_SHARES_ROOT_ENV);
+    if (!allowed || !*allowed)
+        return true;
+    char resolved[PATH_MAX];
+    if (!realpath(allowed, resolved))
+        return false; // a root that does not resolve admits nothing
+    size_t n = strlen(resolved);
+    while (n > 1 && resolved[n - 1] == '/')
+        resolved[--n] = '\0';
+    if (strcmp(resolved, "/") == 0)
+        return true;
+    return strncmp(root, resolved, n) == 0 && (root[n] == '\0' || root[n] == '/');
+}
+
 // Publish `path` as volume `name`, under the next free volume id.
 int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
     if (err && err_len)
@@ -225,11 +255,16 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
     if (slot < 0)
         return vol_fail(err, err_len, "volume table full (max %d)", AFP_MAX_VOLUMES);
 
+    char resolved[PATH_MAX];
+    const char *root = realpath(path, resolved) ? resolved : path;
+    if (!vol_path_allowed(root))
+        return vol_fail(err, err_len, "path '%s' is outside %s ('%s')", path, AFP_SHARES_ROOT_ENV,
+                        getenv(AFP_SHARES_ROOT_ENV));
+
     vol_t *v = &g_afp->vols[slot];
     memset(v, 0, sizeof(*v));
     snprintf(v->name, sizeof(v->name), "%s", name);
-    char resolved[PATH_MAX];
-    snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
+    snprintf(v->root, sizeof(v->root), "%s", root);
     uint32_t id = 0;
     if (!atalk_id_alloc(&g_afp->next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
         memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
@@ -439,7 +474,7 @@ static void afp_asp_close(void *ctx, uint16_t session_ref) {
 }
 static int afp_asp_status(void *ctx, uint8_t **out, size_t *out_len) {
     (void)ctx;
-    return atalk_build_status_block(g_afp->object, "GrannySmith", out, out_len);
+    return atalk_build_status_block(g_afp->object, AFP_MACHINE_TYPE, out, out_len);
 }
 static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
     (void)ctx;

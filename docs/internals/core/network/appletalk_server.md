@@ -2591,6 +2591,12 @@ under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on the headless build. Like
 every share it stays for every machine that plugs in. No path literal lives
 in `src/core`.
 
+Because the server is guest-only (§5), a volume hands its whole tree to
+anyone on the cable. Setting `$GS_AFP_SHARES_ROOT` to a directory confines
+`volumes.add` to that directory and what lies below it (compared after
+`realpath`, so `..` and symlinks in the argument cannot step out); a path
+elsewhere is refused with the reason. Unset, any directory can be published.
+
 ---
 
 # 4 Persistence formats
@@ -2619,7 +2625,11 @@ state, two homes:
 
 `.gs-afp` and every `._*` sidecar are filtered out of FPEnumerate and of the
 offspring count, and a client pathname that names either is rejected with
-`ParamErr` before it can resolve.
+`ParamErr` before it can resolve. The host's other dotfiles (`.git`, `.ssh`,
+`.DS_Store`) are not listed either -- a Mac name never starts with a period,
+and a share overlapping a home directory should not show them -- but they are
+only hidden, not server state: a folder holding one is not empty, and
+FPDelete refuses it with `DirNotEmpty` rather than deleting them.
 
 **Names and paths.** A pathname from the client is CNode names separated by
 NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and

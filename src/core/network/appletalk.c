@@ -27,6 +27,7 @@
 #include "shell.h"
 #include "system.h"
 #include "value.h"
+#include "worker_thread.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -728,7 +729,13 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
 // The SCC's frame sink (scc_set_frame_sink): a frame the guest transmitted on
 // the LocalTalk port of the machine whose connection `ctx` is.  The sink is
 // installed only while that connection is plugged in.
+// Every frame, and so every protocol layer above, enters here.  The stack's
+// state -- the network, the connection, the server tables -- is unlocked
+// globals, sound because all of it runs on the one worker thread: the
+// guest's frames and the scheduler's timers there, the object model's calls
+// through the mailbox.  A debug build checks it.
 static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
+    worker_thread_assert("llap_receive");
     llap_in((atalk_conn_t *)ctx, buf, size);
 }
 
