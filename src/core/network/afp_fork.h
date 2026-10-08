@@ -53,6 +53,7 @@ typedef enum {
     AFP_FORK_RANGE_NOT_LOCKED,
     AFP_FORK_IO_ERR,
     AFP_FORK_DISK_FULL,
+    AFP_FORK_PARAM_ERR,
 } afp_fork_status_t;
 
 // No fork grows past this: the 2 GB - 1 KB ceiling every size the server
@@ -152,7 +153,8 @@ void afp_fork_flush_volume(uint16_t vol_id);
 // --- byte-range locks ------------------------------------------------------
 
 // Lock or unlock [start, start+length).  `end_relative` measures `start` from
-// end of fork; `length` of 0xFFFFFFFF means "to the end".  On success
+// end of fork; `length` of 0xFFFFFFFF means "to the end".  A range starting
+// before byte 0 is AFP_FORK_PARAM_ERR (FPByteRangeLock's ParamErr).  On success
 // `*out_start` receives the resolved range start, which is the reply value.
 afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_relative, int32_t start, uint32_t length,
                                       uint32_t *out_start);

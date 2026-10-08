@@ -1371,6 +1371,32 @@ TEST(byte_range_locks_report_overlap_and_release_on_close) {
     put8(0);
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
 
+    // A start-relative negative offset starts before byte 0: afpParamErr,
+    // not a lock near 4 GB.
+    req_reset();
+    put8(0x00);
+    put16(b);
+    put32(0xFFFFFFF0u);
+    put32(4);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_BYTE_RANGE_LOCK));
+
+    // So does an end-relative offset reaching back past the fork's start.
+    req_reset();
+    put8(0x80); // lock, end-relative
+    put16(b);
+    put32((uint32_t)-17); // the fork is 16 bytes
+    put32(4);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_BYTE_RANGE_LOCK));
+
+    // An end-relative offset inside the fork resolves to an absolute start.
+    req_reset();
+    put8(0x80);
+    put16(b);
+    put32((uint32_t)-4);
+    put32(4);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_BYTE_RANGE_LOCK));
+    ASSERT_EQ_INT(12, (int)rd32(g_reply));
+
     // Unlocking a range that was never locked is afpRangeNotLocked.
     req_reset();
     put8(0x01); // unlock
