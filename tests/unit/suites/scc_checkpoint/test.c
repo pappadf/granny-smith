@@ -4,9 +4,9 @@
 // SCC checkpoint round-trip.
 //
 // `scc_checkpoint` wrote both channels as ONE block of
-// `offsetof(ch_t, scc) * 2` bytes starting at ch[0]. That assumes the two
+// `offsetof(scc_channel_t, scc) * 2` bytes starting at ch[0]. That assumes the two
 // channels are packed at the PREFIX size. They are not: the stride is
-// sizeof(ch_t), eight bytes larger because of the `scc` back-pointer each
+// sizeof(scc_channel_t), eight bytes larger because of the `scc` back-pointer each
 // channel carries. Measured on this tree: prefix 11424, sizeof 11432.
 //
 // So the block ran eight bytes past the end of ch[0]'s prefix and straight over
