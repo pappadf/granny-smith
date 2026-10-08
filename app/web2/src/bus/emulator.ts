@@ -33,6 +33,7 @@ import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
+import { audioTargetLatencyFromQuery } from '@/audio/latency';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
 import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
@@ -109,6 +110,9 @@ interface EmscriptenModuleConfig {
   onPrinterAttach?(ctrl: number, version: string): void;
   // The audio-out AudioWorklet module (em_audio.c addModule()s it).
   gsAudioWorkletUrl?: string;
+  // The audio-out latency target in seconds (?audio_latency=; em_audio.c
+  // keeps its default when unset).
+  gsAudioTargetLatency?: number;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -242,6 +246,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onVoodooGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
+    gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),
   });
 
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core

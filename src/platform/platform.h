@@ -56,6 +56,10 @@ void platform_audio_set_rate(uint32_t src_rate_hz);
 // feedback for the accelerated-mode governor.
 double platform_audio_ring_fill(void);
 
+// Redraw the whole screen from the active display now, whatever its dirty
+// flags say (a restored checkpoint's framebuffer).  A no-op headless.
+void platform_force_redraw(void);
+
 // Print the host's callstack, for the failure handler.
 void platform_print_host_callstack(void);
 

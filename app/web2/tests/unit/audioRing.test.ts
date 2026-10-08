@@ -164,6 +164,27 @@ describe('AudioRingConsumer', () => {
     expect(c.process(quantum())).toBe(false);
   });
 
+  it('crossfades the silent-depth trim from the last sample played', () => {
+    const r = makeRing();
+    const c = r.consumer();
+    c.process(quantum());
+    r.push(3000); // far deeper than the 480-frame target
+    c.process(quantum());
+    // The producer reports sustained silence: the depth is cut to target at
+    // the end of the next quantum.
+    r.hdr[L.ARING_W_SILENT] = 8;
+    const cut = quantum();
+    c.process(cut);
+    expect((r.write() - r.read()) >>> 0).toBe(480);
+    expect(cut[0][127]).not.toBe(0);
+    // The next quantum starts exactly where the cut left off, then ramps.
+    r.hdr[L.ARING_W_SILENT] = 0;
+    const next = quantum();
+    c.process(next);
+    expect(next[0][0]).toBeCloseTo(cut[0][127], 6);
+    expect(next[1][0]).toBeCloseTo(cut[1][127], 6);
+  });
+
   it('reports the fill level every 32 quanta', () => {
     const r = makeRing();
     const c = r.consumer();
