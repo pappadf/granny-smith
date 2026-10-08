@@ -252,7 +252,7 @@ static void register_fpu_aliases(void) {
 // === Lifecycle ===
 
 // Create and initialize a CPU instance for the specified model.
-extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
+cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     cpu_t *cpu = (cpu_t *)malloc(sizeof(cpu_t));
     if (!cpu)
@@ -610,16 +610,19 @@ void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
 // instance_data on the cpu node is the cpu_t* itself; lifetime is tied
 // to cpu_init / cpu_delete.
 
+// The cpu node is only ever created by cpu_init with a live cpu_t as its
+// instance data, so the accessors below take it as given rather than each
+// re-checking for NULL.
 static cpu_t *cpu_from(struct object *self) {
-    return (cpu_t *)object_data(self);
+    cpu_t *cpu = (cpu_t *)object_data(self);
+    assert(cpu != NULL);
+    return cpu;
 }
 
 // === CPU class ==============================================================
 
 static DEF_GETTER(attr_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_pc(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -627,8 +630,6 @@ static DEF_GETTER(attr_cpu_pc) {
 
 static DEF_GETTER(attr_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(2, cpu_get_sr(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -636,8 +637,6 @@ static DEF_GETTER(attr_cpu_sr) {
 
 static DEF_GETTER(attr_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(1, cpu_get_sr(cpu) & 0xFFu);
     v.flags |= VAL_HEX;
     return v;
@@ -645,8 +644,6 @@ static DEF_GETTER(attr_cpu_ccr) {
 
 static DEF_GETTER(attr_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_ssp(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -654,8 +651,6 @@ static DEF_GETTER(attr_cpu_ssp) {
 
 static DEF_GETTER(attr_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_usp(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -663,8 +658,6 @@ static DEF_GETTER(attr_cpu_usp) {
 
 static DEF_GETTER(attr_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_msp(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -672,8 +665,6 @@ static DEF_GETTER(attr_cpu_msp) {
 
 static DEF_GETTER(attr_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_vbr(cpu));
     v.flags |= VAL_HEX;
     return v;
@@ -681,126 +672,75 @@ static DEF_GETTER(attr_cpu_vbr) {
 
 static DEF_GETTER(attr_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_an(cpu, 7));
     v.flags |= VAL_HEX;
     return v;
 }
 
-#define CPU_DREG_RW(N)                                                                                                 \
-    static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        value_t v = val_uint(4, cpu_get_dn(cpu, N));                                                                   \
-        v.flags |= VAL_HEX;                                                                                            \
-        return v;                                                                                                      \
-    }                                                                                                                  \
-    static value_t set_cpu_d##N(struct object *self, const member_t *m, value_t in) {                                  \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        cpu_set_dn(cpu, N, (uint32_t)in.u);                                                                            \
-        return val_none();                                                                                             \
-    }
-#define CPU_AREG_RW(N)                                                                                                 \
-    static value_t attr_cpu_a##N(struct object *self, const member_t *m) {                                             \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        value_t v = val_uint(4, cpu_get_an(cpu, N));                                                                   \
-        v.flags |= VAL_HEX;                                                                                            \
-        return v;                                                                                                      \
-    }                                                                                                                  \
-    static value_t set_cpu_a##N(struct object *self, const member_t *m, value_t in) {                                  \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        cpu_set_an(cpu, N, (uint32_t)in.u);                                                                            \
-        return val_none();                                                                                             \
-    }
+// D0-D7 and A0-A7 share one getter/setter pair: the member's user_data holds
+// the register number, with A registers offset by 8 (see CPU_DREG_MEMBER).
+static DEF_GETTER(attr_cpu_reg) {
+    cpu_t *cpu = cpu_from(self);
+    int n = (int)(uintptr_t)m->attr.user_data;
+    value_t v = val_uint(4, n < 8 ? cpu_get_dn(cpu, n) : cpu_get_an(cpu, n - 8));
+    v.flags |= VAL_HEX;
+    return v;
+}
 
-// clang-format off — these macros expand to function definitions
-// without a trailing `;`, which clang-format mis-parses as expressions.
-CPU_DREG_RW(0)
-CPU_DREG_RW(1)
-CPU_DREG_RW(2)
-CPU_DREG_RW(3)
-CPU_DREG_RW(4)
-CPU_DREG_RW(5)
-CPU_DREG_RW(6)
-CPU_DREG_RW(7)
-CPU_AREG_RW(0)
-CPU_AREG_RW(1)
-CPU_AREG_RW(2)
-CPU_AREG_RW(3)
-CPU_AREG_RW(4)
-CPU_AREG_RW(5)
-CPU_AREG_RW(6)
-CPU_AREG_RW(7)
-// clang-format on
+static DEF_SETTER(set_cpu_reg) {
+    cpu_t *cpu = cpu_from(self);
+    int n = (int)(uintptr_t)m->attr.user_data;
+    if (n < 8)
+        cpu_set_dn(cpu, n, (uint32_t)in.u);
+    else
+        cpu_set_an(cpu, n - 8, (uint32_t)in.u);
+    return val_none();
+}
 
 // === Setters for the named registers and CCR-bit attributes ===
 
 static DEF_SETTER(set_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_pc(cpu, (uint32_t)in.u);
     return val_none();
 }
 
+// The member's width (2) makes the object layer reject a value wider than SR.
 static DEF_SETTER(set_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_sr(cpu, (uint16_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     uint16_t sr = cpu_get_sr(cpu);
-    sr = (sr & (uint16_t)~cpu_ccr_mask) | (uint16_t)(in.u & cpu_ccr_mask);
+    // Bits 5-7 of the CCR byte are unimplemented and read as zero
+    sr = (sr & (uint16_t)~CPU_CCR_MASK) | (uint16_t)(in.u & CPU_CCR_MASK);
     cpu_set_sr(cpu, sr);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_ssp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_usp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_msp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_vbr(cpu, (uint32_t)in.u);
     return val_none();
 }
@@ -808,8 +748,6 @@ static DEF_SETTER(set_cpu_vbr) {
 // `cpu.sp` aliases A7 (the active stack pointer).
 static DEF_SETTER(set_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_an(cpu, 7, (uint32_t)in.u);
     return val_none();
 }
@@ -826,55 +764,46 @@ static DEF_GETTER(attr_cpu_instr_count) {
 // is the same call).
 static DEF_METHOD(cpu_method_frame) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_debug_if_t dif = cpu_debug_if(cpu);
     return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
 }
 
 // CCR-bit attributes (cpu.c / cpu.v / cpu.z / cpu.n / cpu.x). 1-bit reads
 // and writes that round-trip through SR — the legacy `set z 1` interface
-// in typed form.
-#define CPU_CCR_BIT_RW(letter, mask_const)                                                                             \
-    static value_t attr_cpu_cc_##letter(struct object *self, const member_t *m) {                                      \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        return val_uint(1, (cpu_get_sr(cpu) & (mask_const)) ? 1u : 0u);                                                \
-    }                                                                                                                  \
-    static value_t set_cpu_cc_##letter(struct object *self, const member_t *m, value_t in) {                           \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        uint16_t sr = cpu_get_sr(cpu);                                                                                 \
-        if (in.u & 1u)                                                                                                 \
-            sr |= (mask_const);                                                                                        \
-        else                                                                                                           \
-            sr &= (uint16_t) ~(mask_const);                                                                            \
-        cpu_set_sr(cpu, sr);                                                                                           \
-        return val_none();                                                                                             \
-    }
+// in typed form.  The member's user_data holds the bit's CPU_CCR_* mask.
+static DEF_GETTER(attr_cpu_cc_bit) {
+    uint16_t mask = (uint16_t)(uintptr_t)m->attr.user_data;
+    return val_uint(1, (cpu_get_sr(cpu_from(self)) & mask) ? 1u : 0u);
+}
 
-// clang-format off
-CPU_CCR_BIT_RW(c, cpu_ccr_c)
-CPU_CCR_BIT_RW(v, cpu_ccr_v)
-CPU_CCR_BIT_RW(z, cpu_ccr_z)
-CPU_CCR_BIT_RW(n, cpu_ccr_n)
-CPU_CCR_BIT_RW(x, cpu_ccr_x)
-// clang-format on
+static DEF_SETTER(set_cpu_cc_bit) {
+    cpu_t *cpu = cpu_from(self);
+    uint16_t mask = (uint16_t)(uintptr_t)m->attr.user_data;
+    uint16_t sr = cpu_get_sr(cpu);
+    if (in.u & 1u)
+        sr |= mask;
+    else
+        sr &= (uint16_t)~mask;
+    cpu_set_sr(cpu, sr);
+    return val_none();
+}
 
-#define ATTR_RW_HEX_F(name_, get_, set_, doc_, flags_)                                                                 \
+// A hex register attribute.  `width_` (bytes) makes the object layer reject a
+// write that does not fit instead of the setter silently truncating it; 0
+// leaves the value unconstrained (the setter takes the low 32 bits).
+#define ATTR_RW_HEX_FW(name_, get_, set_, doc_, flags_, width_, user_)                                                 \
     {                                                                                                                  \
         .kind = M_ATTR, .name = name_, .doc = doc_, .flags = flags_, .attr = {                                         \
             .type = V_UINT,                                                                                            \
+            .width = width_,                                                                                           \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = get_,                                                                                               \
-            .set = set_                                                                                                \
+            .set = set_,                                                                                               \
+            .user_data = (const void *)(uintptr_t)(user_)                                                              \
         }                                                                                                              \
     }
-#define ATTR_RW_HEX(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, 0)
+#define ATTR_RW_HEX_F(name_, get_, set_, doc_, flags_) ATTR_RW_HEX_FW(name_, get_, set_, doc_, flags_, 0, 0)
+#define ATTR_RW_HEX(name_, get_, set_, doc_)           ATTR_RW_HEX_F(name_, get_, set_, doc_, 0)
 // The same, shown only under the Advanced toggle.
 #define ATTR_RW_HEX_ADV(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, M_CAT_ADVANCED)
 // A read-only counter, shown only under the Advanced toggle.
@@ -888,25 +817,29 @@ CPU_CCR_BIT_RW(x, cpu_ccr_x)
     }
 // A condition-code bit: one of the five CCR flags, readable and writable as 0/1
 // (Advanced: SR and CCR already show them).
-#define ATTR_RW_BIT(name_, get_, set_, doc_)                                                                           \
+#define ATTR_RW_BIT(name_, mask_, doc_)                                                                                \
     {                                                                                                                  \
         .kind = M_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                 \
             .type = V_UINT,                                                                                            \
-            .get = get_,                                                                                               \
-            .set = set_                                                                                                \
+            .get = attr_cpu_cc_bit,                                                                                    \
+            .set = set_cpu_cc_bit,                                                                                     \
+            .user_data = (const void *)(uintptr_t)(mask_)                                                              \
         }                                                                                                              \
     }
 // D0..D7 and A0..A7 differ only by number, so generate their doc text too --
 // sixteen hand-written strings saying "data register 3" would be sixteen
 // chances to write "register 2".
-#define CPU_DREG_MEMBER(N) ATTR_RW_HEX("d" #N, attr_cpu_d##N, set_cpu_d##N, "Data register D" #N " (32-bit)")
-#define CPU_AREG_MEMBER(N) ATTR_RW_HEX("a" #N, attr_cpu_a##N, set_cpu_a##N, "Address register A" #N " (32-bit)")
+#define CPU_DREG_MEMBER(N) ATTR_RW_HEX_FW("d" #N, attr_cpu_reg, set_cpu_reg, "Data register D" #N " (32-bit)", 0, 0, N)
+#define CPU_AREG_MEMBER(N)                                                                                             \
+    ATTR_RW_HEX_FW("a" #N, attr_cpu_reg, set_cpu_reg, "Address register A" #N " (32-bit)", 0, 0, 8 + N)
 
+// Static members only: the `fpu` child (and, on the 68040, `mmu`) is attached
+// at runtime by cpu_init, and the 030 PMMU's `mmu` by cpu_attach_mmu.
 // clang-format off
 static const member_t cpu_members[] = {
     ATTR_RW_HEX("pc",  attr_cpu_pc,  set_cpu_pc,  "Program counter — address of the next instruction to execute"),
-    ATTR_RW_HEX("sr",  attr_cpu_sr,  set_cpu_sr,  "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask"),
-    ATTR_RW_HEX_ADV("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)"),
+    ATTR_RW_HEX_FW("sr", attr_cpu_sr, set_cpu_sr, "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask", 0, 2, 0),
+    ATTR_RW_HEX_FW("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)", M_CAT_ADVANCED, 1, 0),
     ATTR_RW_HEX_ADV("ssp", attr_cpu_ssp, set_cpu_ssp, "Supervisor stack pointer, the A7 seen in supervisor mode"),
     ATTR_RW_HEX_ADV("usp", attr_cpu_usp, set_cpu_usp, "User stack pointer, the A7 seen in user mode"),
     ATTR_RW_HEX_ADV("msp", attr_cpu_msp, set_cpu_msp, "Master stack pointer (68020+); used instead of SSP when SR's M bit is set"),
@@ -916,11 +849,11 @@ static const member_t cpu_members[] = {
     CPU_DREG_MEMBER(4), CPU_DREG_MEMBER(5), CPU_DREG_MEMBER(6), CPU_DREG_MEMBER(7),
     CPU_AREG_MEMBER(0), CPU_AREG_MEMBER(1), CPU_AREG_MEMBER(2), CPU_AREG_MEMBER(3),
     CPU_AREG_MEMBER(4), CPU_AREG_MEMBER(5), CPU_AREG_MEMBER(6), CPU_AREG_MEMBER(7),
-    ATTR_RW_BIT("c", attr_cpu_cc_c, set_cpu_cc_c, "Carry flag"),
-    ATTR_RW_BIT("v", attr_cpu_cc_v, set_cpu_cc_v, "Overflow flag"),
-    ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z, "Zero flag"),
-    ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
-    ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
+    ATTR_RW_BIT("c", CPU_CCR_CARRY, "Carry flag"),
+    ATTR_RW_BIT("v", CPU_CCR_OVERFLOW, "Overflow flag"),
+    ATTR_RW_BIT("z", CPU_CCR_ZERO, "Zero flag"),
+    ATTR_RW_BIT("n", CPU_CCR_NEGATIVE, "Negative flag"),
+    ATTR_RW_BIT("x", CPU_CCR_EXTEND, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
     {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0x40800000 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",

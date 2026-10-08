@@ -5,6 +5,7 @@
 // Motorola 68000 instruction disassembler for debugging output.
 
 #include "cpu.h"
+#include "cpu_ea.h"
 #include "debug_mac.h"
 
 #include <assert.h>
@@ -13,13 +14,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static uint16_t disasm_fetch_16_without_inc(uint16_t *fetch_pos) {
+// Read the word after the opcode at fetch_pos without advancing (a peek)
+static uint16_t disasm_peek_16(uint16_t *fetch_pos) {
     uint16_t v = fetch_pos[1];
 
     return v;
 }
 
-static uint32_t disasm_fetch_32_without_inc(uint16_t *fetch_pos) {
+// Read the long after the opcode at fetch_pos without advancing (a peek)
+static uint32_t disasm_peek_32(uint16_t *fetch_pos) {
     // Widen before the shift: a promoted int shifted past its sign bit is
     // undefined for any word at or above $8000.
     uint32_t v = (uint32_t)fetch_pos[1] << 16 | fetch_pos[2];
@@ -58,21 +61,15 @@ static const char *cc[] = {"T",  "F",  "HI", "LS", "CC", "CS", "NE", "EQ",
 static const char *bcc[] = {"RA", "?",  "HI", "LS", "CC", "CS", "NE", "EQ",
                             "VC", "VS", "PL", "MI", "GE", "LT", "GT", "LE"};
 
-static const char *format_pc_displacement(int32_t disp) {
-    static char buf[20];
-
-    if (disp >= 0)
-        sprintf(buf, "*+$%04X", (int)(disp));
-    else
-        sprintf(buf, "*-$%04X", (int)(0 - disp));
-
-    return buf;
-}
-
+// Format into the next slot of a small ring of static buffers, so several
+// formatted operands can be live at once without the caller managing storage.
 static const char *tmp_buf_printf(const char *fmt, ...) {
-    // A single MOVE with two 68020+ full-extension-word operands can keep
-    // ~8 intermediates live at once (bd/od/idx/final for each side) before
-    // the outer sprintf consumes them. 16 slots leaves comfortable margin.
+    // Worst case, checked against disasm_ea_full: one full-extension-word
+    // operand keeps at most 4 slots live (index, BD, OD, the assembled
+    // string), and no instruction has more than two EA operands, so 8 slots
+    // are live before the outer sprintf consumes them.  Branch
+    // displacements (format_pc_displacement) take one slot and never share
+    // an instruction with a full-extension EA.  16 slots is double the need.
     enum { N = 160, SLOTS = 16 };
     static char b[SLOTS][N];
     static unsigned idx;
@@ -82,6 +79,16 @@ static const char *tmp_buf_printf(const char *fmt, ...) {
     vsnprintf(s, N, fmt, ap);
     va_end(ap);
     return s;
+}
+
+// Format a PC-relative branch displacement as "*+$XXXX" / "*-$XXXX".  Uses the
+// tmp_buf_printf ring like every other operand formatter, so two calls in one
+// line do not share a buffer.  The magnitude is computed in unsigned
+// arithmetic, so INT32_MIN negates without overflow.
+static const char *format_pc_displacement(int32_t disp) {
+    if (disp >= 0)
+        return tmp_buf_printf("*+$%04X", (unsigned)disp);
+    return tmp_buf_printf("*-$%04X", 0u - (uint32_t)disp);
 }
 
 // Count how many 16-bit words a 68020+ full extension word consumes
@@ -330,7 +337,9 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
                 buf = tmp_buf_printf("#$%X", (int)pos[0]);
                 pos++;
             } else if (size == 1) {
-                buf = tmp_buf_printf("#$%X", (int)(pos[0]));
+                // A byte immediate occupies the low byte of its word; the high
+                // byte is padding and not part of the operand.
+                buf = tmp_buf_printf("#$%X", (int)(pos[0] & 0xFF));
                 pos++;
             } else {
                 // Unknown immediate size — return an obvious placeholder so the
@@ -832,15 +841,17 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
     { sprintf(buf, __VA_ARGS__); }
 #define INSTR(x)
 
-#define EXT_WORD (int)disasm_fetch_16_without_inc(fetch_pos_src)
+#define EXT_WORD (int)disasm_peek_16(fetch_pos_src)
 
-#define EXT_LONG (int)disasm_fetch_32_without_inc(fetch_pos_src)
+#define EXT_LONG (int)disasm_peek_32(fetch_pos_src)
 
 #define SRC_WORD (int)disasm_fetch_16(&fetch_pos_src, 0)
 
 #define SRC_LONG (int)disasm_fetch_32(&fetch_pos_src, 0)
 
 #define DST_WORD (int)disasm_fetch_16(&fetch_pos_dst, 0)
+// A byte immediate: the low byte of its extension word (the high byte is padding)
+#define SRC_BYTE (SRC_WORD & 0xFF)
 #define DST_LONG (int)disasm_fetch_32(&fetch_pos_dst, 0)
 
 #define DST_EA(size, offset, mode) disasm_ea(size, opcode >> 3 & 7, opcode & 7, &fetch_pos_dst, offset, mode)
@@ -918,7 +929,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_ADD_L_DN_EA        ASM("ADD.L\t%s,%s", DN, DST_EA(4, 0, (ea_data & ea_alterable)));
 #define OP_ADDA_L_EA_AN       ASM("ADDA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
 #define OP_ADDA_W_EA_AN       ASM("ADDA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN);
-#define OP_ADDI_B_DATA_EA     ASM("ADDI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)));
+#define OP_ADDI_B_DATA_EA     ASM("ADDI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, (ea_data & ea_alterable)));
 #define OP_ADDI_L_DATA_EA     ASM("ADDI.L\t#$%X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)));
 #define OP_ADDI_W_DATA_EA     ASM("ADDI.W\t#$%X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)));
 #define OP_ADDQ_B_DATA_EA     ASM("ADDQ.B\t#$%X,%s", (int)IMM, DST_EA(1, 0, ea_alterable & ~ea_an))
@@ -938,8 +949,8 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_AND_L_EA_DN        ASM("AND.L\t%s,%s", SRC_EA(4, 0, ea_data), DN)
 #define OP_AND_W_DN_EA        ASM("AND.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)))
 #define OP_AND_W_EA_DN        ASM("AND.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
-#define OP_ANDI_B_DATA_CCR    ASM("ANDI.B\t#$%04X,CCR", SRC_WORD)
-#define OP_ANDI_B_DATA_EA     ASM("ANDI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
+#define OP_ANDI_B_DATA_CCR    ASM("ANDI.B\t#$%02X,CCR", SRC_BYTE)
+#define OP_ANDI_B_DATA_EA     ASM("ANDI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, (ea_data & ea_alterable)))
 #define OP_ANDI_L_DATA_EA     ASM("ANDI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)))
 #define OP_ANDI_W_DATA_EA     ASM("ANDI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)))
 #define OP_ANDI_W_DATA_SR     ASM("ANDI.W\t#$%04X,SR", SRC_WORD)
@@ -978,7 +989,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_BSR_L_LABEL        ASM("BSR.L\t%s", LONG_PC_DISP);
 #define OP_BSR_W_LABEL        ASM("BSR\t%s", PC_DISP);
 #define OP_BTST_B_DATA_EA     ASM("BTST\t#$%X,%s", SRC_WORD, DST_EA(1, 1, ea_data & ~ea_xxx))
-#define OP_BTST_B_DN_EA       ASM("BTST\t%s,%s", DN, DST_EA(1, 0, ea_data & ~ea_xxx))
+#define OP_BTST_B_DN_EA       ASM("BTST\t%s,%s", DN, DST_EA(1, 0, ea_data))
 #define OP_BTST_L_DATA_DN     ASM("BTST\t#$%X,%s", SRC_WORD, DST_EA(1, 1, ea_data & ~ea_xxx))
 #define OP_BTST_L_DX_DY       ASM("BTST\t%s,%s", DX, DY)
 #define OP_BFTST_EA           ASM("BFTST\t%s", BF_OPERANDS(ea_control))
@@ -1015,7 +1026,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_CMP_L_EA_DN        ASM("CMP.L\t%s,%s", SRC_EA(4, 0, ea_any), DN);
 #define OP_CMP_W_EA_DN        ASM("CMP.W\t%s,%s", SRC_EA(2, 0, ea_any), DN);
 #define OP_CMPA_W_EA_AN       ASM("CMPA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN);
-#define OP_CMPI_B_DATA_EA     ASM("CMPI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, ea_data & ~ea_xxx))
+#define OP_CMPI_B_DATA_EA     ASM("CMPI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, ea_data & ~ea_xxx))
 #define OP_CMPI_L_DATA_EA     ASM("CMPI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, ea_data & ~ea_xxx))
 #define OP_CMPI_W_DATA_EA     ASM("CMPI.W\t#$%X,%s", SRC_WORD, DST_EA(2, 1, ea_data & ~ea_xxx))
 #define OP_CMPM_B_AY_AX       ASM("CMPM.B\t(%s)+,(%s)+", AY, AX);
@@ -1023,14 +1034,14 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_CMPA_L_EA_AN       ASM("CMPA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
 #define OP_CMPM_W_AY_AX       ASM("CMPM.W\t(%s)+,(%s)+", AY, AX);
 #define OP_DBCC_DN_LABEL      ASM("DB%s\t%s,%s", CC, DY, PC_DISP)
-#define OP_DIVS_L_EA_DR_DQ    ASM("DIVS.L\t%s,%s:%s", SRC_EA(4, 1, ea_any), DR, DQ)
+#define OP_DIVS_L_EA_DR_DQ    ASM("DIVS.L\t%s,%s:%s", SRC_EA(4, 1, ea_data), DR, DQ)
 #define OP_DIVS_W_EA_DN       ASM("DIVS.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
 #define OP_DIVU_W_EA_DN       ASM("DIVU.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
 #define OP_EOR_B_DN_EA        ASM("EOR.B\t%s,%s", DN, DST_EA(1, 0, (ea_data & ea_alterable)));
 #define OP_EOR_L_DN_EA        ASM("EOR.L\t%s,%s", DN, DST_EA(4, 0, (ea_data & ea_alterable)));
 #define OP_EOR_W_DN_EA        ASM("EOR.W\t%s,%s", DN, DST_EA(2, 0, (ea_data & ea_alterable)));
-#define OP_EORI_B_DATA_CCR    ASM("EORI.B\t#$%04X,CCR", SRC_WORD)
-#define OP_EORI_B_DATA_EA     ASM("EORI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
+#define OP_EORI_B_DATA_CCR    ASM("EORI.B\t#$%02X,CCR", SRC_BYTE)
+#define OP_EORI_B_DATA_EA     ASM("EORI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, (ea_data & ea_alterable)))
 #define OP_EORI_L_DATA_EA     ASM("EORI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)))
 #define OP_EORI_W_DATA_EA     ASM("EORI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)))
 #define OP_EORI_W_DATA_SR     ASM("EORI.W\t#$%04X,SR", SRC_WORD)
@@ -1039,6 +1050,9 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_EXG_DX_DY          ASM("EXG\t%s,%s", DX, DY)
 #define OP_EXT_L_DN           ASM("EXT.L\t%s", DY)
 #define OP_EXT_W_DN           ASM("EXT.W\t%s", DY)
+// Jumps to the `illegal:` label that CPU_DECODER_EPILOGUE below plants in the
+// generated cpu_disasm() -- valid because cpu_decode.h expands the whole
+// table, and this epilogue, into that one function.
 #define OP_UNDEFINED                                                                                                   \
     do {                                                                                                               \
         goto illegal;                                                                                                  \
@@ -1091,7 +1105,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_MOVES_L_RN_EA    ASM("MOVES.L\t%s,%s", RN, DST_EA(4, 1, (ea_memory & ea_alterable)))
 #define OP_MOVES_W_EA_RN    ASM("MOVES.W\t%s,%s", SRC_EA(2, 1, (ea_memory & ea_alterable)), RN)
 #define OP_MOVES_W_RN_EA    ASM("MOVES.W\t%s,%s", RN, DST_EA(2, 1, (ea_memory & ea_alterable)))
-#define OP_MULS_L_EA_DH_DL  ASM("MULS.L\t%s,%s:%s", SRC_EA(4, 1, ea_any), DH, DL)
+#define OP_MULS_L_EA_DH_DL  ASM("MULS.L\t%s,%s:%s", SRC_EA(4, 1, ea_data), DH, DL)
 #define OP_MULS_W_EA_DN     ASM("MULS.W\t%s,%s", SRC_EA(2, 0, ea_any), DN)
 #define OP_MULU_W_EA_DN     ASM("MULU.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
 #define OP_NBCD_B_EA        ASM("NBCD\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
@@ -1111,8 +1125,8 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_OR_L_EA_DN       ASM("OR.L\t%s,%s", SRC_EA(4, 0, ea_data), DN)
 #define OP_OR_W_DN_EA       ASM("OR.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)))
 #define OP_OR_W_EA_DN       ASM("OR.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
-#define OP_ORI_B_DATA_CCR   ASM("ORI.B\t#$%04X,CCR", SRC_WORD)
-#define OP_ORI_B_DATA_EA    ASM("ORI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
+#define OP_ORI_B_DATA_CCR   ASM("ORI.B\t#$%02X,CCR", SRC_BYTE)
+#define OP_ORI_B_DATA_EA    ASM("ORI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, (ea_data & ea_alterable)))
 #define OP_ORI_L_DATA_EA    ASM("ORI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)))
 #define OP_ORI_W_DATA_EA    ASM("ORI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)))
 #define OP_ORI_W_DATA_SR    ASM("ORI.W\t#$%04X,SR", SRC_WORD)
@@ -1167,7 +1181,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_SUB_W_EA_DN      ASM("SUB.W\t%s,%s", SRC_EA(2, 0, ea_any), DN);
 #define OP_SUBA_L_EA_AN     ASM("SUBA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
 #define OP_SUBA_W_EA_AN     ASM("SUBA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN);
-#define OP_SUBI_B_DATA_EA   ASM("SUBI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)));
+#define OP_SUBI_B_DATA_EA   ASM("SUBI.B\t#$%X,%s", SRC_BYTE, DST_EA(1, 1, (ea_data & ea_alterable)));
 #define OP_SUBI_L_DATA_EA   ASM("SUBI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)));
 #define OP_SUBI_W_DATA_EA   ASM("SUBI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)));
 #define OP_SUBQ_B_DATA_EA   ASM("SUBQ.B\t#$%X,%s", (int)IMM, DST_EA(1, 0, ea_alterable & ~ea_an))
@@ -1182,7 +1196,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_SUBX_W_AX_AY     ASM("SUBX.W\t-(%s),-(%s)", AY, AX);
 #define OP_SUBX_W_DX_DY     ASM("SUBX.W\t%s,%s", DY, DX);
 #define OP_SWAP_DN          ASM("SWAP\t%s", DY)
-#define OP_TAS_B_EA         ASM("TAS\t%s", DST_EA(1, 0, ea_any))
+#define OP_TAS_B_EA         ASM("TAS\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
 #define OP_TRAP_VECTOR      ASM("TRAP\t#$%X", (int)(opcode & 0xF))
 #define OP_TRAPV            ASM("TRAPV")
 #define OP_TRAPCC           ASM("T%s", CC)
