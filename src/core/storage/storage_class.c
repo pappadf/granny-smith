@@ -23,6 +23,7 @@
 #include "image.h"
 #include "image_apm.h"
 #include "image_chunkmap.h"
+#include "image_hfs.h"
 #include "image_iso9660.h"
 #include "image_ndif.h"
 #include "image_part.h"
@@ -213,7 +214,7 @@ static int work_hd_create(io_leaf_t *j) {
 
 static int work_fd_create(io_leaf_t *j) {
     int rc = image_create_blank_floppy(j->a, false, j->flag);
-    if (rc == -2)
+    if (rc == IMAGE_CREATE_EXISTS)
         snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
     else if (rc != 0)
         snprintf(j->err, sizeof j->err, "failed to create blank floppy '%s'", j->a);
@@ -222,7 +223,7 @@ static int work_fd_create(io_leaf_t *j) {
 
 static int work_profile_create(io_leaf_t *j) {
     int rc = image_create_blank_profile(j->a, j->blocks);
-    if (rc == -2)
+    if (rc == IMAGE_CREATE_EXISTS)
         snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
     else if (rc != 0)
         snprintf(j->err, sizeof j->err, "failed to create blank ProFile image '%s'", j->a);
@@ -524,29 +525,6 @@ static DEF_METHOD(files_method_profile_create) {
     return io_leaf_dispatch(j, "files.profile_create");
 }
 
-static const char *apm_fs_kind_label(enum apm_fs_kind k) {
-    switch (k) {
-    case APM_FS_HFS:
-        return "HFS";
-    case APM_FS_UFS:
-        return "UFS";
-    case APM_FS_MFS:
-        return "MFS";
-    case APM_FS_ISO9660:
-        return "ISO";
-    case APM_FS_PARTITION_MAP:
-        return "map";
-    case APM_FS_DRIVER:
-        return "drvr";
-    case APM_FS_FREE:
-        return "free";
-    case APM_FS_PATCHES:
-        return "patch";
-    default:
-        return "--";
-    }
-}
-
 // `files.partmap(path)` — print the Apple Partition Map of an image.
 static DEF_METHOD(files_method_partmap) {
     const char *path = argv[0].s;
@@ -559,17 +537,55 @@ static DEF_METHOD(files_method_partmap) {
         image_close(img);
         return val_err("files.partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
     }
-    gs_outf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
+    // disk_size is whole 512-byte blocks: image_apm_parse refuses any other geometry.
+    gs_outf("format: APM (%uB blocks, %zu total)\n", (unsigned)APM_BLOCK_SIZE, disk_size(img) / APM_BLOCK_SIZE);
     gs_outf("  #  Name                             Type                        Start        Size  FS\n");
     for (uint32_t i = 0; i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
         gs_outf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
                 p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
-                (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
+                (unsigned long long)p->size_blocks, image_apm_fs_kind_label(p->fs_kind));
     }
     image_apm_free(table);
     image_close(img);
     return val_bool(true);
+}
+
+// The filesystem a partition's volume header names, or NULL.
+static const char *partition_volume_kind(image_t *img, size_t size, const apm_partition_t *p) {
+    uint64_t at = p->start_block * APM_BLOCK_SIZE + 1024;
+    uint8_t hdr[2];
+    if (p->size_blocks * APM_BLOCK_SIZE < 1024 + sizeof(hdr) || at + sizeof(hdr) > size ||
+        image_read_bytes(img, at, hdr, sizeof(hdr)) != 0)
+        return NULL;
+    switch (RD_BE16(hdr)) {
+    case HFS_SIG_BD:
+        return "HFS";
+    case HFS_SIG_HP:
+        return "HFS+";
+    case HFS_SIG_HX:
+        return "HFSX";
+    default:
+        return NULL;
+    }
+}
+
+// files.probe's lines for an APM disk's filesystem partitions.
+static void probe_report_partitions(image_t *img, size_t size) {
+    apm_table_t *table = image_apm_parse(img, NULL);
+    if (!table)
+        return;
+    for (uint32_t i = 0; i < table->n_partitions; i++) {
+        const apm_partition_t *p = &table->partitions[i];
+        if (p->fs_kind != APM_FS_HFS && p->fs_kind != APM_FS_UFS && p->fs_kind != APM_FS_UNKNOWN)
+            continue;
+        const char *vol = partition_volume_kind(img, size, p);
+        if (!vol && p->fs_kind == APM_FS_UNKNOWN)
+            continue; // an unrecognised partition with no volume we know
+        gs_outf("partition %u: %s (%s)%s%s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
+                p->type[0] ? p->type : "(unknown)", vol ? ", volume " : "", vol ? vol : "");
+    }
+    image_apm_free(table);
 }
 
 // `files.probe(path)` — identify the format of a disk image.
@@ -592,7 +608,7 @@ static DEF_METHOD(files_method_probe) {
     gs_source_release(isrc);
     bool hfs = false;
     if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
-        hfs = (block[0] == 0x42 && block[1] == 0x44);
+        hfs = RD_BE16(block) == HFS_SIG_BD;
     if (apm && iso)
         gs_outf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
     else if (apm)
@@ -605,6 +621,11 @@ static DEF_METHOD(files_method_probe) {
         gs_outf("format: HFS (bare, %zu bytes)\n", size);
     else
         gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
+    // A partitioned disk's volumes: each partition the map names as a
+    // filesystem, and what its own header says it is (an HFS volume's
+    // MDB sits 1024 bytes into its partition, as on a bare disk).
+    if (apm)
+        probe_report_partitions(img, size);
     // What the format registry peeled to reach the disk, and what it finds
     // the disk to be.
     if (img->format && strcmp(img->format, "raw") != 0)
