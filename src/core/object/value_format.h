@@ -34,6 +34,7 @@ typedef struct {
 } vbuf_t;
 
 void vbuf_append(vbuf_t *b, const char *s, size_t n);
+void vbuf_append_str(vbuf_t *b, const char *s); // NUL-terminated; NULL appends nothing
 void vbuf_appendf(vbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void vbuf_free(vbuf_t *b);
 

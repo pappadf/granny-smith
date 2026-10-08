@@ -388,7 +388,7 @@ int shell_init(void) {
     // shell's tab-completion engine. Done early so any `gs_eval` that
     // lands during init (vanishingly unlikely but cheap to guarantee)
     // sees a live provider.
-    meta_set_complete_provider(shell_meta_complete_provider);
+    meta_complete_register(shell_meta_complete_provider);
 
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed

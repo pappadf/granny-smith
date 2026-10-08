@@ -12,6 +12,7 @@
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
+#include "value_format.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -239,6 +240,38 @@ TEST(test_wellformed_args_still_parse) {
     fixture_down(a, b);
 }
 
+// Out-of-range JSON numbers and a backslash at the end of a string are
+// refused, not saturated or read past.
+TEST(test_out_of_range_args_are_refused) {
+    struct object *a, *b;
+    fixture_up(&a, &b);
+    const char *bad[] = {"[99999999999999999999]", "[1e999]", "[\"abc\\"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        g_pc = 0;
+        ASSERT_EQ_INT(-1, gs_eval("a.pc", bad[i], out, sizeof(out)));
+        ASSERT_EQ_INT(0, (int)g_pc);
+    }
+    fixture_down(a, b);
+}
+
+// A hex-flagged V_INT renders its bit pattern at its width, and as a JSON
+// string like V_UINT; strings escape control characters.
+TEST(test_value_format_hex_int_and_escapes) {
+    char buf[64];
+    value_t v = val_int(-1);
+    v.flags |= VAL_HEX;
+    v.width = 4;
+    value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "0xffffffff") == 0);
+    value_format_into(&v, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "\"0xffffffff\"") == 0);
+    value_t s = val_str("a\"b\\c\n\x01"
+                        "d");
+    value_format_into(&s, VFMT_JSON, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "\"a\\\"b\\\\c\\n\\u0001d\"") == 0);
+    value_free(&s);
+}
+
 int main(void) {
     RUN(test_shell_assignment_is_not_a_path);
     RUN(test_typed_setter_writes);
@@ -247,5 +280,7 @@ int main(void) {
     RUN(test_enumerate_with_meta_indices);
     RUN(test_truncated_args_are_refused);
     RUN(test_wellformed_args_still_parse);
+    RUN(test_out_of_range_args_are_refused);
+    RUN(test_value_format_hex_int_and_escapes);
     return 0;
 }

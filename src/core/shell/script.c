@@ -1450,7 +1450,7 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
     else if (strcmp(word, "none") == 0)
         v = val_none();
     else if (word[0] == '+' || word[0] == '-' || isdigit((unsigned char)word[0])) {
-        v = parse_literal_full(word, NULL, 0);
+        v = parse_literal_whole_string(word, NULL, 0);
         if (val_is_error(&v) || v.kind == V_STRING) {
             // Not a clean numeric literal — the whole word is a string.
             value_free(&v);

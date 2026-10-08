@@ -49,27 +49,13 @@ void root_register_install(root_install_fn install, root_uninstall_fn uninstall)
 
 // Attach `o` under `parent` (NULL = the root) as a cfg-scoped stub, freed by
 // root_uninstall.  Returns `o`, or NULL -- having freed it -- when its class
-// is invalid or the stub table is full.
+// is invalid or the stub table cannot grow.
 struct object *root_attach_stub(struct object *parent, struct object *o);
 
 // Tear down only when the installed stubs are still associated with
 // `cfg`. Lets `system_destroy(old)` no-op after a `checkpoint --load`
 // has already swapped in stubs for the new cfg.
 void root_uninstall_if(struct config *cfg);
-
-// === Debug entry-object factories ===========================================
-//
-// Each breakpoint / logpoint owns a per-entry object_t* exposed under
-// debug.breakpoints[id] / debug.logpoints[id]. debug.c calls these
-// factories once per entry at set-time; object_delete fires the per-entry
-// invalidator hooks (object.h) when the entry is removed. NULL is a
-// valid return — object resolution falls back to "empty slot" semantics.
-
-struct breakpoint;
-struct logpoint;
-
-struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp);
-struct object *gs_classes_make_logpoint_object(struct logpoint *lp);
 
 #ifdef __cplusplus
 }
