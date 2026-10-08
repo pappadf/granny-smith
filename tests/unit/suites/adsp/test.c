@@ -699,6 +699,7 @@ TEST(test_send_queue_backpressure) {
     adsp_conn_t *ca = open_a_to_b();
     g_partition = true; // no acknowledgments, so nothing ever drains
     static uint8_t chunk[1024];
+    ASSERT_EQ_INT(adsp_send_space(ca), ADSP_SEND_QUEUE);
     int accepted = 0;
     for (int i = 0; i < (ADSP_SEND_QUEUE / (int)sizeof(chunk)) + 2; i++) {
         if (adsp_write(g_a, ca, chunk, (int)sizeof(chunk), false) < 0)
@@ -706,6 +707,7 @@ TEST(test_send_queue_backpressure) {
         accepted += (int)sizeof(chunk);
     }
     ASSERT_EQ_INT(accepted, ADSP_SEND_QUEUE);
+    ASSERT_EQ_INT(adsp_send_space(ca), 0);
     ASSERT_EQ_INT(adsp_write(g_a, ca, chunk, 1, false), -1);
     // The peer's advertised window bounds what actually went out (12-8).
     ASSERT_TRUE(adsp_conn_unacked(ca) <= ADSP_RECV_WINDOW);

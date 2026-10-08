@@ -1010,6 +1010,12 @@ int adsp_write(adsp_stack_t *s, adsp_conn_t *c, const uint8_t *data, int len, bo
     return len;
 }
 
+int adsp_send_space(const adsp_conn_t *c) {
+    if (!c || !c->in_use)
+        return 0;
+    return ADSP_SEND_QUEUE - c->queued;
+}
+
 int adsp_send_attention(adsp_stack_t *s, adsp_conn_t *c, uint16_t code, const uint8_t *data, int len) {
     if (!s || !c || !c->in_use || c->state != ADSP_STATE_OPEN)
         return -1;

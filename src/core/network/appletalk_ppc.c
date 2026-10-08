@@ -375,7 +375,11 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
 
     // Header and payload are one client message, so they must not be split by
     // an EOM in between (§4.7).
+    // Check the whole message fits first, so a full send queue cannot leave
+    // the header queued without its payload and EOM.
     adsp_stack_t *stack = atalk_adsp_stack();
+    if (adsp_send_space(s->conn) < PPC_BLOCK_HEADER_SIZE + len + 1)
+        return -1;
     if (adsp_write(stack, s->conn, hdr, PPC_BLOCK_HEADER_SIZE, false) < 0)
         return -1;
     if (adsp_write(stack, s->conn, payload, len, true) < 0)
