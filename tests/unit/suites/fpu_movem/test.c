@@ -17,6 +17,9 @@
 //
 // The -(An) form additionally uses a reversed register list
 // (bit i = FPi) versus bit 7 = FP0 everywhere else.
+//
+// Also hosts the FMOVE.P packed-decimal special-value checks, which need the
+// same single-instruction 68030+FPU setup.
 
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -240,6 +243,57 @@ TEST(fmovem_control_dynamic_list_save) {
     ASSERT_TRUE(fp80_eq(read_ext96(DATA_ADDR + 0x40), val(8)));
 }
 
+// --- packed decimal special values (FMOVE.P) --------------------------------
+// MC68881UM Table 3-4: infinity/NaN is SE=1, YY=11, exponent $FFF; any other
+// YY is an ordinary in-range string.
+
+TEST(fmove_p_load_infinity_and_nan_pattern) {
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68030(cpu);
+    fpu_state_t *fpu = get_fpu(cpu);
+    cpu->a[0] = DATA_ADDR;
+    memory_write_uint32(DATA_ADDR, 0xFFFF0000u); // -inf
+    memory_write_uint32(DATA_ADDR + 4, 0);
+    memory_write_uint32(DATA_ADDR + 8, 0);
+    exec_fmovem(cpu, 0xF210, 0x4C00, NULL, 0); // FMOVE.P (A0),FP0
+    ASSERT_EQ_INT(fpu->fp[0].exponent, 0xFFFF);
+    ASSERT_TRUE(fpu->fp[0].mantissa == 0);
+    // A signalling NaN fraction lands bit-for-bit (not pre-quieted by the
+    // conversion), so the FMOVE itself sees an SNAN and signals it.
+    memory_write_uint32(DATA_ADDR, 0x7FFF0000u);
+    memory_write_uint32(DATA_ADDR + 4, 0x80000001u);
+    memory_write_uint32(DATA_ADDR + 8, 0);
+    fpu->fpsr = 0;
+    exec_fmovem(cpu, 0xF210, 0x4C00, NULL, 0);
+    ASSERT_EQ_INT(fpu->fp[0].exponent & 0x7FFF, 0x7FFF);
+    ASSERT_TRUE((fpu->fpsr & FPEXC_SNAN) != 0);
+}
+
+TEST(fmove_p_load_yy_nonzero_is_in_range) {
+    // YY=01, exponent 000, d16=1: the value 1.0, not an infinity
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68030(cpu);
+    fpu_state_t *fpu = get_fpu(cpu);
+    cpu->a[0] = DATA_ADDR;
+    memory_write_uint32(DATA_ADDR, 0x10000001u);
+    memory_write_uint32(DATA_ADDR + 4, 0);
+    memory_write_uint32(DATA_ADDR + 8, 0);
+    exec_fmovem(cpu, 0xF210, 0x4C00, NULL, 0);
+    ASSERT_TRUE(fp80_eq(fpu->fp[0], val(1)));
+}
+
+TEST(fmove_p_store_infinity_pattern) {
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68030(cpu);
+    fpu_state_t *fpu = get_fpu(cpu);
+    cpu->a[1] = DATA_ADDR;
+    fpu->fp[0] = fp80_make(0, 0x7FFF, 0);
+    exec_fmovem(cpu, 0xF211, 0x6C00, NULL, 0); // FMOVE.P FP0,(A1){#0}
+    ASSERT_EQ_INT((int)memory_read_uint32(DATA_ADDR), 0x7FFF0000);
+    ASSERT_EQ_INT((int)memory_read_uint32(DATA_ADDR + 4), 0);
+    ASSERT_EQ_INT((int)memory_read_uint32(DATA_ADDR + 8), 0);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -253,6 +307,9 @@ int main(void) {
     RUN(fmovem_an_indirect_save_all_restore_all);
     RUN(fmovem_predec_save_postinc_restore);
     RUN(fmovem_control_dynamic_list_save);
+    RUN(fmove_p_load_infinity_and_nan_pattern);
+    RUN(fmove_p_load_yy_nonzero_is_in_range);
+    RUN(fmove_p_store_infinity_pattern);
 
     test_harness_destroy(ctx);
     return 0;
