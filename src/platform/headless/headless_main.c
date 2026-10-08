@@ -646,7 +646,7 @@ int hl_run_statement(uint32_t client, const char *src) {
     }
     g_foreground_job = id;
     g_foreground_client = client;
-    double last_heartbeat = host_time();
+    double last_heartbeat = host_time_ms();
     uint64_t start_instr = cpu_instr_count();
     bool cancelled_for_quit = false; // `quit` or SIGTERM: the job was cancelled
     int rc = -1;
@@ -671,8 +671,8 @@ int hl_run_statement(uint32_t client, const char *src) {
         scheduler_t *sched = system_scheduler();
         bool running = sched && scheduler_is_running(sched);
         if (running) {
-            double now = host_time();
-            if (now - last_heartbeat >= 1.0) {
+            double now = host_time_ms();
+            if (now - last_heartbeat >= 1000.0) {
                 uint64_t current = cpu_instr_count();
                 printf("# running... %llu instructions (+%llu since start)\n", (unsigned long long)current,
                        (unsigned long long)(current - start_instr));

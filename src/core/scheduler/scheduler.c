@@ -714,7 +714,7 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
     s->cpu_events = NULL;
     s->saved.running = false;
     s->vbl_acc_error = 0;
-    s->previous_time = host_time();
+    s->previous_time = host_time_ms() / 1000.0; // seconds
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
@@ -1739,7 +1739,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
 
     GS_ASSERT(!isnan(s->vbl_acc_error));
 
-    now = host_time();
+    now = host_time_ms() / 1000.0; // seconds
 
     // Execute the VBL frame-units the host clock earned this tick.  Each is a
     // trigger_vbl + one-VBL-period run (scheduler_run_frame) — the same unit the
@@ -1754,7 +1754,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     }
 
     // Update smoothed host-seconds-per-VBL estimate
-    double delta = host_time() - now;
+    double delta = host_time_ms() / 1000.0 - now;
     int denom = executed_vbls > 0 ? executed_vbls : 1;
     if (isnan(s->host_secs_per_vbl))
         s->host_secs_per_vbl = delta / denom;

@@ -769,7 +769,7 @@ at exactly `N` instructions; the job that issued it is held until that mode ends
 a client's stop or its disconnect; a headless script waits for that (its next
 statement sees the stopped machine), the browser's terminal does not.
 
-No `host_time()` value ever feeds guest execution on the headless path.
+No `host_time_ms()` value ever feeds guest execution on the headless path.
 
 ### 10.3 WASM: host-clock-driven, two pacing modes
 

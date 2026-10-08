@@ -74,11 +74,11 @@
 
 // --- Fake host clock -------------------------------------------------------
 
-static double g_now; // seconds; returned by host_time()
+static double g_now; // seconds; host_time_ms() returns it in milliseconds
 static double g_secs_per_instr; // simulated emulation cost (0 = free)
 
-double host_time(void) {
-    return g_now;
+double host_time_ms(void) {
+    return g_now * 1000.0;
 }
 
 // --- Fake audio-ring signal (governor feedback) ----------------------------
@@ -430,7 +430,7 @@ static void teardown(scheduler_t *s) {
 static int tick_at(double now_s) {
     uint64_t before = g_vbls;
     if (now_s > g_now)
-        g_now = now_s; // keep host_time() >= the tick timestamps we feed
+        g_now = now_s; // keep host_time_ms() >= the tick timestamps we feed
     scheduler_main_loop(TEST_CFG, now_s * 1000.0, platform_pacing());
     return (int)(g_vbls - before);
 }
@@ -1145,7 +1145,7 @@ TEST(test_forget_source_drops_events_and_types) {
 // The scheduler's plain-data prefix used to run past `cpu_cycles` and over
 // `previous_time`, `vbl_acc_error`, `host_secs_per_vbl` and
 // `host_secs_per_loop` -- the pacing governor's smoothing, all derived from
-// host_time().  The restore overwrote all four immediately, so nothing
+// host_time_ms().  The restore overwrote all four immediately, so nothing
 // consumed them, but they still went into every save file and made two
 // processes saving identical guest state produce different bytes.
 //

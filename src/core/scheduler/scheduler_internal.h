@@ -98,7 +98,7 @@ struct scheduler {
     // These four are the pacing governor's wall-clock smoothing.  They used
     // to be inside the checkpointed block, so every checkpoint carried one
     // host's timing state -- the restore then overwrote all four from
-    // host_time(), so nothing ever consumed them, but they still made save
+    // host_time_ms(), so nothing ever consumed them, but they still made save
     // files non-reproducible: two processes saving identical guest state
     // produced files differing in the mantissa of these doubles: host state
     // leaking into a save file.

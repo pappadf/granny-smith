@@ -342,7 +342,7 @@ back-to-back as fast as the host allows, yielding between frame-units only for
 the heartbeat / daemon-poll (pump) or Ctrl-C / `--max-cycles` (REPL). An
 instruction-budget `scheduler.run N` schedules a `run_stop_event` that the inner
 `scheduler_run_instructions` clamps to, stopping mid-frame at exactly `N`; no argument runs
-until `scheduler.stop`. No `host_time()` feeds guest execution.
+until `scheduler.stop`. No `host_time_ms()` feeds guest execution.
 
 Property: a frame-unit is a constant number of instructions with the VBL at its
 boundary, so guest state at a given budget is a pure function of the budget on

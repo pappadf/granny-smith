@@ -97,7 +97,7 @@ static gs_audio_ring_t g_aring = {
     .fill_pm = -1,
 }; // the one shared ring
 static int g_aring_channels = 1; // set by platform_audio_open
-static double g_last_push_time = -1.0; // producer-side freshness for ring_fill
+static double g_last_push_time = -1.0; // producer-side freshness for ring_fill (host ms)
 
 // ============================================================================
 // WebAudio (AudioWorklet) Implementation
@@ -403,7 +403,7 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
     else
         atomic_store_explicit(&ring->silent_pushes, 0, memory_order_relaxed);
     atomic_fetch_add_explicit(&ring->push_seq, 1, memory_order_relaxed);
-    g_last_push_time = host_time();
+    g_last_push_time = host_time_ms();
 }
 
 // Change the source sample rate mid-stream
@@ -417,7 +417,7 @@ void platform_audio_set_rate(uint32_t src_rate_hz) {
 // signal" within half a second of the stream idling, matching the governor's
 // contract from the proxy-based implementation.
 double platform_audio_ring_fill(void) {
-    if (g_last_push_time < 0.0 || host_time() - g_last_push_time > 0.5)
+    if (g_last_push_time < 0.0 || host_time_ms() - g_last_push_time > 500.0)
         return -1.0;
     int32_t pm = atomic_load_explicit(&g_aring.fill_pm, memory_order_relaxed);
     if (pm < 0)
