@@ -347,8 +347,14 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
                         uint32_t pci_mask, const char *what) {
-    if (!bus || bus->window_count >= PCI_MAX_WINDOWS)
+    if (!bus)
         return;
+    if (bus->window_count >= PCI_MAX_WINDOWS) {
+        // A family declaring one window too many loses a whole aperture; say so.
+        LOG(0, "%s: no free window slot for '%s' (PCI_MAX_WINDOWS = %d); dropped", bus->name,
+            what ? what : "PCI window", PCI_MAX_WINDOWS);
+        return;
+    }
     pci_window_t *w = &bus->window[bus->window_count++];
     w->bus = bus;
     w->space = space;
