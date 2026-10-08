@@ -183,7 +183,7 @@ value_t parse_integer_literal(const char **p) {
         return val_err("expected integer literal");
     tmp[ti] = '\0';
 
-    // Suffix: u|i, optional bit-width number (8/16/32/64) is not yet honoured.
+    // Suffix: u|i.
     bool force_signed = negative;
     bool force_unsigned = false;
     if (*q == 'u' || *q == 'U') {
@@ -193,8 +193,11 @@ value_t parse_integer_literal(const char **p) {
         force_signed = true;
         q++;
     }
-    while (isdigit((unsigned char)*q))
-        q++; // swallow optional bit-width
+    // A literal ends at a non-identifier character. A digit invalid for the
+    // base (`0b12`, `0o18`) or any other trailing letter is an error, not
+    // the end of a shorter literal: `devices.0o18` must not select index 1.
+    if (isalnum((unsigned char)*q) || *q == '_')
+        return val_err("malformed integer literal");
 
     char *endp = NULL;
     errno = 0;

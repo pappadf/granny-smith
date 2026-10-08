@@ -81,6 +81,17 @@ TEST(test_int_suffix) {
     value_free(&v);
 }
 
+// A digit invalid for the base, or any trailing letter, is an error rather
+// than the end of a shorter literal (`0b12` used to read as 1).
+TEST(test_int_trailing_alnum_rejected) {
+    const char *bad[] = {"0b12", "0o18", "12abc", "100u32", "0x1fg"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        value_t v = parse_str(bad[i]);
+        ASSERT_TRUE(val_is_error(&v));
+        value_free(&v);
+    }
+}
+
 // Floats: decimal, scientific, hex-float.
 TEST(test_floats) {
     value_t v = parse_str("1.0");
@@ -315,6 +326,7 @@ int main(void) {
     RUN(test_int_octal_dec);
     RUN(test_int_underscores);
     RUN(test_int_suffix);
+    RUN(test_int_trailing_alnum_rejected);
     RUN(test_floats);
     RUN(test_bools);
     RUN(test_strings);
