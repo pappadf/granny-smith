@@ -260,8 +260,4 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
 int image_export_run(image_export_t *e, char *err, size_t err_cap);
 void image_export_end(image_export_t *e);
 
-// A machine's image hook, called by every machine's init.  It does nothing:
-// images are attached by the media layer, not set up from the config here.
-void setup_images(config_t *config);
-
 #endif // IMAGE_H

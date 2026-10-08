@@ -277,8 +277,6 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
-    setup_images(cfg);
-
     // Bind the I/O island (tower decode: IOP apertures + dual SCSI), then
     // hook the IOP host interfaces the shared table routes to.
     mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);

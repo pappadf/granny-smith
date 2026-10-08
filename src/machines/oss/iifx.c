@@ -1599,7 +1599,6 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    setup_images(cfg);
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);

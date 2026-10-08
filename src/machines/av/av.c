@@ -802,8 +802,6 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
-    setup_images(cfg);
-
     // Bind the I/O island + CPU-ID + ROM aperture, then arm the overlay.
     av_io_bind(&st->io, cfg, desc);
     av_memory_layout(cfg);

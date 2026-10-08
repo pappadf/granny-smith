@@ -193,8 +193,6 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
-    setup_images(cfg);
-
     // Bind the I/O island + DAFB apertures + overlay, then arm the overlay.
     mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
     mcu_memory_layout(cfg);

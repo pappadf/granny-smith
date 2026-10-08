@@ -22,7 +22,7 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `wrap_prefix` / `wrap_blocks` / `wrap_base` / `wrap_storage_size`: the volume wrapper's synthesised partition map + driver, served in front of an HFS volume when a bare volume or a driverless partitioned disk is attached as a SCSI hard disk ([bare-volume-wrapper.md](bare-volume-wrapper.md)). The volume starts `wrap_base` bytes into `storage` (0 for a bare volume, the `Apple_HFS` partition's start otherwise); `raw_size` is the prefix plus the volume, and `wrap_storage_size` the storage's own size.
 
 **Module lifecycle**
-- The module has no global state to set up or tear down; every image is opened and closed by its owner. `setup_images(config)`, called from each machine's init, does nothing.
+- The module has no global state to set up or tear down; every image is opened and closed by its owner.
 
 **Opening images** — three typed entry points
 

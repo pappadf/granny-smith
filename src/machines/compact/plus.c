@@ -353,8 +353,6 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     memory_map_add(cfg->memory_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
                    (memory_interface_t *)scsi_get_memory_interface(cfg->scsi), cfg->scsi);
 
-    setup_images(cfg);
-
     machine_part_begin(cfg, checkpoint, "keyboard");
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
     machine_part(cfg, checkpoint, "keyboard", part_save_keyboard, cfg->keyboard);

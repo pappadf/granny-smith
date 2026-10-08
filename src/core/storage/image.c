@@ -926,10 +926,6 @@ image_t *images_find(const image_list_t *images, const char *name) {
     return NULL;
 }
 
-void setup_images(struct config *config) {
-    (void)config;
-}
-
 // ============================================================================
 // Checkpointing
 // ============================================================================

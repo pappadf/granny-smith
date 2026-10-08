@@ -312,7 +312,6 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
-    setup_images(cfg);
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);

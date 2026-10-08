@@ -54,7 +54,6 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     scsi_5380_attach(cfg->scsi, cp);
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_via(cfg->scsi, cfg->via2);
-    setup_images(cfg);
 
     machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp);
