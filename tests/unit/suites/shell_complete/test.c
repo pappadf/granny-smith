@@ -6,6 +6,7 @@
 // and only for one: an argument merely NAMED `path` (an object path, say)
 // gets none.  The VFS is a stub directory holding `disk.img` and `roms/`.
 
+#include "alias.h"
 #include "cmd_complete.h"
 #include "commands.h"
 #include "object.h"
@@ -210,11 +211,26 @@ TEST(test_statement_positions_follow_the_parser) {
     ASSERT_EQ_INT(0, g_out.count);
 }
 
+// Binding names resolve case-sensitively, so completion matches them the
+// same way: `$P<Tab>` must not offer `$pc`, which would not resolve.
+TEST(test_binding_completion_is_case_sensitive) {
+    build_tree();
+    char err[128];
+    ASSERT_EQ_INT(0, alias_add_user("pcx", "tool", err, sizeof(err)));
+    complete("tool.load $pc");
+    ASSERT_TRUE(has("$pcx"));
+    complete("tool.load $PC");
+    ASSERT_TRUE(!has("$pcx"));
+    alias_remove_user("pcx", err, sizeof(err));
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_statement_positions_follow_the_parser);
     RUN(test_val_path_argument_gets_files);
     RUN(test_argument_named_path_without_flag_gets_none);
     RUN(test_flag_not_name_decides_per_slot);
     RUN(test_command_word_completes_and_takes_its_methods_arguments);
+    RUN(test_binding_completion_is_case_sensitive);
     return 0;
 }
