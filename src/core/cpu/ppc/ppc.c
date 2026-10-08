@@ -78,8 +78,8 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     // DEC or external interrupt arriving between lwarx and stwcx. leaves the
     // reservation live across the handler and the rfi, so the conditional
     // store succeeds where hardware fails it -- the exact atomicity break the
-    // pair exists to prevent.  reserve_addr is deliberately left alone: the
-    // reservation-granule compare needs it.
+    // pair exists to prevent.  reserve_addr is left alone; nothing compares
+    // it (see ppc_do_stwcx).
     p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
