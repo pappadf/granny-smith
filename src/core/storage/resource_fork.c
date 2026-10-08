@@ -32,6 +32,9 @@ static int16_t be_i16(const uint8_t *p) {
     return (int16_t)RD_BE16(p);
 }
 
+// A resource name's UTF-8 buffer (its terminator included)
+#define RFORK_NAME_UTF8_MAX 64
+
 // One parsed type entry: 4-CC plus a contiguous run of ref-list slots.
 typedef struct rfork_type {
     uint8_t cc[4];
@@ -54,7 +57,7 @@ typedef struct rfork_type {
         const uint8_t *bytes; // pointer into the fork buffer
         size_t size; // raw (possibly compressed) size
         uint8_t attrs;
-        char name_utf8[64]; // empty string when name_off == -1
+        char name_utf8[RFORK_NAME_UTF8_MAX]; // empty string when name_off == -1
         uint8_t *inflated; // owned; NULL when not decompressed
         size_t inflated_size;
         bool inflate_tried; // decompression attempted (success or not)
@@ -185,7 +188,8 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
             if ((size_t)do24 + 4 > data_len)
                 FAIL("resource data offset out of range");
             uint32_t rlen = RD_BE32(data + do24);
-            if ((size_t)do24 + 4 + rlen > data_len)
+            // 64-bit: in a 32-bit size_t (wasm32) do24 + 4 + rlen wraps
+            if ((uint64_t)do24 + 4 + rlen > data_len)
                 FAIL("resource data length out of range");
 
             rf->types[t].resources[r].id = id;
@@ -382,7 +386,9 @@ static const char *attr_name(uint8_t bit) {
 }
 
 int rfork_info_format(const char *name, uint8_t attrs, size_t size, char *out, size_t cap) {
-    char esc[256];
+    // Room for the worst case: every byte of a longest name a control
+    // character, which gs_json_escape spells as six (\u00XX)
+    char esc[6 * (RFORK_NAME_UTF8_MAX - 1) + 1];
     if (gs_json_escape(name ? name : "", esc, sizeof(esc)) < 0)
         return -EINVAL;
 

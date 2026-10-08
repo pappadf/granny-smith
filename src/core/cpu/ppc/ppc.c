@@ -90,9 +90,8 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     p->msr = (p->msr & ppc_msr_exception_keep(p)) | le;
     ppc_update_active_maps(p);
     p->pc = ((p->msr & PPC_MSR_EP) ? 0xFFF00000u : 0u) + vector;
-    // Record in the shared exception trace ring (field mapping:
-    // vbr slot = MSR, format_frame = vector offset, fault_addr = DAR).
-    exc_trace_record(vector, resume_pc, p->srr0, p->dar, 0, p->msr, 0, (uint16_t)vector, 0);
+    // Record in the shared exception trace ring (as a PPC entry)
+    exc_trace_record_ppc(vector, resume_pc, p->srr0, p->dar, p->msr);
 }
 
 // Take a pending external/decrementer interrupt when MSR[EE] allows.

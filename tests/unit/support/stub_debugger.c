@@ -18,6 +18,10 @@ int debug_break_and_trace(void) {
     return 0;
 }
 
+bool debug_break_on_run_entry(void) {
+    return false;
+}
+
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     (void)addr;
     if (buf && buf_size > 0)
@@ -51,6 +55,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     (void)sr;
     (void)format_frame;
     (void)double_fault_kind;
+}
+
+// PPC flavour of the exception trace ring stub (ppc.c's exception entry).
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr) {
+    (void)vector;
+    (void)resume_pc;
+    (void)srr0;
+    (void)dar;
+    (void)msr;
 }
 
 // Debug-surface helpers the MMU object classes call (debug.h).  Unit suites

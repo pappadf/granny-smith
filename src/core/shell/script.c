@@ -349,6 +349,10 @@ static bool parse_block_header(parser_t *ps, const char *line, int line_no, char
     if (*after == '\0') {
         // Multi-line form: body is on the following lines.
         *out_head = dup_trim(line, brace);
+        if (!*out_head) {
+            parse_error(ps, line_no, "out of memory");
+            return false;
+        }
         script_block_t *b = parse_block_lines(ps, line_no);
         if (!b) {
             free(*out_head);
@@ -411,6 +415,11 @@ static bool parse_block_header(parser_t *ps, const char *line, int line_no, char
         return false;
     }
     *out_head = dup_trim(line, brace);
+    if (!*out_head) {
+        script_block_free(b);
+        parse_error(ps, line_no, "out of memory");
+        return false;
+    }
     *out_body = b;
     return true;
 }
@@ -438,10 +447,18 @@ static stmt_t *parse_if(parser_t *ps, const char *line, int line_no) {
         const char *cond = skip_sp(kw_match(head, "if"));
         st->conds = (char **)calloc(1, sizeof(char *));
         st->blocks = (script_block_t **)calloc(1, sizeof(script_block_t *));
-        st->conds[0] = strdup(cond);
+        char *cond_copy = strdup(cond);
+        free(head);
+        if (!st->conds || !st->blocks || !cond_copy) {
+            free(cond_copy);
+            script_block_free(body);
+            stmt_free(st);
+            parse_error(ps, line_no, "out of memory");
+            return NULL;
+        }
+        st->conds[0] = cond_copy;
         st->blocks[0] = body;
         st->n_conds = 1;
-        free(head);
         return st; // inline if: no elif/else chain
     }
 
@@ -560,6 +577,10 @@ static bool parse_def_params(parser_t *ps, const char *head, int line_no, char *
     while (ident_char(*p))
         p++;
     char *name = dup_trim(ns, p);
+    if (!name) {
+        parse_error(ps, line_no, "out of memory");
+        return false;
+    }
     p = skip_sp(p);
     if (*p != '(') {
         parse_error(ps, line_no, "def: expected '(' after function name");
@@ -579,7 +600,7 @@ static bool parse_def_params(parser_t *ps, const char *head, int line_no, char *
             while (ident_char(*p))
                 p++;
             char *param = dup_trim(s, p);
-            char **np = (char **)realloc(params, (size_t)(n + 1) * sizeof(char *));
+            char **np = param ? (char **)realloc(params, (size_t)(n + 1) * sizeof(char *)) : NULL;
             if (!np) {
                 free(param);
                 parse_error(ps, line_no, "out of memory");
@@ -696,6 +717,33 @@ static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
         if (kind == ST_ASSIGN)
             st->lvalue = dup_span(c.head, c.head_end);
     }
+    // dup_span answers NULL for an absent part; NULL for a present one is OOM
+    bool oom = (kind == ST_COMMAND || kind == ST_EXPR)
+                   ? (c.start && !st->text)
+                   : ((c.rest && !st->text) || (c.name && !st->name) || (kind == ST_ASSIGN && c.head && !st->lvalue));
+    if (oom) {
+        stmt_free(st);
+        parse_error(ps, line_no, "out of memory");
+        return NULL;
+    }
+    return st;
+}
+
+// Hand a block statement its name, text and body, all already allocated
+// (or NULL where an allocation failed): a failed statement or text frees
+// the lot and reports out of memory.  `name` may be NULL by design.
+static stmt_t *stmt_finish(parser_t *ps, stmt_t *st, char *name, char *text, script_block_t *body, int line_no) {
+    if (!st || !text) {
+        stmt_free(st);
+        free(name);
+        free(text);
+        script_block_free(body);
+        parse_error(ps, line_no, "out of memory");
+        return NULL;
+    }
+    st->name = name;
+    st->text = text;
+    st->body = body;
     return st;
 }
 
@@ -726,10 +774,9 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_WHILE, line_no);
-        st->text = strdup(cond);
-        st->body = body;
+        char *text = strdup(cond);
         free(head);
-        return st;
+        return stmt_finish(ps, st, NULL, text, body, line_no);
     }
     if (c.kind == SCRIPT_STMT_FOR) {
         char *head = NULL;
@@ -748,6 +795,12 @@ static stmt_t *parse_stmt(parser_t *ps) {
         while (ident_char(*q))
             q++;
         char *name = dup_trim(ns, q);
+        if (!name) {
+            parse_error(ps, line_no, "out of memory");
+            free(head);
+            script_block_free(body);
+            return NULL;
+        }
         const char *after_in = kw_match(skip_sp(q), "in");
         if (!after_in) {
             parse_error(ps, line_no, "for: expected 'in'");
@@ -765,11 +818,9 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_FOR, line_no);
-        st->name = name;
-        st->text = strdup(iter);
-        st->body = body;
+        char *text = strdup(iter);
         free(head);
-        return st;
+        return stmt_finish(ps, st, name, text, body, line_no);
     }
     if (c.kind == SCRIPT_STMT_DEF) {
         char *head = NULL;
@@ -785,13 +836,17 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_DEF, line_no);
-        st->name = name;
-        st->params = params;
-        st->n_params = n_params;
-        st->body = body;
-        st->text = strdup(head);
+        char *text = strdup(head);
         free(head);
-        return st;
+        if (st) {
+            st->params = params;
+            st->n_params = n_params;
+        } else {
+            for (int i = 0; i < n_params; i++)
+                free(params[i]);
+            free(params);
+        }
+        return stmt_finish(ps, st, name, text, body, line_no);
     }
     return parse_stmt_text(ps, line, line_no);
 }
@@ -1211,8 +1266,12 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             return false;
         }
         while (ident_char(**p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = **p;
+            // Fail rather than look up a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                *errv = val_err("identifier too long (max %zu)", sizeof(name) - 1);
+                return false;
+            }
+            name[i++] = **p;
             (*p)++;
         }
         name[i] = '\0';
@@ -1274,8 +1333,11 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
     }
     size_t i = 0;
     while (ident_char(**p)) {
-        if (i + 1 < sizeof(path))
-            path[i++] = **p;
+        if (i + 1 >= sizeof(path)) {
+            *errv = val_err("identifier too long (max %zu)", sizeof(path) - 1);
+            return false;
+        }
+        path[i++] = **p;
         (*p)++;
     }
     path[i] = '\0';
@@ -1486,7 +1548,12 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             const char *q = p;
             while (ident_char(*q))
                 q++;
-            if (*q == '=' && q[1] != '=' && (size_t)(q - p) < sizeof(named_names[0])) {
+            if (*q == '=' && q[1] != '=') {
+                // A name too long to hold is an error, not a positional word
+                if ((size_t)(q - p) >= sizeof(named_names[0])) {
+                    result = val_err("argument name '%.*s...' too long (max %zu)", 16, p, sizeof(named_names[0]) - 1);
+                    goto out;
+                }
                 memcpy(named_names[named_n], p, (size_t)(q - p));
                 named_names[named_n][q - p] = '\0';
                 name = named_names[named_n];
@@ -1643,8 +1710,13 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
         char name[64];
         size_t i = 0;
         while (ident_char(*p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = *p;
+            // Fail rather than assign to a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                exec_error(cx, st->line, "identifier too long (max %zu)", sizeof(name) - 1);
+                value_free(&rhs);
+                return;
+            }
+            name[i++] = *p;
             p++;
         }
         name[i] = '\0';
@@ -1808,6 +1880,12 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
 // How many times a `for … in <range>` body may run.  See exec_for.
 #define FOR_RANGE_MAX_ITERATIONS (1u << 20)
 
+// Invalidator for a for-loop's object items: the body destroyed one
+// (machine.boot tears down the whole tree), so its slot must not be bound.
+static void for_item_gone(void *ud) {
+    *(bool *)ud = true;
+}
+
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1823,11 +1901,6 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_free(&iter);
         return;
     }
-
-    // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route.
-    value_t saved = val_none();
-    bool had = shell_binding_save_top(st->name, &saved);
 
     // The one cap, and it bounds TIME rather than memory: a range denotes its
     // values without allocating, so what needs limiting is how many times the
@@ -1856,10 +1929,33 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = (size_t)n;
     }
 
+    // A list holds raw object pointers: watch each object item so one the
+    // body destroys is reported instead of bound (a dangling pointer).
+    bool *gone = NULL;
+    if (iter.kind == V_LIST && count > 0) {
+        gone = (bool *)calloc(count, sizeof(*gone));
+        if (!gone) {
+            exec_error(cx, st->line, "for: out of memory");
+            value_free(&iter);
+            return;
+        }
+        for (size_t i = 0; i < count; i++)
+            if (iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+                object_register_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
+    }
+
+    // Detach any shadowed same-named binding in the current scope (it stays
+    // watched); the loop variable is removed at every exit route.
+    struct binding *saved = shell_binding_detach_top(st->name);
+
     for (size_t i = 0; i < count; i++) {
         if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
+            break;
+        }
+        if (gone && gone[i]) {
+            exec_error(cx, st->line, "for: item %zu was destroyed (e.g. by machine.boot)", i);
             break;
         }
         value_t item;
@@ -1890,11 +1986,14 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             break;
     }
 
-    shell_binding_remove_top(st->name);
-    if (had) {
-        char err[SCRIPT_ERR_MAX];
-        shell_binding_let(st->name, saved, err, sizeof(err));
+    if (gone) {
+        for (size_t i = 0; i < count; i++)
+            if (!gone[i] && iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+                object_unregister_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
+        free(gone);
     }
+    shell_binding_remove_top(st->name);
+    shell_binding_reattach_top(saved);
     value_free(&iter);
 }
 

@@ -507,7 +507,7 @@ typedef struct {
 static bool binding_complete_var_cb(const char *name, const value_t *v, void *ud) {
     (void)v;
     binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
-    if (!name || (cc->prefix[0] && strncasecmp(name, cc->prefix, strlen(cc->prefix)) != 0))
+    if (!name || (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0))
         return true;
     char buf[128];
     snprintf(buf, sizeof(buf), "$%s", name);
@@ -519,7 +519,7 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
     (void)path;
     (void)kind;
     binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
-    if (cc->prefix[0] && strncasecmp(name, cc->prefix, strlen(cc->prefix)) != 0)
+    if (cc->prefix[0] && strncmp(name, cc->prefix, strlen(cc->prefix)) != 0)
         return true;
     char buf[128];
     snprintf(buf, sizeof(buf), "$%s", name ? name : "");

@@ -258,11 +258,10 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
         vfs_stat_t st;
         if (host->stat(NULL, resolved, &st) == 0 && (st.mode & VFS_MODE_FILE)) {
             int pr = image_vfs_acquire_mount(resolved, &mount);
-            if (pr == 0) {
+            if (pr == 0)
                 prefix_len = strlen(resolved);
-            } else if (pr == -EBUSY) {
-                return -EBUSY;
-            }
+            else if (pr != -ENOTDIR && pr != -ENOENT)
+                return pr; // a real probe error (-EBUSY, -ENOMEM, -ENOSPC, ...), as walk_for_descent reports it
         }
     }
 

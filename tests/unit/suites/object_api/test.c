@@ -218,6 +218,8 @@ TEST(test_truncated_args_are_refused) {
         "{\"v\":1} [2]", // a second document
         "[]x", // empty array, then garbage
         "{}x", // empty object, then garbage
+        "[1e999]", // a float out of range (strtod's inf)
+        "[99999999999999999999]", // an integer out of range (strtoll saturates)
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         g_pc = 0;

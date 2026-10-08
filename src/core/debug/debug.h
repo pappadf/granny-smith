@@ -119,29 +119,15 @@ enum logpoint_kind {
     LP_KIND_RW = 3, // fire on read or write
 };
 
-// === Constants ===
-#define TRACE_ENTRY_PC  0
-#define TRACE_ENTRY_LOG 1
-
-// === Type Definitions ===
-
-// Single trace entry: either a PC value or a log message index
-typedef struct trace_entry {
-    uint8_t type; // TRACE_ENTRY_PC or TRACE_ENTRY_LOG
-    uint32_t value; // PC address or log message index
-} trace_entry_t;
-
-// Log message stored in trace log buffer
-typedef struct trace_log_msg {
-    char *text; // Log message text (owned)
-} trace_log_msg_t;
-
 // Debug state (exposed for performance-critical access)
 struct debug {
     bool active;
     int step;
     breakpoint_t *breakpoints;
-    uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
+    // A breakpoint stopped the machine at skip_pc: the next run's entry
+    // probe lets that instruction execute once instead of stopping again.
+    bool skip_pending;
+    uint32_t skip_pc;
     logpoint_t *logpoints;
     // A watchpoint (a stopping memory logpoint, in the list above) fired
     // inside the instruction in flight; debug_break_and_trace stops the
@@ -151,22 +137,6 @@ struct debug {
     // add; never reset, never recycled. The first allocated id is 0.
     int next_breakpoint_id;
     int next_logpoint_id;
-    // Trace buffer for PC entries
-    uint32_t *trace_buffer;
-    uint32_t trace_buffer_size;
-    int trace_head;
-    int trace_tail;
-    int trace_size;
-    // Trace log message buffer
-    trace_log_msg_t *trace_log_buffer;
-    uint32_t trace_log_buffer_size;
-    uint32_t trace_log_head;
-    uint32_t trace_log_count;
-    // Combined trace entries (PC + log references)
-    trace_entry_t *trace_entries;
-    uint32_t trace_entries_size;
-    uint32_t trace_entries_head;
-    uint32_t trace_entries_tail;
     // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
     struct object *object; // root `debug` node
     struct object *bp_collection_object;
@@ -303,11 +273,8 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr);
 
 int debug_break_and_trace(void);
 
-void debug_print_target_trace(void);
-
-void debug_trace_capture_log(const char *line);
-
-int debug_trace_is_active(void);
+// Breakpoint probe at the PC a scheduler run starts on (see debug.c).
+bool debug_break_on_run_entry(void);
 
 bool debug_active(debug_t *debug);
 
@@ -321,8 +288,9 @@ void debug_set_prompt_default(bool enabled);
 
 // === Exception trace ring ===
 // Records every CPU bus error / exception as a ring buffer entry.  The
-// bus-error code paths in cpu_internal.h call exc_trace_record().  Enable
-// streaming with `log exceptions 1`, dump the ring with `info exceptions`.
+// 68K exception paths in cpu_internal.h call exc_trace_record(), the PPC
+// exception entry in ppc.c exc_trace_record_ppc().  Enable
+// streaming with `log.set exceptions 1`, dump the ring with `debug.exceptions`.
 
 // Which architecture recorded a ring entry.  One shared ring for all main-CPU
 // architectures — the fields below are reused by role per arch: on PPC,
@@ -350,5 +318,8 @@ typedef struct exc_trace_entry {
 // Record one exception event (called from cpu_internal.h exception paths)
 void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
                       uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind);
+
+// Record one PowerPC exception (called from ppc.c's exception entry)
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr);
 
 #endif // DEBUG_H

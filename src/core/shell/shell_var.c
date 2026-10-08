@@ -226,14 +226,41 @@ static void shell_binding_pop_scope_impl(void) {
     memset(s, 0, sizeof(*s));
 }
 
-static bool shell_binding_save_top_impl(const char *name, value_t *saved_out) {
+static binding_t *shell_binding_detach_top_impl(const char *name) {
     scope_t *top = &g_scopes[g_n_scopes - 1];
     binding_t *b = scope_find(top, name);
     if (!b)
-        return false;
-    if (saved_out)
-        *saved_out = b->stale ? val_err("'$%s' holds a destroyed object", name) : value_dup(&b->value);
-    return true;
+        return NULL;
+    // Unlink without freeing: the entry (and its invalidator) lives on
+    for (int i = 0; i < top->n; i++) {
+        if (top->items[i] == b) {
+            top->items[i] = top->items[top->n - 1];
+            top->n--;
+            break;
+        }
+    }
+    return b;
+}
+
+static void shell_binding_reattach_top_impl(binding_t *b) {
+    if (!b)
+        return;
+    scope_t *top = &g_scopes[g_n_scopes - 1];
+    binding_t *cur = scope_find(top, b->name);
+    if (cur)
+        scope_remove(top, cur);
+    // Room for the entry; on OOM the shadowed binding is lost, not leaked
+    if (top->n == top->cap) {
+        int cap = top->cap ? top->cap * 2 : 16;
+        binding_t **t = (binding_t **)realloc(top->items, (size_t)cap * sizeof(*t));
+        if (!t) {
+            binding_free(b);
+            return;
+        }
+        top->items = t;
+        top->cap = cap;
+    }
+    top->items[top->n++] = b;
 }
 
 static void shell_binding_remove_top_impl(const char *name) {
@@ -332,11 +359,17 @@ void shell_binding_pop_scope(void) {
     job_tables_unlock();
 }
 
-bool shell_binding_save_top(const char *name, value_t *saved_out) {
+struct binding *shell_binding_detach_top(const char *name) {
     job_tables_lock();
-    bool r = shell_binding_save_top_impl(name, saved_out);
+    binding_t *r = shell_binding_detach_top_impl(name);
     job_tables_unlock();
     return r;
+}
+
+void shell_binding_reattach_top(struct binding *b) {
+    job_tables_lock();
+    shell_binding_reattach_top_impl(b);
+    job_tables_unlock();
 }
 
 void shell_binding_remove_top(const char *name) {

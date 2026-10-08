@@ -675,8 +675,9 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
 
 void debug_mac_mouse_trace_tick(void *source, uint64_t data) {
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-    int16_t v = (int16_t)memory_debug_read_uint16(addr_Mouse);
-    int16_t h = (int16_t)memory_debug_read_uint16(addr_Mouse + 2);
+    // Mac-world address, like every other global read here (debug_mac_xlate)
+    int16_t v = (int16_t)read16(addr_Mouse);
+    int16_t h = (int16_t)read16(addr_Mouse + 2);
     uint64_t sample = mouse_point_pack(h, v) | TRACE_MOUSE_HAVE_LAST;
     if (sample != data)
         gs_outf("[trace-mouse] h=%d v=%d\n", h, v);

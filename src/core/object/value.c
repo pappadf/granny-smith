@@ -397,7 +397,14 @@ uint64_t val_as_u64(const value_t *v, bool *ok) {
     case V_UINT:
         return v->u;
     case V_FLOAT:
-        return (uint64_t)v->f;
+        // Out of range (or NaN) the conversion is undefined -- a trap in
+        // wasm -- so refuse it; a negative value wraps as an int64 would.
+        if (!(v->f >= -9223372036854775808.0 && v->f < 18446744073709551616.0)) {
+            if (ok)
+                *ok = false;
+            return 0;
+        }
+        return v->f < 0 ? (uint64_t)(int64_t)v->f : (uint64_t)v->f;
     case V_ENUM:
         return (uint64_t)v->enm.idx;
     default:
@@ -423,6 +430,12 @@ int64_t val_as_i64(const value_t *v, bool *ok) {
     case V_UINT:
         return (int64_t)v->u;
     case V_FLOAT:
+        // Out of range (or NaN) the conversion is undefined: refuse it
+        if (!(v->f >= -9223372036854775808.0 && v->f < 9223372036854775808.0)) {
+            if (ok)
+                *ok = false;
+            return 0;
+        }
         return (int64_t)v->f;
     case V_ENUM:
         return (int64_t)v->enm.idx;
