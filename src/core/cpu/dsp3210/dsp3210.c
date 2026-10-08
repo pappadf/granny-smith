@@ -1650,6 +1650,10 @@ static int exec_da(dsp3210_t *s, uint32_t w) {
 
     if (fmt == 3 && m >= 6)
         return exec_da_special(s, w);
+    /* The M values with no accumulator behind them -- fmt 1 M=111 and
+     * fmt 2 M=11x, opcodes $0F/$16/$17 -- never get here: they are among
+     * the illegal-opcode patterns exec_insn traps first, so the a_pipe[2][m]
+     * and a[m] reads below always see m <= 3 (or the 0.0/1.0/tap cases). */
 
     /* Operand fetch order is X then Y: the X and Y registers are loaded
      * in machine states 1 and 2 of the same instruction cycle
