@@ -9,7 +9,8 @@
 # (the suite-tnt 7.6 image plus BeOS_Launcher from the BeOS 5.0.3 Professional
 # disc in Startup Items) and systems/beos_5_0_3_ppc_500mb.dmg.7z (a 500 MB
 # SCSI disk BeOS 5.0.3's own Installer initialised and filled on this
-# machine, booted once).  Both are UDIF images with uncompressed chunks
+# machine, with Mouse Acceleration set to its minimum so the pointer is
+# linear).  Both are UDIF images with uncompressed chunks
 # (files.convert level=0: the empty space is zero runs) inside 7z, so the
 # extracted disks open as they are, at a third of their raw size.  At an
 # older pin the rows SKIP.

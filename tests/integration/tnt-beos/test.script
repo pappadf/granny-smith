@@ -44,8 +44,10 @@ def beos_boot(model) {
     scheduler.run 6000000000
 }
 
-# BeOS's pointer gain is ~2 screen pixels per ADB count: home to the top
-# left, then step there in small moves (no acceleration).
+# The BeOS disk has Mouse Acceleration at its minimum ("Slow", Preferences
+# -> Mouse), so the pointer is linear: one ADB count is one screen pixel
+# for any delta.  Home to the top left, then step there in moves of up to
+# 20 counts (always positive from home; the shell's integers are unsigned).
 def be_move(x, y) {
     for i in range(20) {
         machine.adb.mouse.move -50 -50 "relative"
@@ -53,11 +55,13 @@ def be_move(x, y) {
     }
     let cx = 0
     let cy = 0
-    while $cx < $x / 2 || $cy < $y / 2 {
-        let dx = $x / 2 - $cx
-        let dy = $y / 2 - $cy
-        if $dx > 4 { $dx = 4 }
-        if $dy > 4 { $dy = 4 }
+    while $cx < $x || $cy < $y {
+        let dx = $x - $cx
+        let dy = $y - $cy
+        if $cx >= $x { $dx = 0 }
+        if $cy >= $y { $dy = 0 }
+        if $dx > 20 { $dx = 20 }
+        if $dy > 20 { $dy = 20 }
         machine.adb.mouse.move $dx $dy "relative"
         scheduler.run 1500000
         $cx = $cx + $dx
@@ -95,7 +99,7 @@ def row_pm9500mp_beos() {
     be_move(580, 10)
     be_press()
     scheduler.run 200000000
-    be_move(418, 12)
+    be_move(415, 12)
     be_press()
     scheduler.run 800000000
     # The About window: "CPU: 2 PowerPC 604's running at 90MHz" — the
