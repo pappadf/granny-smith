@@ -30,6 +30,7 @@
 #include "scsi.h"
 
 #include "drive_catalog.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "log.h"
 #include "object.h"

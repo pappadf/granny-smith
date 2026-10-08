@@ -52,6 +52,7 @@
 //   - pin/unpin: writing a speed pins (governor off), 0 returns to auto and
 //     restarts from the authentic floor
 
+#include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
 #include "scheduler.h"

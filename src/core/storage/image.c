@@ -12,6 +12,7 @@
 #include "gs_out.h"
 
 #include "format_registry.h"
+#include "gs_assert.h"
 #include "image_iso9660.h"
 #include "image_scratch.h"
 #include "image_udif.h"

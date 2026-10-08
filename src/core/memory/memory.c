@@ -18,6 +18,7 @@
 #include "common.h"
 #include "cpu.h"
 #include "debug.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "platform.h"

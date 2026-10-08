@@ -5,6 +5,7 @@
 // Tagged-union value type. See value.h for the contract.
 
 #include "value.h"
+#include "gs_assert.h"
 
 #include <math.h>
 #include <stdarg.h>

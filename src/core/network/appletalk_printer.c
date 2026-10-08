@@ -8,6 +8,7 @@
 #include "appletalk_internal.h"
 #include "byteq.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "laserwriter_job.h"
 #include "log.h"
 #include "platform.h"

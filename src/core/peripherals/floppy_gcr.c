@@ -6,6 +6,7 @@
 // These functions are used by both IWM and SWIM code paths.
 
 #include "floppy_internal.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
 

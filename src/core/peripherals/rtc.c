@@ -6,6 +6,7 @@
 
 #include "rtc.h"
 
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "system.h"

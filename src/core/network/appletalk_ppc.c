@@ -22,6 +22,7 @@
 #include "appletalk_adsp.h"
 #include "appletalk_internal.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "value.h"

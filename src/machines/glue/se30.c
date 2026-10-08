@@ -23,6 +23,7 @@
 #include "asc.h"
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
 #include "floppy.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "memory.h"
 #include "nubus.h"

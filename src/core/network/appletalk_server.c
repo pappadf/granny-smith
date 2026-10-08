@@ -28,6 +28,7 @@
 #include "appletalk_internal.h"
 #include "atalk_id.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "macroman.h"
 #include "worker_thread.h"

@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gs_assert.h"
 #include "meta.h"
 #include "job/job.h"
 

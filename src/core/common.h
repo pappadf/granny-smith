@@ -9,7 +9,7 @@
 // codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
 // the libc headers it uses itself.
 //
-// Transitional: the libc includes, status.h, gs_assert.h and the checkpoint_t
+// Transitional: the libc includes, status.h and the checkpoint_t
 // forward declaration below are still pulled in here because many TUs rely on
 // getting them transitively; they go once those TUs include what they use.
 
@@ -23,10 +23,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-// Status codes (status_t) and assertions (GS_ASSERT, GS_UNIMPLEMENTED) live
-// in their own headers; common.h still includes them so existing users keep
-// building while includes are pushed down to the TUs that need them.
-#include "gs_assert.h"
+// Status codes (status_t) live in status.h; common.h still includes it so
+// existing users keep building while includes are pushed down to the TUs
+// that need them.
 #include "status.h"
 
 // === Unaligned byte-order accessors =========================================

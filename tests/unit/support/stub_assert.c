@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "gs_assert.h"
+
 // Prints the failed assertion's location and expression (no newline)
 static void print_assert_location(const char *expr, const char *file, int line, const char *func) {
     fprintf(stderr, "[unit] assertion failed: %s:%d", file ? file : "?", line);

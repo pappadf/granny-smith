@@ -28,6 +28,7 @@
 // control lines, fixed in via_init before this suite existed and pinned so
 // they cannot be silently undone.
 
+#include "gs_assert.h"
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"

@@ -23,6 +23,7 @@
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
+#include "gs_assert.h"
 #include "inflate.h"
 #include "log.h"
 #include "log_categories.h"

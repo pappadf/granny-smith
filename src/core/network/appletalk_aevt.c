@@ -25,6 +25,7 @@
 #include "appletalk.h"
 #include "appletalk_ppc.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "scheduler.h"

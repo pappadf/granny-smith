@@ -16,6 +16,7 @@
 
 value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
 #include "drive_catalog.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "log.h"
 #include "object.h"

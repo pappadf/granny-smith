@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "laserwriter_job.h"
 #include "log.h"

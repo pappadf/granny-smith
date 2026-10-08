@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "gs_assert.h"
+
 // gs_assert_fail backs the GS_ASSERT macros in gs_assert.h.  None of the
 // code paths the dump tool exercises should ever fire an assert, so this
 // is a hard-abort safety net rather than a real handler.

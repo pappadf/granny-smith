@@ -13,6 +13,7 @@
 
 #include "cpu.h"
 #include "debug.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"

@@ -7,6 +7,7 @@
 #include "machine_parts.h"
 
 #include "checkpoint.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "system_internal.h"
 

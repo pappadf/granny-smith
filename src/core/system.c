@@ -17,6 +17,7 @@
 #include "display.h"
 #include "drive_catalog.h"
 #include "floppy.h"
+#include "gs_assert.h"
 #include "gs_out.h"
 #include "host_input.h"
 #include "image.h"

@@ -41,6 +41,7 @@
 
 #include "build_id.h"
 #include "checkpoint.h"
+#include "gs_assert.h"
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"

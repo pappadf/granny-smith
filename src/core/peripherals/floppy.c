@@ -12,6 +12,7 @@
 #include "event/gs_event.h"
 
 static void floppy_notify_present(int drive, bool present);
+#include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
 #include "platform.h"

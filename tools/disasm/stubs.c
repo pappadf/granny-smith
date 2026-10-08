@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "gs_assert.h"
+
 // aux_syscall_name() is called by the shared annotate_disasm.c when the
 // A/UX syscall annotation pass fires (TRAP #0).  The standalone disasm
 // tool never produces A/UX-aware output so a NULL stub is sufficient —

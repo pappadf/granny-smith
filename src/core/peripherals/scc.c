@@ -7,6 +7,7 @@
 #include "scc.h"
 
 #include "cpu.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "platform.h"

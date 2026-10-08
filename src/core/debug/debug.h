@@ -11,6 +11,7 @@
 #include "addr_format.h"
 #include "common.h"
 #include "debug_cpu.h"
+#include "gs_assert.h"
 #include "object.h"
 #include "value.h"
 

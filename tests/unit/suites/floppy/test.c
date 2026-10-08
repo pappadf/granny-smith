@@ -15,6 +15,7 @@
 // floppy_gcr.c is #included so the tests can reach its static codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
+#include "gs_assert.h"
 #include "test_assert.h"
 
 #include <stdint.h>

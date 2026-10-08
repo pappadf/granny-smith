@@ -4,6 +4,7 @@
 // scsi_cdrom.c
 // CD-ROM device logic for the SCSI subsystem (AppleCD SC Plus / Sony CDU-8002).
 
+#include "gs_assert.h"
 #include "platform.h"
 #include "scsi.h"
 #include "scsi_internal.h"
