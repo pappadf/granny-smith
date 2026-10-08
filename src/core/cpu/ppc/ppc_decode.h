@@ -10,11 +10,16 @@
 // Because emulator and disassembler are literally the same decode tree,
 // they cannot drift out of sync.
 //
-// The tree decides VALIDITY as well as identity: invalid forms (reserved
-// fields set, invalid BO encodings, instructions neither model has — 601UM
-// §10.3 Tables 10-6/10-8; PEM appendix A) route to OP_ILLEGAL on both
-// sides.  MODEL validity is the leaves' job, not the tree's: encodings only
-// one model implements (the POWER holdovers and MQ/RTC moves on the 601;
+// The tree decides VALIDITY as well as identity: invalid forms (invalid BO
+// encodings, instructions neither model has — 601UM §10.3 Tables
+// 10-6/10-8; PEM appendix A) route to OP_ILLEGAL on both sides.  Reserved
+// fields are checked only where a row says so (sc, tlbsync, the storage-
+// control and indexed load/store rows, the XO rows with a reserved RB, the
+// A-form rows noted below); elsewhere — rfi, mcrf, mtcrf, mfsr/mtsr, the
+// CR-logical and compare rows, among others — nonzero reserved bits decode
+// and execute as if zero, which the PEM allows ("boundedly undefined").
+// MODEL validity is the leaves' job, not the tree's: encodings only one
+// model implements (the POWER holdovers and MQ/RTC moves on the 601;
 // mftb/tlbsync/stfiwx/fsel/fres/frsqrte on the 604) decode here
 // unconditionally, and the emulator's OP_ overloads raise the program
 // exception on the other model while the disassembler's flag the encoding
