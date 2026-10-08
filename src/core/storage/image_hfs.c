@@ -23,6 +23,7 @@
 #include "common.h"
 #include "image.h"
 #include "image_part.h"
+#include "log.h"
 #include "macroman.h"
 #include "storage.h"
 
@@ -31,6 +32,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("image")
 
 // ---- Big-endian helpers ----------------------------------------------------
 
@@ -269,6 +272,14 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
         free(buf);
         return -EIO;
     }
+    // The catalog's further extents are in the extents overflow file, which
+    // serves file forks only: what the inline ones do not cover stays zeros,
+    // and the files recorded there will not be found.  Say so, once.
+    if (filled < cat_size)
+        LOG(1,
+            "HFS catalog is %u bytes, its %d inline extents hold %llu; the rest (in the extents overflow file) is not "
+            "read",
+            (unsigned)cat_size, HFS_INLINE_EXTENTS, (unsigned long long)filled);
 
     *out_buf = buf;
     *out_size = cat_size;
@@ -278,8 +289,10 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
 // ---- B-tree scan ----------------------------------------------------------
 
 // Parse one leaf node and append its records to *dst (realloc as needed).
-// Returns 0 on success, negated errno on failure.
-static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n, size_t *dst_cap) {
+// A malformed record is skipped and counted in *skipped.  Returns 0 on
+// success, negated errno on failure.
+static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n, size_t *dst_cap,
+                           size_t *skipped) {
     uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
     // Record offset table lives at the end of the node: 2 bytes per pointer,
     // nrecs+1 entries (last one is the free-space sentinel).
@@ -289,33 +302,45 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
     for (uint16_t i = 0; i < nrecs; i++) {
         uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
         uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
-        if (off < 14 || next > node_size || next <= off)
-            continue; // skip malformed record quietly
+        if (off < 14 || next > node_size || next <= off) {
+            (*skipped)++;
+            continue;
+        }
         size_t rec_size = next - off;
         const uint8_t *rec = node + off;
         // Key: keyLen(1) + reserved(1) + parID(4) + nameLen(1) + name[]
-        if (rec_size < 7)
+        if (rec_size < 7) {
+            (*skipped)++;
             continue;
+        }
         uint8_t key_len = rec[0];
-        if (key_len < 1 + 4 || key_len > 37)
+        if (key_len < 1 + 4 || key_len > 37) {
+            (*skipped)++;
             continue;
+        }
         uint32_t parent_cnid = RD_BE32(rec + 2);
         uint8_t name_len = rec[6];
         // The name must lie inside both the key and the record.  The key
         // length alone bounds neither, and the name is read -- and shown to
         // the user -- before anything else checks it.
-        if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size)
+        if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size) {
+            (*skipped)++;
             continue;
+        }
         // Key storage (including keyLen byte) padded up to even length.
         size_t key_bytes = 1 + key_len;
         if (key_bytes & 1)
             key_bytes++;
-        if (key_bytes >= rec_size)
+        if (key_bytes >= rec_size) {
+            (*skipped)++;
             continue;
+        }
         const uint8_t *rec_data = rec + key_bytes;
         size_t data_size = rec_size - key_bytes;
-        if (data_size < 2)
+        if (data_size < 2) {
+            (*skipped)++;
             continue;
+        }
 
         uint8_t type = rec_data[0];
         if (type != CAT_REC_FOLDER && type != CAT_REC_FILE)
@@ -355,6 +380,7 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
             memcpy(r->finder_info + 16, rec_data + FILE_OFF_FXINFO, 16);
         } else {
             (*dst_n)--; // malformed; drop it
+            (*skipped)++;
         }
     }
     return 0;
@@ -514,6 +540,15 @@ static const hfs_xt_rec_t *find_xt_record(const hfs_volume_t *vol, uint8_t fork_
     return best;
 }
 
+// The record array cut down to what it holds: it grew by doubling, and it
+// lives as long as the volume.
+static cat_rec_t *shrink_records(cat_rec_t *recs, size_t n, size_t cap) {
+    if (n == 0 || n == cap)
+        return recs;
+    cat_rec_t *fit = realloc(recs, n * sizeof(*recs));
+    return fit ? fit : recs;
+}
+
 // Walk the catalog B-tree's leaf chain starting from firstLeaf.
 static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, size_t cat_size, size_t node_size,
                                    uint32_t first_leaf) {
@@ -524,6 +559,7 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
     // catalog. Anything past that means a forward-link cycle.
     size_t max_nodes = node_size ? (cat_size / node_size) + 1 : 0;
     size_t visited = 0;
+    size_t skipped = 0;
 
     while (node_idx != 0 && visited++ < max_nodes) {
         uint64_t off = (uint64_t)node_idx * node_size;
@@ -533,15 +569,17 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
         uint8_t kind = node[NODE_OFF_KIND];
         if (kind != NODE_KIND_LEAF)
             break;
-        int rc = parse_leaf_node(node, node_size, &dst, &n, &cap);
+        int rc = parse_leaf_node(node, node_size, &dst, &n, &cap, &skipped);
         if (rc < 0) {
             free(dst);
             return rc;
         }
         node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
+    if (skipped)
+        LOG(1, "HFS catalog: %zu malformed record(s) skipped; the files they describe will not be found", skipped);
 
-    vol->records = dst;
+    vol->records = shrink_records(dst, n, cap);
     vol->n_records = n;
     return 0;
 }
@@ -564,11 +602,24 @@ static uint8_t hfs_fold_byte(uint8_t c) {
     return c;
 }
 
+// Fold a byte of a UTF-8 name, `prev` the byte before it.  ASCII as
+// hfs_fold_byte; a Latin-1 letter (U+00E0..U+00FE but U+00F7, which is
+// 0xC3 then 0xA0..0xBE) to its capital (0xC3 then 0x80..0x9E), so "café"
+// finds "CAFÉ" as the Finder would.  Upper and lower case of these letters
+// are the same length in UTF-8, so the names still compare byte for byte.
+// The MacRoman letters outside Latin-1 (œ, ÿ) and the rest of Unicode are
+// not folded.
+static uint8_t fold_utf8_byte(uint8_t prev, uint8_t c) {
+    if (prev == 0xC3 && c >= 0xA0 && c <= 0xBE && c != 0xB7)
+        return (uint8_t)(c - 0x20);
+    return hfs_fold_byte(c);
+}
+
 static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t lb) {
     size_t n = la < lb ? la : lb;
     for (size_t i = 0; i < n; i++) {
-        uint8_t ca = hfs_fold_byte(a[i]);
-        uint8_t cb = hfs_fold_byte(b[i]);
+        uint8_t ca = fold_utf8_byte(i ? a[i - 1] : 0, a[i]);
+        uint8_t cb = fold_utf8_byte(i ? b[i - 1] : 0, b[i]);
         if (ca != cb)
             return (int)ca - (int)cb;
     }
@@ -578,8 +629,9 @@ static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t
 }
 
 // Compare a record's stored UTF-8 name against a supplied UTF-8 component.
-// Matching is case-insensitive over ASCII (good enough for v1; full Unicode
-// case folding is future work), with the HFS↔Unix '/' ↔ ':' equivalence
+// Matching is case-insensitive over ASCII and the Latin-1 letters MacRoman
+// shares (see fold_utf8_byte; the rest of Unicode is compared exactly),
+// with the HFS↔Unix '/' ↔ ':' equivalence
 // applied symmetrically so a name containing a slash on disk can be matched
 // via a colon-separated path component on the way in.
 static bool name_matches(const char *stored_utf8, const char *input_utf8) {
@@ -979,7 +1031,7 @@ static int collect_hfsplus_catalog(hfs_volume_t *vol, const uint8_t *cat_buf, si
         }
         node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
-    vol->records = dst;
+    vol->records = shrink_records(dst, n, cap);
     vol->n_records = n;
     return 0;
 }
@@ -1146,14 +1198,14 @@ int hfs_lookup(hfs_volume_t *vol, const char *const *components, size_t nc, hfs_
         memset(out, 0, sizeof(*out));
         snprintf(out->name, sizeof(out->name), "%s", vol->volume_name);
         out->is_dir = true;
-        out->cnid = HFS_ROOT_CNID;
+        out->cnid = HFS_ROOT_ID;
         // Count root-level children to populate valence.
         for (size_t i = 0; i < vol->n_records; i++)
-            if (vol->records[i].parent_cnid == HFS_ROOT_CNID)
+            if (vol->records[i].parent_cnid == HFS_ROOT_ID)
                 out->valence++;
         return 0;
     }
-    uint32_t parent = HFS_ROOT_CNID;
+    uint32_t parent = HFS_ROOT_ID;
     const cat_rec_t *r = NULL;
     for (size_t i = 0; i < nc; i++) {
         r = find_child(vol, parent, components[i]);

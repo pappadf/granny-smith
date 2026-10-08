@@ -295,6 +295,46 @@ TEST(storage_rollback) {
     teardown_sandbox();
 }
 
+// A committed block keeps one preimage however often it is rewritten before
+// the next commit, and a commit forgets it: the next rewrite journals afresh.
+TEST(storage_journal_one_preimage_per_commit) {
+    setup_sandbox();
+    create_base_image(BASE_FILE, TEST_BLOCKS, 0x21);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    // A commit takes a checkpoint stream or goes through clear_rollback.
+    ASSERT_ERR(storage_checkpoint(storage, NULL), GS_ERROR);
+
+    uint8_t block[STORAGE_BLOCK_SIZE];
+    fill_block(9, 0x01, block);
+    ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage));
+
+    const off_t entry = 4 + STORAGE_BLOCK_SIZE;
+    struct stat st;
+    for (uint8_t salt = 0x02; salt < 0x06; salt++) {
+        fill_block(9, salt, block);
+        ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    }
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == entry);
+
+    ASSERT_OK(storage_clear_rollback(storage));
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == 0);
+    fill_block(9, 0x07, block);
+    ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == entry);
+
+    // The preimage is the last commit's data.
+    uint8_t verify[STORAGE_BLOCK_SIZE];
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_OK(storage_read_block(storage, 9 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(9, 0x05, verify);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 // --- Variable block size -------------------------------------------------
 // The engine is block-size-agnostic: 512 (flat disks), 532 (Lisa ProFile:
 // 512 data + 20 inline tag), or any multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE].
@@ -913,6 +953,7 @@ int main(void) {
     RUN(storage_state_roundtrip);
     RUN(storage_delta_persistence);
     RUN(storage_rollback);
+    RUN(storage_journal_one_preimage_per_commit);
     RUN(storage_block_size_532);
     RUN(storage_block_size_other);
     RUN(storage_block_size_validation);

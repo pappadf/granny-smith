@@ -31,7 +31,7 @@ enum image_type {
     image_fd_dd_mfm, // 720K MFM, double-density
     image_fd_hd, // 1440K MFM, high-density
     image_hd,
-    image_cdrom
+    image_cdrom // an ISO 9660 disc (a primary volume descriptor at 32 KB)
 };
 
 // True for media the drive reads with MFM framing rather than Apple GCR.
@@ -99,12 +99,9 @@ struct image;
 typedef struct image image_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
-
-// Module initialization (registers shell commands)
-void image_init(checkpoint_t *checkpoint);
-
-// Module destructor (no-op for now)
-void image_delete(void);
+//
+// The module keeps no state of its own to set up or tear down: each image
+// is opened and closed by its owner.
 
 // Open a base image read-only.  Delta and journal are placed in a process-local
 // scratch directory and removed when the image is closed.
@@ -191,7 +188,9 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 
-// Get the size of the disk image in bytes
+// Get the size of the disk image in bytes.  0 for a NULL image -- no opened
+// image is empty (the openers refuse a zero-length one), so 0 always means
+// "no image".
 size_t disk_size(image_t *disk);
 
 // Bytes per block the image was opened with (512 unless a geometry said
@@ -226,7 +225,13 @@ int image_create_empty(const char *filename, size_t size);
 // existing file).
 int image_create_empty_udif(const char *filename, uint64_t size);
 
-// Create a new blank floppy image file (800K or 1440K)
+// What the blank-image creators below return for an existing file they will
+// not overwrite (0 is success, -1 any other failure).
+#define IMAGE_CREATE_EXISTS (-2)
+
+// Create a new blank floppy image file (800K or 1440K).  Without `overwrite`
+// an existing file is refused (IMAGE_CREATE_EXISTS), atomically: the file is
+// created exclusively, so a file appearing meanwhile is never truncated.
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
 
 // On-the-wire ProFile block size: 512 data bytes + a 20-byte inline tag (see
@@ -238,12 +243,13 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
 // all-zero file of block_count × PROFILE_BLOCK_BYTES bytes.  The controller's
 // synthesized device-info block reports this block count, so the OS sizes the
 // volume from it (5 MB ProFile = 9728 blocks; 10 MB Widget ≈ 19448 blocks).
-// Refuses to overwrite an existing file.  Returns 0 on success, -2 if the file
-// already exists, -1 on any other error.
+// Refuses to overwrite an existing file.  Returns 0 on success,
+// IMAGE_CREATE_EXISTS if the file already exists, -1 on any other error.
 int image_create_blank_profile(const char *filename, uint32_t block_count);
 
 // Export the full disk content (base + delta) of an open image to a new file.
-// Returns 0 on success, -1 on failure.
+// The destination is created exclusively: an existing file is never
+// overwritten.  Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);
 
 // The same export in three steps, so the write can run off the emulator
@@ -256,7 +262,8 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
 int image_export_run(image_export_t *e, char *err, size_t err_cap);
 void image_export_end(image_export_t *e);
 
-// Setup images from config
+// A machine's image hook, called by every machine's init.  It does nothing:
+// images are attached by the media layer, not set up from the config here.
 extern void setup_images(config_t *config);
 
 #endif // IMAGE_H

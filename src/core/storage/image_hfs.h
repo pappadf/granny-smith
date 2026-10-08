@@ -30,7 +30,7 @@
 #include <stdint.h>
 
 // Root directory CNID per HFS convention.
-#define HFS_ROOT_CNID 2
+#define HFS_ROOT_ID 2
 
 // Volume signature words at offset 0 of the MDB / Volume Header.
 #define HFS_SIG_BD 0x4244 // "BD" — classic HFS Master Directory Block

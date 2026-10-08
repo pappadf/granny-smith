@@ -284,7 +284,7 @@ static int iso_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint6
 
 static const fs_ops_t HFS_OPS = {"HFS",
                                  true,
-                                 HFS_ROOT_CNID,
+                                 HFS_ROOT_ID,
                                  hfs_ops_open,
                                  hfs_ops_close,
                                  hfs_ops_lookup,
@@ -292,7 +292,7 @@ static const fs_ops_t HFS_OPS = {"HFS",
                                  hfs_ops_readdir,
                                  hfs_ops_closedir,
                                  hfs_ops_read};
-static const fs_ops_t UFS_OPS = {"UFS",          false,           UFS_ROOT_INO,    ufs_ops_open,     ufs_ops_close,
+static const fs_ops_t UFS_OPS = {"UFS",          false,           UFS_ROOT_ID,     ufs_ops_open,     ufs_ops_close,
                                  ufs_ops_lookup, ufs_ops_opendir, ufs_ops_readdir, ufs_ops_closedir, ufs_ops_read};
 static const fs_ops_t MFS_OPS = {"MFS",
                                  true,

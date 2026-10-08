@@ -12,11 +12,6 @@
 
 #include <stdlib.h>
 
-// Error messages defined in image_apm.c.
-extern const char *const image_apm_err_read;
-extern const char *const image_apm_err_alloc;
-extern const char *const image_apm_err_nil;
-
 apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
     if (!img) {
         if (errmsg)

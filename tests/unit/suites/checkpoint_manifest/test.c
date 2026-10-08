@@ -41,6 +41,8 @@ TEST(test_image_list_is_well_formed) {
     ASSERT_TRUE(mkdtemp(root) != NULL);
     checkpoint_machine_set_root(root);
     ASSERT_EQ_INT(0, checkpoint_machine_set("m1", "20260923"));
+    // The machine directory exists now: moving the root under it is refused.
+    ASSERT_EQ_INT(-1, checkpoint_machine_set_root("/elsewhere"));
 
     static image_t imgs[6];
     static char names[6][300];
@@ -55,9 +57,8 @@ TEST(test_image_list_is_well_formed) {
         g_cfg.images[i] = &imgs[i];
     }
     g_cfg.n_images = 6;
-    global_emulator = &g_cfg;
 
-    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest());
+    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     char path[128];
     snprintf(path, sizeof(path), "%s/manifest.json", checkpoint_machine_dir());
     const char *text = read_text(path);
@@ -68,7 +69,7 @@ TEST(test_image_list_is_well_formed) {
 
     // An empty list closes cleanly too.
     g_cfg.n_images = 0;
-    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest());
+    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     text = read_text(path);
     ASSERT_TRUE(strstr(text, "\"images\": []\n}\n") != NULL);
 

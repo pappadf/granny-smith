@@ -4,8 +4,9 @@
 // archive.c
 // Mac archive file handling: files.archive.identify and files.archive.extract.
 // Archives are namespaces of the VFS (namespace.h), so identify is a bounded
-// probe of the file and extract is a copy of its tree; the in-tree peeler
-// library does the format work, and its name does not leak to users.
+// probe of the file and extract is a copy of its tree.  The in-tree peeler
+// library does the format work; the user-facing concept is a Mac archive,
+// so the object surface is `files.archive` and no message names peeler.
 
 #include "archive.h"
 #include "gs_out.h"

@@ -186,7 +186,7 @@ On open, the **catalog file** is read fully into memory using its three inline
 extents (`drCTExtRec`), then the B-tree **leaf chain** is walked
 (`fLink`-linked, node kind `0xFF`) and every folder/file record is flattened
 into `vol->records[]`. Lookups then scan that list; root directory is
-`HFS_ROOT_CNID = 2`. File records yield: CNID, valence (folders), the data and
+`HFS_ROOT_ID = 2`. File records yield: CNID, valence (folders), the data and
 resource fork descriptors, and the 32-byte Finder info (16 `FInfo` + 16
 `FXInfo`).
 
@@ -293,16 +293,16 @@ A/UX 3.0.x.
 
 - `ufs_open(img, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
   superblock at offset 8192** (`UFS_SBOFF`) and validates `FS_MAGIC`
-  (`0x011954`). A/UX writes big-endian on 68k, but either byte order is accepted
-  (tolerating an occasional LE-rewritten image). `ufs_probe` is the cheap
-  single-sector pre-check.
+  (`0x011954`), big-endian only: A/UX writes big-endian on 68k, and
+  `ufs_probe` (the cheap pre-check, reading only the 4-byte magic) accepts
+  exactly what `ufs_open` can open.
 - Targets the `Apple_UNIX_SVR2` APM entries a period A/UX install writes.
 - **Inode layout is 4.3BSD-Tahoe**: the 32-bit `di_size` lives at inode offset
   **12** (not 8) — Tahoe used `quad_t val[0]` for `di_rdev` and `val[1]` for
   size, and A/UX inherited that. Files > 4 GiB are unsupported.
 - Block addressing follows **direct (12) + single-indirect + double-indirect**
   pointers. Triple-indirect is unimplemented (no current fixture needs it).
-- Root inode is `UFS_ROOT_INO = 2`. Inodes are read **on demand** (no full
+- Root inode is `UFS_ROOT_ID = 2`. Inodes are read **on demand** (no full
   in-RAM snapshot, unlike HFS) — suited to large volumes with sparse access.
 - Names are 8-bit clean and passed through unchanged. Symbolic links are
   *reported* (`is_symlink`) but **not followed** — callers see the link itself.
@@ -463,7 +463,7 @@ Partition inspection (`src/core/storage/storage_class.c`):
 | Command | Effect |
 |---------|--------|
 | `files.partmap <path>` | Parse and print the partition map as a text table. |
-| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. |
+| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. On an APM disk, one line per filesystem partition (HFS, UFS, or one whose volume header is HFS/HFS+/HFSX), with the volume its header names. |
 | `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`, `stale`. |
 | `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
 | `files.mounts[n].unmount` | Force-close a cached auto-mount. |
