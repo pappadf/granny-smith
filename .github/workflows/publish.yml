@@ -24,7 +24,9 @@ permissions:
   contents: read
   packages: read
 
-# Allow only one publish at a time to avoid push conflicts
+# Allow only one publish at a time to avoid push conflicts (a staging
+# deploy, in its own group, can still push in between: see the retry in
+# the push step)
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -188,4 +190,15 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add --all
           git commit -m "Deploy ${{ github.event.release.tag_name }}"
-          git push origin main
+          # publish.yml and publish-staging.yml push to the same branch
+          # from different concurrency groups, so the other may have
+          # pushed since our checkout: rebase onto it and retry (they
+          # touch disjoint paths, so the rebase does not conflict).
+          for attempt in 1 2 3 4 5; do
+            if git push origin main; then exit 0; fi
+            echo "Push rejected (attempt $attempt); rebasing onto the new gs-pages main."
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+          echo "Could not push to gs-pages after 5 attempts." >&2
+          exit 1

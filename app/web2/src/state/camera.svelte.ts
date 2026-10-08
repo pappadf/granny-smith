@@ -152,11 +152,11 @@ function pushFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement): void
 
 function startPump(video: HTMLVideoElement): void {
   if (!transport()) return; // the frame geometry below comes from the block
-  if (!canvasEl) {
-    canvasEl = document.createElement('canvas');
-    canvasEl.width = shmW;
-    canvasEl.height = shmH;
-  }
+  canvasEl ??= document.createElement('canvas');
+  // Every start: transport() may have re-read a different geometry since
+  // the canvas was made (assigning an unchanged size is cheap).
+  if (canvasEl.width !== shmW) canvasEl.width = shmW;
+  if (canvasEl.height !== shmH) canvasEl.height = shmH;
   const ctx = canvasEl.getContext('2d', { willReadFrequently: true });
   if (!ctx) return;
   let stopped = false;

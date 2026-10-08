@@ -6,7 +6,15 @@
 //
 // This file owns the gsEval dispatch.
 
-import { gsEval, gsOk, isGsError, shutdownEmulator, isModuleReady } from './emulator';
+import {
+  gsEval,
+  gsOk,
+  isGsError,
+  shutdownEmulator,
+  pauseEmulator,
+  resumeEmulator,
+  isModuleReady,
+} from './emulator';
 import { restartEmulator } from './boot';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
 
@@ -339,12 +347,12 @@ export async function removeWatchpoint(id: number): Promise<boolean> {
 
 export async function continueExec(): Promise<void> {
   if (!isModuleReady()) return;
-  await gsEval('scheduler.run');
+  await resumeEmulator();
 }
 
 export async function pauseExec(): Promise<void> {
   if (!isModuleReady()) return;
-  await gsEval('scheduler.stop');
+  await pauseEmulator();
 }
 
 export async function stepInto(n = 1): Promise<void> {

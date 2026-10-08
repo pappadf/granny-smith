@@ -199,11 +199,6 @@ fi
 # Configure git to use credential helper that reads from environment
 export GIT_TERMINAL_PROMPT=0
 
-# Suppress git-lfs smudge globally so the clone never stalls waiting for LFS objects.
-if git lfs version &>/dev/null 2>&1; then
-    git lfs install --skip-repo >/dev/null 2>&1 || true
-fi
-
 # Ensure 7z is available (used to extract large binary archives)
 if ! command -v 7z &>/dev/null; then
     log_info "Installing p7zip-full..."
@@ -278,12 +273,14 @@ if GIT_LFS_SKIP_SMUDGE=1 git \
         LOCAL_README=$(cat "$DATA_DIR/README.md")
     fi
 
-    # Copy data directories (roms, systems, apps) - exclude .git and README
-    for dir in "$TEMP_CLONE_DIR"/*/; do
-        if [[ -d "$dir" ]] && [[ "$(basename "$dir")" != ".git" ]]; then
-            rm -rf "$DATA_DIR/$(basename "$dir")"
-            cp -r "$dir" "$DATA_DIR/"
-        fi
+    # Replace the whole tree, not directory by directory: the marker below
+    # says tests/data IS revision $DATA_COMMIT, so a file or directory
+    # deleted upstream must go here too.  Only the README (this repo's own,
+    # tracked) is kept, and a .git is never touched.
+    find "$DATA_DIR/" -mindepth 1 -maxdepth 1 ! -name README.md ! -name .git -exec rm -rf {} +
+    for entry in "$TEMP_CLONE_DIR"/*; do
+        [[ "$(basename "$entry")" == "README.md" ]] && continue
+        cp -r "$entry" "$DATA_DIR/"
     done
 
     # Restore local README if it existed, otherwise don't overwrite

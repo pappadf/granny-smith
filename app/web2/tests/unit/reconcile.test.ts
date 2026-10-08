@@ -118,6 +118,21 @@ describe('one post-boot reconciliation, every path', () => {
     delete images.mounted['/opfs/images/hd/a.img'];
   });
 
+  // The previous machine's media went with it: no badge may offer to eject
+  // from a drive the new (or restored) machine does not have.
+  it("a boot or a restore forgets the previous machine's mounts", async () => {
+    se30();
+    bridge.reply('machine.attach_media', { bus: 'scsi', id: 4, label: 'ID 4' });
+    images.mounted['/opfs/images/fd/old.img'] = { kind: 'fd', drive: 1 };
+    await initEmulator({
+      ...BOOT,
+      media: [{ bus: 'scsi', unit: 4, type: 'hd', path: '/opfs/images/hd/a.img' }],
+    });
+    expect(Object.keys(images.mounted)).toEqual(['/opfs/images/hd/a.img']);
+    await reconcileUiWithMachine('restore');
+    expect(images.mounted).toEqual({});
+  });
+
   it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');
