@@ -1001,13 +1001,33 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
             }
         }
 
-        // Restore GCR track buffers
+        // Restore GCR track buffers.  trk->size comes from the file, but
+        // every access to a track buffer is bounded by iwm_track_length(), so
+        // a buffer of any other size is an OOB read/write waiting to happen:
+        // fail the restore rather than allocate it.  Once the stream is
+        // known bad there is nothing to stay aligned with, so stop reading.
+        bool tracks_ok = true;
         for (int d = 0; d < NUM_DRIVES; d++) {
             for (int s = 0; s < NUM_SIDES; s++) {
                 for (int t = 0; t < NUM_TRACKS; t++) {
                     floppy_track_t *trk = &floppy->drives[d].tracks[s][t];
+                    trk->data = NULL; // scrubbed at save; never trust a file pointer
+                    if (!tracks_ok) {
+                        trk->size = 0;
+                        trk->modified = false;
+                        continue;
+                    }
                     uint8_t has_data = 0;
                     system_read_checkpoint_data(checkpoint, &has_data, 1);
+                    if (has_data && trk->size != iwm_track_length(t)) {
+                        LOG(1, "Drive %d: restored track %d side %d size %zu, expected %zu", d, t, s, trk->size,
+                            iwm_track_length(t));
+                        checkpoint_set_error(checkpoint);
+                        tracks_ok = false;
+                        trk->size = 0;
+                        trk->modified = false;
+                        continue;
+                    }
                     if (has_data && trk->size > 0) {
                         trk->data = malloc(trk->size);
                         if (trk->data)
