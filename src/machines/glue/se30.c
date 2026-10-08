@@ -147,21 +147,21 @@ static void se30_memory_layout_tail(config_t *cfg) {
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---
     // Mirror the 64 KB across the 1 MB decode window $FEE00000-$FEEFFFFF
     if (se30->vram) {
-        uint32_t vram_pages = SE30_VRAM_SIZE >> PAGE_SHIFT; // 16 pages
-        uint32_t vram_start_page = SE30_VRAM_BASE >> PAGE_SHIFT;
-        uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
+        uint32_t vram_pages = SE30_VRAM_SIZE >> MEM_PAGE_SHIFT; // 16 pages
+        uint32_t vram_start_page = SE30_VRAM_BASE >> MEM_PAGE_SHIFT;
+        uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> MEM_PAGE_SHIFT; // 1 MB window
         for (uint32_t p = vram_start_page; p < vram_mirror_end && p < g_page_count; p++) {
-            uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
+            uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << MEM_PAGE_SHIFT;
             mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
     }
 
     // --- VROM: $FEFF8000 - $FEFFFFFF (32 KB read-only) ---
     {
-        uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 8 pages
-        uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
+        uint32_t vrom_pages = SE30_VROM_SIZE >> MEM_PAGE_SHIFT; // 8 pages
+        uint32_t vrom_start_page = SE30_VROM_BASE >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < vrom_pages && vrom_start_page + p < g_page_count; p++)
-            mac030_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
+            mac030_fill_page(vrom_start_page + p, se30->vrom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // --- ROM overlay: map ROM at $00000000 on reset ---

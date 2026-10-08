@@ -475,8 +475,8 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     index_logpoints(debug);
     debug->active = true;
 
-    uint32_t start_page = addr >> PAGE_SHIFT;
-    uint32_t end_page = end_addr >> PAGE_SHIFT;
+    uint32_t start_page = addr >> MEM_PAGE_SHIFT;
+    uint32_t end_page = end_addr >> MEM_PAGE_SHIFT;
 
     if (space == ADDR_SPACE_LOGICAL) {
         memory_logpoint_install(start_page, end_page);
@@ -487,8 +487,8 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
         // installed while user code is running watches the user mapping.
         if (g_mmu && g_mmu->enabled) {
             bool supervisor = debug_cpu_is_supervisor();
-            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> PAGE_SHIFT;
-            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> PAGE_SHIFT;
+            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> MEM_PAGE_SHIFT;
+            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> MEM_PAGE_SHIFT;
             if (phys_end < phys_start) {
                 uint32_t tmp = phys_start;
                 phys_start = phys_end;
@@ -507,8 +507,8 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             if (dif && dif->translate_mac) {
                 bool ok_start = false, ok_end = false;
-                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> PAGE_SHIFT;
-                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> PAGE_SHIFT;
+                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> MEM_PAGE_SHIFT;
+                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> MEM_PAGE_SHIFT;
                 if (ok_start && ok_end) {
                     if (phys_end < phys_start) {
                         uint32_t tmp = phys_start;
@@ -758,7 +758,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 if (g_mmu && g_mmu->enabled) {
                     phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
                 } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
-                           g_mem_logpoint_page_count[addr >> PAGE_SHIFT]) {
+                           g_mem_logpoint_page_count[addr >> MEM_PAGE_SHIFT]) {
                     // PPC keep-logical route: a logically-watched page
                     // arrives with its logical address — translate it for
                     // the physical compare.  Unwatched pages arrive
@@ -1680,8 +1680,8 @@ static void free_logpoint(logpoint_t *lp) {
         return;
     if (lp->kind != LP_KIND_PC) {
         if (lp->space == ADDR_SPACE_LOGICAL) {
-            uint32_t start_page = lp->addr >> PAGE_SHIFT;
-            uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
+            uint32_t start_page = lp->addr >> MEM_PAGE_SHIFT;
+            uint32_t end_page = lp->end_addr >> MEM_PAGE_SHIFT;
             memory_logpoint_uninstall(start_page, end_page);
         }
         // Physical range tracked separately; populated for both LOGICAL

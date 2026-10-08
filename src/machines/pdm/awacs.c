@@ -82,13 +82,13 @@ static uint32_t awacs_window_base(pdm_amic_t *a) {
 // aligned inside 8 KB-aligned regions, so a 16-bit read never crosses a
 // page.
 static uint16_t awacs_phys_read16(uint32_t phys) {
-    uint32_t page = phys >> PAGE_SHIFT;
+    uint32_t page = phys >> MEM_PAGE_SHIFT;
     if (page >= (uint32_t)g_page_count)
         return 0;
     uint8_t *host = g_page_table[page].host_base;
     if (!host)
         return 0;
-    host += phys & ((1u << PAGE_SHIFT) - 1u);
+    host += phys & ((1u << MEM_PAGE_SHIFT) - 1u);
     return (uint16_t)((host[0] << 8) | host[1]);
 }
 

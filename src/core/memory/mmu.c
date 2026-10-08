@@ -702,10 +702,10 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
         const mmu_host_region_t *r = &mmu->host_regions[i];
         if (r->alias)
             continue; // resolver-only: device windows may overlap the alias range
-        uint32_t pages = r->size >> PAGE_SHIFT;
-        uint32_t start = r->phys_base >> PAGE_SHIFT;
+        uint32_t pages = r->size >> MEM_PAGE_SHIFT;
+        uint32_t start = r->phys_base >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < pages && start + p < g_page_count; p++)
-            fill(start + p, r->host + (p << PAGE_SHIFT), r->writable);
+            fill(start + p, r->host + (p << MEM_PAGE_SHIFT), r->writable);
         // Mode-24 (24-bit Memory Manager) slot window: slot s ($9..$E) has a
         // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
         // space at $Fs000000 (GLUE/BBU decode both to the same slot).
@@ -717,10 +717,10 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
                 uint32_t alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
                 if (alias_bytes > r->size)
                     alias_bytes = r->size;
-                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
-                uint32_t start24 = ((uint32_t)slot << 20) >> PAGE_SHIFT; // $00s00000
+                uint32_t alias_pages = alias_bytes >> MEM_PAGE_SHIFT;
+                uint32_t start24 = ((uint32_t)slot << 20) >> MEM_PAGE_SHIFT; // $00s00000
                 for (uint32_t p = 0; p < alias_pages && start24 + p < g_page_count; p++)
-                    fill(start24 + p, r->host + (p << PAGE_SHIFT), true);
+                    fill(start24 + p, r->host + (p << MEM_PAGE_SHIFT), true);
             }
         }
     }
@@ -765,14 +765,14 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
         return; // unmapped physical address — leave SoA entry as zero
 
     host_writable = host_writable && writable;
-    uint32_t page_index = logical_page >> PAGE_SHIFT;
+    uint32_t page_index = logical_page >> MEM_PAGE_SHIFT;
     if (page_index >= g_page_count)
         return;
 
     // Memory logpoints force the slow path — see mmu_fill_soa_entry.  The
     // physical array is sized by the page table like the logical one, so a
     // physical page past it cannot be watched (and must not be indexed).
-    uint32_t phys_index = physical_page >> PAGE_SHIFT;
+    uint32_t phys_index = physical_page >> MEM_PAGE_SHIFT;
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
         return;
     if (g_mem_logpoint_phys_page_count && phys_index < g_page_count && g_mem_logpoint_phys_page_count[phys_index])
@@ -880,7 +880,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     }
 
     // Align to emulator page boundary for SoA entry
-    uint32_t emu_page = logical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t emu_page = logical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
     // Check transparent translation first
     if (mmu_check_tt(mmu, logical_addr, write, supervisor)) {
@@ -892,7 +892,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         // return 0 silently — the hardware doesn't bus error for internal
         // pseudo-slots like slot $F.  Writes are always silently dropped.
         if (!write) {
-            uint32_t page_index = emu_page >> PAGE_SHIFT;
+            uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
             if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
                 memory_addr_faults_when_unmapped(logical_addr)) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
@@ -962,7 +962,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // Fill the SoA entry for this emulator page.
     // The physical address from the walk gives us the physical page base.
     // We need to map the emulator's 4KB page granularity.
-    uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t phys_page = result.physical_addr & ~(uint32_t)MEM_PAGE_MASK;
     // Write-array fill policy: a page becomes writable through the SoA only
     // once it is marked modified -- which this access establishes when it is a
     // write.  A read fault on a clean page deliberately leaves the write entry
@@ -989,7 +989,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // or a mapping reshaped from block to page tables) always supersedes it.
     atc_invalidate_covering(mmu, logical_addr, supervisor);
     uint32_t ps_bits = result.page_size_bits;
-    if (ps_bits > PAGE_SHIFT && ps_bits < 32) {
+    if (ps_bits > MEM_PAGE_SHIFT && ps_bits < 32) {
         uint32_t log_mask = ~((1u << ps_bits) - 1);
         // The physical range starts at the descriptor's page frame, which need
         // not be aligned to the coverage (see the walk): recover it from the

@@ -21,7 +21,7 @@ typedef struct page_entry {
 } page_entry_t;
 ```
 
-The page table is indexed by `addr >> PAGE_SHIFT` (where `PAGE_SHIFT = 12`,
+The page table is indexed by `addr >> MEM_PAGE_SHIFT` (where `MEM_PAGE_SHIFT = 12`,
 giving 4 KB pages). For a 24-bit address space (Plus), this yields 4,096
 entries; for a 32-bit address space (IIcx), up to 1,048,576 entries.
 
@@ -43,7 +43,7 @@ entirely inline in `memory.h` with no function call overhead:
 static inline uint8_t memory_read_uint8(uint32_t addr)
 {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
         return LOAD_BE8((uint8_t *)(base + masked));
     return memory_read_uint8_slow(masked);
@@ -63,7 +63,7 @@ repoint them. That is what makes a write-protected or supervisor-only page fall
 to the slow path without any per-access permission test.
 
 For 16-bit and 32-bit reads, the inline accessor additionally checks that the
-access does not cross a page boundary (`(masked & PAGE_MASK) <= MEM_PAGE_SIZE -
+access does not cross a page boundary (`(masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE -
 N`); a failing check falls through to the slow path. Instruction prefetch uses
 `memory_read_prefetch32`, which is the same fast path but returns only the
 opcode word when the 32-bit read would cross into the next page — real hardware

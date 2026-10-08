@@ -680,10 +680,10 @@ void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
 void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     // VRAM: direct writable pages + a bus-resolver host region so the 040
     // walker and DMA reach it by physical address.
-    uint32_t pages = AV_CIVIC_VRAM_SIZE >> PAGE_SHIFT;
-    uint32_t start = AV_CIVIC_VRAM_BASE >> PAGE_SHIFT;
+    uint32_t pages = AV_CIVIC_VRAM_SIZE >> MEM_PAGE_SHIFT;
+    uint32_t start = AV_CIVIC_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
-        mac030_fill_page(start + i, cv->vram + (i << PAGE_SHIFT), true);
+        mac030_fill_page(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
     memory_map_host_region(cfg->memory_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);
 

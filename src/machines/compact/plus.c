@@ -148,7 +148,7 @@ static display_t *plus_display(config_t *cfg) {
 static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
     if (p >= g_page_count)
         return;
-    uintptr_t adjusted = (uintptr_t)host_ptr - ((uintptr_t)p << PAGE_SHIFT);
+    uintptr_t adjusted = (uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT);
     g_page_table[p].host_base = host_ptr;
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
@@ -168,9 +168,9 @@ static void plus_set_rom_overlay(config_t *cfg, bool on) {
         return;
     ps->rom_overlay = on;
     uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-    uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++)
-        plus_map_read_page(p, on ? ram + cfg->ram_size + (p << PAGE_SHIFT) : ram + (p << PAGE_SHIFT));
+        plus_map_read_page(p, on ? ram + cfg->ram_size + (p << MEM_PAGE_SHIFT) : ram + (p << MEM_PAGE_SHIFT));
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
 }
 

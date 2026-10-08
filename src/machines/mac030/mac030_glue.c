@@ -119,19 +119,19 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     // expect NO aliasing, and non-BMI rows that expect the wrap.  BMI rows are
     // 1, 4 and 16 MB; every other total (2, 5, 8, 32, 64 …) expects the wrap,
     // so those get one extra mirror.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
     bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
     uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
     for (uint32_t p = 0; p < map_end_page && p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
 
     // --- ROM, mirrored across the board's window (read-only) ---
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t rom_end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = desc->rom_base >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = desc->rom_end >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++)
-            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
     }
 
     // --- I/O dispatcher, the window directly above the ROM window ---
@@ -273,7 +273,7 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
     if (size_pages == 0)
         return; // a bank smaller than one page decodes nothing
     for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
-        fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
+        fill(start_page + i, host + ((i % size_pages) << MEM_PAGE_SHIFT), writable);
 }
 
 void mac030_clear_page(uint32_t page_index) {
@@ -302,7 +302,7 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
@@ -334,15 +334,15 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
         return;
     *overlay_flag = on;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = rom_start >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = rom_start >> MEM_PAGE_SHIFT;
     if (on) {
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
         uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+            mac030_fill_page(p, ram_base + (p << MEM_PAGE_SHIFT), true);
     }
 }
 

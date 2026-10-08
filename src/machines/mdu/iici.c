@@ -136,22 +136,23 @@ static void iici_memory_layout_init(config_t *cfg) {
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
     uint8_t *bank_b = ram_base + bank_a_size;
-    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_size >> PAGE_SHIFT, mac030_fill_page, true);
-    mac030_map_mirrored(IICI_BANK_B_PHYS >> PAGE_SHIFT, IICI_BANK_WINDOW >> PAGE_SHIFT, bank_b,
-                        bank_b_size >> PAGE_SHIFT, mac030_fill_page, true);
+    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT,
+                        mac030_fill_page, true);
+    mac030_map_mirrored(IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, IICI_BANK_WINDOW >> MEM_PAGE_SHIFT, bank_b,
+                        bank_b_size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
     // — but ram_a_size must still be set so window mirroring resolves).
     mmu_set_ram_bank_b(st->mmu, bank_a_size, bank_b, IICI_BANK_B_PHYS, bank_b_size, IICI_BANK_WINDOW);
 
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IICI_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = IICI_ROM_END >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = IICI_ROM_START >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = IICI_ROM_END >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 

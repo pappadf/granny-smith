@@ -178,7 +178,7 @@ static DEF_METHOD(method_mem_translate) {
         return val_str(buf);
     }
     if (!g_mmu || !g_mmu->enabled) {
-        uint32_t page = addr >> PAGE_SHIFT;
+        uint32_t page = addr >> MEM_PAGE_SHIFT;
         const char *backing = "unmapped";
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
@@ -191,7 +191,7 @@ static DEF_METHOD(method_mem_translate) {
     bool ok_s = mmu_translate_checked(g_mmu, addr, true, &pa_s);
     bool ok_u = mmu_translate_checked(g_mmu, addr, false, &pa_u);
     const char *backing_s = "unmapped";
-    uint32_t page_s = pa_s >> PAGE_SHIFT;
+    uint32_t page_s = pa_s >> MEM_PAGE_SHIFT;
     if (ok_s && page_s < g_page_count) {
         page_entry_t *pe = &g_page_table[page_s];
         backing_s = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");

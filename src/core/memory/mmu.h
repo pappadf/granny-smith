@@ -347,7 +347,7 @@ extern struct mmu_state *g_mmu;
 // PLOAD naming the other FC.
 static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write,
                                       bool supervisor) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
+    uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
     if (page_index < g_page_count) {
         uintptr_t *filled =
             write ? (supervisor ? g_supervisor_write : g_user_write) : (supervisor ? g_supervisor_read : g_user_read);

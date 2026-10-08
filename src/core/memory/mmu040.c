@@ -347,7 +347,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     if (!mmu || !mmu->enabled)
         return false;
 
-    uint32_t emu_page = logical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t emu_page = logical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
     // Transparent translation: identity mapping, no walk.
     uint32_t tt = ttr_lookup(mmu, logical_addr, supervisor);
@@ -360,7 +360,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
         // Unmapped physical under a TTR: bus-error only inside the NuBus
         // window on reads; silent otherwise (same policy as the PMMU path).
         if (!write) {
-            uint32_t page_index = emu_page >> PAGE_SHIFT;
+            uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
             if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
                 memory_addr_faults_when_unmapped(logical_addr)) {
                 g_bus_error_is_pmmu = false; // bus timeout: skip semantics
@@ -390,7 +390,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
         return false;
     }
 
-    uint32_t phys_page = r.physical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t phys_page = r.physical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
     // Write-array fill policy: only once the page is marked modified (which
     // this access establishes when it is a write).  A read fault on a clean

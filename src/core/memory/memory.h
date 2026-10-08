@@ -260,9 +260,9 @@ extern void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start,
 
 // === Page Table ===
 
-#define PAGE_SHIFT    12
-#define MEM_PAGE_SIZE (1 << PAGE_SHIFT) // 4096
-#define PAGE_MASK     (MEM_PAGE_SIZE - 1) // 0xFFF
+#define MEM_PAGE_SHIFT 12
+#define MEM_PAGE_SIZE  (1 << MEM_PAGE_SHIFT) // 4096
+#define MEM_PAGE_MASK  (MEM_PAGE_SIZE - 1) // 0xFFF
 
 // Each page maps to either a direct host pointer or a device handler
 typedef struct page_entry {
@@ -552,7 +552,7 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
 
 static inline uint8_t memory_read_uint8(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
         return LOAD_BE8((uint8_t *)(base + masked));
     return memory_read_uint8_slow(masked);
@@ -560,18 +560,18 @@ static inline uint8_t memory_read_uint8(uint32_t addr) {
 
 static inline uint16_t memory_read_uint16(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
         return LOAD_BE16((uint8_t *)(base + masked));
     return memory_read_uint16_slow(masked);
 }
 
 static inline uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         return LOAD_BE32((uint8_t *)(base + masked));
     }
     return memory_read_uint32_slow(masked);
@@ -602,8 +602,8 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
 // the whole decoder body.
 static inline uint32_t memory_read_prefetch32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         return LOAD_BE32((uint8_t *)(base + masked));
     }
     // Out of page (or no SoA entry): take the opcode word only.
@@ -612,7 +612,7 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
 
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1)) {
         STORE_BE8((uint8_t *)(base + masked), value);
         return;
@@ -622,9 +622,9 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
 
 static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
         STORE_BE16((uint8_t *)(base + masked), value);
         return;
     }
@@ -633,9 +633,9 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
 
 static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         STORE_BE32((uint8_t *)(base + masked), value);
         return;
     }

@@ -74,7 +74,7 @@ void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the USER
     // arrays belong to the PPC MMU front end (logical fills, ppc_mmu.c)
@@ -276,8 +276,8 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
 
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
-    for (uint32_t p = 0; p < (cfg->machine->rom_size >> PAGE_SHIFT); p++)
-        tnt_fill_page((TNT_ROM_BASE >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
+    for (uint32_t p = 0; p < (cfg->machine->rom_size >> MEM_PAGE_SHIFT); p++)
+        tnt_fill_page((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
 
     // Grand Central: the 128 KB island.
     st->gc_interface.read_uint8 = gc_read8;

@@ -818,7 +818,7 @@ static void lisa_mmureg_write(lisa_mmu_t *m, const lisa_resolved_t *r, uint16_t 
 static inline void lisa_logpoint_notify(uint32_t addr, unsigned size, uint32_t value, bool is_write) {
     if (!g_mem_logpoint_hook || !g_mem_logpoint_page_count)
         return;
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     if (page < g_page_count && g_mem_logpoint_page_count[page])
         g_mem_logpoint_hook(addr, size, value, is_write);
 }

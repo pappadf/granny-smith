@@ -1224,7 +1224,7 @@ static inline void f_trap(cpu_t *restrict cpu, uint16_t opcode) {
     // Only the all-ones word an unmapped fetch returns qualifies: a genuine
     // line-F opcode on a page that merely has no SoA fast-path entry (a page
     // covered by a memory logpoint, say) is a real line-F exception.
-    uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
+    uint32_t fetch_page = cpu->instruction_pc >> MEM_PAGE_SHIFT;
     if (__builtin_expect(
             opcode == 0xFFFF && g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
         // Instruction page has no SoA entry — fetch returned $FF from unmapped

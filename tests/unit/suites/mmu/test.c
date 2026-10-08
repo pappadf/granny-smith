@@ -240,14 +240,14 @@ TEST(test_soa_identity_mapping) {
     ASSERT_TRUE(g_supervisor_read[1] != 0);
 
     // ROM page at 0x40000000: read-only (read entries non-zero, write entries zero)
-    uint32_t rom_page = 0x40000000 >> PAGE_SHIFT;
+    uint32_t rom_page = 0x40000000 >> MEM_PAGE_SHIFT;
     ASSERT_TRUE(g_supervisor_read[rom_page] != 0);
     ASSERT_TRUE(g_supervisor_write[rom_page] == 0); // ROM is read-only
     ASSERT_TRUE(g_user_read[rom_page] != 0);
     ASSERT_TRUE(g_user_write[rom_page] == 0);
 
     // Unmapped page (e.g., 0x80000000): should have zero entries
-    uint32_t unmapped_page = 0x80000000 >> PAGE_SHIFT;
+    uint32_t unmapped_page = 0x80000000 >> MEM_PAGE_SHIFT;
     ASSERT_TRUE(g_supervisor_read[unmapped_page] == 0);
     ASSERT_TRUE(g_supervisor_write[unmapped_page] == 0);
 
@@ -668,7 +668,7 @@ TEST(test_24bit_soa_compatibility) {
     ASSERT_EQ_INT((int)0x12345678, (int)memory_read_uint32(0x000100));
 
     // ROM page: read-only
-    uint32_t rom_page_idx = 0x400000 >> PAGE_SHIFT;
+    uint32_t rom_page_idx = 0x400000 >> MEM_PAGE_SHIFT;
     ASSERT_TRUE(g_supervisor_read[rom_page_idx] != 0);
     ASSERT_TRUE(g_supervisor_write[rom_page_idx] == 0);
 

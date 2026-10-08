@@ -158,8 +158,8 @@ static void mcu_map_ram(config_t *cfg) {
             if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
                 end = st->bank_start[o];
 
-        mac030_map_mirrored(start >> PAGE_SHIFT, (end - start) >> PAGE_SHIFT, ram_base + st->bank_image_off[b],
-                            size >> PAGE_SHIFT, mac030_fill_page, true);
+        mac030_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT, ram_base + st->bank_image_off[b],
+                            size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
     }
 }
 
@@ -575,10 +575,10 @@ static void mcu_memory_layout_init(config_t *cfg) {
     memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",
                    (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
     uint8_t *vram = dafb_vram(st->dafb);
-    uint32_t vram_pages = dafb_vram_size(st->dafb) >> PAGE_SHIFT;
-    uint32_t vram_start = DAFB_VRAM_BASE >> PAGE_SHIFT;
+    uint32_t vram_pages = dafb_vram_size(st->dafb) >> MEM_PAGE_SHIFT;
+    uint32_t vram_start = DAFB_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < vram_pages && vram_start + i < g_page_count; i++)
-        mac030_fill_page(vram_start + i, vram + (i << PAGE_SHIFT), true);
+        mac030_fill_page(vram_start + i, vram + (i << MEM_PAGE_SHIFT), true);
     // Register VRAM with the bus resolver so 040 table walks / TT matches
     // reaching physical $F9xxxxxx resolve to the buffer.
     memory_map_host_region(cfg->memory_map, "dafb_vram", vram, DAFB_VRAM_BASE, dafb_vram_size(st->dafb),

@@ -91,23 +91,23 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // memory."  Each bank mirrors its installed size throughout its 64 MB window
     // (the boot ROM sizes a bank by that wrap).  This static (MMU-off) page table
     // models the physical map the ROM probes before it builds its PMMU tree.
-    uint32_t bank_a_pages = IISI_BANK_A_SIZE >> PAGE_SHIFT; // 1 MB / 4 KB = 256
-    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
+    uint32_t bank_a_pages = IISI_BANK_A_SIZE >> MEM_PAGE_SHIFT; // 1 MB / 4 KB = 256
+    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
-    uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
-    uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> PAGE_SHIFT;
-    uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> PAGE_SHIFT;
+    uint32_t bank_b_pages = bank_b_size >> MEM_PAGE_SHIFT;
+    uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT;
+    uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> MEM_PAGE_SHIFT;
     mac030_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, mac030_fill_page, true);
 
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = IISI_ROM_END >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = IISI_ROM_START >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = IISI_ROM_END >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 

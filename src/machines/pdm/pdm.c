@@ -107,7 +107,7 @@ void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the USER
     // arrays belong to the 601 MMU front end (logical fills, ppc_mmu.c)
@@ -218,10 +218,10 @@ static void pdm_id_write32(void *ctx, uint32_t offset, uint32_t value) {
 static void pdm_map_rom_window(config_t *cfg, uint32_t base, uint32_t window) {
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t first = base >> PAGE_SHIFT;
-    uint32_t pages = window >> PAGE_SHIFT;
+    uint32_t first = base >> MEM_PAGE_SHIFT;
+    uint32_t pages = window >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, rom + ((p << PAGE_SHIFT) % rom_size), false);
+        pdm_fill_page(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
 }
 
 static void pdm_memory_layout(config_t *cfg) {

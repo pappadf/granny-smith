@@ -98,7 +98,7 @@ typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writ
 // memory (they probe down from the window top and read where the address
 // wraps).
 //
-// The guard is the point.  Each family computed `size >> PAGE_SHIFT` and took
+// The guard is the point.  Each family computed `size >> MEM_PAGE_SHIFT` and took
 // `p % that` with nothing checking it was non-zero, so a bank under 4 KB would
 // divide by zero.  Unreachable through machine.boot today, which validates
 // against ram_options, but iici_split_ram_banks' fallback is written to accept

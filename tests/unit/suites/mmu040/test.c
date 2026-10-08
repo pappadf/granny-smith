@@ -129,7 +129,7 @@ TEST(walk_4k_translates_and_sets_used_bits) {
     ASSERT_TRUE(!(phys32_read(&c, PAGE_TABLE) & (1u << 4)));
 
     // Fast path now hits: SoA read entry populated
-    ASSERT_TRUE(g_supervisor_read[TEST_LA >> PAGE_SHIFT] != 0);
+    ASSERT_TRUE(g_supervisor_read[TEST_LA >> MEM_PAGE_SHIFT] != 0);
     ctx_close(&c);
 }
 
@@ -159,15 +159,15 @@ TEST(modified_bit_set_on_first_write_only) {
 
     // Read fault first: fills the read SoA, leaves the write SoA empty
     (void)memory_read_uint8(TEST_LA);
-    ASSERT_TRUE(g_supervisor_read[TEST_LA >> PAGE_SHIFT] != 0);
-    ASSERT_TRUE(g_supervisor_write[TEST_LA >> PAGE_SHIFT] == 0);
+    ASSERT_TRUE(g_supervisor_read[TEST_LA >> MEM_PAGE_SHIFT] != 0);
+    ASSERT_TRUE(g_supervisor_write[TEST_LA >> MEM_PAGE_SHIFT] == 0);
     ASSERT_TRUE(!(phys32_read(&c, PAGE_TABLE) & (1u << 4)));
 
     // First write re-faults, sets M, and fills the write SoA
     memory_write_uint8(TEST_LA + 5, 0x77);
     ASSERT_TRUE(!g_bus_error_pending);
     ASSERT_TRUE(phys32_read(&c, PAGE_TABLE) & (1u << 4));
-    ASSERT_TRUE(g_supervisor_write[TEST_LA >> PAGE_SHIFT] != 0);
+    ASSERT_TRUE(g_supervisor_write[TEST_LA >> MEM_PAGE_SHIFT] != 0);
     ASSERT_EQ_INT(0x77, (int)c.ram[TEST_PA + 5]); // landed at the physical page
     ctx_close(&c);
 }
@@ -206,7 +206,7 @@ TEST(supervisor_only_page_rejects_user_access) {
     (void)memory_read_uint8(TEST_LA);
     ASSERT_TRUE(!g_bus_error_pending);
     // User SoA must NOT have been filled despite the shared root
-    ASSERT_TRUE(g_user_read[TEST_LA >> PAGE_SHIFT] == 0);
+    ASSERT_TRUE(g_user_read[TEST_LA >> MEM_PAGE_SHIFT] == 0);
 
     // Simulate user mode: switch the active arrays
     g_active_read = g_user_read;
@@ -460,7 +460,7 @@ TEST(translate_checked_is_side_effect_free) {
     ASSERT_EQ_INT((int)(TEST_PA + 0x40), (int)pa);
     // No U bits set, no SoA fill
     ASSERT_TRUE(!(phys32_read(&c, ROOT_TABLE) & (1u << 3)));
-    ASSERT_TRUE(g_supervisor_read[TEST_LA >> PAGE_SHIFT] == 0);
+    ASSERT_TRUE(g_supervisor_read[TEST_LA >> MEM_PAGE_SHIFT] == 0);
 
     // Failed walk reports false
     ASSERT_TRUE(!mmu_translate_checked(c.bus, 0x0FF00000u, true, &pa));

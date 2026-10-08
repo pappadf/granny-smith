@@ -413,7 +413,7 @@ static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store)
         return ppc_dxlate_slow(p, iw, addr, store);
     }
     if (p->msr & PPC_MSR_PR) {
-        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> PAGE_SHIFT];
+        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> MEM_PAGE_SHIFT];
         if (__builtin_expect(e != 0, 1))
             return false;
     }

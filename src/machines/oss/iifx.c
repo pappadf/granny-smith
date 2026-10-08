@@ -311,7 +311,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
@@ -443,10 +443,10 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     }
     uint8_t *src = enable ? st->fmc_inverted_rom : rom_data;
     // Pages $40008000-$4000FFFF (8 pages × 4 KB = 32 KB) get repointed.
-    uint32_t start_page = 0x40008000u >> PAGE_SHIFT;
-    uint32_t end_page = 0x40010000u >> PAGE_SHIFT;
+    uint32_t start_page = 0x40008000u >> MEM_PAGE_SHIFT;
+    uint32_t end_page = 0x40010000u >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page; p++) {
-        uint32_t guest = p << PAGE_SHIFT;
+        uint32_t guest = p << MEM_PAGE_SHIFT;
         uint8_t *host_ptr = src + ((guest - 0x40000000u) % rom_size);
         iifx_fill_page(p, host_ptr, false);
     }
@@ -480,17 +480,17 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     st->rom_overlay = overlay;
 
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     // Dropping the overlay restores the same wrapped RAM mapping
     // iifx_memory_layout_init installs (identical to a linear one while
     // rom_size ≤ ram_size, but keep the two expressions in lock-step).
-    uint32_t ram_pages = cfg->ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = cfg->ram_size >> MEM_PAGE_SHIFT;
 
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
-        uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + ((p % ram_pages) << PAGE_SHIFT);
+        uint8_t *host_ptr = overlay ? rom_data + (p << MEM_PAGE_SHIFT) : ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT);
         iifx_fill_page(p, host_ptr, !overlay);
     }
 
@@ -506,13 +506,13 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     // costing ~3.6x whole-machine throughput vs the IIcx.  RESET re-arms the
     // trap.  The FMC ROM-invert POST window ($40008000-$4000FFFF) re-points
     // its 8 pages after this via the same iifx_fill_page path.
-    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> PAGE_SHIFT);
-    uint32_t wend = (uint32_t)(IIFX_ROM_END >> PAGE_SHIFT);
+    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> MEM_PAGE_SHIFT);
+    uint32_t wend = (uint32_t)(IIFX_ROM_END >> MEM_PAGE_SHIFT);
     for (uint32_t p = wstart; p < wend && p < g_page_count; p++) {
         if (overlay) {
             iifx_arm_rom_trap_page(st, cfg, p);
         } else {
-            uint32_t guest = p << PAGE_SHIFT;
+            uint32_t guest = p << MEM_PAGE_SHIFT;
             iifx_fill_page(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
         }
     }
@@ -1440,8 +1440,8 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // Unlike the two-bank MDU machines (iici.c, iisi.c) there is no second
     // decode window at $04000000: modelling one regressed the 32 MB case,
     // which the ROM sizes correctly as a single contiguous 32 MB region.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    uint32_t window_pages = IIFX_RAM_WINDOW >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
+    uint32_t window_pages = IIFX_RAM_WINDOW >> MEM_PAGE_SHIFT;
     // RAM larger than the decode window still maps in full (the ROM's
     // descending probe walks above the window), so the span is the larger.
     mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, iifx_fill_page,

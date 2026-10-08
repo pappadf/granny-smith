@@ -91,10 +91,10 @@ static void map_bank_window(config_t *cfg, uint32_t base, uint32_t window, uint3
     if (!size)
         return;
     uint8_t *host = ram_native_pointer(cfg->memory_map, 0) + host_off;
-    uint32_t pages = window >> PAGE_SHIFT;
-    uint32_t first = base >> PAGE_SHIFT;
+    uint32_t pages = window >> MEM_PAGE_SHIFT;
+    uint32_t first = base >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, host + ((p << PAGE_SHIFT) % size), true);
+        pdm_fill_page(first + p, host + ((p << MEM_PAGE_SHIFT) % size), true);
 }
 
 // Rebuild the whole DRAM decode ($00000000-$3FFFFFFF) from the current
@@ -107,7 +107,7 @@ void pdm_hmc_remap(config_t *cfg) {
     // Clear the DRAM region: unmapped pages read 0 (outside the bus-error
     // range), so empty windows fail the probe's signature compare — the
     // "empty banks must not echo" requirement.
-    for (uint32_t p = 0; p < (0x40000000u >> PAGE_SHIFT); p++)
+    for (uint32_t p = 0; p < (0x40000000u >> MEM_PAGE_SHIFT); p++)
         pdm_clear_page(p);
 
     // Motherboard bank at 0: 8 MB window, 4 MB parts alias twice.

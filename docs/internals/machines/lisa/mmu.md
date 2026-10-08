@@ -20,7 +20,7 @@ delegate. For every Mac-architecture machine `g_lisa_mmu` is NULL and the
 behaviour is byte-for-byte unchanged.
 
 **Page-size decision.** The hot-path SoA cache hard-codes
-`PAGE_SHIFT 12` (4 KB). Rather than parameterise it (approach A, which perturbs
+`MEM_PAGE_SHIFT 12` (4 KB). Rather than parameterise it (approach A, which perturbs
 the tuned 68030/A-UX paths), the Lisa takes approach **B**: its SoA arrays are
 left empty, so every Lisa access misses the fast path and is fully translated in
 the slow-path delegate. A boot-ROM self-test is a few million instructions, so

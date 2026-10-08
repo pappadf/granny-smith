@@ -69,7 +69,7 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the user
     // arrays belong to the PPC MMU front end and are only cleared here.
@@ -110,10 +110,10 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // system ROM space that is not physically implemented in a bank will be
     // aliased to the physical device(s) within that bank" (MPC106UM §6.5).
     uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
-    uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++) {
-        gos_fill_page((GOS_ROM_BASE >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
-        gos_fill_page((GOS_ROM_BANK0 >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BANK0 >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // PCI: the root, then the bridge (config ports, the bus, Grackle's own

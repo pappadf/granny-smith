@@ -273,7 +273,7 @@ static inline bool can_lazy_install(uint32_t page, const page_entry_t *pe) {
 // logpoints armed even the call/return overhead was measurable (~3% of a
 // PDM boot under callgrind).
 static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writable_out) {
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     bool logical_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[page];
     bool phys_watched = false;
     uint32_t phys_addr = addr;
@@ -294,8 +294,8 @@ static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writa
     // MMU-translated, PPC-translated, or the address itself (which IS
     // physical when a PPC slow translation already rewrote it, and equals
     // logical on MMU-less machines).
-    if (g_mem_logpoint_phys_page_count && (phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count &&
-        g_mem_logpoint_phys_page_count[phys_addr >> PAGE_SHIFT])
+    if (g_mem_logpoint_phys_page_count && (phys_addr >> MEM_PAGE_SHIFT) < (uint32_t)g_page_count &&
+        g_mem_logpoint_phys_page_count[phys_addr >> MEM_PAGE_SHIFT])
         phys_watched = true;
 
     if (!logical_watched && !phys_watched)
@@ -304,14 +304,14 @@ static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writa
     if (g_mmu && g_mmu->enabled) {
         // Route through the real physical address so writes land in the page
         // the guest actually sees, not the g_page_table identity alias.
-        uint8_t *base = mmu_phys_to_host(g_mmu, phys_addr & ~(uint32_t)PAGE_MASK);
-        *host_out = base ? base + (phys_addr & PAGE_MASK) : NULL;
+        uint8_t *base = mmu_phys_to_host(g_mmu, phys_addr & ~(uint32_t)MEM_PAGE_MASK);
+        *host_out = base ? base + (phys_addr & MEM_PAGE_MASK) : NULL;
         *writable_out = base ? mmu_phys_is_writable(g_mmu, phys_addr) : false;
-    } else if ((phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count) {
+    } else if ((phys_addr >> MEM_PAGE_SHIFT) < (uint32_t)g_page_count) {
         // No 68K MMU: phys_addr is the identity address or the PPC
         // translation from above — dispatch on ITS page entry.
-        page_entry_t *pe = &g_page_table[phys_addr >> PAGE_SHIFT];
-        *host_out = pe->host_base ? pe->host_base + (phys_addr & PAGE_MASK) : NULL;
+        page_entry_t *pe = &g_page_table[phys_addr >> MEM_PAGE_SHIFT];
+        *host_out = pe->host_base ? pe->host_base + (phys_addr & MEM_PAGE_MASK) : NULL;
         *writable_out = pe->writable;
     } else {
         *host_out = NULL;
@@ -459,10 +459,10 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
     // map, so use the validity-reporting walk here.
     if (!mmu_translate_checked(g_mmu, addr, supervisor, &phys))
         return false; // translation failed → fall through to the MMU fault path
-    if ((phys & ~(uint32_t)PAGE_MASK) == (addr & ~(uint32_t)PAGE_MASK))
+    if ((phys & ~(uint32_t)MEM_PAGE_MASK) == (addr & ~(uint32_t)MEM_PAGE_MASK))
         return true; // identity mapping — dispatch as usual
     // Non-identity: only divert to the table walk when the target is real RAM.
-    return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)PAGE_MASK) == NULL;
+    return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)MEM_PAGE_MASK) == NULL;
 }
 
 // Latch a deferred bus error on behalf of a DEVICE that terminates an
@@ -517,10 +517,10 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
                            : lisa_mmu_read32(addr, supervisor);
 
     // A byte can never straddle a page, so this is constant-true for size 1.
-    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+    const bool in_page = (size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size);
     const uint32_t fill = size == 1 ? 0xFFu : size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
 
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
     // Memory logpoint: page is forced to the slow path but backed by RAM/ROM.
@@ -537,7 +537,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
     // Lazy-install identity SoA for a host-backed page when the MMU is off.
     if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
-        return load_be_n(pe->host_base + (addr & PAGE_MASK), size);
+        return load_be_n(pe->host_base + (addr & MEM_PAGE_MASK), size);
     }
 
     // Gate logical-device dispatch via dispatch_device_at_logical(): identity /
@@ -561,13 +561,13 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
         if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
             return dev_read_n(pe, addr, addr - pe->base_addr, size);
         if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
-            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            uintptr_t base = g_active_read[addr >> MEM_PAGE_SHIFT];
             if (base != 0)
                 return load_be_n((uint8_t *)(base + addr), size);
             // SoA still 0: the physical page is a device, unmapped, or
             // logpointed.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
+            uint32_t phys_page = phys >> MEM_PAGE_SHIFT;
             if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev)
@@ -698,12 +698,12 @@ uint8_t memory_debug_read_uint8(uint32_t addr) {
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
         return 0xFF;
-    uint32_t page = phys >> PAGE_SHIFT;
+    uint32_t page = phys >> MEM_PAGE_SHIFT;
     if (page >= g_page_count)
         return 0xFF;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base)
-        return LOAD_BE8(pe->host_base + (phys & PAGE_MASK));
+        return LOAD_BE8(pe->host_base + (phys & MEM_PAGE_MASK));
     if (pe->dev)
         return (uint8_t)debug_dev_read(pe, phys, 1);
     return 0xFF;
@@ -715,15 +715,15 @@ uint16_t memory_debug_read_uint16(uint32_t addr) {
         return (uint16_t)lisa_mmu_debug_read(addr, 2, g_active_read == g_supervisor_read);
     // Single-page word reads hit the device's own width handler; byte-split
     // only when the access straddles a page.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFF;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
-                return LOAD_BE16(pe->host_base + (phys & PAGE_MASK));
+                return LOAD_BE16(pe->host_base + (phys & MEM_PAGE_MASK));
             if (pe->dev)
                 return (uint16_t)debug_dev_read(pe, phys, 2);
         }
@@ -736,15 +736,15 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_read(addr, 4, g_active_read == g_supervisor_read);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFFFFFFu;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
-                return LOAD_BE32(pe->host_base + (phys & PAGE_MASK));
+                return LOAD_BE32(pe->host_base + (phys & MEM_PAGE_MASK));
             if (pe->dev)
                 return debug_dev_read(pe, phys, 4);
         }
@@ -761,13 +761,13 @@ uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
     uint32_t value = 0;
     for (unsigned i = 0; i < size; i++) { // byte-wise: an access may straddle pages
         uint32_t a = phys + i;
-        uint32_t page = a >> PAGE_SHIFT;
+        uint32_t page = a >> MEM_PAGE_SHIFT;
         if (page >= g_page_count)
             return 0;
         page_entry_t *pe = &g_page_table[page];
         uint8_t b;
         if (pe->host_base)
-            b = pe->host_base[a & PAGE_MASK];
+            b = pe->host_base[a & MEM_PAGE_MASK];
         else if (pe->dev)
             b = (uint8_t)debug_dev_read(pe, a, 1);
         else
@@ -788,7 +788,7 @@ uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
 void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
     while (len) {
         uint32_t a = addr & g_address_mask;
-        uint32_t off = a & PAGE_MASK;
+        uint32_t off = a & MEM_PAGE_MASK;
         uint32_t chunk = MEM_PAGE_SIZE - off; // stay within one page per iteration
         if (chunk > len)
             chunk = len;
@@ -800,11 +800,11 @@ void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
             bool ok = !(g_mmu && g_mmu->enabled) ||
                       mmu_translate_checked(g_mmu, a, g_active_read == g_supervisor_read, &phys);
             if (ok) {
-                uint32_t page = phys >> PAGE_SHIFT;
+                uint32_t page = phys >> MEM_PAGE_SHIFT;
                 if (page < g_page_count) {
                     page_entry_t *pe = &g_page_table[page];
                     if (pe->host_base && !pe->dev) {
-                        memcpy(dst, pe->host_base + (phys & PAGE_MASK), chunk);
+                        memcpy(dst, pe->host_base + (phys & MEM_PAGE_MASK), chunk);
                         dst += chunk;
                         addr += chunk;
                         len -= chunk;
@@ -834,14 +834,14 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
         return false;
-    uint32_t page = phys >> PAGE_SHIFT;
+    uint32_t page = phys >> MEM_PAGE_SHIFT;
     if (page >= g_page_count)
         return false;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base) {
         if (!pe->writable)
             return false; // ROM/VROM — drop silently
-        STORE_BE8(pe->host_base + (phys & PAGE_MASK), value);
+        STORE_BE8(pe->host_base + (phys & MEM_PAGE_MASK), value);
         return true;
     }
     if (pe->dev) {
@@ -855,17 +855,17 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_write(addr, 2, g_active_write == g_supervisor_write, value);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
-                STORE_BE16(pe->host_base + (phys & PAGE_MASK), value);
+                STORE_BE16(pe->host_base + (phys & MEM_PAGE_MASK), value);
                 return true;
             }
             if (pe->dev) {
@@ -884,17 +884,17 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_write(addr, 4, g_active_write == g_supervisor_write, value);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
-                STORE_BE32(pe->host_base + (phys & PAGE_MASK), value);
+                STORE_BE32(pe->host_base + (phys & MEM_PAGE_MASK), value);
                 return true;
             }
             if (pe->dev) {
@@ -951,9 +951,9 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     }
 
     // A byte can never straddle a page, so this is constant-true for size 1.
-    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+    const bool in_page = (size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size);
 
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
     // Memory logpoint: forced slow path for a RAM write on a logged page.
@@ -971,7 +971,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
         if (pe->writable)
-            store_be_n(pe->host_base + (addr & PAGE_MASK), value, size);
+            store_be_n(pe->host_base + (addr & MEM_PAGE_MASK), value, size);
         return;
     }
 
@@ -997,7 +997,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             return;
         }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
-            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            uintptr_t base = g_active_write[addr >> MEM_PAGE_SHIFT];
             if (base != 0) {
                 store_be_n((uint8_t *)(base + addr), value, size);
                 return;
@@ -1005,7 +1005,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             // SoA still 0: the physical page is a device, unmapped, or covered
             // by a logpoint.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
+            uint32_t phys_page = phys >> MEM_PAGE_SHIFT;
             if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev) {
@@ -1125,7 +1125,7 @@ static void rebuild_soa_page(uint32_t p) {
     // logpoint count applies directly too.
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[p])
         return;
-    uint32_t guest_base = p << PAGE_SHIFT;
+    uint32_t guest_base = p << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
@@ -1354,8 +1354,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
 
     // Populate page table entries for the device's address range
     if (g_page_table) {
-        uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
-        uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+        uint32_t start_page = (addr & g_address_mask) >> MEM_PAGE_SHIFT;
+        uint32_t end_page = ((addr + size - 1) & g_address_mask) >> MEM_PAGE_SHIFT;
         assert(start_page < g_page_count && "device start address exceeds page table bounds");
         if (end_page < start_page)
             LOG(0, "memory_map_add('%s'): page range $%X..$%X is inverted; the region claims no pages",
@@ -1395,8 +1395,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
 static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const memory_interface_t *iface_ptr) {
     if (!g_page_table || size == 0)
         return;
-    uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
-    uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+    uint32_t start_page = (addr & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t end_page = ((addr + size - 1) & g_address_mask) >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_page_table[p].dev == iface_ptr) {
             g_page_table[p].host_base = NULL;
@@ -1477,11 +1477,11 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     uint32_t rom_size = mem->rom_size;
 
     // RAM pages: 0x000000 – ram_size (writable, direct access)
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < ram_pages && p < g_page_count; p++) {
-        assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
-        uint8_t *host_ptr = mem->image + (p << PAGE_SHIFT);
-        uint32_t guest_base = p << PAGE_SHIFT;
+        assert((p << MEM_PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
+        uint8_t *host_ptr = mem->image + (p << MEM_PAGE_SHIFT);
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
 
         // AoS cold-path entry (device dispatch)
@@ -1508,9 +1508,9 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     //   offset % (2*rom_size) in [rom_size, 2*rom_size) → I/O / undefined (left unmapped)
     // This produces ROM mirrors at every 2*rom_size (256 KB for the 128 KB Plus ROM),
     // matching the old flat-buffer copy loop: addr += 2 * ROM_SIZE.
-    uint32_t rom_start_page = (rom_start_addr & g_address_mask) >> PAGE_SHIFT;
-    uint32_t rom_end_page = (rom_region_end & g_address_mask) >> PAGE_SHIFT;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT; // content pages per ROM copy
+    uint32_t rom_start_page = (rom_start_addr & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = (rom_region_end & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT; // content pages per ROM copy
     uint32_t mirror_stride = rom_pages * 2; // mirror cycle in pages (A17 stride)
 
     // Protect against a zero-length ROM (degenerate case)
@@ -1521,8 +1521,8 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
         if (offset_in_cycle >= rom_pages)
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
-        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
-        uint32_t guest_base = p << PAGE_SHIFT;
+        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << MEM_PAGE_SHIFT);
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
 
         // AoS cold-path entry
@@ -1542,7 +1542,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
 
 // Populate page-table entries for a RAM-mirror region.  Each page in
 // [mirror_start, mirror_end) is set up as a full read+write alias of RAM at
-// (guest_page << PAGE_SHIFT) % ram_size.  This models the physical
+// (guest_page << MEM_PAGE_SHIFT) % ram_size.  This models the physical
 // address-bus wraparound on a Macintosh Plus: high address bits beyond the
 // installed RAM range are undecoded, so accesses in the unmapped gap fold
 // down into actual RAM.  The Plus ROM relies on this for its exception save
@@ -1555,11 +1555,11 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
         return;
 
     uint32_t ram_size = mem->ram_size;
-    uint32_t start_page = (mirror_start & g_address_mask) >> PAGE_SHIFT;
-    uint32_t end_page = (mirror_end & g_address_mask) >> PAGE_SHIFT;
+    uint32_t start_page = (mirror_start & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t end_page = (mirror_end & g_address_mask) >> MEM_PAGE_SHIFT;
 
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
-        uint32_t guest_base = p << PAGE_SHIFT;
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uint32_t ram_off = guest_base % ram_size;
         uint8_t *host_ptr = mem->image + ram_off;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
@@ -1648,7 +1648,7 @@ void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu) {
 // Fill one host window through the hook, page by page.
 static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
     for (uint32_t off = 0; off < size; off += MEM_PAGE_SIZE)
-        g_mem_host_fill((phys_base + off) >> PAGE_SHIFT, host_ptr + off, writable);
+        g_mem_host_fill((phys_base + off) >> MEM_PAGE_SHIFT, host_ptr + off, writable);
 }
 
 // Runs only at machine build, on the map under construction -- the selected
@@ -1753,11 +1753,11 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // Allocate page table sized for the given address space
     if (address_bits == 32) {
         mem->address_mask = 0xFFFFFFFFUL; // full 32-bit
-        mem->page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
+        mem->page_count = 1 << (32 - MEM_PAGE_SHIFT); // 1,048,576 pages
     } else {
         // 24-bit (Macintosh Plus / SE)
         mem->address_mask = 0x00FFFFFFUL;
-        mem->page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
+        mem->page_count = 1 << (24 - MEM_PAGE_SHIFT); // 4,096 pages
     }
     size_t pages = (size_t)mem->page_count;
 

@@ -22,12 +22,12 @@ static uint8_t *overlay_rom_data(const mac030_rom_overlay_t *ov) {
 
 // Point the aperture at direct ROM pages, mirroring the image across it.
 void mac030_rom_overlay_fill_aperture(const mac030_rom_overlay_t *ov) {
-    uint32_t rom_pages = ov->cfg->machine->rom_size >> PAGE_SHIFT;
+    uint32_t rom_pages = ov->cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = overlay_rom_data(ov);
-    uint32_t start_page = ov->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = ov->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
+    uint32_t end_page = ov->rom_end >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
+        mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
 }
 
 // RAM at zero, aperture direct.  Idempotent.
@@ -42,19 +42,19 @@ void mac030_rom_overlay_drop(mac030_rom_overlay_t *ov) {
 
 // ROM readable at zero; aperture pages routed to the trigger device.
 void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
-    uint32_t rom_pages = ov->cfg->machine->rom_size >> PAGE_SHIFT;
+    uint32_t rom_pages = ov->cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     uint8_t *rom_data = overlay_rom_data(ov);
 
     ov->armed = true;
 
     // ROM mapped read-only at zero.
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (p << PAGE_SHIFT), false);
+        mac030_fill_page(p, rom_data + (p << MEM_PAGE_SHIFT), false);
 
     // Route the aperture through the trigger device: memory_map_add did the
     // page plumbing once, and later arms re-point the pages by hand.
-    uint32_t start_page = ov->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = ov->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
+    uint32_t end_page = ov->rom_end >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &ov->iface;
@@ -95,7 +95,7 @@ static uint8_t overlay_peek8(void *ctx, uint32_t offset) {
 // bytes of a mirror period -- the ROM sits at the top of that one calloc.
 //
 // That was not reachable: the memory dispatcher only calls a device's 16/32-bit
-// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
+// handler when (addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
 // closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
 // "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
 // end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
