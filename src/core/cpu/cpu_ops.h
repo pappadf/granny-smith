@@ -2109,6 +2109,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                     int _sz = _fpu->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
                     AY -= (uint32_t)_sz;                                                                               \
                     fpu_fsave(_fpu, AY);                                                                               \
+                    if (__builtin_expect(g_bus_error_pending, 0))                                                      \
+                        AY += (uint32_t)_sz; /* roll back for the Format $B retry */                                   \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_fsave(_fpu, _ea);                                                                              \
@@ -2128,7 +2130,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                 if (EA_MODE == 3) {                                                                                    \
                     /* (An)+ postincrement */                                                                          \
                     int _sz = fpu_frestore(_fpu, AY);                                                                  \
-                    AY += (uint32_t)_sz;                                                                               \
+                    if (__builtin_expect(!g_bus_error_pending, 1))                                                     \
+                        AY += (uint32_t)_sz;                                                                           \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_frestore(_fpu, _ea);                                                                           \

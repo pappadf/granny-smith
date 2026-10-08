@@ -23,6 +23,7 @@
 
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "fpu.h"
 #include "harness.h"
 #include "memory.h"
 #include "mmu.h"
@@ -288,6 +289,30 @@ TEST(trap_frame_push_fault_halts) {
     teardown_mmu(cpu, mmu);
 }
 
+TEST(fsave_predec_fault_leaves_an) {
+    // FSAVE -(A0) with the frame landing in the invalid page: A0 must not
+    // keep its predecrement.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    if (!cpu->fpu)
+        cpu->fpu = fpu_init();
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF320); // FSAVE -(A0)
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4100;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x4100);
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -303,6 +328,7 @@ int main(void) {
     RUN(unlk_pop_fault_leaves_an_and_sp);
     RUN(movem_postinc_fault_leaves_an);
     RUN(trap_frame_push_fault_halts);
+    RUN(fsave_predec_fault_leaves_an);
 
     test_harness_destroy(ctx);
     return 0;
