@@ -415,7 +415,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
         if (*instructions > 1) {                                                                                       \
-            g_sprint_unrun_slots += *instructions - 1; /* the rest of the plan is not run */                           \
+            g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
             *instructions = 1;                                                                                         \
         }                                                                                                              \
     /* Saturating burn-down decrement: see cores.md, "The 68K decoder prologue" */                                     \

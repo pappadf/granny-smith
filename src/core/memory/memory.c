@@ -103,20 +103,10 @@ uint32_t *g_bus_error_instr_ptr = NULL;
 // host-region list and its fill walk.
 void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable) = NULL;
 
-// I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
-// Penalty cycles are converted to "phantom instructions" that consume sprint
-// burndown slots, causing sprints with I/O to end sooner and keeping event
-// timing accurate.
-uint32_t g_io_penalty_remainder = 0; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
-uint64_t g_sprint_base_cycles = 0; // scheduler cpu_cycles at sprint start
-uint32_t g_sprint_frac_x256 = 0; // sub-cycle remainder at sprint start (x256)
-uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
-uint32_t g_esync_period_x256 = 0; // E period in CPU cycles x256 (0 = unset)
-uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sprint
-uint32_t g_sprint_unrun_slots = 0;
-uint32_t g_io_stall_owed = 0; // stall slots owed past the sprint's end
-uint32_t g_io_cpi_x256 = 0; // effective CPI for penalty conversion, x256 (0 = disabled)
-uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown during sprint
+// The running sprint's state shared with the slow paths (memory.h).  The
+// scheduler sets it up at each sprint's start and harvests it at its end;
+// it is stored here so every build that links the memory slow paths has it.
+sprint_io_t g_sprint_io;
 
 // Memory logpoint support: non-zero entries force the page through the slow
 // path even when the underlying page is plain RAM/ROM.  See memory.h.

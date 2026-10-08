@@ -1500,31 +1500,31 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // Execute sprint — expose burndown pointer and CPI for I/O penalty mechanism
         s->sprint_total = instr_to_exec;
         s->sprint_burndown = instr_to_exec;
-        g_sprint_burndown_ptr = &s->sprint_burndown;
-        g_io_cpi_x256 = s->cpi_eff_x256;
-        g_io_phantom_instructions = 0;
-        g_sprint_unrun_slots = 0;
+        g_sprint_io.burndown = &s->sprint_burndown;
+        g_sprint_io.cpi_x256 = s->cpi_eff_x256;
+        g_sprint_io.phantom_instructions = 0;
+        g_sprint_io.unrun_slots = 0;
         // Sprint timebase for E-synchronized penalties: mid-sprint "now" =
         // base cycles + (slots consumed x effective CPI + carried fraction),
         // mirroring current_cpu_cycles (see memory_io_esync_penalty)
-        g_sprint_base_cycles = s->saved.cpu_cycles;
-        g_sprint_frac_x256 = s->cycle_frac_x256;
-        g_sprint_total_slots = instr_to_exec;
-        g_esync_period_x256 = s->esync_period_x256;
+        g_sprint_io.base_cycles = s->saved.cpu_cycles;
+        g_sprint_io.frac_x256 = s->cycle_frac_x256;
+        g_sprint_io.total_slots = instr_to_exec;
+        g_sprint_io.esync_period_x256 = s->esync_period_x256;
         // The penalty remainder lives in the scheduler; the sprint runs on its alias.
-        g_io_penalty_remainder = s->saved.io_penalty_remainder;
+        g_sprint_io.penalty_remainder = s->saved.io_penalty_remainder;
         // A stall carried over from the previous sprint comes first: the CPU
         // is still waiting on that bus cycle.
         uint32_t owed = min_u32(s->saved.io_stall_slots, s->sprint_burndown);
         s->saved.io_stall_slots -= owed;
         s->sprint_burndown -= owed;
-        g_io_phantom_instructions = owed;
-        g_io_stall_owed = s->saved.io_stall_slots;
+        g_sprint_io.phantom_instructions = owed;
+        g_sprint_io.stall_owed = s->saved.io_stall_slots;
         if (s->sprint_burndown)
             cpu->run_sprint(cpu->ctx, &s->sprint_burndown);
-        s->saved.io_stall_slots = g_io_stall_owed;
-        s->saved.io_penalty_remainder = g_io_penalty_remainder;
-        g_sprint_burndown_ptr = NULL; // no longer valid outside sprint
+        s->saved.io_stall_slots = g_sprint_io.stall_owed;
+        s->saved.io_penalty_remainder = g_sprint_io.penalty_remainder;
+        g_sprint_io.burndown = NULL; // no longer valid outside sprint
 
         // Account for executed instructions and cycles.
         // sprint_total includes both real instructions and phantom instructions
@@ -1538,11 +1538,11 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // instead froze the CPU at the faulting instruction until whatever
         // event came next -- the length of the stall set by how far away
         // that event happened to be (scheduler.md §6.4).
-        uint32_t unrun = min_u32(g_sprint_unrun_slots, s->sprint_total);
-        g_sprint_unrun_slots = 0;
+        uint32_t unrun = min_u32(g_sprint_io.unrun_slots, s->sprint_total);
+        g_sprint_io.unrun_slots = 0;
         uint32_t executed_slots = s->sprint_total - unrun;
-        uint32_t phantom = g_io_phantom_instructions;
-        g_io_phantom_instructions = 0;
+        uint32_t phantom = g_sprint_io.phantom_instructions;
+        g_sprint_io.phantom_instructions = 0;
         s->sprint_total = 0;
         // Fixed-point x256: whole cycles advance the clock, the sub-cycle
         // remainder carries in scheduler state so nothing is ever dropped —

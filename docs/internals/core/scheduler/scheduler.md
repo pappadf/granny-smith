@@ -465,15 +465,15 @@ while (remaining_cycles > 0) {
 
     // 2. Execute the sprint
     sprint_total = sprint_burndown = instr_to_exec;
-    g_sprint_burndown_ptr = &sprint_burndown;                    // expose to I/O penalty mechanism
-    g_io_cpi_x256 = cpi_eff_x256;                                // effective CPI (== cpi<<8 unless accelerated)
-    g_io_phantom_instructions = 0;
+    g_sprint_io.burndown = &sprint_burndown;                    // expose to I/O penalty mechanism
+    g_sprint_io.cpi_x256 = cpi_eff_x256;                                // effective CPI (== cpi<<8 unless accelerated)
+    g_sprint_io.phantom_instructions = 0;
     cpu_run_sprint(cpu, &sprint_burndown);                       // CPU runs until burndown hits 0
-    g_sprint_burndown_ptr = NULL;
+    g_sprint_io.burndown = NULL;
 
     // 3. Finalize: fold the sprint's work into the authoritative counters
     executed_slots = sprint_total;                               // may have been shrunk by reconcile
-    phantom = g_io_phantom_instructions;
+    phantom = g_sprint_io.phantom_instructions;
     sprint_total = 0;
     advance_x256 = executed_slots * cpi_eff_x256 + cycle_frac_x256;
     executed_cycles = advance_x256 >> 8;                         // whole cycles advance…
@@ -506,12 +506,12 @@ instructions** that are deducted from `sprint_burndown`:
 
 ```c
 // memory.h — memory_io_penalty
-g_io_penalty_remainder += extra_cycles << 8;  // whole cycles onto the x256 grid
-burn = g_io_penalty_remainder / g_io_cpi_x256;
+g_sprint_io.penalty_remainder += extra_cycles << 8;  // whole cycles onto the x256 grid
+burn = g_sprint_io.penalty_remainder / g_sprint_io.cpi_x256;
 if (burn > 0) {
-    g_io_penalty_remainder -= burn * g_io_cpi_x256;
-    g_io_phantom_instructions += burn;
-    *g_sprint_burndown_ptr -= burn;           // ends the sprint sooner
+    g_sprint_io.penalty_remainder -= burn * g_sprint_io.cpi_x256;
+    g_sprint_io.phantom_instructions += burn;
+    *g_sprint_io.burndown -= burn;           // ends the sprint sooner
 }
 ```
 
@@ -523,13 +523,13 @@ only reflects real work.
 
 A stall longer than what is left of the sprint does not stop at the sprint's end: the
 event there fires on time while the CPU is still waiting on its bus cycle. The slots
-past the end are owed (`io_stall_slots`, via the sprint-time alias `g_io_stall_owed`)
+past the end are owed (`io_stall_slots`, via the sprint-time alias `g_sprint_io.stall_owed`)
 and burned first in the next sprint, before the CPU runs anything. Clamping instead —
 dropping the overflow — made the total stall depend on where events happened to fall.
 
 The sub-CPI remainder belongs to the scheduler (`io_penalty_remainder`, in its
 checkpointed prefix and zero on a new machine), so sub-CPI penalties accumulate
-correctly over time and a restore resumes them exactly. `g_io_penalty_remainder` is
+correctly over time and a restore resumes them exactly. `g_sprint_io.penalty_remainder` is
 its sprint-time alias: copied in at sprint start, copied back at sprint end. Outside a
 sprint (an inspection access dispatching into a device handler) `memory_io_penalty`
 returns early and never touches timing.
@@ -580,7 +580,7 @@ clamp to one instruction. All of them go through
 
 ```c
 static inline void memory_end_sprint(uint32_t *instructions) {
-    g_sprint_unrun_slots += *instructions;   // planned, not run
+    g_sprint_io.unrun_slots += *instructions;   // planned, not run
     *instructions = 0;                       // the decoder loop exits
 }
 ```

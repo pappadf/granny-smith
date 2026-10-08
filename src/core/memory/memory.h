@@ -315,22 +315,38 @@ extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=sup
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
+// The running sprint's state shared with the slow paths: the one channel
+// between the scheduler, which owns its contents -- it sets them up at each
+// sprint's start and harvests them at its end -- and the memory slow paths
+// and CPU exception paths that charge the sprint from inside it.  Nothing
+// outside a sprint may rely on it (burndown is NULL there).  The storage is
+// in memory.c.
+//
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
 // Penalty cycles are converted to phantom instructions that burn sprint burndown,
 // causing I/O-heavy sprints to end sooner and keeping event timing accurate.
 // The CPI is the scheduler's *effective* CPI in x256 fixed point (cpi << 8
 // unless accelerated mode lowered it), so penalties convert at the same rate
-// the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
-extern uint32_t g_io_penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
-extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
-extern uint32_t g_io_stall_owed; // sprint-time alias of the scheduler's io_stall_slots
-extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
-extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
-// Slots the running sprint planned but will not spend: something ended it
-// at this instruction boundary (an exception, a STOP, a trace step).  The
-// scheduler takes them off the sprint, so neither the clock nor the
-// instruction count advances for them -- time the CPU did not run.
-extern uint32_t g_sprint_unrun_slots;
+// the sprint accounts cycles. cpi_x256 == 0 disables the mechanism.
+typedef struct sprint_io {
+    uint32_t *burndown; // points to the scheduler's sprint_burndown during a sprint, else NULL
+    uint32_t cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
+    uint32_t penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
+    uint32_t phantom_instructions; // phantom instructions consumed this sprint
+    uint32_t stall_owed; // sprint-time alias of the scheduler's io_stall_slots
+    // Slots the running sprint planned but will not spend: something ended it
+    // at this instruction boundary (an exception, a STOP, a trace step).  The
+    // scheduler takes them off the sprint, so neither the clock nor the
+    // instruction count advances for them -- time the CPU did not run.
+    uint32_t unrun_slots;
+    // E-sync timebase (see "VIA E-clock synchronization" below)
+    uint64_t base_cycles; // scheduler cpu_cycles at sprint start
+    uint32_t frac_x256; // sub-cycle remainder at sprint start (x256)
+    uint32_t total_slots; // sprint slot budget at sprint start
+    uint32_t esync_period_x256; // E period in CPU cycles x256 (0 = unset)
+} sprint_io_t;
+
+extern sprint_io_t g_sprint_io;
 
 // End the running sprint at the current instruction boundary.  Always this,
 // never a bare `*instructions = 0`: the bare store left the slots in the
@@ -339,7 +355,7 @@ extern uint32_t g_sprint_unrun_slots;
 // as the gap to whatever event came next.
 static inline void memory_end_sprint(uint32_t *instructions) {
     if (instructions) {
-        g_sprint_unrun_slots += *instructions;
+        g_sprint_io.unrun_slots += *instructions;
         *instructions = 0;
     }
 }
@@ -352,12 +368,8 @@ static inline void memory_end_sprint(uint32_t *instructions) {
 // (1.2766 us) independent of CPU speed — the ROMs' pre-calibration timebase
 // (1-E "pipelined" model, settled against a real IIsi chime recording).
 // Ranges flagged `esync` charge this phase-accurate penalty instead of a
-// fixed cycle count.
-
-extern uint64_t g_sprint_base_cycles; // scheduler cpu_cycles at sprint start
-extern uint32_t g_sprint_frac_x256; // sub-cycle remainder at sprint start (x256)
-extern uint32_t g_sprint_total_slots; // sprint slot budget at sprint start
-extern uint32_t g_esync_period_x256; // E period in CPU cycles x256 (0 = unset)
+// fixed cycle count.  The timebase it needs is in g_sprint_io (base_cycles,
+// frac_x256, total_slots, esync_period_x256).
 
 // Pure math: cycles from `now_cycles` to the next E boundary, in (0, E].
 // Fixed-point x256 grid keeps the boundary sequence exact for non-integer
@@ -380,26 +392,26 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
 // The remainder accumulates x256 cycles so fractional effective CPIs
 // (accelerated mode) convert without losing sub-slot penalty time.
 static inline void memory_io_penalty(uint32_t extra_cycles) {
-    if (__builtin_expect(g_io_cpi_x256 == 0, 0))
+    if (__builtin_expect(g_sprint_io.cpi_x256 == 0, 0))
         return; // penalties disabled
-    if (__builtin_expect(g_sprint_burndown_ptr == NULL, 0))
+    if (__builtin_expect(g_sprint_io.burndown == NULL, 0))
         return; // outside a sprint (an inspection access): never touches guest timing
     // Saturate so the x256 shift and the add stay inside 32 bits (the
     // remainder is already under one CPI, < 2^16).  Real penalties are tens
     // of cycles; the cap is ~16M.
     if (__builtin_expect(extra_cycles > MEMORY_IO_PENALTY_MAX, 0))
         extra_cycles = MEMORY_IO_PENALTY_MAX;
-    g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
-    uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
+    g_sprint_io.penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
+    uint32_t burn = g_sprint_io.penalty_remainder / g_sprint_io.cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
-        g_io_penalty_remainder -= burn * g_io_cpi_x256;
-        uint32_t *bp = g_sprint_burndown_ptr;
+        g_sprint_io.penalty_remainder -= burn * g_sprint_io.cpi_x256;
+        uint32_t *bp = g_sprint_io.burndown;
         // A stall longer than what is left of the sprint runs on past the
         // sprint's end (the event there fires on time, the CPU is still
         // stalled): the slots past it are owed to the next sprint, not lost.
         uint32_t take = (*bp > burn) ? burn : *bp;
-        g_io_phantom_instructions += take;
-        g_io_stall_owed += burn - take;
+        g_sprint_io.phantom_instructions += take;
+        g_sprint_io.stall_owed += burn - take;
         *bp -= take;
     }
 }
@@ -413,13 +425,13 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
 // CPI slot) is inherent to the slot quantization and irrelevant against the
 // >=20-cycle E period; the long-run rate is exact.
 static inline void memory_io_esync_penalty(void) {
-    if (__builtin_expect(g_io_cpi_x256 == 0, 0) || g_esync_period_x256 == 0)
+    if (__builtin_expect(g_sprint_io.cpi_x256 == 0, 0) || g_sprint_io.esync_period_x256 == 0)
         return; // penalties disabled / E grid not configured
-    uint64_t now = g_sprint_base_cycles;
-    uint32_t *bp = g_sprint_burndown_ptr;
+    uint64_t now = g_sprint_io.base_cycles;
+    uint32_t *bp = g_sprint_io.burndown;
     if (bp)
-        now += ((uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi_x256 + g_sprint_frac_x256) >> 8;
-    memory_io_penalty(memory_esync_penalty_cycles(now, g_esync_period_x256));
+        now += ((uint64_t)(g_sprint_io.total_slots - *bp) * g_sprint_io.cpi_x256 + g_sprint_io.frac_x256) >> 8;
+    memory_io_penalty(memory_esync_penalty_cycles(now, g_sprint_io.esync_period_x256));
 }
 
 // Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses

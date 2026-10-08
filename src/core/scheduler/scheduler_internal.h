@@ -59,7 +59,7 @@ struct scheduler_saved {
 
     // I/O wait-state time not yet burned as a phantom instruction, x256
     // cycles (under one effective CPI).  Guest-visible timing state, so it is
-    // checkpointed; zero on a new machine.  g_io_penalty_remainder is its
+    // checkpointed; zero on a new machine.  g_sprint_io.penalty_remainder is its
     // sprint-time alias: copied in at sprint start, out at sprint end.
     uint32_t io_penalty_remainder;
 
@@ -166,7 +166,7 @@ struct scheduler {
 
     uint32_t frequency;
     // The VIA E-clock period in CPU cycles x256, derived from `frequency`;
-    // the sprint publishes it as g_esync_period_x256.
+    // the sprint publishes it as g_sprint_io.esync_period_x256.
     uint32_t esync_period_x256;
 
     // Object-tree binding — lifetime tied to scheduler_init / scheduler_delete.

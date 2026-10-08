@@ -185,19 +185,9 @@ void cpu_poll_interrupt(cpu_t *restrict cpu) {
         g_fake_stopped = false; // an event fired since the STOP: it is the wake-up
 }
 
-uint32_t g_io_penalty_remainder = 0;
-uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi_x256 = 0;
-uint32_t *g_sprint_burndown_ptr = NULL;
-uint32_t g_sprint_unrun_slots = 0;
-uint32_t g_io_stall_owed = 0;
-// E-clock sync state: normally defined in memory.c and written by scheduler.c
-// (scheduler_set_frequency / the sprint loop). memory.c is not linked into
-// this isolated scheduler suite, so stub the storage here.
-uint64_t g_sprint_base_cycles = 0;
-uint32_t g_sprint_frac_x256 = 0;
-uint32_t g_sprint_total_slots = 0;
-uint32_t g_esync_period_x256 = 0;
+// The sprint state (memory.h): normally stored in memory.c, which this
+// isolated scheduler suite does not link.
+sprint_io_t g_sprint_io;
 
 // A recording checkpoint stream: save writes into g_cp[g_cp_slot], restore
 // always reads back slot 0.  Used only by
