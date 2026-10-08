@@ -262,6 +262,6 @@ void image_export_end(image_export_t *e);
 
 // A machine's image hook, called by every machine's init.  It does nothing:
 // images are attached by the media layer, not set up from the config here.
-extern void setup_images(config_t *config);
+void setup_images(config_t *config);
 
 #endif // IMAGE_H

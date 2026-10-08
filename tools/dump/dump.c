@@ -835,7 +835,6 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
 
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1\",\n");
     fprintf(fp, "  \"source\": {\n    \"label\": ");
-    extern void re_json_write_string(FILE *, const char *);
     re_json_write_string(fp, src_label);
     fprintf(fp, ",\n    \"data_fork\": {\"size\": %zu},\n", data_len);
     fprintf(fp, "    \"rsrc_fork\": {\"size\": %zu}", rsrc_len);

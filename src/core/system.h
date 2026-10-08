@@ -106,7 +106,7 @@ void system_set_default_share(const char *path);
 // the active machine.  `opts` carries the construction arguments (see
 // machine_build_opts.h); machine_boot_apply and the checkpoint restore both
 // fill it.
-extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
+config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
 
 // Make a constructed machine the active one -- global_emulator, the object
 // root, the machine label, the machine_booted event -- and destroy the one it
@@ -116,7 +116,7 @@ struct host_pacing;
 void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
-extern void system_destroy(config_t *config);
+void system_destroy(config_t *config);
 
 // The active machine (NULL before the first boot).  Ownership contract:
 // system.c is the only writer -- system_swap_in publishes a fully built

@@ -42,6 +42,6 @@ void keyboard_checkpoint(keyboard_t *restrict keyboard, checkpoint_t *checkpoint
 void keyboard_input(keyboard_t *keyboard, unsigned char val);
 
 // Processes a key event from the host system
-extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int key);
+void keyboard_update(keyboard_t *keyboard, key_event_t event, int key);
 
 #endif // KEYBOARD_H

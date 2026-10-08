@@ -32,9 +32,11 @@
 #define CODE_ADDR 0x001000u
 #define DATA_ADDR 0x002000u
 
+// The 68030 decoder: cpu.c declares it for itself, no header exports it.
+void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
+
 // Run one 68030 instruction starting at cpu->pc.
 static void run_one(cpu_t *cpu) {
-    extern void cpu_run_68030(cpu_t * cpu, uint32_t * instructions);
     uint32_t one = 1;
     cpu_run_68030(cpu, &one);
 }

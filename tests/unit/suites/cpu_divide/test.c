@@ -25,6 +25,7 @@
 
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "fpu.h"
 #include "harness.h"
 #include "memory.h"
 #include "test_assert.h"
@@ -34,8 +35,10 @@
 
 #define CODE_ADDR 0x001000u
 
-extern void cpu_run_68000(cpu_t *cpu, uint32_t *instructions);
-extern void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
+// The 68000 / 68030 decoders: cpu.c declares them for itself, no header
+// exports them.
+void cpu_run_68000(cpu_t *cpu, uint32_t *instructions);
+void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
 
 // Execute exactly one instruction on the 68000 decoder.
 static void run_one_68000(cpu_t *cpu) {
@@ -45,7 +48,6 @@ static void run_one_68000(cpu_t *cpu) {
 
 // Execute exactly one instruction on the 68030 decoder (DIVS.L is 68020+).
 static void run_one_68030(cpu_t *cpu) {
-    extern void *fpu_init(void);
     cpu->cpu_model = CPU_MODEL_68030;
     if (!cpu->fpu)
         cpu->fpu = fpu_init();

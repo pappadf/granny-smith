@@ -881,7 +881,6 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // the other env-var overrides this replaced, this one only ever produced
     // output and never changed emulated behaviour.
     if (log_would_log(log_local_category(), 9)) {
-        extern uint64_t cpu_instr_count(void);
         unsigned long long ic = (unsigned long long)cpu_instr_count();
         if (off == 0x020 || off == 0x050 || off == 0x070) {
             LOG(9, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x", ic, off, value, cpu_get_pc(cfg->cpu),

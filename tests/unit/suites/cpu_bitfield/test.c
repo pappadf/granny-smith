@@ -15,6 +15,7 @@
 
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "fpu.h"
 #include "harness.h"
 #include "memory.h"
 #include "test_assert.h"
@@ -29,15 +30,16 @@
 
 static uint8_t g_ref[DATA_LEN]; // reference copy of the operand bytes
 
+// The 68030 decoder: cpu.c declares it for itself, no header exports it.
+void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
+
 static void run_one(cpu_t *cpu) {
-    extern void cpu_run_68030(cpu_t * cpu, uint32_t * instructions);
     uint32_t one = 1;
     cpu_run_68030(cpu, &one);
 }
 
 // The harness builds a 68000; the bit-field opcodes only decode on the 030.
 static void make_68030(cpu_t *cpu) {
-    extern void *fpu_init(void);
     cpu->cpu_model = CPU_MODEL_68030;
     if (!cpu->fpu)
         cpu->fpu = fpu_init();

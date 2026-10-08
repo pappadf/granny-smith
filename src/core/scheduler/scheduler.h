@@ -221,10 +221,10 @@ void scheduler_new_event_type(struct scheduler *s, const char *source_name, void
 // Returns the current cpu_cycles including in-progress sprint execution.  A
 // real function, not a header inline: struct scheduler is opaque outside the
 // scheduler, and unit suites substitute their own definition.
-extern uint64_t scheduler_cpu_cycles(struct scheduler *restrict s);
+uint64_t scheduler_cpu_cycles(struct scheduler *restrict s);
 
 // Get current emulated time in nanoseconds
-extern double scheduler_time_ns(struct scheduler *restrict s);
+double scheduler_time_ns(struct scheduler *restrict s);
 
 // Execution control
 

@@ -188,7 +188,7 @@ static void add_key_event(keyboard_t *keyboard, uint8_t key) {
 }
 
 // Processes a key event from the host and converts to Mac keyboard protocol
-extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
+void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
     LOG(3, "keyboard_update: event=%s, host_key=0x%02X", event == key_down ? "key_down" : "key_up", host_key);
 
     // Two checks with different jobs: this one bounds pressed[] (any int can

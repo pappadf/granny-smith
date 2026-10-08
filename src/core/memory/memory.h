@@ -113,8 +113,8 @@ typedef struct memory_bus_err_window {
 // rom: the ROM to build the region with (copied in; NULL or empty leaves it
 //      zero), or nothing on a restore
 // checkpoint: if non-NULL, restore RAM and ROM from checkpoint
-extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size,
-                                     memory_bus_err_window_t bus_err, const rom_image_t *rom, checkpoint_t *checkpoint);
+memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, memory_bus_err_window_t bus_err,
+                              const rom_image_t *rom, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
 
@@ -151,8 +151,8 @@ void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint)
 
 // === Operations ===
 
-extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                           void *device);
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+                    void *device);
 
 // Register a host-backed region on the physical bus map.  `writable`
 // distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
@@ -216,9 +216,9 @@ bool memory_addr_faults_when_unmapped(uint32_t addr);
 
 // Remove `device`'s mapping that starts at `addr` (the mapping's own size is
 // used); no-op when there is none.
-extern void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device);
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device);
 
-extern void memory_map_print(memory_map_t *mem);
+void memory_map_print(memory_map_t *mem);
 
 // Host pointer to guest RAM byte `addr`: exactly mem->image + addr.  Never
 // NULL for a live map; no bounds check and no address folding (the caller
@@ -247,7 +247,7 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value);
 // ROM pages in [rom_start_addr, rom_region_end) are populated with page-table
 // mirroring: guest addresses wrap at rom_size so the ROM content repeats.
 // Called from machine-specific layout callbacks (e.g. plus_memory_layout_init).
-extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
+void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
 
 // Populate page table entries for a RAM-mirror region.  Each guest address in
 // [mirror_start, mirror_end) aliases the corresponding RAM byte at
@@ -257,7 +257,7 @@ extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, ui
 // RAM — the ROM's exception save area at $3FFC80 relies on this.  Call this
 // from the machine layout callback for any machine that needs that
 // behaviour (Plus does; explicitly-decoded machines like the SE/30 do not).
-extern void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end);
+void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end);
 
 // === Page Table ===
 

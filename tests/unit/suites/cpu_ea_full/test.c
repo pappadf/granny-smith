@@ -15,6 +15,7 @@
 
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "fpu.h"
 #include "harness.h"
 #include "memory.h"
 #include "test_assert.h"
@@ -25,9 +26,11 @@
 
 #define CODE_ADDR 0x001000u
 
+// The 68030 decoder: cpu.c declares it for itself, no header exports it.
+void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
+
 // Run one 68030 instruction starting at cpu->pc.
 static void run_one(cpu_t *cpu) {
-    extern void cpu_run_68030(cpu_t * cpu, uint32_t * instructions);
     uint32_t one = 1;
     cpu_run_68030(cpu, &one);
 }
@@ -36,7 +39,6 @@ static void run_one(cpu_t *cpu) {
 // path runs. cpu_init() was called with CPU_MODEL_68000; we swap models
 // and allocate the FPU the 68030 path expects.
 static void make_68030(cpu_t *cpu) {
-    extern void *fpu_init(void);
     cpu->cpu_model = CPU_MODEL_68030;
     if (!cpu->fpu)
         cpu->fpu = fpu_init();

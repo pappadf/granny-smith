@@ -3047,7 +3047,6 @@ static const arg_decl_t debug_exceptions_args[] = {
      .default_value = &k_int0,
      .doc = "0 = print all; 1 = filter out routine traps/IRQs"},
 };
-extern void debug_exc_trace_dump(int filter);
 static DEF_METHOD(debug_method_exceptions) {
     int filter = (argc >= 1) ? (int)argv[0].i : 0;
     debug_exc_trace_dump(filter);
