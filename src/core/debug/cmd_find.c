@@ -52,7 +52,11 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
 
 #define FIND_MAX_HITS 65536
 
-// Linear scan of [start..end_incl]; returns a V_LIST of V_UINT hit
+// Candidate start addresses searched per bulk memory read
+#define FIND_CHUNK 65536
+
+// Scan of [start..end_incl] for every (possibly overlapping) occurrence of
+// the pattern; returns a V_LIST of V_UINT hit
 // addresses (hex-flagged), or V_ERROR on overflow/oom.
 static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t *pattern, size_t plen) {
     if (plen == 0)
@@ -64,43 +68,54 @@ static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t
 
     size_t cap = 16, len = 0;
     value_t *items = (value_t *)malloc(cap * sizeof(value_t));
-    if (!items)
+    // One window of FIND_CHUNK candidate start addresses, plus the bytes a
+    // match starting at the window's last address runs on into.
+    uint8_t *buf = (uint8_t *)malloc(FIND_CHUNK + plen - 1);
+    if (!items || !buf) {
+        free(items);
+        free(buf);
         return val_err("find: out of memory");
-
-    // Byte-by-byte rolling compare. Use the side-effect-free debug read
-    // so a scan crossing unmapped pages can't latch a spurious guest bus
-    // error.
-    for (uint64_t a = start; a <= stop; a++) {
-        if (memory_debug_read_uint8((uint32_t)a) != pattern[0])
-            continue;
-        bool match = true;
-        for (size_t k = 1; k < plen; k++) {
-            if (memory_debug_read_uint8((uint32_t)(a + k)) != pattern[k]) {
-                match = false;
-                break;
-            }
-        }
-        if (!match)
-            continue;
-        if (len == FIND_MAX_HITS) {
-            for (size_t i = 0; i < len; i++)
-                value_free(&items[i]);
-            free(items);
-            return val_err("find: more than %d matches; narrow the range", FIND_MAX_HITS);
-        }
-        if (len == cap) {
-            cap *= 2;
-            value_t *t = (value_t *)realloc(items, cap * sizeof(value_t));
-            if (!t) {
-                free(items);
-                return val_err("find: out of memory");
-            }
-            items = t;
-        }
-        value_t v = val_uint(4, (uint32_t)a);
-        v.flags |= VAL_HEX;
-        items[len++] = v;
     }
+
+    // Read memory a window at a time with memory_debug_read_block -- the
+    // side-effect-free debug read (a scan crossing unmapped pages can't latch
+    // a spurious guest bus error), memcpy-fast for RAM -- and search each
+    // window with memchr for the first pattern byte, then memcmp.
+    for (uint64_t base = start; base <= stop; base += FIND_CHUNK) {
+        uint64_t n_starts = stop - base + 1; // candidate starts in this window
+        if (n_starts > FIND_CHUNK)
+            n_starts = FIND_CHUNK;
+        memory_debug_read_block((uint32_t)base, buf, (uint32_t)(n_starts + plen - 1));
+        for (size_t i = 0; i < n_starts; i++) {
+            const uint8_t *p = (const uint8_t *)memchr(buf + i, pattern[0], (size_t)n_starts - i);
+            if (!p)
+                break;
+            i = (size_t)(p - buf);
+            if (memcmp(p, pattern, plen) != 0)
+                continue;
+            if (len == FIND_MAX_HITS) {
+                for (size_t k = 0; k < len; k++)
+                    value_free(&items[k]);
+                free(items);
+                free(buf);
+                return val_err("find: more than %d matches; narrow the range", FIND_MAX_HITS);
+            }
+            if (len == cap) {
+                cap *= 2;
+                value_t *t = (value_t *)realloc(items, cap * sizeof(value_t));
+                if (!t) {
+                    free(items);
+                    free(buf);
+                    return val_err("find: out of memory");
+                }
+                items = t;
+            }
+            value_t v = val_uint(4, (uint32_t)(base + i));
+            v.flags |= VAL_HEX;
+            items[len++] = v;
+        }
+    }
+    free(buf);
     return val_list(items, len);
 }
 
