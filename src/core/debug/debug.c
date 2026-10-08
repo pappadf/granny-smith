@@ -538,8 +538,10 @@ static log_category_t *exc_trace_get_category(void) {
     return s_exc_trace_category;
 }
 
-void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
-                      uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
+// Write one ring entry; the fields are in the 68K roles (see debug.h for
+// how PPC reuses them).
+static void exc_trace_push(uint8_t arch, uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr,
+                           uint32_t rw, uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
     uint32_t idx = s_exc_trace_head % EXC_TRACE_RING_SIZE;
     exc_trace_entry_t *e = &s_exc_trace_ring[idx];
     e->ts = cpu_instr_count();
@@ -552,10 +554,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     e->format_frame = format_frame;
     e->rw = (uint8_t)rw;
     e->double_fault_kind = (uint8_t)double_fault_kind;
-    e->arch = EXC_ARCH_M68K; // this entry point serves the 68K exception paths
+    e->arch = arch;
     s_exc_trace_head = (s_exc_trace_head + 1) % EXC_TRACE_RING_SIZE;
     s_exc_trace_count++;
+}
 
+void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
+                      uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
+    exc_trace_push(EXC_ARCH_M68K, vector, faulting_pc, saved_pc, fault_addr, rw, vbr, sr, format_frame,
+                   double_fault_kind);
     // Stream to the log pipeline if the exceptions category is enabled.
     // The LOG_WITH macro short-circuits when level > threshold, so this adds
     // only a single memory load + branch when streaming is off.
@@ -570,6 +577,14 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
              double_fault_kind ? "  [DOUBLE FAULT]" : "");
+}
+
+// The PowerPC exception entry: MSR goes in the vbr slot, DAR in fault_addr
+// and the vector offset in format_frame, and the entry dumps in PPC form.
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr) {
+    exc_trace_push(EXC_ARCH_PPC, vector, resume_pc, srr0, dar, 0, msr, 0, (uint16_t)vector, 0);
+    LOG_WITH(exc_trace_get_category(), 1, "[EXC] vec=$%05X dar=$%08X pc=$%08X srr0=$%08X msr=$%08X", vector, dar,
+             resume_pc, srr0, msr);
 }
 
 // Dump the exception trace ring buffer (most recent EXC_TRACE_RING_SIZE entries)

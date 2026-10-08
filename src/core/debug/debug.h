@@ -288,8 +288,9 @@ void debug_set_prompt_default(bool enabled);
 
 // === Exception trace ring ===
 // Records every CPU bus error / exception as a ring buffer entry.  The
-// bus-error code paths in cpu_internal.h call exc_trace_record().  Enable
-// streaming with `log exceptions 1`, dump the ring with `info exceptions`.
+// 68K exception paths in cpu_internal.h call exc_trace_record(), the PPC
+// exception entry in ppc.c exc_trace_record_ppc().  Enable
+// streaming with `log.set exceptions 1`, dump the ring with `debug.exceptions`.
 
 // Which architecture recorded a ring entry.  One shared ring for all main-CPU
 // architectures — the fields below are reused by role per arch: on PPC,
@@ -317,5 +318,8 @@ typedef struct exc_trace_entry {
 // Record one exception event (called from cpu_internal.h exception paths)
 void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
                       uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind);
+
+// Record one PowerPC exception (called from ppc.c's exception entry)
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr);
 
 #endif // DEBUG_H

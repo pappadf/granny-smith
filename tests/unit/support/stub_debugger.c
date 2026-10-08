@@ -57,6 +57,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     (void)double_fault_kind;
 }
 
+// PPC flavour of the exception trace ring stub (ppc.c's exception entry).
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr) {
+    (void)vector;
+    (void)resume_pc;
+    (void)srr0;
+    (void)dar;
+    (void)msr;
+}
+
 // Debug-surface helpers the MMU object classes call (debug.h).  Unit suites
 // that link cpu.c / ppc.c do not exercise translate/peek; these keep them
 // linking without dragging in debug.c or value.c.
