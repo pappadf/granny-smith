@@ -1110,7 +1110,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
                 cpu->a[7] = cpu->ssp;
         }
         cpu->m = new_m;
-        cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // T1 in bit 1, T0 in bit 0.  Documented divergence: T0 (trace on change
+        // of flow, MC68030UM 8.1.7) is stored so SR reads back what was written,
+        // but nothing acts on it -- every trace decision tests T1 (bit 1) only,
+        // so T0-only mode never traces.  Implementing it needs a flow-change
+        // hook in every branch/jump/return/SR-write op.
+        cpu->trace = ((sr >> 14) & 3);
         // Switch SoA active pointers when supervisor bit changes
         if ((bool)new_s != old_s) {
             g_active_read = new_s ? g_supervisor_read : g_user_read;
