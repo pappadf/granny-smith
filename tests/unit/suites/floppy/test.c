@@ -16,6 +16,7 @@
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
 #include "gs_assert.h"
+#include "image_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>

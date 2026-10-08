@@ -286,7 +286,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         break;
     case 0x09: // /WRTPRT: zero when write protected
         desc = "/WRTPRT";
-        ret = (floppy->disk[drv] != NULL) ? floppy->disk[drv]->writable : 0;
+        ret = (floppy->disk[drv] != NULL) ? image_is_writable(floppy->disk[drv]) : 0;
         break;
     case 0x0A: // /TKO: zero when head on track 0
         desc = "/TKO";
@@ -316,7 +316,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             // 1440K only: the deviation from swim.md's "2 pulses per
             // revolution unconditionally" is justified by MacTest for HD
             // media specifically, so 720K MFM stays on the 2/rev path.
-            bool is_hd = (img && img->type == image_fd_hd);
+            bool is_hd = (img && image_get_type(img) == image_fd_hd);
             ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
@@ -347,7 +347,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         desc = "NEWINTF";
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             // Report new interface (0) only for HD disks
-            ret = (floppy->disk[drv] && floppy->disk[drv]->type == image_fd_hd) ? 0 : 1;
+            ret = (floppy->disk[drv] && image_get_type(floppy->disk[drv]) == image_fd_hd) ? 0 : 1;
         } else {
             ret = 1; // 800K drive
         }
@@ -732,7 +732,8 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     // something writes a format.
     floppy->drives[drive].cur_format_known = false;
     const char *name = disk ? image_get_filename(disk) : NULL;
-    LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>", disk ? disk->writable : 0);
+    LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>",
+        disk ? image_is_writable(disk) : 0);
 
     return 0;
 }
@@ -1362,7 +1363,7 @@ static DEF_METHOD(floppy_method_identify) {
     if (!img)
         return val_str("");
     const char *density = "";
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_ss:
         density = "400K";
         break;
@@ -1600,7 +1601,7 @@ static DEF_GETTER(floppy_disk_attr_writable) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
-    return val_bool(img && img->writable);
+    return val_bool(img && image_is_writable(img));
 }
 
 static DEF_GETTER(floppy_disk_attr_density) {
@@ -1609,7 +1610,7 @@ static DEF_GETTER(floppy_disk_attr_density) {
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
     if (!img)
         return val_str("");
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_ss:
         return val_str("400k");
     case image_fd_ds:

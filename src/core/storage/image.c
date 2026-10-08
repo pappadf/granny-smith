@@ -14,6 +14,7 @@
 #include "checkpoint.h"
 #include "format_registry.h"
 #include "gs_assert.h"
+#include "image_internal.h"
 #include "image_iso9660.h"
 #include "image_scratch.h"
 #include "image_udif.h"

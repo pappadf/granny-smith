@@ -12,6 +12,7 @@
 
 #include "cpu.h"
 #include "image.h"
+#include "image_internal.h"
 #include "memory.h"
 #include "scsi.h"
 #include "scsi_internal.h"

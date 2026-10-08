@@ -5,6 +5,7 @@
 // Byte-granular and partition-bounded image reads.  See image_part.h.
 
 #include "image_part.h"
+#include "image_internal.h"
 
 #include <errno.h>
 #include <string.h>

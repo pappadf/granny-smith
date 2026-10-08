@@ -9,6 +9,7 @@
 #include "ata.h"
 #include "checkpoint.h"
 #include "image.h"
+#include "image_internal.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_internal.h"

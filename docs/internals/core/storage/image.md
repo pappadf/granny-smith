@@ -5,7 +5,7 @@ The image module manages floppy and hard-disk containers while delegating all bl
 The image subsystem speaks **paths only**. It does not know about machine ids, slots, drives, or `/opfs/checkpoints/`; the higher layer (`config_t` in `system.c`) decides where to place per-image state and remembers the result across boots.
 
 **Types & Key Values**
-- **`image_t`** *(see `src/core/storage/image.h`)* keeps the paths and handles needed by the delta-file storage layer:
+- **`image_t`** *(declared in `src/core/storage/image.h`; its layout is private to the storage module, in `image_internal.h`, and every other module reads it through the `image_get_*` / `image_is_writable` accessors in `image.h`, implemented in `image_access.c`)* keeps the paths and handles needed by the delta-file storage layer:
 	- `storage`: opaque `storage_t*` handle used for every block read/write.
 	- `filename`: original path supplied by the user (the immutable base image); it may run through an image or archive.
 	- `source_key`: key of the byte source that path opened ([source.md](source.md)).

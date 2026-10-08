@@ -9,6 +9,7 @@
 #include "build_id.h"
 #include "common.h"
 #include "image.h"
+#include "image_internal.h"
 #include "log.h"
 #include "storage_util.h"
 #include "system_internal.h"

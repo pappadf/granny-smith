@@ -13,6 +13,7 @@
 #include "storage.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // === Forward Declarations ===
@@ -53,51 +54,31 @@ typedef struct image_geometry {
     uint32_t block_size; // Bytes per block; 0 is treated as STORAGE_BLOCK_SIZE (512)
 } image_geometry_t;
 
-// Image structure (exposed for performance-critical access in floppy controller)
-struct image {
-    storage_t *storage; // Backing storage engine instance
-    char *filename; // The path the caller named (a host path, or one through an image or archive)
-    char *source_key; // Key of the source the caller's path opened (source.h)
-    char *format; // Wrapper layers peeled to reach the disk: "raw", "dc42", "bin+ndif", ...
-    char *source_canon; // Writable only: canonical form of the path the caller named
-    struct image *next_writable; // Writable only: the open-writable list (image_path_is_open_writable)
-    char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
-    char *delta_path; // Path to delta file (<instance_path>.delta)
-    char *journal_path; // Path to preimage journal (<instance_path>.journal)
-    size_t raw_size; // Logical size of the image in bytes
-    uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
-    bool writable; // True when the caller requested write access
-    bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
-    enum image_type type; // Detected image type (floppy, hd, ...)
-    bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
-
-    // disk_read_data / disk_write_data calls since open: the drive-activity
-    // lights (drive_activity.h) and files.images[i].reads / .writes.
-    uint64_t reads;
-    uint64_t writes;
-
-    // DiskCopy 4.2 per-sector tags (read-only metadata).  The Lisa boot ROM and
-    // OS read these (e.g. the boot block's FILEID = $AAAA); loaded from the
-    // file's tag section at open time.  NULL when the image has no tags.
-    uint8_t *tags; // tag_count * tag_bytes bytes, or NULL
-    uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
-    uint32_t tag_count; // number of tagged sectors
-
-    // Volume wrapper (image_wrap.h): a synthesised partition-map + driver
-    // prefix served in front of an HFS volume.  wrap_blocks blocks of
-    // wrap_prefix precede the volume, which starts wrap_base bytes into
-    // `storage` (0 for a bare volume; the Apple_HFS partition's start for a
-    // driverless partitioned disk).  raw_size is the prefix plus the volume;
-    // wrap_storage_size is the storage's own size.  NULL / 0 for every
-    // other image.
-    uint8_t *wrap_prefix;
-    uint32_t wrap_blocks;
-    size_t wrap_base;
-    size_t wrap_storage_size;
-};
-
+// A disk image: opaque outside the storage module (image_internal.h)
 struct image;
 typedef struct image image_t;
+
+// === Accessors ===
+// Detected type (floppy geometry, hard disk, CD-ROM)
+enum image_type image_get_type(const image_t *image);
+// Re-classify an image (a floppy-sized file attached as a CD-ROM)
+void image_set_type(image_t *image, enum image_type type);
+// True when the caller opened the image for writing
+bool image_is_writable(const image_t *image);
+// Logical size in bytes (a synthesised wrapper prefix included)
+size_t image_get_raw_size(const image_t *image);
+// Wrapper layers peeled to reach the disk: "raw", "dc42", "bin+ndif", ...
+const char *image_get_format(const image_t *image);
+// Key of the source the image's path opened (source.h), or NULL
+const char *image_get_source_key(const image_t *image);
+// The delta and journal files of a writable image, or NULL
+const char *image_get_delta_path(const image_t *image);
+const char *image_get_journal_path(const image_t *image);
+// The backing storage engine instance
+storage_t *image_get_storage(const image_t *image);
+// disk_read_data / disk_write_data calls since open (drive_activity.h)
+uint64_t image_get_reads(const image_t *image);
+uint64_t image_get_writes(const image_t *image);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //

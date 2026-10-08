@@ -393,9 +393,11 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
         const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        int k = image_is_floppy(img->type) ? DRIVE_KIND_FD : img->type == image_cdrom ? DRIVE_KIND_CD : DRIVE_KIND_HD;
-        reads[k] += img->reads;
-        writes[k] += img->writes;
+        int k = image_is_floppy(image_get_type(img)) ? DRIVE_KIND_FD
+                : image_get_type(img) == image_cdrom ? DRIVE_KIND_CD
+                                                     : DRIVE_KIND_HD;
+        reads[k] += image_get_reads(img);
+        writes[k] += image_get_writes(img);
     }
 }
 
@@ -587,20 +589,20 @@ int system_probe_floppy(const char *path) {
         return 1;
     }
 
-    if (!image_is_floppy(disk->type)) {
-        gs_outf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
+    if (!image_is_floppy(image_get_type(disk))) {
+        gs_outf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, image_get_raw_size(disk));
         image_close(disk);
         return 1;
     }
 
     const char *type_str = "unknown";
-    if (disk->type == image_fd_ss)
+    if (image_get_type(disk) == image_fd_ss)
         type_str = "single-sided 400KB";
-    else if (disk->type == image_fd_ds)
+    else if (image_get_type(disk) == image_fd_ds)
         type_str = "double-sided 800KB";
-    else if (disk->type == image_fd_dd_mfm)
+    else if (image_get_type(disk) == image_fd_dd_mfm)
         type_str = "double-density 720KB MFM";
-    else if (disk->type == image_fd_hd)
+    else if (image_get_type(disk) == image_fd_hd)
         type_str = "high-density 1440KB";
 
     gs_outf("%s: Valid floppy image (%s)\n", path, type_str);
@@ -906,8 +908,8 @@ static bool image_file_in_use(const char *path) {
         const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        if ((img->delta_path && strcmp(img->delta_path, path) == 0) ||
-            (img->journal_path && strcmp(img->journal_path, path) == 0))
+        if ((image_get_delta_path(img) && strcmp(image_get_delta_path(img), path) == 0) ||
+            (image_get_journal_path(img) && strcmp(image_get_journal_path(img), path) == 0))
             return true;
     }
     return false;
@@ -999,7 +1001,7 @@ int gs_find_media(const char *dir_path, const char *dest) {
         // Try as floppy image
         image_t *img = image_open_readonly(full);
         if (img) {
-            bool is_floppy = image_is_floppy(img->type);
+            bool is_floppy = image_is_floppy(image_get_type(img));
             image_close(img);
             if (is_floppy) {
                 snprintf(found_path, sizeof(found_path), "%s", full);
@@ -1402,9 +1404,9 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         // floppy).  Say so when the two disagree on a floppy: the image_t
         // keeps no floppy-specific state, but the caller may have picked the
         // wrong file.
-        if (image_is_floppy(slot->img->type))
+        if (image_is_floppy(image_get_type(slot->img)))
             LOG(1, "%s: floppy-sized image attached as a CD-ROM", path);
-        slot->img->type = image_cdrom;
+        image_set_type(slot->img, image_cdrom);
         // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
         // sector, not a property of the disc — so serve every disc at 2048 and let
         // the guest ask for anything else.  A host that wants 512-byte addressing

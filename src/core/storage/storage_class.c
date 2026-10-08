@@ -24,6 +24,7 @@
 #include "image_apm.h"
 #include "image_chunkmap.h"
 #include "image_hfs.h"
+#include "image_internal.h"
 #include "image_iso9660.h"
 #include "image_ndif.h"
 #include "image_part.h"

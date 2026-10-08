@@ -468,7 +468,7 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
     uint64_t blk = scsi->devices[target].block_size;
     uint64_t off = (uint64_t)lba * blk;
     uint64_t cnt = (uint64_t)blocks * blk;
-    if (off + cnt > (uint64_t)img->raw_size)
+    if (off + cnt > (uint64_t)image_get_raw_size(img))
         return false;
     // Both are bounded by raw_size above, so narrowing is safe.
     if (off_out)
@@ -663,7 +663,7 @@ void run_cmd(scsi_t *scsi) {
 
         LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-            scsi->device_images[target] ? scsi->device_images[target]->raw_size : 0);
+            scsi->device_images[target] ? image_get_raw_size(scsi->device_images[target]) : 0);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {

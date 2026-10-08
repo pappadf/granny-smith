@@ -127,7 +127,7 @@ bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
     if (!img)
         return false;
     out->img = img;
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_hd:
         out->hd = true; // the only HD class we model
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_1440K);
@@ -189,7 +189,7 @@ bool floppy_media_write_sector(const floppy_media_t *m, int track, int side, int
     if (!m || !m->valid || sector < 0 || sector >= floppy_media_spt(m, track) || side < 0 || side >= m->sides)
         return false;
     size_t off = floppy_media_sector_offset(m, track, side, sector);
-    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img) || !m->img->writable)
+    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img) || !image_is_writable(m->img))
         return false;
     return disk_write_data(m->img, off, data, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
 }
@@ -214,7 +214,7 @@ int iwm_image_num_sides(image_t *img) {
     if (!img)
         return 2; // Default to double-sided if unknown
     // Only the 400K disk is single-sided; 720K, 800K and 1440K are not.
-    return (img->type == image_fd_ss) ? 1 : 2;
+    return (image_get_type(img) == image_fd_ss) ? 1 : 2;
 }
 
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
@@ -446,7 +446,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
     // (which once classified as a hard disk) was GCR-encoded from
     // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
-    if (image_is_mfm_floppy(img->type))
+    if (image_is_mfm_floppy(image_get_type(img)))
         return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 
@@ -504,7 +504,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // or MFM).
 const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
     static uint8_t sync_track[9320]; // iwm_track_length's longest zone
-    if (!img || image_is_mfm_floppy(img->type) || drive->track < 0 || drive->track >= NUM_TRACKS)
+    if (!img || image_is_mfm_floppy(image_get_type(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
         return NULL;
     const floppy_track_t *track = &drive->tracks[sel][drive->track];
     if (track->data)
@@ -806,7 +806,7 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
 // deliberately do not form valid sectors) have no representation in the image
 // at all, which is why "just flush at checkpoint time" is not a substitute.
 void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side) {
-    if (!img || !img->writable)
+    if (!img || !image_is_writable(img))
         return;
     floppy_track_t *t = &drive->tracks[side][drive->track];
     if (!t->data || t->size == 0)
@@ -875,7 +875,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             LOG(4, "Drive %d: Flush track %d side %d (size=%zu)", drive_index, tr, side, t->size);
 
             // Respect write-protect: do not modify underlying image
-            if (!img->writable) {
+            if (!image_is_writable(img)) {
                 LOG(2, "Drive %d: Skip flush track %d side %d - write-protected", drive_index, tr, side);
                 t->modified = false;
                 continue;

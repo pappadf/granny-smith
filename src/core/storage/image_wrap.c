@@ -11,6 +11,7 @@
 #include "common.h"
 #include "gs_out.h"
 #include "gsdisk_driver.h" // generated: gsdisk_drvr[] (src/core/storage/gsdisk/)
+#include "image_internal.h"
 #include "log.h"
 
 #include <stdlib.h>

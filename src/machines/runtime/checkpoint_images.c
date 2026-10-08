@@ -108,13 +108,13 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         if (!img) {
             gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
-        } else if (!consolidated && saved_key && saved_key[0] && img->source_key &&
-                   !gs_key_same_source(saved_key, img->source_key)) {
+        } else if (!consolidated && saved_key && saved_key[0] && image_get_source_key(img) &&
+                   !gs_key_same_source(saved_key, image_get_source_key(img))) {
             // A quick checkpoint's disk is the base plus the saved delta: on
             // other base bytes the delta would apply to the wrong disk.  (A
             // consolidated one carries every block, so its base is not read.)
             gs_outf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
-                    saved_key, img->source_key);
+                    saved_key, image_get_source_key(img));
             checkpoint_set_error(cp);
         }
     }
@@ -122,7 +122,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // keeping the stream in step.  Once the checkpoint is flagged, though, the
     // restore is over -- the caller stops at the first damaged entry -- and
     // reading on would only repeat the failure under another name.
-    if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != STATUS_OK) {
+    if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(image_get_storage(img), cp) != STATUS_OK) {
         gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }

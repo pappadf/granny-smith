@@ -692,17 +692,17 @@ static void swim_format_masks(const image_t *img, uint16_t *current, uint16_t *a
     uint16_t all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) |
                    SWIM_FMT_MASK(SWIM_FMT_BIT_720K) | SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
     if (img) {
-        if (img->type == image_fd_ss) {
+        if (image_get_type(img) == image_fd_ss) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_400K);
             all = cur;
-        } else if (img->type == image_fd_ds) {
+        } else if (image_get_type(img) == image_fd_ds) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_800K);
             all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | cur;
-        } else if (img->type == image_fd_dd_mfm) {
+        } else if (image_get_type(img) == image_fd_dd_mfm) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_720K);
             // DD media: any DD capacity, but not 1440K -- that needs HD media.
             all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) | cur;
-        } else if (img->type == image_fd_hd) {
+        } else if (image_get_type(img) == image_fd_hd) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
             // HD media takes every floppy capacity.
         } else {
@@ -725,13 +725,13 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
     image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     bool present = img != NULL;
-    bool writable = present && img->writable;
+    bool writable = present && image_is_writable(img);
     // MfmDrive/MfmDisk ask "is this MFM media"; MfmFormat asks "is it 1440K"
     // ($FF = 1440K, $00 = 720K -- IOP SWIM Driver ERS).  One flag used to
     // drive both, so a 720K disk could never have been reported correctly.
-    bool is_mfm = present && image_is_mfm_floppy(img->type);
-    bool is_1440 = present && img->type == image_fd_hd;
-    bool is_ds = present && img->type != image_fd_ss;
+    bool is_mfm = present && image_is_mfm_floppy(image_get_type(img));
+    bool is_1440 = present && image_get_type(img) == image_fd_hd;
+    bool is_ds = present && image_get_type(img) != image_fd_ss;
 
     int track = (floppy && floppy_idx >= 0) ? floppy_drive_track(floppy, (unsigned)floppy_idx) : 0;
     if (track < 0)
@@ -870,7 +870,7 @@ static int16_t swim_write_blocks(iop_t *iop, int floppy_idx, uint32_t block_numb
     image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     if (!img)
         return MAC_ERR_OFFLINE;
-    if (!img->writable)
+    if (!image_is_writable(img))
         return MAC_ERR_W_PR;
 
     size_t byte_offset, byte_count;
@@ -953,7 +953,7 @@ static void swim_handle_write(iop_t *iop) {
 // lay down sector headers, so there is nothing for them to change. They are
 // named here so the next reader sees the payload is fully accounted for.
 static int16_t swim_do_format(iop_t *iop, floppy_t *floppy, int idx, image_t *img) {
-    if (!img->writable)
+    if (!image_is_writable(img))
         return MAC_ERR_W_PR;
 
     uint32_t pl = IOPMsgPayload(IOPXmtMsgBase, SWIM_SLOT);

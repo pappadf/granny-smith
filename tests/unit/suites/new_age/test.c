@@ -12,6 +12,7 @@
 #include "floppy.h"
 #include "floppy_geometry.h"
 #include "image.h"
+#include "image_internal.h"
 #include "new_age.h"
 #include "scheduler.h"
 #include "test_assert.h"

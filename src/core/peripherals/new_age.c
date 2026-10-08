@@ -295,7 +295,7 @@ static uint8_t na_st3(const new_age_t *na, int d) {
     uint8_t st3 = 0x08 | 0x04 | 0x02; // 2 MB drive, /Mode ID, /Select Media (not ED)
     if (!hd)
         st3 |= 0x80; // /2MB-or-4MB media high: low-density medium (or none)
-    if (img && img->writable)
+    if (img && image_is_writable(img))
         st3 |= 0x40; // /Write protect high: writable
     if (!na_ready(na, d))
         st3 |= 0x20; // /Ready
@@ -436,7 +436,7 @@ static void na_start_data(new_age_t *na) {
         return;
     }
     bool writes = base == 0x05 || base == 0x0D || base == 0x01;
-    if (writes && !(na_image(na, d) && na_image(na, d)->writable)) {
+    if (writes && !(na_image(na, d) && image_is_writable(na_image(na, d)))) {
         na->x_st1 = NEW_AGE_ST1_NW;
         na_arm(na, NA_EV_XFER, d, NA_SHORT_NS);
         return;

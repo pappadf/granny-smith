@@ -2119,12 +2119,12 @@ static DEF_METHOD(scsi_method_identify_hd) {
         gs_outf("invalid SCSI HD image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (image_is_floppy(img->type)) {
-        gs_outf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", img->raw_size);
+    if (image_is_floppy(image_get_type(img))) {
+        gs_outf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
-    size_t sz = img->raw_size;
+    size_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (sz == best->size)
         gs_outf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
@@ -2144,8 +2144,8 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
         gs_outf("invalid CD-ROM image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (image_is_floppy(img->type)) {
-        gs_outf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
+    if (image_is_floppy(image_get_type(img))) {
+        gs_outf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2160,7 +2160,8 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     gs_source_release(src);
     bool is_disk = f && strcmp(f->name, "disk") == 0;
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    const char *enc = (img->format && strcmp(img->format, "raw") != 0) ? img->format : NULL;
+    const char *fmt = image_get_format(img);
+    const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
     if (!is_iso && !is_disk) {
         gs_outf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
         image_close(img);
