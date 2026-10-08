@@ -3,7 +3,7 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, setRunStateMirror } from './emulator';
+import { gsEval, gsErrorText, gsOk, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
 import { attachMedia, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
@@ -216,7 +216,8 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
 // machine.status to 'running' once the worker pushes the transition.
 export async function prepareFreshMachine(): Promise<void> {
   if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  await gsEval('scheduler.run');
+  const run = await gsEval('scheduler.run');
+  if (!gsOk(run)) showNotification(`Could not run the machine: ${gsErrorText(run)}`, 'error');
 }
 
 // Power-cycle the running machine.  machine.restart tears nothing down: the
@@ -230,6 +231,10 @@ export async function restartEmulator(): Promise<void> {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
-  await gsEval('scheduler.run');
+  const run = await gsEval('scheduler.run');
+  if (!gsOk(run)) {
+    showNotification(`Restarted, but could not run: ${gsErrorText(run)}`, 'error');
+    return;
+  }
   showNotification('Machine restarted', 'info');
 }
