@@ -6,8 +6,6 @@
 
 #include "value_format.h"
 
-#include "meta.h"
-
 #include "object.h"
 
 #include <inttypes.h>

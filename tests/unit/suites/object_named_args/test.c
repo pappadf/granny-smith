@@ -302,6 +302,27 @@ TEST(test_call_form_unknown_name_errors) {
     object_root_reset();
 }
 
+// A rest tail longer than the validator's scratch capacity is refused,
+// not written past node_call's stack array.
+TEST(test_rest_tail_over_cap_errors) {
+    install_nt();
+    node_t n = object_resolve(object_root(), "nt.sum");
+    ASSERT_TRUE(node_valid(n));
+    value_t argv[OBJ_VALIDATE_MAX_ARGS + 4];
+    for (int i = 0; i < OBJ_VALIDATE_MAX_ARGS + 4; i++)
+        argv[i] = val_int(1);
+    value_t r = node_call(n, OBJ_VALIDATE_MAX_ARGS + 4, argv);
+    ASSERT_TRUE(val_is_error(&r));
+    ASSERT_TRUE(strstr(r.err, "too many arguments") != NULL);
+    value_free(&r);
+    // Exactly at the cap still works.
+    r = node_call(n, OBJ_VALIDATE_MAX_ARGS, argv);
+    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(OBJ_VALIDATE_MAX_ARGS, (int)r.i);
+    value_free(&r);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_named_only_fills_slots);
     RUN(test_positional_then_named);
@@ -312,6 +333,7 @@ int main(void) {
     RUN(test_rest_slot_not_nameable);
     RUN(test_rest_method_fixed_slot_by_name);
     RUN(test_rest_tail_stays_positional);
+    RUN(test_rest_tail_over_cap_errors);
     RUN(test_no_arg_table_rejects_named);
     RUN(test_no_arg_table_positional_passthrough);
     RUN(test_call_form_named);

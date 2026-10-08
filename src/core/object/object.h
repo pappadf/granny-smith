@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "parse.h" // object_is_reserved_word, object_keyword*
 #include "value.h"
 
 #ifdef __cplusplus
@@ -373,6 +374,12 @@ const char *object_logical_key(struct object *o); // entry key, or NULL
 // Room for any canonical path (object_compute_path truncates past it).
 #define OBJ_PATH_MAX 512
 
+// Compute the dotted path of `obj` (e.g. `"machine.cpu"`,
+// `"machine.cpu.meta"`, `"machine.floppy.drive[0]"`). The root produces an
+// empty string. Meta nodes recurse into their inspected target and append
+// `.meta`. Output is NUL-terminated and truncated to `buf_size - 1`.
+void object_compute_path(struct object *obj, char *buf, size_t buf_size);
+
 // Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
 #define OBJ_KEY_MAX 63
 bool object_valid_key(const char *key);
@@ -605,8 +612,14 @@ typedef struct {
     value_t value; // owned by the caller (binder aliases, never copies)
 } named_arg_t;
 
-// Maximum total bound arguments (mirrors the validator's scratch capacity).
-#define OBJ_BIND_MAX_ARGS 16
+// Most arguments one validated method call takes, declared slots and a rest
+// tail together: node_call validates into a stack scratch array of this many
+// value_t, and a call passing more is refused with an error. Raise with care
+// -- every node_call frame carries the array.
+#define OBJ_VALIDATE_MAX_ARGS 16
+
+// Maximum total bound arguments (the validator's scratch capacity).
+#define OBJ_BIND_MAX_ARGS OBJ_VALIDATE_MAX_ARGS
 
 // Bind a (positional list, named list) pair against a method's declared
 // args[] table, producing the purely positional argv that node_call /
@@ -627,6 +640,11 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
 
+// The same descent for an integer segment the caller already holds
+// (`devices[N]`, `bucket.N`), without a round trip through text. An index
+// outside the int range resolves to an invalid node.
+node_t node_child_index(node_t n, int64_t index);
+
 // Key descent into a collection: `volumes["Shared"]`. Routed to the
 // collection's by_key lookup, which maps a stable name onto whatever entry
 // currently holds it. Returns an invalid node when the collection has no
@@ -635,20 +653,8 @@ node_t node_child_key(node_t n, const char *key);
 
 // === Reserved-word check =====================================================
 
-// Reserved words may not be used as member names, alias names, or any
-// future user-bindable identifier. Members: boolean-literal spellings +
-// script-grammar keywords.
-//
-// Returns true if `name` collides with a reserved word.
-bool object_is_reserved_word(const char *name);
-
-// The shell's keywords, in table order, each with a one-line syntax: the
-// reserved words plus contextual ones (`command`, a keyword only in its
-// statement shape).  `is_statement`: it heads a statement.
-size_t object_keyword_count(void);
-const char *object_keyword(size_t i);
-const char *object_keyword_syntax(size_t i);
-bool object_keyword_is_statement(size_t i);
+// The reserved-word and keyword queries (object_is_reserved_word,
+// object_keyword*) live with the lexical layer: parse.h.
 
 // Validate a candidate member/alias name. Returns true if acceptable.
 // Diagnostic messages are written to err_buf (may be NULL).
