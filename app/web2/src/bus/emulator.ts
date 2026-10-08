@@ -311,9 +311,18 @@ function transportError(message: string): GsError {
   return { error: message, transport: true };
 }
 
+// `quiet` drops what the leaf printed instead of echoing it to the terminal:
+// for the UI's own housekeeping (a mkdir that may find the directory there,
+// a validator probing a file as each kind of medium), whose diagnostics
+// answer no question the user asked.  The result is unaffected.
+export interface GsEvalOptions {
+  quiet?: boolean;
+}
+
 export async function gsEval(
   path: string,
   args?: unknown[] | Record<string, unknown>,
+  opts?: GsEvalOptions,
 ): Promise<unknown> {
   if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
   if (!Module || !moduleReady || !mailbox) return transportError('emulator not ready');
@@ -323,7 +332,7 @@ export async function gsEval(
   // error, not the mailbox's, so it carries no `transport` flag.
   const tooLarge = requestTooLarge(path || '', argsJson);
   if (tooLarge) return { error: tooLarge };
-  return executeMailboxRequest(path || '', argsJson);
+  return executeMailboxRequest(path || '', argsJson, undefined, opts?.quiet);
 }
 
 // gsEval for an I/O job (meta.method_info `io`: a copy, an export, an
@@ -636,6 +645,7 @@ async function executeMailboxRequest(
   path: string,
   argsJson: string,
   onProgress?: (done: number, total: number) => void,
+  quiet = false,
 ): Promise<unknown> {
   if (!mailbox) return transportError('emulator not ready');
   const stopWatch = watchRequest(path);
@@ -643,8 +653,8 @@ async function executeMailboxRequest(
     const deadline = LONG_REQUEST.test(path) ? 0 : DEADLINE_MS;
     const r = await mailbox.request(path, argsJson, deadline, { onProgress });
     // What the leaf printed goes to the terminal, as it did when stdout
-    // reached it directly.
-    if (r.output) routeConsole({ kind: 'output', text: r.output, job: null });
+    // reached it directly -- unless the caller asked for quiet.
+    if (r.output && !quiet) routeConsole({ kind: 'output', text: r.output, job: null });
     if (!r.json) return null;
     try {
       return JSON.parse(r.json);
