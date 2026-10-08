@@ -1063,7 +1063,7 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
     LOG(5, "pap: fragment seq=%u len=%d dup=%d eom=%d sts=%d bitmapRemaining=0x%02X", (unsigned)fragment->seq,
         fragment->data_len, fragment->duplicate ? 1 : 0, fragment->eom ? 1 : 0, fragment->sts ? 1 : 0,
         (unsigned)fragment->bitmap_remaining);
-    if (fragment->data && fragment->data_len > 0 && log_would_log(_log_get_local_category(), 10)) {
+    if (fragment->data && fragment->data_len > 0 && log_would_log(log_local_category(), 10)) {
         // Show first 32 bytes of fragment content at level 10 (built only then)
         char preview[100];
         int plen = fragment->data_len > 32 ? 32 : fragment->data_len;

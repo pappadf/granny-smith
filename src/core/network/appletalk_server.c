@@ -2428,7 +2428,7 @@ int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_coun
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                             int out_max, int *out_len) {
     // The server's tables are unlocked globals: single worker thread only
-    worker_thread_assert("afp_handle_command");
+    worker_thread_check("afp_handle_command");
     if (out_len)
         *out_len = 0;
     // Handlers write their fixed-size replies without checking the room: the
