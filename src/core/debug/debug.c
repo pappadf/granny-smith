@@ -1068,7 +1068,8 @@ static int delete_all_breakpoints(debug_t *debug) {
 // The ACTIVE machine's trace: a log line goes there whichever machine wrote
 // it, including one being built alongside it.
 int debug_trace_is_active(void) {
-    debug_t *debug = global_emulator ? global_emulator->debugger : NULL;
+    config_t *cfg = system_running();
+    debug_t *debug = cfg ? cfg->debugger : NULL;
     return debug && debug->trace_entries != NULL;
 }
 
@@ -3335,7 +3336,7 @@ static DEF_METHOD(debug_method_step) {
     if (!scheduler_run_with_budget(s, (uint64_t)count))
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))
-        scheduler_run_frame(s, global_emulator, platform_pacing());
+        scheduler_run_frame(s, system_config(), platform_pacing());
     return val_bool(true);
 }
 

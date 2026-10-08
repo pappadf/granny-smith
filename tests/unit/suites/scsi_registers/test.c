@@ -51,7 +51,10 @@
 // scsi.c registers an object-model node and carries shell-facing helpers, so it
 // references the wider emulator.  None of that is on the path these tests drive.
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {

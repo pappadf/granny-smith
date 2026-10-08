@@ -465,8 +465,9 @@ void platform_machine_attached(void) {
 // while a script waits for the mode it started.
 static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
-    if (sched && global_emulator && scheduler_is_running(sched)) {
-        scheduler_run_frame(sched, global_emulator, &s_pacing);
+    config_t *cfg = system_config();
+    if (sched && cfg && scheduler_is_running(sched)) {
+        scheduler_run_frame(sched, cfg, &s_pacing);
         return true;
     }
     return false;
@@ -1508,7 +1509,7 @@ int main(int argc, char *argv[]) {
         goto out;
     }
 
-    // machine_boot_apply swapped the new machine in: global_emulator is it.
+    // machine_boot_apply swapped the new machine in: system_config() is it.
 
     // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
     // The agent will explicitly send "run" or "s" commands to control execution.
@@ -1538,7 +1539,7 @@ int main(int argc, char *argv[]) {
                     hd_files[i]);
             goto out;
         }
-        if (system_media_attach_path(global_emulator, &bays[i], false, hd_files[i], attach_err, sizeof(attach_err)) !=
+        if (system_media_attach_path(system_config(), &bays[i], false, hd_files[i], attach_err, sizeof(attach_err)) !=
             0) {
             fprintf(stderr, "Error: hd=%s: %s\n", hd_files[i], attach_err);
             goto out;
@@ -1561,7 +1562,7 @@ int main(int argc, char *argv[]) {
         *image++ = '\0';
         media_bay_t bay;
         if (!machine_storage_media_bay(active, bus, (int)strtol(unit, NULL, 10), &bay) ||
-            system_media_attach_path(global_emulator, &bay, strcmp(type, "cd") == 0, image, attach_err,
+            system_media_attach_path(system_config(), &bay, strcmp(type, "cd") == 0, image, attach_err,
                                      sizeof(attach_err)) != 0) {
             fprintf(stderr, "Error: drive=%s: %s\n", drive_args[i], attach_err);
             goto out;
@@ -1583,7 +1584,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: %s has no CD-ROM bay for cdrom=%s\n", active->name, cdrom_files[0]);
             goto out;
         }
-        if (system_media_attach_path(global_emulator, &cd, true, cdrom_files[0], attach_err, sizeof(attach_err)) != 0) {
+        if (system_media_attach_path(system_config(), &cd, true, cdrom_files[0], attach_err, sizeof(attach_err)) != 0) {
             fprintf(stderr, "Error: cdrom=%s: %s\n", cdrom_files[0], attach_err);
             goto out;
         }
@@ -1648,6 +1649,6 @@ int main(int argc, char *argv[]) {
     rc = headless_exit_code(script_rc);
 
 out:
-    system_destroy(global_emulator); // NULL-safe; clears global_emulator
+    system_destroy(system_config()); // NULL-safe; clears the active machine
     return rc;
 }

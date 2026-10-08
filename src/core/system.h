@@ -101,14 +101,14 @@ void system_set_default_share(const char *path);
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
 // Returns the new config handle, NOT yet the active machine: construction
-// touches nothing outside it (global_emulator, the object root, the machine
+// touches nothing outside it (the active-machine pointer, the object root, the machine
 // label), so a failed build has changed nothing.  system_swap_in makes it
 // the active machine.  `opts` carries the construction arguments (see
 // machine_build_opts.h); machine_boot_apply and the checkpoint restore both
 // fill it.
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
 
-// Make a constructed machine the active one -- global_emulator, the object
+// Make a constructed machine the active one -- the active-machine pointer, the object
 // root, the machine label, the machine_booted event -- and destroy the one it
 // replaces.  `restored`: the machine came from a checkpoint.  `pacing`: the
 // host's pacing setting, which the machine runs under from its first frame.
@@ -117,16 +117,6 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 void system_destroy(config_t *config);
-
-// The active machine (NULL before the first boot).  Ownership contract:
-// system.c is the only writer -- system_swap_in publishes a fully built
-// config and system_destroy clears the pointer when it destroys the config it
-// names -- and every reader is expected to run on the emulator thread, so
-// no barrier is needed today (nothing enforces this; a reader on another
-// thread needs a real publication protocol first).  A constructor never reads it
-// (it uses the cfg it was given; the system_*() accessors assert this).
-// Prefer system_config() / system_running() over reading it directly.
-extern config_t *global_emulator;
 
 // Pulse the machine's vertical-blanking line: the scheduler's per-frame tick,
 // dispatched to the substrate's trigger_vbl (defined in machines/machine.c).

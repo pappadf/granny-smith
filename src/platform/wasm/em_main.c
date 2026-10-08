@@ -473,9 +473,9 @@ void em_main_tick(void) {
             }
         }
 
-        // global_emulator is read plainly: every writer (machine.boot,
+        // The active machine is read plainly: every writer (machine.boot,
         // checkpoint.load) is a request served on this thread.
-        scheduler_main_loop(global_emulator, now, &s_pacing); // Pass milliseconds
+        scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
 
         // Update video if framebuffer changed
         em_video_update();

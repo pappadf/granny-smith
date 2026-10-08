@@ -237,7 +237,8 @@ void trigger_vbl(struct config *restrict config) {
 //
 // machine is a process-singleton namespace: registered once by core_init
 // (machine_init below) and never torn down.  Per-instance attribute getters
-// read from `global_emulator` rather than `object_data(self)` so the live
+// read the running machine (system_running(): an observer, safe to call
+// while another machine is being built) rather than `object_data(self)` so the live
 // machine state is reflected regardless of when the object was attached
 // and how many cfg lifetimes have come and gone since.  Pre-boot reads
 // return VK_ERROR — no soft fallbacks; callers gate on `machine.created`.
@@ -247,7 +248,7 @@ void trigger_vbl(struct config *restrict config) {
 // through this (or active_profile_or_error), so the "no machine" answer is
 // worded once.
 static config_t *active_cfg_or_error(const char *attr_name, value_t *out_err) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine) {
         *out_err = val_err("machine.%s: no machine booted; check machine.created first", attr_name);
         return NULL;
@@ -351,7 +352,7 @@ static DEF_GETTER(attr_machine_ram) {
 // per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
 // this is a bitmap and not an enum.
 static DEF_GETTER(attr_machine_irq) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.irq: no machine");
     value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->rt.irq);
@@ -360,7 +361,7 @@ static DEF_GETTER(attr_machine_irq) {
 }
 
 static DEF_GETTER(attr_machine_ipl) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.ipl: no machine");
     if (!cfg->cpu)
@@ -369,7 +370,7 @@ static DEF_GETTER(attr_machine_ipl) {
 }
 
 static DEF_GETTER(attr_machine_created) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     return val_bool(cfg && cfg->machine != NULL);
 }
 
@@ -692,7 +693,7 @@ static DEF_METHOD(machine_method_boot) {
 // down and nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the
 // object tree all survive; this is the reset button.
 static DEF_METHOD(machine_method_reset) {
-    if (!global_emulator)
+    if (!system_config())
         return val_err("machine.reset: no machine is running; boot one first");
     system_machine_reset();
     return val_bool(true);
@@ -704,7 +705,7 @@ static DEF_METHOD(machine_method_reset) {
 // RTC (still ticking), mounted media, the Caps Lock latch and the LaserWriter
 // all survive because nothing destroyed them.
 static DEF_METHOD(machine_method_restart) {
-    if (!global_emulator)
+    if (!system_config())
         return val_err("machine.restart: no machine is running; boot one first");
     system_machine_power_cycle();
     return val_bool(true);
@@ -818,7 +819,7 @@ static const arg_decl_t catalog_profile_args[] = {
 // it used, {bus, id, label}, which is what eject_media takes back.
 
 static DEF_METHOD(machine_method_attach_hd) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.attach_hd: no machine is running");
     media_bay_t bays[MEDIA_HD_BAYS_MAX];
@@ -837,7 +838,7 @@ static DEF_METHOD(machine_method_attach_hd) {
 }
 
 static DEF_METHOD(machine_method_attach_cdrom) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.attach_cdrom: no machine is running");
     media_bay_t bay;
@@ -854,7 +855,7 @@ static DEF_METHOD(machine_method_attach_cdrom) {
 // catalog.profile's storage tree, the unit on it, hd or cd.  The one attach
 // a frontend needs, whatever bus the position is on.
 static DEF_METHOD(machine_method_attach_media) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.attach_media: no machine is running");
     const char *bus_id = argv[0].s, *type = argv[2].s;
@@ -878,7 +879,7 @@ static DEF_METHOD(machine_method_attach_media) {
 }
 
 static DEF_METHOD(machine_method_eject_media) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->machine)
         return val_err("machine.eject_media: no machine is running");
     media_bus_t bus;
@@ -1041,7 +1042,7 @@ static const class_desc_t machine_class = {
 // === Lifecycle ============================================================
 //
 // machine is a process-singleton — registered once by core_init and
-// never detached.  Attribute getters read from global_emulator so the live
+// never detached.  Attribute getters read system_running() so the live
 // state is reflected regardless of how many cfg lifetimes have come and
 // gone since the object was attached.  Both functions are idempotent.
 

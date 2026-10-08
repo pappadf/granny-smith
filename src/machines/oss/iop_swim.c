@@ -797,7 +797,7 @@ static inline bool swim_addressing_is_24bit(void) {
 // memory_map_t's flat RAM image.  Returns NULL if host_addr + byte_count
 // would extend past the configured RAM size.
 static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
-    config_t *cfg = global_emulator;
+    config_t *cfg = system_running();
     if (!cfg || !cfg->memory_map)
         return NULL;
     // In 24-bit mode the buffer the .Sony driver hands us is a Memory Manager

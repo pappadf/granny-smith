@@ -41,7 +41,10 @@
 // drives (select -> CDB -> data-in), so the references are satisfied here
 // rather than by linking system.c and pulling in the whole machine.
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {

@@ -226,10 +226,13 @@ interactions are handled cleanly.
 
 - **Global instance management:**
   - The global emulator state is referenced via a single pointer,
-    `global_emulator`, defined in `system.c` and declared in `system.h`.
-    `system.c` is its only writer (`system_swap_in` publishes a built
-    machine, `system_destroy` clears it); readers are expected to run on the
-    emulator thread.  This is a convention, not an enforced lock.
+    `global_emulator`, private (`static`) to `system.c`; everyone else reads
+    it through `system_config()` (asserts it is not called while a machine
+    is being built) or `system_running()` (for observers, such as log
+    decoration, that may run during a build).  `system.c` is its only writer
+    (`system_swap_in` publishes a built machine, `system_destroy` clears it);
+    readers are expected to run on the emulator thread.  This is a
+    convention, not an enforced lock.
   - All other modules avoid global variables, instead receiving context through
     constructor parameters or referencing global state for read-only needs.
 
@@ -242,8 +245,8 @@ interactions are handled cleanly.
     `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
     all modules in dependency order and optionally restores from a
     checkpoint, whose event queue is read last.  The new machine is not the
-    active one: constructors use the `cfg` they are given, never
-    `global_emulator` or the `system_*()` accessors (which assert it).
+    active one: constructors use the `cfg` they are given, never the
+    `system_*()` accessors (which assert it).
   - `system_swap_in(config_t *, bool restored)`: makes a built machine the
     active one (global, object root, memory-map selection, label,
     `machine_booted`) and destroys the machine it replaces.

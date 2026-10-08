@@ -70,7 +70,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
 // Link stubs
 // ============================================================
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {

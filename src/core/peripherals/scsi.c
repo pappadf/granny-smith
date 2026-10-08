@@ -1792,7 +1792,8 @@ static DEF_METHOD(scsi_dev_method_insert) {
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     if (!scsi)
         return val_err("scsi.devices.N.insert: scsi controller not available");
-    if (!global_emulator)
+    config_t *cfg = system_config();
+    if (!cfg)
         return val_err("scsi.devices.N.insert: emulator not initialised");
     // Slot 7 is the initiator and scsi_add_device asserts against it.  No node
     // for it can exist today -- scsi_devices_get hands out an entry only for a
@@ -1803,7 +1804,7 @@ static DEF_METHOD(scsi_dev_method_insert) {
 
     // The attach's own result (it used to answer true whatever happened).
     if (scsi_device_type(scsi, slot) == scsi_dev_cdrom)
-        return val_bool(add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot));
+        return val_bool(add_scsi_cdrom_on(cfg, scsi, argv[0].s, (int)slot));
     return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
 }
 
@@ -2189,10 +2190,11 @@ static DEF_METHOD(scsi_method_attach_cdrom) {
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_cdrom: id must be 0..6");
-    if (!global_emulator)
+    config_t *cfg = system_config();
+    if (!cfg)
         return val_err("scsi.attach_cdrom: emulator not initialised");
     scsi_t *bus = (scsi_t *)object_data(self);
-    return val_bool(add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id));
+    return val_bool(add_scsi_cdrom_on(cfg, bus ? bus : cfg->scsi, argv[0].s, (int)id));
 }
 
 // `scsi.hd_models` — VK_LIST of {label, vendor, product, revision, size} maps

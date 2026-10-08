@@ -20,7 +20,6 @@
 static config_t g_cfg; // zeroed: no machine profile, so no model/RAM fields
 static image_t *g_images[8];
 static int g_n_images;
-config_t *global_emulator = NULL;
 
 image_t *config_get_image(const config_t *cfg, int index) {
     return cfg && index >= 0 && index < g_n_images ? g_images[index] : NULL;

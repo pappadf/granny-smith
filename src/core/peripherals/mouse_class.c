@@ -46,7 +46,7 @@ static mouse_route_t mouse_mode_route(const value_t *v) {
 }
 
 static DEF_METHOD(mouse_method_move) {
-    if (!global_emulator)
+    if (!system_config())
         return val_err("mouse.move: no machine");
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
@@ -62,7 +62,7 @@ static DEF_METHOD(mouse_method_move) {
 }
 
 static DEF_METHOD(mouse_method_click) {
-    if (!global_emulator)
+    if (!system_config())
         return val_err("mouse.click: no machine");
     bool down = (argc >= 1 && argv[0].kind == VK_BOOL) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == VK_STRING && argv[1].s) ? argv[1].s : "default";
@@ -76,9 +76,10 @@ static DEF_METHOD(mouse_method_click) {
 }
 
 static DEF_METHOD(mouse_method_trace) {
-    if (!global_emulator)
+    config_t *cfg = system_config();
+    if (!cfg)
         return val_err("mouse.trace: no machine");
-    debug_mac_set_trace_mouse(global_emulator->host_input, argv[0].b);
+    debug_mac_set_trace_mouse(cfg->host_input, argv[0].b);
     return val_none();
 }
 

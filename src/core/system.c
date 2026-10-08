@@ -59,8 +59,16 @@
 
 LOG_USE_CATEGORY_NAME("system");
 
-// Global emulator pointer (definition; ownership contract in system.h)
-config_t *global_emulator = NULL;
+// The active machine (NULL before the first boot), private to this file:
+// everyone else reads it through system_config() / system_running().
+// Ownership contract: system.c is the only writer -- system_swap_in publishes
+// a fully built config and system_destroy clears the pointer when it destroys
+// the config it names -- and every reader is expected to run on the emulator
+// thread, so no barrier is needed today (nothing enforces this; a reader on
+// another thread needs a real publication protocol first).  A constructor
+// never reads it (it uses the cfg it was given; the system_*() accessors
+// assert this).
+static config_t *global_emulator = NULL;
 
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
