@@ -116,8 +116,11 @@ LOG_USE_CATEGORY_NAME("asc");
 // and falls back to the default rate.
 static const uint32_t asc_rate_table[4] = {22257, 22257, 22050, 44100};
 
-// Matching drain-event periods in nanoseconds of emulated time (1e9 / rate)
-static const uint64_t asc_period_table[4] = {44929, 44929, 45351, 22676};
+// The drain event's period is 1e9 / rate ns of emulated time, which is not
+// an integer: each event waits the integer part, and the remainder
+// (1e9 % rate) accumulates in period_frac to add one ns whenever it reaches
+// a whole one, so the mean period is exact instead of drifting ~1.4 samples
+// per 100k at 22,257 Hz.
 
 // ============================================================================
 // Type Definitions (Private)
@@ -139,6 +142,7 @@ struct asc {
     uint8_t wave_control; // 0x805: voice enable bits (bits 0-3)
     uint8_t volume; // 0x806: bits 5-7 = 3-bit digital volume level
     uint8_t clock_rate; // 0x807: sample rate select
+    uint32_t period_frac; // drain-period remainder accumulator, in 1/rate ns (asc_schedule_fifo_drain)
     uint8_t play_rec_a; // 0x80A: channel A play/record mode
     uint8_t play_rec_b; // 0x80B: channel B play/record mode
     uint8_t test_reg; // 0x80F: hardware test register
@@ -217,6 +221,19 @@ static void asc_update_irq(asc_t *asc) {
 }
 
 // Resets both FIFO channels to empty state (triggered by fifo_control bit 7 toggle)
+// Latch FIFO interrupt status bits: only bits not already set count as a
+// change, and only a change re-evaluates the IRQ output.  The single place
+// FIFO events latch status (the overflow path in fifo_push and the half-empty
+// transition in fifo_check_irq); guest reads clear it and guest writes set it
+// directly.
+static void fifo_irq_latch(asc_t *asc, uint8_t bits) {
+    uint8_t rising = bits & (uint8_t)~asc->fifo_irq_status;
+    if (!rising)
+        return;
+    asc->fifo_irq_status |= rising;
+    asc_update_irq(asc);
+}
+
 static void fifo_clear(asc_t *asc) {
     LOG(2, "fifo_clear: resetting both FIFOs");
     for (int ch = 0; ch < 2; ch++) {
@@ -234,11 +251,9 @@ static void fifo_push(asc_t *asc, int ch, uint8_t byte) {
     if (asc->fifo_count[ch] >= FIFO_SIZE) {
         // FIFO overflow: set the full/overflow bit in FIFO_IRQ (§6.3 in docs)
         uint8_t full_bit = (ch == 0) ? FIFO_IRQ_A_FULL : FIFO_IRQ_B_FULL;
-        if (!(asc->fifo_irq_status & full_bit)) {
+        if (!(asc->fifo_irq_status & full_bit))
             LOG(1, "fifo_push: channel %d overflow, setting full IRQ", ch);
-            asc->fifo_irq_status |= full_bit;
-            asc_update_irq(asc);
-        }
+        fifo_irq_latch(asc, full_bit);
         return;
     }
     uint16_t base = (ch == 0) ? CH_A_BASE : CH_B_BASE;
@@ -282,12 +297,7 @@ static void fifo_check_irq(asc_t *asc) {
         }
     }
 
-    // Only update if new flags appeared (avoid re-triggering on already-set bits)
-    uint8_t rising = new_flags & ~asc->fifo_irq_status;
-    if (rising) {
-        asc->fifo_irq_status |= rising;
-        asc_update_irq(asc);
-    }
+    fifo_irq_latch(asc, new_flags);
 }
 
 // Extracts the 3-bit digital volume level (0-7) from the volume register
@@ -394,7 +404,14 @@ static void asc_fifo_drain_callback(void *source, uint64_t data) {
 static void asc_schedule_fifo_drain(asc_t *asc) {
     if (!asc->scheduler)
         return;
-    scheduler_new_cpu_event(asc->scheduler, &asc_fifo_drain_callback, asc, 0, 0, asc_period_table[asc->clock_rate & 3]);
+    uint32_t rate = asc_rate_hz(asc);
+    uint64_t period = 1000000000ULL / rate;
+    asc->period_frac += (uint32_t)(1000000000ULL % rate);
+    if (asc->period_frac >= rate) {
+        asc->period_frac -= rate;
+        period++;
+    }
+    scheduler_new_cpu_event(asc->scheduler, &asc_fifo_drain_callback, asc, 0, 0, period);
 }
 
 // Cancels any pending FIFO drain event
@@ -404,7 +421,10 @@ static void asc_cancel_fifo_drain(asc_t *asc) {
     remove_event(asc->scheduler, &asc_fifo_drain_callback, asc);
 }
 
-// Writes one byte to a wavetable phase or increment register (big-endian, byte-at-a-time)
+// Writes one byte to a wavetable phase or increment register (big-endian,
+// byte-at-a-time).  The registers are 24-bit: the top byte of the 32-bit
+// window (byte_pos 0) is reserved, reads back 0 and is discarded here -- the
+// masking keeps `*reg` a valid 24-bit phase/increment after any byte write.
 static void write_wave_reg(uint32_t *reg, int byte_pos, uint8_t data) {
     int shift = (3 - byte_pos) * 8;
     uint32_t mask = ~((uint32_t)0xFF << shift);
@@ -762,10 +782,11 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     if (scheduler)
         scheduler_new_event_type(scheduler, "asc", asc, "fifo_drain", &asc_fifo_drain_callback);
 
-    // If restoring from a checkpoint with the chip running, restart the
-    // producer event (rate comes from the restored clock-rate register)
-    if (asc->mode == MODE_FIFO || asc->mode == MODE_WAVETABLE)
-        asc_schedule_fifo_drain(asc);
+    // No producer event is scheduled here, restore or not.  A fresh chip is
+    // off (mode 0).  A restored running chip already has its pending
+    // fifo_drain event in the checkpoint's event queue, which
+    // scheduler_restore_events re-inserts once every source exists --
+    // scheduling another here ran two drain chains at twice the sample rate.
 
     // Open the shared host audio stream: mono int16 at the chip's rate
     audio_out_open(asc_rate_hz(asc), 1);

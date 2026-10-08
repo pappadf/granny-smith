@@ -48,6 +48,8 @@ typedef void (*event_callback_t_local)(void *, uint64_t);
 static event_callback_t_local s_cb;
 static void *s_cb_src;
 static uint64_t s_period_ns;
+static uint64_t s_period_sum; // every scheduled period since fresh()
+static uint64_t s_period_n;
 static int s_cancels;
 
 event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
@@ -59,6 +61,8 @@ event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback,
     s_cb = (event_callback_t_local)callback;
     s_cb_src = source;
     s_period_ns = ns;
+    s_period_sum += ns;
+    s_period_n++;
     return NULL;
 }
 
@@ -84,6 +88,11 @@ void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *s
 }
 
 // Advance the producer by n sample ticks (the drain re-schedules itself)
+// The drain period is 1e9/rate ns, not an integer: each event waits the
+// integer part or one more, the remainder carried so the mean is exact.
+#define ASSERT_PERIOD_FOR(rate)                                                                                        \
+    ASSERT_TRUE(s_period_ns == 1000000000ULL / (rate) || s_period_ns == 1000000000ULL / (rate) + 1)
+
 static void tick(int n) {
     for (int i = 0; i < n; i++) {
         ASSERT_TRUE(s_cb != NULL);
@@ -245,6 +254,8 @@ static void fresh(void) {
     s_cb = NULL;
     s_cb_src = NULL;
     s_period_ns = 0;
+    s_period_sum = 0;
+    s_period_n = 0;
     s_cancels = 0;
     s_cb1 = false;
     s_cb1_falls = 0;
@@ -430,7 +441,7 @@ TEST(test_producer_open_batch_and_conversion) {
     ASSERT_EQ_INT(s_open_channels, 1);
 
     wr(R_MODE, 1);
-    ASSERT_EQ_INT((int)s_period_ns, 44929);
+    ASSERT_PERIOD_FOR(22257);
     wr(R_VOLUME, 0x80); // volume 4
 
     // Fill A with a known ramp; mono routing (control bit 1 = 0) takes A
@@ -536,22 +547,35 @@ TEST(test_producer_wavetable_free_run) {
 TEST(test_producer_rate_switch) {
     fresh();
     wr(R_MODE, 1);
-    ASSERT_EQ_INT((int)s_period_ns, 44929);
+    ASSERT_PERIOD_FOR(22257);
 
     // ascClockRate = 3 → 44,100 Hz: host stream restarted, event retimed
     wr(R_CLOCK, 3);
     ASSERT_EQ_INT((int)s_set_rate, 44100);
-    ASSERT_EQ_INT((int)s_period_ns, 22676);
+    ASSERT_PERIOD_FOR(44100);
 
     // = 2 → 22,050 Hz
     wr(R_CLOCK, 2);
     ASSERT_EQ_INT((int)s_set_rate, 22050);
-    ASSERT_EQ_INT((int)s_period_ns, 45351);
+    ASSERT_PERIOD_FOR(22050);
 
     // back to the default
     wr(R_CLOCK, 0);
     ASSERT_EQ_INT((int)s_set_rate, 22257);
-    ASSERT_EQ_INT((int)s_period_ns, 44929);
+    ASSERT_PERIOD_FOR(22257);
+}
+
+// Over one second of samples the periods add up to exactly one second (no
+// drift from rounding 1e9/22257 down to 44929 ns every time).
+TEST(test_producer_period_no_drift) {
+    fresh();
+    wr(R_MODE, 1);
+    s_period_sum = 0;
+    s_period_n = 0;
+    tick(22257);
+    wr(R_MODE, 0);
+    ASSERT_EQ_INT((int)s_period_n, 22257);
+    ASSERT_TRUE(s_period_sum >= 1000000000ULL - 1 && s_period_sum <= 1000000000ULL + 1);
 }
 
 TEST(test_producer_stops_when_off) {
@@ -577,6 +601,7 @@ int main(void) {
     RUN(test_producer_stereo_mix);
     RUN(test_producer_wavetable_free_run);
     RUN(test_producer_rate_switch);
+    RUN(test_producer_period_no_drift);
     RUN(test_producer_stops_when_off);
     fprintf(stderr, "asc: all tests passed\n");
     return 0;
