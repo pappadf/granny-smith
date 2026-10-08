@@ -260,19 +260,16 @@ const char *system_machine_model_id(void);
 // or -1 on failure (file exists, both drives full, image system error).
 int system_create_floppy(const char *path, bool high_density, int preferred);
 
-// Attach a read-only CD-ROM image at the given SCSI id. Used by typed
-// `cdrom_attach` and the legacy `cdrom attach` command alike — the
-// underlying primitive opens the image, registers it as a SCSI device,
-// and emits the legacy "Attaching CD-ROM" stdout message.
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
-// The same, on an explicitly named SCSI bus.  A machine with more than one
-// visible bus — the Apple Network Servers' two fast/wide 53C825A channels —
-// needs `machine.scsi2.attach_cdrom` to land on the second one; NULL means
-// the machine's primary bus and is what every Macintosh path passes.
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+// Attach a read-only CD-ROM image on `bus` at `scsi_id`: opens the image,
+// registers it as a SCSI device and prints the "Attaching CD-ROM" line.  The
+// bus is explicit because a machine can have more than one -- the Apple
+// Network Servers' two fast/wide 53C825A channels, where
+// `machine.scsi2.attach_cdrom` lands on the second.  NULL bus: refused (no
+// SCSI).
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 // Attach a writable SCSI hard disk image (base + delta) on `bus` at `scsi_id`,
 // presented as the closest catalog drive.  NULL bus: refused (no SCSI).
-bool add_scsi_hd_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
 // Probe a floppy image at `path`: opens it read-only and prints the
 // detected density.

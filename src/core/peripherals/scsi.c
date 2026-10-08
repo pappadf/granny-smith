@@ -1778,7 +1778,7 @@ static DEF_METHOD(scsi_dev_method_eject) {
 // `insert(path)` — mount an image into this slot, as the kind of device the
 // slot already is.
 //
-// This used to call add_scsi_cdrom() whatever was in the slot, so inserting
+// This used to call system_attach_scsi_cdrom() whatever was in the slot, so inserting
 // into a hard disk turned it into a read-only SONY CDU-8002 with 2048-byte
 // blocks -- a running machine's boot disk, mid-session.
 //
@@ -1804,7 +1804,7 @@ static DEF_METHOD(scsi_dev_method_insert) {
 
     // The attach's own result (it used to answer true whatever happened).
     if (scsi_device_type(scsi, slot) == scsi_dev_cdrom)
-        return val_bool(add_scsi_cdrom_on(cfg, scsi, argv[0].s, (int)slot));
+        return val_bool(system_attach_scsi_cdrom(cfg, scsi, argv[0].s, (int)slot));
     return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
 }
 
@@ -2194,7 +2194,7 @@ static DEF_METHOD(scsi_method_attach_cdrom) {
     if (!cfg)
         return val_err("scsi.attach_cdrom: emulator not initialised");
     scsi_t *bus = (scsi_t *)object_data(self);
-    return val_bool(add_scsi_cdrom_on(cfg, bus ? bus : cfg->scsi, argv[0].s, (int)id));
+    return val_bool(system_attach_scsi_cdrom(cfg, bus ? bus : cfg->scsi, argv[0].s, (int)id));
 }
 
 // `scsi.hd_models` — VK_LIST of {label, vendor, product, revision, size} maps

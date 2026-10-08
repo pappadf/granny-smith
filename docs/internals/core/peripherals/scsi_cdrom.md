@@ -1009,5 +1009,5 @@ type, image size, current block size, and SCSI ID.
 | `src/core/peripherals/scsi.c` | NCR 5380 controller |
 | `src/core/peripherals/scsi_bus.c` | The shared bus: phase machine, target/device models, command dispatch, HD handling |
 | `src/core/peripherals/scsi_cdrom.c` | CD-ROM device: INQUIRY, MODE pages, READ TOC, sense, Apple quirks |
-| `src/core/system.c` | Typed attach helper (`add_scsi_cdrom`) behind `machine.attach_cdrom` / `machine.scsi.attach_cdrom` |
+| `src/core/system.c` | Typed attach helper (`system_attach_scsi_cdrom`) behind `machine.attach_cdrom` / `machine.scsi.attach_cdrom` |
 | `src/core/storage/image.h` | Image types including `image_cdrom` |

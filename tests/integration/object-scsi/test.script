@@ -71,7 +71,7 @@ assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-fd.img") == false "floppy
 # eject() is deliberately type-agnostic: on a hard disk it is "detach this
 # disk" (scsi_eject_device takes any id, and the CD-ROM's PREVENT lock is the
 # only thing that refuses it).  insert() has to be its counterpart, and was
-# not: it called add_scsi_cdrom() whatever the slot held, so putting a hard
+# not: it called system_attach_scsi_cdrom() whatever the slot held, so putting a hard
 # disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks.
 #
 # The slot's type survives an eject -- scsi_eject_device clears
@@ -96,8 +96,8 @@ assert machine.scsi.device[3].type == "cdrom" "CD came back as ${machine.scsi.de
 assert machine.scsi.device[3].read_only == true "CD came back writable after insert"
 assert machine.scsi.device[3].block_size == 2048 "CD came back with ${machine.scsi.device[3].block_size}-byte blocks"
 
-# An attach that cannot open its file must SAY so.  add_scsi_drive_on and
-# add_scsi_cdrom_on returned void and their callers reported success
+# An attach that cannot open its file must SAY so.  system_attach_scsi_hd and
+# system_attach_scsi_cdrom returned void and their callers reported success
 # unconditionally, so `attach_hd` on a missing file printed "Failed to open
 # image" and then answered true -- which is how the first version of the
 # round-trip test above passed while inserting nothing at all.

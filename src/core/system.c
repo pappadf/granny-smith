@@ -712,7 +712,7 @@ static int do_create_hd(const char *path, const char *size_str) {
     return 0;
 }
 
-// Attach a SCSI hard disk image. Delegates to add_scsi_hd_on().
+// Attach a SCSI hard disk image. Delegates to system_attach_scsi_hd().
 // Returns 0 on success, -1 on error.
 static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     if (scsi_id < 0 || scsi_id > 7) {
@@ -728,7 +728,7 @@ static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     // `attach_hd` on an unopenable file printed "Failed to open image" and then
     // answered true -- and once insert() started reporting its attach result,
     // a test could assert on a lie.
-    return add_scsi_hd_on(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
+    return system_attach_scsi_hd(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
 }
 
 static int do_attach_hd(const char *path, int scsi_id) {
@@ -1492,7 +1492,7 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
 //
 // A NULL bus is refused: the Lisa has no SCSI at all, and `hd=` on a Lisa
 // used to hand NULL to scsi_add_device and crash the harness.
-bool add_scsi_hd_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
         gs_outf("Cannot attach %s: this machine has no SCSI bus\n", filename);
         return false;
@@ -1508,13 +1508,9 @@ bool add_scsi_hd_on(struct config *restrict config, struct scsi *bus, const char
     return true;
 }
 
-// Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    return add_scsi_cdrom_on(config, config ? config->scsi : NULL, filename, scsi_id);
-}
-
-// ...on a NAMED bus; see add_scsi_hd_on.
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+// Attach a SCSI CD-ROM (AppleCD SC Plus / Sony CDU-8002) on a named bus;
+// see system_attach_scsi_hd.
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
         gs_outf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
         return false;
