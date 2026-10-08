@@ -47,10 +47,10 @@ TEST(test_user_add_and_lookup) {
     reset();
     char err[160];
     ASSERT_EQ_INT(0, alias_add_user("foo", "cpu.d0", err, sizeof(err)));
-    alias_kind_t k = ALIAS_BUILTIN;
+    alias_kind_t k = AK_BUILTIN;
     const char *p = alias_lookup("foo", &k);
     ASSERT_TRUE(p && strcmp(p, "cpu.d0") == 0);
-    ASSERT_EQ_INT(ALIAS_USER, k);
+    ASSERT_EQ_INT(AK_USER, k);
 }
 
 TEST(test_user_replace) {
@@ -189,6 +189,23 @@ TEST(test_iteration_order) {
     ASSERT_TRUE(strcmp(c.names[2], "foo") == 0);
 }
 
+// Removing a user alias keeps the remaining entries in registration order.
+TEST(test_remove_keeps_order) {
+    reset();
+    char err[160];
+    alias_add_user("a", "cpu.d0", err, sizeof(err));
+    alias_add_user("b", "cpu.d1", err, sizeof(err));
+    alias_add_user("c", "cpu.d2", err, sizeof(err));
+    alias_add_user("d", "cpu.d3", err, sizeof(err));
+    ASSERT_EQ_INT(0, alias_remove_user("b", err, sizeof(err)));
+    collect_t c = {0};
+    alias_each(collect_cb, &c);
+    ASSERT_EQ_INT(3, c.count);
+    ASSERT_TRUE(strcmp(c.names[0], "a") == 0);
+    ASSERT_TRUE(strcmp(c.names[1], "c") == 0);
+    ASSERT_TRUE(strcmp(c.names[2], "d") == 0);
+}
+
 int main(void) {
     RUN(test_register_builtin_basic);
     RUN(test_register_builtin_idempotent);
@@ -202,5 +219,6 @@ int main(void) {
     RUN(test_clear_user_keeps_builtin);
     RUN(test_invalid_identifier_rejected);
     RUN(test_iteration_order);
+    RUN(test_remove_keeps_order);
     return 0;
 }

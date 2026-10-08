@@ -65,6 +65,26 @@ its MAGIC and VERSION so layout drift fails loudly, and from then on
 writes request records and reads result records through `Module.HEAPU8`
 and Atomics.
 
+**The rule: no direct calls into the core.** Under `PROXY_TO_PTHREAD`
+an exported wasm function is still callable from the browser main thread
+(`Module.ccall(...)`), and such a call does *not* proxy to the worker: it
+runs the core on the main thread, with the main thread's pthread context,
+while the worker is inside `em_main_tick`. Only the handful of built-in
+Emscripten callbacks (pointer lock, mouse, keyboard, visibility) are
+proxied to the worker for us. Calling into the core from the main thread
+races the worker for scheduler, machine and device state, uses WasmFS/OPFS
+handles from a thread that did not open them, and can deadlock or stall on
+the runtime's mutexes. So every JS→C request goes through the mailbox, and
+the Makefile no longer exports `ccall`/`cwrap`.
+
+The rule was learned the hard way (a regression, 2026-05-02):
+`Module.ccall('em_gs_eval', ...)` carried the typed object-model bridge
+(`gsEval` / `gsInspect`) and ran `shell_dispatch()` on the main thread.
+E2E tests saving and loading checkpoints through `gsEval` saw 60–90 s per
+call, a post-load `run` that did not advance the emulator, and "browser
+closed" crashes; `pthread_self()` probed inside `shell_poll` and inside
+`em_gs_eval` showed two different threads.
+
 Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
 completion ride on the `Shell` class's `run` / `complete` methods. The

@@ -13,9 +13,6 @@
 // other negative values are failures of a platform that tried.  The `gs_`
 // prefix marks a hook of this contract (Granny Smith's platform surface);
 // core-owned functions use `system_`.
-//
-// frontend_force_redraw is the exception: every platform must define it, so
-// it has no default.
 
 #ifndef PLATFORM_HOOKS_H
 #define PLATFORM_HOOKS_H
@@ -28,10 +25,6 @@
 // re-bases its samples of the machine and announces what it shows of it; the
 // weak default serves a host that samples nothing.
 void platform_machine_attached(void);
-
-// Redraw the screen once, now: a restored framebuffer must appear without
-// waiting for the guest to touch it.  Required of every platform.
-void frontend_force_redraw(void);
 
 // True when `path` lives on volatile scratch storage (the browser's memfs
 // /tmp, where uploaded test media land): a writable mount of such an image

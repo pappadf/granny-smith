@@ -12,6 +12,10 @@
 // The built-in/user alias table (alias.c) is the read-only fallback
 // behind every scope — its entries surface as V_REF values, which is
 // exactly the reference-binding semantics.
+//
+// Lookup is a linear scan of each scope: scopes hold a handful to a few
+// tens of bindings, where a scan is as fast as a hash and keeps creation
+// order for free.  Revisit if scripts start keeping hundreds.
 
 #include "shell_var.h"
 
@@ -116,11 +120,12 @@ static binding_t *scope_add(scope_t *s, const char *name) {
     return b;
 }
 
+// Remove (and free) b, keeping the remaining bindings in creation order
 static void scope_remove(scope_t *s, binding_t *b) {
     for (int i = 0; i < s->n; i++) {
         if (s->items[i] == b) {
             binding_free(b);
-            s->items[i] = s->items[s->n - 1];
+            memmove(&s->items[i], &s->items[i + 1], (size_t)(s->n - i - 1) * sizeof(s->items[0]));
             s->n--;
             return;
         }
@@ -284,6 +289,9 @@ void shell_var_init(void) {
         memset(g_scopes, 0, sizeof(g_scopes));
         g_n_scopes = 2; // [0] process globals, [1] script/session top level
     }
+    // Relative on purpose (see shell_var.h): the project's tmp/ scratch
+    // directory when headless runs from the repository root, as AGENTS.md
+    // asks of scratch files, and /tmp on WASM, whose working directory is /.
     shell_var_set("TMP_DIR", "tmp");
 }
 

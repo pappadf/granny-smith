@@ -17,9 +17,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Logical block size assumed for APM.  Driver descriptor block at block 0
-// may declare something different, but every APM media we care about uses
-// 512-byte blocks.
+// Logical block size of the partition map.  The driver descriptor in block 0
+// may declare another (sbBlkSize; 2048 on Apple CD-ROMs), but the map
+// entries and their start/size fields are in 512-byte blocks on every Apple
+// medium, CDs included, so the declared size is not consulted -- rejecting
+// a map whose descriptor says 2048 would refuse those discs.
 #define APM_BLOCK_SIZE 512
 
 // Filesystem kind inferred from the APM partition type string.  The
@@ -85,5 +87,16 @@ void image_apm_free(apm_table_t *table);
 // Map a pmParType string to an apm_fs_kind.  Useful for direct probing
 // of individual entries when the full table isn't needed.
 enum apm_fs_kind image_apm_classify_type(const char *type_string);
+
+// The short label `files.partmap` shows for a kind ("HFS", "drvr", "--").
+// Kept beside image_apm_classify_type so the two mappings stay in step.
+const char *image_apm_fs_kind_label(enum apm_fs_kind kind);
+
+// The parser's error messages, what *errmsg points at on failure.
+extern const char *const image_apm_err_nil; // no image / source
+extern const char *const image_apm_err_read; // too short, unreadable, or not 512-byte blocks
+extern const char *const image_apm_err_sig; // no "PM" signature on block 1
+extern const char *const image_apm_err_count; // pmMapBlkCnt out of range
+extern const char *const image_apm_err_alloc; // out of memory
 
 #endif // IMAGE_APM_H

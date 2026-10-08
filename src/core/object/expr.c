@@ -298,6 +298,12 @@ static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size,
             snprintf(err_buf, err_size, "index must be numeric or a string key");
             return false;
         }
+        // The segment text is signed: an unsigned index past INT64_MAX would
+        // wrap negative and name a different slot, so it is refused.
+        if (idx->kind == V_UINT && idx->u > (uint64_t)INT64_MAX) {
+            snprintf(err_buf, err_size, "index out of range");
+            return false;
+        }
         n = snprintf(buf + *pi, buf_size - *pi, "[%lld]", (long long)iv);
     }
     if (n < 0 || (size_t)n >= buf_size - *pi) {
@@ -414,7 +420,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 // so the caller can parse the comma-separated arguments.
 //
 // path_buf must be at least 256 bytes.
-static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
+static bool parse_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
     char ident[64];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
@@ -605,7 +611,7 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
 
 // Read optional `.ident` / `[expr]` continuation segments into sub_buf
 // (leading '.' included for non-empty paths) and detect an opening `(`.
-// Mirrors read_path_segments but produces a *relative* path.
+// Mirrors parse_path_segments but produces a *relative* path.
 static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, size_t sub_size, bool *call_open) {
     sub_buf[0] = '\0';
     char err[160];
@@ -1109,7 +1115,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         // Path-or-call.
         char path_buf[256];
         bool call_open = false;
-        if (!read_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
+        if (!parse_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
         // Builtins: recognised by name in call form, before
         // object-tree lookup. `try` is a special form (lazy w.r.t.
@@ -1270,9 +1276,10 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set)
             return v;
-        // V_ERROR is falsy, so `!error` is true.
-        // This is what makes `assert $(!cpu.broken)` clean for "either
-        // the attribute does not exist, or it is false".
+        // V_ERROR is falsy, so `!error` is true -- the one operator that
+        // consumes an error instead of propagating it (contract: expr.h,
+        // expr_eval). This is what makes `assert !machine.cpu.broken`
+        // clean for "either the attribute does not exist, or it is false".
         bool t = val_as_bool(&v);
         value_free(&v);
         return val_bool(!t);
@@ -1344,10 +1351,39 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         return val_err("%s", (msg));                                                                                   \
     } while (0)
 
-static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err, size_t err_size) {
+// The source spelling of a numeric_op operator, for diagnostics: '<' and
+// '>' there are the shifts.
+static const char *numeric_op_token(char op) {
+    switch (op) {
+    case '<':
+        return "<<";
+    case '>':
+        return ">>";
+    case '+':
+        return "+";
+    case '-':
+        return "-";
+    case '*':
+        return "*";
+    case '/':
+        return "/";
+    case '%':
+        return "%";
+    case '&':
+        return "&";
+    case '|':
+        return "|";
+    case '^':
+        return "^";
+    default:
+        return "?";
+    }
+}
+
+static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err, size_t err_size) {
     num_kind_t k = promote_pair(classify_numeric(a), classify_numeric(b));
     if (k == NK_NONE) {
-        snprintf(err, err_size, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
+        snprintf(err, err_size, "non-numeric operand to '%s'", numeric_op_token(op));
         return val_err("non-numeric");
     }
     value_t pa = coerce_to(k, a);
@@ -1537,7 +1573,7 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1610,7 +1646,7 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             continue;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1641,7 +1677,7 @@ static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, op, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1669,7 +1705,7 @@ static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '&', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '&', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1696,7 +1732,7 @@ static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '^', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '^', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1724,7 +1760,7 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '|', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '|', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1869,30 +1905,32 @@ static value_t parse_equality(lex_t *L, const expr_ctx_t *ctx) {
 // `false && X` returns false even if evaluating X would have errored;
 // `true || X` returns true similarly.
 
-// Skip one equality-level expression for short-circuit purposes,
-// suppressing any lex errors and discarding the value.
-static void skip_equality(lex_t *L, const expr_ctx_t *ctx) {
+// One grammar level of the recursive-descent ladder (parse_equality, ...).
+typedef value_t (*parse_level_fn)(lex_t *L, const expr_ctx_t *ctx);
+
+// Skip one expression at the given level for short-circuit purposes,
+// suppressing any lex errors and discarding the value. The one body behind
+// skip_equality / skip_logand / skip_ternary.
+static void skip_level(lex_t *L, const expr_ctx_t *ctx, parse_level_fn parse) {
     bool saved = L->err_set;
     char saved_msg[sizeof(L->err)];
     memcpy(saved_msg, L->err, sizeof(L->err));
     L->err_set = false;
     L->err[0] = '\0';
-    value_t v = parse_equality(L, ctx);
+    value_t v = parse(L, ctx);
     value_free(&v);
     L->err_set = saved;
     memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
+// Skip the right side of `&&`.
+static void skip_equality(lex_t *L, const expr_ctx_t *ctx) {
+    skip_level(L, ctx, parse_equality);
+}
+
+// Skip the right side of `||`.
 static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_logand(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_logand);
 }
 
 // The ternary's counterparts to skip_equality / skip_logand.
@@ -1910,15 +1948,7 @@ static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
 static void skip_expr(lex_t *L, const expr_ctx_t *ctx);
 
 static void skip_ternary(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_ternary(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_ternary);
 }
 
 static value_t parse_logand(lex_t *L, const expr_ctx_t *ctx) {
@@ -2030,15 +2060,7 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
 }
 
 static void skip_expr(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_expr(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_expr);
 }
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx) {

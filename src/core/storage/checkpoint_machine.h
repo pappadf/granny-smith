@@ -38,24 +38,30 @@ const char *checkpoint_machine_created(void);
 
 // Override the parent directory used to host machine subdirectories.  Default
 // is "/opfs/checkpoints".  Test harnesses use this to redirect the entire
-// tree to a temp location.
-void checkpoint_machine_set_root(const char *root);
+// tree to a temp location.  Only before checkpoint_machine_set: once the
+// machine directory exists (and images may keep deltas in it) a new root is
+// refused, -1; else 0.
+int checkpoint_machine_set_root(const char *root);
 
 // Set the active machine directory explicitly (no <machine_id>-<created>
 // suffix).  Used by headless callers that pass --checkpoint-dir directly.
 // Creates the directory if it does not exist.  Returns 0 on success.
 int checkpoint_machine_set_dir(const char *dir);
 
-// Sweep the parent /opfs/checkpoints/ directory, deleting every entry whose
-// name does not exactly match the current machine directory.  Also deletes
-// any *.tmp files left in the current machine directory by a crashed
-// previous write.  Idempotent; safe to call before any images are opened.
-// Returns 0 on success, non-zero on failure.
+// Sweep the parent /opfs/checkpoints/ directory, deleting every entry shaped
+// like a machine directory (<16 hex>-<YYYYMMDDTHHMMSSZ>) other than the
+// current one.  Also deletes any *.tmp files left in the current machine
+// directory by a crashed previous write.  Best effort: every entry is
+// tried; returns non-zero when anything could not be removed (or on bad
+// state), 0 otherwise.  Idempotent; safe to call before any images are
+// opened.
 int checkpoint_machine_sweep_others(void);
 
-// Write manifest.json in the current machine directory.  Called exactly once,
-// at the end of machine creation, after the slot table is populated.  The
-// manifest is informational only: failure is logged but not fatal.
-int checkpoint_machine_write_manifest(void);
+// Write manifest.json in the current machine directory, describing `cfg`
+// (its model, RAM and images).  Called exactly once, at the end of machine
+// creation, after the slot table is populated.  The manifest is
+// informational only: failure is logged but not fatal.
+struct config;
+int checkpoint_machine_write_manifest(const struct config *cfg);
 
 #endif // CHECKPOINT_MACHINE_H

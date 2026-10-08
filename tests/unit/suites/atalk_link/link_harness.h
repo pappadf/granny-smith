@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The stack's fixed LLAP node (appletalk.c LLAP_HOST_NODE) and the node the
+// The stack's fixed LLAP node (appletalk.c ATALK_HOST_NODE) and the node the
 // tests play the guest from.
 #define HOST_NODE  33
 #define GUEST_NODE 5

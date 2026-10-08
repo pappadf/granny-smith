@@ -44,10 +44,21 @@ make -f Makefile.headless                       # -> build/headless/gs-headless
   IIx/IIcx/SE/30 ROM otherwise boots as `se30`), `ram=<KB>`, `hd=` (repeatable),
   `cdrom=`, `fd=` / `fd0=` / `fd1=`, `video_card=`, `monitor=`, `script=<file>`,
   `--var NAME=VAL`.
-- Flags: `--port=N` (default 6800), `--kill` (replace a daemon on that port),
+- Flags: `--port=N` (default 6800), `--kill` (replace a daemon on that port:
+  SIGTERM, then SIGKILL after 5 s; the daemon holds an flock on its PID file,
+  so only a live daemon is signalled),
   `--no-prompt` (no status line after each reply), `--speed=turbo|paced|accelerated`
   (`max` = `turbo`), `--script-stdin`.
 - The machine sits at the reset vector until you run it.
+- Startup order: `script=` first, then `--script-stdin`, then the daemon. A
+  `quit` in a script (or a failing `script=`) ends it there: the daemon prints
+  `READY` and exits at once.
+- More than 8 `hd=`/`cdrom=`, 2 `fd=`, 16 `drive=` or 64 `--var` is an error.
+- **Security:** the daemon binds 127.0.0.1 with no authentication. Any local
+  process can run any statement as your user, host file reads and writes
+  (`files.cp`, `checkpoint.save` to any path) included. While a client is
+  served, the daemon's stdout *and* stderr go to it -- every line printed,
+  logs and warnings too. Run it only where local users are trusted.
 - Non-daemon `script=` runs keep free-running after the script ends: finish
   the script with `quit`.
 - If the daemon never prints `READY`, the bind was blocked (sandbox) or the

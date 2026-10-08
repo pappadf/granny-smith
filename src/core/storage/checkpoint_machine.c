@@ -38,14 +38,17 @@ static const char *machine_root(void) {
     return g_machine_root ? g_machine_root : "/opfs/checkpoints";
 }
 
-void checkpoint_machine_set_root(const char *root) {
+int checkpoint_machine_set_root(const char *root) {
+    // Once the identity is set, its directory exists and writable images may
+    // already keep their deltas in it: moving the root then would split the
+    // machine's state between two trees.  Set the root first.
+    if (g_machine_id) {
+        LOG(1, "checkpoint_machine_set_root: refused, the machine directory %s is in use", g_machine_dir);
+        return -1;
+    }
     free(g_machine_root);
     g_machine_root = root ? gs_strdup(root) : NULL;
-    // Recompute machine dir if id+created already set.
-    if (g_machine_id && g_machine_created) {
-        free(g_machine_dir);
-        g_machine_dir = gs_str_printf("%s/%s-%s", machine_root(), g_machine_id, g_machine_created);
-    }
+    return 0;
 }
 
 // Undo a partial checkpoint_machine_set so a retry is possible, putting
@@ -184,6 +187,8 @@ int checkpoint_machine_sweep_others(void) {
         return -1;
     }
 
+    // Best effort: every entry is tried, and a failure is reported at the end.
+    bool failed = false;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         const char *name = entry->d_name;
@@ -211,9 +216,13 @@ int checkpoint_machine_sweep_others(void) {
         struct stat st;
         if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
             LOG(2, "checkpoint_machine: sweeping orphan dir %s", child);
-            (void)gs_rm_tree(child);
-        } else {
-            unlink(child);
+            if (gs_rm_tree(child) != 0) {
+                LOG(1, "checkpoint_machine: could not remove all of %s", child);
+                failed = true;
+            }
+        } else if (unlink(child) != 0 && errno != ENOENT) {
+            LOG(1, "checkpoint_machine: could not remove %s (errno=%d)", child, errno);
+            failed = true;
         }
         free(child);
     }
@@ -232,17 +241,18 @@ int checkpoint_machine_sweep_others(void) {
             if (nlen >= 4 && strcmp(name + nlen - 4, ".tmp") == 0) {
                 char *p = gs_str_printf("%s/%s", g_machine_dir, name);
                 if (p) {
-                    unlink(p);
+                    if (unlink(p) != 0 && errno != ENOENT)
+                        failed = true;
                     free(p);
                 }
             }
         }
         closedir(me);
     }
-    return 0;
+    return failed ? -1 : 0;
 }
 
-int checkpoint_machine_write_manifest(void) {
+int checkpoint_machine_write_manifest(const config_t *cfg) {
     if (!g_machine_dir)
         return -1;
     // Defer to a JSON build inline.  Keep the schema shallow and stable.
@@ -256,7 +266,7 @@ int checkpoint_machine_write_manifest(void) {
     char *body = NULL;
     char *id_esc = gs_json_escape_dup(g_machine_id);
     char *created_esc = gs_json_escape_dup(g_machine_created);
-    char *build_esc = gs_json_escape_dup(get_build_id());
+    char *build_esc = gs_json_escape_dup(build_id_get());
     if (!id_esc || !created_esc || !build_esc) {
         free(id_esc);
         free(created_esc);
@@ -277,9 +287,9 @@ int checkpoint_machine_write_manifest(void) {
 
     const char *model_id = "";
     uint32_t ram_bytes = 0;
-    if (global_emulator && global_emulator->machine && global_emulator->machine->id) {
-        model_id = global_emulator->machine->id;
-        ram_bytes = global_emulator->ram_size;
+    if (cfg && cfg->machine && cfg->machine->id) {
+        model_id = cfg->machine->id;
+        ram_bytes = cfg->ram_size;
     }
     char *model_esc = gs_json_escape_dup(model_id);
     if (!model_esc) {
@@ -302,9 +312,9 @@ int checkpoint_machine_write_manifest(void) {
     // a truncated one.
     char *img_buf = gs_strdup("  \"images\": [");
     bool first = true;
-    int n = global_emulator ? global_emulator->n_images : 0;
+    int n = cfg ? cfg->n_images : 0;
     for (int i = 0; i < n && img_buf; i++) {
-        image_t *img = global_emulator->images[i];
+        const image_t *img = cfg->images[i];
         if (!img)
             continue;
         char *base_esc = gs_json_escape_dup(img->filename ? img->filename : "");

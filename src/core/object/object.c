@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -558,71 +559,6 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // are case-sensitive everywhere else in the codebase. This is the set
 // docs/internals/core/object/object-model.md ("Reserved words") documents.
 
-// The shell's keywords, each with its one-line syntax (shell.keywords); the
-// syntax sits next to the word so the two cannot drift.  One table for the
-// reserved-word check, shell.keywords and completion.
-//   reserved   may not name a member, alias or binding; a contextual
-//              keyword (`command`) is a keyword only in its statement shape
-//   statement  heads a statement (offered at the start of a line)
-enum { KW_RESERVED = 1, KW_STATEMENT = 2 };
-static const struct {
-    const char *word;
-    const char *syntax;
-    unsigned flags;
-} KEYWORDS[] = {
-    // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
-    // words to bool-slot input coercions (validate_slot) — they are
-    // ordinary identifiers again.
-    {"true",     "true — the boolean literal",                                 KW_RESERVED               },
-    {"false",    "false — the boolean literal",                                KW_RESERVED               },
-    {"none",     "none — no value (an unset optional, an absent result)",      KW_RESERVED               },
-    // Statement keywords.
-    {"let",      "let <name> = <expr>",                                          KW_RESERVED | KW_STATEMENT},
-    {"alias",    "alias <name> = <path>",                                        KW_RESERVED | KW_STATEMENT},
-    {"command",  "command <name> = <path> — a bare word that runs the method", KW_STATEMENT              },
-    {"if",       "if <expr> { … }",                                            KW_RESERVED | KW_STATEMENT},
-    {"elif",     "} elif <expr> { … }",                                        KW_RESERVED | KW_STATEMENT},
-    {"else",     "} else { … }",                                               KW_RESERVED | KW_STATEMENT},
-    {"while",    "while <expr> { … }",                                         KW_RESERVED | KW_STATEMENT},
-    {"for",      "for <name> in <expr> { … }",                                 KW_RESERVED | KW_STATEMENT},
-    {"in",       "for <name> in <expr> { … }",                                 KW_RESERVED               },
-    {"break",    "break — leave the innermost loop",                           KW_RESERVED | KW_STATEMENT},
-    {"continue", "continue — next iteration of the innermost loop",            KW_RESERVED | KW_STATEMENT},
-    {"return",   "return [<expr>]",                                              KW_RESERVED | KW_STATEMENT},
-    {"def",      "def <name>(<param>, …) { … }",                             KW_RESERVED | KW_STATEMENT},
-    {"assert",   "assert <expr> [\"message\"]",                                  KW_RESERVED | KW_STATEMENT},
-    {"include",  "include <path> — run a script file here",                    KW_RESERVED | KW_STATEMENT},
-    // Held for a possible future post-test loop.
-    {"do",       "do — reserved",                                              KW_RESERVED               },
-};
-
-#define N_KEYWORDS (sizeof(KEYWORDS) / sizeof(KEYWORDS[0]))
-
-size_t object_keyword_count(void) {
-    return N_KEYWORDS;
-}
-
-const char *object_keyword(size_t i) {
-    return i < N_KEYWORDS ? KEYWORDS[i].word : NULL;
-}
-
-const char *object_keyword_syntax(size_t i) {
-    return i < N_KEYWORDS ? KEYWORDS[i].syntax : NULL;
-}
-
-bool object_keyword_is_statement(size_t i) {
-    return i < N_KEYWORDS && (KEYWORDS[i].flags & KW_STATEMENT);
-}
-
-bool object_is_reserved_word(const char *name) {
-    if (!name)
-        return false;
-    for (size_t i = 0; i < N_KEYWORDS; i++)
-        if ((KEYWORDS[i].flags & KW_RESERVED) && strcmp(name, KEYWORDS[i].word) == 0)
-            return true;
-    return false;
-}
-
 // Pure identifier: [A-Za-z_][A-Za-z0-9_]*
 static bool is_valid_identifier(const char *name) {
     if (!name || !*name)
@@ -660,6 +596,15 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
 // failure rather than a walk off the end, not to limit real enums.
 #define OBJ_MAX_ENUM_VALUES 256
 
+// Entries in a NULL-terminated enum table: the one scan validate_slot and the
+// result check share. The descriptors carry no count, so it runs per call.
+static size_t enum_table_len(const char *const *table) {
+    size_t n = 0;
+    while (table && table[n])
+        n++;
+    return n;
+}
+
 static bool enum_table_ok(const char *const *table) {
     if (!table || !table[0])
         return false;
@@ -669,10 +614,7 @@ static bool enum_table_ok(const char *const *table) {
     return false;
 }
 
-// Helpers for the method-arg ordering / coercion checks.
-static bool kind_supports_width(value_kind_t k) {
-    return k == V_INT || k == V_UINT;
-}
+// Helper for the method-arg width checks.
 static bool width_is_supported(uint8_t w) {
     // 0 = unconstrained, 1/2/4/8 = integer widths, 10 = FPU extended.
     return w == 0 || w == 1 || w == 2 || w == 4 || w == 8 || w == 10;
@@ -729,6 +671,16 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "%s.%s: %s has no .doc text", cls->name, m->name,
                          m->kind == M_ATTR ? "attribute" : "method");
+            return false;
+        }
+
+        // A method with no args[] table opts out of validation entirely, so
+        // it must not also claim an arity: a variadic method declares an
+        // OBJ_ARG_REST slot instead.
+        if (m->kind == M_METHOD && !m->method.args && m->method.nargs != 0) {
+            if (err_buf && err_size)
+                snprintf(err_buf, err_size, "%s.%s: nargs %d without an args[] table", cls->name, m->name,
+                         m->method.nargs);
             return false;
         }
 
@@ -790,12 +742,6 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                                  "%s.%s: arg '%s' is V_ENUM but has a missing or unterminated enum_values table",
                                  cls->name, m->name, p->name ? p->name : "?");
                     return false;
-                }
-                if (p->width && !kind_supports_width(p->kind)) {
-                    // Warning: width meaningless for this kind. Logged but
-                    // not fatal. Stay quiet by default — class authors will
-                    // see it via a follow-up audit pass.
-                    (void)0;
                 }
                 if (!width_is_supported(p->width)) {
                     if (err_buf && err_size)
@@ -1328,16 +1274,14 @@ int object_entry_index(struct object *entry) {
     return entry ? entry->entry_index : -1;
 }
 
-node_t node_child(node_t n, const char *segment) {
-    node_t bad = (node_t){0};
-    if (!segment || !*segment)
-        return bad;
-    if (!n.obj)
-        return bad;
+// Single-segment descent shared by node_child (a textual segment) and
+// node_child_index (an integer the caller already has). `segment` is the
+// identifier for a name segment, NULL for an integer one (`ival`).
+static node_t node_child_at(node_t n, const char *segment, long long ival);
 
-    // Attribute / method nodes are leaves — no further descent.
-    if (n.member && n.member->kind != M_CHILD)
-        return bad;
+node_t node_child(node_t n, const char *segment) {
+    if (!segment || !*segment)
+        return (node_t){0};
 
     // Probe for a pure-integer segment up front. Integer segments can
     // either *select an index* on a pending indexed-child member
@@ -1365,6 +1309,25 @@ node_t node_child(node_t n, const char *segment) {
         }
         value_free(&iv);
     }
+    return node_child_at(n, is_int ? NULL : segment, ival);
+}
+
+node_t node_child_index(node_t n, int64_t index) {
+    return node_child_at(n, NULL, (long long)index);
+}
+
+static node_t node_child_at(node_t n, const char *segment, long long ival) {
+    node_t bad = (node_t){0};
+    bool is_int = (segment == NULL);
+    if (!n.obj)
+        return bad;
+    // An index has to fit the int the collection callbacks take.
+    if (is_int && (ival < INT_MIN || ival > INT_MAX))
+        return bad;
+
+    // Attribute / method nodes are leaves — no further descent.
+    if (n.member && n.member->kind != M_CHILD)
+        return bad;
 
     // Case 1: `n` is sitting on an indexed-child member with no index
     // chosen yet. An integer segment supplies that index. This is what
@@ -1392,7 +1355,7 @@ node_t node_child(node_t n, const char *segment) {
     // M_CHILD descent computes the real target object, before the regular
     // member lookup — so paths like `cpu.meta`, `floppy.drives.0.meta`,
     // and bare `meta` (root) all resolve uniformly.
-    if (strcmp(segment, "meta") == 0) {
+    if (!is_int && strcmp(segment, "meta") == 0) {
         struct object *meta = meta_node_for(here);
         if (!meta)
             return bad;
@@ -1482,9 +1445,7 @@ node_t object_resolve(struct object *root, const char *path) {
             q = skip_ws(q);
             if (*q != ']')
                 return bad;
-            char seg[32];
-            snprintf(seg, sizeof(seg), "%lld", idx);
-            cur = node_child(cur, seg);
+            cur = node_child_index(cur, idx);
             if (!node_valid(cur))
                 return bad;
             p = skip_ws(q + 1);
@@ -1500,9 +1461,7 @@ node_t object_resolve(struct object *root, const char *path) {
             const char *q = parse_int(p, &idx);
             if (!q)
                 return bad;
-            char seg[32];
-            snprintf(seg, sizeof(seg), "%lld", idx);
-            cur = node_child(cur, seg);
+            cur = node_child_index(cur, idx);
             if (!node_valid(cur))
                 return bad;
             p = skip_ws(q);
@@ -1529,6 +1488,77 @@ node_t object_resolve(struct object *root, const char *path) {
     return cur;
 }
 
+// === Path printer ============================================================
+//
+// Walks `obj` up to the root. The root carries the substrate name
+// ("emu") but doesn't appear in user-facing paths (`cpu.pc`, not
+// `emu.cpu.pc`), so the recursion stops as soon as a node has no
+// parent. Meta nodes are unattached (parent == NULL), so the recursion
+// special-cases them: their path is `<inspected>.meta`.
+
+void object_compute_path(struct object *obj, char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0)
+        return;
+    buf[0] = '\0';
+    if (!obj)
+        return;
+
+    // Meta node: recurse on the inspected target, then append ".meta".
+    if (object_class(obj) == meta_class()) {
+        struct object *inspected = (struct object *)object_data(obj);
+        object_compute_path(inspected, buf, buf_size);
+        size_t len = strlen(buf);
+        const char *suffix = (len > 0) ? ".meta" : "meta";
+        size_t slen = strlen(suffix);
+        if (len + slen + 1 <= buf_size) {
+            memcpy(buf + len, suffix, slen + 1);
+        }
+        return;
+    }
+
+    // Callback-backed child (collection entry, lookup-backed named child):
+    // no attached parent, but a logical one -- `<parent>.<name>`,
+    // `<parent>[<index>]` or `<parent>["<key>"]`.
+    struct object *parent = object_parent(obj);
+    struct object *lparent = parent ? NULL : object_logical_parent(obj);
+    if (lparent) {
+        object_compute_path(lparent, buf, buf_size);
+        size_t len = strlen(buf);
+        char seg[OBJ_KEY_MAX + 8];
+        const char *lname = object_logical_name(obj);
+        const char *lkey = object_logical_key(obj);
+        if (lname)
+            snprintf(seg, sizeof(seg), "%s%s", len > 0 ? "." : "", lname);
+        else if (lkey)
+            snprintf(seg, sizeof(seg), "[\"%s\"]", lkey);
+        else
+            snprintf(seg, sizeof(seg), "[%d]", object_logical_index(obj));
+        size_t slen = strlen(seg);
+        if (len + slen + 1 <= buf_size)
+            memcpy(buf + len, seg, slen + 1);
+        return;
+    }
+
+    // Root (or detached): empty path.
+    if (!parent)
+        return;
+
+    // Recurse on parent, then append "." + own name.
+    object_compute_path(parent, buf, buf_size);
+    size_t len = strlen(buf);
+    const char *name = object_name(obj);
+    if (!name || !*name)
+        return;
+    size_t nlen = strlen(name);
+    // Skip the leading dot when the parent itself was the root (empty).
+    bool need_dot = (len > 0);
+    if (len + (need_dot ? 1 : 0) + nlen + 1 > buf_size)
+        return;
+    if (need_dot)
+        buf[len++] = '.';
+    memcpy(buf + len, name, nlen + 1);
+}
+
 // === Argument / setter validation ===========================================
 //
 // Single engine drives both: arg_decl_t (one per method param) and
@@ -1536,8 +1566,6 @@ node_t object_resolve(struct object *root, const char *path) {
 // view, then validate_slot() enforces kind / width / non-empty / enum
 // rules with limited coercion. See docs/internals/core/object/object-model.md
 // ("Typed dispatch validation").
-
-#define OBJ_VALIDATE_MAX_ARGS 16
 
 typedef struct typed_slot {
     const char *name; // arg name; "" for attribute slots
@@ -1755,9 +1783,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
             }
             const char *str = in->s ? in->s : "";
             int idx = -1;
-            size_t n_table = 0;
-            while (s->enum_values[n_table])
-                n_table++;
+            size_t n_table = enum_table_len(s->enum_values);
             for (size_t i = 0; i < n_table; i++) {
                 if (strcmp(s->enum_values[i], str) == 0) {
                     idx = (int)i;
@@ -1781,9 +1807,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     } else {
         // Kinds match — secondary checks.
         if (s->kind == V_ENUM && s->enum_values) {
-            size_t n_table = 0;
-            while (s->enum_values[n_table])
-                n_table++;
+            size_t n_table = enum_table_len(s->enum_values);
             if (out->enm.idx < 0 || (size_t)out->enm.idx >= n_table) {
                 snprintf(err_buf, err_size, "enum index %d out of range", out->enm.idx);
                 return VALIDATE_ERR;
@@ -1815,18 +1839,22 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     return rewrote ? VALIDATE_REWRITE : VALIDATE_OK;
 }
 
-// Build a "<class>.<member>" prefix into buf. Used for the leading text
-// in method/setter error messages.
+// Build the "<path>.<member>" prefix of a method/setter error message,
+// naming the member the way the user addresses it (`machine.cpu.step`), with
+// the same path printer meta.path uses. A node with no path (the root, or
+// one not attached to the tree) falls back to its class name.
 static void format_member_path(char *buf, size_t buf_size, struct object *obj, const member_t *m) {
+    char path[OBJ_PATH_MAX];
+    object_compute_path(obj, path, sizeof(path));
     const class_desc_t *cls = obj ? object_class(obj) : NULL;
-    const char *cls_name = (cls && cls->name) ? cls->name : "";
+    const char *head = *path ? path : (cls && cls->name) ? cls->name : "";
     const char *member_name = (m && m->name) ? m->name : "";
-    if (*cls_name && *member_name)
-        snprintf(buf, buf_size, "%s.%s", cls_name, member_name);
+    if (*head && *member_name)
+        snprintf(buf, buf_size, "%s.%s", head, member_name);
     else if (*member_name)
         snprintf(buf, buf_size, "%s", member_name);
     else
-        snprintf(buf, buf_size, "%s", cls_name);
+        snprintf(buf, buf_size, "%s", head);
 }
 
 // Validate argv against a method's declared args[]. On success the body is
@@ -1839,14 +1867,13 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     const arg_decl_t *args = m->method.args;
     int nargs = m->method.nargs;
 
-    char prefix[128];
+    char prefix[256];
     format_member_path(prefix, sizeof(prefix), obj, m);
 
     // No declared args[] table → opt out of framework validation entirely
-    // (the body owns argc / kind checking). This matches the legacy
-    // contract for methods that haven't been migrated yet, and for
-    // genuinely-variadic helpers like `echo` whose shape isn't expressible
-    // in the current arg_decl_t vocabulary.
+    // (the body owns argc / kind checking). object_validate_class only
+    // allows this with nargs == 0; a variadic method declares an
+    // OBJ_ARG_REST slot instead (root `echo` does).
     if (!args) {
         *out_argc = in_argc;
         *out_argv = in_argv;
@@ -1862,6 +1889,10 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
 
     if (nargs > OBJ_VALIDATE_MAX_ARGS)
         return val_err("%s: declared arg count %d exceeds limit %d", prefix, nargs, OBJ_VALIDATE_MAX_ARGS);
+    // Every given argument lands in scratch[] (a rest tail included), so the
+    // count is bounded by its capacity -- refused, never clamped or overrun.
+    if (in_argc > OBJ_VALIDATE_MAX_ARGS)
+        return val_err("%s: too many arguments (got %d, limit %d)", prefix, in_argc, OBJ_VALIDATE_MAX_ARGS);
 
     // Locate the rest slot, if any (must be last per registration check).
     bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
@@ -1968,7 +1999,7 @@ static value_t node_validate_set(struct object *obj, const member_t *m, value_t 
     typed_slot_t s;
     slot_from_attr(&s, m);
 
-    char prefix[128];
+    char prefix[256];
     format_member_path(prefix, sizeof(prefix), obj, m);
 
     char err[160];
@@ -1992,7 +2023,7 @@ static value_t node_validate_set(struct object *obj, const member_t *m, value_t 
 // Result-kind sanity check for getters / method results / setter returns.
 // V_ERROR is always allowed (in-band error path).
 static void assert_return_matches(const typed_slot_t *slot, const value_t *out, const char *site) {
-    (void)site;
+    (void)site; // only the GS_ASSERTF messages read it; GS_FAST compiles them out
     if (out->kind == V_ERROR)
         return;
     // V_ANY declares a polymorphic result; V_NONE reaches here only from
@@ -2004,23 +2035,15 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
     // An unset OBJ_ARG_NONE_OK slot answers `none`
     if ((slot->flags & OBJ_ARG_NONE_OK) && out->kind == V_NONE)
         return;
-    if (slot->kind != out->kind) {
-        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, value_kind_name(slot->kind),
-                value_kind_name(out->kind));
-        assert(out->kind == slot->kind && "return kind mismatch");
-    }
-    if ((slot->kind == V_INT || slot->kind == V_UINT) && slot->width) {
-        if (!value_fits_width(out, slot->width)) {
-            fprintf(stderr, "[object] %s: width mismatch (declared %u bytes)\n", site, slot->width);
-            assert(value_fits_width(out, slot->width) && "return width mismatch");
-        }
-    }
-    if (slot->kind == V_ENUM && slot->enum_values) {
-        size_t n_table = 0;
-        while (slot->enum_values[n_table])
-            n_table++;
-        assert(out->enm.idx >= 0 && (size_t)out->enm.idx < n_table && "return enum index out of table");
-    }
+    // Through the project's assertion handler, which prints the message
+    // with its diagnostics, rather than a bare stderr line before assert().
+    GS_ASSERTF(out->kind == slot->kind, "%s: kind mismatch (declared %s, got %s)", site, value_kind_name(slot->kind),
+               value_kind_name(out->kind));
+    if ((slot->kind == V_INT || slot->kind == V_UINT) && slot->width)
+        GS_ASSERTF(value_fits_width(out, slot->width), "%s: width mismatch (declared %u bytes)", site, slot->width);
+    if (slot->kind == V_ENUM && slot->enum_values && out->kind == V_ENUM)
+        GS_ASSERTF(out->enm.idx >= 0 && (size_t)out->enm.idx < enum_table_len(slot->enum_values),
+                   "%s: enum index %d out of table", site, out->enm.idx);
 }
 #endif
 
@@ -2260,11 +2283,11 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
     const arg_decl_t *args = n.member->method.args;
     int nargs = n.member->method.nargs;
 
-    char prefix[128];
+    char prefix[256];
     format_member_path(prefix, sizeof(prefix), n.obj, n.member);
 
     // Methods without a declared args[] table don't participate in named
-    // binding (legacy variadic surface like `echo`) — positional-only.
+    // binding — positional-only.
     if (!args || nargs <= 0) {
         if (named_n > 0)
             return val_err("%s: method does not declare named arguments", prefix);

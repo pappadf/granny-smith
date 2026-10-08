@@ -13,9 +13,11 @@
 #ifndef TRAP_LOOKUP_H
 #define TRAP_LOOKUP_H
 
+#include <stddef.h>
 #include <stdint.h>
 
-// Returns the human-readable name for a Mac OS A-trap opcode.
-const char *macos_atrap_name(uint16_t trap);
+// Returns the human-readable name for a Mac OS A-trap opcode; an unknown
+// opcode is formatted as "_XXXX" into `buf` (8 bytes suffice).
+const char *debug_mac_atrap_name(uint16_t trap, char *buf, size_t buf_size);
 
 #endif // TRAP_LOOKUP_H

@@ -879,7 +879,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // visible in the object model -- none of which an env var offered.  Unlike
     // the other env-var overrides this replaced, this one only ever produced
     // output and never changed emulated behaviour.
-    if (log_would_log(_log_get_local_category(), 9)) {
+    if (log_would_log(log_local_category(), 9)) {
         extern uint64_t cpu_instr_count(void);
         unsigned long long ic = (unsigned long long)cpu_instr_count();
         if (off == 0x020 || off == 0x050 || off == 0x070) {

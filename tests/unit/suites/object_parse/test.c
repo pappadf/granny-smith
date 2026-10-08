@@ -12,7 +12,7 @@
 #include <string.h>
 
 static value_t parse_str(const char *s) {
-    return parse_literal_full(s, NULL, 0);
+    return parse_literal_whole_string(s, NULL, 0);
 }
 
 // Decimal integer.
@@ -175,12 +175,12 @@ TEST(test_bytes_int_suffix) {
 // Enum tags resolve against the supplied table.
 TEST(test_enum_lookup) {
     static const char *const phases[] = {"idle", "command", "data", "status"};
-    value_t v = parse_literal_full("data", phases, 4);
+    value_t v = parse_literal_whole_string("data", phases, 4);
     ASSERT_EQ_INT(V_ENUM, v.kind);
     ASSERT_EQ_INT(2, v.enm.idx);
     value_free(&v);
 
-    v = parse_literal_full("missing", phases, 4);
+    v = parse_literal_whole_string("missing", phases, 4);
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
 }
@@ -291,8 +291,26 @@ TEST(test_leading_zero_is_decimal_not_octal) {
     value_free(&vo);
 }
 
+// A digit invalid for the base ends the literal in an error rather than
+// being swallowed (`0b12` is not 1), and the bytes-suffix width is read
+// with the integer grammar (`:010` is ten bytes, not octal eight).
+TEST(test_int_rejects_trailing_digits_and_letters) {
+    const char *bad[] = {"0b12", "0o18", "100u32", "12abc", "0x1g"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        value_t v = parse_str(bad[i]);
+        ASSERT_TRUE(val_is_error(&v));
+        value_free(&v);
+    }
+    value_t v = parse_str("0x1:010");
+    ASSERT_EQ_INT(V_BYTES, v.kind);
+    ASSERT_EQ_INT(10, (int)v.bytes.n);
+    ASSERT_EQ_INT(1, v.bytes.p[9]);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_int_decimal);
+    RUN(test_int_rejects_trailing_digits_and_letters);
     RUN(test_int_hex);
     RUN(test_int_binary);
     RUN(test_int_octal_dec);

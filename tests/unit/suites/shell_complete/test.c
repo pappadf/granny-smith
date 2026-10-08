@@ -115,7 +115,7 @@ static void build_tree(void) {
 static struct completion g_out;
 
 static void complete(const char *line) {
-    memset(&g_out, 0, sizeof(g_out));
+    completion_free(&g_out);
     g_opendir_calls = 0;
     shell_complete(line, (int)strlen(line), &g_out);
 }

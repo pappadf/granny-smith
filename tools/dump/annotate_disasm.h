@@ -5,7 +5,7 @@
 // Disassemble + annotate a 68k code buffer to a file.  Calls cpu_disasm
 // per instruction and decorates the output with branch-destination
 // resolution and (when the flag is set) trap-name comments via
-// macos_atrap_name().  Both the standalone tools/disasm tool and the `re`
+// debug_mac_atrap_name().  Both the standalone tools/disasm tool and the `re`
 // orchestrator link against this; the proposal calls out factoring out
 // the duplicated branch annotator that previously lived inside
 // tools/disasm.c.

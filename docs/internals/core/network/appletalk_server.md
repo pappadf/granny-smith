@@ -2619,7 +2619,11 @@ state, two homes:
 
 `.gs-afp` and every `._*` sidecar are filtered out of FPEnumerate and of the
 offspring count, and a client pathname that names either is rejected with
-`ParamErr` before it can resolve.
+`ParamErr` before it can resolve. The host's other dotfiles (`.git`, `.ssh`,
+`.DS_Store`) are not listed either -- a Mac name never starts with a period,
+and a share overlapping a home directory should not show them -- but they are
+only hidden, not server state: a folder holding one is not empty, and
+FPDelete refuses it with `DirNotEmpty` rather than deleting them.
 
 **Names and paths.** A pathname from the client is CNode names separated by
 NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and
@@ -2791,8 +2795,10 @@ name, enablement and message, the printer, the Apple event port -- belongs
 to the network, which no machine checkpoints.
 
 A machine checkpoint therefore carries the connection's block only: the
-link's enabled flag and counters, and the session numbering (the next
-session reference and wire session id). A restored connection has no
+link's enabled flag and counters, the session numbering (the next
+session reference and wire session id) and the ATP transaction-id cursor,
+so a restored connection does not reuse a TID the guest's exactly-once
+cache may still hold. A restored connection has no
 sessions, which to the guest is a **server restart**: its next request on
 the session it held is answered `SessClosed` -- never dropped, which would
 leave it waiting out a timeout -- the AppleShare client sees the connection

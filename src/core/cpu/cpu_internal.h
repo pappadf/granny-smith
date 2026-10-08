@@ -11,6 +11,7 @@
 #define CPU_INTERNAL_H
 
 #include "cpu.h"
+#include "cpu_ea.h"
 #include "debug.h"
 #include "memory.h"
 #include "mmu.h"
@@ -32,7 +33,10 @@ struct cpu {
     uint32_t ssp;
     uint32_t usp;
 
-    // status register
+    // status register.  The five CCR flags follow one convention: 0 = clear,
+    // any non-zero value = set (UPDATE_N stores the operand's sign bit in
+    // place, not 1), so test them for truth, never compare them with 1.
+    // Z is the exception -- every writer stores exactly 0 or 1.
     uint32_t trace;
     uint32_t supervisor;
     uint32_t interrupt_mask;
@@ -157,7 +161,10 @@ static inline uint32_t ea_index_value(cpu_t *restrict cpu, uint16_t ext_word) {
     uint32_t v = (ext_word & 0x8000) ? cpu->a[(ext_word >> 12) & 7] : cpu->d[(ext_word >> 12) & 7];
     if ((ext_word & 0x0800) == 0) // word-sized index
         v = (int32_t)(int16_t)v; // sign extend
-    // Apply scale factor (68020+): bits 10-9 encode shift count 0-3
+    // Apply scale factor (68020+): bits 10-9 encode shift count 0-3.  The
+    // shift is deliberately unsigned: scaling the two's-complement index
+    // modulo 2^32 is exactly the hardware's address arithmetic, with no
+    // signed-overflow question for a large negative index.
     if (cpu->cpu_model >= CPU_MODEL_68030) {
         int scale = (ext_word >> 9) & 3;
         v <<= scale;
@@ -172,6 +179,12 @@ static __attribute__((noinline)) uint32_t calculate_ea_full(cpu_t *restrict cpu,
     // With increment=true, cpu->pc now points past the ext word (correct for BD/OD reads).
     // With increment=false, cpu->pc still points AT the ext word (not yet advanced).
     // Use a local 'pos' to sequence through BD and OD bytes correctly in both cases.
+    //
+    // A fault on a BD/OD fetch or the indirect read does not abort here: in
+    // the deferred-bus-error model the instruction always completes and the
+    // epilogue raises the fault.  Committing the full instruction length is
+    // what that needs -- Format $A (skip) resumes at cpu->pc, and Format $B
+    // (retry) restarts from cpu->instruction_pc regardless of cpu->pc.
     uint32_t pos = cpu->pc;
     if (!increment)
         pos += 2; // skip the ext word we already read without advancing cpu->pc
@@ -240,7 +253,10 @@ static __attribute__((noinline)) uint32_t calculate_ea_full(cpu_t *restrict cpu,
             }
             result = intermediate + index + (uint32_t)od;
         } else {
-            // iis=4 (reserved): treat as no-memory-indirect
+            // iis=4 (reserved): treat as no-memory-indirect.  MC68030UM lists
+            // the encoding as reserved without defining what the CPU does with
+            // it, so we keep the harmless reading rather than invent an
+            // exception; the disassembler shows it as <illegal>.
             result = base + index + (uint32_t)bd;
         }
     }
@@ -307,10 +323,22 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
     default:
         break;
     }
+    // Modes 0/1 (register direct) have no address; the read/write helpers
+    // dispatch them before getting here.  A caller that skips validation
+    // (cpu_pmmu_general's PMOVE with a Dn/An operand) lands its access at the
+    // top of the address space rather than on the vector table at 0, which is
+    // why this is not the mode-7 default's 0.  Kept as-is: neither value is
+    // what hardware does (it would trap), and changing it moves stray writes.
     return (uint32_t)-1;
 }
 
 // Calculate the effective address for an operand based on mode and register.
+// `size` is the operand size in bytes: it sets the (An)+/-(An) step and the
+// immediate length -- 1/2/4 for integer ops, 8 for PMOVE's 64-bit root
+// pointers, 12 for FPU extended -- and only size 1 gets the A7 byte-to-word
+// adjustment.  Callers validate mode/reg first (VALID_EA); an invalid
+// encoding yields a fixed dummy address (see calculate_ea_slow) rather than
+// a check here.
 // Force-inlined hot switch covering the frequent register-indirect modes
 // (An)/(An)+/-(An)/(d16,An); everything else takes the out-of-line cold tail
 // above.  Out-of-line entirely, these helpers measured ~11% of gameplay
@@ -344,7 +372,10 @@ static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restri
     }
 }
 
-// Read an 8-bit value from the effective address specified in the opcode
+// Read an 8-bit value from the effective address specified in the opcode.
+// The read_ea_* helpers trust the caller's VALID_EA check (an unvalidated
+// mode would read a dummy address); validating again here would put a
+// second test on every operand read of the hot path.
 static inline __attribute__((always_inline)) uint8_t read_ea_8(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
     uint16_t mode = opcode >> 3 & 7;
     uint16_t reg = opcode & 7;
@@ -464,42 +495,43 @@ static inline __attribute__((always_inline)) void write_ea_32(cpu_t *restrict cp
 // frame).  The retry re-executes from scratch, so we must abort cleanly and
 // leave the architectural state (Dn/An, including An for post-increment mode)
 // unchanged — otherwise the retry restarts with already-incremented registers.
+//
+// The caller has validated the EA (control modes or (An)+, never -(An)); the
+// helper does not re-check it.  The mask loops visit only the set bits
+// (__builtin_ctz), lowest register first, which is the transfer order.
 static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int bits) {
-    int i;
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
+    unsigned d_mask = register_mask & 0xFFu; // D0-D7 in bits 0-7
+    unsigned a_mask = register_mask >> 8; // A0-A7 in bits 8-15
 
     // Stage register updates so a mid-instruction bus error leaves Dn/An
     // untouched; real hardware restarts MOVEM from scratch via RTE fmt=$B.
     uint32_t new_d[8], new_a[8];
-    uint8_t d_set = 0, a_set = 0;
-    for (i = 0; i < 8; i++)
-        if (register_mask & (1 << i)) {
-            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
-            ea += bits >> 3;
-            if (g_bus_error_pending)
-                return;
-            new_d[i] = v;
-            d_set |= (uint8_t)(1 << i);
-        }
-    for (i = 0; i < 8; i++)
-        if (register_mask & (0x100 << i)) {
-            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
-            ea += bits >> 3;
-            if (g_bus_error_pending)
-                return;
-            new_a[i] = v;
-            a_set |= (uint8_t)(1 << i);
-        }
+    for (unsigned m = d_mask; m; m &= m - 1) {
+        int i = __builtin_ctz(m);
+        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+        ea += bits >> 3;
+        if (g_bus_error_pending)
+            return;
+        new_d[i] = v;
+    }
+    for (unsigned m = a_mask; m; m &= m - 1) {
+        int i = __builtin_ctz(m);
+        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+        ea += bits >> 3;
+        if (g_bus_error_pending)
+            return;
+        new_a[i] = v;
+    }
 
-    for (i = 0; i < 8; i++)
-        if (d_set & (1 << i))
-            cpu->d[i] = new_d[i];
-    for (i = 0; i < 8; i++)
-        if (a_set & (1 << i))
-            cpu->a[i] = new_a[i];
+    // Every transfer succeeded (a fault returned above): commit them all
+    for (unsigned m = d_mask; m; m &= m - 1)
+        cpu->d[__builtin_ctz(m)] = new_d[__builtin_ctz(m)];
+    for (unsigned m = a_mask; m; m &= m - 1)
+        cpu->a[__builtin_ctz(m)] = new_a[__builtin_ctz(m)];
 
     // Postincrement mode writes the incremented address back, and it does so
     // even when the base register is ALSO in the transfer list -- the loaded
@@ -524,64 +556,71 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
 // Same retry-safety concern as movem_to_register: on a mid-instruction bus
 // error the faulting instruction is restarted (Format $B), so An (for
 // predecrement mode) must not be updated until all writes have succeeded.
+//
+// The caller has validated the EA (control-alterable or -(An)); mode 4 is
+// recognised from the opcode bits alone.  For -(An) the mask is reversed
+// (bit 0 = A7 ... bit 15 = D0), so the lowest set bit is still the first
+// register stored.
 static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int bits) {
-    int i;
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
     int step = bits >> 3; // 2 for 16-bit, 4 for 32-bit
+    unsigned lo_mask = register_mask & 0xFFu;
+    unsigned hi_mask = register_mask >> 8;
 
     if ((opcode & 0x38) == 0x20) // predecrement mode: -(An)
     {
         int an = opcode & 7; // base address register number
         uint32_t addr = cpu->a[an];
-        for (i = 0; i < 8; i++)
-            if (register_mask & (1 << i)) {
-                addr -= step;
-                // 68030 stores An-step when An is the predecrement base register
-                uint32_t val = cpu->a[7 - i];
-                if (cpu->cpu_model >= CPU_MODEL_68030 && (7 - i) == an)
-                    val -= step;
-                if (bits == 16)
-                    memory_write_uint16(addr, val);
-                else
-                    memory_write_uint32(addr, val);
-                if (g_bus_error_pending)
-                    return; // leave cpu->a[an] unchanged so RTE-retry sees the original An
-            }
-        for (i = 0; i < 8; i++)
-            if (register_mask & (0x100 << i)) {
-                addr -= step;
-                if (bits == 16)
-                    memory_write_uint16(addr, cpu->d[7 - i]);
-                else
-                    memory_write_uint32(addr, cpu->d[7 - i]);
-                if (g_bus_error_pending)
-                    return;
-            }
+        for (unsigned m = lo_mask; m; m &= m - 1) {
+            int r = 7 - __builtin_ctz(m); // bit i selects A(7-i)
+            addr -= step;
+            // 68030 stores An-step when An is the predecrement base register
+            uint32_t val = cpu->a[r];
+            if (cpu->cpu_model >= CPU_MODEL_68030 && r == an)
+                val -= step;
+            if (bits == 16)
+                memory_write_uint16(addr, val);
+            else
+                memory_write_uint32(addr, val);
+            if (g_bus_error_pending)
+                return; // leave cpu->a[an] unchanged so RTE-retry sees the original An
+        }
+        for (unsigned m = hi_mask; m; m &= m - 1) {
+            int r = 7 - __builtin_ctz(m); // bit 8+i selects D(7-i)
+            addr -= step;
+            if (bits == 16)
+                memory_write_uint16(addr, cpu->d[r]);
+            else
+                memory_write_uint32(addr, cpu->d[r]);
+            if (g_bus_error_pending)
+                return;
+        }
+        // An empty mask leaves addr == An, so this store is a harmless no-op
         cpu->a[an] = addr;
     } else {
         uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
-        for (i = 0; i < 8; i++)
-            if (register_mask & (1 << i)) {
-                if (bits == 16)
-                    memory_write_uint16(ea, cpu->d[i]);
-                else
-                    memory_write_uint32(ea, cpu->d[i]);
-                ea += step;
-                if (g_bus_error_pending)
-                    return;
-            }
-        for (i = 0; i < 8; i++)
-            if (register_mask & (0x100 << i)) {
-                if (bits == 16)
-                    memory_write_uint16(ea, cpu->a[i]);
-                else
-                    memory_write_uint32(ea, cpu->a[i]);
-                ea += step;
-                if (g_bus_error_pending)
-                    return;
-            }
+        for (unsigned m = lo_mask; m; m &= m - 1) {
+            int i = __builtin_ctz(m);
+            if (bits == 16)
+                memory_write_uint16(ea, cpu->d[i]);
+            else
+                memory_write_uint32(ea, cpu->d[i]);
+            ea += step;
+            if (g_bus_error_pending)
+                return;
+        }
+        for (unsigned m = hi_mask; m; m &= m - 1) {
+            int i = __builtin_ctz(m);
+            if (bits == 16)
+                memory_write_uint16(ea, cpu->a[i]);
+            else
+                memory_write_uint32(ea, cpu->a[i]);
+            ea += step;
+            if (g_bus_error_pending)
+                return;
+        }
     }
 }
 
@@ -593,10 +632,12 @@ static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
     // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
-    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (~ss & rr & 0x80);
-    cpu->extend = cpu->carry = (bc | (ss & ~rr)) & 0x80;
-    cpu->negative = rr & 0x80;
-    cpu->zero &= rr == 0;
+    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (~ss & rr & 0x80) >> 7;
+    cpu->extend = cpu->carry = ((bc | (ss & ~rr)) & 0x80) >> 7;
+    cpu->negative = rr >> 7;
+    // Z is sticky across a multi-precision chain: cleared by any non-zero
+    // byte, never set.  A logical AND, so it holds for any truthy Z value.
+    cpu->zero = cpu->zero && rr == 0;
     return rr;
 }
 
@@ -606,10 +647,11 @@ static inline uint8_t sbcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t bc = ((~xx & yy) | ((~xx | yy) & dd)) & 0x88;
     uint8_t rr = dd - bc + (bc >> 2);
     // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
-    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (dd & ~rr & 0x80);
-    cpu->extend = cpu->carry = (bc | (~dd & rr)) & 0x80;
-    cpu->negative = rr & 0x80;
-    cpu->zero &= rr == 0;
+    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (dd & ~rr & 0x80) >> 7;
+    cpu->extend = cpu->carry = ((bc | (~dd & rr)) & 0x80) >> 7;
+    cpu->negative = rr >> 7;
+    // Sticky Z, as in abcd
+    cpu->zero = cpu->zero && rr == 0;
     return rr;
 }
 
@@ -658,36 +700,55 @@ static inline __attribute__((always_inline)) bool conditional_test(cpu_t *restri
     }
 }
 
-// Raise a CPU exception by pushing state and loading exception vector.
-// On 68030, determines frame format from vector number: vectors 5 (divide by
-// zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
-// instruction address); all others use Format $0. Uses VBR on 68030.
-static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
-    // Trace all exceptions (bus errors have their own dedicated path with richer info;
-    // this records generic exceptions — illegal instruction, privilege violation,
-    // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
-    if (vector != 0x008) {
-        extern void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr,
-                                     uint32_t rw, uint32_t vbr, uint16_t sr, uint16_t format_frame,
-                                     int double_fault_kind);
-        exc_trace_record(vector, cpu->instruction_pc, pc, 0, 0, cpu->vbr, sr, 0, 0);
-    }
+// Point the active SoA tables at the supervisor or the user view of memory.
+// The one place the active view follows SR.S: write_sr (every SR write,
+// including RTE) and enter_exception_supervisor call it on a mode change, and
+// the decoders re-derive it from cpu->supervisor where state may have moved
+// outside those paths (sprint entry, after delivering a deferred bus error).
+static inline void cpu_select_soa(bool supervisor) {
+    g_active_read = supervisor ? g_supervisor_read : g_user_read;
+    g_active_write = supervisor ? g_supervisor_write : g_user_write;
+}
+
+// Enter supervisor mode on the interrupt stack for exception processing.
+// From user mode: save A7 to USP, load the supervisor stack, set S, clear M,
+// and repoint the active SoA so the frame push and vector fetch walk the
+// supervisor MMU view.  From master mode (68020+): save A7 to MSP and switch
+// to ISP.  The way back is write_sr, which RTE goes through.
+static inline void enter_exception_supervisor(cpu_t *restrict cpu) {
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
         cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0; // exceptions always switch to ISP (M=0)
-        // Mode transition: point the active SoA at the supervisor tables so
-        // the upcoming frame push (on SSP) and vector fetch walk the
-        // supervisor MMU view, not the user one that was in effect.
-        g_active_read = g_supervisor_read;
-        g_active_write = g_supervisor_write;
+        cpu_select_soa(true);
     } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
         // In supervisor+master mode: switch to ISP for the exception frame
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
         cpu->m = 0;
     }
+}
+
+// Raise a CPU exception by pushing state and loading exception vector.
+// On 68030, determines frame format from vector number: vectors 5 (divide by
+// zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
+// instruction address); all others use Format $0. Uses VBR on 68030.
+//
+// Neither the frame push nor the vector fetch is checked for a fault here
+// (a VBR or SSP pointing at unmapped memory).  Such a fault leaves
+// g_bus_error_pending set like any other access and is delivered through the
+// deferred-bus-error path as an ordinary bus error.  Only the bus-error entry
+// points (exception_bus_error_retry, and exception_bus_error's 68000 path)
+// treat a fault during their own frame push or vector fetch as the double
+// fault that halts the CPU.
+static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
+    // Trace all exceptions (bus errors have their own dedicated path with richer info;
+    // this records generic exceptions — illegal instruction, privilege violation,
+    // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
+    if (vector != 0x008)
+        exc_trace_record(vector, cpu->instruction_pc, pc, 0, 0, cpu->vbr, sr, 0, 0);
+    enter_exception_supervisor(cpu);
 
     if (cpu->cpu_model >= CPU_MODEL_68030) {
         // Determine frame format from exception vector number
@@ -753,6 +814,71 @@ static inline void push_access_error_frame_040(cpu_t *restrict cpu, uint32_t sav
     memory_write_uint32(frame + 0x14, fault_addr); // fault address
 }
 
+// Size of the MC68030 Format $B (long bus cycle fault) frame: 46 words.
+#define FRAME_B_BYTES 92
+
+// Push the MC68000 group-0 bus-error frame: 7 words = 14 bytes.  The 68000
+// has no format word; its frame is { status word, access address,
+// instruction register, SR, PC }.  The Lisa OS's segment-fault / BUS_ERR
+// handler reads the access address (+$2) to locate the faulting segment to
+// demand-load and the saved SR (+$8) to tell a user fault (recoverable
+// segment swap-in) from a system fault (fatal e_hardsyscode).  Pushing the
+// 68030 Format-$B frame instead made that handler read the SR from the wrong
+// offset → it mis-classified the user-mode installer-segment fault as
+// e_hardsyscode and never loaded the segment, and the 92-byte frame
+// overflowed the 14-byte-expecting supervisor stack.
+static inline void push_group0_frame_68000(cpu_t *restrict cpu, uint32_t saved_pc, uint16_t saved_sr,
+                                           uint32_t fault_addr, uint32_t rw, uint16_t fc) {
+    uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
+    cpu->a[7] -= 14;
+    uint32_t f0 = cpu->a[7];
+    memory_write_uint16(f0 + 0x00, ssw0);
+    memory_write_uint32(f0 + 0x02, fault_addr);
+    memory_write_uint16(f0 + 0x06, cpu->ir); // instruction register (faulting/branching opcode)
+    memory_write_uint16(f0 + 0x08, saved_sr);
+    memory_write_uint32(f0 + 0x0A, saved_pc);
+}
+
+// Push the MC68030 Format $B (long bus cycle fault) frame.  We model none of
+// the internal pipeline state, so every field we do not set is pushed as zero
+// -- written once each rather than zeroing the whole frame and overwriting.
+//
+// SSW: FC comes from g_bus_error_fc (set by the slow path when raising the
+// fault) so the frame reflects the FC the access was actually issued with —
+// vital for MOVES from kernel mode with DFC=1 (A/UX copyin/copyout): the
+// kernel's page-fault arbiter uses SSW[2:0] to decide whether the fault was
+// against the user or kernel address space.  Bit 8 is DF (data fault), bit 6
+// RW (1 = read), bits 5:4 SIZE.  SIZE is always reported as byte (01): the
+// memory layer does not record the width of the faulting access, so a
+// handler that decodes SIZE sees byte for every fault.
+static inline void push_bus_fault_frame_b(cpu_t *restrict cpu, uint32_t saved_pc, uint16_t saved_sr,
+                                          uint32_t fault_addr, uint32_t rw, uint16_t fc) {
+    uint16_t ssw = (uint16_t)((1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc);
+    cpu->a[7] -= FRAME_B_BYTES;
+    uint32_t frame = cpu->a[7];
+    memory_write_uint16(frame + 0x00, saved_sr);
+    memory_write_uint32(frame + 0x02, saved_pc);
+    memory_write_uint16(frame + 0x06, 0xB008); // format $B, vector 2 (bus error)
+    memory_write_uint16(frame + 0x08, 0); // internal register
+    memory_write_uint16(frame + 0x0A, ssw);
+    memory_write_uint32(frame + 0x0C, 0); // instruction pipe stages C and B
+    memory_write_uint32(frame + 0x10, fault_addr); // data cycle fault address
+    for (uint32_t off = 0x14; off < FRAME_B_BYTES; off += 4)
+        memory_write_uint32(frame + off, 0); // buffers and internal registers
+}
+
+// Halt on a double bus error: a fault while pushing a bus-error frame or
+// fetching its vector.  Records the event (kind 1 = frame push, 2 = vector
+// fetch) and ends the sprint; the next sprint's prologue performs the reset.
+static inline void bus_error_double_fault(cpu_t *restrict cpu, uint32_t faulting_pc, uint32_t saved_pc,
+                                          uint32_t fault_addr, uint32_t rw, uint16_t saved_sr, uint16_t format,
+                                          int kind) {
+    cpu->halted = 1;
+    g_bus_error_pending = false;
+    memory_end_sprint(g_bus_error_instr_ptr);
+    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, kind);
+}
+
 // Bus error with retry semantics for MMU-enabled OS kernels (A/UX).
 // Saves faulting PC (instruction_pc) so the handler's RTE restarts the
 // instruction after mapping the page.  The instruction has already completed
@@ -764,137 +890,45 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
 
-    // Switch to supervisor mode / ISP
-    if (!cpu->supervisor) {
-        cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
-        cpu->supervisor = 1;
-        cpu->m = 0;
-        // Mode transition: repoint active SoA at the supervisor tables so
-        // the frame push and vector fetch below walk the supervisor MMU view.
-        g_active_read = g_supervisor_read;
-        g_active_write = g_supervisor_write;
-    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
-        cpu->msp = cpu->a[7];
-        cpu->a[7] = cpu->ssp;
-        cpu->m = 0;
-    }
-
+    enter_exception_supervisor(cpu);
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
 
-    // MC68000 (Lisa) group-0 bus-error stack frame: 7 words = 14 bytes.  The
-    // 68000 has no format word; its frame is { status word, access address,
-    // instruction register, SR, PC }.  The Lisa OS's segment-fault / BUS_ERR
-    // handler reads the access address (+$2) to locate the faulting segment to
-    // demand-load and the saved SR (+$8) to tell a user fault (recoverable
-    // segment swap-in) from a system fault (fatal e_hardsyscode).  Pushing the
-    // 68030 Format-$B frame here made that handler read the SR from the wrong
-    // offset → it mis-classified the user-mode installer-segment fault as
-    // e_hardsyscode and never loaded the segment, and the 92-byte frame
-    // overflowed the 14-byte-expecting supervisor stack.
+    // Frame per model: 68000 group-0, 68040 format $7, 68030 format $B.  The
+    // 040 frame has retry semantics here (saved_pc = faulting instruction;
+    // the handler fixes the mapping and its RTE restarts the instruction).
+    uint16_t format;
     if (cpu->cpu_model == CPU_MODEL_68000) {
-        uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
-        cpu->a[7] -= 14;
-        uint32_t f0 = cpu->a[7];
-        memory_write_uint16(f0 + 0x00, ssw0);
-        memory_write_uint32(f0 + 0x02, fault_addr);
-        memory_write_uint16(f0 + 0x06, cpu->ir); // instruction register (faulting/branching opcode)
-        memory_write_uint16(f0 + 0x08, saved_sr);
-        memory_write_uint32(f0 + 0x0A, saved_pc);
-        if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
-            return;
-        }
-        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
-        if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
-            return;
-        }
-        cpu->trace = 0;
-        if (saved_pc != faulting_pc)
-            cpu->last_bus_error_pc = 0;
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
-        return;
-    }
-
-    // MC68040 access error: format $7 frame with retry semantics (saved_pc =
-    // faulting instruction; the handler fixes the mapping and its RTE
-    // restarts the instruction — the 040 analogue of the $B retry below).
-    if (cpu->cpu_model >= CPU_MODEL_68040) {
+        format = 0;
+        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
+    } else if (cpu->cpu_model >= CPU_MODEL_68040) {
+        format = 0x7;
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
-        if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 1);
-            return;
-        }
-        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
-        if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 2);
-            return;
-        }
-        cpu->trace = 0;
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 0);
-        return;
+    } else {
+        format = 0xB;
+        push_bus_fault_frame_b(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
     }
-
-    // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
-    // FC comes from g_bus_error_fc (set by the slow path when raising the
-    // fault) so the frame reflects the FC the access was actually issued
-    // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
-    // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
-    // whether the fault was against the user or kernel address space.
-    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
-
-    cpu->a[7] -= 92;
-    uint32_t frame = cpu->a[7];
-    for (int i = 0; i < 92; i += 4)
-        memory_write_uint32(frame + i, 0);
-    memory_write_uint16(frame + 0x00, saved_sr);
-    memory_write_uint32(frame + 0x02, saved_pc);
-    memory_write_uint16(frame + 0x06, 0xB008);
-    memory_write_uint16(frame + 0x0A, ssw);
-    memory_write_uint32(frame + 0x10, fault_addr);
-
-    // Detect double bus error during frame push or field writes
     if (g_bus_error_pending) {
-        cpu->halted = 1;
-        g_bus_error_pending = false;
-        memory_end_sprint(g_bus_error_instr_ptr);
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 1);
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 1);
         return;
     }
-
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
-
-    // Detect double bus error during vector read
     if (g_bus_error_pending) {
-        cpu->halted = 1;
-        g_bus_error_pending = false;
-        memory_end_sprint(g_bus_error_instr_ptr);
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 2);
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 2);
         return;
     }
-
     cpu->trace = 0;
-    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 0);
+    // (Retry: saved_pc == faulting_pc always, so the 68000 path's same-PC
+    // tracking reset in exception_bus_error never applies here.)
+    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
 }
 
-// Raise a 68030 bus error with Format $A stack frame (short bus cycle fault).
-// Called when a deferred bus error is detected after instruction completion.
-// Since this is deferred (instruction already completed), saved_pc points to the
-// NEXT instruction so the handler's RTE skips the faulting instruction.
-static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict cpu, uint32_t fault_addr, uint32_t rw) {
+// Raise a bus error with skip semantics (68030 Format $B frame, 68040 format
+// $7, 68000 group-0).  Called when a deferred bus error is detected after
+// instruction completion, so `saved_pc` normally points past the faulting
+// instruction and the handler's RTE skips it; f_trap passes the faulting
+// instruction itself for an instruction-fetch fault.
+static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict cpu, uint32_t fault_addr, uint32_t rw,
+                                                                uint32_t saved_pc) {
     // Double bus error detection: on the real 68030, RTE from a bus error
     // (format $B) retries the faulting instruction.  If the retry faults at
     // the same PC, the CPU halts (MC68030UM §8.3.3).  We detect this by
@@ -906,70 +940,26 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // The faulting instruction's address (before PC was advanced by the decoder)
     uint32_t faulting_pc = cpu->instruction_pc;
     if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
-        cpu->halted = 1;
         cpu->last_bus_error_pc = 0;
-        g_bus_error_pending = false;
-        memory_end_sprint(g_bus_error_instr_ptr);
-        exc_trace_record(0x008, faulting_pc, cpu->pc, fault_addr, rw, cpu->vbr, cpu_get_sr(cpu), 0xB, 1);
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, cpu_get_sr(cpu), 0xB, 1);
         return;
     }
     cpu->last_bus_error_pc = faulting_pc;
 
     uint16_t saved_sr = cpu_get_sr(cpu);
-    // Use cpu->pc (next instruction) since the faulting instruction already completed.
-    // For instruction fetch bus errors (via f_trap), the caller adjusts PC first.
-    uint32_t saved_pc = cpu->pc;
 
-    // Switch to supervisor mode / ISP
-    if (!cpu->supervisor) {
-        cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
-        cpu->supervisor = 1;
-        cpu->m = 0;
-        // Mode transition: repoint active SoA at the supervisor tables so
-        // the frame push and vector fetch below walk the supervisor MMU view.
-        g_active_read = g_supervisor_read;
-        g_active_write = g_supervisor_write;
-    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
-        cpu->msp = cpu->a[7];
-        cpu->a[7] = cpu->ssp;
-        cpu->m = 0;
-    }
-
+    enter_exception_supervisor(cpu);
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
 
-    // MC68000 (Lisa) group-0 bus-error stack frame: 7 words = 14 bytes.  The
-    // 68000 has no format word; its frame is { status word, access address,
-    // instruction register, SR, PC }.  The Lisa OS's segment-fault / BUS_ERR
-    // handler reads the access address (+$2) to locate the faulting segment to
-    // demand-load and the saved SR (+$8) to tell a user fault (recoverable
-    // segment swap-in) from a system fault (fatal e_hardsyscode).  Pushing the
-    // 68030 Format-$B frame here made that handler read the SR from the wrong
-    // offset → it mis-classified the user-mode installer-segment fault as
-    // e_hardsyscode and never loaded the segment, and the 92-byte frame
-    // overflowed the 14-byte-expecting supervisor stack.
     if (cpu->cpu_model == CPU_MODEL_68000) {
-        uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
-        cpu->a[7] -= 14;
-        uint32_t f0 = cpu->a[7];
-        memory_write_uint16(f0 + 0x00, ssw0);
-        memory_write_uint32(f0 + 0x02, fault_addr);
-        memory_write_uint16(f0 + 0x06, cpu->ir); // instruction register (faulting/branching opcode)
-        memory_write_uint16(f0 + 0x08, saved_sr);
-        memory_write_uint32(f0 + 0x0A, saved_pc);
+        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
         if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
+            bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, 0, 1);
             return;
         }
         cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
         if (g_bus_error_pending) {
-            cpu->halted = 1;
-            g_bus_error_pending = false;
-            memory_end_sprint(g_bus_error_instr_ptr);
-            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
+            bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, 0, 2);
             return;
         }
         cpu->trace = 0;
@@ -981,34 +971,15 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
 
     // MC68040 access error: format $7 frame with skip semantics (saved_pc =
     // next instruction; the deferred fault is delivered after the faulting
-    // instruction completed, matching the $A path below).
+    // instruction completed, matching the $B path below).
+    uint16_t format;
     if (cpu->cpu_model >= CPU_MODEL_68040) {
+        format = 0x7;
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
-        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
-        cpu->trace = 0;
-        if (saved_pc != faulting_pc)
-            cpu->last_bus_error_pc = 0;
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 0);
-        return;
+    } else {
+        format = 0xB;
+        push_bus_fault_frame_b(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
     }
-
-    // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
-    // FC comes from g_bus_error_fc (set by the slow path when raising the
-    // fault) so the frame reflects the FC the access was actually issued
-    // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
-    // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
-    // whether the fault was against the user or kernel address space.
-    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
-
-    cpu->a[7] -= 92;
-    uint32_t frame = cpu->a[7];
-    for (int i = 0; i < 92; i += 4)
-        memory_write_uint32(frame + i, 0);
-    memory_write_uint16(frame + 0x00, saved_sr);
-    memory_write_uint32(frame + 0x02, saved_pc);
-    memory_write_uint16(frame + 0x06, 0xB008);
-    memory_write_uint16(frame + 0x0A, ssw);
-    memory_write_uint32(frame + 0x10, fault_addr);
 
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
     cpu->trace = 0;
@@ -1021,14 +992,15 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     if (saved_pc != faulting_pc)
         cpu->last_bus_error_pc = 0;
 
-    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 0);
+    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, format, 0);
 }
 
 // Check if a pending interrupt should be serviced.  Level 7 is non-maskable on
 // the 68000 (taken even when the interrupt mask is 7) — the Lisa's parity-error
 // NMI relies on this; levels 1-6 are gated by the mask as usual.
+// Called at sprint boundaries and from write_sr; almost always false.
 static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
-    if (cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7) {
+    if (__builtin_expect(cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7, 0)) {
         uint16_t sr = cpu_get_sr(cpu);
         cpu->stopped = 0; // an interrupt resumes a STOP-halted CPU
         cpu->interrupt_mask = cpu->ipl;
@@ -1071,13 +1043,15 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
         // Switch SoA active pointers when supervisor bit changes
         if ((bool)new_s != old_s) {
-            g_active_read = new_s ? g_supervisor_read : g_user_read;
-            g_active_write = new_s ? g_supervisor_write : g_user_write;
+            cpu_select_soa(new_s);
             // On supervisor→user, snapshot the CRP that the kernel just
             // loaded for the about-to-run user process.  A/UX swaps CRP
             // per context switch, so this pins the most recently
             // scheduled user process (typically the foreground MAE app)
             // for `set-mouse --aux` to translate Toolbox globals into.
+            // This is the only place to do it: the CPU can leave supervisor
+            // mode only through an SR write (RTE, MOVE/ANDI/EORI to SR),
+            // and exception entry only ever goes the other way.
             if (!new_s && g_mmu)
                 g_mmu->last_user_crp = g_mmu->crp;
         }
@@ -1107,10 +1081,8 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         // private code segment (mapped only in its own domain) faulted forever
         // (e.g. SYSTEM.SHELL's segment 24).  For machines with no MMU the two
         // tables hold identical entries, so this is a no-op there.
-        if ((bool)new_s != old_s) {
-            g_active_read = new_s ? g_supervisor_read : g_user_read;
-            g_active_write = new_s ? g_supervisor_write : g_user_write;
-        }
+        if ((bool)new_s != old_s)
+            cpu_select_soa(new_s);
     }
 
     cpu->supervisor = new_s;
@@ -1188,7 +1160,9 @@ static inline uint32_t m68k_fetch_fault_pc_advance(uint16_t ir) {
     }
     return 2; // best-effort default (non-recoverable opcode → handler aborts anyway)
 }
-static inline void f_trap(cpu_t *restrict cpu) {
+// Line-F exception for `opcode`, or the bus error an unmapped fetch disguised
+// as one (see below).
+static inline void f_trap(cpu_t *restrict cpu, uint16_t opcode) {
     // Check for spurious F-line from unmapped instruction fetch.
     // When the MMU page table is corrupted, instruction fetches to garbage
     // addresses return $FF (unmapped physical) which decodes as $FFFF = F-line.
@@ -1220,12 +1194,17 @@ static inline void f_trap(cpu_t *restrict cpu) {
     if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
         bool is_pmmu = g_bus_error_is_pmmu;
         g_bus_error_pending = false;
-        cpu->pc = cpu->instruction_pc;
+        // Retry: the saved PC is the faulting instruction itself
+        if (is_pmmu) {
+            exception_bus_error_retry(cpu, cpu->instruction_pc, 1);
+            return;
+        }
+        uint32_t saved_pc = cpu->instruction_pc;
         // 68000 group-0 (skip) bus error: advance the saved PC by the faulting
         // control-transfer instruction's prefetch amount so the Lisa OS handler's
         // SUBQ back-up resumes on the fault target.  The PMMU retry path (68030
-        // A/UX) restarts at the faulting PC and ignores this.
-        if (cpu->cpu_model == CPU_MODEL_68000 && !is_pmmu) {
+        // A/UX) above restarts at the faulting PC instead.
+        if (cpu->cpu_model == CPU_MODEL_68000) {
             // RTS is the one transfer the Lisa OS recovers by RE-EXECUTING it: its
             // BUS_ERR handler does USP -= 4 (undo the pop) then PC -= 2, so the saved
             // PC must point at the RTS instruction, not its (absent-segment) target —
@@ -1235,22 +1214,22 @@ static inline void f_trap(cpu_t *restrict cpu) {
             // transfer (JMP/JSR/...) the OS continues at the target with the stack
             // intact, so the target-relative advance is correct.
             if (cpu->ir == 0x4E75) // RTS
-                cpu->pc = cpu->ir_pc + 2;
+                saved_pc = cpu->ir_pc + 2;
             else
-                cpu->pc += m68k_fetch_fault_pc_advance(cpu->ir);
+                saved_pc += m68k_fetch_fault_pc_advance(cpu->ir);
         }
-        if (is_pmmu)
-            exception_bus_error_retry(cpu, cpu->instruction_pc, 1);
-        else
-            exception_bus_error(cpu, cpu->instruction_pc, 1);
+        exception_bus_error(cpu, cpu->instruction_pc, 1, saved_pc);
         return;
     }
+    // Only the all-ones word an unmapped fetch returns qualifies: a genuine
+    // line-F opcode on a page that merely has no SoA fast-path entry (a page
+    // covered by a memory logpoint, say) is a real line-F exception.
     uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
-    if (__builtin_expect(g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
+    if (__builtin_expect(
+            opcode == 0xFFFF && g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
         // Instruction page has no SoA entry — fetch returned $FF from unmapped
         // physical memory.  Treat as bus error (matching real hardware behavior).
-        cpu->pc = cpu->instruction_pc;
-        exception_bus_error(cpu, cpu->instruction_pc, 1);
+        exception_bus_error(cpu, cpu->instruction_pc, 1, cpu->instruction_pc);
         return;
     }
     // MC68030UM 8.1.5: the saved PC is the address of the F-line instruction.
@@ -1270,7 +1249,9 @@ static inline void skip_ea_extension_words(cpu_t *restrict cpu, int mode, int re
         uint16_t ext = memory_read_uint16(cpu->pc);
         cpu->pc += 2;
         if (ext & 0x0100) {
-            // Full extension word — skip base and outer displacements
+            // Full extension word — skip base and outer displacements.  The
+            // reserved BD size 0 counts as "no BD": this only positions the
+            // stacked PC for the illegal-instruction exception being raised.
             int bd_size = (ext >> 4) & 3;
             if (bd_size == 2)
                 cpu->pc += 2; // word BD

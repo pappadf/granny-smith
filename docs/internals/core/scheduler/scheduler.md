@@ -5,7 +5,11 @@ how emulated time advances, how CPU execution is organized into sprints, how eve
 queued and fired, and how the various counters stay consistent with each other.
 
 The source lives in [src/core/scheduler/scheduler.c](../../../../src/core/scheduler/scheduler.c) and
-[src/core/scheduler/scheduler.h](../../../../src/core/scheduler/scheduler.h).
+[src/core/scheduler/scheduler.h](../../../../src/core/scheduler/scheduler.h); the private state
+shared with the object-model glue
+([scheduler_class.c](../../../../src/core/scheduler/scheduler_class.c): the `scheduler` and
+`pacing` nodes) is in
+[scheduler_internal.h](../../../../src/core/scheduler/scheduler_internal.h).
 
 ---
 
@@ -106,12 +110,13 @@ These are myths that repeatedly show up in discussions of the scheduler. Every o
 
 All timing in the emulator is ultimately measured in **CPU cycles** of the emulated
 68000/68030. The clock frequency is per-machine (Mac Plus: 7,833,600 Hz; SE/30:
-15,667,200 Hz) and stored in `s->frequency`. Nanoseconds and microseconds are computed
-on demand from cycles:
+15,667,200 Hz) and stored in `s->frequency`. A delay given in nanoseconds is converted to
+cycles when the event is armed, split so the multiply cannot overflow:
 
 ```c
-ns = cycles * NS_PER_SEC / s->frequency;     // cycles -> ns
-cycles = ns * s->frequency / NS_PER_SEC;     // ns -> cycles
+cycles = (ns / NS_PER_SEC) * s->frequency + (ns % NS_PER_SEC) * s->frequency / NS_PER_SEC;
+if (cycles == 0)
+    cycles = 1;                              // a sub-cycle delay is one cycle, never "now"
 ```
 
 Cycles are the source of truth. Instruction counts are derived from cycles using the
@@ -222,21 +227,24 @@ self-consistent with the guest's boot-time calibration).
 
 ### 3.1 The scheduler struct
 
-The entire scheduler state is encapsulated in one opaque struct
-([scheduler.c:68-100](../../../../src/core/scheduler/scheduler.c#L68)). The fields that matter
-for timing:
+The entire scheduler state is encapsulated in one struct, opaque outside the scheduler
+([scheduler_internal.h](../../../../src/core/scheduler/scheduler_internal.h)). Its
+guest-visible plain data is a nested `struct scheduler_saved saved` — the block a
+checkpoint writes and reads as a unit (§11). The fields that matter for timing:
 
 ```c
 struct scheduler {
-    uint32_t cpi;                    // Per-machine authentic CPI constant
+    struct scheduler_saved saved;    // checkpointed: running, cpu_cycles, cpi,
+                                     //   io_penalty_remainder, io_stall_slots,
+                                     //   frame_cycles_left, total_instructions
     uint32_t frequency;              // CPU clock in Hz
     host_pacing_t pacing;            // The host's pacing it runs under (mode, speed; not checkpointed)
 
     uint32_t cpi_eff_x256;           // Effective CPI, x256 (derived; not checkpointed)
     uint32_t cycle_frac_x256;        // Sub-cycle sprint remainder (transient)
 
-    uint64_t cpu_cycles;             // Authoritative "now" at last sprint boundary
-    uint64_t total_instructions;     // Instructions retired through last sprint boundary
+    // saved.cpu_cycles: authoritative "now" at last sprint boundary
+    // saved.total_instructions: instructions retired through last sprint boundary
     uint32_t sprint_total;           // Instructions planned for the current sprint
     uint32_t sprint_burndown;        // Instructions still to execute in this sprint
 
@@ -340,9 +348,16 @@ After reconciliation:
   inner loop at the next instruction boundary.
 
 Critically, **`reconcile_sprint()` does not update `s->cpu_cycles` or
-`s->total_instructions`**. Those get updated only in the sprint-finalization code at
-[scheduler.c:947-960](../../../../src/core/scheduler/scheduler.c#L947). This is what makes it
-safe to call from deep inside a memory write.
+`s->total_instructions`**. Those get updated only in the sprint-finalization code in
+`scheduler_run_instructions`. This is what makes it safe to call from deep inside a
+memory write.
+
+The flip side is that the effective CPI and the carried sub-cycle remainder must not
+change inside a sprint: `current_cpu_cycles` multiplies the slots already run by
+`cpi_eff_x256`, so a new value would re-date cycles that have already happened, and a
+reconcile does not help (the executed slots stay in the product). Every path that
+changes them — machine build, restore, the pacing setters, the governor — runs between
+frames, and `scheduler_update_cpi_eff` asserts that no sprint is in flight.
 
 ### 4.4 Worked example
 
@@ -401,8 +416,8 @@ event_t *scheduler_new_cpu_event(scheduler, callback, source, data, cycles, ns);
 ```
 
 Exactly one of `cycles` or `ns` must be non-zero
-([scheduler.c:754-755](../../../../src/core/scheduler/scheduler.c#L754)); the other is derived
-from the machine frequency. The pipeline
+([scheduler.c](../../../../src/core/scheduler/scheduler.c)); a delay in `ns` is converted to
+cycles at the machine frequency (§2), a sub-cycle delay rounding up to one cycle. The pipeline
 ([scheduler.c:749-764](../../../../src/core/scheduler/scheduler.c#L749)):
 
 1. **Invariant check** (`CHECK_INVARIANTS(s)`) and queue integrity check
@@ -427,7 +442,8 @@ relative to an accurate baseline — not to the stale `s->cpu_cycles`.
 - `remove_event_by_data(s, callback, source, data)` — as above but also match `data`.
 - `has_event(s, callback)` — check whether any event with that callback is scheduled.
 
-Both remove variants walk the full list; removing an event is `O(n)`.
+Both remove variants share one body and walk the full list; removing an event is `O(n)`,
+and so is `has_event` — deliberately, since the queue is a handful of entries deep.
 
 ---
 
@@ -442,10 +458,9 @@ while (remaining_cycles > 0) {
     cycles_to_execute = remaining_cycles;
     if (cpu_events != NULL) {
         cycles_to_event = cpu_events->timestamp - cpu_cycles;   // never negative (invariant)
-        cycles_to_execute = MIN(cycles_to_event, remaining_cycles);
+        cycles_to_execute = min_u64(cycles_to_event, remaining_cycles);
     }
-    instr_to_exec = cycles_to_instructions(s, cycles_to_execute);
-    if (cycles_to_execute > 0 && instr_to_exec == 0) instr_to_exec = 1;
+    instr_to_exec = cycles_to_instructions(s, cycles_to_execute); // >= 1 when any cycles remain
     if (debugger_active) instr_to_exec = 1;                      // single-step in debugger
 
     // 2. Execute the sprint
@@ -529,7 +544,8 @@ device raises IRQ -> machine_update_ipl() -> cpu_set_ipl(cpu, level) -> cpu_resc
 ```
 
 `cpu_reschedule(scheduler)` is just `reconcile_sprint()` on the machine's scheduler
-([scheduler.c:835](../../../../src/core/scheduler/scheduler.c#L835)). It sets
+([scheduler.c](../../../../src/core/scheduler/scheduler.c)) — idempotent, and a no-op
+outside a sprint. It sets
 `sprint_burndown = 0` while leaving all derived quantities (`current_cpu_cycles`,
 `cpu_instr_count`) intact. That has two effects:
 
@@ -551,7 +567,7 @@ sprint-loop-iteration overhead. This matches real 68000 behavior, which also sam
 IPL at instruction boundaries.
 
 The same mechanism is what `scheduler_stop()` uses
-([scheduler.c:843](../../../../src/core/scheduler/scheduler.c#L843)): it sets `running = false`
+([scheduler.c](../../../../src/core/scheduler/scheduler.c)): it sets `running = false`
 and calls `reconcile_sprint` to cut the sprint short at the next boundary so the outer
 `while (remaining_cycles > 0)` loop can exit promptly.
 
@@ -650,11 +666,15 @@ relaxed to:
 every queued event satisfies: timestamp + CPI >= cpu_cycles
 ```
 
-Both `validate_cpu_events` and `scheduler_check_invariants` enforce the relaxed form
-([scheduler.c:218-235](../../../../src/core/scheduler/scheduler.c#L218),
-[scheduler.c:144-149](../../../../src/core/scheduler/scheduler.c#L144)). This allows the brief
+Both `validate_cpu_events` and `scheduler_check_invariants` enforce the relaxed form on
+the queue head — the sort order bounds every later entry by it
+([scheduler.c](../../../../src/core/scheduler/scheduler.c)). This allows the brief
 window during a sprint iteration where the head event is slightly in the past but has
-not yet been processed.
+not yet been processed. Once `process_event_queue` has run, the strict form holds again:
+it fires everything due at or before `cpu_cycles`, including anything a callback or a
+periodic re-arm queued there, so the sprint loop asserts `timestamp >= cpu_cycles` after
+it. The sprint itself is checked against its plan: it never runs more slots than
+`instr_to_exec`.
 
 ### 8.3 Mitigations when overshoot matters
 
@@ -715,7 +735,8 @@ frame-unit*. They differ only in **pacing**: how fast the run loop issues frame-
 ([scheduler.c](../../../../src/core/scheduler/scheduler.c)) is the atomic step:
 
 1. `trigger_vbl(config)` — pulse the machine's VBL line (VIA CA1, `image_tick_all`, …).
-2. `scheduler_run(s, MAC_VBL_PERIOD)` — run exactly one VBL period of emulated time.
+2. `scheduler_run_instructions` for one VBL period's worth of instructions — exactly one VBL
+   period of emulated time.
 
 So the VBL is **not** a scheduler event; it is injected imperatively, once at the start
 of every frame-unit. A run is just a sequence of frame-units:
@@ -742,7 +763,7 @@ Headless does not arm any VBL event. Its run loops
   `scheduler.run` with no budget holds the statement until the machine stops.
 
 An instruction-budget `scheduler.run N` schedules a `run_stop_event`; the inner
-`scheduler_run` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
+`scheduler_run_instructions` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
 at exactly `N` instructions; the job that issued it is held until that mode ends
 (§10.5). `scheduler.run` with no argument runs until a breakpoint, `scheduler.stop`,
 a client's stop or its disconnect; a headless script waits for that (its next
@@ -847,7 +868,7 @@ mode_ended   {mode, owner, reason, pc, instr_count}
 the end of `scheduler_run_frame` for a stop from inside the frame (budget, breakpoint),
 or from `scheduler_stop_reason` itself for one from outside (a `scheduler.stop` leaf
 served between ticks). A machine that is already stopped reports nothing. The mode
-fields live after the checkpointed prefix: a restored machine starts with no mode open.
+fields live outside the checkpointed block: a restored machine starts with no mode open.
 
 ---
 
@@ -857,9 +878,10 @@ fields live after the checkpointed prefix: a restored machine starts with no mod
 
 Two parts are written:
 
-1. **Plain-data fields** — everything from the top of the struct up to but not
-   including `event_types`, written in one block via `system_write_checkpoint_data`
-   ([scheduler.c:629](../../../../src/core/scheduler/scheduler.c#L629)).
+1. **Plain-data fields** — the nested `struct scheduler_saved` block, written whole via
+   `system_write_checkpoint_data` ([scheduler.c](../../../../src/core/scheduler/scheduler.c)).
+   A static assert pins its size (48 bytes), so a new field there is a deliberate
+   checkpoint-format change.
 2. **Event queue** — each event is converted to a checkpoint-friendly form
    (`event_as_checkpoint_t`) with `source_name` and `event_name` strings instead of
    raw pointers. The strings are looked up in the `event_types` registry, which must
@@ -940,7 +962,7 @@ Enforced by `scheduler_check_invariants` at every API entry/exit:
   `scheduler.run N` stays byte-deterministic with aux cores live.  Aux cores
   never call `scheduler_set_*` and never own an event timestamp's meaning.
 
-All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `common.h`) with file, line,
+All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `gs_assert.h`) with file, line,
 function, and context. There are no `printf`-based error reports in the scheduler.
 
 ---

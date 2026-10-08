@@ -18,9 +18,18 @@ const char *aux_syscall_name(uint32_t num) {
     return NULL;
 }
 
-// gs_assert_fail referenced by common.h / GS_ASSERT macros — should never fire
+// gs_assert_fail referenced by gs_assert.h / GS_ASSERT macros — should never fire
 // during pure disassembly, but we provide a stub to satisfy the linker.
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func) {
+    (void)expr;
+    (void)file;
+    (void)line;
+    (void)func;
+    __builtin_trap();
+}
+
+// gs_assert_failf backs GS_ASSERTF; same hard-abort safety net.
+void gs_assert_failf(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
     (void)expr;
     (void)file;
     (void)line;

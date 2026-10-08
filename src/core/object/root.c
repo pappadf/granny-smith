@@ -12,20 +12,20 @@
 #include "root.h"
 #include "gs_out.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
 #include "alias.h"
 #include "commands.h"
+#include "log.h"
 #include "object.h"
+#include "shell.h"
 #include "shell_funcs.h"
 #include "system.h"
 #include "usage.h"
 #include "value.h"
 
-extern const class_desc_t shell_alias_class; // src/core/object/alias.c
-extern const class_desc_t shell_class; // src/core/shell/shell_class.c
+LOG_USE_CATEGORY_NAME("object");
 
 // === Introspection root methods =============================================
 // `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
@@ -182,7 +182,8 @@ static DEF_METHOD(method_root_quit) {
 // `echo(...)` — print arguments separated by spaces. Mirrors the
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
-// detour. Returns true on success.
+// detour. Its one declared slot is an any-kind rest, so it takes any
+// number of arguments (up to OBJ_VALIDATE_MAX_ARGS). Returns true.
 static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
@@ -221,6 +222,12 @@ static const arg_decl_t root_path_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Object path; empty resolves to the root"},
 };
+static const arg_decl_t root_echo_args[] = {
+    {.name = "values",
+     .kind = V_ANY,
+     .validation_flags = OBJ_ARG_REST | OBJ_ARG_POLY,
+     .doc = "Values to print, separated by spaces"},
+};
 static const arg_decl_t root_help_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -250,17 +257,17 @@ static const member_t emu_root_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
     {.kind = M_METHOD,
      .name = "quit",
-     .doc = "Exit the emulator (asks the legacy quit command to end the run)",
+     .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
+     .method = {.args = root_echo_args, .nargs = 1, .result = V_BOOL, .fn = method_root_echo}      },
 };
 
-static const class_desc_t emu_root_class_real = {
+static const class_desc_t emu_root_class = {
     .name = "emu",
     .members = emu_root_members,
     .n_members = sizeof(emu_root_members) / sizeof(emu_root_members[0]),
@@ -282,9 +289,10 @@ static const class_desc_t emu_root_class_real = {
 // install has already swapped to the new cfg. The g_installed_cfg
 // pointer guards both directions.
 
-#define MAX_STUBS 40
-static struct object *g_stubs[MAX_STUBS];
+// Grown on demand: a fixed cap made a subtree quietly absent once it filled.
+static struct object **g_stubs = NULL;
 static int g_stub_count = 0;
+static int g_stub_cap = 0;
 static struct config *g_installed_cfg = NULL;
 
 // The registered subsystem install hooks, run in registration order.
@@ -302,7 +310,7 @@ void root_register_install(root_install_fn install, root_uninstall_fn uninstall)
         if (g_hooks[i].install == install)
             return; // already registered
     if (g_hook_count >= MAX_INSTALL_HOOKS) {
-        fprintf(stderr, "root: install-hook table full (%d)\n", MAX_INSTALL_HOOKS);
+        LOG(0, "root: install-hook table full (%d)", MAX_INSTALL_HOOKS);
         return;
     }
     g_hooks[g_hook_count].install = install;
@@ -314,17 +322,23 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
     if (!o)
         return NULL;
     const class_desc_t *cls = object_class(o);
-    if (g_stub_count >= MAX_STUBS) {
-        // A discarded result makes a whole subtree quietly absent -- which
-        // reads as a missing feature, not a resource limit -- so say so.
-        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS,
-                object_name(o) ? object_name(o) : "(unnamed)");
-        object_delete(o);
-        return NULL;
+    if (g_stub_count == g_stub_cap) {
+        int cap = g_stub_cap ? g_stub_cap * 2 : 32;
+        struct object **t = (struct object **)realloc(g_stubs, (size_t)cap * sizeof(*t));
+        if (!t) {
+            // A discarded result makes a whole subtree quietly absent --
+            // which reads as a missing feature, not a resource limit -- so
+            // say so.
+            LOG(0, "root: out of memory; '%s' not attached", object_name(o) ? object_name(o) : "(unnamed)");
+            object_delete(o);
+            return NULL;
+        }
+        g_stubs = t;
+        g_stub_cap = cap;
     }
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
-        fprintf(stderr, "root: class '%s' invalid: %s\n", cls && cls->name ? cls->name : "?", err);
+        LOG(0, "root: class '%s' invalid: %s", cls && cls->name ? cls->name : "?", err);
         object_delete(o);
         return NULL;
     }
@@ -333,16 +347,11 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
     return o;
 }
 
-// A stub of class `cls` over `data`.
-static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    return root_attach_stub(parent, object_new(cls, data, name));
-}
-
 void root_install_class(void) {
     // Registers the top-level method table on the object root. Safe to
     // call repeatedly — object_root_set_class is idempotent for the
     // same class pointer.
-    object_root_set_class(&emu_root_class_real);
+    object_root_set_class(&emu_root_class);
 }
 
 void root_install(struct config *cfg) {
@@ -359,28 +368,22 @@ void root_install(struct config *cfg) {
         root_uninstall();
     g_installed_cfg = cfg;
 
-    // Top-level methods. Already installed by shell_init via
+    // Top-level methods. Already installed by core_init via
     // root_install_class; the call is repeated here so paths that skip
-    // shell_init still get the methods.
+    // core_init still get the methods.
     root_install_class();
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
     // floppy_init, sound_init, debug_init). The platform-level facades
     // (mouse, screen, files, log, catalog) are process-singletons attached
-    // from shell_init, and the AppleTalk network's `appletalk` tree is
+    // from core_init, and the AppleTalk network's `appletalk` tree is
     // attached once by appletalk_network_init.
     //
     // What remains here is the Shell class instance with its children, and
     // then each registered subsystem hook (files.images, machine.nubus,
     // machine.pci).
-    struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
-    if (shell_obj) {
-        object_set_order(shell_obj, 60);
-        shell_funcs_install(shell_obj); // `shell.functions` container
-        attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
-        attach_stub(shell_obj, &shell_command_class, cfg, "command");
-    }
+    shell_class_register(cfg);
     for (int i = 0; i < g_hook_count; i++)
         g_hooks[i].install(cfg);
 }
@@ -411,7 +414,7 @@ void root_uninstall(void) {
     // `attributes`, `methods`, `help`, `time` and `quit` all stopped
     // resolving until a new machine existed.  The comment that stood here
     // feared "stale members", but the stale things are the STUBS, and the loop
-    // above already detached them.  emu_root_class_real is a static descriptor
+    // above already detached them.  emu_root_class is a static descriptor
     // whose members take a path and walk the tree; not one of them holds or
     // dereferences a cfg, so there is nothing about it to go stale.
     // Aliases (built-in and user) survive machine teardown: they store

@@ -13,6 +13,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/memory/rom.c \
                 ../../../../src/core/memory/rom_table.c \
                 ../../../../src/core/memory/memory.c \
+                ../../../../src/core/memory/memory_class.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \
                 ../../../../src/core/object/meta.c \

@@ -19,8 +19,7 @@
 #include <string.h>
 
 #include "log.h"
-#include "object.h" // object_is_reserved_word, object_validate_name
-#include "value.h"
+#include "object.h" // object_validate_name
 
 LOG_USE_CATEGORY_NAME("alias");
 
@@ -33,17 +32,6 @@ typedef struct {
 static alias_entry_t *g_table = NULL;
 static size_t g_count = 0;
 static size_t g_capacity = 0;
-
-static char *xstrdup(const char *s) {
-    if (!s)
-        return NULL;
-    size_t n = strlen(s);
-    char *r = (char *)malloc(n + 1);
-    if (!r)
-        return NULL;
-    memcpy(r, s, n + 1);
-    return r;
-}
 
 static void set_err(char *err_buf, size_t err_size, const char *fmt, ...) {
     if (!err_buf || !err_size)
@@ -108,9 +96,9 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
     int idx = find_index(name);
     if (idx >= 0) {
         alias_entry_t *e = &g_table[idx];
-        if (e->kind == ALIAS_BUILTIN && e->path && strcmp(e->path, path) == 0)
+        if (e->kind == AK_BUILTIN && e->path && strcmp(e->path, path) == 0)
             return 0; // idempotent re-registration with same target
-        if (e->kind == ALIAS_BUILTIN) {
+        if (e->kind == AK_BUILTIN) {
             set_err(err_buf, err_size, "built-in alias '%s' already maps to '%s'", name, e->path);
             return -1;
         }
@@ -121,9 +109,9 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
         // built-in to a different target can see what happened.
         LOG(1, "user alias '$%s' (→ %s) replaced by built-in (→ %s)", name, e->path ? e->path : "?", path);
         free_entry(e);
-        e->name = xstrdup(name);
-        e->path = xstrdup(path);
-        e->kind = ALIAS_BUILTIN;
+        e->name = strdup(name);
+        e->path = strdup(path);
+        e->kind = AK_BUILTIN;
         return 0;
     }
 
@@ -132,9 +120,9 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
         return -1;
     }
     alias_entry_t *e = &g_table[g_count++];
-    e->name = xstrdup(name);
-    e->path = xstrdup(path);
-    e->kind = ALIAS_BUILTIN;
+    e->name = strdup(name);
+    e->path = strdup(path);
+    e->kind = AK_BUILTIN;
     return 0;
 }
 
@@ -149,13 +137,13 @@ static int alias_add_user_impl(const char *name, const char *path, char *err_buf
     int idx = find_index(name);
     if (idx >= 0) {
         alias_entry_t *e = &g_table[idx];
-        if (e->kind == ALIAS_BUILTIN) {
+        if (e->kind == AK_BUILTIN) {
             set_err(err_buf, err_size, "'%s' is a built-in alias", name);
             return -1;
         }
         // Replace existing user alias.
         free(e->path);
-        e->path = xstrdup(path);
+        e->path = strdup(path);
         return 0;
     }
 
@@ -164,9 +152,9 @@ static int alias_add_user_impl(const char *name, const char *path, char *err_buf
         return -1;
     }
     alias_entry_t *e = &g_table[g_count++];
-    e->name = xstrdup(name);
-    e->path = xstrdup(path);
-    e->kind = ALIAS_USER;
+    e->name = strdup(name);
+    e->path = strdup(path);
+    e->kind = AK_USER;
     return 0;
 }
 
@@ -176,14 +164,14 @@ static int alias_remove_user_impl(const char *name, char *err_buf, size_t err_si
         set_err(err_buf, err_size, "no such alias '%s'", name ? name : "(null)");
         return -1;
     }
-    if (g_table[idx].kind == ALIAS_BUILTIN) {
+    if (g_table[idx].kind == AK_BUILTIN) {
         set_err(err_buf, err_size, "'%s' is a built-in alias and cannot be removed", name);
         return -1;
     }
     free_entry(&g_table[idx]);
-    // Compact: move the last entry into this slot.
-    if ((size_t)idx != g_count - 1)
-        g_table[idx] = g_table[g_count - 1];
+    // Close the gap by shifting the tail down one slot, keeping the
+    // registration order alias_each promises (removal is a cold path).
+    memmove(&g_table[idx], &g_table[idx + 1], (g_count - 1 - (size_t)idx) * sizeof(alias_entry_t));
     memset(&g_table[g_count - 1], 0, sizeof(alias_entry_t));
     g_count--;
     return 0;
@@ -224,7 +212,7 @@ static void alias_clear_user_impl(void) {
     // Compact in place: copy survivors forward.
     size_t w = 0;
     for (size_t r = 0; r < g_count; r++) {
-        if (g_table[r].kind == ALIAS_BUILTIN) {
+        if (g_table[r].kind == AK_BUILTIN) {
             if (w != r)
                 g_table[w] = g_table[r];
             w++;
@@ -237,80 +225,6 @@ static void alias_clear_user_impl(void) {
         memset(&g_table[i], 0, sizeof(alias_entry_t));
     g_count = w;
 }
-
-// === Object-model class descriptor =========================================
-//
-// `shell.alias` exposes alias add / remove / list as object methods.
-
-static DEF_METHOD(method_alias_add) {
-    char err[160];
-    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
-        return val_err("%s", err);
-    return val_none();
-}
-
-static DEF_METHOD(method_alias_remove) {
-    char err[160];
-    if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
-        return val_err("%s", err);
-    return val_none();
-}
-
-// shell.alias.list builds a V_LIST of V_STRING entries: each "name=path".
-typedef struct {
-    value_t *items;
-    size_t len;
-    size_t cap;
-} list_acc_t;
-
-static bool list_acc_collect(const char *name, const char *path, alias_kind_t kind, void *ud) {
-    list_acc_t *acc = (list_acc_t *)ud;
-    char buf[256];
-    snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
-    // The shared accumulator; this was the third of five copies.
-    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(buf)))
-        return false;
-    return true;
-}
-
-static DEF_METHOD(method_alias_list) {
-    list_acc_t acc = {0};
-    alias_each(list_acc_collect, &acc);
-    return val_list(acc.items, acc.len);
-}
-
-static const arg_decl_t alias_add_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"          },
-    {.name = "path", .kind = V_STRING, .doc = "object path the alias substitutes"},
-};
-static const arg_decl_t alias_remove_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"},
-};
-
-static const member_t shell_alias_members[] = {
-    {.kind = M_METHOD,
-     .name = "add",
-     .doc = "Register a user alias",
-     .flags = 0,
-     .method = {.args = alias_add_args, .nargs = 2, .result = V_NONE, .fn = method_alias_add}      },
-    {.kind = M_METHOD,
-     .name = "remove",
-     .doc = "Remove a user alias",
-     .flags = 0,
-     .method = {.args = alias_remove_args, .nargs = 1, .result = V_NONE, .fn = method_alias_remove}},
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "List aliases as 'name=path' strings",
-     .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_alias_list}               },
-};
-
-const class_desc_t shell_alias_class = {
-    .name = "alias",
-    .doc = "User and built-in aliases: add, remove, list",
-    .members = shell_alias_members,
-    .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
-};
 
 // === The table lock (job/job.h): every public entry takes it for the one
 // operation; the interpreter on the job thread and the emulator thread

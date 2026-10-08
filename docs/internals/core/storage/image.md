@@ -17,12 +17,12 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `block_size`: bytes per logical block — 512 for flat disks (the default openers), 532 for a Lisa ProFile (512 data + 20 inline tag).
 	- `writable`: true when the caller asked for write access.
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
-	- `type`: detected category (`image_fd_ds`, `image_hd`, ...).
+	- `type`: detected category (`image_fd_ds`, `image_hd`, ...): a floppy by its size, `image_cdrom` for an ISO 9660 disc (a primary volume descriptor at 32 KB), `image_hd` for anything else — an HFS-only CD included, since nothing in its bytes says CD.
 	- `from_diskcopy`: marks DiskCopy 4.2 sources so their headers can be skipped.
 	- `wrap_prefix` / `wrap_blocks` / `wrap_base` / `wrap_storage_size`: the volume wrapper's synthesised partition map + driver, served in front of an HFS volume when a bare volume or a driverless partitioned disk is attached as a SCSI hard disk ([bare-volume-wrapper.md](bare-volume-wrapper.md)). The volume starts `wrap_base` bytes into `storage` (0 for a bare volume, the `Apple_HFS` partition's start otherwise); `raw_size` is the prefix plus the volume, and `wrap_storage_size` the storage's own size.
 
 **Module lifecycle**
-- **`image_init(checkpoint_t *checkpoint)`** and **`image_delete(void)`** remain no-ops (no global resources).
+- The module has no global state to set up or tear down; every image is opened and closed by its owner. `setup_images(config)`, called from each machine's init, does nothing.
 
 **Opening images** — three typed entry points
 
@@ -38,9 +38,9 @@ After construction the caller queries the instance stem with **`image_path(const
 
 Common steps (shared by all three openers):
 
-1. `stat()` + a lightweight DiskCopy 4.2 probe distinguish raw images from DC archives. DiskCopy images must have `data_size` aligned to 512 bytes.
-2. A `storage_config_t` is built with `base_path=base`, `delta_path`, `journal_path`, and `base_data_offset` (0 for raw, 0x54 for DiskCopy).
-3. `storage_new()` opens the base file read-only, opens or creates the delta and journal, and reads existing bitmaps when the delta already exists.
+1. The path's forks go through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip — any nesting); the innermost byte source is the disk. Its size must be a whole number of blocks.
+2. A `storage_config_t` is built with that source as `base` (a DiskCopy image's base is a view past its header, so no offset is needed), `delta_path` and `journal_path`.
+3. `storage_new()` takes its own reference on the base, opens or creates the delta and journal, and reads existing bitmaps when the delta already exists.
 
 No seeding step is needed — unmodified blocks are read directly from the base file.
 

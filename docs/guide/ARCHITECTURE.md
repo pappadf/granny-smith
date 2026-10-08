@@ -141,7 +141,7 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     objects (`M_CHILD`, named or indexed).
   - The class is attached to the object root by the module's `_init`
     function (cfg-scoped subsystems) or by a dedicated
-    `<module>_class_register` called from `shell_init`
+    `<module>_class_register` called from `core_init` (`src/core/core_init.c`)
     (process-singletons that don't need per-machine state).
   - Built-in `$reg` aliases that the module owns are registered in the
     same `_init` (`alias_register_builtin`).

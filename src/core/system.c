@@ -586,7 +586,7 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
-        if (rc == -2)
+        if (rc == IMAGE_CREATE_EXISTS)
             gs_outf("fd create: file already exists: %s (won't overwrite)\n", path);
         else
             gs_outf("fd create: failed to create blank floppy file: %s\n", path);
@@ -688,7 +688,7 @@ static int do_attach_hd(const char *path, int scsi_id) {
 // One-time, machine-independent process setup: log categories, the image
 // system, the AppleTalk network.
 void system_init(void) {
-    gs_outf("Granny Smith build %s\n", get_build_id());
+    gs_outf("Granny Smith build %s\n", build_id_get());
 
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
@@ -699,8 +699,6 @@ void system_init(void) {
     // "appletalk" that existed for exactly this reason -- and whose presence
     // was the tell that a manifest was missing.
     log_register_manifest();
-
-    image_init(NULL);
 
     // The AppleTalk network: host state, one per process.  Machines plug into
     // it as they are built (atalk_conn_new) and never tear it down.
@@ -1225,7 +1223,7 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // on checkpoint restore — the manifest is fixed at original creation
     // time and is purely informational.  Failure is non-fatal.
     if (!restored && checkpoint_machine_dir())
-        checkpoint_machine_write_manifest();
+        checkpoint_machine_write_manifest(cfg);
 
     // The machine it replaces goes last; its teardown leaves the new
     // machine's object tree alone (root_uninstall_if).
@@ -1621,7 +1619,11 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         return GS_ERROR;
     }
 
-    checkpoint_close(checkpoint);
+    // A consolidated checkpoint is published (renamed into place) here.
+    if (!checkpoint_close(checkpoint)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to finish checkpoint %s", filename);
+        return GS_ERROR;
+    }
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
@@ -1717,7 +1719,7 @@ int system_checkpoint_load(const char *filename) {
     system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
-    frontend_force_redraw();
+    platform_force_redraw();
 
     // The scheduler came back in the run state it was saved in: a machine
     // checkpointed while running runs again on the platform's next frame.

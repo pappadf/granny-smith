@@ -3372,14 +3372,14 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
             unsigned ea_mode = (opcode >> 3) & 7;
             if (ea_mode == 1) {
                 cpu->pc = cpu->instruction_pc + 2;
-                f_trap(cpu);
+                f_trap(cpu, opcode);
                 return;
             }
             // Multi-word formats (extended/packed/double) with Dn:
             // the 68882 protocol can't transfer >4 bytes from Dn, so trap
             if ((src_spec == 2 || src_spec == 3 || src_spec == 5 || src_spec == 7) && ea_mode == 0) {
                 cpu->pc = cpu->instruction_pc + 2;
-                f_trap(cpu);
+                f_trap(cpu, opcode);
                 return;
             }
             float80_reg_t src_val = fpu_load_ea(cpu, opcode, src_spec);
@@ -3396,13 +3396,13 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
         unsigned ea_mode_w = (opcode >> 3) & 7;
         if (ea_mode_w == 1) {
             cpu->pc = cpu->instruction_pc + 2;
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         // Multi-word formats with Dn: can't transfer >4 bytes, so trap
         if ((format == 2 || format == 3 || format == 5 || format == 7) && ea_mode_w == 0) {
             cpu->pc = cpu->instruction_pc + 2;
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         if (format == 3 || format == 7) {

@@ -4,14 +4,16 @@
 // mac_traps_data.c
 // Mac OS A-trap name definitions for debugging.
 
+#include "debug_data.h"
+#include "debug_mac.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
-struct {
-    const char *name;
-    uint16_t trap;
-} macos_atraps[] = {
+// Sorted by trap, strictly ascending: lookup_atrap binary-searches it (the
+// disasm unit suite checks the order).
+const mac_trap_info_t macos_atraps[] = {
 
     {"_Open",                            0xa000},
     {"_Close",                           0xa001},
@@ -2811,11 +2813,18 @@ struct {
 
 const size_t macos_atraps_count = sizeof(macos_atraps) / sizeof(macos_atraps[0]);
 
-// Look up a trap by its raw 16-bit value.
+// Look up a trap by its raw 16-bit value (binary search; the table is sorted).
 static const char *lookup_atrap(uint16_t trap) {
-    for (size_t i = 0; i < macos_atraps_count; i++)
-        if (macos_atraps[i].trap == trap)
-            return macos_atraps[i].name;
+    size_t lo = 0, hi = macos_atraps_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (macos_atraps[mid].trap == trap)
+            return macos_atraps[mid].name;
+        if (macos_atraps[mid].trap < trap)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
     return NULL;
 }
 
@@ -2838,8 +2847,11 @@ static const char *lookup_atrap(uint16_t trap) {
 // equivalent to the version below over all 65,536 inputs against this table's
 // 2,794 entries -- zero disagreements -- so consolidating on the emulator's
 // changes no rendered name.
-const char *macos_atrap_name(uint16_t trap) {
-    static char buffer[32];
+//
+// A known trap's name is a pointer into the table; an unknown one is
+// formatted into the caller's `buf` (8 bytes hold "_XXXX"), so two results
+// held at once never share storage.
+const char *debug_mac_atrap_name(uint16_t trap, char *buf, size_t buf_size) {
 
     // Most flag-bit combinations are pre-expanded in the table (_BlockMove
     // appears at $A02E/$A12E/$A42E/...), so try the exact form first.
@@ -2857,6 +2869,8 @@ const char *macos_atrap_name(uint16_t trap) {
             return name;
     }
 
-    snprintf(buffer, sizeof(buffer), "_%04X", trap);
-    return buffer;
+    if (!buf || buf_size == 0)
+        return "_????";
+    snprintf(buf, buf_size, "_%04X", trap);
+    return buf;
 }

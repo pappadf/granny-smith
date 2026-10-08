@@ -14,7 +14,12 @@
 //   strings:   "..." with backslash escapes (\n \t \r \\ \" \xHH \0)
 //              and `${...}` interpolation regions kept as literal
 //              characters (the expression evaluator handles them).
-//   bytes:     "hello":bytes  or  0xDEAD_BEEF:N
+//   bytes:     "hello":bytes  or  0xDEAD_BEEF:N (N, 1..16, read with the
+//              integer grammar above)
+//
+// A numeric literal is at most PARSE_NUMBER_MAX characters (digits for an
+// integer, the whole spelling for a float); a longer one is an error, not
+// truncated. An integer literal must end at a non-identifier character.
 //   enum tag:  bare identifier resolved against a caller-supplied table
 //
 // The parser does **not** resolve paths or aliases — that is the
@@ -35,6 +40,9 @@ extern "C" {
 // Forward.
 struct parse_pos;
 
+// Longest numeric literal accepted; ample for a 64-bit `0b` literal.
+#define PARSE_NUMBER_MAX 79
+
 // Parse a single literal value starting at *p. On success, advances *p
 // past the literal and returns the parsed value. On failure, returns a
 // V_ERROR with a descriptive message and leaves *p on the failing
@@ -47,7 +55,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
 // Parse a complete literal occupying the whole string `s` (with any
 // surrounding whitespace). Returns V_ERROR if any trailing characters
 // remain past the literal.
-value_t parse_literal_full(const char *s, const char *const *enum_table, size_t n_enum);
+value_t parse_literal_whole_string(const char *s, const char *const *enum_table, size_t n_enum);
 
 // Parse just an integer literal. Convenience wrapper used by the
 // expression lexer; on success consumes the digits and any underscore
@@ -61,6 +69,23 @@ value_t parse_integer_literal(const char **p);
 // evaluator to handle ${...} interpolation; only the standard escapes
 // are decoded.
 value_t parse_string_literal(const char **p);
+
+// === Keywords ================================================================
+
+// Reserved words may not be used as member names, alias names, or any
+// future user-bindable identifier. Members: boolean-literal spellings +
+// script-grammar keywords.
+//
+// Returns true if `name` collides with a reserved word.
+bool object_is_reserved_word(const char *name);
+
+// The shell's keywords, in table order, each with a one-line syntax: the
+// reserved words plus contextual ones (`command`, a keyword only in its
+// statement shape).  `is_statement`: it heads a statement.
+size_t object_keyword_count(void);
+const char *object_keyword(size_t i);
+const char *object_keyword_syntax(size_t i);
+bool object_keyword_is_statement(size_t i);
 
 #ifdef __cplusplus
 }

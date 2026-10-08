@@ -123,7 +123,7 @@ suite can add one with `STUBS` or drop one with `OMIT_STUBS`.
 | `stub_peripherals.c` | isolated, cpu | No-op floppy and RTC entry points |
 | `stub_prom.c` | | The PROM catalog (`prom_identify_card()`, `prom_card_resolvable()`), for suites linking `pci.c` without the ROM layer |
 | `stub_platform.c` | isolated, cpu | Sound and timing platform hooks |
-| `stub_shell.c` | isolated, cpu | `shell_init()`, `shell_dispatch()`, `parse_address()` |
+| `stub_shell.c` | isolated, cpu | `shell_init()`, `parse_address()` |
 | `stub_system.c` | isolated, cpu | `system_*()` accessors routed to the harness context |
 
 `scripts/check-doc-inventories.py` (Hygiene workflow) fails if a

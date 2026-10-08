@@ -9,6 +9,7 @@
 
 // === Includes ===
 #include "common.h"
+#include "debug_mac.h" // mouse_route_t
 #include "scc.h"
 #include "via.h"
 
@@ -43,19 +44,21 @@ void mouse_move(mouse_t *restrict mouse, int dx, int dy);
 // it, and the machine-side hooks (mac_host_io.c) decode with it.  It used to
 // exist twice, and the copies had already drifted apart in what they accepted.
 //
-//   "default" (or empty/NULL) -> 'd'   the machine's usual path -- NOT the
-//                                      same operation everywhere: on a Mac,
-//                                      x/y is an absolute Toolbox cursor
-//                                      target; on a Lisa, x/y are deltas
-//   "relative" / "hw"         -> 'h'   x/y are hardware deltas, no Toolbox
-//                                      help, on EVERY machine -- the
-//                                      operation a host with a relative
-//                                      pointer (a pointer lock) uses
-//   "global"                  -> 'g'   absolute screen position (warp)
-//   "aux"                     -> 'a'   A/UX MAE routing
+//   "default" (or empty/NULL) -> MOUSE_ROUTE_DEFAULT  the machine's usual
+//                                path -- NOT the same operation everywhere:
+//                                on a Mac, x/y is an absolute Toolbox cursor
+//                                target; on a Lisa, x/y are deltas
+//   "relative" / "hw"         -> MOUSE_ROUTE_HW  x/y are hardware deltas, no
+//                                Toolbox help, on EVERY machine -- the
+//                                operation a host with a relative pointer
+//                                (a pointer lock) uses
+//   "global"                  -> MOUSE_ROUTE_GLOBAL  absolute screen
+//                                position (warp)
+//   "aux"                     -> MOUSE_ROUTE_AUX  A/UX MAE routing
 //
-// Returns 0 for anything else, which callers report as a bad argument.
-char input_mouse_mode_parse(const char *mode);
+// Returns MOUSE_ROUTE_INVALID for anything else, which callers report as a
+// bad argument.
+mouse_route_t input_mouse_mode_parse(const char *mode);
 
 // === Delta clamping =========================================================
 //

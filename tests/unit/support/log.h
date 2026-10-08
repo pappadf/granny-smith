@@ -18,7 +18,6 @@ typedef struct log_category {
 typedef void (*log_sink_fn)(const char *line, void *user);
 
 /* No-op functions to satisfy references */
-static inline void log_init(void) {}
 static inline log_category_t *log_register_category(const char *name) {
     (void)name;
     static log_category_t c;
@@ -78,15 +77,15 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 }
 
 #define LOG_USE_CATEGORY(catptr)                                                                                       \
-    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
+    static inline __attribute__((unused)) log_category_t *log_local_category(void) {                                   \
         return (catptr);                                                                                               \
     }
 
 #define LOG_USE_CATEGORY_NAME(name)                                                                                    \
-    static log_category_t _log_dummy_cat;                                                                              \
-    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
+    static log_category_t log_dummy_cat;                                                                               \
+    static inline __attribute__((unused)) log_category_t *log_local_category(void) {                                   \
         (void)(name);                                                                                                  \
-        return &_log_dummy_cat;                                                                                        \
+        return &log_dummy_cat;                                                                                         \
     }
 
 #ifndef LOG_COMPILE_MIN_LEVEL

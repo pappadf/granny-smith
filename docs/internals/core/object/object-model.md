@@ -40,11 +40,12 @@ the same errors. There is no shadow API.
 | [object.c](../../../../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
 | [value.h](../../../../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
 | [value.c](../../../../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
-| [parse.c](../../../../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
+| [parse.c](../../../../src/core/object/parse.c) | The literal parser (one integer grammar for literals, path indices and the expression lexer) and the keyword / reserved-word table |
 | [expr.h](../../../../src/core/object/expr.h) | `${...}` expression parser and evaluator |
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
+| [alias_class.c](../../../../src/core/object/alias_class.c) | The `shell.alias` class (`add`/`remove`/`list`) over that table |
 | [api.h](../../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
-| [meta.h](../../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
+| [meta.h](../../../../src/core/object/meta.h) | The synthetic `meta` class (`<path>.meta.*` introspection + `meta.complete`) |
 | [usage.h](../../../../src/core/object/usage.h) | Usage text for any path (`help`, `shell.usage`) |
 | [lint.h](../../../../src/core/object/lint.h) | The member-doc lint behind `shell.lint_members` |
 | [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
@@ -122,7 +123,7 @@ table. Each `member_t` is one of three kinds:
   kept in step by hand.
 
   A node that holds **per-machine state should be built and destroyed with
-  the machine**, not registered once at `shell_init`. `machine` itself is a
+  the machine**, not registered once at `core_init`. `machine` itself is a
   long-lived container whose children come and go, so both shapes appear
   under it, and the distinction is not cosmetic: a process-lifetime node
   cannot own a scheduler source, because the scheduler does not outlive the
@@ -307,7 +308,11 @@ and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
 is the friendlier reading; the full precedence table is `expr.c`'s grammar
 comment, the authority in code. Truthiness is per kind: numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
-an error reaching a condition aborts.
+an error reaching a condition aborts. The one operator that consumes an
+error is `!`: it reads an error as false, so `!err` is true and
+`assert !machine.cpu.broken` passes when the attribute is missing or false.
+`&&`, `||` and `?:` parse the side they do not take and discard its value
+and any error in it — a method call there still runs.
 
 Paths keep resolving *into* structured values (`V_MAP` / `V_LIST`):
 when a path prefix names a node whose value is a map or list, the
@@ -392,7 +397,9 @@ arrived from.
 - **Arity.** Required parameters must be present; `OBJ_ARG_OPTIONAL`
   parameters may be omitted; `OBJ_ARG_REST` (last slot only) slurps
   any remaining items into the body's argv. Calls with too many
-  arguments are rejected unless the last slot is rest.
+  arguments are rejected unless the last slot is rest; even then a call
+  is capped at `OBJ_VALIDATE_MAX_ARGS` (16, object.h) arguments in all,
+  the size of the scratch buffer the validator works in.
 - **Kind match.** `argv[i].kind` must equal the slot's declared
   kind (with the coercion exceptions below).
 - **Width fit.** `V_INT` / `V_UINT` slots that declare `width=1/2/4/8`
@@ -494,6 +501,10 @@ call. Hard errors abort startup in every build configuration:
 - Arg-only flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `default_value`) set on an attribute slot.
 - Member `flags` outside the visibility category bits.
+- A method with `nargs != 0` but no `args[]` table. A method without a
+  table skips validation altogether, so it may not claim an arity; a
+  variadic method declares an `OBJ_ARG_REST` slot instead (root `echo`
+  takes a `V_ANY` rest).
 - More than one collection member in a class, or a collection that hands
   out no entries (`by_index.get` or `by_key.lookup`), or a `next` /
   `next_key` without its `get` / `lookup`.
@@ -504,9 +515,10 @@ than first-call surprises.
 ### Return-kind assertions (debug builds)
 
 In debug builds the framework asserts that getter returns, method
-results, and setter returns match their declarations. A getter for
-a `V_UINT, width=4` attribute that returns `V_STRING` aborts
-immediately; a method declared `result = V_NONE` that returns a
+results, and setter returns match their declarations, through the
+project's `GS_ASSERTF` handler. A getter for
+a `V_UINT, width=4` attribute that returns `V_STRING` fails the
+assertion immediately; a method declared `result = V_NONE` that returns a
 non-error value also aborts. `V_ERROR` is always allowed (in-band
 error). Release builds compile the asserts out, so the production
 cost is zero. Integration and unit tests run with assertions
@@ -597,7 +609,7 @@ Objects in the tree fall into two camps:
 - **Process-singletons.** Stateless or process-global facades — the
   archive extractor, the platform mouse / keyboard / screen / vfs /
   find facades, the rom / vrom / machine / checkpoint orchestrators —
-  attach themselves at `shell_init` time via their owning module's
+  attach themselves at `core_init` time via their owning module's
   `*_init` (or `*_class_register`) function and stay attached for the
   process lifetime. Their methods consult the active machine where
   needed but do not hold per-machine state on the object node itself.
@@ -679,7 +691,7 @@ the level contract over every model in the registry.
 | Each NuBus card's declaration ROM: Apple's or its substitute | Decided as the bus seats the card | Unchanged | Unchanged | From the card's part of the checkpoint (Apple's bytes, or nothing for the substitute, which is regenerated) |
 | Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `pacing`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
 | AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched, but for the LaserWriter, which restarts (a job in flight and what jobs made permanent go); the new machine plugs into it | Untouched | Untouched | As `machine.boot`: never in a checkpoint. Nor kept across a page reload: the web app saves none of it, and a reloaded page starts with only the default share |
-| The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session numbering), with no sessions: the guest sees a restarted server |
+| The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session and ATP transaction numbering), with no sessions: the guest sees a restarted server |
 
 **`machine.boot` inherits nothing from the running machine.** The
 document is the whole specification. `model` and `rom` are required, and
@@ -900,7 +912,7 @@ singleton or cfg-scoped:
    `cfg->foo = foo_init(...)` call), or register a root install hook
    (`root_register_install`) when the node belongs under a root stub;
    for process-singletons, add a small `foo_class_register` and call it
-   from `shell_init`. A collection is a `collection_desc_t` plus, when
+   from `core_init`. A collection is a `collection_desc_t` plus, when
    its entries are objects of their own, an `object_cache_t`.
 4. **Register any built-in aliases** the class wants to expose
    (`alias_register_builtin`); idempotent, so safe under repeated
@@ -949,7 +961,7 @@ written months ago.
 ### Singleton lifetime
 
 A class registered as a process singleton (`<module>_class_register()` from
-`shell_init`) stays registered for the life of the process. **There is no
+`core_init`) stays registered for the life of the process. **There is no
 unregister.** Four `*_class_unregister` functions used to exist — `find`,
 `mouse`, `screen`, `vfs` — with zero callers between them, and the absence of
 a shutdown path is deliberate rather than an omission: nothing in the process

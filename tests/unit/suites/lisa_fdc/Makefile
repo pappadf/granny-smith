@@ -13,6 +13,7 @@ TEST_HARNESS := isolated
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
                 ../../../../src/core/storage/image.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
+                ../../../../src/core/storage/image_iso9660.c \
                 ../../../../src/core/storage/image_apm.c \
                 ../../../../src/core/storage/storage_util.c \
                 ../../../../src/core/storage/image_scratch.c \

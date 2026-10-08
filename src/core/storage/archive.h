@@ -3,11 +3,9 @@
 
 // archive.h
 // Archive file handling: identification (`.sit` / `.cpt` / `.zip` / `.tar` /
-// `.hqx` / `.bin` / `.gz`) and extraction.  An archive is a namespace of the VFS
-// (namespace.h) -- `ls app.sit` lists it, `cp app.sit/Readme .` copies one
-// file out -- and these are the typed object surface over that, `archive.*`.
-// The in-tree peeler library does the format work; its name is an
-// implementation detail.
+// `.hqx` / `.bin` / `.gz`) and extraction, and the `files.archive` object.
+// An archive is also a namespace of the VFS (namespace.h): `ls app.sit`
+// lists it, `cp app.sit/Readme .` copies one file out.
 
 #ifndef ARCHIVE_H
 #define ARCHIVE_H
@@ -19,9 +17,9 @@ struct class_desc;
 // Identify an archive at `path` (any VFS path: it may be inside an image or
 // another archive).  Returns the format short name ("sit" / "cpt" / "zip" /
 // "tar" / "hqx" / "bin" / "gz") for a recognised file, or NULL when the file is
-// unreadable or not a supported archive.  Returned pointer is owned by the
-// peeler library and is valid for the lifetime of the program.  Reads at
-// most 64 KiB from each end of the file.
+// unreadable or not a supported archive.  The name is a static string of the
+// format registry (peel_identify), valid for the lifetime of the program.
+// Reads at most 64 KiB from each end of the file.
 const char *archive_identify_file(const char *path);
 
 // Extract the archive at `path` into `out_dir` (defaults to "." when

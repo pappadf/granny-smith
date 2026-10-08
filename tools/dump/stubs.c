@@ -11,10 +11,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// gs_assert_fail backs the GS_ASSERT macros in common.h.  None of the
+// gs_assert_fail backs the GS_ASSERT macros in gs_assert.h.  None of the
 // code paths the dump tool exercises should ever fire an assert, so this
 // is a hard-abort safety net rather than a real handler.
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func) {
+    (void)expr;
+    (void)file;
+    (void)line;
+    (void)func;
+    __builtin_trap();
+}
+
+// gs_assert_failf backs GS_ASSERTF; same hard-abort safety net.
+void gs_assert_failf(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
     (void)expr;
     (void)file;
     (void)line;
@@ -24,7 +33,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 }
 
 // A-trap name lookup is NOT stubbed here any more: the canonical
-// macos_atrap_name() now lives in src/core/debug/mac_traps_data.c, beside its
+// debug_mac_atrap_name() now lives in src/core/debug/mac_traps_data.c, beside its
 // table, which this tool already links.  The three former copies each
 // re-declared the table with a `uint32_t trap` member where the definition has
 // `uint16_t` -- C11 6.2.7 undefined behaviour across translation units.

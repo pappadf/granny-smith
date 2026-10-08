@@ -6,8 +6,6 @@
 
 #include "value_format.h"
 
-#include "meta.h"
-
 #include "object.h"
 
 #include <inttypes.h>
@@ -39,6 +37,11 @@ void vbuf_append(vbuf_t *b, const char *s, size_t n) {
     memcpy(b->p + b->len, s, n);
     b->len += n;
     b->p[b->len] = '\0';
+}
+
+void vbuf_append_str(vbuf_t *b, const char *s) {
+    if (s)
+        vbuf_append(b, s, strlen(s));
 }
 
 void vbuf_appendf(vbuf_t *b, const char *fmt, ...) {
@@ -82,10 +85,18 @@ static bool mode_is_json(value_format_mode_t m) {
     return m == VFMT_JSON || m == VFMT_JSON_TAGGED;
 }
 
-// RFC 8259 string literal: quotes plus the escapes JSON requires.
+// RFC 8259 string literal: quotes plus the escapes JSON requires. Runs of
+// ordinary characters are appended in one call, not byte by byte.
 static void append_json_string(vbuf_t *b, const char *s) {
     vbuf_append(b, "\"", 1);
     for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
+        const unsigned char *run = p;
+        while (*p >= 0x20 && *p != '"' && *p != '\\')
+            p++;
+        if (p > run)
+            vbuf_append(b, (const char *)run, (size_t)(p - run));
+        if (!*p)
+            break;
         switch (*p) {
         case '"':
             vbuf_append(b, "\\\"", 2);
@@ -109,10 +120,7 @@ static void append_json_string(vbuf_t *b, const char *s) {
             vbuf_append(b, "\\f", 2);
             break;
         default:
-            if (*p < 0x20)
-                vbuf_appendf(b, "\\u%04x", (unsigned)*p);
-            else
-                vbuf_append(b, (const char *)p, 1);
+            vbuf_appendf(b, "\\u%04x", (unsigned)*p); // the remaining control characters
             break;
         }
     }
@@ -162,21 +170,24 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
 
     case V_BOOL:
-        vbuf_append(out, v->b ? "true" : "false", v->b ? 4 : 5);
+        vbuf_append_str(out, v->b ? "true" : "false");
         return;
 
     case V_INT:
-        // VAL_HEX is honoured in every text mode.  format_value_print used to
-        // ignore it for V_INT while format_scalar_inline honoured it, so the
-        // same attribute rendered two ways depending on whether it was asked
-        // for alone or inside a table.  JSON keeps V_INT numeric so the
-        // document stays machine-readable.
-        if (mode_is_json(mode))
+        // VAL_HEX is honoured in every mode, as for V_UINT: format_value_print
+        // used to ignore it for V_INT while format_scalar_inline honoured it,
+        // so the same attribute rendered two ways.  Hex shows the two's-
+        // complement bit pattern at the value's width (-1 at width 4 is
+        // 0xffffffff), and in JSON it is a string like V_UINT's, because
+        // "0x…" is not a JSON number.
+        if (v->flags & VAL_HEX) {
+            uint64_t bits = (uint64_t)v->i;
+            if (v->width > 0 && v->width < 8)
+                bits &= ((uint64_t)1 << (8 * v->width)) - 1;
+            vbuf_appendf(out, mode_is_json(mode) ? "\"0x%" PRIx64 "\"" : "0x%" PRIx64, bits);
+        } else {
             vbuf_appendf(out, "%" PRId64, v->i);
-        else if (v->flags & VAL_HEX)
-            vbuf_appendf(out, "0x%" PRIx64, (uint64_t)v->i);
-        else
-            vbuf_appendf(out, "%" PRId64, v->i);
+        }
         return;
 
     case V_UINT:
@@ -203,7 +214,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         else if (mode == VFMT_INLINE)
             vbuf_appendf(out, "\"%s\"", s);
         else
-            vbuf_append(out, s, strlen(s));
+            vbuf_append_str(out, s);
         return;
     }
 
@@ -244,7 +255,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             if (mode == VFMT_INLINE)
                 vbuf_appendf(out, "\"%s\"", label);
             else
-                vbuf_append(out, label, strlen(label));
+                vbuf_append_str(out, label);
         } else {
             bool bare = (mode == VFMT_TEXT || mode == VFMT_REPL);
             vbuf_appendf(out, bare ? "<enum:%d>" : "enum:%d", v->enm.idx);
@@ -344,7 +355,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         if (mode_is_json(mode))
             append_json_string(out, r);
         else
-            vbuf_append(out, r, strlen(r));
+            vbuf_append_str(out, r);
         return;
     }
 

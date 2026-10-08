@@ -9,12 +9,13 @@ TEST_NAME    := checkpoint
 TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := machine_object assert
-# The object layer is real so checkpoint.c's class descriptor is validated the
+# The object layer is real so checkpoint_class.c's class descriptor is validated the
 # way it is in the emulator; everything past the module boundary (the cmd_*
-# handlers, the gs_* platform hooks, get_build_id) is stubbed in test.c, which
+# handlers, the gs_* platform hooks, build_id_get) is stubbed in test.c, which
 # also lets the test drive the build-ID gate.
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/checkpoint.c \
+              ../../../../src/core/checkpoint_class.c \
               ../../../../src/core/io/io_worker.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \

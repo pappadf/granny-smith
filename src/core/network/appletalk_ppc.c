@@ -444,7 +444,7 @@ static void ppc_on_nbp_reply(void *ctx, const atalk_nbp_info_t *info) {
     (void)ctx;
     if (!info || !g_ppc->browse_active)
         return;
-    if (info->node == LLAP_HOST_NODE)
+    if (info->node == ATALK_HOST_NODE)
         return; // that is our own advertisement
     for (int i = 0; i < g_ppc->machine_count; i++) {
         if (g_ppc->machines[i].node == info->node && g_ppc->machines[i].socket == info->socket)
@@ -943,7 +943,7 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
         .type = PPC_NBP_TYPE,
         .zone = "*",
         .socket = PPC_HOST_SOCKET,
-        .node = LLAP_HOST_NODE,
+        .node = ATALK_HOST_NODE,
         .net = 0,
     };
     if (atalk_nbp_publish(&g_host->nbp, &desc) != 0) {

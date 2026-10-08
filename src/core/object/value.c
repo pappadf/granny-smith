@@ -11,18 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Duplicate a NUL-terminated string with malloc. NULL-safe.
-static char *xstrdup(const char *s) {
-    if (!s)
-        return NULL;
-    size_t n = strlen(s);
-    char *r = (char *)malloc(n + 1);
-    if (!r)
-        return NULL;
-    memcpy(r, s, n + 1);
-    return r;
-}
-
 value_t val_none(void) {
     value_t v = {0};
     v.kind = V_NONE;
@@ -48,7 +36,7 @@ value_t val_int(int64_t i) {
 value_t val_uint(uint8_t width, uint64_t u) {
     value_t v = {0};
     v.kind = V_UINT;
-    v.width = width ? width : 8;
+    v.width = width; // 0 = unconstrained, kept as given
     v.u = u;
     return v;
 }
@@ -64,7 +52,7 @@ value_t val_float(double f) {
 value_t val_str(const char *s) {
     value_t v = {0};
     v.kind = V_STRING;
-    v.s = xstrdup(s ? s : "");
+    v.s = strdup(s ? s : "");
     return v;
 }
 
@@ -75,13 +63,14 @@ value_t val_bytes(const void *p, size_t n) {
     v.bytes.p = NULL;
     if (n == 0)
         return v;
+    // A NULL source with a non-zero length is a caller bug, not a request
+    // for zeroes; report it like every other invalid constructor input.
+    if (!p)
+        return val_err("val_bytes: NULL source for %zu bytes", n);
     v.bytes.p = (uint8_t *)malloc(n);
     if (!v.bytes.p)
         return v; // length stays 0: p != NULL whenever n > 0, always
-    if (p)
-        memcpy(v.bytes.p, p, n);
-    else
-        memset(v.bytes.p, 0, n);
+    memcpy(v.bytes.p, p, n);
     v.bytes.n = n;
     return v;
 }
@@ -127,17 +116,19 @@ value_t val_err(const char *fmt, ...) {
     va_list ap;
     buf[0] = '\0';
     va_start(ap, fmt);
-    if (fmt)
-        vsnprintf(buf, sizeof(buf), fmt, ap);
+    int n = fmt ? vsnprintf(buf, sizeof(buf), fmt, ap) : 0;
     va_end(ap);
-    v.err = xstrdup(buf);
+    // Over-long message: keep the fixed cap but mark the cut with "...".
+    if (n >= (int)sizeof(buf))
+        memcpy(buf + sizeof(buf) - 4, "...", 4);
+    v.err = strdup(buf);
     return v;
 }
 
 value_t val_ref(const char *path) {
     value_t v = {0};
     v.kind = V_REF;
-    v.ref = xstrdup(path ? path : "");
+    v.ref = strdup(path ? path : "");
     return v;
 }
 
@@ -228,7 +219,7 @@ void val_map_put(value_map_builder_t *b, const char *key, value_t v) {
         b->entries = e;
         b->cap = cap;
     }
-    char *k = xstrdup(key ? key : "");
+    char *k = strdup(key ? key : "");
     if (!k) {
         b->err = true;
         value_free(&v);
@@ -365,7 +356,7 @@ value_t value_dup(const value_t *v) {
             if (!entries)
                 return val_err("value_dup: OOM duplicating map of %zu", v->map.len);
             for (size_t i = 0; i < v->map.len; i++) {
-                entries[i].key = xstrdup(v->map.entries[i].key);
+                entries[i].key = strdup(v->map.entries[i].key);
                 entries[i].val = value_dup(&v->map.entries[i].val);
             }
         }

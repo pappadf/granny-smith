@@ -74,6 +74,12 @@ value_t expr_object_path_read(struct object *root, const char *path);
 // no surrounding parens). Returns the resulting value_t (or V_ERROR on
 // syntax/type/resolution errors). Caller frees with value_free.
 //
+// Errors: a V_ERROR operand propagates through every operator, with two
+// exceptions. `!` treats an error as false, so `!err` is true (`assert
+// !machine.cpu.broken` passes when the attribute is missing or false); and
+// `&&` / `||` / `?:` parse the side they do not take and discard its value
+// and any error it raised (a method call there still runs).
+//
 // `src` is consumed entirely; trailing garbage is an error.
 value_t expr_eval(const char *src, const expr_ctx_t *ctx);
 

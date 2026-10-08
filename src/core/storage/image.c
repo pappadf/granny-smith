@@ -12,6 +12,7 @@
 #include "gs_out.h"
 
 #include "format_registry.h"
+#include "image_iso9660.h"
 #include "image_scratch.h"
 #include "image_udif.h"
 #include "image_wrap.h"
@@ -178,7 +179,10 @@ static void mint_random_hex_id(char out[static 17]) {
 #endif
     if (!got) {
         // Fallback: combine PID + time + a counter for uniqueness within a
-        // process even if /dev/urandom is unavailable.
+        // process even if /dev/urandom is unavailable.  Unique only while
+        // ids are minted on one thread (the emulator's; the counter is a
+        // plain static) -- two threads minting in the same second could
+        // collide.
         static uint32_t ctr = 0;
         uint32_t pid = (uint32_t)getpid();
         uint32_t now = (uint32_t)time(NULL);
@@ -344,6 +348,12 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     image->raw_size = (size_t)raw;
     image->block_size = block_size;
     image->type = classify_image((size_t)raw);
+    // A disc is told apart by its content, not its size: an ISO 9660 primary
+    // volume descriptor at 32 KB (an HFS-only CD stays a hard disk -- nothing
+    // in its bytes says CD).
+    if (image->type == image_hd && block_size == STORAGE_BLOCK_SIZE &&
+        iso_probe_source(u.data, 0, gs_source_size(u.data)))
+        image->type = image_cdrom;
     image->writable = mode != OPEN_READONLY;
     image->from_diskcopy = u.dc42 != NULL;
 
@@ -665,6 +675,24 @@ static char *stream_set_large_buffer(FILE *f) {
     return buf;
 }
 
+// Create `path` for writing, refusing a file that exists: the check and the
+// create are one open(O_CREAT | O_EXCL), so a file that appears between a
+// caller's check and the write is never truncated.  NULL with errno set
+// (EEXIST for an existing file).
+static FILE *create_exclusive(const char *path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0)
+        return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        int e = errno;
+        close(fd);
+        remove(path);
+        errno = e;
+    }
+    return f;
+}
+
 struct image_export {
     storage_export_view_t *view;
     char *dest;
@@ -748,7 +776,9 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     gs_mkdir_parents(e->dest);
     if (export_is_udif(e))
         return image_export_run_udif(e, err, err_cap);
-    FILE *f = fopen(e->dest, "wb");
+    // Exclusively: begin refused an existing file, and one that has appeared
+    // since is refused here rather than truncated.
+    FILE *f = create_exclusive(e->dest);
     if (!f) {
         int rc = errno ? errno : EIO;
         if (err)
@@ -827,16 +857,9 @@ int image_create_empty_udif(const char *filename, uint64_t size) {
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density) {
     if (!filename || !*filename)
         return -1;
-    if (!overwrite) {
-        FILE *exist = fopen(filename, "rb");
-        if (exist) {
-            fclose(exist);
-            return -2;
-        }
-    }
-    FILE *f = fopen(filename, "wb");
+    FILE *f = overwrite ? fopen(filename, "wb") : create_exclusive(filename);
     if (!f)
-        return -1;
+        return (!overwrite && errno == EEXIST) ? IMAGE_CREATE_EXISTS : -1;
     const size_t total = high_density ? 1440 * 1024 : 800 * 1024;
     int fd = fileno(f);
     if (fd < 0 || ftruncate(fd, (off_t)total) != 0) {
@@ -851,15 +874,10 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
 int image_create_blank_profile(const char *filename, uint32_t block_count) {
     if (!filename || !*filename || block_count == 0)
         return -1;
-    FILE *exist = fopen(filename, "rb");
-    if (exist) {
-        fclose(exist);
-        return -2;
-    }
     gs_mkdir_parents(filename);
-    FILE *f = fopen(filename, "wb");
+    FILE *f = create_exclusive(filename);
     if (!f)
-        return -1;
+        return errno == EEXIST ? IMAGE_CREATE_EXISTS : -1;
     // A blank ProFile is just zeros — block_count × 532.  ftruncate leaves the
     // new bytes reading as zero, so the controller serves an all-zero disk the
     // OS then formats; the device-info block reports block_count as capacity.
@@ -905,12 +923,6 @@ image_t *images_find(const image_list_t *images, const char *name) {
     return NULL;
 }
 
-void image_init(checkpoint_t *checkpoint) {
-    (void)checkpoint;
-}
-
-void image_delete(void) {}
-
 void setup_images(struct config *config) {
     (void)config;
 }
@@ -936,7 +948,8 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     // restore re-wraps rather than trusting the file to say so (the prefix
     // is never in the file).  raw_size is the storage's own size, which is
     // what the restore's geometry check and base materialisation expect.
-    char flags = (char)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
+    uint8_t flags =
+        (uint8_t)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
     system_write_checkpoint_data(checkpoint, &flags, sizeof(flags));
 
     uint64_t raw_size = (uint64_t)(image->wrap_prefix ? image->wrap_storage_size : image->raw_size);

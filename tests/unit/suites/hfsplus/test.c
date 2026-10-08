@@ -233,7 +233,7 @@ TEST(test_readdir_root) {
     hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
     ASSERT_TRUE(vol != NULL);
 
-    hfs_dir_iter_t *it = hfs_opendir_cnid(vol, HFS_ROOT_CNID);
+    hfs_dir_iter_t *it = hfs_opendir_cnid(vol, HFS_ROOT_ID);
     ASSERT_TRUE(it != NULL);
     int saw_sub = 0, saw_hello = 0, saw_bullet = 0, count = 0;
     hfs_dirent_t de;

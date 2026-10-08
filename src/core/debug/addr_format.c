@@ -5,13 +5,8 @@
 
 #include "addr_format.h"
 
-#include "cpu.h"
-#include "debug.h"
-#include "lisa_mmu.h"
-#include "mmu.h"
-#include "system.h"
+#include "debug_cpu.h" // register names, MMU state, translation
 
-#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -19,60 +14,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Default display mode: auto (collapsed unless MMU is active)
-addr_display_mode_t g_addr_display_mode = ADDR_DISPLAY_AUTO;
+// Shown in place of the physical half's hex digits when a logical address
+// does not translate: one '?' per digit of the "%08X" field it replaces
+#define ADDR_UNMAPPED_TEXT "????????"
 
-bool debug_cpu_is_supervisor(void) {
-    const cpu_debug_if_t *dif = system_cpu_debug_if();
-    return (dif && dif->is_supervisor) ? dif->is_supervisor(dif->ctx) : true;
+// Display mode: auto (collapsed unless the MMU is active)
+static addr_display_mode_t s_addr_display_mode = ADDR_DISPLAY_AUTO;
+
+addr_display_mode_t addr_display_get_mode(void) {
+    return s_addr_display_mode;
 }
 
-// Try to resolve a name as a CPU register, returning its value.
-// Returns true if name matched a register, false otherwise.
-static bool resolve_register_address(const char *name, uint32_t *value) {
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
-        return false;
-
-    // Case-insensitive comparisons
-    char lower[8];
-    size_t len = strlen(name);
-    if (len == 0 || len > 7)
-        return false;
-    for (size_t i = 0; i <= len; i++)
-        lower[i] = tolower((unsigned char)name[i]);
-
-    // PC, SP
-    if (strcmp(lower, "pc") == 0) {
-        *value = cpu_get_pc(cpu);
-        return true;
-    }
-    if (strcmp(lower, "sp") == 0) {
-        *value = cpu_get_an(cpu, 7);
-        return true;
-    }
-    if (strcmp(lower, "ssp") == 0) {
-        *value = cpu_get_ssp(cpu);
-        return true;
-    }
-    if (strcmp(lower, "usp") == 0) {
-        *value = cpu_get_usp(cpu);
-        return true;
-    }
-
-    // D0-D7
-    if (lower[0] == 'd' && lower[1] >= '0' && lower[1] <= '7' && lower[2] == '\0') {
-        *value = cpu_get_dn(cpu, lower[1] - '0');
-        return true;
-    }
-
-    // A0-A7
-    if (lower[0] == 'a' && lower[1] >= '0' && lower[1] <= '7' && lower[2] == '\0') {
-        *value = cpu_get_an(cpu, lower[1] - '0');
-        return true;
-    }
-
-    return false;
+void addr_display_set_mode(addr_display_mode_t mode) {
+    s_addr_display_mode = mode;
 }
 
 // Parse an address string with optional L:/P: prefix and $/0x notation.
@@ -82,14 +36,14 @@ bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out)
         return false;
 
     // Default to logical address
-    *space_out = ADDR_LOGICAL;
+    *space_out = ADDR_SPACE_LOGICAL;
 
     // Check for L: or P: prefix (case-insensitive)
     if ((str[0] == 'L' || str[0] == 'l') && str[1] == ':') {
-        *space_out = ADDR_LOGICAL;
+        *space_out = ADDR_SPACE_LOGICAL;
         str += 2;
     } else if ((str[0] == 'P' || str[0] == 'p') && str[1] == ':') {
-        *space_out = ADDR_PHYSICAL;
+        *space_out = ADDR_SPACE_PHYSICAL;
         str += 2;
     }
 
@@ -106,7 +60,7 @@ bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out)
         if (*str == '\0')
             return false; // explicit reject empty after $
         // Try to resolve as register name (pc, sp, a0-a7, d0-d7, ssp, usp)
-        if (resolve_register_address(str, addr_out))
+        if (debug_cpu_register_value(str, addr_out))
             return true;
         // Fall through to hex parsing.
         char *endptr;
@@ -147,7 +101,7 @@ int format_address(char *buf, size_t buf_size, uint32_t addr) {
 
 // Check if dual address display should be active
 bool addr_display_is_expanded(void) {
-    switch (g_addr_display_mode) {
+    switch (s_addr_display_mode) {
     case ADDR_DISPLAY_EXPANDED:
         return true;
     case ADDR_DISPLAY_COLLAPSED:
@@ -155,82 +109,13 @@ bool addr_display_is_expanded(void) {
     case ADDR_DISPLAY_AUTO:
     default:
         // Expanded when MMU is present and enabled
-        return g_mmu && g_mmu->enabled;
+        return debug_cpu_mmu_enabled();
     }
-}
-
-// Translate a logical address to physical for debug display.
-uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid) {
-    if (is_identity)
-        *is_identity = true;
-    if (tt_hit)
-        *tt_hit = false;
-    if (valid)
-        *valid = true;
-
-    // The Lisa's segment MMU: its own translation, not the PMMU's (before,
-    // this reported every Lisa address as mapped to itself).
-    if (g_lisa_mmu) {
-        uint32_t phys = logical_addr;
-        bool ok = lisa_mmu_translate(g_lisa_mmu, logical_addr, debug_cpu_is_supervisor(), &phys, NULL);
-        if (valid)
-            *valid = ok;
-        if (is_identity)
-            *is_identity = ok && phys == logical_addr;
-        return ok ? phys : logical_addr;
-    }
-
-    // No MMU or MMU disabled: identity mapping
-    if (!g_mmu || !g_mmu->enabled)
-        return logical_addr;
-
-    // Translate via the current CPU mode rather than hardcoded supervisor so
-    // that under TC.SRE=1 (separate user/supervisor roots) addresses dumped
-    // while user code is running resolve through CRP, not SRP.  Also affects
-    // breakpoint physical-page matching via the debug_check_pc_break caller.
-    bool supervisor = debug_cpu_is_supervisor();
-
-    // Check transparent translation first
-    if (mmu_check_tt(g_mmu, logical_addr, false, supervisor)) {
-        if (tt_hit)
-            *tt_hit = true;
-        // TT = identity mapping
-        return logical_addr;
-    }
-
-    // Perform table walk (read-only)
-    uint16_t mmusr = mmu_test_address(g_mmu, logical_addr, false, supervisor, NULL);
-
-    if (mmusr & MMUSR_I) {
-        // Invalid descriptor
-        if (valid)
-            *valid = false;
-        return logical_addr;
-    }
-
-    if (mmusr & MMUSR_B) {
-        // Bus error during walk
-        if (valid)
-            *valid = false;
-        return logical_addr;
-    }
-
-    // The MMUSR doesn't directly give us the physical address.
-    // We need to do a full walk to get it.  Use mmu_table_walk result
-    // indirectly by reading the physical_addr from a walk result.
-    // For now, re-walk to extract physical address.
-    // Note: mmu_table_walk is static in mmu.c, so we use mmu_translate_debug.
-    uint32_t phys_addr = mmu_translate_debug(g_mmu, logical_addr, supervisor);
-
-    if (is_identity)
-        *is_identity = (phys_addr == logical_addr);
-
-    return phys_addr;
 }
 
 // Format an address with optional L:/P: dual display
 int format_address_with_space(char *buf, size_t buf_size, uint32_t addr, addr_space_t space) {
-    if (space == ADDR_PHYSICAL)
+    if (space == ADDR_SPACE_PHYSICAL)
         return snprintf(buf, buf_size, "P:$%08X", addr);
 
     // Logical address — check if we should show dual L:/P:
@@ -243,12 +128,12 @@ int format_address_with_space(char *buf, size_t buf_size, uint32_t addr, addr_sp
     uint32_t phys_addr = debug_translate_address(addr, &is_identity, NULL, &valid);
 
     if (!valid)
-        return snprintf(buf, buf_size, "L:$%08X P:????????", addr);
+        return snprintf(buf, buf_size, "L:$%08X P:" ADDR_UNMAPPED_TEXT, addr);
 
     return snprintf(buf, buf_size, "L:$%08X P:$%08X", addr, phys_addr);
 }
 
 // Format a logical address with optional physical translation for dual display
 int format_address_pair(char *buf, size_t buf_size, uint32_t logical_addr) {
-    return format_address_with_space(buf, buf_size, logical_addr, ADDR_LOGICAL);
+    return format_address_with_space(buf, buf_size, logical_addr, ADDR_SPACE_LOGICAL);
 }

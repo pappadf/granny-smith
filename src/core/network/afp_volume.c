@@ -43,9 +43,16 @@
 
 LOG_USE_CATEGORY_NAME("afp");
 
+// The status block's Machine Type: what a real server reports (the hardware
+// it runs on), not the emulator's name, which it used to put on the wire.
+#define AFP_MACHINE_TYPE "Macintosh"
+
 // AFP versions we speak.  "AFPVersion 2.1" is only advertised because every
 // 2.1 command below is implemented; the honest-negotiation rule is
-// that this list and the dispatch table move together.
+// that this list and the dispatch table move together.  2.2 and 3.x are not
+// offered: what they add (Unicode and long names, 64-bit offsets) does not
+// map onto this server's HFS-style catalog, and the System 6/7 clients the
+// project targets speak 2.1 at most; a newer client falls back to 2.1.
 static const char *const k_afp_versions[] = {"AFPVersion 2.0", "AFPVersion 2.1"};
 
 // ============================================================================
@@ -362,8 +369,8 @@ static int afp_nbp_publish(const char *object) {
     atalk_nbp_service_desc_t desc = {.object = object,
                                      .type = AFP_ENTITY_TYPE,
                                      .zone = "*",
-                                     .socket = HOST_AFP_SOCKET,
-                                     .node = LLAP_HOST_NODE,
+                                     .socket = ATALK_HOST_AFP_SOCKET,
+                                     .node = ATALK_HOST_NODE,
                                      .net = 0};
     return atalk_nbp_publish(&g_afp->nbp_entry, &desc);
 }
@@ -439,7 +446,7 @@ static void afp_asp_close(void *ctx, uint16_t session_ref) {
 }
 static int afp_asp_status(void *ctx, uint8_t **out, size_t *out_len) {
     (void)ctx;
-    return atalk_build_status_block(g_afp->object, "GrannySmith", out, out_len);
+    return atalk_build_status_block(g_afp->object, AFP_MACHINE_TYPE, out, out_len);
 }
 static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
     (void)ctx;
