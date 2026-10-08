@@ -2027,33 +2027,6 @@ TEST(volume_add_reports_the_real_reason_it_failed) {
     fixture_down();
 }
 
-// With GS_AFP_SHARES_ROOT set, only that directory and what lies below it
-// can be published; a path outside, or one that only shares its prefix, is
-// refused with the reason.
-TEST(volume_add_honours_the_shares_root) {
-    fixture_up("sharesroot");
-    char err[256];
-    char inside[512], sibling[512];
-    host_path("Inside", inside, sizeof(inside));
-    ASSERT_EQ_INT(0, mkdir(inside, 0755));
-    host_path("InsideX", sibling, sizeof(sibling)); // same prefix, another directory
-    ASSERT_EQ_INT(0, mkdir(sibling, 0755));
-
-    ASSERT_EQ_INT(0, setenv("GS_AFP_SHARES_ROOT", inside, 1));
-    int slot = atalk_afp_volume_add("InsideVol", inside, err, sizeof(err));
-    ASSERT_TRUE(slot >= 0);
-    ASSERT_EQ_INT(0, atalk_afp_volume_remove("InsideVol", err, sizeof(err)));
-    ASSERT_TRUE(atalk_afp_volume_add("SiblingVol", sibling, err, sizeof(err)) < 0);
-    ASSERT_TRUE(strstr(err, "GS_AFP_SHARES_ROOT") != NULL);
-    ASSERT_TRUE(atalk_afp_volume_add("TmpVol", "/tmp", err, sizeof(err)) < 0);
-    ASSERT_EQ_INT(0, unsetenv("GS_AFP_SHARES_ROOT"));
-
-    // Unset, any directory can be published again
-    ASSERT_TRUE(atalk_afp_volume_add("SiblingVol", sibling, err, sizeof(err)) >= 0);
-    ASSERT_EQ_INT(0, atalk_afp_volume_remove("SiblingVol", err, sizeof(err)));
-    fixture_down();
-}
-
 TEST(stats_track_commands_bytes_and_error_codes) {
     fixture_up("stats");
     const atalk_afp_stats_t *st = atalk_afp_get_stats();
@@ -4037,7 +4010,6 @@ int main(void) {
     RUN(get_srvr_parms_lists_every_volume);
 
     RUN(volume_add_reports_the_real_reason_it_failed);
-    RUN(volume_add_honours_the_shares_root);
     RUN(stats_track_commands_bytes_and_error_codes);
     RUN(disabling_the_server_refuses_commands);
     RUN(server_name_and_versions_are_readable_and_settable);

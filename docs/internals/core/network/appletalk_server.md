@@ -2591,12 +2591,6 @@ under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on the headless build. Like
 every share it stays for every machine that plugs in. No path literal lives
 in `src/core`.
 
-Because the server is guest-only (§5), a volume hands its whole tree to
-anyone on the cable. Setting `$GS_AFP_SHARES_ROOT` to a directory confines
-`volumes.add` to that directory and what lies below it (compared after
-`realpath`, so `..` and symlinks in the argument cannot step out); a path
-elsewhere is refused with the reason. Unset, any directory can be published.
-
 ---
 
 # 4 Persistence formats

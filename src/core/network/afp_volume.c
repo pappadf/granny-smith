@@ -197,29 +197,6 @@ static bool vol_id_in_use(uint32_t id, const void *ctx) {
     return find_vol_by_id((uint16_t)id) != NULL;
 }
 
-// The server is unauthenticated (FPLogin takes "No User Authent" only), so
-// a volume hands its whole tree to anyone on the cable.  When this variable
-// names a directory, only it and what lies below it can be published; unset,
-// any directory can, as the platform's default share and the test suites
-// expect.  Whether the default should be an allow-list is the owner's call.
-#define AFP_SHARES_ROOT_ENV "GS_AFP_SHARES_ROOT"
-
-// May the resolved directory `root` be published?
-static bool vol_path_allowed(const char *root) {
-    const char *allowed = getenv(AFP_SHARES_ROOT_ENV);
-    if (!allowed || !*allowed)
-        return true;
-    char resolved[PATH_MAX];
-    if (!realpath(allowed, resolved))
-        return false; // a root that does not resolve admits nothing
-    size_t n = strlen(resolved);
-    while (n > 1 && resolved[n - 1] == '/')
-        resolved[--n] = '\0';
-    if (strcmp(resolved, "/") == 0)
-        return true;
-    return strncmp(root, resolved, n) == 0 && (root[n] == '\0' || root[n] == '/');
-}
-
 // Publish `path` as volume `name`, under the next free volume id.
 int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
     if (err && err_len)
@@ -255,16 +232,11 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
     if (slot < 0)
         return vol_fail(err, err_len, "volume table full (max %d)", AFP_MAX_VOLUMES);
 
-    char resolved[PATH_MAX];
-    const char *root = realpath(path, resolved) ? resolved : path;
-    if (!vol_path_allowed(root))
-        return vol_fail(err, err_len, "path '%s' is outside %s ('%s')", path, AFP_SHARES_ROOT_ENV,
-                        getenv(AFP_SHARES_ROOT_ENV));
-
     vol_t *v = &g_afp->vols[slot];
     memset(v, 0, sizeof(*v));
     snprintf(v->name, sizeof(v->name), "%s", name);
-    snprintf(v->root, sizeof(v->root), "%s", root);
+    char resolved[PATH_MAX];
+    snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
     uint32_t id = 0;
     if (!atalk_id_alloc(&g_afp->next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
         memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
