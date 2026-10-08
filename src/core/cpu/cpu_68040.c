@@ -452,8 +452,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
-    cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
