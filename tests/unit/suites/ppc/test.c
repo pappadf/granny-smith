@@ -777,6 +777,11 @@ static void test_sprs(void) {
     CHECK_EQ(P->lr, 0x12345678u);
     step1_valid(e_spr(3, 8, 0)); // mflr
     CHECK_EQ(P->gpr[3], 0x12345678u);
+    // XER reserved bits 3-15 and 24 read as zero on the 601 (601UM 2.2.5)
+    fresh();
+    P->gpr[4] = 0xFFFFFFFFu;
+    step1_valid(e_spr(4, 1, 1)); // mtxer
+    CHECK_EQ(P->xer, 0xE000FF7Fu);
     // RTC asymmetry: write via SPR 20/21, read via 4/5
     fresh();
     P->gpr[4] = 0x1234u;
