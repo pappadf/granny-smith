@@ -101,7 +101,7 @@ if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
 every case already ends in `break;` — so a `break` inside an op macro binds to
 the innermost *switch*, falls through to the outer switch's own `break`, and
 runs on to the end of the loop body. It cannot leave the loop. That is why the
-two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_030`, use
+two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_68030`, use
 `continue`: `switch` captures `break` but not `continue`.
 
 **`goto` to a per-exception label is a legitimate alternative**, and on its own

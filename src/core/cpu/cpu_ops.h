@@ -87,12 +87,15 @@
 
 #define SP (A(7))
 
-// These variants will be needed for instructions like MOVEP
-#define READ2x8(addr)     ((uint16_t)READ8(addr) << 8 | (uint16_t)READ8(addr + 2))
-#define READ4x8(addr)     ((uint32_t)READ2x8(addr) << 16 | (uint32_t)READ2x8(addr + 4))
-#define WRITE2x8(addr, x) (WRITE8(addr, (x) >> 8 & 0xFF), WRITE8(addr + 2, (x) & 0xFF))
-#define WRITE4x8(addr, x) (WRITE2x8(addr, (x) >> 16 & 0xFFFF), WRITE2x8(addr + 4, (x) & 0xFFFF))
+// Alternate-byte accesses (stride 2) used by MOVEP
+#define READ2x8(addr)     (((uint16_t)READ8(addr) << 8) | (uint16_t)READ8((addr) + 2))
+#define READ4x8(addr)     (((uint32_t)READ2x8(addr) << 16) | (uint32_t)READ2x8((addr) + 4))
+#define WRITE2x8(addr, x) (WRITE8(addr, ((x) >> 8) & 0xFF), WRITE8((addr) + 2, (x) & 0xFF))
+#define WRITE4x8(addr, x) (WRITE2x8(addr, ((x) >> 16) & 0xFFFF), WRITE2x8((addr) + 4, (x) & 0xFFFF))
 
+// Branch displacements.  DISP8 is the Bcc.B/BSR.B byte in the opcode; the
+// decoder has already routed $00 (word form) and $FF (long form) elsewhere,
+// so callers must not use it on any other opcode.
 #define DISP8()  ((int32_t)(int8_t)(opcode & 0xFF))
 #define DISP16() ((int32_t)(int16_t)FETCH16())
 #define DISP32() ((int32_t)FETCH32())
@@ -103,39 +106,56 @@
 // Helper macros to extract bit fields from opcode
 #define EA_MODE ((opcode >> 3) & 7)
 #define EA_REG  (opcode & 7)
-#define DATA    ((((opcode >> 9 & 7) - 1) & 7) + 1)
+#define DATA    quick_data(opcode)
 
+// ADDQ/SUBQ/shift-immediate count from opcode bits 11:9, where 0 encodes 8.
+// Branch-free: (n - 1) & 7 maps 0 to 7 and every other n to n - 1.
+static inline int quick_data(uint16_t op) {
+    return ((((op >> 9) & 7) - 1) & 7) + 1;
+}
+
+// EA-mode validation.  VALID_EA(modes) checks the opcode's own EA field;
+// VALID_EA_MOVE the MOVE destination field; both go through the per-model
+// VALIDATE_EA_MODE_REG, which raises the illegal-instruction exception and
+// ends the instruction.  These expand to `continue`, so they MUST be used
+// inside the decoder's while-loop (cpu_decode.h), as every op macro is: a
+// `break` would only leave the innermost switch (cores.md, "The interpreter
+// loop has exactly one exit").
 #ifdef CPU_DECODER_IS_68030
 // 68030 EA validation: skip extension words before illegal instruction.
 // On 68030, the CPU prefetches EA extension words before detecting invalid
 // modes. This override advances cpu->pc past those words on the exception
 // path only — zero cost on the normal (non-exception) fast path.
-#define VALIDATE_EA_030(supported_modes, mode, reg, sz)                                                                \
+#define VALIDATE_EA_68030(supported_modes, mode, reg, sz)                                                              \
     if (!((supported_modes) & 1u << ((mode) + ((mode) == 7 ? (reg) : 0)))) {                                           \
         skip_ea_extension_words(cpu, (mode), (reg), (sz));                                                             \
         EXC_ILLEGAL();                                                                                                 \
         continue;                                                                                                      \
     }
-#define VALIDATE_EA(supported_modes, mode, reg) VALIDATE_EA_030(supported_modes, mode, reg, 0)
+#define VALIDATE_EA_MODE_REG(supported_modes, mode, reg) VALIDATE_EA_68030(supported_modes, mode, reg, 0)
 // Override LOAD_EA to pass correct operand size for immediate mode skipping
 #define LOAD_EA(bits, x, modes)                                                                                        \
-    VALIDATE_EA_030(modes, EA_MODE, EA_REG, (bits) / 8);                                                               \
+    VALIDATE_EA_68030(modes, EA_MODE, EA_REG, (bits) / 8);                                                             \
     UINT(bits) x = READ_EA(bits, opcode, false)
 #else
-#define VALIDATE_EA(supported_modes, mode, reg)                                                                        \
+#define VALIDATE_EA_68000(supported_modes, mode, reg)                                                                  \
     if (!((supported_modes) & 1u << ((mode) + ((mode) == 7 ? (reg) : 0)))) {                                           \
         EXC_ILLEGAL();                                                                                                 \
         continue;                                                                                                      \
     }
+#define VALIDATE_EA_MODE_REG(supported_modes, mode, reg) VALIDATE_EA_68000(supported_modes, mode, reg)
 #define LOAD_EA(bits, x, modes)                                                                                        \
     VALID_EA(modes);                                                                                                   \
     UINT(bits) x = READ_EA(bits, opcode, false)
 #endif
-#define VALID_EA(modes)              VALIDATE_EA(modes, EA_MODE, EA_REG)
-#define VALID_EA_MOVE(modes)         VALIDATE_EA(modes, (opcode >> 6) & 7, (opcode >> 9) & 7)
+#define VALID_EA(modes)              VALIDATE_EA_MODE_REG(modes, EA_MODE, EA_REG)
+#define VALID_EA_MOVE(modes)         VALIDATE_EA_MODE_REG(modes, (opcode >> 6) & 7, (opcode >> 9) & 7)
 #define LOAD_EA_WITH_UPDATE(bits, x) UINT(bits) x = READ_EA(bits, opcode, true)
 
-// load from -(An), i.e. An in pre-decrement mode
+// load from -(An), i.e. An in pre-decrement mode.  An is decremented BEFORE
+// the read and is not restored if the read faults: a caller whose instruction
+// can be retried (Format $B) must snapshot An first and roll it back when
+// g_bus_error_pending is set, as SUBX/ADDX/ABCD/SBCD/CMPM/PACK/UNPK do.
 #define LOAD_AN8_PREDEC(var, n)                                                                                        \
     A(n) -= (n) == 7 ? 2 : 1;                                                                                          \
     uint8_t var = READ8(A(n))
@@ -175,14 +195,15 @@
 #define S_EXT_8TO16(x)  ((int16_t)(int8_t)(x)) // sign-extend 8-bit to 16-bit
 
 // Generic helper macros to clear condition codes
-#define CLEAR_N()    CC_N = 0
-#define CLEAR_NZVC() CC_N = CC_Z = CC_V = CC_C = 0
+#define CLEAR_N()    (CC_N = 0)
+#define CLEAR_NZVC() (CC_N = CC_Z = CC_V = CC_C = 0)
 
 // Generic helper macros to update condition codes based on result
-#define UPDATE_N(res)           CC_N = res & 1u << (BITS(res) - 1)
-#define UPDATE_Z(res)           CC_Z = !(res)
-#define UPDATE_NZ_CLEAR_V(res)  UPDATE_N(res), UPDATE_Z(res), CC_V = 0
-#define UPDATE_NZ_CLEAR_CV(res) UPDATE_N(res), UPDATE_Z(res), CC_C = CC_V = 0
+// (Each is one parenthesised expression, so it is safe as the body of an if.)
+#define UPDATE_N(res)           (CC_N = (res) & 1u << (BITS(res) - 1))
+#define UPDATE_Z(res)           (CC_Z = !(res))
+#define UPDATE_NZ_CLEAR_V(res)  (UPDATE_N(res), UPDATE_Z(res), CC_V = 0)
+#define UPDATE_NZ_CLEAR_CV(res) (UPDATE_N(res), UPDATE_Z(res), CC_C = CC_V = 0)
 
 // Helper macros to update condition codes for specific operations
 #define UPDATE_V_SUB(dst, src, res)        CC_V = ((((dst) ^ (src)) & ((dst) ^ (res))) >> (BITS(res) - 1))
@@ -195,7 +216,8 @@
 #define UPDATE_C_SHIFT_L(data, count)      CC_C = count && (count <= BITS(data)) && (data & 1u << (BITS(data) - count))
 #define UPDATE_C_SHIFT_R(data, count, res) CC_C = count && (count > BITS(data) ? res : data & 1u << (count - 1))
 
-// Generic SUB
+// Generic SUB.  The UPDATE_V/N/Z steps never touch C, so SUB/ADD can copy
+// the finished C into X last (CC_X = CC_C) -- keep it that way.
 #define GENERIC_SUB(dst, src, res)                                                                                     \
     res = dst - src;                                                                                                   \
     UPDATE_C_SUB(dst, src, res);                                                                                       \
@@ -524,8 +546,12 @@
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_N(r);                                                                                                       \
     UPDATE_Z(r);                                                                                                       \
-    CC_V = (!r && d) ||                                                                                                \
-           (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> (c & (bits - 1)) ^ d) >> ((bits - c - 1) & (bits - 1));
+    /* V: the MSB changed at some point during the shift.  _asl_sign is d's */                                         \
+    /* sign bit smeared over the top c+1 bits; any of those bits of d that */                                          \
+    /* differ from it survive the final shift and make _asl_flip non-zero. */                                          \
+    UINT(bits) _asl_sign = (UINT(bits))((INT(bits))((1u << (bits - 1)) & d) >> (c & (bits - 1)));                      \
+    UINT(bits) _asl_flip = (UINT(bits))((_asl_sign ^ d) >> ((bits - c - 1) & (bits - 1)));                             \
+    CC_V = (!r && d) || _asl_flip;
 
 #define LSHIFT_LEFT(bits, data, count, op)                                                                             \
     SHIFT_COMMON(bits, data, count, op);                                                                               \
@@ -616,14 +642,14 @@
 // with different operations (XOR, AND-NOT, OR) and optional write-back
 #define BIT_OP_WRITE(size, bit, operation)                                                                             \
     VALID_EA((ea_data & ea_alterable));                                                                                \
-    UINT(size) mask = 1u << (bit);                                                                                     \
+    UINT(size) mask = 1u << ((bit) & ((size) - 1)); /* bit < size even if a caller forgets to mask */                  \
     LOAD_EA(size, dst, (ea_data & ea_alterable));                                                                      \
     CC_Z = !(dst & mask);                                                                                              \
     STORE_EA(size, operation);
 
 #define BIT_OP_TEST(size, bit, mode)                                                                                   \
     VALID_EA(mode);                                                                                                    \
-    UINT(size) mask = 1u << (bit);                                                                                     \
+    UINT(size) mask = 1u << ((bit) & ((size) - 1)); /* bit < size even if a caller forgets to mask */                  \
     LOAD_EA_WITH_UPDATE(size, dst);                                                                                    \
     CC_Z = !(dst & mask);
 
@@ -631,17 +657,8 @@
 // Format-$B RTE retry restarts with pre-instruction An values.  Without this,
 // a dest-side page fault on (An)+,(An)+ leaks +size into the source An on
 // retry — seen in A/UX libc1_s memcpy crossing virgin user pages.
-#define MOVE(size)                                                                                                     \
-    VALID_EA(ea_any - ea_an);                                                                                          \
-    uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
-    LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
-    WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
-    if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
-        cpu->a[EA_REG] = _move_src_an_save;                                                                            \
-    UPDATE_NZ_CLEAR_CV(src);
-
-#define MOVEx(size)                                                                                                    \
-    VALID_EA(ea_any);                                                                                                  \
+#define MOVE(size, src_modes)                                                                                          \
+    VALID_EA(src_modes);                                                                                               \
     uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
@@ -663,7 +680,8 @@
     if (CC)                                                                                                            \
         PC += 2;                                                                                                       \
     else {                                                                                                             \
-        int16_t counter = DY - 1;                                                                                      \
+        /* DBcc counts in the low word of Dn only */                                                                   \
+        int16_t counter = (int16_t)((uint16_t)DY - 1);                                                                 \
         STORE_DN(16, EA_REG, counter);                                                                                 \
         PC += counter == -1 ? 2 : (int32_t)(int16_t)FETCH16_NO_INC();                                                  \
     }
@@ -691,10 +709,6 @@
 // raise a deferred bus error.  Sibling of the MOVEM (65d3ff4), write_ea
 // (959728c), and MOVE src-An (82fb501) restart-safety fixes.
 #define PUSH(x)                                                                                                        \
-    WRITE32(SP - 4, (x));                                                                                              \
-    if (__builtin_expect(!g_bus_error_pending, 1))                                                                     \
-        SP -= 4;
-#define PUSH32(x)                                                                                                      \
     WRITE32(SP - 4, (x));                                                                                              \
     if (__builtin_expect(!g_bus_error_pending, 1))                                                                     \
         SP -= 4;
@@ -733,9 +747,9 @@
 #define OP_BTST_B_DN_EA     OP(BIT_OP_TEST(8, DX & 7, ea_data))
 #define OP_BTST_L_DATA_DN   OP(BIT_OP_TEST(32, FETCH16() & 0x1F, ea_data - ea_xxx))
 #define OP_BTST_B_DATA_EA   OP(BIT_OP_TEST(8, FETCH16() & 7, ea_data - ea_xxx))
-#define OP_MOVE_B_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(8))
-#define OP_MOVE_W_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(16))
-#define OP_MOVE_L_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(32))
+#define OP_MOVE_B_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(8, ea_any - ea_an))
+#define OP_MOVE_W_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(16, ea_any))
+#define OP_MOVE_L_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(32, ea_any))
 #define OP_MOVEA_W_EA_AN    OP(MOVEA(16))
 #define OP_MOVEA_L_EA_AN    OP(MOVEA(32))
 #define OP_CLR_B_EA         OP(VALID_EA((ea_data & ea_alterable)); CLR(8))
@@ -835,7 +849,7 @@
     OP({                                                                                                               \
         int32_t _disp = (int32_t)(int16_t)FETCH16();                                                                   \
         uint32_t _ay = AY;                                                                                             \
-        PUSH32(_ay);                                                                                                   \
+        PUSH(_ay);                                                                                                     \
         AY = SP;                                                                                                       \
         SP += _disp;                                                                                                   \
     })
@@ -935,15 +949,15 @@
 #define OP_ROXR_W_DATA_DY     OP(ROXR(16, DY, DATA))
 #define OP_ROR_W_DATA_DY      OP(ROTATE_RIGHT(16, DY, DATA))
 #define OP_ASR_W_DX_DY        OP(SHIFT_RIGHT(16, DY, DX & 0x3F, (int16_t)d >> MIN(c, 15)))
-#define OP_LSR_W_DX_DY        OP(SHIFT_RIGHT(16, DY, D(opcode >> 9 & 7) & 0x3F, c > 15 ? 0 : d >> c))
+#define OP_LSR_W_DX_DY        OP(SHIFT_RIGHT(16, DY, DX & 0x3F, c > 15 ? 0 : d >> c))
 #define OP_ROXR_W_DX_DY       OP(ROXR(16, DY, (DX & 0x3F) % 17))
 #define OP_ROR_W_DX_DY        OP(ROTATE_RIGHT(16, DY, DX & 0x3F))
 #define OP_ASR_L_DATA_DY      OP(SHIFT_RIGHT(32, DY, DATA, (int32_t)d >> c))
 #define OP_LSR_L_DATA_DY      OP(SHIFT_RIGHT(32, DY, DATA, d >> c))
 #define OP_ROXR_L_DATA_DY     OP(ROXR(32, DY, DATA))
 #define OP_ROR_L_DATA_DY      OP(ROTATE_RIGHT(32, DY, DATA))
-#define OP_ASR_L_DX_DY        OP(SHIFT_RIGHT(32, DY, D(opcode >> 9 & 7) & 0x3F, (int32_t)d >> MIN(c, 31)))
-#define OP_LSR_L_DX_DY        OP(SHIFT_RIGHT(32, DY, D(opcode >> 9 & 7) & 0x3F, c > 31 ? 0 : d >> c))
+#define OP_ASR_L_DX_DY        OP(SHIFT_RIGHT(32, DY, DX & 0x3F, (int32_t)d >> MIN(c, 31)))
+#define OP_LSR_L_DX_DY        OP(SHIFT_RIGHT(32, DY, DX & 0x3F, c > 31 ? 0 : d >> c))
 #define OP_ROXR_L_DX_DY       OP(ROXR(32, DY, (DX & 0x3F) % 33))
 #define OP_ROR_L_DX_DY        OP(ROTATE_RIGHT(32, DY, DX & 0x3F))
 #define OP_ASR_W_EA           OP(SHIFT_EA_R((int16_t)ea >> 1); CC_X = ea & 1)
@@ -978,23 +992,25 @@
 #define OP_LSL_W_EA           OP(SHIFT_EA_L(ea << 1); CC_X = CC_C)
 #define OP_ROXL_W_EA          OP(SHIFT_EA_L(ea << 1 | (CC_X ? 1 : 0)); CC_X = CC_C)
 #define OP_ROL_W_EA           OP(SHIFT_EA_L(ea << 1 | ea >> 15))
-#define OP_CINVL_CACHES_AN    OP(EXC_FTRAP())
-#define OP_CINVP_CACHES_AN    OP(EXC_FTRAP())
-#define OP_CINVA_CACHES       OP(EXC_FTRAP())
-#define OP_CPUSHL_CACHES_AN   OP(EXC_FTRAP())
-#define OP_CPUSHP_CACHES_AN   OP(EXC_FTRAP())
-#define OP_CPUSHA_CACHES      OP(EXC_FTRAP())
-#define OP_PFLUSH_AN          OP(EXC_FTRAP())
-#define OP_PFLUSHN_AN         OP(EXC_FTRAP())
-#define OP_PFLUSHA            OP(EXC_FTRAP())
-#define OP_PFLUSHAN           OP(EXC_FTRAP())
-#define OP_PTESTR_AN          OP(EXC_FTRAP())
-#define OP_PTESTW_AN          OP(EXC_FTRAP())
-#define OP_MOVE16_AN_P_XXX_L  OP(EXC_FTRAP())
-#define OP_MOVE16_XXX_L_AN_P  OP(EXC_FTRAP())
-#define OP_MOVE16_AN_XXX_L    OP(EXC_FTRAP())
-#define OP_MOVE16_XXX_L_AN    OP(EXC_FTRAP())
-#define OP_MOVE16_AN_P_AN_P   OP(EXC_FTRAP())
+// The 68040's own line-F instructions.  A 68030 has none of them, so the
+// line-F exception is the correct behaviour here; cpu_68040.c overrides them.
+#define OP_CINVL_CACHES_AN   OP(EXC_FTRAP())
+#define OP_CINVP_CACHES_AN   OP(EXC_FTRAP())
+#define OP_CINVA_CACHES      OP(EXC_FTRAP())
+#define OP_CPUSHL_CACHES_AN  OP(EXC_FTRAP())
+#define OP_CPUSHP_CACHES_AN  OP(EXC_FTRAP())
+#define OP_CPUSHA_CACHES     OP(EXC_FTRAP())
+#define OP_PFLUSH_AN         OP(EXC_FTRAP())
+#define OP_PFLUSHN_AN        OP(EXC_FTRAP())
+#define OP_PFLUSHA           OP(EXC_FTRAP())
+#define OP_PFLUSHAN          OP(EXC_FTRAP())
+#define OP_PTESTR_AN         OP(EXC_FTRAP())
+#define OP_PTESTW_AN         OP(EXC_FTRAP())
+#define OP_MOVE16_AN_P_XXX_L OP(EXC_FTRAP())
+#define OP_MOVE16_XXX_L_AN_P OP(EXC_FTRAP())
+#define OP_MOVE16_AN_XXX_L   OP(EXC_FTRAP())
+#define OP_MOVE16_XXX_L_AN   OP(EXC_FTRAP())
+#define OP_MOVE16_AN_P_AN_P  OP(EXC_FTRAP())
 
 // ============================================================
 // CPU-specific instruction definitions
@@ -1194,6 +1210,15 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         D(_dn) = (_w < 32u) ? (uint32_t)((int32_t)(_f << (32u - _w)) >> (32u - _w)) : _f;                              \
     })
 
+// BFFFO result: the position of the field's first set bit counted from its
+// MSB, or the width if the field is zero.  _f is right-justified in 32 bits,
+// so its MSB sits (32 - w) places below bit 31 and clz overcounts by that.
+// The caller adds the signed offset with uint32 wraparound, which is what the
+// hardware stores for a negative offset (offset + position, two's complement).
+static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
+    return f ? (uint32_t)__builtin_clz(f) - (32u - w) : w;
+}
+
 #define OP_BFFFO_DN                                                                                                    \
     OP({                                                                                                               \
         int32_t _off;                                                                                                  \
@@ -1202,14 +1227,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         BF_DECODE_EXT_WITH_DN(_off, _w, _dn);                                                                          \
         uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
         BF_UPDATE_CC(_f, _w);                                                                                          \
-        uint32_t _pos = 0;                                                                                             \
-        if (_f != 0) {                                                                                                 \
-            for (_pos = 0; _pos < _w && !((_f >> (_w - 1u - _pos)) & 1u); _pos++) {                                    \
-            }                                                                                                          \
-        } else {                                                                                                       \
-            _pos = _w;                                                                                                 \
-        }                                                                                                              \
-        D(_dn) = (uint32_t)_off + _pos;                                                                                \
+        D(_dn) = (uint32_t)_off + bf_first_set(_f, _w);                                                                \
     })
 #define OP_BFFFO_EA                                                                                                    \
     OP({                                                                                                               \
@@ -1222,14 +1240,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         uint32_t _f;                                                                                                   \
         BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
         BF_UPDATE_CC(_f, _w);                                                                                          \
-        uint32_t _pos = 0;                                                                                             \
-        if (_f != 0) {                                                                                                 \
-            for (_pos = 0; _pos < _w && !((_f >> (_w - 1u - _pos)) & 1u); _pos++) {                                    \
-            }                                                                                                          \
-        } else {                                                                                                       \
-            _pos = _w;                                                                                                 \
-        }                                                                                                              \
-        D(_dn) = (uint32_t)_off + _pos;                                                                                \
+        D(_dn) = (uint32_t)_off + bf_first_set(_f, _w);                                                                \
     })
 
 #define OP_BFINS_DN                                                                                                    \
@@ -1870,7 +1881,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     OP({                                                                                                               \
         int32_t _disp = (int32_t)FETCH32();                                                                            \
         uint32_t _a = AY;                                                                                              \
-        PUSH32(_a);                                                                                                    \
+        PUSH(_a);                                                                                                      \
         AY = SP;                                                                                                       \
         SP += _disp;                                                                                                   \
     })
@@ -2132,7 +2143,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 #define OP_BFSET_DN  OP_UNDEFINED
 #define OP_BFSET_EA  OP_UNDEFINED
 
-// CHK.W: 68000 version (no CHK.L on 68000)
+// CHK.W: 68000 version (no CHK.L on 68000).  Unlike the 68030 path above,
+// N is written only when the exception is taken and left alone in bounds --
+// this is what the 68000 single-step corpus (CHK.json) passes against, and
+// the two CPUs genuinely differ in the formally undefined case.
 #define OP_CHK_W_EA_DN                                                                                                 \
     OP(                                                                                                                \
         VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(16, src); int16_t dn = (int16_t)(uint16_t)DX;                           \
