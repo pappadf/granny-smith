@@ -354,7 +354,8 @@ size_t re_annotate_disasm_write(FILE *out, const uint8_t *bytes, size_t bytes_le
 
         char trap_note[64] = {0};
         if ((flags & RE_DISASM_ANNOTATE_TRAPS) && (words[pos] & 0xF000u) == 0xA000u) {
-            const char *name = macos_atrap_name(words[pos]);
+            char trap_buf[8];
+            const char *name = debug_mac_atrap_name(words[pos], trap_buf, sizeof(trap_buf));
             if (name && name[0])
                 snprintf(trap_note, sizeof(trap_note), "\t; trap %s", name);
         }

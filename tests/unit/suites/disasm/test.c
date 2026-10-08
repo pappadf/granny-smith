@@ -3,6 +3,8 @@
 // Disassembler test - validates cpu_disasm() against a corpus of expected outputs.
 
 #include "cpu.h"
+#include "debug_data.h"
+#include "debug_mac.h"
 #include "harness.h"
 #include "test_assert.h"
 #include <stdint.h>
@@ -250,6 +252,36 @@ TEST(every_opcode_fits_its_buffers) {
     ASSERT_TRUE(max_len < 256);
 }
 
+// The A-trap table is binary-searched, so it must stay strictly ascending.
+TEST(atrap_table_sorted) {
+    for (size_t i = 1; i < macos_atraps_count; i++)
+        ASSERT_TRUE(macos_atraps[i - 1].trap < macos_atraps[i].trap);
+    char buf[8];
+    ASSERT_TRUE(strcmp(debug_mac_atrap_name(0xA9A0, buf, sizeof(buf)), "_GetResource") == 0);
+    ASSERT_TRUE(strcmp(debug_mac_atrap_name(0xA42E, buf, sizeof(buf)), "_BlockMove") == 0);
+    // Unknown traps are formatted into the caller's buffer, not shared state.
+    char a[8], b[8];
+    const char *na = debug_mac_atrap_name(0xABC3, a, sizeof(a));
+    const char *nb = debug_mac_atrap_name(0xABC5, b, sizeof(b));
+    ASSERT_TRUE(strcmp(na, "_ABC3") == 0);
+    ASSERT_TRUE(strcmp(nb, "_ABC5") == 0);
+}
+
+// Every global is found by name; a duplicated name resolves to its first entry.
+TEST(mac_global_lookup) {
+    for (size_t i = 0; i < mac_global_vars_count; i++) {
+        const mac_global_info_t *g = mac_global_find(mac_global_vars[i].name);
+        ASSERT_TRUE(g != NULL);
+        ASSERT_TRUE(strcmp(g->name, mac_global_vars[i].name) == 0);
+        ASSERT_TRUE(g <= &mac_global_vars[i]);
+    }
+    const mac_global_info_t *t = mac_global_find("TimeSCSIDB");
+    ASSERT_TRUE(t && t->address == 0x0B24);
+    ASSERT_TRUE(mac_global_find("NoSuchGlobal") == NULL);
+    ASSERT_TRUE(mac_global_find(NULL) == NULL);
+    ASSERT_TRUE(debug_mac_lookup_global_address("Ticks") == 0x016A);
+}
+
 int main(void) {
     // Initialize test harness (creates CPU and memory for us)
     test_context_t *ctx = test_harness_init();
@@ -261,6 +293,8 @@ int main(void) {
     RUN(disasm_all);
     RUN(disasm_full_ext_words);
     RUN(every_opcode_fits_its_buffers);
+    RUN(atrap_table_sorted);
+    RUN(mac_global_lookup);
 
     test_harness_destroy(ctx);
     return 0;

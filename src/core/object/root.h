@@ -57,20 +57,6 @@ struct object *root_attach_stub(struct object *parent, struct object *o);
 // has already swapped in stubs for the new cfg.
 void root_uninstall_if(struct config *cfg);
 
-// === Debug entry-object factories ===========================================
-//
-// Each breakpoint / logpoint owns a per-entry object_t* exposed under
-// debug.breakpoints[id] / debug.logpoints[id]. debug.c calls these
-// factories once per entry at set-time; object_delete fires the per-entry
-// invalidator hooks (object.h) when the entry is removed. NULL is a
-// valid return — object resolution falls back to "empty slot" semantics.
-
-struct breakpoint;
-struct logpoint;
-
-struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp);
-struct object *gs_classes_make_logpoint_object(struct logpoint *lp);
-
 #ifdef __cplusplus
 }
 #endif
