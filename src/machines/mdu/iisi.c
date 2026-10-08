@@ -192,7 +192,6 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
         // ROM's INITVIAS, which runs only after the relocation jump).
         if (st->rom_overlay && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
             iisi_set_rom_overlay(cfg, false);
-        st->last_port_a = output;
         return;
     }
     egret_via1_port_output(st->egret, port, output);

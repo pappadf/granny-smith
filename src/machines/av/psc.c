@@ -171,6 +171,8 @@ void av_psc_set_dsp_hook(av_psc_t *psc, av_psc_dsp_fn fn, void *ctx) {
 
 uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off) {
     off &= 0x1F;
+    if (off + 1u >= sizeof(psc->snd))
+        return 0; // $21C-$21F hold no sound latches (the array is $1C bytes)
     return (uint16_t)((psc->snd[off] << 8) | psc->snd[off + 1]);
 }
 

@@ -824,6 +824,82 @@ TEST(test_debug_map_sweep) {
 }
 
 // ============================================================================
+// Test: a degenerate TC (index fields overrun the address) is invalid
+// ============================================================================
+//
+// IS=0 with TIA+TIB+TIC = 45 > 32: the walker's bit position would underflow
+// and shift the logical address by a huge count.  It must report I instead.
+TEST(test_degenerate_tc_invalid) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // IS=0, TIA=TIB=TIC=15, PS=8; every table level is a table pointer at $10000.
+    mmu->tc = (1u << 31) | (8u << 20) | (15u << 12) | (15u << 8) | (15u << 4);
+    uint32_t base = 0x10000;
+    store_be32(ram + base, base | DESC_DT_TABLE4);
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE4) << 32) | base;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((mmusr & MMUSR_I) != 0);
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
+// Test: host-region alias flags the clone, not the last list entry
+// ============================================================================
+//
+// Re-aliasing a window replaces the existing clone in place; the `alias` flag
+// used to land on whatever region was registered last, hiding it from the
+// page fill.
+TEST(test_host_region_alias_flags_clone) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+    g_mmu = mmu;
+    static uint8_t vram[0x2000], other[0x2000];
+
+    mmu_register_host_region(mmu, vram, 0x50000000, sizeof(vram), true);
+    memory_map_host_region_alias(mem, 0x58000000, 0x50000000);
+    mmu_register_host_region(mmu, other, 0x60000000, sizeof(other), true);
+    memory_map_host_region_alias(mem, 0x58000000, 0x50000000); // replace path
+    ASSERT_EQ_INT(3, mmu->host_region_count);
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        bool want = mmu->host_regions[i].phys_base == 0x58000000;
+        ASSERT_TRUE(mmu->host_regions[i].alias == want);
+    }
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
+// Test: physical debug reads stay inside their region / bank
+// ============================================================================
+TEST(test_physical_read_bounds) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // A 16-bit read of a region's last byte must not take its low byte from
+    // the host byte past the region (here a sentinel; unmapped reads as 0).
+    static uint8_t buf[0x1001];
+    buf[0xFFF] = 0x12;
+    buf[0x1000] = 0xAB;
+    mmu_register_host_region(mmu, buf, 0x50000000, 0x1000, true);
+    ASSERT_EQ_INT(0x1200, mmu_read_physical_uint16(mmu, 0x50000FFF));
+
+    // Two-bank layout with an empty Bank A: no divide-by-zero, reads as 0.
+    static uint8_t bank_b[0x1000];
+    mmu_set_ram_bank_b(mmu, 0, bank_b, 0x04000000, sizeof(bank_b), 0x04000000);
+    ASSERT_EQ_INT(0, (int)mmu_read_physical_uint32(mmu, 0x00000100));
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -843,6 +919,9 @@ int main(void) {
     RUN(test_24bit_soa_compatibility);
     RUN(test_debug_walk_trace);
     RUN(test_debug_map_sweep);
+    RUN(test_degenerate_tc_invalid);
+    RUN(test_host_region_alias_flags_clone);
+    RUN(test_physical_read_bounds);
     printf("[PASS] All MMU tests passed\n");
     return 0;
 }

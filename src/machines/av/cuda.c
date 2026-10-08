@@ -1163,17 +1163,15 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "reset", &cuda_reset_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "treqrel", &cuda_treq_release_event);
-        scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
+        // The self-re-arming tick starts on a fresh machine only: on a
+        // restore it is in the scheduler's checkpointed queue, re-inserted
+        // by scheduler_restore_events, and arming it here too ran two chains.
+        if (!cp)
+            scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
         adb_set_data_hook(cuda->adb, cuda_adb_data, cuda); // auto-poll runs on data
-        // (an auto-poll pending at checkpoint time is restored with the queue)
-        // A checkpoint taken with a push or abandonment watchdog in
-        // flight re-arms it here.
-        if (cuda->push_pending)
-            scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)CUDA_PUSH_DELAY_NS);
-        if (cuda->send_timeout_pending)
-            scheduler_new_cpu_event(cuda->sched, &cuda_send_timeout_event, cuda, 0, 0, (uint64_t)CUDA_SEND_ABANDON_NS);
-        if (cuda->treq_release_pending)
-            scheduler_new_cpu_event(cuda->sched, &cuda_treq_release_event, cuda, 0, 0, (uint64_t)CUDA_SYNC_TREQ_NS);
+        // An auto-poll, push, abandonment watchdog or TREQ release pending at
+        // checkpoint time is restored with the queue as well; re-arming it
+        // here would add a stale duplicate that could fire a later one early.
     }
 
     LOG(1, "Cuda init (firmware Cuda 2.37)");

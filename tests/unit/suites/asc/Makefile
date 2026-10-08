@@ -8,6 +8,5 @@
 TEST_NAME    := asc
 TEST_SRCS    := test.c
 TEST_HARNESS := none
-STUBS        := checkpoint
 EXTRA_SRCS   := ../../../../src/core/peripherals/asc.c
 include ../../common.mk

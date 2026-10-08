@@ -21,8 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SDLC_MAX_FRAME         1024
-#define RX_BUF_SIZE            1024
+#define SDLC_MAX_FRAME 1024
+// Room for the largest SDLC frame plus its CRC trailer (SCC_RX_TRAILER_BYTES)
+#define RX_BUF_SIZE            (SDLC_MAX_FRAME + 2)
 #define TX_BUF_SIZE            1024
 #define RX_PENDING_QUEUE_DEPTH 8
 // Host-side transmit capture: one boot's worth of console text per channel.
@@ -445,9 +446,13 @@ static void check_rx(ch_t *ch) {
     size_t frame_len = ch->sdlc_in.len;
     uint8_t dest = ch->sdlc_in.buf[0];
 
+    // Frame bytes, then the CRC trailer the guest reads after them.  The
+    // trailer's value is not modelled; zero it rather than expose stale
+    // buffer contents.  RX_BUF_SIZE leaves room for both at SDLC_MAX_FRAME.
     ch->rx.tail = 0;
-    ch->rx.head = ch->sdlc_in.len + 2;
+    ch->rx.head = ch->sdlc_in.len + SCC_RX_TRAILER_BYTES;
     memcpy(ch->rx.buf, ch->sdlc_in.buf, ch->sdlc_in.len);
+    memset(ch->rx.buf + ch->sdlc_in.len, 0, SCC_RX_TRAILER_BYTES);
 
     ch->sdlc_in.len = 0;
 
