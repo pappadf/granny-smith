@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SCC serial output capture to a file (`machine.scc.<ch>.output`); factory NVRAM on new TNT and G3 machines; three-state screen mode (normal / full screen / no toolbars); complete end-user documentation in `docs/user/`.
 
 ### Changed
-- **Execution model** — one emulator thread with cooperative jobs, a mailbox, and host I/O off the tick.
+- **New threading architecture** — the emulated machine runs alone on its thread; the shell and host I/O (copies, exports, downloads, checkpoint writes) run on their own threads and talk to it through a mailbox, so the Mac keeps running during them (a 192 MB copy no longer freezes it for seconds).
 - **Object model reorganised** (no compatibility aliases) — root is `machine scheduler checkpoint files debug log shell catalog appletalk`; `storage`, `vfs`, `archive` merge into `files`; `machine.models`/`profile` move to `catalog`; `find` → `debug.find`; `debug.log` → `log`.
 - **Reset levels** — `machine.restart` power-cycles in place; new `machine.rebuild`. Machines build beside the running one and swap (no more staged state).
 - **ROM identity** is the ROM's own verified checksum, from one table of every known ROM.
