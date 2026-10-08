@@ -36,7 +36,7 @@ treatment (`platform/`, `peeler/` here) — their docs currently live in
 | `core/cpu/cores.md` | the core registry across `src/core/cpu/cpu.c` and its `cpu_68000/68030/68040`, `ppc/` and `dsp3210/` models |
 | `core/network/ppc_appleevents.md` | the program-linking layers `src/core/network/appletalk_ppc.c` and `appletalk_aevt.c` |
 | `core/object/object-model.md` | the subsystem-wide model doc for `src/core/object/` (`object.c`, `value.c`, `expr.c`, `parse.c`, …) |
-| `core/peripherals/mouse_control.md` | cross-cutting input automation: `src/core/peripherals/adb.c`, `mouse.c` and `src/core/host_input.c` |
+| `core/peripherals/mouse_control.md` | cross-cutting input automation: `src/core/peripherals/adb.c`, `mouse.c`, `mouse_class.c` and `src/core/host_input.c` |
 | `core/peripherals/nubus_generic_vrom.md` | the generic vROM generator `src/core/peripherals/nubus/gsvrom_data.c` (`gsvrom.h`) |
 | `core/peripherals/nubus/cards/display_card_8_24.md` | `src/core/peripherals/nubus/cards/jmfb.c` — the source keeps Apple's ASIC codename `jmfb` |
 | `core/scheduler/timing.md` | the timing model inside `src/core/scheduler/scheduler.c` |
