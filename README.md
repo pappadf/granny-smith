@@ -116,9 +116,10 @@ Sibling projects this one is built on:
 
 - **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA
 - **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`
-- **[m68k-sail](https://github.com/pappadf/m68k-sail)** - a formal, executable Sail specification of the 68000 family (68000 to 68040 and the 68881/68882 FPUs), the 68k counterpart of `powerpc-sail`
+- **[m68k-sail](https://github.com/pappadf/m68k-sail)** - a formal, executable Sail specification of the 68000 family
 - **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from the `m68k-sail` model
 - **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats
+- **[EfterScript](https://github.com/efterscript/efterscript)** - a PostScript interpreter; its `platen` library renders LaserWriter print jobs to PDF
 - **[emu-core-bench](https://github.com/pappadf/emu-core-bench)** - measured comparisons of interpreter-core designs
 
 ## Acknowledgments
