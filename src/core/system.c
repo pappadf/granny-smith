@@ -1840,8 +1840,7 @@ int system_checkpoint_load(const char *filename) {
     system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
-    extern void frontend_force_redraw(void);
-    frontend_force_redraw();
+    platform_force_redraw();
 
     if (scheduler_is_running(new_config->scheduler))
         LOG(1, "Checkpoint was saved while running - resuming execution");

@@ -774,7 +774,7 @@ void em_video_force_redraw(void) {
         draw();
 }
 
-void frontend_force_redraw(void) {
+void platform_force_redraw(void) {
     em_video_force_redraw();
 }
 
