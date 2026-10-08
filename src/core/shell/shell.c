@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
+#include "log_context.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
@@ -372,7 +373,7 @@ int shell_init(void) {
 
     // Wire the Meta class's `complete(line, cursor)` method to the
     // shell's tab-completion engine.
-    meta_set_complete_provider(shell_meta_complete_provider);
+    meta_complete_register(shell_meta_complete_provider);
 
     shell_initialized = true;
     return 0;

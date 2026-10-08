@@ -16,7 +16,8 @@
 // a mount is mounted in turn straight from its source -- a view of the
 // parent, or a decode-through fork -- never copied out.
 //
-// Read-only: mkdir/unlink/rename are static `-EROFS` rejecters.
+// Read-only: the backend is flagged VFS_BE_RDONLY, so vfs.c refuses
+// mkdir/unlink/rename with -EROFS before reaching it.
 
 #pragma once
 
@@ -60,9 +61,10 @@ gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t
 // to close drops it.
 int image_vfs_unmount(const char *path);
 
-// Iteration over the current table, for `image list`.
+// Iteration over the current table, for `image list`.  `stale`: see
+// image_vfs_mount_info_t.
 typedef void (*image_vfs_list_cb)(const char *path, const char *format_name, uint32_t n_partitions, uint32_t refcount,
-                                  bool busy, void *user);
+                                  bool busy, bool stale, void *user);
 void image_vfs_list(image_vfs_list_cb cb, void *user);
 
 // Every mount gets a serial number when it is created: a counter that never
@@ -78,6 +80,8 @@ typedef struct {
     uint32_t refcount; // open handles
     bool unmounting; // unmount requested while handles were live
     bool busy; // refusing service: unmounting, or inside an image attached writable
+    bool stale; // its file changed since: a newer mount serves the path, and this one
+                // lives only for the handles already open on it (the last drops it)
 } image_vfs_mount_info_t;
 
 // The smallest live serial greater than `prev` (-1 to start), or -1.

@@ -93,7 +93,7 @@ Mounts are not checkpointed; they are rebuilt on demand.
 
 - Unit: `image_vfs`, `vfs`.
 - Integration: `image-hfs-traverse`, `image-partmap`, `vfs-rsrc`,
-  `image-attach-busy`, `image-export-raw`, `archive-vfs`.
+  `image-attach-busy`, `image-export-raw`, `image-iso9660`, `archive-confined`.
 
 ## 7. Known debts
 

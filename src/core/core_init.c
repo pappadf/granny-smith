@@ -8,7 +8,7 @@
 #include "core_init.h"
 
 #include "core_singletons.h"
-#include "log.h"
+#include "log_context.h"
 #include "shell.h"
 #include "worker_thread.h"
 #include "job/job.h"
@@ -22,12 +22,13 @@ int core_init(void) {
 
     // Ordering invariants, top to bottom:
     //
-    // 1. worker_thread_record first: it latches this pthread for the
+    // 1. worker_thread_latch first: it latches this pthread for the
     //    thread-affinity guard (MODE=debug/sanitize: any gs_eval or shell
     //    entry from another thread then aborts).  Everything below runs on
     //    this thread, so a registration that hands work to the emulator
     //    thread already finds the latch set.
-    // 2. log_init before anything that registers a log category or logs.
+    // 2. log_context_install (the logger's PC/count decorations and trace
+    //    capture) before anything that logs.
     // 3. job_layer_init (records this as the emulator thread) before any
     //    module that prints or runs work through the job layer.
     // 4. shell_init (binding store, completion provider) before the root is
@@ -38,10 +39,11 @@ int core_init(void) {
     // 6. The singletons in any order among themselves (each attaches only
     //    its own node), but before root_install, whose cfg-scoped stubs and
     //    install hooks (files.images, ...) hang off nodes they create.
-    worker_thread_record();
-    log_init();
+    worker_thread_latch();
+    log_context_install();
     job_layer_init();
-    shell_init();
+    if (shell_init() != 0)
+        return -1;
 
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed

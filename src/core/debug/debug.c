@@ -31,7 +31,6 @@
 #include "nubus.h"
 #include "object.h"
 #include "pci.h"
-#include "root.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "shell_var.h"
@@ -48,11 +47,6 @@ static const class_desc_t lp_collection_class;
 static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
 static const class_desc_t debug_mac_globals_class;
-
-// Per-entry object factories for debug.breakpoints[id] / debug.logpoints[id];
-// defined with their entry classes below, called once per entry at add time.
-static struct object *make_breakpoint_object(struct breakpoint *bp);
-static struct object *make_logpoint_object(struct logpoint *lp);
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -260,7 +254,7 @@ static void index_breakpoints(debug_t *debug) {
     debug->bp_pc_filter = 0;
     debug->bp_any_physical = false;
     for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next) {
-        if (bp->space == ADDR_PHYSICAL)
+        if (bp->space == ADDR_SPACE_PHYSICAL)
             debug->bp_any_physical = true;
         else
             debug->bp_pc_filter |= bp_filter_bit(bp->addr);
@@ -280,6 +274,11 @@ static void index_logpoints(debug_t *debug) {
     *mem_tail = NULL;
 }
 
+// Per-entry object factories for debug.breakpoints[id] / debug.logpoints[id]
+// (defined with their entry classes below).
+static struct object *make_breakpoint_object(breakpoint_t *bp);
+static struct object *make_logpoint_object(logpoint_t *lp);
+
 // ============================================================================
 // Operations
 // ============================================================================
@@ -297,8 +296,8 @@ static breakpoint_t *add_breakpoint(debug_t *debug, uint32_t addr, addr_space_t 
     bp->condition = NULL;
     bp->hit_count = 0;
     bp->id = debug->next_breakpoint_id++;
-    // The entry object is created lazily by the root install path the first time
-    // someone resolves debug.breakpoints[id]; we just hold the slot.
+    // The per-entry object exposed as debug.breakpoints[id]; object_delete
+    // fires its invalidator hooks when the breakpoint is removed.
     bp->entry_object = make_breakpoint_object(bp);
     object_set_logical_parent(bp->entry_object, debug->bp_collection_object, NULL, bp->id, NULL);
 
@@ -389,7 +388,7 @@ static logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
 
     lp->addr = addr;
     lp->end_addr = end_addr;
-    lp->space = ADDR_LOGICAL;
+    lp->space = ADDR_SPACE_LOGICAL;
     lp->kind = LP_KIND_PC;
     lp->category = category;
     lp->level = level;
@@ -438,10 +437,10 @@ static logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
 
 // Install a memory-access logpoint (write/read/rw).  Forces the covered pages
 // through the memory slow path so the hook can observe every access.  No
-// impact on the fast path for other pages.  When space == ADDR_LOGICAL the
+// impact on the fast path for other pages.  When space == ADDR_SPACE_LOGICAL the
 // current MMU mapping is also consulted and the corresponding physical pages
 // are watched, so an access via an alias of the same physical page still
-// fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
+// fires the hook.  When space == ADDR_SPACE_PHYSICAL only the physical watch is
 // installed (no logical-page watch) — the caller observes every alias.
 static struct object *make_watchpoint_object(logpoint_t *lp);
 
@@ -478,7 +477,7 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     uint32_t start_page = addr >> PAGE_SHIFT;
     uint32_t end_page = end_addr >> PAGE_SHIFT;
 
-    if (space == ADDR_LOGICAL) {
+    if (space == ADDR_SPACE_LOGICAL) {
         memory_logpoint_install(start_page, end_page);
         // Also watch the physical pages the current MMU mapping points at —
         // catches aliases (same physical reached via different logical addrs).
@@ -752,7 +751,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         // Check the access against the logpoint's address range — using the
         // physical address for P:-space logpoints, logical for L:-space.
         uint32_t cmp_addr;
-        if (lp->space == ADDR_PHYSICAL) {
+        if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = current_access_is_supervisor();
                 if (g_mmu && g_mmu->enabled) {
@@ -931,7 +930,7 @@ int debug_break_and_trace(void) {
                 continue;
             }
             bool hit = false;
-            if (bp->space == ADDR_LOGICAL) {
+            if (bp->space == ADDR_SPACE_LOGICAL) {
                 // Logical breakpoint: compare directly with PC
                 hit = (bp->addr == current_pc);
             } else {
@@ -947,7 +946,7 @@ int debug_break_and_trace(void) {
                     continue;
                 }
                 bp->hit_count++;
-                if (bp->space == ADDR_PHYSICAL) {
+                if (bp->space == ADDR_SPACE_PHYSICAL) {
                     gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
                     gs_outf("breakpoint hit at $%08X\n", bp->addr);
@@ -1679,7 +1678,7 @@ static void free_logpoint(logpoint_t *lp) {
     if (!lp)
         return;
     if (lp->kind != LP_KIND_PC) {
-        if (lp->space == ADDR_LOGICAL) {
+        if (lp->space == ADDR_SPACE_LOGICAL) {
             uint32_t start_page = lp->addr >> PAGE_SHIFT;
             uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
             memory_logpoint_uninstall(start_page, end_page);
@@ -1862,7 +1861,7 @@ uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
     return bp ? bp->addr : 0;
 }
 addr_space_t breakpoint_get_space(const breakpoint_t *bp) {
-    return bp ? bp->space : ADDR_LOGICAL;
+    return bp ? bp->space : ADDR_SPACE_LOGICAL;
 }
 const char *breakpoint_get_condition(const breakpoint_t *bp) {
     return bp ? bp->condition : NULL;
@@ -2161,15 +2160,25 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     }
 }
 
-// Main assertion failure handler - prints diagnostics and pauses execution
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
-    // Header
+// Prints the ASSERT banner: the failed expression and where it sits
+static void print_assert_header(const char *expr, const char *file, int line, const char *func) {
     gs_outf("\n\n==================== ASSERT ====================\n");
     if (expr && *expr)
         gs_outf("Assertion failed: (%s)\n", expr);
     else
         gs_outf("Assertion failed\n");
     gs_outf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+}
+
+// Main assertion failure handler (GS_ASSERT) - prints diagnostics and pauses execution
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func) {
+    print_assert_header(expr, file, line, func);
+    diagnose_and_halt("assertion", expr, file, line, func);
+}
+
+// Assertion failure handler with a message (GS_ASSERTF)
+void gs_assert_failf(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+    print_assert_header(expr, file, line, func);
 
     // Optional message
     if (fmt) {
@@ -2186,7 +2195,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 
 // The unimplemented-function handler.  Same diagnostics and the same halt --
 // what differs is the claim being made, so the banner says so and nothing here
-// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
+// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in gs_assert.h for why a
 // release build is exactly where this one matters).
 //
 // The banner goes to stderr, unbuffered: if a platform's failure hook
@@ -2236,7 +2245,7 @@ static breakpoint_t *bp_from(struct object *self) {
 // unchanged; the assert keeps the table and the enum from drifting apart.
 const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
-_Static_assert(ADDR_LOGICAL == 0 && ADDR_PHYSICAL == 1 && DEBUG_SPACE_COUNT == ADDR_PHYSICAL + 1,
+_Static_assert(ADDR_SPACE_LOGICAL == 0 && ADDR_SPACE_PHYSICAL == 1 && DEBUG_SPACE_COUNT == ADDR_SPACE_PHYSICAL + 1,
                "debug_space_values must list every addr_space_t, in enum order");
 
 static DEF_GETTER(bp_attr_addr) {
@@ -2362,7 +2371,7 @@ static const class_desc_t breakpoint_entry_class = {
     .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
 };
 
-static struct object *make_breakpoint_object(struct breakpoint *bp) {
+static struct object *make_breakpoint_object(breakpoint_t *bp) {
     if (!bp)
         return NULL;
     return object_new(&breakpoint_entry_class, bp, NULL);
@@ -2493,7 +2502,7 @@ static const class_desc_t logpoint_entry_class = {
     .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
 };
 
-static struct object *make_logpoint_object(struct logpoint *lp) {
+static struct object *make_logpoint_object(logpoint_t *lp) {
     if (!lp)
         return NULL;
     return object_new(&logpoint_entry_class, lp, NULL);
@@ -2628,7 +2637,8 @@ static DEF_METHOD(bp_method_add) {
     // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
     // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
     // dereferenced an index as a pointer.
-    addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
     // stacking a duplicate that would fire twice and need removing twice.
@@ -2738,7 +2748,8 @@ static DEF_METHOD(lp_method_add) {
 
     // The slot is V_ENUM against debug_space_values, so the index is the
     // answer -- validate_slot rejected anything that is not in the table.
-    addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2947,7 +2958,8 @@ static DEF_METHOD(wp_method_add) {
     if (end_addr < addr)
         return val_err("watchpoints.add: end must not precede addr");
 
-    addr_space_t space = (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     // The hit is printed, not logged, so the category only labels the entry.
     log_category_t *category = log_get_category("memory");

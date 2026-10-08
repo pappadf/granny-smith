@@ -26,9 +26,10 @@
 extern "C" {
 #endif
 
+// Which tier an alias belongs to (AK_ = alias_kind_t).
 typedef enum {
-    ALIAS_BUILTIN = 1,
-    ALIAS_USER,
+    AK_BUILTIN = 1,
+    AK_USER,
 } alias_kind_t;
 
 // Register a built-in alias. Idempotent: registering the same
@@ -75,6 +76,10 @@ void alias_reset(void);
 // Drop only user aliases — used by checkpoint restore (checkpoints don't
 // preserve user aliases).
 void alias_clear_user(void);
+
+// The `shell.alias` class (alias_class.c), attached by root_install.
+struct class_desc;
+extern const struct class_desc shell_alias_class;
 
 #ifdef __cplusplus
 }

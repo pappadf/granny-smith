@@ -194,7 +194,7 @@ int image_wrap_volume(image_t *image) {
     uint8_t *prefix = (uint8_t *)malloc((size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK);
     if (!prefix)
         return -1;
-    image_wrap_build_prefix(prefix, blocks, get_build_id());
+    image_wrap_build_prefix(prefix, blocks, build_id_get());
     image->wrap_prefix = prefix;
     image->wrap_blocks = IMAGE_WRAP_PREFIX_BLOCKS;
     image->wrap_base = (size_t)start * BLK;

@@ -78,6 +78,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// GS_MAILBOX_VERSION: the layout version, checked by the page
+// (app/web2/src/bus/mailbox.ts VERSION) before its first request.  Bump it --
+// here and there, with a line below -- on any change to the control block, a record's layout, or the
+// request / event kinds.
+//
+//   1-8  js_bridge_t, the single-slot request block this replaced (its
+//        history is in git: src/platform/wasm/em.h, JS_BRIDGE_VERSION)
+//   9    the mailbox: control block + request and event rings
 #define GS_MAILBOX_MAGIC   0x47534D42u // 'GSMB'
 #define GS_MAILBOX_VERSION 9u
 

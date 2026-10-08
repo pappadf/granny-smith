@@ -13,15 +13,30 @@
 // numeric: 0 is silent, higher is more verbose.  A process singleton, created
 // at shell init.
 
+#include "gs_out.h"
 #include "log.h"
 #include "log_categories.h"
 #include "object.h"
 #include "value.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Prints one category's settings, as `log.set <cat>` reports them
+static void print_category(const char *category) {
+    const log_category_t *c = log_get_category(category);
+    if (!c) {
+        gs_outf("unknown category \"%s\" (see log.levels for the full list)\n", category);
+        return;
+    }
+    const char *file = log_get_category_file(c);
+    gs_outf("%s level=%d stdout=%s file=%s ts=%s pc=%s\n", log_category_name(c), log_get_level(c),
+            log_get_category_stdout(c) ? "on" : "off", file ? file : "off",
+            log_get_category_timestamp(c) ? "on" : "off", log_get_category_show_pc(c) ? "on" : "off");
+}
 
 // `log.set(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem
 // logging, with real named arguments.
@@ -60,7 +75,7 @@ static DEF_METHOD(log_method_set) {
     }
     if (argv[3].kind == V_STRING && argv[3].s) {
         if (log_set_category_file(category, argv[3].s) != 0)
-            return val_err("log.set: cannot open log file '%s'", argv[3].s);
+            return val_err("log.set: cannot open log file '%s': %s", argv[3].s, strerror(errno));
         touched = true;
     }
     if (argv[4].kind == V_BOOL) {
@@ -72,7 +87,7 @@ static DEF_METHOD(log_method_set) {
         touched = true;
     }
 
-    log_print_category(category);
+    print_category(category);
     (void)touched;
     return val_bool(true);
 }
@@ -169,7 +184,7 @@ static DEF_GETTER(cat_attr_file_get) {
 static DEF_SETTER(cat_attr_file_set) {
     const char *path = in.s ? in.s : "off";
     int rc = log_set_category_file(log_category_name(entry_cat(self)), path);
-    value_t out = rc == 0 ? val_none() : val_err("cannot open log file '%s'", path);
+    value_t out = rc == 0 ? val_none() : val_err("cannot open log file '%s': %s", path, strerror(errno));
     value_free(&in);
     return out;
 }

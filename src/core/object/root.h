@@ -49,7 +49,7 @@ void root_register_install(root_install_fn install, root_uninstall_fn uninstall)
 
 // Attach `o` under `parent` (NULL = the root) as a cfg-scoped stub, freed by
 // root_uninstall.  Returns `o`, or NULL -- having freed it -- when its class
-// is invalid or the stub table is full.
+// is invalid or the stub table cannot grow.
 struct object *root_attach_stub(struct object *parent, struct object *o);
 
 // Tear down only when the installed stubs are still associated with

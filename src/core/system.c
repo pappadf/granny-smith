@@ -718,7 +718,7 @@ static int do_attach_hd(const char *path, int scsi_id) {
 
 // Initialize the setup system and register commands
 void setup_init() {
-    gs_outf("Granny Smith build %s\n", get_build_id());
+    gs_outf("Granny Smith build %s\n", build_id_get());
 
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
@@ -1840,8 +1840,7 @@ int system_checkpoint_load(const char *filename) {
     system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
-    extern void frontend_force_redraw(void);
-    frontend_force_redraw();
+    platform_force_redraw();
 
     if (scheduler_is_running(new_config->scheduler))
         LOG(1, "Checkpoint was saved while running - resuming execution");

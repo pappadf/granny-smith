@@ -22,9 +22,11 @@
 #include <stddef.h>
 
 // Initialize the store (creates the global + top-level scopes and the
-// default TMP_DIR binding: $TMPDIR when the host sets it, else /tmp --
-// absolute, so it names the same place whatever the working directory;
-// on WASM, /tmp is the in-memory scratch directory em_main creates).
+// default TMP_DIR binding, "tmp" -- relative to the working directory:
+// the repository's tmp/ scratch directory for a headless run started at the
+// repository root (the project convention for scratch files), and /tmp --
+// the in-memory scratch directory em_main creates -- on WASM, whose working
+// directory is /).
 void shell_var_init(void);
 
 // `$name` lookup: walk scopes top-down, then the alias table (aliases

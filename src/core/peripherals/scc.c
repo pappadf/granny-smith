@@ -38,7 +38,7 @@ static const class_desc_t scc_class;
 static const class_desc_t scc_channel_class;
 
 static inline bool scc_should_log(int level) {
-    return log_would_log(_log_get_local_category(), level);
+    return log_would_log(log_local_category(), level);
 }
 
 // Emit a short hexdump preview for SDLC frames so AppleTalk traces stay readable

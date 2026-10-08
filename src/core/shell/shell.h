@@ -22,6 +22,10 @@
 // job, or the typed path form -- and the Shell class hands the line to
 // the v2 script interpreter (script.h).
 
+// The `shell` class (shell_class.c), attached by root_install.
+struct class_desc;
+extern const struct class_desc shell_class;
+
 // Compose the current shell prompt into `buf`: "gs> " with no machine,
 // "gs <model>> " while running, "gs <model> @<pc>> " when stopped. Used
 // by the Shell class's `prompt` attribute and the headless REPL's

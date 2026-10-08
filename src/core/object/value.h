@@ -121,14 +121,20 @@ struct value_entry {
 value_t val_none(void);
 value_t val_bool(bool b);
 value_t val_int(int64_t i);
+// width is the value's byte width (1/2/4/8); 0 means unconstrained and is
+// stored as 0, never rewritten to 8.
 value_t val_uint(uint8_t width, uint64_t u);
 value_t val_float(double f);
 value_t val_str(const char *s);
+// Copies n bytes from p. (NULL, 0) yields an empty buffer; (NULL, n > 0)
+// is rejected with a V_ERROR rather than zero-filled.
 value_t val_bytes(const void *p, size_t n);
 value_t val_enum(int idx, const char *const *table, size_t n_table);
 value_t val_list(value_t *items, size_t len); // takes ownership of items array
 value_t val_map(struct value_entry *entries, size_t len); // takes ownership of entries array
 value_t val_obj(struct object *o);
+// The formatted message is capped at 511 characters; a longer one is cut
+// and ends in "..." so the truncation is visible.
 value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 value_t val_ref(const char *path); // node reference by path text (strdup'd)
 // Half-open [start, stop) with a stride.  `step` must not be 0.
@@ -198,8 +204,10 @@ void value_free(value_t *v);
 value_t value_dup(const value_t *v);
 
 // GCC/Clang cleanup attribute helper, used as:
-//   VALUE_AUTO value_t x = something();
-// to release on scope exit including error paths.
+//   VALUE_AUTO x = something();
+// to release on scope exit including error paths. Deliberately unguarded:
+// the project builds only with GCC and Clang (Emscripten is Clang), the
+// same requirement the GNU `, ##__VA_ARGS__` in the LOG/assert macros has.
 #define VALUE_AUTO __attribute__((cleanup(value_free_ptr))) value_t
 void value_free_ptr(value_t *v); // wrapper compatible with cleanup attribute
 

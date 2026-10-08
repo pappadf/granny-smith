@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // meta.c
-// The `Meta` class. Every node implicitly carries a `meta` attribute
+// The `meta` class. Every node implicitly carries a `meta` attribute
 // whose value is a synthetic Meta node bound to the inspected object.
 // See docs/internals/core/object/object-model.md.
 //
@@ -27,79 +27,8 @@
 // list instead of erroring (callers expect a tolerant degradation).
 static meta_complete_fn g_complete_provider = NULL;
 
-void meta_set_complete_provider(meta_complete_fn fn) {
+void meta_complete_register(meta_complete_fn fn) {
     g_complete_provider = fn;
-}
-
-// === Path printer ==========================================================
-//
-// Walks `obj` up to the root. The root carries the substrate name
-// ("emu") but doesn't appear in user-facing paths (`cpu.pc`, not
-// `emu.cpu.pc`), so the recursion stops as soon as a node has no
-// parent. Meta nodes are unattached (parent == NULL), so the recursion
-// special-cases them: their path is `<inspected>.meta`.
-
-void object_compute_path(struct object *obj, char *buf, size_t buf_size) {
-    if (!buf || buf_size == 0)
-        return;
-    buf[0] = '\0';
-    if (!obj)
-        return;
-
-    // Meta node: recurse on the inspected target, then append ".meta".
-    if (object_class(obj) == meta_class()) {
-        struct object *inspected = (struct object *)object_data(obj);
-        object_compute_path(inspected, buf, buf_size);
-        size_t len = strlen(buf);
-        const char *suffix = (len > 0) ? ".meta" : "meta";
-        size_t slen = strlen(suffix);
-        if (len + slen + 1 <= buf_size) {
-            memcpy(buf + len, suffix, slen + 1);
-        }
-        return;
-    }
-
-    // Callback-backed child (collection entry, lookup-backed named child):
-    // no attached parent, but a logical one -- `<parent>.<name>`,
-    // `<parent>[<index>]` or `<parent>["<key>"]`.
-    struct object *parent = object_parent(obj);
-    struct object *lparent = parent ? NULL : object_logical_parent(obj);
-    if (lparent) {
-        object_compute_path(lparent, buf, buf_size);
-        size_t len = strlen(buf);
-        char seg[OBJ_KEY_MAX + 8];
-        const char *lname = object_logical_name(obj);
-        const char *lkey = object_logical_key(obj);
-        if (lname)
-            snprintf(seg, sizeof(seg), "%s%s", len > 0 ? "." : "", lname);
-        else if (lkey)
-            snprintf(seg, sizeof(seg), "[\"%s\"]", lkey);
-        else
-            snprintf(seg, sizeof(seg), "[%d]", object_logical_index(obj));
-        size_t slen = strlen(seg);
-        if (len + slen + 1 <= buf_size)
-            memcpy(buf + len, seg, slen + 1);
-        return;
-    }
-
-    // Root (or detached): empty path.
-    if (!parent)
-        return;
-
-    // Recurse on parent, then append "." + own name.
-    object_compute_path(parent, buf, buf_size);
-    size_t len = strlen(buf);
-    const char *name = object_name(obj);
-    if (!name || !*name)
-        return;
-    size_t nlen = strlen(name);
-    // Skip the leading dot when the parent itself was the root (empty).
-    bool need_dot = (len > 0);
-    if (len + (need_dot ? 1 : 0) + nlen + 1 > buf_size)
-        return;
-    if (need_dot)
-        buf[len++] = '.';
-    memcpy(buf + len, name, nlen + 1);
 }
 
 // === Member-list accumulator ==============================================
@@ -671,12 +600,11 @@ static const member_t meta_members[] = {
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}                                                                                    },
 };
 
-// Special class name — would normally trip the `meta`-is-reserved check
-// in object_validate_class, but Meta class members do not collide with
-// the reserved literal because none of them are named "meta" themselves.
-// Validation is still safe (no member named "meta" appears below).
+// Lower-case like every other class name. `meta` is reserved only as a
+// MEMBER name (object_validate_class), not as a class name, and none of the
+// members above is named "meta".
 static const class_desc_t g_meta_class = {
-    .name = "Meta",
+    .name = "meta",
     .members = meta_members,
     .n_members = sizeof(meta_members) / sizeof(meta_members[0]),
 };

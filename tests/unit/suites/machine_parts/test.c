@@ -25,7 +25,7 @@
 
 // === Stubs for what checkpoint.c reaches outside its module ==================
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return "unit-test-build-0001";
 }
 int system_checkpoint_load(const char *filename) {

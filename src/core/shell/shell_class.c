@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "alias.h" // shell_alias_class
 #include "cmd_complete.h"
 #include "expr.h"
 #include "highlight.h"
@@ -442,8 +443,6 @@ const class_desc_t shell_class = {
     .n_members = sizeof(shell_members) / sizeof(shell_members[0]),
     .doc = "The shell: bindings, functions, aliases and scripts",
 };
-
-extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 
 void shell_class_register(struct config *cfg) {
     struct object *shell_obj = root_attach_stub(NULL, object_new(&shell_class, cfg, "shell"));

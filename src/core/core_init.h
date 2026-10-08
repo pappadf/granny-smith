@@ -12,7 +12,8 @@
 // layer, the shell, the object root with its top-level methods, and the
 // singleton namespaces that have pre-boot surfaces (rom, machine, catalog,
 // files, ...).  Call once, on the emulator thread, before any request;
-// later calls do nothing.  Returns 0.
+// later calls do nothing.  Returns 0, or -1 when the shell did not come up
+// (the platform must then not open its mailbox).
 int core_init(void);
 
 #endif // GS_CORE_INIT_H

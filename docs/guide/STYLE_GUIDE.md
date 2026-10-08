@@ -8,11 +8,30 @@ This document describes the coding, formatting, and documentation conventions fo
 
 - Use the formatting rules specified in `.clang-format`
 
+### Compiler Extensions
+
+The project builds with GCC and Clang only (Emscripten and the headless
+build are both Clang), and relies on GNU C extensions where they buy
+something real: the `, ##__VA_ARGS__` comma swallow in variadic macros
+(`GS_ASSERTF`, `LOG`), `__attribute__((cleanup))` (`VALUE_AUTO`),
+`__builtin_*` intrinsics, and `-std=gnu11`.  No portability shim is kept for
+other compilers.
+
 ### Naming Conventions
 
 - Use `snake_case` for identifiers: `parse_header()`, `file_info`.
 - Constants and macros are `ALL_CAPS_WITH_UNDERSCORES`.
 - Prefix internal/private functions with `static` and, if needed, a module prefix: `static int hqx_decode_byte(...)`.
+- No project-wide `gs_` / `GS_` prefix, with two exceptions: names with a high
+  risk of colliding with libc or third-party headers (the assertion macros
+  `GS_ASSERT` / `GS_ASSERTF` and `gs_assert_fail` are the canonical case), and
+  symbols exported out of the WASM core, where `gs_` tells a JS caller the
+  name is Granny Smith's.  Everything else (`checkpoint_t`, `status_t`, ...)
+  is unprefixed.
+- Global variables: `g_` for an object shared across translation units
+  (declared `extern` in a header), `s_` for a file-scope `static`.
+- Identifiers starting with an underscore are reserved for the implementation
+  (C11 7.1.3); do not define them, macro-generated helpers included.
 
 ### Comments
 
@@ -210,7 +229,7 @@ there is nothing to forget. This has now been re-flagged by four separate
 reviews; it is recorded here so it stops being.
 
 **3. Three kinds of "this should not happen", and they are not the same.**
-See `src/core/common.h` for the first two.
+See `src/core/gs_assert.h` for the first two.
 
 | situation | use | why |
 |---|---|---|

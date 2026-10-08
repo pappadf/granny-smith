@@ -6,6 +6,8 @@
 
 #include "platform.h"
 
+#include "headless.h"
+
 #include "api.h"
 #include "appletalk.h"
 #include "checkpoint_machine.h"
@@ -35,32 +37,22 @@
 #include "job/job.h"
 #include "mailbox/mailbox.h"
 
-#include <arpa/inet.h>
-#include <dirent.h>
 #include <errno.h>
-#include <getopt.h>
-#include <netinet/in.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <termios.h>
 #include <unistd.h>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
 #endif
 
-// Platform stubs for functions defined in WASM but needed by core
-
-// Video force redraw - no-op in headless
-void frontend_force_redraw(void) {
-    // No video in headless mode
-}
+// Nothing to redraw: headless has no screen of its own (platform.h)
+void platform_force_redraw(void) {}
 
 // The host directory published as the default AppleShare volume, resolved at
 // startup from --shared-dir or $GS_SHARED_DIR.  The path literal lives here in
@@ -234,77 +226,36 @@ void printer_sink_capture(const printer_capture_t *cap) {
 // same path web2's scheduler_main_loop() takes.  See hl_run_statement
 // / the main loop below, and docs/internals/core/scheduler/scheduler.md §10.
 
-// Signal handling for graceful shutdown
-static volatile sig_atomic_t g_running = 1;
-static volatile sig_atomic_t g_interrupted = 0;
+// The loop's flags (headless.h).  The handlers only set a flag: nothing a
+// signal handler may call (signal-safety(7)) stops a scheduler, so the loops
+// act on them -- SIGTERM ends every loop and stops the machine, SIGINT is
+// Ctrl-C (hl_interrupt).
+volatile sig_atomic_t g_running = 1;
+volatile sig_atomic_t g_interrupted = 0;
+volatile sig_atomic_t g_quit_requested = 0;
 
+// SIGINT: Ctrl-C
 static void sigint_handler(int sig) {
     (void)sig;
     g_interrupted = 1; // the loop acts: cancel stdin's job, stop its run
 }
 
+// SIGTERM: shut down
 static void sigterm_handler(int sig) {
     (void)sig;
-    g_running = 0;
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_stop(sched);
+    g_running = 0; // every loop checks it; hl_run_statement stops the machine
 }
 
-// PID file path for daemon mode
-static char g_pid_path[256] = {0};
-
-// Build PID file path for the given port
-static void pid_file_path(int port, char *buf, size_t len) {
-    snprintf(buf, len, "/tmp/gs-headless-%d.pid", port);
-}
-
-// Write PID file for daemon mode
-static void write_pid_file(int port) {
-    pid_file_path(port, g_pid_path, sizeof(g_pid_path));
-    FILE *f = fopen(g_pid_path, "w");
-    if (f) {
-        fprintf(f, "%d\n", getpid());
-        fclose(f);
-    }
-}
-
-// Remove PID file on exit
-static void remove_pid_file(void) {
-    if (g_pid_path[0])
-        unlink(g_pid_path);
-}
-
-// Kill existing daemon on the given port
-static int kill_existing_daemon(int port) {
-    char path[256];
-    pid_file_path(port, path, sizeof(path));
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return 0; // no PID file, nothing to kill
-    int pid = 0;
-    if (fscanf(f, "%d", &pid) != 1 || pid <= 0) {
-        fclose(f);
-        unlink(path);
-        return 0;
-    }
-    fclose(f);
-    // Check if process exists
-    if (kill(pid, 0) != 0) {
-        unlink(path); // stale PID file
-        return 0;
-    }
-    // Send SIGTERM
-    fprintf(stderr, "Killing existing daemon (PID %d) on port %d\n", pid, port);
-    kill(pid, SIGTERM);
-    // Wait briefly for it to exit
-    for (int i = 0; i < 20; i++) {
-        usleep(100000); // 100ms
-        if (kill(pid, 0) != 0)
-            break;
-    }
-    unlink(path);
-    return 1;
+// Install `handler` for `sig`.  SA_RESTART keeps the semantics signal() had
+// here (glibc's BSD signal): a blocking getline on stdin survives a Ctrl-C;
+// poll()-based waits return EINTR and re-check the flags.
+static void install_signal(int sig, void (*handler)(int)) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(sig, &sa, NULL);
 }
 
 // The whole of a small text file, NUL-terminated, for the caller to free; NULL
@@ -364,6 +315,10 @@ static void print_usage(const char *program) {
     printf("                  which hands the screen to a NuBus card)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
     printf("\n");
+    printf("  Startup order: script= first, then --script-stdin, then the daemon or the\n");
+    printf("  interactive prompt.  A `quit` in a script, or a script= that fails, ends the\n");
+    printf("  run there (a daemon still prints READY, then exits).\n");
+    printf("\n");
     printf("Options:\n");
     printf("  --help, -h      Display this help message\n");
     printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced). Headless\n");
@@ -371,9 +326,12 @@ static void print_usage(const char *program) {
     printf("                  (more instructions per frame-unit, scheduler.speed multiplier).\n");
     printf("  --cycles=N      Run for N CPU cycles then exit (for testing)\n");
     printf("  --quiet, -q     Suppress startup messages\n");
-    printf("  --daemon        Start in daemon mode (TCP socket interface for AI agents)\n");
+    printf("  --daemon        Start in daemon mode (TCP socket interface for AI agents).\n");
+    printf("                  Listens on 127.0.0.1 with NO authentication: any local process\n");
+    printf("                  can run any statement, host file access included, as this user\n");
     printf("  --port=PORT     TCP port for daemon mode (default: 6800)\n");
-    printf("  --kill          Kill existing daemon on same port before starting\n");
+    printf("  --kill          Kill existing daemon on same port before starting (SIGTERM,\n");
+    printf("                  SIGKILL after 5 s); PID file /tmp/gs-headless-<port>.pid\n");
     printf("  --script-stdin  Read script commands from stdin instead of a file\n");
     printf("  --var NAME=VAL  Set a shell variable (can be repeated)\n");
     printf("  --no-prompt     Disable the prompt status line for all connections\n");
@@ -396,9 +354,6 @@ static void print_usage(const char *program) {
     printf("  %s --daemon --port=7000 rom=iix-iicx-se30-97221136.rom hd=disk.img\n", program);
 }
 
-// Global script exit code (set by commands like screenshot match)
-static int g_script_exit_code = 0;
-
 // Assertion failures seen this run.  A failed GS_ASSERT prints its
 // diagnostics and pauses the machine (debug.c diagnose_and_halt) so it can be
 // examined on the spot; it does not stop a script, which would otherwise run
@@ -414,23 +369,21 @@ static void headless_failure_hook(const char *kind, const char *expr, const char
             file ? file : "<unknown>", line);
 }
 
-// The exit status: the script's own, or 3 if any assertion failed.
-static int headless_exit_code(void) {
+// The exit status: the scripts' own (`script_rc`, from script= and
+// --script-stdin), or 3 if any assertion failed.
+static int headless_exit_code(int script_rc) {
     if (g_assert_failures) {
         fprintf(stderr, "headless: %u assertion failure(s) this run\n", g_assert_failures);
-        if (g_script_exit_code == 0)
+        if (script_rc == 0)
             return 3;
     }
-    return g_script_exit_code;
+    return script_rc;
 }
-
-// Quit flag for headless mode - set by quit command
-static volatile int quit_requested = 0;
 
 // Platform impl of gs_quit (the weak default in system.c says "not
 // supported": the browser owns the page).
 int gs_quit(void) {
-    quit_requested = 1;
+    g_quit_requested = 1;
     // Stop scheduler to break out of any running emulation
     scheduler_t *sched = system_scheduler();
     if (sched) {
@@ -438,22 +391,6 @@ int gs_quit(void) {
     }
     return 0;
 }
-
-// Legacy shell `quit` — thin shim.
-// Forward declaration for run_script_file (used by main script-flag path).
-static int run_script_file(const char *filename);
-
-// Default daemon port (Motorola 68xx heritage)
-#define DAEMON_DEFAULT_PORT 6800
-
-// Daemon mode state
-static int g_daemon_mode = 0;
-static int g_daemon_port = DAEMON_DEFAULT_PORT;
-static int g_listen_fd = -1;
-static int g_client_fd = -1;
-static bool g_client_lost = false; // a write to the client failed: stop serving it
-static int g_saved_stdout = -1;
-static int g_saved_stderr = -1;
 
 // ============================================================================
 // The loop: frame, drain, and scripts as jobs
@@ -469,9 +406,7 @@ static int g_saved_stderr = -1;
 // script waits for N because the job waits for its mode; `scheduler.run`
 // returns at once and the machine runs on between statements.
 
-#define HL_CLIENT_STDIN  3u // the script file, --script-stdin and the REPL
-#define HL_CLIENT_DAEMON 4u // a daemon connection
-#define HL_MBX_RING      (64u << 10)
+#define HL_MBX_RING (64u << 10)
 
 static gs_mailbox_t g_mbx;
 static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_RING];
@@ -541,7 +476,7 @@ static void hl_inline_frame(void) {
         usleep(1000);
 }
 
-static bool hl_pump_once(void) {
+bool hl_pump_once(void) {
     bool did = hl_run_frame();
     if (gs_mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
@@ -687,12 +622,20 @@ static void hl_interrupt(uint32_t client) {
         scheduler_stop_owned(s, 0);
 }
 
-static void daemon_serve_control_connection(void);
-static bool daemon_client_gone(int client_fd);
+// SIGTERM arrived (g_running cleared): stop the machine, once, so a run in
+// flight ends and every loop can unwind.  The handler only sets the flag.
+static void hl_honour_sigterm(void) {
+    static bool done;
+    if (g_running || done)
+        return;
+    done = true;
+    scheduler_t *sched = system_scheduler();
+    if (sched)
+        scheduler_stop(sched);
+}
 
-// Runs one statement as a job and waits for its result, driving the loop
-// meanwhile.  Returns 0 (ok), -1 (the script failed or was cancelled).
-static int hl_run_statement(uint32_t client, const char *src) {
+// Runs one statement as a job and waits for its result (headless.h).
+int hl_run_statement(uint32_t client, const char *src) {
     uint32_t id = gs_mailbox_client_script(&g_cli, client, src, strlen(src));
     if (!id) {
         printf("error: statement too long for the mailbox\n");
@@ -702,7 +645,7 @@ static int hl_run_statement(uint32_t client, const char *src) {
     g_foreground_client = client;
     double last_heartbeat = host_time();
     uint64_t start_instr = cpu_instr_count();
-    bool cancelled_for_quit = false;
+    bool cancelled_for_quit = false; // `quit` or SIGTERM: the job was cancelled
     int rc = -1;
     for (;;) {
         bool did = hl_pump_once();
@@ -715,9 +658,10 @@ static int hl_run_statement(uint32_t client, const char *src) {
             hl_interrupt(HL_CLIENT_STDIN);
             printf("\n[Interrupted]\n");
         }
-        if (quit_requested && !cancelled_for_quit) {
-            // `quit` inside a script: the machine is stopped; the script
-            // must not start the next run.
+        hl_honour_sigterm();
+        if ((g_quit_requested || !g_running) && !cancelled_for_quit) {
+            // `quit` inside a script, or SIGTERM: the machine is stopped;
+            // the script must not start the next run.
             cancelled_for_quit = true;
             job_cancel(client, id);
         }
@@ -733,20 +677,7 @@ static int hl_run_statement(uint32_t client, const char *src) {
                 last_heartbeat = now;
             }
         }
-        if (g_daemon_mode && g_client_fd >= 0 && !g_client_lost) {
-            if (daemon_client_gone(g_client_fd)) {
-                // Nobody left to read the result: this client's run and
-                // script end here; nothing else is touched.
-                g_client_lost = true;
-                job_cancel_client(client);
-                job_glue_stop_modes(client);
-            } else if (running) {
-                // A second connection during a run is a control connection
-                // (stop / quit); once the run is over, the next connection
-                // is the next client and waits its turn in the backlog.
-                daemon_serve_control_connection();
-            }
-        }
+        daemon_watch_statement(client, running); // a no-op without a daemon client
         if (!did && !running)
             usleep(1000);
     }
@@ -758,172 +689,13 @@ static int hl_run_statement(uint32_t client, const char *src) {
     return rc;
 }
 
-// ============================================================================
-// Daemon mode: TCP socket interface for AI agents
-// ============================================================================
-
-// Redirect stdout/stderr to the client socket so printf output goes to the agent
-static void daemon_redirect_output(int client_fd) {
-    g_saved_stdout = dup(STDOUT_FILENO);
-    g_saved_stderr = dup(STDERR_FILENO);
-    dup2(client_fd, STDOUT_FILENO);
-    dup2(client_fd, STDERR_FILENO);
-    // A previous client that vanished left the streams' error flags set;
-    // daemon_client_gone reads them for this client.
-    clearerr(stdout);
-    clearerr(stderr);
-}
-
-// Restore stdout/stderr to their original destinations
-static void daemon_restore_output(void) {
-    fflush(stdout);
-    fflush(stderr);
-    if (g_saved_stdout >= 0) {
-        dup2(g_saved_stdout, STDOUT_FILENO);
-        close(g_saved_stdout);
-        g_saved_stdout = -1;
-    }
-    if (g_saved_stderr >= 0) {
-        dup2(g_saved_stderr, STDERR_FILENO);
-        close(g_saved_stderr);
-        g_saved_stderr = -1;
-    }
-}
-
-// Create and bind the listening socket for daemon mode
-static int daemon_create_listener(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("daemon: socket");
-        return -1;
-    }
-
-    // Allow port reuse for quick restarts
-    int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // bind to 127.0.0.1 only
-    addr.sin_port = htons(port);
-
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "Error: port %d already in use. Use --port=N to specify a different port.\n", port);
-        close(fd);
-        return -1;
-    }
-
-    if (listen(fd, 1) < 0) {
-        perror("daemon: listen");
-        close(fd);
-        return -1;
-    }
-
-    return fd;
-}
-
-// Whether the daemon client is gone.  EOF is not that: a half-closing client
-// (nc -N, nc -q, Python's shutdown(SHUT_WR)) sends a FIN and still reads the
-// output, and a FIN cannot tell a half-close from a close -- the old check
-// peeked recv() == 0 and cancelled such a client's own scheduler.run.  Only
-// a failed write can tell, and it shows up as POLLERR/POLLHUP on the socket
-// once a write has drawn the peer's RST (the once-a-second heartbeat writes,
-// so a closed client is noticed within ~1-2 s), or as a failed fflush.
-static bool daemon_client_gone(int client_fd) {
-    if (client_fd < 0)
-        return false;
-    struct pollfd pfd = {.fd = client_fd, .events = 0, .revents = 0};
-    if (poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
-        return true;
-    return ferror(stdout) != 0;
-}
-
-// While a run is in flight the daemon is inside one client's dispatch, so a
-// second connection waits in the listen backlog until that dispatch returns.
-// For a bare `scheduler.run` that is a short wait; for a `scheduler.run`
-// inside a shell `while` loop it is forever, and the daemon looks wedged with
-// only kill -9 as a way out.  Answer such a connection out of band instead:
-// the run is stoppable from it, and anything else is refused with a note
-// rather than executed, since the shell is busy with the first client.
-static void daemon_serve_control_connection(void) {
-    struct pollfd pfd = {.fd = g_listen_fd, .events = POLLIN, .revents = 0};
-    if (g_listen_fd < 0 || poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
-        return;
-    int fd = accept(g_listen_fd, NULL, NULL);
-    if (fd < 0)
-        return;
-
-    // One line, and only what is already there: a control client that sends
-    // nothing must not stall the run it came to stop.
-    char line[256];
-    ssize_t n = recv(fd, line, sizeof(line) - 1, MSG_DONTWAIT);
-    if (n < 0)
-        n = 0;
-    line[n] = '\0';
-    for (char *p = line; *p; p++)
-        if (*p == '\n' || *p == '\r')
-            *p = '\0';
-    char *cmd = line;
-    while (*cmd == ' ')
-        cmd++;
-
-    const char *reply;
-    if (strcmp(cmd, "stop") == 0 || strcmp(cmd, "scheduler.stop") == 0 || strcmp(cmd, "shell.interrupt") == 0 ||
-        strcmp(cmd, "shell.interrupt()") == 0) {
-        // The two halves of the terminal's Ctrl-C, for the daemon's client:
-        // cancel its statement in flight (which ends the run that statement
-        // started), and stop a run an earlier statement left going.
-        job_cancel_client(HL_CLIENT_DAEMON);
-        job_glue_stop_modes(HL_CLIENT_DAEMON);
-        reply = "# run stopped by control connection\n";
-    } else if (strcmp(cmd, "quit") == 0) {
-        quit_requested = 1;
-        reply = "# quit requested\n";
-    } else {
-        reply = "# busy: a run is in flight on another connection; "
-                "this connection accepts only stop / shell.interrupt / quit\n";
-    }
-    (void)!write(fd, reply, strlen(reply));
-    // Drain before closing, as daemon_handle_client does: closing with input
-    // unread -- or still in flight, since the recv above takes only what had
-    // arrived -- sends an RST, and the client loses the reply to "connection
-    // reset by peer".  Bounded (~100 ms) so a silent client cannot stall the
-    // run; a half-closing client ends it at once with its FIN.
-    shutdown(fd, SHUT_WR);
-    for (int i = 0; i < 10; i++) {
-        struct pollfd dp = {.fd = fd, .events = POLLIN, .revents = 0};
-        int r = poll(&dp, 1, 10);
-        if (r < 0 && errno != EINTR)
-            break;
-        if (r > 0 && recv(fd, line, sizeof(line), 0) <= 0)
-            break; // the client's FIN (or an error): nothing more can arrive
-    }
-    close(fd);
-}
-
-// === Statements from a stream ==============================================
+// === Statements from a stream (headless.h) =================================
 //
-// A statement is complete when it ends at a newline and is balanced
-// (script_needs_continuation).  The daemon, stdin and the REPL all feed lines
-// to one assembler and run each statement the moment it is complete.  The
-// daemon used to guess where a request ended BEFORE running anything -- read
-// until a newline plus 1 ms of silence, then run the lot -- and every one of
-// its defects was that guess: a 2 KB cap, a fragment dispatched half-read, a
-// second send lost, a block silently dropped.
+// The daemon (headless_daemon.c), stdin and the REPL all feed lines to this
+// one assembler and run each statement the moment it is complete.
 
-#define STMT_MAX (1u << 20) // 1 MB
-
-typedef struct stmt_asm {
-    char *buf;
-    size_t len, cap;
-} stmt_asm_t;
-
-// Feed one line (no newline).  Returns 1 when a.buf holds a complete statement
-// (run it, then stmt_reset), 0 when more lines are needed, -1 when the
-// statement would pass STMT_MAX (it has been discarded).  Blank lines outside
-// a statement are skipped.
-static int stmt_feed_line(stmt_asm_t *a, const char *line, size_t len) {
+// Blank lines outside a statement are skipped.
+int stmt_feed_line(stmt_asm_t *a, const char *line, size_t len) {
     while (len > 0 && line[len - 1] == '\r')
         len--;
     if (len == 0 && a->len == 0)
@@ -951,208 +723,17 @@ static int stmt_feed_line(stmt_asm_t *a, const char *line, size_t len) {
     return script_needs_continuation(a->buf) ? 0 : 1;
 }
 
-static void stmt_reset(stmt_asm_t *a) {
+// Empty the assembler for the next statement (keeps its buffer)
+void stmt_reset(stmt_asm_t *a) {
     a->len = 0;
     if (a->buf)
         a->buf[0] = '\0';
 }
 
-static void stmt_free(stmt_asm_t *a) {
+// Release the assembler's buffer
+void stmt_free(stmt_asm_t *a) {
     free(a->buf);
     *a = (stmt_asm_t){0};
-}
-
-// Run one complete daemon statement, pump the run it starts, and report the
-// PC as a status line.
-static void daemon_run_statement(char *stmt) {
-    hl_run_statement(HL_CLIENT_DAEMON, stmt);
-    if (!g_client_lost && system_is_initialized() && debug_prompt_enabled()) {
-        char disasm_buf[160];
-        debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
-        if (disasm_buf[0] != '\0')
-            printf("%s\n", disasm_buf);
-    }
-    fflush(stdout);
-}
-
-// How long a client may stay silent, after its last statement has finished
-// and its output is flushed, before the daemon hangs up.  Not a latency: a
-// statement runs the moment it is complete.  `echo cmd | nc -w 2` keeps
-// working (the close lands well inside nc's timeout); `nc -N` just closes
-// sooner.
-#define DAEMON_IDLE_CLOSE_MS 500
-
-// Serve one client: run its statements as they complete, while reading on.
-// Supports any number of newline-delimited statements, in any number of
-// sends, of any size up to STMT_MAX.
-static void daemon_handle_client(int client_fd) {
-    g_client_fd = client_fd;
-    g_client_lost = false;
-    daemon_redirect_output(client_fd);
-
-    stmt_asm_t stmt = {0};
-    char *pending = NULL; // bytes of a line not yet ended by a newline
-    size_t pending_len = 0, pending_cap = 0;
-    bool skipping = false; // dropping the rest of a line past STMT_MAX
-    bool eof = false;
-    double idle_since = host_time_ms();
-    char chunk[65536];
-
-    while (!quit_requested && !g_client_lost) {
-        // Run every statement the input already completes.
-        char *nl;
-        while (!quit_requested && !g_client_lost && pending_len && (nl = memchr(pending, '\n', pending_len)) != NULL) {
-            size_t line_len = (size_t)(nl - pending);
-            if (!skipping) {
-                int r = stmt_feed_line(&stmt, pending, line_len);
-                if (r < 0)
-                    printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
-                else if (r > 0) {
-                    daemon_run_statement(stmt.buf);
-                    stmt_reset(&stmt);
-                }
-            }
-            skipping = false;
-            memmove(pending, nl + 1, pending_len - line_len - 1);
-            pending_len -= line_len + 1;
-            idle_since = host_time_ms();
-        }
-        if (quit_requested || g_client_lost)
-            break;
-
-        if (eof) {
-            // The last line may lack its newline; it is still a line.
-            if (pending_len && !skipping) {
-                int r = stmt_feed_line(&stmt, pending, pending_len);
-                pending_len = 0;
-                if (r < 0)
-                    printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
-                else if (r > 0) {
-                    daemon_run_statement(stmt.buf);
-                    stmt_reset(&stmt);
-                }
-            }
-            break;
-        }
-
-        // Wait for more, until the client has been idle long enough.
-        double idle = host_time_ms() - idle_since;
-        if (idle >= DAEMON_IDLE_CLOSE_MS)
-            break;
-        // The machine runs on between statements: a frame, then a look
-        // at the socket, instead of one long poll.
-        struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
-        bool busy = hl_pump_once();
-        int ready = poll(&pfd, 1, busy ? 0 : 5);
-        if (ready < 0 && errno != EINTR)
-            break;
-        if (ready <= 0)
-            continue;
-        ssize_t n = recv(client_fd, chunk, sizeof(chunk), 0);
-        if (n == 0) {
-            eof = true; // no more input -- not "client gone" (see daemon_client_gone)
-            continue;
-        }
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN)
-                continue;
-            g_client_lost = true;
-            break;
-        }
-        idle_since = host_time_ms();
-        if (pending_len + (size_t)n > STMT_MAX) {
-            // A line longer than any statement may be: drop it up to its end.
-            printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
-            stmt_reset(&stmt);
-            char *end = memchr(chunk, '\n', (size_t)n);
-            pending_len = 0;
-            if (!end) {
-                skipping = true;
-                continue;
-            }
-            skipping = true;
-            size_t rest = (size_t)n - (size_t)(end - chunk);
-            memmove(chunk, end, rest);
-            n = (ssize_t)rest;
-        }
-        if (pending_len + (size_t)n > pending_cap) {
-            size_t cap = pending_cap ? pending_cap : 65536;
-            while (cap < pending_len + (size_t)n)
-                cap *= 2;
-            char *grown = realloc(pending, cap);
-            if (!grown) {
-                printf("error: out of memory reading the request\n");
-                break;
-            }
-            pending = grown;
-            pending_cap = cap;
-        }
-        memcpy(pending + pending_len, chunk, (size_t)n);
-        pending_len += (size_t)n;
-    }
-
-    // An open block at the end of input is reported, never dropped.
-    if (!g_client_lost && (stmt.len || (pending_len && !skipping)))
-        printf("error: incomplete block at end of input; not run\n");
-    stmt_free(&stmt);
-    free(pending);
-
-    daemon_restore_output();
-    // Drain what the client still sends before closing: closing a socket with
-    // unread input sends an RST, which can destroy output the client has not
-    // read yet.
-    shutdown(client_fd, SHUT_WR);
-    for (int i = 0; i < 50; i++) {
-        struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
-        if (poll(&pfd, 1, 10) <= 0 || recv(client_fd, chunk, sizeof(chunk), 0) <= 0)
-            break;
-    }
-    close(client_fd);
-    g_client_fd = -1;
-}
-
-// Main daemon loop: accept connections and handle them one at a time
-static void daemon_loop(void) {
-    fprintf(stderr, "Daemon listening on 127.0.0.1:%d\n", g_daemon_port);
-    fprintf(stderr, "Send commands with: echo \"command\" | nc localhost %d\n", g_daemon_port);
-
-    // Emit READY signal so callers can block-read instead of sleeping
-    printf("READY\n");
-    fflush(stdout);
-
-    while (g_running && !quit_requested) {
-        // A frame if the machine runs (a `scheduler.run` left it going),
-        // then the listener: no long wait while there is work.
-        bool busy = hl_pump_once();
-        fd_set fds;
-        struct timeval tv = {0, busy ? 0 : 10000};
-        FD_ZERO(&fds);
-        FD_SET(g_listen_fd, &fds);
-
-        int ready = select(g_listen_fd + 1, &fds, NULL, NULL, &tv);
-        if (ready < 0) {
-            if (errno == EINTR)
-                continue;
-            perror("daemon: select");
-            break;
-        }
-        if (ready == 0)
-            continue; // timeout, check g_running again
-
-        // Accept client connection
-        int client_fd = accept(g_listen_fd, NULL, NULL);
-        if (client_fd < 0) {
-            if (errno == EINTR)
-                continue;
-            perror("daemon: accept");
-            continue;
-        }
-
-        daemon_handle_client(client_fd);
-    }
-
-    close(g_listen_fd);
-    g_listen_fd = -1;
 }
 
 // Parse key=value argument, returns value or NULL if key doesn't match
@@ -1166,6 +747,7 @@ static const char *parse_arg(const char *arg, const char *key) {
 
 // Run a script file: one `include` statement as a job, so `include` paths
 // inside it resolve relative to the file and diagnostics carry its name.
+// Returns the script's exit status: 0, or 1 when it failed.
 static int run_script_file(const char *filename) {
     printf("> running %s\n", filename);
     char stmt[4096];
@@ -1182,8 +764,8 @@ static int run_script_file(const char *filename) {
         // v2 scripts abort on the first error; a script that
         // aborted never reaches its `quit`, so exit here instead of
         // dropping into the interactive loop.
-        g_script_exit_code = 1;
-        quit_requested = 1;
+        g_quit_requested = 1;
+        return 1;
     }
     return 0;
 }
@@ -1191,14 +773,16 @@ static int run_script_file(const char *filename) {
 // Run statements from stdin, each as soon as it is complete: a
 // line at a time through the statement assembler, so a multi-line block
 // runs when it closes.  getline, not a 1024-byte fgets: a longer line used to
-// be split into two statements.
+// be split into two statements.  Returns the exit status: 1 if any statement
+// failed, else 0.
 static int run_script_stdin(void) {
+    int exit_code = 0;
     stmt_asm_t stmt = {0};
     char *line = NULL;
     size_t line_cap = 0;
     char *last_cmd = NULL;
     ssize_t n;
-    while (!quit_requested && (n = getline(&line, &line_cap, stdin)) >= 0) {
+    while (g_running && !g_quit_requested && (n = getline(&line, &line_cap, stdin)) >= 0) {
         size_t len = (size_t)n;
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             line[--len] = '\0';
@@ -1226,7 +810,7 @@ static int run_script_stdin(void) {
         int r = stmt_feed_line(&stmt, line, len);
         if (r < 0) {
             printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
-            g_script_exit_code = 1;
+            exit_code = 1;
             continue;
         }
         if (r == 0)
@@ -1236,71 +820,113 @@ static int run_script_stdin(void) {
         int result = hl_run_statement(HL_CLIENT_STDIN, stmt.buf); // interactive: results print
         stmt_reset(&stmt);
         if (result != 0)
-            g_script_exit_code = 1;
+            exit_code = 1;
     }
     if (stmt.len) {
         printf("error: incomplete block at end of input; not run\n");
-        g_script_exit_code = 1;
+        exit_code = 1;
     }
     stmt_free(&stmt);
     free(line);
     free(last_cmd);
-    return 0;
+    return exit_code;
 }
 
-// Check if stdin has data available (non-blocking)
-static int stdin_has_data(void) {
-    fd_set fds;
-    struct timeval tv = {0, 0};
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
-}
-
-// Shell prompt — shared builder in shell.c (same text as the web shell)
-void print_prompt(void) {
-    if (g_daemon_mode)
-        return;
+// Shell prompt -- shared builder in shell.c (same text as the web shell)
+static void print_prompt(void) {
     char buf[256];
     shell_build_prompt(buf, sizeof(buf));
     printf("%s", buf);
     fflush(stdout);
 }
 
-// Poll for shell input (called from main loop): a line at a time through the
-// statement assembler, with the continuation prompt "... " while a block is
-// open.  getline, so a long line is one line.
+// The REPL's stdin, read with read() into our own buffer.  A FILE* would
+// read ahead: paste three lines and getline returns the first while the
+// other two sit in stdio's buffer, where poll() on the descriptor cannot see
+// them -- they ran only when more input arrived.  Here the buffer is ours,
+// so a complete line in it is taken before the descriptor is waited on.
+static char *g_stdin_buf;
+static size_t g_stdin_len, g_stdin_cap;
+static bool g_stdin_eof;
+
+// Take the next line out of g_stdin_buf into `line` (NUL-terminated, without
+// its newline; the caller frees it), waiting up to `timeout_ms` for input when
+// none is buffered.  At end of input the unterminated remainder is the last
+// line.  Returns false when there is no line yet (or no more input).
+static bool stdin_take_line(int timeout_ms, char **line, size_t *len) {
+    char *nl = g_stdin_len ? memchr(g_stdin_buf, '\n', g_stdin_len) : NULL;
+    if (!nl && !g_stdin_eof) {
+        struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN, .revents = 0};
+        if (poll(&pfd, 1, timeout_ms) > 0) {
+            if (g_stdin_cap - g_stdin_len < 4096) {
+                size_t cap = g_stdin_cap ? g_stdin_cap * 2 : 8192;
+                char *grown = realloc(g_stdin_buf, cap);
+                if (!grown)
+                    return false;
+                g_stdin_buf = grown;
+                g_stdin_cap = cap;
+            }
+            ssize_t n = read(STDIN_FILENO, g_stdin_buf + g_stdin_len, g_stdin_cap - g_stdin_len);
+            if (n > 0)
+                g_stdin_len += (size_t)n;
+            else if (n == 0 || (errno != EINTR && errno != EAGAIN))
+                g_stdin_eof = true; // end of input (or a dead descriptor): stop polling it
+            nl = g_stdin_len ? memchr(g_stdin_buf, '\n', g_stdin_len) : NULL;
+        }
+    } else if (!nl && timeout_ms > 0) {
+        usleep((useconds_t)timeout_ms * 1000); // no input will come: the caller's idle wait
+    }
+    size_t line_len, used;
+    if (nl) {
+        line_len = (size_t)(nl - g_stdin_buf);
+        used = line_len + 1;
+    } else if (g_stdin_eof && g_stdin_len) {
+        line_len = used = g_stdin_len;
+    } else {
+        return false;
+    }
+    *line = malloc(line_len + 1);
+    if (!*line)
+        return false;
+    memcpy(*line, g_stdin_buf, line_len);
+    (*line)[line_len] = '\0';
+    *len = line_len;
+    memmove(g_stdin_buf, g_stdin_buf + used, g_stdin_len - used);
+    g_stdin_len -= used;
+    return true;
+}
+
+// Poll for shell input (called from the main loop, which passes how long it
+// may wait): a line at a time through the statement assembler, with the
+// continuation prompt "... " while a block is open.  Returns whether a line
+// was taken.
 static stmt_asm_t g_repl;
 
-int shell_poll(void) {
-    if (!stdin_has_data())
-        return 0;
-
-    static char *line = NULL;
-    static size_t line_cap = 0;
-    ssize_t n = getline(&line, &line_cap, stdin);
-    if (n < 0)
-        return 0;
-    size_t len = (size_t)n;
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+static bool repl_poll(int timeout_ms) {
+    char *line;
+    size_t len;
+    if (!stdin_take_line(timeout_ms, &line, &len))
+        return false;
+    while (len > 0 && line[len - 1] == '\r')
         line[--len] = '\0';
 
     int r = stmt_feed_line(&g_repl, line, len);
+    free(line);
     if (r < 0) {
         printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
-        return 1;
+        return true;
     }
     if (r == 0) {
-        if (g_repl.len && !g_daemon_mode) {
+        if (g_repl.len) {
             printf("... ");
             fflush(stdout);
         }
-        return 1;
+        return true;
     }
 
     hl_run_statement(HL_CLIENT_STDIN, g_repl.buf);
     stmt_reset(&g_repl);
-    return 1;
+    return true;
 }
 
 // Offer the ROM file's sibling *.vrom and *.prom files to the core's
@@ -1379,14 +1005,81 @@ double platform_audio_ring_fill(void) {
     return -1.0;
 }
 
+// Limits on the repeatable arguments.  Going past one is an error, not a
+// warning: a run must not go on without media it was asked for (and in
+// daemon mode a warning would reach no client).
+#define HL_MAX_HD     8
+#define HL_MAX_CDROM  8
+#define HL_MAX_DRIVES 16
+#define HL_MAX_VARS   64
+
+// Report a repeatable argument given more than `max` times.  Returns main's
+// exit status.
+static int too_many(const char *program, const char *what, int max, const char *value) {
+    fprintf(stderr, "Error: too many %s (at most %d): %s\n", what, max, value);
+    fprintf(stderr, "Run %s --help for usage.\n", program);
+    return 1;
+}
+
+// The REPL: frame-units while the machine runs, a statement from stdin as
+// soon as it is complete, until quit, SIGTERM or --cycles.  --cycles counts
+// instructions run, across every machine the session runs: a machine.boot or
+// checkpoint.load replaces the one being counted, and the count carries on
+// from the new one's start (platform_machine_attached) rather than
+// subtracting across them.
+static void interactive_run(uint64_t max_cycles, int quiet) {
+    if (!quiet)
+        printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
+
+    uint64_t spent_cycles = 0;
+    uint64_t last_cycles = cpu_instr_count();
+    s_count_rebase = false;
+
+    while (g_running && !g_quit_requested) {
+        // Check for max cycles limit
+        if (max_cycles > 0) {
+            uint64_t now = cpu_instr_count();
+            if (s_count_rebase) {
+                s_count_rebase = false;
+                last_cycles = now;
+            }
+            if (now > last_cycles)
+                spent_cycles += now - last_cycles;
+            last_cycles = now;
+            if (spent_cycles >= max_cycles) {
+                if (!quiet)
+                    printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
+                break;
+            }
+        }
+
+        // One frame-unit per iteration while the machine runs (the same
+        // step web2's tick runs, unthrottled), then the drain; a REPL line
+        // runs as a job, the loop pumping inside its wait.  Idle, the wait
+        // for stdin is the loop's sleep (1 ms, so the drain keeps serving a
+        // job's calls), and typed input ends it at once.
+        bool busy = hl_pump_once();
+        repl_poll(busy ? 0 : 1);
+        hl_honour_sigterm();
+
+        // Handle interrupt (Ctrl+C stops emulation but doesn't exit)
+        if (g_interrupted) {
+            g_interrupted = 0;
+            hl_interrupt(HL_CLIENT_STDIN);
+            printf("\n[Interrupted]\n");
+            print_prompt();
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     debug_set_failure_hook(headless_failure_hook);
 
     // Configuration from arguments
     const char *rom_file = NULL;
-    const char *hd_files[8] = {NULL};
+    const char *hd_files[HL_MAX_HD] = {NULL};
     int hd_count = 0;
-    const char *cdrom_files[8] = {NULL}; // cdrom=<file> arguments
+    const char *cdrom_files[HL_MAX_CDROM] = {NULL}; // cdrom=<file> arguments
     int cdrom_count = 0;
     const char *fd_files[FLOPPY_NUM_DRIVES] = {NULL};
     int fd_count = 0;
@@ -1400,14 +1093,18 @@ int main(int argc, char *argv[]) {
     const char *slots_arg = NULL;
     const char *monitor_arg = NULL;
     const char *config_arg = NULL; // config=: a JSON document, or a file holding one
-    const char *drive_args[16] = {NULL}; // drive=bus:unit:type[:image]
+    const char *drive_args[HL_MAX_DRIVES] = {NULL}; // drive=bus:unit:type[:image]
     int drive_count = 0;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
+    int daemon_mode = 0; // --daemon
+    int daemon_port = DAEMON_DEFAULT_PORT;
+    int script_rc = 0; // the exit status script= and --script-stdin leave
+    int rc = 1; // main's own exit status on the failure paths below
     int no_prompt = 0;
     const char *checkpoint_dir = NULL; // explicit --checkpoint-dir=
-    const char *var_defs[64] = {NULL}; // --var NAME=VALUE definitions
+    const char *var_defs[HL_MAX_VARS] = {NULL}; // --var NAME=VALUE definitions
     int var_count = 0;
 
     // Parse arguments
@@ -1426,7 +1123,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (strcmp(arg, "--daemon") == 0) {
-            g_daemon_mode = 1;
+            daemon_mode = 1;
             quiet = 1; // suppress banner in daemon mode
             continue;
         }
@@ -1462,8 +1159,8 @@ int main(int argc, char *argv[]) {
         }
 
         if (strncmp(arg, "--port=", 7) == 0) {
-            g_daemon_port = atoi(arg + 7);
-            if (g_daemon_port <= 0 || g_daemon_port > 65535) {
+            daemon_port = atoi(arg + 7);
+            if (daemon_port <= 0 || daemon_port > 65535) {
                 fprintf(stderr, "Error: Invalid port number: %s\n", arg + 7);
                 return 1;
             }
@@ -1512,11 +1209,9 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --var requires NAME=VALUE\n");
                 return 1;
             }
-            if (var_count < 64) {
-                var_defs[var_count++] = def;
-            } else {
-                fprintf(stderr, "Warning: Too many --var definitions, ignoring: %s\n", def);
-            }
+            if (var_count >= HL_MAX_VARS)
+                return too_many(argv[0], "--var definitions", HL_MAX_VARS, def);
+            var_defs[var_count++] = def;
             continue;
         }
 
@@ -1526,20 +1221,16 @@ int main(int argc, char *argv[]) {
         }
 
         if ((value = parse_arg(arg, "hd")) != NULL) {
-            if (hd_count < 8) {
-                hd_files[hd_count++] = value;
-            } else {
-                fprintf(stderr, "Warning: Too many HD images, ignoring: %s\n", value);
-            }
+            if (hd_count >= HL_MAX_HD)
+                return too_many(argv[0], "hd= images", HL_MAX_HD, value);
+            hd_files[hd_count++] = value;
             continue;
         }
 
         if ((value = parse_arg(arg, "cdrom")) != NULL) {
-            if (cdrom_count < 8) {
-                cdrom_files[cdrom_count++] = value;
-            } else {
-                fprintf(stderr, "Warning: Too many CD-ROM images, ignoring: %s\n", value);
-            }
+            if (cdrom_count >= HL_MAX_CDROM)
+                return too_many(argv[0], "cdrom= images", HL_MAX_CDROM, value);
+            cdrom_files[cdrom_count++] = value;
             continue;
         }
 
@@ -1554,11 +1245,9 @@ int main(int argc, char *argv[]) {
         }
 
         if ((value = parse_arg(arg, "fd")) != NULL) {
-            if (fd_count < FLOPPY_NUM_DRIVES) {
-                fd_files[fd_count++] = value;
-            } else {
-                fprintf(stderr, "Warning: Too many FD images, ignoring: %s\n", value);
-            }
+            if (fd_count >= FLOPPY_NUM_DRIVES)
+                return too_many(argv[0], "fd= images", FLOPPY_NUM_DRIVES, value);
+            fd_files[fd_count++] = value;
             continue;
         }
 
@@ -1587,8 +1276,9 @@ int main(int argc, char *argv[]) {
             continue;
         }
         if ((value = parse_arg(arg, "drive")) != NULL) {
-            if (drive_count < 16)
-                drive_args[drive_count++] = value;
+            if (drive_count >= HL_MAX_DRIVES)
+                return too_many(argv[0], "drive= arguments", HL_MAX_DRIVES, value);
+            drive_args[drive_count++] = value;
             continue;
         }
         if ((value = parse_arg(arg, "monitor")) != NULL) {
@@ -1619,12 +1309,12 @@ int main(int argc, char *argv[]) {
 
     // Line-buffer stdout when output is redirected or piped
     if (script_file || !isatty(STDOUT_FILENO)) {
-        setvbuf(stdout, NULL, _IOLBF, 0);
+        setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     }
 
     // Setup signal handlers
-    signal(SIGINT, sigint_handler);
-    signal(SIGTERM, sigterm_handler);
+    install_signal(SIGINT, sigint_handler);
+    install_signal(SIGTERM, sigterm_handler);
     // Ignore SIGPIPE: in daemon mode stdout/stderr are dup2'd to the
     // client socket, so any printf after the client disconnects would
     // otherwise kill the daemon.  With SIG_IGN, write() returns -1 /
@@ -1653,7 +1343,10 @@ int main(int argc, char *argv[]) {
     }
 
     // Initialize the process core (shell, object root, singletons)
-    core_init();
+    if (core_init() != 0) {
+        fprintf(stderr, "Error: core initialisation failed\n");
+        return 1;
+    }
 
     // The mailbox this process is a client of, and the job thread that runs
     // its scripts (falls back to inline scripts if the thread cannot start).
@@ -1713,7 +1406,7 @@ int main(int argc, char *argv[]) {
     if (checkpoint_dir && *checkpoint_dir) {
         if (checkpoint_machine_set_dir(checkpoint_dir) != 0) {
             fprintf(stderr, "Error: cannot create --checkpoint-dir %s: %s\n", checkpoint_dir, strerror(errno));
-            return 1;
+            goto out;
         }
         checkpoint_machine_set_root(checkpoint_dir);
     }
@@ -1724,13 +1417,13 @@ int main(int argc, char *argv[]) {
     rom_file_info_t rom_fi = {0};
     if (rom_probe_file(rom_file, &rom_fi) != 0 || !rom_fi.info) {
         fprintf(stderr, "Error: ROM file %s could not be identified\n", rom_file);
-        return 1;
+        goto out;
     }
     // A known ROM for a machine that is not emulated has no model to boot.
     if (!rom_is_supported(rom_fi.info)) {
         fprintf(stderr, "Error: ROM file %s is the %s, for a machine Granny Smith does not emulate\n", rom_file,
                 rom_fi.info->family_name);
-        return 1;
+        goto out;
     }
 
     // Resolve target machine: model= overrides; else use the first entry in
@@ -1754,14 +1447,14 @@ int main(int argc, char *argv[]) {
             for (const char *const *p = rom_fi.info->compatible; *p; p++)
                 fprintf(stderr, " %s", *p);
             fprintf(stderr, "\n");
-            return 1;
+            goto out;
         }
     }
 
     const hw_profile_t *profile = machine_find(target_model);
     if (!profile) {
         fprintf(stderr, "Error: machine model '%s' is not registered\n", target_model);
-        return 1;
+        goto out;
     }
 
     // Offer the ROM's sibling *.vrom files to the content-addressed registry
@@ -1780,7 +1473,7 @@ int main(int argc, char *argv[]) {
         config_text = read_text_file(config_arg);
         if (!config_text) {
             fprintf(stderr, "Error: cannot read config=%s\n", config_arg);
-            return 1;
+            goto out;
         }
     }
     char drives_spec[512] = "";
@@ -1811,17 +1504,14 @@ int main(int argc, char *argv[]) {
     if (val_is_error(&boot_err)) {
         fprintf(stderr, "Error: %s\n", boot_err.err ? boot_err.err : "boot failed");
         value_free(&boot_err);
-        return 1;
+        goto out;
     }
 
-    if (!global_emulator) {
-        fprintf(stderr, "Error: Failed to initialize emulator\n");
-        return 1;
-    }
+    // machine_boot_apply swapped the new machine in: global_emulator is it.
 
     // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
     // The agent will explicitly send "run" or "s" commands to control execution.
-    if (g_daemon_mode) {
+    if (daemon_mode) {
         scheduler_t *s = system_scheduler();
         if (s)
             scheduler_stop(s);
@@ -1845,12 +1535,12 @@ int main(int argc, char *argv[]) {
         if (i >= n_bays) {
             fprintf(stderr, "Error: %s has %d hard-disk bay(s); none left for hd=%s\n", active->name, n_bays,
                     hd_files[i]);
-            return 1;
+            goto out;
         }
         if (system_media_attach_path(global_emulator, &bays[i], false, hd_files[i], attach_err, sizeof(attach_err)) !=
             0) {
             fprintf(stderr, "Error: hd=%s: %s\n", hd_files[i], attach_err);
-            return 1;
+            goto out;
         }
         if (!quiet)
             printf("Attached HD[%d]: %s (%s)\n", i, hd_files[i], bays[i].label);
@@ -1873,7 +1563,7 @@ int main(int argc, char *argv[]) {
             system_media_attach_path(global_emulator, &bay, strcmp(type, "cd") == 0, image, attach_err,
                                      sizeof(attach_err)) != 0) {
             fprintf(stderr, "Error: drive=%s: %s\n", drive_args[i], attach_err);
-            return 1;
+            goto out;
         }
         if (!quiet)
             printf("Attached %s: %s (%s unit %s)\n", strcmp(type, "cd") == 0 ? "CD-ROM" : "HD", image, bus, unit);
@@ -1884,17 +1574,17 @@ int main(int argc, char *argv[]) {
     // There is one bay, so one cdrom=.
     if (cdrom_count > 1) {
         fprintf(stderr, "Error: %s has one CD-ROM bay; got %d cdrom= arguments\n", active->name, cdrom_count);
-        return 1;
+        goto out;
     }
     if (cdrom_count == 1) {
         media_bay_t cd;
         if (!profile_cdrom_bay(active, &cd)) {
             fprintf(stderr, "Error: %s has no CD-ROM bay for cdrom=%s\n", active->name, cdrom_files[0]);
-            return 1;
+            goto out;
         }
         if (system_media_attach_path(global_emulator, &cd, true, cdrom_files[0], attach_err, sizeof(attach_err)) != 0) {
             fprintf(stderr, "Error: cdrom=%s: %s\n", cdrom_files[0], attach_err);
-            return 1;
+            goto out;
         }
         if (!quiet)
             printf("Attached CD-ROM: %s (SCSI ID %d)\n", cdrom_files[0], cd.unit);
@@ -1925,111 +1615,41 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Run startup script if provided
+    // Startup order: script= runs first, then --script-stdin, then the
+    // daemon or the REPL.  A `quit` in either script, or a script= that
+    // fails, ends the process there: neither the daemon nor the REPL starts.
     if (script_file) {
         if (!quiet)
             printf("Running script: %s\n", script_file);
-        run_script_file(script_file);
+        script_rc = run_script_file(script_file);
     }
 
     // Run commands from stdin if --script-stdin
-    if (script_stdin) {
-        run_script_stdin();
+    if (script_stdin && !g_quit_requested) {
+        int stdin_rc = run_script_stdin();
+        if (stdin_rc)
+            script_rc = stdin_rc;
     }
 
-    // Check if quit was requested during script execution
-    if (quit_requested) {
-        g_running = 0;
+    if (daemon_mode) {
+        // Daemon mode: the shell on a TCP socket (headless_daemon.c); the
+        // scheduler stays stopped until a client runs it.  After a `quit`
+        // above it prints READY and returns at once.
+        if (daemon_run(daemon_port, kill_daemon) != 0)
+            goto out;
+    } else {
+        // Interactive mode: the REPL on stdin/stdout
+        if (!g_quit_requested)
+            interactive_run(max_cycles, quiet);
+        if (!quiet)
+            printf("\nShutting down...\n");
     }
+    rc = headless_exit_code(script_rc);
 
-    // ====================================================================
-    // Daemon mode: listen on TCP socket for commands from AI agents
-    // ====================================================================
-    if (g_daemon_mode) {
-        // Kill existing daemon on same port if --kill was specified
-        if (kill_daemon)
-            kill_existing_daemon(g_daemon_port);
-
-        g_listen_fd = daemon_create_listener(g_daemon_port);
-        if (g_listen_fd < 0) {
-            fprintf(stderr, "Error: Failed to create daemon listener on port %d\n", g_daemon_port);
-            system_destroy(global_emulator);
-            global_emulator = NULL;
-            return 1;
-        }
-
-        // Write PID file and register cleanup
-        write_pid_file(g_daemon_port);
-        atexit(remove_pid_file);
-        fprintf(stderr, "Daemon PID: %d\n", getpid());
-
-        // In daemon mode, do NOT auto-start the scheduler.
-        // The agent sends "run" or "s" commands to control execution.
-        daemon_loop();
-
+out:
+    if (global_emulator) {
         system_destroy(global_emulator);
         global_emulator = NULL;
-        return headless_exit_code();
     }
-
-    // ====================================================================
-    // Interactive mode: normal REPL on stdin/stdout
-    // ====================================================================
-
-    // Start the emulator (only if not quitting)
-    if (g_running) {
-        if (!quiet)
-            printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
-    }
-
-    // Main loop.  --max-cycles counts instructions run, across every machine
-    // the session runs: a machine.boot or checkpoint.load replaces the one
-    // being counted, and the count carries on from the new one's start
-    // (platform_machine_attached) rather than subtracting across them.
-    uint64_t spent_cycles = 0;
-    uint64_t last_cycles = cpu_instr_count();
-    s_count_rebase = false;
-
-    while (g_running && !quit_requested) {
-        // Check for max cycles limit
-        if (max_cycles > 0) {
-            uint64_t now = cpu_instr_count();
-            if (s_count_rebase) {
-                s_count_rebase = false;
-                last_cycles = now;
-            }
-            if (now > last_cycles)
-                spent_cycles += now - last_cycles;
-            last_cycles = now;
-            if (spent_cycles >= max_cycles) {
-                if (!quiet)
-                    printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
-                break;
-            }
-        }
-
-        // One frame-unit per iteration while the machine runs (the same
-        // step web2's tick runs, unthrottled), then the drain; a REPL line
-        // runs as a job, the loop pumping inside its wait.
-        bool busy = hl_pump_once();
-        if (!shell_poll() && !busy)
-            usleep(1000);
-
-        // Handle interrupt (Ctrl+C stops emulation but doesn't exit)
-        if (g_interrupted) {
-            g_interrupted = 0;
-            hl_interrupt(HL_CLIENT_STDIN);
-            printf("\n[Interrupted]\n");
-            print_prompt();
-        }
-    }
-
-    // Cleanup
-    if (!quiet)
-        printf("\nShutting down...\n");
-
-    system_destroy(global_emulator);
-    global_emulator = NULL;
-
-    return headless_exit_code();
+    return rc;
 }

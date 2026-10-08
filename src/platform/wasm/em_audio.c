@@ -106,22 +106,44 @@ static double g_last_push_time = -1.0; // producer-side freshness for ring_fill
 // Initialize the WebAudio subsystem: create the context and register the
 // worklet processor. The worklet *node* is created lazily by gs_audio_open_js
 // once the machine's sound frontend declares its stream parameters.
+//
+// `fresh` (the C side's own init, em_audio_init) sets the subsystem up again
+// even if Module.gsAudio survives from an earlier run of the C side in this
+// Module (a hot reload): the old node is stopped, the context, the owner
+// counter and the gesture hooks are kept.  Without it (gs_audio_open_js) an
+// initialised subsystem is left alone.
+//
+// The latency target -- the ring depth the worklet's start gate waits for and
+// its rate trim steers to -- is 83 ms (~5 Plus VBLs) unless the page sets
+// Module.gsAudioTargetLatency (seconds, 0.02-0.25): web2 takes it from the
+// ?audio_latency=<ms> URL parameter.
 // clang-format off
-EM_JS(void, gs_audio_init_js, (), {
+EM_JS(void, gs_audio_init_js, (int fresh), {
     // Check if already initialized
-    if (Module.gsAudio && Module.gsAudio.initialized)
+    if (Module.gsAudio && Module.gsAudio.initialized && !fresh)
         return;
 
     // Initialize audio subsystem object
     var ga = Module.gsAudio = (Module.gsAudio || {});
+    if (ga.node) {
+        // A hot reload: retire the previous run's worklet (see makeNode)
+        try {
+            ga.node.port.postMessage({stop: 1});
+            ga.node.disconnect();
+        } catch (e) {
+        }
+    }
     ga.initialized = true;
-    ga.targetLatency = 0.083; // fixed latency target (~5 Plus VBLs)
+    var tl = Number(Module.gsAudioTargetLatency);
+    ga.targetLatency = (tl >= 0.02 && tl <= 0.25) ? tl : 0.083; // seconds
     ga.srcRate = 0;           // set by gs_audio_open_js
     ga.channels = 0;
     ga.node = null;
     ga.pend = null;           // stream params requested before the module loaded
     ga.modReady = false;
-    ga.ctx = ga.ctx || new (self.AudioContext || self.webkitAudioContext)();
+    // SharedArrayBuffer (which -pthread requires) rules out every browser
+    // that only had webkitAudioContext.
+    ga.ctx = ga.ctx || new self.AudioContext();
 
     // Autoplay policy: a suspended AudioContext may only resume from a user
     // gesture.  The data path no longer touches the main thread (SAB ring),
@@ -134,8 +156,11 @@ EM_JS(void, gs_audio_init_js, (), {
         } catch (e) {
         }
     };
-    self.addEventListener('pointerdown', resumeOnGesture, true);
-    self.addEventListener('keydown', resumeOnGesture, true);
+    if (!ga.gestureHooked) {
+        ga.gestureHooked = true;
+        self.addEventListener('pointerdown', resumeOnGesture, true);
+        self.addEventListener('keydown', resumeOnGesture, true);
+    }
 
     // The AudioWorklet processor is app/web2's gsAudio.worklet.ts (its ring
     // logic, audioRing.ts, is unit-tested there), bundled by the page and
@@ -143,7 +168,7 @@ EM_JS(void, gs_audio_init_js, (), {
     // straight from the ring in the wasm heap (a SharedArrayBuffer), reading
     // the layout from the ring's control block.  It used to be a JS string
     // in this file, where nothing could test it.
-    ga.nextOwner = 0;
+    ga.nextOwner = ga.nextOwner || 0; // kept across a hot reload: owner ids never repeat
 
     // (Re)creates the worklet node for the pending stream parameters
     ga.makeNode = function() {
@@ -176,7 +201,7 @@ EM_JS(void, gs_audio_init_js, (), {
             // and publishes fill reports through it with Atomics.  Only the
             // worklet whose id is in the owner word consumes: a retired one
             // that has not yet seen its {stop} cannot touch read_idx.
-            var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
+            var heap = HEAPU8;
             var owner = ++ga.nextOwner;
             Atomics.store(new Int32Array(heap.buffer, p.ringPtr, 16), 11, owner); // GS_ARING_W_OWNER
             ga.node = new AudioWorkletNode(ga.ctx, 'gs-audio-worklet', {
@@ -234,7 +259,7 @@ EM_JS(void, gs_audio_resume_js, (), {
 // change (worklet restart), different channel count = node re-creation.
 // ring_ptr / ring_frames locate the shared ring inside the wasm heap.
 EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr), {
-    gs_audio_init_js();
+    gs_audio_init_js(0);
     var ga = Module.gsAudio;
     if (ga.node && ga.channels === channels) {
         if (ga.srcRate !== rate) {
@@ -270,41 +295,31 @@ EM_JS(void, gs_audio_set_rate_js, (int rate), {
 // Main-thread Proxy Wrappers
 // ============================================================================
 
-// These wrappers ensure audio EM_JS functions execute on the main thread
-// (where AudioContext and AudioWorklet are available), even though the
-// emulator runs on a worker thread via PROXY_TO_PTHREAD.
+// These wrappers run the audio EM_JS functions on the main thread (where
+// AudioContext and AudioWorklet are available): the emulator, and so every
+// caller here, runs on a worker pthread (PROXY_TO_PTHREAD).  The build is
+// always -pthread, so there is no "already on the main thread" branch.
 
 static void gs_audio_init(void) {
-    if (emscripten_is_main_browser_thread()) {
-        gs_audio_init_js();
-    } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, gs_audio_init_js);
-    }
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, gs_audio_init_js, 1);
 }
 
 static void gs_audio_resume(void) {
-    if (emscripten_is_main_browser_thread()) {
-        gs_audio_resume_js();
-    } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, gs_audio_resume_js);
-    }
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, gs_audio_resume_js);
 }
 
+// The ring's address travels as the third int of an EM_FUNC_SIG_VIII call:
+// a uint32_t reinterpreted as a wasm32 i32, and read back by JS as a heap
+// offset.  That holds for wasm32 only -- under wasm64 (MEMORY64) the pointer
+// would need a pointer-sized slot (EM_FUNC_SIG_PARAM_P, an i64 there) and a
+// BigInt on the JS side.
 static void gs_audio_open(int rate, int channels) {
     uint32_t ring_ptr = (uint32_t)(uintptr_t)&g_aring;
-    if (emscripten_is_main_browser_thread()) {
-        gs_audio_open_js(rate, channels, ring_ptr);
-    } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, gs_audio_open_js, rate, channels, ring_ptr);
-    }
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, gs_audio_open_js, rate, channels, ring_ptr);
 }
 
 static void gs_audio_set_rate(int rate) {
-    if (emscripten_is_main_browser_thread()) {
-        gs_audio_set_rate_js(rate);
-    } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, gs_audio_set_rate_js, rate);
-    }
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, gs_audio_set_rate_js, rate);
 }
 
 // ============================================================================

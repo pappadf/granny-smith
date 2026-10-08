@@ -1,68 +1,33 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
+// common.h
+// Small project-local helpers with no better home: the unaligned byte-order
+// accessors and the four-character-code converters.  Charter: only
+// header-only helpers that are genuinely used across subsystems and depend on
+// nothing but <stdint.h>/<stdbool.h>.  Not a place for module types, status
+// codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
+// the libc headers it uses itself.
+//
+// Transitional: the libc includes, status.h, gs_assert.h and the checkpoint_t
+// forward declaration below are still pulled in here because many TUs rely on
+// getting them transitively; they go once those TUs include what they use.
+
 #ifndef COMMON_H
 #define COMMON_H
 
-// Commonly used standard headers across modules
+// Standard headers (transitional -- see above)
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
-// Shared status codes used across modules
-#define GS_SUCCESS 0
-#define GS_ERROR   -1
-
-// Project-wide assertions and diagnostics
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Failure handler prints diagnostics (host + target backtraces, process info) then pauses the scheduler
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...);
-
-// Basic assert macros.  Enabled in every build except the GS_FAST production
-// profile (wasm release / headless MODE=fast), where they compile to nothing —
-// measured ~4.5% of steady-state gameplay host time.
-// The default headless build keeps them: it is the debugging tool, and CI
-// runs it so the checks retain their value.
-#ifdef GS_FAST
-#define GS_ASSERT(cond)            ((void)0)
-#define GS_ASSERTF(cond, fmt, ...) ((void)0)
-#else
-#define GS_ASSERT(cond) ((cond) ? (void)0 : gs_assert_fail(#cond, __FILE__, __LINE__, __func__, NULL))
-#define GS_ASSERTF(cond, fmt, ...)                                                                                     \
-    ((cond) ? (void)0 : gs_assert_fail(#cond, __FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__))
-#endif
-
-// The guest asked for something the hardware being emulated really does, and
-// this emulator has not implemented it.
-//
-// NOT an assert, and deliberately NOT compiled out by GS_FAST.  An assert says
-// "this cannot happen" and earns its removal from the shipping build because a
-// correct program never trips one.  This says "this can happen, it is legal,
-// and we cannot do it" -- a statement that is just as true in the release
-// build, and more useful there, because that is the build a user is running
-// when they find the gap.
-//
-// It is also not a guest-facing error.  Answering the guest -- a SCSI CHECK
-// CONDITION, a bus error, a NAK -- claims the request was wrong when it was
-// not, and sends whoever is debugging it to look at the driver.  Fault at the
-// host, name the missing function, and stop.
-//
-// Handled rather than fatal: gs_unimplemented_fail prints the banner and the
-// same diagnostics an assertion does, then stops the scheduler and returns
-// control to the shell.  A dead browser tab tells a user less than a stopped
-// machine with a message does.
-void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...);
-
-#define GS_UNIMPLEMENTED(fmt, ...) gs_unimplemented_fail(__FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__)
-
-#ifdef __cplusplus
-}
-#endif
+// Status codes (status_t) and assertions (GS_ASSERT, GS_UNIMPLEMENTED) live
+// in their own headers; common.h still includes them so existing users keep
+// building while includes are pushed down to the TUs that need them.
+#include "gs_assert.h"
+#include "status.h"
 
 // === Unaligned byte-order accessors =========================================
 // For on-disk and on-wire structures, which are read at arbitrary offsets:
@@ -116,8 +81,9 @@ static inline uint32_t fourcc_value(const char *s) {
     return v;
 }
 
-// Forward declaration for checkpoint data type used across modules
-// Modules receive a pointer to this opaque struct when saving/restoring state.
+// Transitional: checkpoint_t belongs to checkpoint.h (which declares it too);
+// kept here until the TUs relying on it transitively include checkpoint.h or
+// forward-declare `struct checkpoint` themselves.
 struct checkpoint;
 typedef struct checkpoint checkpoint_t;
 

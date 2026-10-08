@@ -289,10 +289,10 @@ void shell_var_init(void) {
         memset(g_scopes, 0, sizeof(g_scopes));
         g_n_scopes = 2; // [0] process globals, [1] script/session top level
     }
-    // Absolute, so it does not depend on the working directory (see
-    // shell_var.h); $TMPDIR is the POSIX override and is unset on WASM.
-    const char *tmp = getenv("TMPDIR");
-    shell_var_set("TMP_DIR", (tmp && *tmp) ? tmp : "/tmp");
+    // Relative on purpose (see shell_var.h): the project's tmp/ scratch
+    // directory when headless runs from the repository root, as AGENTS.md
+    // asks of scratch files, and /tmp on WASM, whose working directory is /.
+    shell_var_set("TMP_DIR", "tmp");
 }
 
 // === The table lock (job/job.h): every public entry takes it for the one

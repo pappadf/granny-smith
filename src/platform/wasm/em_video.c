@@ -26,6 +26,7 @@
 #include <emscripten/html5.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "display.h"
@@ -45,7 +46,7 @@ LOG_USE_CATEGORY_NAME("video");
 
 // Maximum supported framebuffer area.  Chosen to fit a 1152x870 (1 MP)
 // mode at 32 bpp.  We still allocate per-display, but the
-// scratch upload buffer is sized once.
+// scratch upload buffer is sized once (on the heap, when WebGL comes up).
 #define MAX_FB_BYTES (1152u * 870u * 4u)
 
 // Does this descriptor's raster fit the scratch buffer?  A larger one is
@@ -89,8 +90,14 @@ typedef struct prog_uniforms {
 
 static prog_uniforms_t s_uniforms[NUM_FORMATS] = {0};
 
-// Scratch upload buffer for the framebuffer texture.
-static uint8_t s_upload_scratch[MAX_FB_BYTES];
+// Scratch upload buffer for the framebuffer texture: MAX_FB_BYTES, allocated
+// by init_gl once the context exists (NULL without WebGL: nothing renders).
+// It always holds the last frame uploaded -- em_video_update compares
+// against it.
+static uint8_t *s_upload_scratch;
+
+// The canvas's intrinsic size as last set (resize_canvas), 0 before the first
+static uint32_t s_canvas_w, s_canvas_h;
 
 // ============================================================================
 // Shader sources
@@ -320,7 +327,29 @@ static const char *FS_4BPP = "#version 300 es\n"
 // Static helpers
 // ============================================================================
 
-// Compile a shader, panic on error.  Returns 0 if compilation failed.
+// Log a shader's or program's info log in full (`what` names the step).
+// Driver logs run past any fixed buffer, and the truncated part is the
+// useful one: the final error line.
+static void log_info_log(GLuint obj, bool is_program, const char *what) {
+    GLint len = 0;
+    if (is_program)
+        glGetProgramiv(obj, GL_INFO_LOG_LENGTH, &len);
+    else
+        glGetShaderiv(obj, GL_INFO_LOG_LENGTH, &len);
+    char *log = len > 0 ? malloc((size_t)len) : NULL;
+    if (!log) {
+        LOG(0, "%s failed (no info log)", what);
+        return;
+    }
+    if (is_program)
+        glGetProgramInfoLog(obj, len, NULL, log);
+    else
+        glGetShaderInfoLog(obj, len, NULL, log);
+    LOG(0, "%s failed: %s", what, log);
+    free(log);
+}
+
+// Compile a shader.  Returns 0 (logged, nothing leaked) if compilation failed.
 static GLuint compile_shader(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, NULL);
@@ -328,9 +357,8 @@ static GLuint compile_shader(GLenum type, const char *src) {
     GLint ok;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        char log[512];
-        glGetShaderInfoLog(s, sizeof log, NULL, log);
-        LOG(0, "shader compile failed: %s", log);
+        log_info_log(s, false, "shader compile");
+        glDeleteShader(s);
         return 0;
     }
     return s;
@@ -340,8 +368,11 @@ static GLuint compile_shader(GLenum type, const char *src) {
 static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms_t *u_out) {
     GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src);
-    if (!vs || !fs)
+    if (!vs || !fs) {
+        glDeleteShader(vs); // deleting 0 is a no-op
+        glDeleteShader(fs);
         return 0;
+    }
     GLuint prog = glCreateProgram();
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
@@ -349,14 +380,13 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     glLinkProgram(prog);
     GLint ok;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs); // flagged for deletion; freed with the program
+    glDeleteShader(fs);
     if (!ok) {
-        char log[512];
-        glGetProgramInfoLog(prog, sizeof log, NULL, log);
-        LOG(0, "shader link failed: %s", log);
+        log_info_log(prog, true, "shader link");
+        glDeleteProgram(prog);
         return 0;
     }
-    glDeleteShader(vs);
-    glDeleteShader(fs);
     if (u_out) {
         u_out->u_fb_size = glGetUniformLocation(prog, "u_fb_size");
         u_out->u_stride = glGetUniformLocation(prog, "u_stride");
@@ -472,7 +502,13 @@ static void upload_clut(const display_t *d) {
 // CSS scale (zoom) is applied JS-side via the screen-wrapper element; here
 // we set the *intrinsic* canvas resolution so 1 canvas pixel == 1 emulator
 // pixel.  The page learns the geometry from the screen event, not from here.
+// Only on an actual change: a shape change that keeps the size (a depth
+// switch) or a forced full redraw does not touch the canvas element.
 static void resize_canvas(uint32_t width, uint32_t height) {
+    if (width == s_canvas_w && height == s_canvas_h)
+        return;
+    s_canvas_w = width;
+    s_canvas_h = height;
     emscripten_set_canvas_element_size("#screen", (int)width, (int)height);
     glViewport(0, 0, (int)width, (int)height);
 }
@@ -491,19 +527,27 @@ static void announce_geometry(const display_t *d) {
 // Lifecycle
 // ============================================================================
 
+// Create the WebGL2 context and everything the renderer keeps for its
+// lifetime.  Once only: em_video_init guards against a second call.
 static void init_gl(void) {
     EmscriptenWebGLContextAttributes attr;
     emscripten_webgl_init_context_attributes(&attr);
     attr.majorVersion = 2;
     attr.minorVersion = 0;
     s_ctx = emscripten_webgl_create_context("#screen", &attr);
-    if (s_ctx <= 0) {
+    if (s_ctx == 0) { // the handle is unsigned; 0 means no context
         // No newline on the old printf here, so this one ran into whatever came
         // next in the output.  LOG ends its own lines.
         LOG(0, "WebGL 2 not supported - cannot run");
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
+
+    s_upload_scratch = calloc(1, MAX_FB_BYTES);
+    if (!s_upload_scratch) {
+        LOG(0, "renderer: cannot allocate the %u-byte upload buffer - cannot run", (unsigned)MAX_FB_BYTES);
+        return;
+    }
 
     glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -641,6 +685,9 @@ static bool refresh_from_display(display_t *d, bool force_full) {
     if (response)
         upload_response(d);
 
+    // Consumer-cleared, plain bools: the producers (the machine's video
+    // hardware) and this renderer both run on the emulator thread.  A
+    // producer on another thread would need these to become atomics.
     d->fb_dirty = false;
     d->shape_dirty = false;
     d->clut_dirty = false;
@@ -648,19 +695,27 @@ static bool refresh_from_display(display_t *d, bool force_full) {
     return true;
 }
 
+// Draw the quad.  glGetError is a pipeline sync point, so it is asked only
+// while `log.set video 1` (or higher) wants its answer.
 static void draw(void) {
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR)
-        LOG(1, "GL error: %d", err);
+    if (log_would_log(log_local_category(), 1)) {
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR)
+            LOG(1, "GL error: %d", err);
+    }
 }
 
 // ============================================================================
 // Public API
 // ============================================================================
 
+// Bring the renderer up; a second call is a no-op (a re-init would leak the
+// context's programs, textures and buffer).
 void em_video_init(void) {
+    if (s_ctx)
+        return;
     init_gl();
 }
 
@@ -693,7 +748,7 @@ static bool s_blanked;
 // monitor with no signal would, instead of the last frame.  Once per
 // transition.
 static void blank_canvas(void) {
-    if (s_blanked || s_ctx <= 0)
+    if (s_blanked || s_ctx == 0)
         return;
     s_blanked = true;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -702,6 +757,8 @@ static void blank_canvas(void) {
 }
 
 void em_video_update(void) {
+    if (!s_upload_scratch)
+        return; // no renderer (WebGL failed to come up)
     display_t *d = system_display();
     if (!d || !d->bits) {
         overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
@@ -767,6 +824,8 @@ void em_video_update(void) {
 }
 
 void em_video_force_redraw(void) {
+    if (!s_upload_scratch)
+        return; // no renderer (WebGL failed to come up)
     display_t *d = system_display();
     if (d && d->bits && !fb_fits_scratch(d))
         return;
@@ -774,7 +833,7 @@ void em_video_force_redraw(void) {
         draw();
 }
 
-void frontend_force_redraw(void) {
+void platform_force_redraw(void) {
     em_video_force_redraw();
 }
 

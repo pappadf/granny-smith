@@ -63,7 +63,7 @@
 
 static char g_build_id[BUILD_ID_LEN + 1] = "unit-test-build-0001";
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return g_build_id;
 }
 

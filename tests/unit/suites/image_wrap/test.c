@@ -13,7 +13,7 @@
 
 // --- stubs for what image_wrap.c reaches outside the layout code -------------
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return "test-build";
 }
 
