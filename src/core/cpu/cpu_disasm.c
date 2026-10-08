@@ -5,6 +5,7 @@
 // Motorola 68000 instruction disassembler for debugging output.
 
 #include "cpu.h"
+#include "cpu_ea.h"
 #include "debug_mac.h"
 
 #include <assert.h>

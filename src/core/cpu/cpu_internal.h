@@ -11,6 +11,7 @@
 #define CPU_INTERNAL_H
 
 #include "cpu.h"
+#include "cpu_ea.h"
 #include "debug.h"
 #include "memory.h"
 #include "mmu.h"
