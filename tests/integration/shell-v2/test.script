@@ -139,6 +139,7 @@ let lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll = 1
 assert try(shell.eval("\$llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll = 2"), none) == none "assignment to an over-long name was accepted"
 assert try(shell.eval("echo \$llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"), none) == none "an over-long $name splice was accepted"
 assert $lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll == 1 "an over-long name assigned to its 63-character prefix"
+assert try(shell.eval("debug.logpoints.add addr=0x400 llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll=1"), none) == none "an over-long argument name became a positional"
 
 # --- for: object items and a shadowed object binding across machine.boot -
 # machine.boot destroys the tree the loop's objects live in: a later item

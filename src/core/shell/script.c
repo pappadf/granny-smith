@@ -1548,7 +1548,12 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             const char *q = p;
             while (ident_char(*q))
                 q++;
-            if (*q == '=' && q[1] != '=' && (size_t)(q - p) < sizeof(named_names[0])) {
+            if (*q == '=' && q[1] != '=') {
+                // A name too long to hold is an error, not a positional word
+                if ((size_t)(q - p) >= sizeof(named_names[0])) {
+                    result = val_err("argument name '%.*s...' too long (max %zu)", 16, p, sizeof(named_names[0]) - 1);
+                    goto out;
+                }
                 memcpy(named_names[named_n], p, (size_t)(q - p));
                 named_names[named_n][q - p] = '\0';
                 name = named_names[named_n];
