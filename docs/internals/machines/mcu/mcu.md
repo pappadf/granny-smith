@@ -40,7 +40,6 @@ Evidence labels below follow the DAFB-family implementation reference:
   The YANCC bridge file at `$50028000` is **accept-and-log with readback**:
   64 longword slots latch writes and read back verbatim, and every first touch
   is logged (`log.set board`).
->>>>>>> 2c5abf01 (docs/internals: audit against the code, cite the reference pages)
 - **256 KiB I/O island at `$50000000`**, mirror mask `$3FFFF`, run on the
   shared mac030 I/O engine (reference: [mcu.md](../../../reference/machines/mcu/mcu.md)
   §3.2). Q700 decode: VIA1 `$0000`, VIA2 `$2000`, MAC
