@@ -611,6 +611,31 @@ TEST(test_cpt_nesting_cap_is_exact) {
     free(a);
 }
 
+// A folder whose count overruns its parent's makes the walker list more
+// entries than the 16-bit directory total could ever describe: one folder
+// claiming 65535 children, all empty folders, is 65536 entries, and refused.
+TEST(test_cpt_entry_count_is_capped) {
+    size_t n = 65536;
+    size_t len = 8 + 7 + n * 3;
+    uint8_t *a = calloc(len, 1);
+    ASSERT_TRUE(a != NULL);
+    a[0] = 0x01;
+    a[1] = 0x01;
+    put32(a + 4, 8);
+    put16(a + 8 + 4, 1); // the directory says one entry
+    uint8_t *e = a + 8 + 7;
+    e[0] = 0x80;
+    put16(e + 1, 65535);
+    for (size_t i = 1; i < n; i++)
+        e[i * 3] = 0x80; // an empty folder with no children
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
 // ============================================================================
 // StuffIt 5 archives
 // ============================================================================
@@ -1687,6 +1712,7 @@ int main(void) {
     RUN(test_cpt_short_fork_is_rejected);
     RUN(test_cpt_fork_extent_is_checked);
     RUN(test_cpt_nesting_cap_is_exact);
+    RUN(test_cpt_entry_count_is_capped);
     RUN(test_cpt_folder_nesting_is_bounded);
     RUN(test_sit5_round_trip);
     RUN(test_sit5_round_trip_with_resource_fork);
