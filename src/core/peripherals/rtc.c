@@ -64,8 +64,8 @@ static const class_desc_t rtc_pram_class;
 // precalculated using any online epoch converter
 #define MAC_TO_UNIX_EPOCH 2082844800
 
-#define IS_READ(cmd)     (cmd & 0x80)
-#define IS_EXTENDED(cmd) ((cmd >> 3 & 0x0F) == 7)
+#define RTC_IS_READ(cmd)     ((cmd) & 0x80)
+#define RTC_IS_EXTENDED(cmd) (((cmd) >> 3 & 0x0F) == 7)
 
 #define CMD_SECONDS_REG_0 0x01
 #define CMD_SECONDS_REG_1 0x05
@@ -73,6 +73,17 @@ static const class_desc_t rtc_pram_class;
 #define CMD_SECONDS_REG_3 0x0D
 #define CMD_TEST          0x31
 #define CMD_WRITE_PROTECT 0x35
+
+// Validity token -- see docs/reference/formats/mac-pram.md §2..§3.
+// `_InitUtil` checks two independent tokens at cold boot and re-initialises
+// the region whose token is missing.  `rtc.pram.validate()` stamps the XPRAM
+// one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
+// one: that is the SysParam validity byte, which on the extended RTC lives at
+// physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
+// into a reserved XPRAM byte.  SysParam is left for each ROM to
+// initialise with its own defaults.
+#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
+#define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
 void rtc_input(rtc_t *rtc, bool disable, bool clock, bool data);
 
@@ -101,7 +112,7 @@ static int legacy_pram_addr(const rtc_t *rtc, uint8_t cmd) {
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
-    GS_ASSERT(cmd >> 7); // read_cmd is only reached through IS_READ(shift)
+    GS_ASSERT(cmd >> 7); // read_cmd is only reached through RTC_IS_READ(shift)
 
     switch (cmd & 0x7F) {
 
@@ -146,7 +157,7 @@ static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
 
 static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
     // High bit clear indicates write operation
-    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when IS_READ is false
+    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when RTC_IS_READ is false
 
     // Write-protect command itself is always allowed
     if (cmd != CMD_WRITE_PROTECT) {
@@ -295,23 +306,22 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
 
             if (!rtc->command) {
 
-                // if it's a non-exteded read command - simply return the data
                 // Non-extended read command: return data immediately
-                if (IS_READ(rtc->shift) && !IS_EXTENDED(rtc->shift)) {
+                if (RTC_IS_READ(rtc->shift) && !RTC_IS_EXTENDED(rtc->shift)) {
                     rtc->shift = read_cmd(rtc, (uint8_t)rtc->shift);
                     rtc->tx_bits = 8;
                 } else { // In all other cases, we need to wait for more input
                     rtc->command = (uint8_t)rtc->shift;
-                    if (IS_EXTENDED(rtc->command) && !IS_READ(rtc->command))
+                    if (RTC_IS_EXTENDED(rtc->command) && !RTC_IS_READ(rtc->command))
                         // Extended write: need cmd2 (8 bits) + data (8 bits) = 16 bits total
                         rtc->rx_bits = 16;
                     else
                         // Extended read or normal write: need one more byte (8 bits)
                         rtc->rx_bits = 8;
                 }
-            } else if (IS_EXTENDED(rtc->command)) {
+            } else if (RTC_IS_EXTENDED(rtc->command)) {
 
-                if (IS_READ(rtc->command)) {
+                if (RTC_IS_READ(rtc->command)) {
                     // Extended read: look up PRAM value and switch to transmit mode
                     rtc->shift = read_ext(rtc, rtc->command, (uint8_t)rtc->shift);
                     rtc->tx_bits = 8;
@@ -324,7 +334,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
                 rtc->command = 0;
             } else { // normal (non extended) write command
 
-                GS_ASSERT(!IS_READ(rtc->command)); // the read forms are handled above
+                GS_ASSERT(!RTC_IS_READ(rtc->command)); // the read forms are handled above
                 write_cmd(rtc, rtc->command, (uint8_t)rtc->shift);
                 rtc->command = 0;
                 rtc->rx_bits = 8;
@@ -414,17 +424,6 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     rtc->seconds = mac_seconds;
     LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
 }
-
-// === Validity token — see docs/reference/formats/mac-pram.md §2..§3 ===============
-// `_InitUtil` checks two independent tokens at cold boot and re-initialises
-// the region whose token is missing.  `rtc.pram.validate()` stamps the XPRAM
-// one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
-// one: that is the SysParam validity byte, which on the extended RTC lives at
-// physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
-// into a reserved XPRAM byte.  SysParam is left for each ROM to
-// initialise with its own defaults.
-#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
-#define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
 // === Object-model views =====================================================
 
@@ -722,20 +721,14 @@ static DEF_METHOD(rtc_pram_method_dump) {
     if (addr > 0xFF || n == 0 || addr + n > 0x100)
         return val_err("rtc.pram.dump: read of %llu bytes at 0x%02llX would overflow PRAM (256 bytes)",
                        (unsigned long long)n, (unsigned long long)addr);
-    uint8_t buf[256];
-    for (size_t i = 0; i < (size_t)n; i++)
-        buf[i] = rtc_pram_read(rtc, (uint8_t)(addr + i));
-    return val_bytes(buf, (size_t)n);
+    return val_bytes(rtc->pram + addr, (size_t)n);
 }
 
 static DEF_METHOD(rtc_pram_method_snapshot) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
-    uint8_t buf[256];
-    for (int i = 0; i < 256; i++)
-        buf[i] = rtc_pram_read(rtc, (uint8_t)i);
-    return val_bytes(buf, sizeof(buf));
+    return val_bytes(rtc->pram, sizeof(rtc->pram));
 }
 
 // Whole-PRAM restore — used by integration tests that want to seed PRAM
