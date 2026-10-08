@@ -266,7 +266,7 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
     lp->addr = addr;
     lp->end_addr = end_addr;
-    lp->space = ADDR_LOGICAL;
+    lp->space = ADDR_SPACE_LOGICAL;
     lp->kind = LP_KIND_PC;
     lp->category = category;
     lp->level = level;
@@ -317,10 +317,10 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
 // Install a memory-access logpoint (write/read/rw).  Forces the covered pages
 // through the memory slow path so the hook can observe every access.  No
-// impact on the fast path for other pages.  When space == ADDR_LOGICAL the
+// impact on the fast path for other pages.  When space == ADDR_SPACE_LOGICAL the
 // current MMU mapping is also consulted and the corresponding physical pages
 // are watched, so an access via an alias of the same physical page still
-// fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
+// fires the hook.  When space == ADDR_SPACE_PHYSICAL only the physical watch is
 // installed (no logical-page watch) — the caller observes every alias.
 static struct object *make_watchpoint_object(logpoint_t *lp);
 
@@ -366,7 +366,7 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     uint32_t start_page = addr >> PAGE_SHIFT;
     uint32_t end_page = end_addr >> PAGE_SHIFT;
 
-    if (space == ADDR_LOGICAL) {
+    if (space == ADDR_SPACE_LOGICAL) {
         memory_logpoint_install(start_page, end_page);
         // Also watch the physical pages the current MMU mapping points at —
         // catches aliases (same physical reached via different logical addrs).
@@ -624,7 +624,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         // Check the access against the logpoint's address range — using the
         // physical address for P:-space logpoints, logical for L:-space.
         uint32_t cmp_addr;
-        if (lp->space == ADDR_PHYSICAL) {
+        if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = (g_active_write == g_supervisor_write);
                 if (g_mmu && g_mmu->enabled) {
@@ -805,7 +805,7 @@ int debug_break_and_trace(void) {
                 continue;
             }
             bool hit = false;
-            if (bp->space == ADDR_LOGICAL) {
+            if (bp->space == ADDR_SPACE_LOGICAL) {
                 // Logical breakpoint: compare directly with PC
                 hit = (bp->addr == current_pc);
             } else {
@@ -821,7 +821,7 @@ int debug_break_and_trace(void) {
                     continue;
                 }
                 bp->hit_count++;
-                if (bp->space == ADDR_PHYSICAL) {
+                if (bp->space == ADDR_SPACE_PHYSICAL) {
                     gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
                     gs_outf("breakpoint hit at $%08X\n", bp->addr);
@@ -976,7 +976,7 @@ void list_breakpoints(debug_t *debug) {
 
     gs_outf("Breakpoints:\n");
     while (bp != NULL) {
-        if (bp->space == ADDR_PHYSICAL)
+        if (bp->space == ADDR_SPACE_PHYSICAL)
             gs_outf("  #%d: P:$%08X", count, (unsigned int)bp->addr);
         else
             gs_outf("  #%d: $%08X", count, (unsigned int)bp->addr);
@@ -1638,7 +1638,7 @@ static void free_logpoint(logpoint_t *lp) {
     if (!lp)
         return;
     if (lp->kind != LP_KIND_PC) {
-        if (lp->space == ADDR_LOGICAL) {
+        if (lp->space == ADDR_SPACE_LOGICAL) {
             uint32_t start_page = lp->addr >> PAGE_SHIFT;
             uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
             memory_logpoint_uninstall(start_page, end_page);
@@ -1819,7 +1819,7 @@ uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
     return bp ? bp->addr : 0;
 }
 int breakpoint_get_space(const breakpoint_t *bp) {
-    return bp ? (bp->space == ADDR_PHYSICAL ? 1 : 0) : 0;
+    return bp ? (bp->space == ADDR_SPACE_PHYSICAL ? 1 : 0) : 0;
 }
 const char *breakpoint_get_condition(const breakpoint_t *bp) {
     return bp ? bp->condition : NULL;
@@ -2461,7 +2461,7 @@ static DEF_GETTER(wpe_attr_space) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("watchpoint detached");
-    return val_enum(lp->space == ADDR_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
+    return val_enum(lp->space == ADDR_SPACE_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
 }
 static DEF_GETTER(wpe_attr_enabled) {
     logpoint_t *lp = lp_from(self);
@@ -2580,7 +2580,8 @@ static DEF_METHOD(bp_method_add) {
     // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
     // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
     // dereferenced an index as a pointer.
-    addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
     // stacking a duplicate that would fire twice and need removing twice.
@@ -2690,7 +2691,8 @@ static DEF_METHOD(lp_method_add) {
 
     // The slot is V_ENUM against debug_space_values, so the index is the
     // answer -- validate_slot rejected anything that is not in the table.
-    addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2899,7 +2901,8 @@ static DEF_METHOD(wp_method_add) {
     if (end_addr < addr)
         return val_err("watchpoints.add: end must not precede addr");
 
-    addr_space_t space = (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     // The hit is printed, not logged, so the category only labels the entry.
     log_category_t *category = log_get_category("memory");

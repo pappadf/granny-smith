@@ -10,6 +10,7 @@
 // === Includes ===
 #include "addr_format.h"
 #include "common.h"
+#include "debug_cpu.h"
 #include "object.h"
 #include "value.h"
 

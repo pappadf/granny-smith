@@ -1035,9 +1035,9 @@ int main(void) {
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
     // Route every log_emit onto the event ring so the new-UI Logs
-    // view gets a structured stream parallel to stdout. shell_init has
-    // already called log_init; setting the sink here also forwards any
-    // categories registered later (setup_init, machine boot, …).
+    // view gets a structured stream parallel to stdout. The sink is
+    // process-wide, so it also forwards any categories registered later
+    // (setup_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on

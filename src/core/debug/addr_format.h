@@ -13,8 +13,8 @@
 
 // Address space qualifier
 typedef enum {
-    ADDR_LOGICAL, // default — address as seen by CPU (MMU-translated)
-    ADDR_PHYSICAL // physical bus address (bypass MMU)
+    ADDR_SPACE_LOGICAL, // default — address as seen by CPU (MMU-translated)
+    ADDR_SPACE_PHYSICAL // physical bus address (bypass MMU)
 } addr_space_t;
 
 // Address display mode (controls when dual L:/P: display is shown)
@@ -24,12 +24,14 @@ typedef enum {
     ADDR_DISPLAY_EXPANDED // always show both L: and P:
 } addr_display_mode_t;
 
-// Global display mode, settable via "addrmode" shell command
-extern addr_display_mode_t g_addr_display_mode;
+// Current display mode (ADDR_DISPLAY_AUTO until set)
+addr_display_mode_t addr_display_get_mode(void);
+void addr_display_set_mode(addr_display_mode_t mode);
 
 // Parse an address string with optional L:/P: prefix and $/0x notation.
 // Returns true on success, fills out addr and space.
-// Handles: "$408000", "0x408000", "L:$408000", "P:0x408000", "408000"
+// Handles: "$408000", "0x408000", "L:$408000", "P:0x408000", "408000", and
+// "$pc"/"$d0"-style 68K register names (debug_cpu_register_value).
 // Bare numbers without prefix are parsed as hexadecimal.
 bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out);
 
@@ -38,8 +40,8 @@ bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out)
 int format_address(char *buf, size_t buf_size, uint32_t addr);
 
 // Format an address with optional L:/P: dual display.
-// If space is ADDR_PHYSICAL, always shows "P:$XXXXXXXX".
-// If space is ADDR_LOGICAL, may show "L:$XXX P:$XXX" depending on display mode
+// If space is ADDR_SPACE_PHYSICAL, always shows "P:$XXXXXXXX".
+// If space is ADDR_SPACE_LOGICAL, may show "L:$XXX P:$XXX" depending on display mode
 // and MMU state.  Returns number of characters written.
 int format_address_with_space(char *buf, size_t buf_size, uint32_t addr, addr_space_t space);
 
@@ -47,18 +49,6 @@ int format_address_with_space(char *buf, size_t buf_size, uint32_t addr, addr_sp
 // Checks current display mode and MMU state.
 // Used by disasm, prompt, examine, etc.
 int format_address_pair(char *buf, size_t buf_size, uint32_t logical_addr);
-
-// Translate a logical address to physical for debug display.
-// Returns the physical address.  If no MMU or MMU disabled, returns logical_addr.
-// Sets *is_identity to true if logical == physical.
-// Sets *tt_hit to true if the address matched a transparent translation register.
-// Sets *valid to true if translation succeeded.
-uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid);
-
-// Whether the main CPU is in supervisor state, asked through the debug
-// interface so debugger code needs no architecture's CPU struct (true when no
-// machine is live).
-bool debug_cpu_is_supervisor(void);
 
 // Check if dual address display should be shown (based on display mode and MMU state).
 bool addr_display_is_expanded(void);

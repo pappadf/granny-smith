@@ -377,7 +377,7 @@ static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf,
 static void atp_timers_init(atalk_conn_t *c);
 static void atp_reset(atalk_conn_t *c, bool teardown);
 // Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
-static log_category_t *_log_get_local_category(void);
+static log_category_t *log_local_category(void);
 static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
 static log_category_t *llap_log_category(void);
 static log_category_t *atp_log_category(void);
@@ -1114,7 +1114,7 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     memcpy(&buffer[5], data, (size_t)size);
 
     LOG_INDENT(4);
-    log_hex(_log_get_local_category(), 9, "DDP tx dump", buffer, length);
+    log_hex(log_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
     c->stats.ddp_out++;
@@ -1250,7 +1250,7 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
 
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
-    log_hex(_log_get_local_category(), 9, "DDP rx dump", buf, len);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
     ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }

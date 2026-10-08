@@ -25,7 +25,7 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     return 0;
 }
 
-// Identity translation stub (real impl in src/core/debug/addr_format.c).
+// Identity translation stub (real impl in src/core/debug/debug_cpu.c).
 // Referenced by the 68K main-CPU debug-if adapter in cpu.c.
 uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid) {
     if (is_identity)

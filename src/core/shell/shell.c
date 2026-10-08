@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
+#include "log_context.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
@@ -379,7 +380,7 @@ int shell_init(void) {
     if (shell_initialized)
         return 0;
 
-    log_init();
+    log_context_install(); // the logger's PC/count decorations and trace capture
     job_layer_init(); // this is the emulator thread
     shell_var_init();
 
