@@ -61,7 +61,16 @@ typedef struct lex {
     const char *p;
     char err[256]; // last error message; non-empty means a syntax error
     bool err_set;
+    int depth; // live parse_ternary + parse_unary frames (EXPR_MAX_DEPTH)
 } lex_t;
+
+// How deep the recursive descent may nest: every bracket, parenthesis,
+// call argument and else-branch re-enters parse_ternary, every prefix
+// operator parse_unary.  A level costs roughly 1.5 KB of C stack (sixteen
+// frames, path buffers in parse_primary), so 200 keeps a pasted
+// `((((...` or `[[[[...` far inside the 512 KB job-thread stack -- and
+// an error rather than a crash, which wasm cannot isolate.
+#define EXPR_MAX_DEPTH 200
 
 static void lex_skip_ws(lex_t *L) {
     while (*L->p && isspace((unsigned char)*L->p))
@@ -89,6 +98,16 @@ static bool lex_eat2(lex_t *L, char a, char b) {
 }
 
 // === Forward declarations ===================================================
+
+// Enter one level of nesting; false (with the lexer error set) past the cap.
+static bool lex_enter(lex_t *L) {
+    if (L->depth >= EXPR_MAX_DEPTH) {
+        lex_error(L, "expression nested too deeply (max %d)", EXPR_MAX_DEPTH);
+        return false;
+    }
+    L->depth++;
+    return true;
+}
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx);
@@ -1262,7 +1281,18 @@ static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Unary ==================================================================
 
+static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx);
+
+// parse_unary under the nesting cap (a prefix-operator run recurses here).
 static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
+    if (!lex_enter(L))
+        return val_err("%s", L->err);
+    value_t v = parse_unary_inner(L, ctx);
+    L->depth--;
+    return v;
+}
+
+static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx) {
     lex_skip_ws(L);
     char c = *L->p;
     if (c == '!') {
@@ -1979,7 +2009,18 @@ static value_t parse_logor(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Ternary ================================================================
 
+static value_t parse_ternary_inner(lex_t *L, const expr_ctx_t *ctx);
+
+// parse_ternary under the nesting cap.
 static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
+    if (!lex_enter(L))
+        return val_err("%s", L->err);
+    value_t v = parse_ternary_inner(L, ctx);
+    L->depth--;
+    return v;
+}
+
+static value_t parse_ternary_inner(lex_t *L, const expr_ctx_t *ctx) {
     value_t c = parse_logor(L, ctx);
     if (L->err_set)
         return c;

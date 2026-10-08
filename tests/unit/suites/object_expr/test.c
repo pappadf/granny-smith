@@ -11,6 +11,7 @@
 #include "value.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -345,6 +346,37 @@ TEST(test_interpolate_long_splice_name_errors) {
     v = expr_interpolate_string(src, &ctx);
     ASSERT_EQ_INT(V_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "63") == 0);
+    value_free(&v);
+}
+
+// Deep nesting is an error, not a C-stack overflow: brackets, parentheses,
+// prefix operators and ternary else-chains all count; ordinary depth parses.
+TEST(test_deep_nesting_is_an_error) {
+    enum { N = 20000 };
+    char *src = (char *)malloc(2 * N + 2);
+    ASSERT_TRUE(src != NULL);
+    const char opens[] = {'(', '[', '-'};
+    for (size_t k = 0; k < sizeof(opens); k++) {
+        memset(src, opens[k], N);
+        src[N] = '1';
+        memset(src + N + 1, opens[k] == '(' ? ')' : opens[k] == '[' ? ']' : ' ', N);
+        src[2 * N + 1] = '\0';
+        value_t v = eval(src);
+        ASSERT_TRUE(val_is_error(&v));
+        ASSERT_TRUE(strstr(v.err, "nested too deeply") != NULL);
+        value_free(&v);
+    }
+    // A long `0 ? 0 : 0 ? 0 : ... : 1` else-chain
+    size_t n = 0;
+    for (int i = 0; i < N / 8; i++)
+        n += (size_t)sprintf(src + n, "0?0:");
+    sprintf(src + n, "1");
+    value_t v = eval(src);
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+    free(src);
+    v = eval("((((((((((((((((((((1))))))))))))))))))))");
+    ASSERT_TRUE(!val_is_error(&v));
     value_free(&v);
 }
 
@@ -770,5 +802,6 @@ int main(void) {
     RUN(test_range_builtin_matches_dotdot);
     RUN(test_range_step_zero_is_refused);
     RUN(test_interpolate_long_splice_name_errors);
+    RUN(test_deep_nesting_is_an_error);
     return 0;
 }
