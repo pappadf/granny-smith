@@ -1211,8 +1211,12 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             return false;
         }
         while (ident_char(**p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = **p;
+            // Fail rather than look up a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                *errv = val_err("identifier too long (max %zu)", sizeof(name) - 1);
+                return false;
+            }
+            name[i++] = **p;
             (*p)++;
         }
         name[i] = '\0';
@@ -1274,8 +1278,11 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
     }
     size_t i = 0;
     while (ident_char(**p)) {
-        if (i + 1 < sizeof(path))
-            path[i++] = **p;
+        if (i + 1 >= sizeof(path)) {
+            *errv = val_err("identifier too long (max %zu)", sizeof(path) - 1);
+            return false;
+        }
+        path[i++] = **p;
         (*p)++;
     }
     path[i] = '\0';
@@ -1643,8 +1650,13 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
         char name[64];
         size_t i = 0;
         while (ident_char(*p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = *p;
+            // Fail rather than assign to a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                exec_error(cx, st->line, "identifier too long (max %zu)", sizeof(name) - 1);
+                value_free(&rhs);
+                return;
+            }
+            name[i++] = *p;
             p++;
         }
         name[i] = '\0';

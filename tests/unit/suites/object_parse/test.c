@@ -291,6 +291,23 @@ TEST(test_leading_zero_is_decimal_not_octal) {
     value_free(&vo);
 }
 
+// An identifier longer than the scanner's buffer is an error, not a
+// silently shortened string (or enum lookup).
+TEST(test_long_identifier_errors) {
+    char src[100];
+    memset(src, 'a', 70);
+    src[70] = '\0';
+    value_t v = parse_str(src);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(strstr(v.err, "too long") != NULL);
+    value_free(&v);
+    src[63] = '\0'; // 63 characters: fits
+    v = parse_str(src);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(63, (int)strlen(v.s));
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_int_decimal);
     RUN(test_int_hex);
@@ -311,5 +328,6 @@ int main(void) {
     RUN(test_integer_literal_rejects_out_of_range);
     RUN(test_integer_literal_negation_boundaries);
     RUN(test_leading_zero_is_decimal_not_octal);
+    RUN(test_long_identifier_errors);
     return 0;
 }

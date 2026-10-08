@@ -2460,8 +2460,12 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
             char ident[64];
             size_t i = 0;
             while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
-                if (i + 1 < sizeof(ident))
-                    ident[i++] = *q;
+                // Fail rather than splice a truncated (other) binding
+                if (i + 1 >= sizeof(ident)) {
+                    free(out);
+                    return val_err("identifier too long (max %zu)", sizeof(ident) - 1);
+                }
+                ident[i++] = *q;
                 q++;
             }
             ident[i] = '\0';

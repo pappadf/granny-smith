@@ -134,6 +134,12 @@ assert $inc_nested_ran == 1 "nested include (file-relative path) ran"
 assert try(shell.eval("include \"inc-no-such-file.script\""), none) == none "missing include file is an error"
 assert try(shell.eval("include \"inc-cycle-1.script\""), none) == none "include cycle is an error"
 
+# --- over-long binding names are errors, never a truncated (other) binding
+let lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll = 1
+assert try(shell.eval("\$llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll = 2"), none) == none "assignment to an over-long name was accepted"
+assert try(shell.eval("echo \$llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"), none) == none "an over-long $name splice was accepted"
+assert $lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll == 1 "an over-long name assigned to its 63-character prefix"
+
 # --- for: object items and a shadowed object binding across machine.boot -
 # machine.boot destroys the tree the loop's objects live in: a later item
 # is an error rather than a dangling pointer, and the shadowed binding the

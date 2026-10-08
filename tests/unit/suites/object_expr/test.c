@@ -321,6 +321,33 @@ TEST(test_interpolate_no_braces_passthrough) {
     value_free(&v);
 }
 
+// Binding callback answering every name with its length, so a lookup of a
+// truncated name would succeed (and splice the wrong number).
+static value_t any_binding(void *ud, const char *name) {
+    (void)ud;
+    return val_int((int64_t)strlen(name));
+}
+
+// A `$name` splice longer than the identifier buffer is an error, not a
+// lookup of its first 63 characters (a different binding).
+TEST(test_interpolate_long_splice_name_errors) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = any_binding;
+    char src[100];
+    src[0] = '$';
+    memset(src + 1, 'a', 70);
+    src[71] = '\0';
+    value_t v = expr_interpolate_string(src, &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(strstr(v.err, "too long") != NULL);
+    value_free(&v);
+    src[64] = '\0'; // 63 characters: fits
+    v = expr_interpolate_string(src, &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "63") == 0);
+    value_free(&v);
+}
+
 TEST(test_interpolate_unterminated) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("oops ${1 + 2", &ctx);
@@ -742,5 +769,6 @@ int main(void) {
     RUN(test_format_spec_without_ternary_unaffected);
     RUN(test_range_builtin_matches_dotdot);
     RUN(test_range_step_zero_is_refused);
+    RUN(test_interpolate_long_splice_name_errors);
     return 0;
 }
