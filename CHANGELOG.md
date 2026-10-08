@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AppleTalk PPC Toolbox and Apple events** (ADSP) for scripted guest control, and a complete **AppleShare (AFP) server**; IIfx and Quadra 900/950 get AppleTalk through the SCC IOP.
 - **Floppy on the Quadra 840AV and Centris 660AV** — the New Age controller, so the AV machines read, write, format and boot from floppies.
 - **Disk images** — UDIF (`.dmg`) read and write; **UDIF is now the stored format** (streamed import, compressed, compact deltas); bare HFS volumes and driverless partitioned disks (archive.org, Mini vMac, Disk Copy, SheepShaver shapes) boot as SCSI disks; LisaEm ProFile images attach as they are; one byte-source model for images, filesystems and archives (ISO 9660 and MFS in the image VFS).
-- **URL boot** — media from archive.org and inside archives, download progress, and a disk downloaded once is reused.
+- **URL boot** — ROMs and disks fetched from any CORS-enabled URL, also from inside a `.zip` or `.sit` (`…/x.zip/<member>`); download progress, and a disk downloaded once is reused.
 - **Machine configuration** — one configuration tree per model drives `machine.boot`, URLs and one New Machine dialog; 24/32-bit addressing is an option.
 - **Object model, console and command browser** — a self-describing tree (docs, types, defaults); a new Terminal console (replacing xterm.js) with syntax highlighting, completion, signature hints and object links; a structural command browser; SYSTEM-tab editing; shell **commands** (`ls`, `cd`, `cp`, `run`, `step`, …).
 - **MMU inspection on every MMU kind** — `machine.cpu.mmu.translate` / `walk` / `map` / `descriptor` on the 68030, 68040, PowerPC and Lisa MMUs, also in the Debug view.
