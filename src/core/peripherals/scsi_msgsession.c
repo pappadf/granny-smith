@@ -84,6 +84,14 @@ void scsi_msg_complete(scsi_msgsession_t *s, const scsi_msg_caps_t *caps, scsi_m
             return; // keep what we have and wait
         }
         uint8_t len = s->out[i + 1];
+        if (len == 0) {
+            // The length counts the code byte, so zero is malformed: there is
+            // no code to read (out[i + 2] is past what arrived).  Reject it
+            // and move on, as for an extended message we do not implement.
+            queue_byte(s, MSG_REJECT);
+            i = (uint8_t)(i + 2);
+            continue;
+        }
         uint8_t code = s->out[i + 2];
 
         if (code == EXT_SDTR && len == 3) {
