@@ -94,10 +94,12 @@ int storage_delete(storage_t *storage);
 
 // === Checkpointing ===
 
-// Serializes storage metadata into a checkpoint stream.
-// Quick checkpoints: writes the current bitmap.
+// Serializes storage metadata into a checkpoint stream, then commits (as
+// storage_clear_rollback does).
+// Quick checkpoints: writes the current bitmap and cluster table.
 // Consolidated checkpoints: streams all block data via storage_save_state().
-// When checkpoint is NULL, behaves as a flush (clears rollback).
+// A NULL checkpoint is an error; to commit without one, call
+// storage_clear_rollback().
 int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
 
 // Restores storage state from a checkpoint stream.
@@ -108,7 +110,10 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
 
 // === Block I/O ===
 
-// Reads one block (block_size bytes) at the given byte offset.
+// Reads one block (block_size bytes) at the given byte offset.  GS_ERROR
+// (buffer zeroed) when the block cannot be read, from the delta or the base
+// alike; a block past the end of a base shorter than the geometry reads as
+// zeros.
 int storage_read_block(storage_t *storage, size_t offset, void *buffer);
 
 // Writes one block (block_size bytes) at the given byte offset.
