@@ -6,28 +6,33 @@ from __future__ import annotations
 Usage: python scripts/dev_server.py --root build --port 8080
        python scripts/dev_server.py --root build --port 8080 --fallback-root .
 """
-import argparse, os, socket, urllib.parse
+import argparse, os, urllib.parse
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
 
-def pick_port(preferred, host='localhost', tries=20):
-    """The preferred port, or the first free one above it.
+class Server(ThreadingHTTPServer):
+    # Never share a port: the bind is the free-port probe (some Python
+    # versions turn SO_REUSEPORT on for HTTPServer).
+    allow_reuse_port = False
+
+
+def serve_on_free_port(handler, preferred, host='localhost', tries=20):
+    """A server listening on the preferred port, or the first free one above it.
 
     Two checkouts of this project served at once (two editors, two
     branches) must not share an origin: OPFS access handles are exclusive
     per origin, the checkpoint machine id lives in localStorage, and a COI
     service worker registered by one would control the other.  A different
     port is a different origin, so `make run` simply takes the next one.
+    The server itself is what binds -- a probe socket closed before the
+    real bind would leave a window for another process to take the port.
     """
     for port in range(preferred, preferred + tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind((host, port))
-            except OSError:
-                continue
-            return port
+        try:
+            return Server((host, port), handler)
+        except OSError:
+            continue
     raise SystemExit(f"No free port in {preferred}..{preferred + tries - 1}")
 
 class Handler(SimpleHTTPRequestHandler):
@@ -78,9 +83,14 @@ class Handler(SimpleHTTPRequestHandler):
         primary = super().translate_path(path)
         if os.path.exists(primary) or not self.fallback_root:
             return primary
-        # Strip query/fragment and URL-decode to get the filesystem-relative path.
-        clean = urllib.parse.unquote(urllib.parse.urlparse(path).path).lstrip('/')
-        fallback = os.path.join(self.fallback_root, clean)
+        # The base class's own resolution against the fallback root: it drops
+        # the query, decodes, and discards '..' segments, so a request cannot
+        # climb out of the fallback root.
+        root, self.directory = self.directory, self.fallback_root
+        try:
+            fallback = super().translate_path(path)
+        finally:
+            self.directory = root
         if os.path.exists(fallback):
             return fallback
         return primary
@@ -91,27 +101,50 @@ def main():
     ap.add_argument('--port', type=int, default=8080)
     ap.add_argument('--fallback-root', default=None,
                     help='Secondary directory to serve files from when not found in --root')
-    ap.add_argument('--default-params', default=None,
-                    help='Default URL query string appended when redirecting / to /index.html')
+    ap.add_argument('--param', action='append', default=[], metavar='KEY=VALUE',
+                    help='A default URL query parameter (repeatable), URL-encoded into the '
+                         'query string appended when redirecting / to /index.html')
     ap.add_argument('--no-coi-headers', action='store_true',
                     help='Skip COOP/COEP headers (let the service worker inject them instead)')
     ap.add_argument('--strict-port', action='store_true',
                     help='Fail if --port is taken instead of moving to the next free one')
     a = ap.parse_args()
-    if not a.strict_port:
-        port = pick_port(a.port)
-        if port != a.port:
-            print(f"Port {a.port} is in use (another instance?); using {port}")
-        a.port = port
+    params = []
+    for kv in a.param:
+        key, sep, value = kv.partition('=')
+        if not sep or not key:
+            raise SystemExit(f"--param wants KEY=VALUE, not '{kv}'")
+        params.append((key, value))
+    # Each value encoded on its own, so a media path holding '&', '%' or a
+    # space neither splits the query nor breaks the Location header.
+    default_params = urllib.parse.urlencode(params, safe='/', quote_via=urllib.parse.quote)
     root = os.path.abspath(a.root)
     if not os.path.isdir(root):
         raise SystemExit(f"Missing root '{root}'. Run make first.")
     if a.fallback_root:
         Handler.fallback_root = os.path.abspath(a.fallback_root)
-    if a.default_params:
-        Handler.default_params = a.default_params
+    if default_params:
+        Handler.default_params = default_params
     if a.no_coi_headers:
         Handler.no_coi_headers = True
+    # One thread per connection.  A COOP/COEP page opens several module and
+    # worker fetches at once and a pthread worker can hold a connection while
+    # it blocks; on the single-threaded HTTPServer any one of those stalled
+    # every other request (a reload that never completed).
+    handler = partial(Handler, directory=root)
+    if a.strict_port:
+        try:
+            httpd = Server(('localhost', a.port), handler)
+        except OSError as e:
+            raise SystemExit(f"Cannot listen on port {a.port}: {e.strerror} "
+                             "(drop --strict-port to take the next free one)")
+    else:
+        httpd = serve_on_free_port(handler, a.port)
+        port = httpd.server_address[1]
+        if port != a.port:
+            print(f"Port {a.port} is in use (another instance?); using {port}")
+        a.port = port
+    httpd.daemon_threads = True
     url = f"http://localhost:{a.port}"
     parts = [f"Serving UI on {url} --"]
     parts.append(f"root {root}")
@@ -119,17 +152,8 @@ def main():
         parts.append(f"(fallback: {Handler.fallback_root})")
     parts.append(f"on {url}")
     print(' '.join(parts))
-    if a.default_params:
-        print(f"Open: {url}/index.html?{a.default_params}")
-    # One thread per connection.  A COOP/COEP page opens several module and
-    # worker fetches at once and a pthread worker can hold a connection while
-    # it blocks; on the single-threaded HTTPServer any one of those stalled
-    # every other request (a reload that never completed).
-    try:
-        httpd = ThreadingHTTPServer(('localhost', a.port), partial(Handler, directory=root))
-    except OSError as e:
-        raise SystemExit(f"Cannot listen on port {a.port}: {e.strerror} (drop --strict-port to take the next free one)")
-    httpd.daemon_threads = True
+    if default_params:
+        print(f"Open: {url}/index.html?{default_params}")
     try: httpd.serve_forever()
     except KeyboardInterrupt: print('\nStop')
 
