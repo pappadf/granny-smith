@@ -179,7 +179,10 @@ static void mint_random_hex_id(char out[static 17]) {
 #endif
     if (!got) {
         // Fallback: combine PID + time + a counter for uniqueness within a
-        // process even if /dev/urandom is unavailable.
+        // process even if /dev/urandom is unavailable.  Unique only while
+        // ids are minted on one thread (the emulator's; the counter is a
+        // plain static) -- two threads minting in the same second could
+        // collide.
         static uint32_t ctr = 0;
         uint32_t pid = (uint32_t)getpid();
         uint32_t now = (uint32_t)time(NULL);

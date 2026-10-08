@@ -1745,7 +1745,11 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         return GS_ERROR;
     }
 
-    checkpoint_close(checkpoint);
+    // A consolidated checkpoint is published (renamed into place) here.
+    if (!checkpoint_close(checkpoint)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to finish checkpoint %s", filename);
+        return GS_ERROR;
+    }
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here

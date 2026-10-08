@@ -27,13 +27,19 @@ checkpoint_t *checkpoint_open_read(const char *filename);
 // Opens a checkpoint file for writing with the specified kind
 checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind);
 
-// Closes a checkpoint file and frees resources
-void checkpoint_close(checkpoint_t *checkpoint);
+// Closes a checkpoint file and frees resources.  A consolidated checkpoint
+// is written to "<filename>.tmp" and renamed over `filename` here, when no
+// error occurred (else the partial file is removed and `filename` is left
+// as it was).  True when the checkpoint closed without error.
+bool checkpoint_close(checkpoint_t *checkpoint);
 
-// Returns true if the checkpoint has encountered an error
+// Returns true if the checkpoint has encountered an error.  A NULL handle
+// counts as one already in error: it is true here, and
+// checkpoint_set_error(NULL) has nothing left to mark.
 bool checkpoint_has_error(checkpoint_t *checkpoint);
 
-// Flag the checkpoint as having encountered an error
+// Flag the checkpoint as having encountered an error (no-op on NULL; see
+// checkpoint_has_error)
 void checkpoint_set_error(checkpoint_t *checkpoint);
 
 // Returns the kind of an open checkpoint
@@ -139,9 +145,18 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
 #define checkpoint_read_file(cp, dest, cap, out_path)                                                                  \
     checkpoint_read_file_loc((cp), (dest), (cap), (out_path), __FILE__, __LINE__)
 
-// Validate that a checkpoint file's build ID matches the current build.
-// Opens the file, reads magic + build ID, compares with current build.
-// Returns true if the build IDs match, false on mismatch or error.
+// Whether a checkpoint file was written by this build: it reads the
+// signature and build ID only.  A file that cannot be opened or read, is
+// too short or has no checkpoint signature is UNREADABLE -- not to be
+// confused with a good checkpoint from another build (MISMATCH).
+typedef enum {
+    CHECKPOINT_BUILD_MATCH,
+    CHECKPOINT_BUILD_MISMATCH,
+    CHECKPOINT_BUILD_UNREADABLE,
+} checkpoint_build_t;
+checkpoint_build_t checkpoint_check_build_id(const char *filename);
+
+// checkpoint_check_build_id(filename) == CHECKPOINT_BUILD_MATCH.
 bool checkpoint_validate_build_id(const char *filename);
 
 // === Object-model class descriptor =========================================
