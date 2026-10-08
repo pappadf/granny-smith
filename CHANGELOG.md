@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MkLinux DR3** boots on the 6100/7100/8100 and the 7500.
 - **PCI** — a generic PCI bus and card architecture beside NuBus, with the Apple Accelerated PCI Graphics Card (ATI Mach64 GX, run from its own FCode ROM) and the **3dfx Voodoo2** (Glide and Quake render; optional WebGPU rasteriser as `voodoo2_webgpu`).
 - **LaserWriter printing to PDF** — a PostScript printer on AppleTalk per machine, interpreted by EfterScript's platen; LaserWriter 8 prints, with a PDF viewer and printer status in the web UI.
-- **Virtual ImageWriter and ImageWriter II to PDF** — on a serial port or over LocalTalk; the printer's own fonts, graphics modes, colour ribbons and flow control. Configurable from the New Machine dialog; the Lisa Office System prints to it.
+- **ImageWriter printing to PDF** — the guest's own, unmodified ImageWriter drivers print, with the printers' own fonts, graphics modes, colour ribbons and flow control; selectable in the New Machine dialog:
+  - **ImageWriter** and **ImageWriter II** on a Mac serial port;
+  - **ImageWriter II with the LocalTalk Option** on AppleTalk, chosen in the Chooser beside the LaserWriter;
+  - **Lisa** — an ImageWriter on Serial A; the Lisa Office System prints.
 - **AppleTalk PPC Toolbox and Apple events** (ADSP) for scripted guest control, and a complete **AppleShare (AFP) server**; IIfx and Quadra 900/950 get AppleTalk through the SCC IOP.
 - **Floppy on the Quadra 840AV and Centris 660AV** — the New Age controller, so the AV machines read, write, format and boot from floppies.
 - **Disk images** — UDIF (`.dmg`) read and write; **UDIF is now the stored format** (streamed import, compressed, compact deltas); bare HFS volumes and driverless partitioned disks (archive.org, Mini vMac, Disk Copy, SheepShaver shapes) boot as SCSI disks; LisaEm ProFile images attach as they are; one byte-source model for images, filesystems and archives (ISO 9660 and MFS in the image VFS).
