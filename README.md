@@ -14,7 +14,7 @@
 
 ## Emulated Computer Models
 
-All models run their original ROMs unpatched, with devices emulated closely enough that original drivers work.
+All models run their original ROMs unpatched, with devices emulated closely enough so that original drivers work.
 
 - **Apple Lisa 2 and Macintosh XL**
 - **Macintosh Plus**
@@ -30,7 +30,7 @@ All models run their original ROMs unpatched, with devices emulated closely enou
 
 ## Emulated NuBus Cards
 
-NuBus display cards fit any machine with free slots, even one with built-in video. Each card runs from a real declaration ROM dump or a runtime-generated generic ROM (no dump required), which can also synthesize custom resolutions (e.g. 800×600).
+NuBus display cards fit any machine with free slots, even one with built-in video. 
 
 - **Apple Display Card 8•24** (the standard "JMFB" card)
 - **Apple Display Card 24AC** (including hardware QuickDraw acceleration)
@@ -44,11 +44,19 @@ NuBus display cards fit any machine with free slots, even one with built-in vide
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
 
+## Emulated Printers
+
+- **LaserWriter** — a virtual PostScript printer on each machine's AppleTalk network
+- **ImageWriter** - on a Mac/Lisa serial port (incl. printing from Lisa Office System)
+- **ImageWriter II** — on a Mac serial port
+- **ImageWriter II with LocalTalk** - selectable in the Chooser
+
+
 ## Verified Guest/Target Operating Systems
 
 The emulated computer models have been tested with various combinations of the following operating systems:
 
-- **Mac OS System 2 to 9.2**
+- **Mac OS System 2 to 9.2.1**
 - **A/UX 3.0.1**
 - **Lisa Office System 3.1**
 - **Lisa Xenix 3.0**
@@ -57,6 +65,7 @@ The emulated computer models have been tested with various combinations of the f
 - **MkLinux DR3**
 - **AIX 4.1.5**
 - **Windows NT 4.0 (PowerPC)** (on the Apple Network Server)
+
 
 ## Work In Progress
 
@@ -81,21 +90,24 @@ You will need a ROM image and a bootable system disk image for the machine you w
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
+6. ROMs and disks can also be fetched from any CORS-enabled URL, including from inside a `.zip` or `.sit` archive (`…/x.zip/<member>`)
 
-Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
+Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), bare HFS volumes or driverless partitioned disks (archive.org, Mini vMac, Disk Copy, SheepShaver shapes), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
+
+Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind. End-user documentation lives in [docs/user/](docs/user/), and the UI offers Midnight (the default), Starlight and Aqua skins.
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/guide/ARCHITECTURE.md](docs/guide/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 
 ## Known Limitations
 
-- **Safari** - known rendering and audio issues; not currently supported
+- **Safari** - starts and runs (v0.9.0 fixed startup on static hosts and mouse grabbing), but known rendering and audio issues remain
 - **Firefox** - works partially; some compatibility problems remain
 - **Ethernet** - the Quadras' SONIC, the AV machines' MACE and the beige G3's BMAC controllers are modeled at the register level (BMAC down to its transmit/receive filters) but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
 - **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
 
 ## A Note on AI
 
-This project allows the use of AI (my project, my rules). This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
+This project allows the use of AI. This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
 There is no intention to track, at the file or commit level, which code was generated with AI assistance and which was not. I know that AI may be a red flag for some people, and I fully respect that.
 
 ## Related Projects
@@ -112,7 +124,6 @@ Sibling projects this one is built on:
 ## Acknowledgments
 
 - [raddad772](https://github.com/raddad772) for the 68K test suite ([single-step-tests](https://github.com/SingleStepTests/m68000))
-- [xterm.js](https://xtermjs.org/) for terminal emulation in the browser
 - [JSZip](https://stuk.github.io/jszip/) for ZIP file handling
 - [Emscripten](https://emscripten.org/) for the WebAssembly toolchain
 
