@@ -101,7 +101,7 @@
   <div class="content">
     <Hero
       title="Granny Smith"
-      subtitle="A classic Macintosh emulator in the browser."
+      subtitle="A Macintosh emulator in the browser."
       titleClass="title"
       subtitleClass="subtitle"
     />
