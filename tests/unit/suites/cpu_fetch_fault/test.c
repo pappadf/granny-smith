@@ -262,6 +262,32 @@ TEST(movem_postinc_fault_leaves_an) {
     teardown_mmu(cpu, mmu);
 }
 
+TEST(trap_frame_push_fault_halts) {
+    // TRAP #0 from user mode with the supervisor stack in the invalid page:
+    // the frame push faults, which is a double fault -- the CPU must halt
+    // instead of vectoring with a half-written frame.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be32(ram + 0x80, HANDLER_ADDR); // vector 32: TRAP #0
+    store_be16(ram + 0x3F00, 0x4E40); // TRAP #0
+    cpu->pc = 0x3F00;
+    cpu->a[7] = 0x4800; // becomes SSP
+    cpu->supervisor = 1;
+    cpu->usp = 0x5800;
+    cpu->halted = 0;
+    cpu_set_sr(cpu, 0x0000);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->halted == 1);
+    ASSERT_TRUE(!g_bus_error_pending);
+    ASSERT_TRUE(cpu->pc != HANDLER_ADDR); // never loaded the vector
+    cpu->halted = 0;
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -276,6 +302,7 @@ int main(void) {
     RUN(link_push_fault_leaves_an_and_sp);
     RUN(unlk_pop_fault_leaves_an_and_sp);
     RUN(movem_postinc_fault_leaves_an);
+    RUN(trap_frame_push_fault_halts);
 
     test_harness_destroy(ctx);
     return 0;
