@@ -109,6 +109,10 @@ bool debug_active(debug_t *debug) {
 int debug_break_and_trace(void) {
     return 0;
 }
+
+bool debug_break_on_run_entry(void) {
+    return false;
+}
 const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
 }

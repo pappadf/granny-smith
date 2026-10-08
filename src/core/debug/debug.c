@@ -222,7 +222,13 @@ static bool eval_breakpoint_condition(const char *expr) {
         .binding_ud = NULL,
     };
 
-    value_t v = expr_eval(expr, &ctx);
+    // Evaluate a private copy: the expression may remove the breakpoint
+    // that owns `expr` (e.g. debug.breakpoints.clear()).
+    char *copy = strdup(expr);
+    if (!copy)
+        return true;
+    value_t v = expr_eval(copy, &ctx);
+    free(copy);
     bool result;
     switch (v.kind) {
     case V_BOOL:
@@ -494,7 +500,15 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
         .binding = lp_binding,
         .binding_ud = &lp,
     };
-    value_t v = expr_interpolate_body(msg, &ctx);
+    // Interpolate a private copy: the template may remove the logpoint that
+    // owns `msg` (e.g. ${debug.logpoints.clear()}).
+    char *copy = strdup(msg);
+    if (!copy) {
+        buf[0] = '\0';
+        return;
+    }
+    value_t v = expr_interpolate_body(copy, &ctx);
+    free(copy);
 
     const char *s = (v.kind == V_STRING && v.s) ? v.s : (v.kind == V_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
@@ -600,6 +614,23 @@ void debug_exc_trace_dump(int filter) {
     }
 }
 
+// Find a logpoint by id; the list walkers re-find their entry this way after
+// evaluating a message template, which may have edited the list.
+static logpoint_t *find_logpoint_by_id(debug_t *debug, int id) {
+    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
+        if (lp->id == id)
+            return lp;
+    return NULL;
+}
+
+// Find a breakpoint by id (see find_logpoint_by_id).
+static breakpoint_t *find_breakpoint_by_id(debug_t *debug, int id) {
+    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
+        if (bp->id == id)
+            return bp;
+    return NULL;
+}
+
 // The debug_t whose construction installed g_mem_logpoint_hook; only its
 // teardown clears the hook (debug_init / debug_delete).
 static debug_t *g_mem_hook_owner = NULL;
@@ -679,9 +710,17 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         }
         char formatted[256];
         if (lp->message) {
+            // The template may edit the logpoint list: keep what the log
+            // line needs, then re-find this entry before walking on.
+            int id = lp->id;
+            log_category_t *category = lp->category;
+            int level = lp->level;
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
-            LOG_WITH(lp->category, lp->level, "logpoint %s $%08X (size=%u, value=$%0*X): %s",
-                     is_write ? "WRITE" : "READ", addr, size, (int)(size * 2), value, formatted);
+            LOG_WITH(category, level, "logpoint %s $%08X (size=%u, value=$%0*X): %s", is_write ? "WRITE" : "READ", addr,
+                     size, (int)(size * 2), value, formatted);
+            lp = find_logpoint_by_id(debug, id);
+            if (!lp)
+                return;
         } else {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
@@ -774,6 +813,77 @@ void debugger_disasm_pc(char *buf, size_t buf_size) {
     debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
+// Check the breakpoints at current_pc, the instruction about to execute.
+// A hit prints, counts, and arms the resume skip; returns true on a hit.
+static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
+    breakpoint_t *bp = debug->breakpoints;
+    while (bp != NULL) {
+        // A disabled breakpoint is kept but ignored.
+        if (bp->disabled) {
+            bp = bp->next;
+            continue;
+        }
+        bool hit = false;
+        if (bp->space == ADDR_LOGICAL) {
+            // Logical breakpoint: compare directly with PC
+            hit = (bp->addr == current_pc);
+        } else {
+            // Physical breakpoint: translate PC to physical and compare
+            bool is_identity, valid;
+            uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &valid);
+            hit = valid && (bp->addr == phys_pc);
+        }
+        if (hit) {
+            // Evaluate optional condition — skip the break if false.
+            // The condition may edit the breakpoint list, so re-find
+            // this entry by id afterwards; gone means no break.
+            if (bp->condition) {
+                int id = bp->id;
+                bool pass = eval_breakpoint_condition(bp->condition);
+                bp = find_breakpoint_by_id(debug, id);
+                if (!bp)
+                    break;
+                if (!pass) {
+                    bp = bp->next;
+                    continue;
+                }
+            }
+            bp->hit_count++;
+            if (bp->space == ADDR_PHYSICAL) {
+                gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+            } else {
+                gs_outf("breakpoint hit at $%08X\n", bp->addr);
+            }
+            gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
+                           bp->addr);
+            // The next run resumes past this instruction (debug_break_on_run_entry)
+            debug->skip_pending = true;
+            debug->skip_pc = current_pc;
+            return true;
+        }
+        bp = bp->next;
+    }
+    return false;
+}
+
+// Breakpoint probe at the start of a run: the instruction at the PC the
+// run starts on is otherwise never checked, since debug_break_and_trace
+// runs after each instruction.  The instruction a breakpoint just stopped
+// on is skipped once, so the run resumes past it.  Breakpoints only: the
+// PC logpoints there already fired when the previous run reached it.
+bool debug_break_on_run_entry(void) {
+    debug_t *debug = system_debug();
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!debug || !dif)
+        return false;
+    uint32_t current_pc = dif->get_pc(dif->ctx);
+    bool resuming = debug->skip_pending && current_pc == debug->skip_pc;
+    debug->skip_pending = false;
+    if (resuming)
+        return false;
+    return check_breakpoints(debug, current_pc);
+}
+
 // Check if execution should break and trace current instruction
 int debug_break_and_trace(void) {
     debug_t *debug = system_debug();
@@ -790,52 +900,8 @@ int debug_break_and_trace(void) {
         stop = true;
     }
 
-    // If we have a last_breakpoint_pc set, this means we need to skip checking
-    // for breakpoints at that specific PC address one time (to allow resuming execution)
-    if (debug->last_breakpoint_pc != 0 && current_pc == debug->last_breakpoint_pc) {
-        // Clear the flag after skipping once
-        debug->last_breakpoint_pc = 0;
-    } else {
-        // Check for breakpoints at current PC
-        breakpoint_t *bp = debug->breakpoints;
-        while (bp != NULL) {
-            // A disabled breakpoint is kept but ignored.
-            if (bp->disabled) {
-                bp = bp->next;
-                continue;
-            }
-            bool hit = false;
-            if (bp->space == ADDR_LOGICAL) {
-                // Logical breakpoint: compare directly with PC
-                hit = (bp->addr == current_pc);
-            } else {
-                // Physical breakpoint: translate PC to physical and compare
-                bool is_identity, valid;
-                uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &valid);
-                hit = valid && (bp->addr == phys_pc);
-            }
-            if (hit) {
-                // Evaluate optional condition — skip the break if false
-                if (bp->condition && !eval_breakpoint_condition(bp->condition)) {
-                    bp = bp->next;
-                    continue;
-                }
-                bp->hit_count++;
-                if (bp->space == ADDR_PHYSICAL) {
-                    gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
-                } else {
-                    gs_outf("breakpoint hit at $%08X\n", bp->addr);
-                }
-                gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
-                               bp->addr);
-                // Remember this PC to skip it next time we check
-                debug->last_breakpoint_pc = current_pc;
-                stop = true;
-                break;
-            }
-            bp = bp->next;
-        }
-    }
+    if (check_breakpoints(debug, current_pc))
+        stop = true;
 
     // Check for logpoints at current PC (these don't stop execution).
     // Match on either the logical PC (install-time VA) or the exact physical
@@ -861,9 +927,16 @@ int debug_break_and_trace(void) {
             if (hit) {
                 lp->hit_count++;
                 if (lp->message) {
+                    // As in the memory hook: the template may edit the list
+                    int id = lp->id;
+                    log_category_t *category = lp->category;
+                    int level = lp->level;
                     char formatted[256];
                     format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
-                    LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
+                    LOG_WITH(category, level, "logpoint $%08X: %s", current_pc, formatted);
+                    lp = find_logpoint_by_id(debug, id);
+                    if (!lp)
+                        break;
                 } else {
                     LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc,
                              lp->hit_count);

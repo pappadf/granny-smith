@@ -60,4 +60,34 @@ scheduler.run
 assert machine.cpu.pc == 0x4007bc "run got stuck — did not advance past the first breakpoint"
 echo "${debug.breakpoints.clear()}"
 
+# --- Breakpoint at the run-entry PC, and every arrival counts ---------------
+# A breakpoint set at the PC the machine is stopped on stops the next run
+# before that instruction executes; each later run resumes past it and
+# stops at the very next arrival (a PC logpoint at the same address counts
+# the arrivals).  The resume skip used to linger until the next arrival,
+# so the breakpoint fired only every other time round a loop.
+scheduler.run 3000000
+let here = machine.cpu.pc
+let bp = debug.breakpoints.add($here)
+let lp = debug.logpoints.add(addr=$here)
+scheduler.run
+assert machine.cpu.pc == $here "run did not stop at the breakpoint on the current PC"
+assert $lp.hit_count == 0 "the entry stop executed an instruction"
+scheduler.run
+assert machine.cpu.pc == $here
+assert $lp.hit_count == 1 "the breakpoint skipped an arrival"
+scheduler.run
+assert $lp.hit_count == 2 "the breakpoint skipped an arrival"
+assert $bp.hit_count == 3
+echo "${debug.breakpoints.clear()}"
+echo "${debug.logpoints.clear()}"
+
+# A condition or message may edit the very list being walked when it fires:
+# both remove themselves here, and the walk must not touch the freed entry.
+echo "${debug.breakpoints.add($here, "debug.breakpoints.clear()")}"
+debug.logpoints.add addr=$here message="${debug.logpoints.clear()}"
+scheduler.run 500000
+assert len(debug.breakpoints.entries) == 0 "the self-clearing condition did not run"
+assert len(debug.logpoints.entries) == 0 "the self-clearing message did not run"
+
 quit

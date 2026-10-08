@@ -141,7 +141,10 @@ struct debug {
     bool active;
     int step;
     breakpoint_t *breakpoints;
-    uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
+    // A breakpoint stopped the machine at skip_pc: the next run's entry
+    // probe lets that instruction execute once instead of stopping again.
+    bool skip_pending;
+    uint32_t skip_pc;
     logpoint_t *logpoints;
     // A watchpoint (a stopping memory logpoint, in the list above) fired
     // inside the instruction in flight; debug_break_and_trace stops the
@@ -302,6 +305,9 @@ void debugger_disasm_pc(char *buf, size_t buf_size);
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr);
 
 int debug_break_and_trace(void);
+
+// Breakpoint probe at the PC a scheduler run starts on (see debug.c).
+bool debug_break_on_run_entry(void);
 
 void debug_print_target_trace(void);
 
