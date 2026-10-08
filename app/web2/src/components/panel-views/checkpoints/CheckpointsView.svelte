@@ -4,7 +4,7 @@
   import Table, { type TableColumn } from '@/components/common/Table.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { opfs } from '@/bus/opfs';
-  import { gsEval } from '@/bus/emulator';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
   import { reconcileUiWithMachine } from '@/bus/boot';
   import { showNotification } from '@/state/toasts.svelte';
   import {
@@ -91,17 +91,14 @@
   ];
 
   async function loadCheckpoint(row: CheckpointEntry) {
-    try {
-      const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
-      if (ok === true) {
-        await reconcileUiWithMachine('restore');
-        showNotification(`Loaded checkpoint '${row.label}'`, 'info');
-      } else {
-        showNotification('Checkpoint load failed', 'error');
-      }
-    } catch {
-      showNotification('Checkpoint load failed', 'error');
+    // gsEval never rejects: a transport failure is an {error} result too.
+    const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
+    if (ok !== true) {
+      showNotification(`Checkpoint load failed: ${gsErrorText(ok)}`, 'error');
+      return;
     }
+    await reconcileUiWithMachine('restore');
+    showNotification(`Loaded checkpoint '${row.label}'`, 'info');
   }
 
   function onContext(key: string, ev: MouseEvent) {
