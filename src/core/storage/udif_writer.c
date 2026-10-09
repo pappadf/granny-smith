@@ -7,6 +7,8 @@
 
 #include "udif_writer.h"
 
+#include "convert_debug.h"
+
 #include "common.h"
 #include "crc32.h"
 #include "deflate.h"
@@ -61,8 +63,11 @@ typedef struct {
     uint64_t sector, count, offset, length;
 } wext_t;
 
+#define UDIF_WRITE_BUFFER (1u << 20) // bytes of output gathered per host write
+
 struct udif_writer {
     FILE *f;
+    char *fbuf; // f's buffer (UDIF_WRITE_BUFFER): freed after f is closed
     char *path;
     char *source_name;
     char *origin;
@@ -146,6 +151,12 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
         return NULL;
     }
     w->f = fdopen(fd, "wb");
+    // Write the file in large pieces: each write is a host call (on the web
+    // build an OPFS write proxied to another thread), and stdio's default
+    // buffer would make one per compressed chunk or smaller.
+    w->fbuf = w->f ? malloc(UDIF_WRITE_BUFFER) : NULL;
+    if (w->fbuf)
+        setvbuf(w->f, w->fbuf, _IOFBF, UDIF_WRITE_BUFFER);
     w->path = gs_strdup(path);
     w->source_name = o.source_name ? gs_strdup(o.source_name) : NULL;
     w->origin = o.origin && *o.origin ? gs_strdup(o.origin) : NULL;
@@ -211,8 +222,13 @@ static bool all_zero(const uint8_t *p, size_t n) {
     return true;
 }
 
+gs_dbg_counter_t g_dbg_udif_write, g_dbg_deflate; // DEBUG(convert-timing)
+
 static int write_out(udif_writer_t *w, const void *p, size_t n) {
-    if (n && fwrite(p, 1, n, w->f) != n)
+    double t0 = gs_dbg_now_ms(); // DEBUG(convert-timing)
+    size_t put = n ? fwrite(p, 1, n, w->f) : 0;
+    gs_dbg_add(&g_dbg_udif_write, put, t0); // DEBUG(convert-timing)
+    if (n && put != n)
         return errno ? -errno : -EIO;
     return 0;
 }
@@ -229,7 +245,9 @@ static int emit_chunk(udif_writer_t *w, const uint8_t *p, size_t n) {
     size_t out_len = n;
     uint32_t type = UDIF_CHUNK_RAW;
     if (w->level > 0) {
+        double t0 = gs_dbg_now_ms(); // DEBUG(convert-timing)
         long z = deflate_zlib(w->ds, p, n, w->zbuf, w->zcap, w->level);
+        gs_dbg_add(&g_dbg_deflate, n, t0); // DEBUG(convert-timing)
         if (z > 0 && (size_t)z < n) {
             out = w->zbuf;
             out_len = (size_t)z;
@@ -331,6 +349,7 @@ static void writer_free(udif_writer_t *w) {
         return;
     if (w->f)
         fclose(w->f);
+    free(w->fbuf);
     free(w->path);
     free(w->source_name);
     free(w->origin);

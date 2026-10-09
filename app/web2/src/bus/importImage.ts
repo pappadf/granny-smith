@@ -24,6 +24,7 @@ import { gsEval, gsErrorText } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
+import { routePrintLine } from './logSink';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
@@ -61,6 +62,10 @@ export interface ImportOptions {
   // later URL boot looks for to use the stored image instead of downloading
   // it again (bus/urlMedia.ts).
   origin?: string;
+  // A Mac archive this pipeline leaves to the caller is handed back staged
+  // (ImportOutcome.archive) instead of being removed, so a download is not
+  // fetched a second time to be unpacked.
+  keepArchive?: boolean;
 }
 
 export interface ImportOutcome {
@@ -71,6 +76,9 @@ export interface ImportOutcome {
   // when nothing was stored (the user has been told why).
   path: string | null;
   category?: DiskCategory;
+  // With keepArchive, when handled is false: the archive, staged whole; the
+  // caller's to remove.
+  archive?: string;
 }
 
 // Names a disk image may carry that the stored .dmg replaces.
@@ -492,14 +500,28 @@ async function importMacArchive(
   const staged = scratchPath(base);
   const part = scratchPath(`${base}.dmg.part`);
   const body = src.kind === 'blob' ? src.blob : src.stream;
+  let handedOver = false;
+  // Not imported: the caller's extracting flow takes it, from the staged
+  // copy when it asked for one.
+  const leave = (): ImportOutcome => {
+    if (!opts.keepArchive) return { handled: false, path: null };
+    handedOver = true;
+    return { handled: false, path: null, archive: staged };
+  };
+  // DEBUG(convert-timing): step times on the Terminal console.
+  const dbg = (step: string, t0: number) =>
+    routePrintLine(`[url-boot] ${name} ${step}: ${Math.round(performance.now() - t0)} ms`);
   try {
+    const tDownload = performance.now();
     if (
       !(await streamToOpfs(staged, body, (n) =>
         opts.onProgress?.(n, src.kind === 'blob' ? src.blob.size : src.total, 0),
       ))
     )
       throw new Error('could not stage the archive');
+    dbg('archive download', tDownload);
     setActivityDetail('decoding the archive...');
+    const tImport = performance.now();
     const r = (await gsEval('files.archive.import', [
       staged,
       part,
@@ -510,8 +532,8 @@ async function importMacArchive(
       bytes_in?: number;
       stored_bytes?: number;
     } | null;
-    if (!r || typeof r !== 'object' || typeof r.member !== 'string')
-      return { handled: false, path: null };
+    dbg('files.archive.import', tImport);
+    if (!r || typeof r !== 'object' || typeof r.member !== 'string') return leave();
     const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {
       if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
@@ -525,9 +547,9 @@ async function importMacArchive(
       }
     }
     // Not a disk (a floppy, a ROM, an application): the staged flow.
-    return { handled: false, path: null };
+    return leave();
   } finally {
-    await rmQuiet(staged);
+    if (!handedOver) await rmQuiet(staged);
     await rmQuiet(part);
   }
 }

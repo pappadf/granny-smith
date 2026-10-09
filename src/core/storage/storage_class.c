@@ -11,6 +11,7 @@
 
 #include "checkpoint.h"
 #include "chunk_cache.h"
+#include "convert_debug.h"
 #include "format_registry.h"
 #include "gs_out.h"
 #include "io_leaf.h"
@@ -28,6 +29,7 @@
 #include "image_part.h"
 #include "image_udif.h"
 #include "image_vfs.h"
+#include "log.h"
 #include "object.h"
 #include "root.h"
 #include "shell.h"
@@ -46,6 +48,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+LOG_USE_CATEGORY_NAME("image")
 
 // === Object-model class descriptors =========================================
 //
@@ -839,6 +843,7 @@ typedef struct {
     uint64_t len;
     udif_writer_stats_t st;
     bool raw; // convert: to a flat raw image instead
+    char dbg[1024]; // DEBUG(convert-timing): convert's timing report, printed by its answer
 } udif_job_t;
 
 static void udif_job_cleanup(io_leaf_t *j) {
@@ -863,6 +868,17 @@ static value_t udif_stats_map(const udif_writer_stats_t *st) {
 
 static value_t answer_udif_stats(io_leaf_t *j) {
     return udif_stats_map(&((udif_job_t *)j->ud)->st);
+}
+
+// DEBUG(convert-timing): files.convert's answer also prints the timing the
+// work recorded (once: the provisional answer comes before the work).
+static value_t answer_convert_stats(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    if (u->dbg[0]) {
+        LOG(0, "%s", u->dbg);
+        u->dbg[0] = 0;
+    }
+    return udif_stats_map(&u->st);
 }
 
 static value_t answer_udif_stored(io_leaf_t *j) {
@@ -994,6 +1010,9 @@ static gs_source_t *open_decoded(const char *path, image_t **img, char *err, siz
 
 static int work_convert(io_leaf_t *j) {
     udif_job_t *u = (udif_job_t *)j->ud;
+    // DEBUG(convert-timing): phase times, and the host-call counters' deltas.
+    double t_start = gs_dbg_now_ms(), t_read = 0, t_append = 0;
+    gs_dbg_counter_t open0 = g_dbg_host_open, read0 = g_dbg_host_read, write0 = g_dbg_udif_write, defl0 = g_dbg_deflate;
     vfs_stat_t vst;
     if (vfs_stat(j->b, &vst) == 0) {
         snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
@@ -1001,6 +1020,7 @@ static int work_convert(io_leaf_t *j) {
     }
     image_t *img = NULL;
     gs_source_t *src = open_decoded(j->a, &img, j->err, sizeof j->err);
+    double t_opened = gs_dbg_now_ms(); // DEBUG(convert-timing)
     if (!src) {
         image_close(img);
         return -EINVAL;
@@ -1037,7 +1057,9 @@ static int work_convert(io_leaf_t *j) {
             break;
         }
         size_t n = total - at < CONVERT_STEP ? (size_t)(total - at) : CONVERT_STEP;
+        double t0 = gs_dbg_now_ms(); // DEBUG(convert-timing)
         rc = gs_source_read_exact(src, at, buf, n);
+        t_read += gs_dbg_now_ms() - t0;
         if (rc) {
             snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)at);
             break;
@@ -1048,8 +1070,12 @@ static int work_convert(io_leaf_t *j) {
                 rc = -EIO;
                 udif_errmsg(j, "write", -ENOSPC);
             }
-        } else if ((rc = udif_writer_append(w, buf, n)) != 0) {
-            udif_errmsg(j, "write", rc);
+        } else {
+            double t1 = gs_dbg_now_ms(); // DEBUG(convert-timing)
+            rc = udif_writer_append(w, buf, n);
+            t_append += gs_dbg_now_ms() - t1;
+            if (rc)
+                udif_errmsg(j, "write", rc);
         }
         at += n;
         io_report_progress(at, total);
@@ -1071,11 +1097,14 @@ static int work_convert(io_leaf_t *j) {
         udif_writer_abort(w);
         return rc;
     }
+    double t_loop = gs_dbg_now_ms(); // DEBUG(convert-timing)
     rc = udif_writer_finish(w, &u->st);
     if (rc) {
         udif_errmsg(j, "finish", rc);
         return rc;
     }
+    double t_finished = gs_dbg_now_ms(); // DEBUG(convert-timing)
+    gs_dbg_counter_t read1 = g_dbg_host_read, open1 = g_dbg_host_open;
     // Read what was written back through the verifier: the decoded bytes
     // must be the ones read (whole sectors: a tail is zero-padded).
     gs_source_t *out = gs_source_host(j->b, NULL);
@@ -1090,6 +1119,23 @@ static int work_convert(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "'%s' did not verify: %s", j->b, msg);
         remove(j->b);
     }
+    // DEBUG(convert-timing): the report files.convert's answer prints.
+    double t_end = gs_dbg_now_ms();
+    snprintf(u->dbg, sizeof u->dbg,
+             "convert-timing: %.0f ms total, %.1f MB in, %.1f MB out\n"
+             "  open source   %8.0f ms\n"
+             "  read source   %8.0f ms  (host reads %llu, %.1f MB, %.0f ms; opens %llu, %.0f ms)\n"
+             "  compress+write%8.0f ms  (deflate %.0f ms; writer output %llu calls, %.1f MB, %.0f ms)\n"
+             "  finish        %8.0f ms\n"
+             "  verify        %8.0f ms  (host reads %llu, %.1f MB, %.0f ms; opens %llu, %.0f ms)",
+             t_end - t_start, (double)total / 1048576.0, (double)u->st.stored_bytes / 1048576.0, t_opened - t_start,
+             t_read, (unsigned long long)(read1.calls - read0.calls), (double)(read1.bytes - read0.bytes) / 1048576.0,
+             read1.ms - read0.ms, (unsigned long long)(open1.calls - open0.calls), open1.ms - open0.ms, t_append,
+             g_dbg_deflate.ms - defl0.ms, (unsigned long long)(g_dbg_udif_write.calls - write0.calls),
+             (double)(g_dbg_udif_write.bytes - write0.bytes) / 1048576.0, g_dbg_udif_write.ms - write0.ms,
+             t_finished - t_loop, t_end - t_finished, (unsigned long long)(g_dbg_host_read.calls - read1.calls),
+             (double)(g_dbg_host_read.bytes - read1.bytes) / 1048576.0, g_dbg_host_read.ms - read1.ms,
+             (unsigned long long)(g_dbg_host_open.calls - open1.calls), g_dbg_host_open.ms - open1.ms);
     return rc;
 }
 
@@ -1290,7 +1336,7 @@ static DEF_METHOD(files_method_convert) {
         if (argc > 6 && argv[6].kind == V_STRING && argv[6].s && *argv[6].s)
             u->origin = gs_strdup(argv[6].s);
     }
-    return udif_dispatch(argv[0].s, argv[1].s, u, work_convert, answer_udif_stats, "files.convert");
+    return udif_dispatch(argv[0].s, argv[1].s, u, work_convert, answer_convert_stats, "files.convert");
 }
 
 // `files.verify(path)` -- decode every chunk of a UDIF and check its
