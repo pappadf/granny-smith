@@ -7,6 +7,11 @@
 # TEST_VARS= :
 #
 #   ROW=<label>     run only the row whose label matches (suite row filter)
+#   ROW_SET=<a,b,…> run only the rows named in this comma list ("*" = all);
+#                   a suite split across directories sets it in each
+#                   wrapper's test.script (`let ROW_SET = "…"` before the
+#                   include). ROW= wins over it, so any row of a split
+#                   suite still runs alone from any of its directories.
 #   REGEN=1         capture goldens instead of matching them
 #   KEEP_GOING=1    a failing row records red + continues (nightly mode);
 #                   default is fail-fast (PR mode)
@@ -23,19 +28,23 @@
 
 # --- run-mode bindings (globals; suites read but don't write these) ----------
 let ROW_FILTER = try($ROW, "")
+let ROW_SET = try($ROW_SET, "")
 let REGEN_MODE = try($REGEN, "0")
 let KEEP_GOING_MODE = try($KEEP_GOING, "0")
 let RESULTS_DIR = try($TEST_RESULTS_DIR, ".")
+let FIXTURE_DIR = try($FIXTURES, "")
 let rows_run = 0
 let rows_failed = 0
 let failed_labels = ""
 
 # --- row harness -------------------------------------------------------------
 
-# True when the row filter is empty or names this row.
+# True when the row filter names this row; without one, when the row set
+# is empty or "*" or contains this row.
 def row_on(label) {
-    if $ROW_FILTER == "" { return true }
-    return $ROW_FILTER == $label
+    if $ROW_FILTER != "" { return $ROW_FILTER == $label }
+    if $ROW_SET == "" || $ROW_SET == "*" { return true }
+    return contains(",${$ROW_SET},", ",${$label},")
 }
 
 # Close a row: `r` is try(row_fn(), "FAILED") — none on success. On
@@ -208,6 +217,43 @@ def wait_match(golden, ceiling, step) {
     return $spent
 }
 
+# A fixed budget that ends early when the screen is already the golden.
+# For the screens a stability wait cannot find (a floppy boot's long quiet
+# stretches, a benchmark's blank phases, "Formatting disk..." held for the
+# whole format): verify mode polls every `step` and returns at the first
+# frame that matches `golden` (or after `ceiling`, leaving the caller's
+# check() to fail with the usual diff); REGEN runs the whole `ceiling`, so a
+# recapture lands exactly where the old fixed budget did.  The caller still
+# check()s afterwards.  Returns the instructions spent.
+def run_until_match(golden, ceiling, step) {
+    if $REGEN_MODE == "1" {
+        scheduler.run $ceiling
+        return $ceiling
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        if machine.screen.matches("${$golden}") { return $spent }
+    }
+    return $spent
+}
+
+# run_until_match, comparing outside the rectangle check_ex() excludes.
+def run_until_match_ex(golden, top, left, bottom, right, ceiling, step) {
+    if $REGEN_MODE == "1" {
+        scheduler.run $ceiling
+        return $ceiling
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        if machine.screen.matches("${$golden}", $top, $left, $bottom, $right) { return $spent }
+    }
+    return $spent
+}
+
 # Run until the screen checksum is unchanged for 3 consecutive polls
 # (the field-proven iifx-install-76 settle()), up to `ceiling`.
 def wait_stable(ceiling) {
@@ -227,6 +273,22 @@ def wait_stable(ceiling) {
         $previous = $now
     }
     return $spent
+}
+
+# Run until the Finder is the current application (low-memory CurApName,
+# $910, reads the Pascal string "Finder"), then until the screen holds
+# still: the boot-to-desktop wait.  It replaces a fixed head start before
+# wait_stable (a stability wait alone can settle on a quiet moment of the
+# extension parade), so it ends as soon as the desktop is up.  `ceiling`
+# bounds each half.
+def wait_desktop(ceiling) {
+    let spent = 0
+    while !(try(machine.cpu.mmu.peek(0x910, 4), 0) == 0x0646696E && try(machine.cpu.mmu.peek(0x914, 2), 0) == 0x6465) {
+        assert $spent < $ceiling "wait_desktop: the Finder never became the current application within ${$ceiling}"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+    }
+    return $spent + wait_stable($ceiling)
 }
 
 # Run until the screen checksum differs from `before` (menu opened,
@@ -401,6 +463,51 @@ def have_media(path) {
 
 # Emit this row's deterministic instruction spend; nightly tooling
 # diffs these against perf-baselines.json.
+# --- checkpoint fixtures (docs/guide/TESTING.md, "Checkpoint fixtures") ------
+# A producer test (config.mk: TEST_PROVIDES := name) saves the machine at a
+# point other tests start from; a consumer (TEST_NEEDS := name) loads it
+# instead of booting there itself.  Only `make test` provides a fixture
+# directory; a test run on its own gets none, so a consumer always has its
+# own way to the same state:
+#
+#   if !fixture_load("ans500-of-prompt") { boot_to_prompt("ans500") }
+#
+# The fixture must be the state that way reaches, byte for byte (the boot is
+# deterministic), or the consumer's assertions would depend on how it ran.
+
+# Save the machine as fixture `name`, when the run has a fixture directory.
+# Written under a temporary name and renamed, so no reader sees part of it.
+def fixture_save(name) {
+    if $FIXTURE_DIR == "" { return false }
+    let f = "${$FIXTURE_DIR}/${$name}.gsc"
+    assert checkpoint.save("${$f}.part") "fixture ${$name}: checkpoint.save failed"
+    files.mv("${$f}.part", $f)
+    echo "fixture: saved ${$name}"
+    return true
+}
+
+# Load fixture `name`; false (and nothing changed) when the run has none.
+def fixture_load(name) {
+    if $FIXTURE_DIR == "" { return false }
+    let f = "${$FIXTURE_DIR}/${$name}.gsc"
+    if !files.path_exists($f) {
+        echo "fixture: ${$name} not available (its producer failed or did not run), booting instead"
+        return false
+    }
+    assert checkpoint.load($f) "fixture ${$name}: checkpoint.load failed"
+    echo "fixture: loaded ${$name}"
+    return true
+}
+
+# The whole test could not run (its media is not in the fetched test data):
+# the "skip:" line the coverage contract reads, and the @@SKIP record the
+# runner turns into `=== SKIP: <test> (<why>) ===` instead of PASS.  `why`
+# starts with the test's name, as the skip: lines always have.
+def skip_test(why) {
+    echo "skip: ${$why}"
+    echo "@@SKIP ${$why}"
+}
+
 def report_perf(row, instr) {
     echo "@@PERF {\"row\":\"${$row}\",\"instr\":${$instr}}"
 }

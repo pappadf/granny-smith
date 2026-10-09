@@ -14,7 +14,7 @@
 // persist and mount all run for real. Same concession as
 // helpers/web2-fs.ts:treeDrag.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';

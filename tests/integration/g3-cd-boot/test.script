@@ -45,7 +45,7 @@ if have_media($cd) {
     assert machine.ata.devices == "- atapi - -" "C2: the ATAPI drive is not on cell 0 device 1"
     finder("c2-atapi", "finder-cd.png")
 } else {
-    echo "skip: g3-cd-boot (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)"
+    skip_test("g3-cd-boot (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
 }
 
 quit

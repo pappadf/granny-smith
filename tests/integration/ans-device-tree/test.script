@@ -6,6 +6,7 @@
 # was there; a missing node means a missing or wrong register, and an extra
 # one means we are pretending to be hardware this machine does not have.
 
+include "../lib/mac.script"
 include "../lib/ans.script"
 
 # Console plumbing (chunked input, the prompt wait, and the two-cold-boot
@@ -150,6 +151,7 @@ def tree(model, ram_kb, bus_clock, l2_label) {
     assert machine.lcd.line(2) == "${$bus_clock_lcd}" "S4: ${$model} CPU banner"
     assert machine.lcd.line(3) == "${$l2_label}" "S4: ${$model} L2 banner"
 
+    report_perf("ans-device-tree/${$model}", scheduler.instr_count)
     echo "ans-device-tree ${$model}: Listing 6-1 matched; ?esb set; AAPL,interrupts confirms the 20+EXT rule"
 }
 

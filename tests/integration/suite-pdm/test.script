@@ -94,8 +94,7 @@ def run_pdm_75(model, id) {
     scheduler.run 450000000
     assert debug.mac.globals.read("BootDrive") != 0 "${$model}: no startup device by 450 M"
     # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
-    scheduler.run 1110000000
-    wait_stable(300000000)
+    wait_desktop(1500000000)
 }
 
 # BARTExists — the ROM's own record of whether it found a NuBus bridge.
@@ -362,8 +361,9 @@ def row_pdm_floppy_800k() {
     machine.floppy.drive[0].insert "${$fd_800}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
     # GCR: the driver's MFM attempts time out first, so the mount takes
-    # longer than the 1.44 MB one (see the note on the fixed budget above).
-    scheduler.run 900000000
+    # longer than the 1.44 MB one (see the note on the fixed budget above);
+    # the budget ends early once the mounted disk is on the screen.
+    run_until_match_ex("goldens/pm7100-floppy-800k.png", 0, 440, 20, 640, 900000000, 50000000)
     wait_stable(1200000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the 800K disk"
     check_ex("goldens/pm7100-floppy-800k.png", 0, 440, 20, 640)
@@ -444,7 +444,7 @@ def row_pdm_floppy_format() {
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
     assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
-    scheduler.run 600000000
+    run_until_match_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640, 600000000, 50000000)
     wait_stable(900000000)
     # "This disk is unreadable... initialize?" -> Initialize -> Continue.
     check_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640)
@@ -479,11 +479,11 @@ def row_pdm_floppy_boot() {
     assert machine.floppy.drive[0].present "boot floppy not in FD0"
     assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
     # Boot blocks, System, extensions, then the Installer's welcome screen.
-    # A fixed budget, not a settle: a floppy boot has long quiet stretches
-    # while the drive works, and a stability wait lands on the first of
-    # them — an empty menu bar, several billion instructions early.
-    scheduler.run 3400000000
-    scheduler.run 4200000000
+    # A budget, not a settle: a floppy boot has long quiet stretches while
+    # the drive works, and a stability wait lands on the first of them — an
+    # empty menu bar, several billion instructions early.  The budget ends
+    # early once the Installer is on the screen.
+    run_until_match_ex("goldens/pm7100-floppy-boot.png", 0, 440, 20, 640, 7600000000, 250000000)
     check_ex("goldens/pm7100-floppy-boot.png", 0, 440, 20, 640)
     report_row("7.6", "swim3", "fd-boot")
     report_perf("suite-pdm/pdm-floppy-boot", scheduler.instr_count)

@@ -24,7 +24,7 @@
 // it is expected to fail, and its job is to say WHERE it stopped.  Frames land
 // in tmp/repro-web/ whatever the outcome.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2 } from '../helpers/web2-fs';

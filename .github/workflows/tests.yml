@@ -112,7 +112,9 @@ jobs:
   # runners.  tests/integration/test-weights.json orders the tests (longest
   # first, so the long suites never start late) and bin-packs them onto the
   # shards; every shard computes the same partition from the same file, and
-  # `make integration-test SHARD=k/3` reproduces one locally.
+  # `make integration-test SHARD=k/4` reproduces one locally.  Fixture
+  # groups (a producer and the tests that restore its checkpoint) pack as
+  # one item, so they always share a shard.
   #
   # The extended tier is on the PR gate as well as the nightly while the
   # integration-test rework settles; in this pool it costs CPU-seconds on
@@ -128,7 +130,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        # The shard count is the length of this list (strategy.job-total
+        # below); the contracts job checks for that many logs.
+        shard: [1, 2, 3, 4]
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:
@@ -166,13 +170,18 @@ jobs:
         env:
           GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
 
-      - name: Run integration tests (shard ${{ matrix.shard }}/3)
+      # --output-sync=target prints each test's output as one block when it
+      # ends, so parallel tests never interleave inside a line (a split
+      # @@COV or @@PERF record, or a PASS line in the middle of another
+      # test's output, would mislead the contracts job).  The price is no
+      # live output from a test until it finishes.
+      - name: Run integration tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
           mkdir -p shard-out
           make integration-test PLATEN=1 WERROR=1 TIER="unit matrix extended" \
-            SHARD=${{ matrix.shard }}/3 TEST_VARS="KEEP_GOING=1" -j"$(nproc)" \
-            2>&1 | tee shard-out/it-shard.log
+            SHARD=${{ matrix.shard }}/${{ strategy.job-total }} TEST_VARS="KEEP_GOING=1" -j"$(nproc)" \
+            --output-sync=target 2>&1 | tee shard-out/it-shard.log
           exit "${PIPESTATUS[0]}"
 
       # The log carries the @@COV / @@PERF records the contracts job checks;
@@ -233,8 +242,8 @@ jobs:
             echo "::notice::No test data (no token): contracts skipped"
             exit 0
           fi
-          if [ "$n" -ne 3 ]; then
-            echo "::error::expected 3 shard logs, found $n"
+          if [ "$n" -ne 4 ]; then
+            echo "::error::expected 4 shard logs (the integration matrix), found $n"
             ls -R shards || true
             exit 1
           fi
@@ -277,6 +286,10 @@ jobs:
             python3 scripts/test-matrix.py --from-results /tmp/it-all.log 2>/dev/null || true
             echo "### Milestone rows (known gaps, non-fatal)"
             grep -h "MILESTONE" /tmp/it-all.log 2>/dev/null || echo "(none)"
+            echo "### Skipped tests (their media is not in the test data)"
+            echo '```'
+            grep -h "^=== SKIP" /tmp/it-all.log 2>/dev/null || echo "(none)"
+            echo '```'
             echo "### Extended-tier coverage"
             echo '```'
             cat /tmp/coverage-extended.log 2>/dev/null || echo "(no extended coverage log)"
@@ -299,10 +312,10 @@ jobs:
   # The web2 frontend (app/web2) is three kinds of job, run in parallel: the
   # static checks and fast tests (ui), the component-gallery screenshots
   # (ui-gallery), and the functional browser end-to-end suite, sharded across
-  # runners (ui-e2e).  Each Playwright shard keeps the suite's single worker,
-  # so no spec runs any differently than it did in one job -- they just run
-  # on three machines.  This is the sole home of browser e2e since the legacy
-  # web UI was retired.
+  # runners (ui-e2e).  Each shard runs its specs in two passes: the parallel
+  # project three at a time, then the serial one (pacing, jitter, real-time
+  # media) alone.  This is the sole home of browser e2e since the legacy web
+  # UI was retired.
   ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -505,12 +518,37 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3)
+      # Two passes over this shard's specs: the `parallel` project with
+      # GS_E2E_WORKERS at once, then the `serial` project (pacing, jitter and
+      # real-time media specs) alone, so nothing else competes with it for
+      # the runner.  The second pass runs even if the first failed, so one red
+      # spec does not hide the other project's results.
+      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3, parallel)
+        id: e2e-parallel
         if: steps.fetch-data.outputs.has_test_data == 'true'
         env:
           CI: true
+          GS_E2E_WORKERS: "3"
+          GS_E2E_JSON: e2e-report/parallel.json
         working-directory: tests/e2e
-        run: npx playwright test --config=playwright.web2.config.ts --shard=${{ matrix.shard }}/3
+        run: npx playwright test --config=playwright.web2.config.ts --project=parallel --shard=${{ matrix.shard }}/3 --pass-with-no-tests --output=test-results/parallel
+
+      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3, serial)
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true' && steps.e2e-parallel.outcome != 'skipped'
+        env:
+          CI: true
+          GS_E2E_JSON: e2e-report/serial.json
+        working-directory: tests/e2e
+        run: npx playwright test --config=playwright.web2.config.ts --project=serial --shard=${{ matrix.shard }}/3 --pass-with-no-tests --output=test-results/serial
+
+      # Per-test durations (the github reporter prints none).
+      - name: Upload e2e report
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: web2-e2e-report-shard-${{ matrix.shard }}
+          path: tests/e2e/e2e-report
+          if-no-files-found: ignore
 
       - name: Upload e2e traces (on failure)
         if: failure()

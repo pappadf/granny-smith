@@ -22,7 +22,7 @@
 // import cancelled midway, or one that runs out of quota, leaves nothing
 // behind -- no stored image, no .part.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as fs from "node:fs";

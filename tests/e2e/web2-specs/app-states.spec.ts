@@ -12,7 +12,7 @@
 // Baselines are platform-sensitive and are recorded only in the CI image
 // (tests/e2e/README.md, "UI screenshots").
 
-import { test, expect, type Page, type Locator } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gsEvalInPage } from "../helpers/web2-eval";
@@ -69,7 +69,9 @@ const TABS = [
   "logs",
 ];
 
-test.use({ viewport: { width: 1280, height: 800 } });
+// Keep web2's default pacing: the toolbar's pacing control is in every
+// screenshot, and the baselines show it at Real.
+test.use({ viewport: { width: 1280, height: 800 }, gsSpeed: null });
 
 // The skin comes from the persisted preference; the preview
 // notice is already dismissed, so no first-visit modal covers the page.

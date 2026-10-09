@@ -7,7 +7,7 @@
 // into one "⋯" menu when they would leave no room for it.  Run in every
 // skin, since each draws the tabs at its own size.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import { MANIFESTS } from "../../../app/web2/src/skins/manifests";
 
 const TABS = [

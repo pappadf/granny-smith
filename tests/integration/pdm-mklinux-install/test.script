@@ -427,7 +427,7 @@ if have_media($dr3_iso) && have_media($drive) {
     phase4_publish()
     report_row("DR3", "ariel", "mklinux-install mach-handoff redhat-installer lilo-conf")
 } else {
-    echo "skip: pdm-mklinux-install (the DR3 disc or the built drive not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("pdm-mklinux-install (the DR3 disc or the built drive not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

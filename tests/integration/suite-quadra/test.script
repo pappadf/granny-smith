@@ -128,8 +128,7 @@ def row_q700_75_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="q700" ram=8192 rom="${$quadra_rom}"
     machine.scsi.attach_hd "${$hd_75}" 0
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
     assert machine.id == "q700" "q700-75-hd: machine.id != q700"
     assert machine.ram == 8192 "q700-75-hd: machine.ram != 8192"
     assert machine.screen.width == 640 "q700-75-hd: not in 640x480"
@@ -330,8 +329,7 @@ def row_q900_75_hd() {
     # (Its device slots are deliberately not asserted: the external chain is
     # empty, and an empty slot does not resolve.)
     machine.scsi2
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
     assert machine.id == "q900" "q900-75-hd: machine.id != q900"
     assert machine.ram == 16384 "q900-75-hd: machine.ram != 16384"
     assert debug.mac.globals.read("MMUFluff") == 14 "q900-75-hd: not identified as Quadra 900"

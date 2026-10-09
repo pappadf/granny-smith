@@ -101,6 +101,14 @@
 # ever re-synthesized (the generator is deterministic, so it only changes
 # if its inputs or the contract do).
 
+# CI runs the suite as four directories so no one test sets the shard
+# floor: this one carries the device and HD-boot rows, and suite-av-sound,
+# suite-av-floppy and suite-av-floppy-boot each set ROW_SET and include
+# this script.  Rows are independent (each one boots its own machine), so
+# the split changes no assertion; perf rows keep their suite-av/ names.
+# ROW= picks any row from any of the four; ROW_SET=* runs them all here.
+let ROW_SET = try($ROW_SET, "av-identity,av-ram-sizing,av-video,av-chime,av-dsp-boot,av-audio-in-device,av-dsp-determinism,av-hd-device,q840av-71-hd-desktop,q660av-71-hd-desktop,av-checkpoint,q840av-71-video-in,q660av-71-video-in")
+
 include "../lib/mac.script"
 
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
@@ -246,14 +254,15 @@ def row_q840av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
 
     assert machine.id == "q840av" "q840av-hd: machine.id != q840av"
     assert debug.mac.globals.read("BootDrive") != 0 "q840av-hd: BootDrive is 0 — nothing booted"
     assert debug.mac.globals.read("SysMap") != 0 "q840av-hd: SysMap unset — no System file opened"
     assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q840av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
-    assert debug.mac.globals.read("Ticks") > 2000 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    # The tick interrupt has run for 10 s of guest time (the desktop is up
+    # at ~950 ticks).
+    assert debug.mac.globals.read("Ticks") > 600 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     # The two models render an identical desktop from the same volume, so the
@@ -283,8 +292,7 @@ def row_av_checkpoint() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
     check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-av.gsc") "av-checkpoint: save failed"
     machine.boot model="q840av" ram=8192 rom="${$av_rom}"
@@ -303,14 +311,15 @@ def row_q660av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
 
     assert machine.id == "q660av" "q660av-hd: machine.id != q660av"
     assert debug.mac.globals.read("BootDrive") != 0 "q660av-hd: BootDrive is 0 — nothing booted"
     assert debug.mac.globals.read("SysMap") != 0 "q660av-hd: SysMap unset — no System file opened"
     assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q660av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
-    assert debug.mac.globals.read("Ticks") > 2000 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    # The tick interrupt has run for 10 s of guest time (the desktop is up
+    # at ~950 ticks).
+    assert debug.mac.globals.read("Ticks") > 600 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q660av-7.1-640x480x8-hd-finder.png")
     # The two models render an identical desktop from the same volume, so the
@@ -344,6 +353,8 @@ def row_video_in(model, golden) {
     machine.rtc.time = 3000000000
     machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
+    # A fixed head start, not wait_desktop(): the captured frame at the
+    # golden instant depends on the boot timeline it was captured on.
     scheduler.run 600000000
     wait_stable(1500000000)
 
@@ -396,8 +407,7 @@ def av_hd_desktop(model) {
     machine.rtc.time = 3000000000
     machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 600000000
-    wait_stable(1500000000)
+    wait_desktop(1500000000)
 }
 
 # ---- av-floppy-mount ----------------------------------------------------------
@@ -413,9 +423,10 @@ def row_av_floppy_mount() {
     assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a one-drive AV"
     machine.floppy.drive[0].insert "${$av_fd_144}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
-    # A fixed budget first: the screen does not change while the drive spins
-    # up and the driver probes the medium, so a bare settle would return early.
-    scheduler.run 600000000
+    # A budget first: the screen does not change while the drive spins up and
+    # the driver probes the medium, so a bare settle would return early.  It
+    # ends early once the mounted disk is on the screen.
+    run_until_match("goldens/q840av-7.1-floppy-mount.png", 600000000, 50000000)
     wait_stable(900000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the floppy"
     check("goldens/q840av-7.1-floppy-mount.png")
@@ -429,7 +440,7 @@ def row_av_floppy_mount() {
 def row_av_floppy_800k() {
     av_hd_desktop("q660av")
     machine.floppy.drive[0].insert "${$av_fd_800}"
-    scheduler.run 600000000
+    run_until_match("goldens/q660av-7.1-floppy-800k.png", 600000000, 50000000)
     wait_stable(900000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the 800K disk"
     check("goldens/q660av-7.1-floppy-800k.png")
@@ -496,10 +507,11 @@ def row_av_floppy_format() {
     click(410, 176)
     wait_stable(300000000)
     machine.adb.keyboard.press 0x24
-    # A fixed budget first: "Formatting disk..." sits unchanged on the screen
-    # for the whole format and verify, so a bare settle returns mid-format.
-    # Format, verify and the HFS write take under 2 G instructions here.
-    scheduler.run 3000000000
+    # Not a bare settle: "Formatting disk..." sits unchanged on the screen
+    # for the whole format and verify, so a settle returns mid-format.
+    # Format, verify and the HFS write take under 2 G instructions here;
+    # the 3 G budget ends early once the formatted disk is on the screen.
+    run_until_match("goldens/q840av-7.1-floppy-format.png", 3000000000, 100000000)
     wait_stable(900000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy"
     assert machine.floppy.drive[0].present "the disk left the drive during the format"
@@ -518,9 +530,9 @@ def row_av_floppy_boot() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.floppy.drive[0].insert "${$av_fd_boot}"
     assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
-    # A fixed budget, not a settle: a floppy boot has long quiet stretches.
-    scheduler.run 4000000000
-    scheduler.run 4000000000
+    # A budget, not a settle: a floppy boot has long quiet stretches.  It
+    # ends early once the Installer is on the screen.
+    run_until_match("goldens/q840av-7.6-floppy-boot.png", 8000000000, 250000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} booting from the floppy"
     check("goldens/q840av-7.6-floppy-boot.png")
     report_row("7.6", "civic", "fd-boot")
@@ -544,6 +556,8 @@ def row_av_beep() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
+    # A fixed head start, not wait_desktop(): the sound capture is
+    # sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run 600000000
     wait_stable(1500000000)
 
@@ -600,6 +614,8 @@ def row_av_tts() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
+    # A fixed head start, not wait_desktop(): the sound capture is
+    # sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run 600000000
     wait_stable(1500000000)
 
@@ -678,6 +694,8 @@ def row_av_sound_in() {
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "tone"
     assert machine.audioin.connected "av-sound-in: tone source not connected"
+    # A fixed head start, not wait_desktop(): the sound capture is
+    # sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run 600000000
     wait_stable(1500000000)
 
@@ -744,6 +762,8 @@ def sr_bring_up() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "none"
+    # A fixed head start, not wait_desktop(): the sound capture is
+    # sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run 600000000
     wait_stable(1500000000)
 

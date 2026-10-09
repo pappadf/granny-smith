@@ -189,9 +189,10 @@ check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
 # 250 M grid instead, the result frame's last content change is at +5.5 G
 # and it is then identical (outside the excluded clock) all the way to
 # +15 G, so 6 G lands half a gigacycle past the end with 9 G of slack
-# above it.
+# above it.  The budget ends early once the ratings are on the screen
+# (sampled on a 250 M grid, as measured).
 click(489, 273)
-scheduler.run 6000000000
+run_until_match_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640, 6000000000, 250000000)
 check_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640)
 
 report_row("7.5", "ariel+24ac", "hd-boot fd-mount ppc-launch display-benchmark")

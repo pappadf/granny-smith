@@ -28,7 +28,7 @@
 // Runs against Chromium's fake capture device (a periodic beep), so no
 // hardware is involved.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { terminalRun } from "../helpers/terminal";
@@ -40,6 +40,8 @@ const AV_HD = path.join(DATA, "systems", "system_7_1_77mb_av.img");
 const AV_HD_NAME = "system_7_1_77mb_av.dmg";
 
 test.use({
+  // Real-time media feeds the guest: keep web2's default pacing.
+  gsSpeed: null,
   launchOptions: {
     args: [
       "--use-gl=angle",

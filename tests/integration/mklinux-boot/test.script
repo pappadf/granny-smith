@@ -193,8 +193,9 @@ def row_pm8100() { ride_to_login("pm8100", 40960) }
 # the login typing lands nowhere, nothing is written, and prove_root_is_mounted
 # fails loudly.  Measured on this image: the 68k address space is still
 # answering at 0.5 G and gone by 1.0 G, and the console reaches its final state
-# by 2.0 G (screen checksum identical at 2.0, 2.5 and 3.0 G).  3 G is the
-# margin on that.
+# by 2.0 G (screen checksum identical at 2.0, 2.5 and 3.0 G).  So the row runs
+# 2 G and then waits for the console to hold still (up to 1 G more, the old
+# 3 G total).
 #
 # Do NOT convert this back into a poll on the address-space check.  Written
 # that way it broke on the first iteration and reported a hand-off 20 M
@@ -204,7 +205,8 @@ def row_pm8100() { ride_to_login("pm8100", 40960) }
 # assertion AFTER the run it says exactly what it should.
 def row_pm7500() {
     power_on_tnt("pm7500", 32768)
-    scheduler.run 3000000000
+    scheduler.run 2000000000
+    wait_stable(1000000000)
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7500: still in the 68k address space — the Booter never handed off"
     assert machine.screen.depth == 32 "pm7500: ${machine.screen.depth} bpp, want 32"
     prove_root_is_mounted("pm7500")
