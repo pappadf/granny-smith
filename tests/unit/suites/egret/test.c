@@ -435,6 +435,19 @@ TEST(test_a_new_command_supersedes_a_parked_reply) {
     egret_delete(eg);
 }
 
+// A restore must arm nothing: the tick (and any watchdog in flight) is in
+// the scheduler's checkpointed queue and comes back from there.  Arming the
+// tick in egret_init as well ran two self-perpetuating 1 s chains.
+TEST(test_restore_arms_no_events) {
+    memset(s_events, 0, sizeof s_events);
+    s_type_count = 0;
+    egret_t *eg = egret_init(NULL, NULL, (struct adb *)1, (struct scheduler *)1, (checkpoint_t *)1);
+    ASSERT_TRUE(eg != NULL);
+    for (int i = 0; i < MAX_EVENTS; i++)
+        ASSERT_TRUE(!s_events[i].live);
+    egret_delete(eg);
+}
+
 int main(void) {
     RUN(test_an_unclaimed_response_does_not_wedge_the_transport);
     RUN(test_auto_poll_runs_on_data_not_on_a_clock);
@@ -442,6 +455,7 @@ int main(void) {
     RUN(test_a_reaped_tick_is_dropped_not_re_presented);
     RUN(test_host_engagement_cancels_the_watchdog);
     RUN(test_a_new_command_supersedes_a_parked_reply);
+    RUN(test_restore_arms_no_events);
     printf("[PASS] All egret tests passed\n");
     return 0;
 }

@@ -318,18 +318,31 @@ def cell_str(c):
             f"x{c.get('depth','?')} addr32={str(c.get('addr32','?')).lower()}")
 
 
+RUNNING = re.compile(r"=== Running(?: \(valgrind\))?: .* \(([^()]+)\) ===$")
+
+
 def read_cov(log_paths):
-    """Collect @@COV records from test output logs."""
-    cells, skips = [], []
+    """Collect @@COV records from test output logs, and which test directories
+    printed a "skip:" line.
+
+    A skip line belongs to the test whose "=== Running: ... (<dir>) ===" header
+    precedes it, so a parallel run must keep each test's output together
+    (make --output-sync=target, as CI runs it)."""
+    cells, skipped_in = [], set()
     for lp in log_paths:
         text = Path(lp).read_text(errors="replace")
+        test = None
         for line in text.splitlines():
+            m = RUNNING.match(line)
+            if m:
+                test = m.group(1)
+                continue
             m = re.search(r"@@COV (\{.*\})", line)
             if m:
                 cells.append(json.loads(m.group(1)))
-            elif line.startswith("skip:"):
-                skips.append(line.strip())
-    return cells, skips
+            elif line.startswith("skip:") and test:
+                skipped_in.add(test)
+    return cells, skipped_in
 
 
 def read_targets(path):
@@ -364,7 +377,7 @@ def check_perf(baseline_path, log_paths):
             if m:
                 rec = json.loads(m.group(1))
                 seen[rec["row"]] = rec["instr"]
-            m = re.match(r"=== Running(?: \(valgrind\))?: .* \(([^()]+)\) ===$", line)
+            m = RUNNING.match(line)
             if m:
                 ran.add(m.group(1))
             m = re.match(r"skip: (\S+)", line)
@@ -417,9 +430,10 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
     because neither means coverage regressed:
       * the owing suite does not exist yet (branch work in progress) —
         derived from the filesystem, so it cannot be faked with a flag;
-      * the cell is media_gated and its row printed a "skip:" line,
+      * the cell is media_gated and its own suite printed a "skip:" line,
         i.e. the private test data is not present in this checkout (a row
-        may land before its data does);
+        may land before its data does) -- a skip in any other test does not
+        excuse it;
       * the cell carries a `blocked` reason — an emulator defect makes it
         unreachable today (the cell-level twin of a milestone row). The
         reason is printed on every run so the debt stays visible, and
@@ -427,7 +441,7 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
         reviewable diff rather than something a rerun can do quietly.
     """
     declared = read_targets(target_path)
-    achieved, skips = read_cov(log_paths)
+    achieved, skipped_in = read_cov(log_paths)
     by_key_declared = {cell_key(c): c for c in declared}
     by_key_achieved = {cell_key(c): c for c in achieved}
 
@@ -452,7 +466,7 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
             other_tier.append(c)
         elif c.get("blocked"):
             blocked.append(c)
-        elif c.get("media_gated") and skips:
+        elif c.get("media_gated") and suite in skipped_in:
             gated.append(c)
         else:
             failed.append(c)

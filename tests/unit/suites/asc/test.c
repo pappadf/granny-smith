@@ -224,6 +224,32 @@ void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const ch
     (void)iface;
     (void)device;
 }
+// --- checkpoint: an in-memory byte stream (save appends, restore replays) ---
+static uint8_t s_cp_buf[4096];
+static size_t s_cp_len, s_cp_pos;
+
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_len + size <= sizeof(s_cp_buf));
+    memcpy(s_cp_buf + s_cp_len, data, size);
+    s_cp_len += size;
+}
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_pos + size <= s_cp_len);
+    memcpy(data, s_cp_buf + s_cp_pos, size);
+    s_cp_pos += size;
+}
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return false;
+}
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+}
+
 // ============================================================================
 // Harness helpers
 // ============================================================================
@@ -565,6 +591,25 @@ TEST(test_producer_stops_when_off) {
     ASSERT_TRUE(s_cancels >= 1);
 }
 
+// Restoring a running chip must not arm the producer: its pending fifo_drain
+// event comes back from the scheduler's checkpointed queue, and arming it in
+// asc_init as well ran two self-perpetuating chains (audio at 2x rate).
+TEST(test_restore_does_not_rearm_producer) {
+    fresh();
+    wr(R_MODE, 1);
+    ASSERT_TRUE(s_cb != NULL);
+    s_cp_len = s_cp_pos = 0;
+    asc_checkpoint(g_asc, (checkpoint_t *)0x1);
+    asc_delete(g_asc);
+
+    s_cb = NULL;
+    g_asc = asc_init(NULL, (scheduler_t *)0x1, (checkpoint_t *)0x1);
+    ASSERT_TRUE(g_asc != NULL);
+    g_if = asc_get_memory_interface(g_asc);
+    ASSERT_EQ_INT(1, rd(R_MODE) & 3); // the chip is still running...
+    ASSERT_TRUE(s_cb == NULL); // ...but no second producer event was armed
+}
+
 // ============================================================================
 
 int main(void) {
@@ -578,6 +623,7 @@ int main(void) {
     RUN(test_producer_wavetable_free_run);
     RUN(test_producer_rate_switch);
     RUN(test_producer_stops_when_off);
+    RUN(test_restore_does_not_rearm_producer);
     fprintf(stderr, "asc: all tests passed\n");
     return 0;
 }

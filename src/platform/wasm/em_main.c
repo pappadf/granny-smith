@@ -515,7 +515,9 @@ void em_main_tick(void) {
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
-    // one here (bounded) instead of at the next RAF.
+    // one here (bounded) instead of at the next RAF.  The poll may have
+    // swapped the machine, so ask for the scheduler again.
+    sched = system_scheduler();
     if (!(sched && scheduler_is_running(sched)))
         served += mailbox_idle_wait();
     tick_poll_ms_current = emscripten_get_now() - poll_t0;

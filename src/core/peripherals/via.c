@@ -363,6 +363,11 @@ static void set_t2c_high(via_t *restrict via, uint8_t value) {
     if ((via->acr & 0x20) == 0) { // one-shot interval timer
         arm_timer(via, TIMER_2, counter_value, &t2_callback);
     } else { // pulse counting timer
+        // Pulse counting is not modelled: hold the loaded count.  Drop any arm
+        // left over from interval mode, or read_timer keeps decrementing from
+        // that stale start point (and t2_callback would still fire).
+        remove_event(via->scheduler, &t2_callback, via);
+        via->timers[TIMER_2].started = false;
         via->timers[TIMER_2].counter = counter_value;
     }
 }
@@ -1081,8 +1086,8 @@ void via_cancel_pending_shift(via_t *via) {
 
 // Set an input pin value on a VIA port
 void via_input(via_t *restrict via, int port, int pin, bool value) {
-    GS_ASSERT(port < 2);
-    GS_ASSERT(pin < 8);
+    GS_ASSERT(port >= 0 && port < 2);
+    GS_ASSERT(pin >= 0 && pin < 8);
 
     if (value)
         via->ports[port].input |= 1 << pin;

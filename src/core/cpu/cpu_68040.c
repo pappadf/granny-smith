@@ -372,6 +372,8 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
                 if (EA_MODE == 4) {                                                                                    \
                     AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
                     fpu_fsave040(_fpu, AY);                                                                            \
+                    if (__builtin_expect(g_bus_error_pending, 0))                                                      \
+                        AY += 4; /* roll back for the retry */                                                         \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_fsave040(_fpu, _ea);                                                                           \
@@ -388,7 +390,8 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
                 fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 3) {                                                                                    \
                     int _sz = fpu_frestore040(_fpu, AY);                                                               \
-                    AY += (uint32_t)_sz;                                                                               \
+                    if (__builtin_expect(!g_bus_error_pending, 1))                                                     \
+                        AY += (uint32_t)_sz;                                                                           \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
                     fpu_frestore040(_fpu, _ea);                                                                        \
@@ -452,8 +455,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
-    cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \

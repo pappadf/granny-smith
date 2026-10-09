@@ -42,6 +42,15 @@ describe('CheckpointResumePrompt', () => {
     await expect(promise).resolves.toBe(false);
   });
 
+  it('a second prompt settles the first as declined', async () => {
+    const first = showCheckpointPrompt();
+    const second = showCheckpointPrompt();
+    await expect(first).resolves.toBe(false);
+    expect(checkpointPrompt.shown).toBe(true);
+    resolveCheckpointPrompt(true);
+    await expect(second).resolves.toBe(true);
+  });
+
   it('resolveCheckpointPrompt(false) hides the modal', () => {
     checkpointPrompt.shown = true;
     resolveCheckpointPrompt(false);

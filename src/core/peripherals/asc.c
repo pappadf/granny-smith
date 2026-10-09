@@ -762,10 +762,9 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     if (scheduler)
         scheduler_new_event_type(scheduler, "asc", asc, "fifo_drain", &asc_fifo_drain_callback);
 
-    // If restoring from a checkpoint with the chip running, restart the
-    // producer event (rate comes from the restored clock-rate register)
-    if (asc->mode == MODE_FIFO || asc->mode == MODE_WAVETABLE)
-        asc_schedule_fifo_drain(asc);
+    // Do NOT re-arm the producer on restore: a running chip's pending
+    // fifo_drain event is in the scheduler's checkpointed queue and is
+    // re-inserted from there; arming it here too ran two chains (2x rate).
 
     // Open the shared host audio stream: mono int16 at the chip's rate
     audio_out_open(asc_rate_hz(asc), 1);

@@ -244,6 +244,24 @@ TEST(a_length_byte_past_the_end_does_not_read_out_of_bounds) {
     ASSERT_EQ_INT(s.out_len, 3);
 }
 
+// A zero length leaves no room for the code byte.  It used to pass both bounds
+// checks and read out[i + 2], one past what arrived; it is now malformed and
+// rejected, and the rest of the stream still parses.
+TEST(a_zero_length_extended_message_is_rejected) {
+    scsi_msgsession_t s;
+    scsi_msg_reset(&s);
+    const uint8_t msg[] = {0xC0, 0x01, 0x00};
+    feed(&s, msg, sizeof(msg));
+
+    scsi_msg_result_t r;
+    scsi_msg_complete(&s, &SYM_CAPS, &r);
+    ASSERT_TRUE(r.identify && !r.incomplete && !r.sdtr && !r.wdtr);
+    ASSERT_EQ_INT(s.out_len, 0);
+    uint8_t reply[8];
+    ASSERT_EQ_INT((int)drain(&s, reply, sizeof(reply)), 1);
+    ASSERT_EQ_INT(reply[0], 0x07); // MESSAGE REJECT
+}
+
 // ---- overflow ---------------------------------------------------------------
 
 // Neither chip reported a full buffer; both dropped the byte and carried on,
@@ -325,6 +343,7 @@ int main(void) {
     RUN(message_reject_from_the_initiator_is_reported);
     RUN(a_half_arrived_extended_message_waits_for_the_rest);
     RUN(a_length_byte_past_the_end_does_not_read_out_of_bounds);
+    RUN(a_zero_length_extended_message_is_rejected);
     RUN(collect_reports_a_full_buffer_instead_of_dropping_silently);
     RUN(reset_clears_a_reply_that_was_never_read);
     RUN(a_second_negotiation_replaces_the_first_reply);

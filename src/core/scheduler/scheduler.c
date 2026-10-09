@@ -1568,6 +1568,15 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     // authentic integer CPI — paced/turbo budgets stay bit-identical)
     uint64_t remaining_cycles = (n * s->cpi_eff_x256) >> 8;
 
+    // The probes below run after each instruction, so the one at the PC
+    // this run starts on needs its own breakpoint check (it also lets the
+    // instruction a breakpoint stopped on run once).
+    if (debugger_active && remaining_cycles > 0 && debug_break_on_run_entry()) {
+        remaining_cycles = 0;
+        s->stop_reason = SCHED_STOP_BREAKPOINT;
+        s->running = false;
+    }
+
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
 
@@ -1607,7 +1616,9 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         }
 
         // Convert cycles to instructions for sprint
-        uint32_t instr_to_exec = (uint32_t)cycles_to_instructions(s, cycles_to_execute);
+        // Clamp rather than cast: a huge budget must not wrap to a tiny sprint
+        uint64_t instr_budget = cycles_to_instructions(s, cycles_to_execute);
+        uint32_t instr_to_exec = instr_budget > UINT32_MAX ? UINT32_MAX : (uint32_t)instr_budget;
         if (cycles_to_execute > 0 && instr_to_exec == 0)
             instr_to_exec = 1;
 

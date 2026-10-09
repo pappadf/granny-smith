@@ -11,8 +11,11 @@ export const checkpointPrompt: PromptState = $state({ shown: false });
 let resolver: ((accept: boolean) => void) | null = null;
 
 // Open the prompt and return a promise that settles when the user clicks
-// Resume or Discard.
+// Resume or Discard, or the prompt is withdrawn (resolveCheckpointPrompt
+// (false) closes it from code too).  A prompt still open is settled as
+// declined first, so no caller waits forever on an orphaned promise.
 export function showCheckpointPrompt(): Promise<boolean> {
+  resolver?.(false);
   checkpointPrompt.shown = true;
   return new Promise<boolean>((resolve) => {
     resolver = resolve;

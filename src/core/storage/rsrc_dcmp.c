@@ -853,7 +853,7 @@ static uint32_t bitr_get(bitr_t *br, unsigned n) {
 // True once the reader has consumed more bits than the payload holds.  Used
 // only as a corruption guard; a well-formed stream stops on actual_size.
 static bool bitr_overrun(const bitr_t *br) {
-    return (br->bit >> 3) > br->len;
+    return br->bit > (uint64_t)br->len * 8; // bit-precise: a partial byte is an overrun too
 }
 
 // One entry of a static prefix code.  `nbits`/`code` are the prefix; the

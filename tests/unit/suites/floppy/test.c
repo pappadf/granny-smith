@@ -343,6 +343,62 @@ TEST(test_write_through_detects_sector_boundary) {
     ASSERT_TRUE(completion_at > 700);
 }
 
+extern size_t stub_disk_size;
+extern int stub_write_count;
+extern size_t stub_last_write_offset;
+
+// A failed track build (here: the image read comes up short) must not leave
+// its unfilled buffer cached.  It used to: the next call saw track->data set
+// and handed the guest uninitialised heap as track nibbles.
+TEST(test_track_build_failure_caches_nothing) {
+    static floppy_drive_t drive;
+    memset(&drive, 0, sizeof drive);
+    image_t img;
+    memset(&img, 0, sizeof img);
+    img.type = image_fd_ds;
+    stub_disk_size = 0; // every read fails
+    ASSERT_TRUE(iwm_track_data(&drive, &img, 0, NULL) == NULL);
+    ASSERT_TRUE(drive.tracks[0][0].data == NULL);
+    ASSERT_TRUE(iwm_track_data(&drive, &img, 0, NULL) == NULL);
+}
+
+// Write a whole GCR sector with header side `hdr_side` through the data
+// register onto a 400K (single-sided) medium; returns the image writes made.
+static int write_through_side(int hdr_side) {
+    static floppy_drive_t drive;
+    memset(&drive, 0, sizeof drive);
+    drive.write_hdr_start = -1;
+    image_t img;
+    memset(&img, 0, sizeof img);
+    img.type = image_fd_ss;
+    img.writable = true;
+    stub_disk_size = 400 * 1024;
+    stub_write_count = 0;
+
+    uint8_t data[512] = {0}, tag[12] = {0};
+    floppy_track_t *t = &drive.tracks[0][0];
+    t->size = iwm_track_length(0);
+    t->data = malloc(t->size);
+    ASSERT_TRUE(t->data != NULL);
+    memset(t->data, 0xFF, t->size);
+    uint8_t *end = encode_sector(t->data, tag, data, 0, 3, hdr_side, 1);
+    int len = (int)(end - t->data);
+    for (int pos = 1; pos <= len; pos++) {
+        drive.offset = pos;
+        iwm_write_through(&drive, &img, 0, 0);
+    }
+    free(t->data);
+    return stub_write_count;
+}
+
+// A side-1 header has no home on single-sided media.  iwm_disk_image_offset
+// ignores the side there, so accepting it overwrote side 0 of the same track.
+TEST(test_write_through_rejects_side_beyond_medium) {
+    ASSERT_EQ_INT(write_through_side(0), 1);
+    ASSERT_EQ_INT((int)stub_last_write_offset, 3 * 512);
+    ASSERT_EQ_INT(write_through_side(1), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Address -> register decode
 // ---------------------------------------------------------------------------
@@ -656,6 +712,8 @@ int main(void) {
     RUN(test_media_sector_bounds);
     RUN(test_mfm_sector_layout);
     RUN(test_write_through_detects_sector_boundary);
+    RUN(test_track_build_failure_caches_nothing);
+    RUN(test_write_through_rejects_side_beyond_medium);
     RUN(test_register_strides);
     printf("All floppy tests passed\n");
     return 0;

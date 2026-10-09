@@ -9,8 +9,10 @@
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
+#include "value_format.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -90,6 +92,24 @@ TEST(test_division_and_modulo) {
     v = eval("1 / 0");
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
+
+    // So is float modulo by zero (fmod would answer NaN).
+    v = eval("1.5 % 0.0");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+// A non-finite float renders as null in the JSON modes (JSON has no inf or
+// nan) and as text elsewhere.
+TEST(test_nonfinite_float_json_is_null) {
+    char buf[32];
+    value_t v = val_float(1.0 / 0.0);
+    value_format_into(&v, VFMT_JSON, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "inf") == 0);
 }
 
 TEST(test_bitwise_ops) {
@@ -318,6 +338,64 @@ TEST(test_interpolate_no_braces_passthrough) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("plain string", &ctx);
     ASSERT_TRUE(strcmp(v.s, "plain string") == 0);
+    value_free(&v);
+}
+
+// Binding callback answering every name with its length, so a lookup of a
+// truncated name would succeed (and splice the wrong number).
+static value_t any_binding(void *ud, const char *name) {
+    (void)ud;
+    return val_int((int64_t)strlen(name));
+}
+
+// A `$name` splice longer than the identifier buffer is an error, not a
+// lookup of its first 63 characters (a different binding).
+TEST(test_interpolate_long_splice_name_errors) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = any_binding;
+    char src[100];
+    src[0] = '$';
+    memset(src + 1, 'a', 70);
+    src[71] = '\0';
+    value_t v = expr_interpolate_string(src, &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(strstr(v.err, "too long") != NULL);
+    value_free(&v);
+    src[64] = '\0'; // 63 characters: fits
+    v = expr_interpolate_string(src, &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "63") == 0);
+    value_free(&v);
+}
+
+// Deep nesting is an error, not a C-stack overflow: brackets, parentheses,
+// prefix operators and ternary else-chains all count; ordinary depth parses.
+TEST(test_deep_nesting_is_an_error) {
+    enum { N = 20000 };
+    char *src = (char *)malloc(2 * N + 2);
+    ASSERT_TRUE(src != NULL);
+    const char opens[] = {'(', '[', '-'};
+    for (size_t k = 0; k < sizeof(opens); k++) {
+        memset(src, opens[k], N);
+        src[N] = '1';
+        memset(src + N + 1, opens[k] == '(' ? ')' : opens[k] == '[' ? ']' : ' ', N);
+        src[2 * N + 1] = '\0';
+        value_t v = eval(src);
+        ASSERT_TRUE(val_is_error(&v));
+        ASSERT_TRUE(strstr(v.err, "nested too deeply") != NULL);
+        value_free(&v);
+    }
+    // A long `0 ? 0 : 0 ? 0 : ... : 1` else-chain
+    size_t n = 0;
+    for (int i = 0; i < N / 8; i++)
+        n += (size_t)sprintf(src + n, "0?0:");
+    sprintf(src + n, "1");
+    value_t v = eval(src);
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+    free(src);
+    v = eval("((((((((((((((((((((1))))))))))))))))))))");
+    ASSERT_TRUE(!val_is_error(&v));
     value_free(&v);
 }
 
@@ -742,5 +820,8 @@ int main(void) {
     RUN(test_format_spec_without_ternary_unaffected);
     RUN(test_range_builtin_matches_dotdot);
     RUN(test_range_step_zero_is_refused);
+    RUN(test_interpolate_long_splice_name_errors);
+    RUN(test_deep_nesting_is_an_error);
+    RUN(test_nonfinite_float_json_is_null);
     return 0;
 }

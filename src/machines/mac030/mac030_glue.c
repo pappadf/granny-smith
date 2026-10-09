@@ -188,7 +188,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         return -1;
     }
     cfg->machine_context = st;
-    st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
 
     mac030_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
@@ -346,7 +345,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     }
 }
 
-// Hardware RESET: ROM overlay back on, MMU disabled.
+// Hardware RESET: ROM overlay back on, shared devices reset.
 // The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
 // pulls Overlay high, so the memory controller uses the ROM overlay map
 // again (Guide p.256), plus the devices every board shares.

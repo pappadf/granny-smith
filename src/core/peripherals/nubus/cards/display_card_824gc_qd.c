@@ -421,6 +421,15 @@ static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
     }
 }
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
+    // Clamp to the clip mask, which bounds every pixel write anyway: the
+    // pattern phase is computed from absolute x, so this changes no pixel, but
+    // a guest span of 64K columns now costs a screen row.
+    if (y < 0 || y >= GC824_CLIP_ROWS)
+        return;
+    if (l < 0)
+        l = 0;
+    if (r > GC824_CLIP_STRIDE * 8)
+        r = GC824_CLIP_STRIDE * 8;
     if (p->gc_pat_kind[p->gc_pat_slot & 3] == 3) {
         // Cached PixPat tile: port-anchored, power-of-two wrap (QD requires
         // PixPat bounds to be powers of two).  patType != 0 patterns are never
@@ -553,6 +562,12 @@ static void gc_cursor_shield(display_card_824gc_priv_t *p, int t, int l, int b, 
 }
 static void gc_fill_rect(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
     gc_cursor_shield(p, t, l, b, r);
+    // Rows off the clip mask draw nothing (gc_px/gc_px_val reject them); skip
+    // them here so a guest rect of +-32K rows costs screen rows, not 64K.
+    if (t < 0)
+        t = 0;
+    if (b > GC824_CLIP_ROWS)
+        b = GC824_CLIP_ROWS;
     for (int y = t; y < b; y++)
         gc_span(p, y, l, r);
 }
@@ -920,6 +935,11 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int 
     while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
         d += 2;
         for (;;) {
+            // Bounded by the record, as gc_mask_and_region does: past `dend`
+            // (and past the DRAM, where dram_be16 reads 0) the 0x7FFF that
+            // ends a band never comes, and this loop ran until `d` wrapped.
+            if (d + 2 > dend)
+                return;
             int x = (int16_t)dram_be16(p, d);
             d += 2;
             if (x == 0x7FFF)
@@ -940,10 +960,14 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int 
                 ninv++;
             }
         }
+        if (d + 2 > dend)
+            return;
         int nyraw = (int16_t)dram_be16(p, d);
         int ny = (nyraw == 0x7FFF) ? 0x7FFF : nyraw + oy;
         int bandBot = (ny == 0x7FFF) ? bot : ny;
-        for (int yy = y; yy < bandBot; yy++)
+        if (bandBot > GC824_CLIP_ROWS)
+            bandBot = GC824_CLIP_ROWS;
+        for (int yy = (y < 0 ? 0 : y); yy < bandBot; yy++)
             for (int s = 0; s + 1 < ninv; s += 2)
                 gc_span(p, yy, inv[s], inv[s + 1]);
         y = ny;
@@ -1266,7 +1290,14 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
     if (base < p->gcp_base || count == 0)
         return;
     uint32_t off = GC824_DRAM_CB + (base - p->gcp_base);
-    uint32_t end = off + count;
+    // `count` is a guest-published longword (CB+$1C0, or the func $26/$38
+    // byteCount).  The stream lives in the queue block GCQD carves from the
+    // CB free area, so never walk past that block's end: unbounded, one
+    // DRAM store could queue hundreds of millions of opcode interpretations.
+    const uint32_t qend = GC824_CB_FREE_END_LOCAL - GC824_DRAM_OFFSET;
+    if (off >= qend)
+        return;
+    uint32_t end = count < qend - off ? off + count : qend;
     // The accepted port's local -> global origin (func $2D staged bounds):
     // every queued coordinate is port-LOCAL and must be shifted.  KNOWN
     // LIMIT: GCQD's SetOrigin stub ($23AC) flushes the queue (func $26) but

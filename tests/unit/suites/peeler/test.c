@@ -611,6 +611,31 @@ TEST(test_cpt_nesting_cap_is_exact) {
     free(a);
 }
 
+// A folder whose count overruns its parent's makes the walker list more
+// entries than the 16-bit directory total could ever describe: one folder
+// claiming 65535 children, all empty folders, is 65536 entries, and refused.
+TEST(test_cpt_entry_count_is_capped) {
+    size_t n = 65536;
+    size_t len = 8 + 7 + n * 3;
+    uint8_t *a = calloc(len, 1);
+    ASSERT_TRUE(a != NULL);
+    a[0] = 0x01;
+    a[1] = 0x01;
+    put32(a + 4, 8);
+    put16(a + 8 + 4, 1); // the directory says one entry
+    uint8_t *e = a + 8 + 7;
+    e[0] = 0x80;
+    put16(e + 1, 65535);
+    for (size_t i = 1; i < n; i++)
+        e[i * 3] = 0x80; // an empty folder with no children
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
 // ============================================================================
 // StuffIt 5 archives
 // ============================================================================
@@ -787,6 +812,34 @@ TEST(test_sit5_lzw_literals_round_trip) {
     ASSERT_EQ_INT(1, list.count);
     ASSERT_EQ_INT((int)n, (int)list.files[0].data_fork.size);
     ASSERT_TRUE(memcmp(list.files[0].data_fork.data, text, n) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
+// StuffIt 5, method 2: the first code after a reset must be a literal -- the
+// dictionary is empty.  A stream opening with code 300 then 'A' used to emit
+// "A" through a never-built entry 300; it is now refused as corrupt.
+TEST(test_sit5_lzw_first_code_must_be_a_literal) {
+    static const unsigned codes[] = {300, 'A'};
+    uint8_t packed[8] = {0};
+    size_t bit = 0;
+    for (size_t i = 0; i < 2; i++)
+        for (int b = 0; b < 9; b++, bit++)
+            if ((codes[i] >> b) & 1)
+                packed[bit / 8] |= (uint8_t)(1u << (bit % 8));
+    sit5_spec sp = {.name = "L",
+                    .data = packed,
+                    .dlen = (uint32_t)((bit + 7) / 8),
+                    .h1_len = -1,
+                    .d_algo = 2,
+                    .d_raw = (const uint8_t *)"A",
+                    .d_raw_len = 1};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    peel_err_free(err);
     peel_file_list_free(&list);
     free(a);
 }
@@ -1372,6 +1425,87 @@ TEST(test_sit_classic_long_folder_name_is_clamped) {
     expect_single_name(a, sizeof(a), want);
 }
 
+// Classic StuffIt: an archive whose header counts more entries than the input
+// holds is truncated, and refused -- not listed as the entries that remain.
+TEST(test_sit_classic_truncated_entry_count_is_refused) {
+    uint8_t a[22 + 112 + 1] = {0};
+    memcpy(a, "SIT!", 4);
+    put16(a + 4, 2); // two top-level entries, but only one follows
+    put32(a + 6, sizeof(a));
+    memcpy(a + 10, "rLau", 4);
+    uint8_t *h = a + 22; // the file "f": stored data fork, one byte
+    h[2] = 1;
+    h[3] = 'f';
+    put32(h + 88, 1);
+    put32(h + 96, 1);
+    put16(h + 102, crc16_arc((const uint8_t *)"x", 1));
+    h[112] = 'x';
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_sit(a, sizeof(a), &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+}
+
+// StuffIt 5: a file under more nested folders than the old fixed 32-entry
+// folder map held keeps its full path; the map used to drop the deeper
+// folders, and the file surfaced at the top level.  Each folder (flags bit 6)
+// names the previous one as its parent (header 1, byte 26).
+TEST(test_sit5_deep_folder_paths_resolve) {
+    enum { N = 40 };
+    size_t len = SIT5_TOP_SIZE + N * (48 + 3 + SIT5_H2_SIZE) + (48 + 1 + SIT5_H2_SIZE) + 1;
+    uint8_t *a = calloc(len, 1);
+    ASSERT_TRUE(a != NULL);
+    memcpy(a, "StuffIt (c)1997-2001", 20);
+    memcpy(a + 20, " Aladdin Systems, Inc., http://www.aladdinsys.com/StuffIt/", 58);
+    a[78] = '\r';
+    a[79] = '\n';
+    put16(a + 92, 1); // entry count: folders add their (zero) children
+    put32(a + 94, SIT5_TOP_SIZE);
+    uint32_t off = SIT5_TOP_SIZE, parent = 0;
+    char want[512] = "";
+    for (int i = 0; i < N + 1; i++) {
+        bool folder = i < N;
+        char name[4];
+        snprintf(name, sizeof(name), folder ? "d%02d" : "f", i);
+        size_t nl = strlen(name);
+        uint8_t *h1 = a + off;
+        put32(h1 + 0, 0xA5A5A5A5u);
+        h1[4] = 1;
+        put16(h1 + 6, (uint16_t)(48 + nl));
+        h1[9] = folder ? 0x40 : 0;
+        put32(h1 + 26, parent);
+        put16(h1 + 30, (uint16_t)nl);
+        if (!folder) {
+            put32(h1 + 34, 1); // one stored byte
+            put32(h1 + 38, 1);
+            put16(h1 + 42, crc16_arc((const uint8_t *)"x", 1));
+        }
+        memcpy(h1 + 48, name, nl);
+        put16(h1 + 32, crc16_arc(h1, 48 + nl));
+        strcat(want, name);
+        if (folder)
+            strcat(want, "/");
+        parent = off;
+        off += (uint32_t)(48 + nl + SIT5_H2_SIZE);
+    }
+    a[off] = 'x';
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  sit5: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    bool found = false;
+    for (size_t i = 0; i < (size_t)list.count; i++)
+        if (strcmp(list.files[i].meta.name, want) == 0)
+            found = true;
+    if (!found)
+        fprintf(stderr, "  no entry named '%s'\n", want);
+    ASSERT_TRUE(found);
+    peel_file_list_free(&list);
+    free(a);
+}
+
 // ============================================================================
 // Garbage in, error out
 // ============================================================================
@@ -1687,10 +1821,12 @@ int main(void) {
     RUN(test_cpt_short_fork_is_rejected);
     RUN(test_cpt_fork_extent_is_checked);
     RUN(test_cpt_nesting_cap_is_exact);
+    RUN(test_cpt_entry_count_is_capped);
     RUN(test_cpt_folder_nesting_is_bounded);
     RUN(test_sit5_round_trip);
     RUN(test_sit5_round_trip_with_resource_fork);
     RUN(test_sit5_lzw_literals_round_trip);
+    RUN(test_sit5_lzw_first_code_must_be_a_literal);
     RUN(test_sit5_resource_fork_extent_is_checked);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);
@@ -1707,6 +1843,8 @@ int main(void) {
     RUN(test_cpt_dot_dot_folder_is_prefixed);
     RUN(test_hqx_slash_in_a_name_cannot_escape);
     RUN(test_sit_classic_long_folder_name_is_clamped);
+    RUN(test_sit_classic_truncated_entry_count_is_refused);
+    RUN(test_sit5_deep_folder_paths_resolve);
     RUN(test_peel_passes_unrecognised_input_through);
     RUN(test_sit3_decodes_a_tree_and_message);
     RUN(test_sit5_lzw_widening_and_clear);

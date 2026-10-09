@@ -3,12 +3,12 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, setRunStateMirror } from './emulator';
+import { gsEval, gsErrorText, gsOk, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
 import { attachMedia, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
 import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
-import { images, setMounted } from '@/state/images.svelte';
+import { images, setMounted, clearMounts } from '@/state/images.svelte';
 import { reapplyCameraSource } from '@/state/camera.svelte';
 import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
@@ -120,6 +120,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
+  clearMounts();
   // Media, through the one attach helper (bus/media.ts); a failure is
   // reported rather than booting the machine without it and no hint.  The
   // boot itself still proceeds.  The startup device is the document's, so
@@ -181,8 +182,11 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   const model = typeof id === 'string' && id ? id : null;
   await syncMachineIdentity();
   if (model) await applyCapabilities(model);
-  // Per-machine caches go with the machine.
+  // Per-machine caches go with the machine.  A boot cleared the mounts
+  // before attaching its own media; a restore brings the checkpoint's media,
+  // which the page has no record of, so no badge may claim a drive.
   images.fdDriveCount = -1;
+  if (origin === 'restore') clearMounts();
   // machine.videoin / machine.audioin reset with the machine; re-assert the
   // user's camera and microphone toggles (or drop them if the new model has
   // no digitizer / no audio input).
@@ -212,7 +216,8 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
 // machine.status to 'running' once the worker pushes the transition.
 export async function prepareFreshMachine(): Promise<void> {
   if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  await gsEval('scheduler.run');
+  const run = await gsEval('scheduler.run');
+  if (!gsOk(run)) showNotification(`Could not run the machine: ${gsErrorText(run)}`, 'error');
 }
 
 // Power-cycle the running machine.  machine.restart tears nothing down: the
@@ -226,6 +231,10 @@ export async function restartEmulator(): Promise<void> {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
-  await gsEval('scheduler.run');
+  const run = await gsEval('scheduler.run');
+  if (!gsOk(run)) {
+    showNotification(`Restarted, but could not run: ${gsErrorText(run)}`, 'error');
+    return;
+  }
   showNotification('Machine restarted', 'info');
 }

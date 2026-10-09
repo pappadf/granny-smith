@@ -48,6 +48,12 @@ export function setMounted(path: string, info: MountInfo | null): void {
   else delete images.mounted[path];
 }
 
+// Forget every mount: the machine they were in is gone (a new boot, a
+// checkpoint restore), so its badges and eject targets are too.
+export function clearMounts(): void {
+  images.mounted = {};
+}
+
 export function isMounted(path: string): boolean {
   return !!images.mounted[path];
 }

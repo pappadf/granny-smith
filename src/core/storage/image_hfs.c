@@ -237,7 +237,11 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
         // 64 MiB cap guards against corruption; realistic catalogs are < 8 MiB.
         return -EINVAL;
     }
-    uint8_t *buf = malloc(cat_size);
+    // Zeroed: a catalog cut short below (an extent past the partition, or
+    // one only the overflow file holds) leaves its tail unread, and the
+    // B-tree walk reads the whole declared size -- as empty nodes, never
+    // as uninitialised heap.
+    uint8_t *buf = calloc(1, cat_size);
     if (!buf)
         return -ENOMEM;
 

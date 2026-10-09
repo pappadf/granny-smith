@@ -108,13 +108,22 @@ size_t cmd_size(uint8_t opcode) {
 // install — is staged whole rather than tripping a fixed-size assert.  The bus
 // handshake is still byte-by-byte, so this is invisible to the guest; only the
 // host-side staging area changes size.
-void scsi_buf_ensure(scsi_t *scsi, size_t bytes) {
+//
+// On allocation failure the old buffer and capacity are kept and false is
+// returned: assigning a NULL realloc result lost the buffer and left callers
+// writing through NULL.  The guest-sized transfers (READ/WRITE/VERIFY) reserve
+// before their phase change and fail the command; phase_data_in/out clamp.
+bool scsi_buf_ensure(scsi_t *scsi, size_t bytes) {
     if (bytes <= scsi->buf.cap)
-        return;
+        return true;
     uint8_t *grown = realloc(scsi->buf.data, bytes);
-    GS_ASSERTF(grown != NULL, "scsi_buf_ensure: failed to grow transfer buffer to %zu bytes", bytes);
+    if (!grown) {
+        LOG(0, "scsi_buf_ensure: failed to grow transfer buffer to %zu bytes", bytes);
+        return false;
+    }
     scsi->buf.data = grown;
     scsi->buf.cap = bytes;
+    return true;
 }
 
 // Pop the next byte from the SCSI buffer.  Data-in is drained front-to-back via
@@ -205,7 +214,8 @@ void phase_data_in(scsi_t *scsi, int bytes) {
 
     scsi->bus.phase = scsi_data_in;
     scsi->bus.req = scsi->bus.bsy = true;
-    scsi_buf_ensure(scsi, (size_t)bytes);
+    if (!scsi_buf_ensure(scsi, (size_t)bytes))
+        bytes = (int)scsi->buf.cap; // never stage past the allocation
     scsi->buf.size = scsi->buf.max = bytes;
     scsi->buf.pos = 0; // fresh fill: deliver from the front
     // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
@@ -292,7 +302,8 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->bus.req = false; // ...but not asking for a byte yet
     scsi->bus.data_out_pending = true;
     scsi->bus.data_out_ready_cy = sch ? scheduler_cpu_cycles(sch) + SCSI_DATA_OUT_SETTLE_CYCLES : 0;
-    scsi_buf_ensure(scsi, (size_t)bytes);
+    if (!scsi_buf_ensure(scsi, (size_t)bytes))
+        bytes = (int)scsi->buf.cap; // never stage past the allocation
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
     // Entering DATA OUT resets a 5380's priming state, if there is one.
@@ -707,6 +718,10 @@ void run_cmd(scsi_t *scsi) {
             LOG(2, "SCSI %s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         if (scsi->cmd.opcode == CMD_WRITE) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
@@ -788,6 +803,10 @@ void run_cmd(scsi_t *scsi) {
             LOG(2, "SCSI %s_10 large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
                 scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         if (scsi->cmd.opcode == CMD_WRITE_10) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
@@ -1280,6 +1299,10 @@ void run_cmd(scsi_t *scsi) {
         // initiator is about to send the blocks, and a target that goes
         // straight to STATUS is not the target it was promised.  The compare
         // happens in command_complete once they have all arrived.
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         phase_data_out(scsi, (int)byte_cnt);
         break;
     }
@@ -1430,7 +1453,10 @@ void command_complete(scsi_t *scsi) {
             size_t defect_len = ((size_t)scsi->buf.data[2] << 8) | scsi->buf.data[3];
             if (defect_len > 0) {
                 LOG(2, "FORMAT UNIT: taking a %zu-byte defect list", defect_len);
-                scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len);
+                if (!scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len)) {
+                    scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+                    return;
+                }
                 scsi->buf.max = (int)(SCSI_FORMAT_DEFECT_HEADER + defect_len);
                 scsi->bus.req = true; // still asking, same phase
                 return;

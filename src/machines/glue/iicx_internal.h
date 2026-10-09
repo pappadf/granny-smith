@@ -25,7 +25,7 @@ struct asc;
 struct floppy;
 
 // IIcx/IIx state is the unified GLUE state struct (mac030_glue.h).  The IIcx
-// uses last_via2_port_b / soft_power_armed for its PB2 soft-power detector;
+// uses soft_power_armed for its PB2 soft-power detector;
 // both machines leave the SE/30 vram/vrom/video_card members NULL.
 typedef mac030_glue_state_t iicx_state_t;
 

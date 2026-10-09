@@ -182,6 +182,10 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &head, sizeof head);
         display_head_apply(&p->display, &head);
     }
+    // Re-point the scanout at the restored buffer: the VIA redrive that
+    // follows reaches select_buffer, which early-returns on an unchanged
+    // main_buf and would leave init's primary-buffer pointer in place.
+    p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
 
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;

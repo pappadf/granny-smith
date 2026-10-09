@@ -196,13 +196,20 @@ static int journal_index_add(storage_t *s, uint32_t lba) {
 
 // Append a preimage entry to the journal file and index.
 static int journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
-    // Write LBA (little-endian uint32_t)
-    if (fwrite(&lba, sizeof(lba), 1, s->journal_fp) != 1)
+    // Write LBA (little-endian uint32_t), then the block data; the stream is
+    // buffered, so a short write (ENOSPC) may only show at the flush
+    if (fwrite(&lba, sizeof(lba), 1, s->journal_fp) != 1 || fwrite(data, s->block_size, 1, s->journal_fp) != 1 ||
+        fflush(s->journal_fp) != 0) {
+        // Cut the partial entry off again: left in place it misaligns every
+        // later append, and journal_load_index would stop at it on reopen,
+        // dropping the preimages appended after it.
+        off_t keep = (off_t)s->journal_count * (off_t)JOURNAL_ENTRY_SIZE(s);
+        clearerr(s->journal_fp);
+        if (ftruncate(fileno(s->journal_fp), keep) != 0)
+            LOG(0, "storage: cannot trim a partial journal entry (errno=%d)", errno);
+        fseeko(s->journal_fp, 0, SEEK_END);
         return GS_ERROR;
-    // Write block data
-    if (fwrite(data, s->block_size, 1, s->journal_fp) != 1)
-        return GS_ERROR;
-    fflush(s->journal_fp);
+    }
 
     return journal_index_add(s, lba);
 }
@@ -908,7 +915,12 @@ static int read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count, uin
 // Helper: skip/discard snapshot data from a checkpoint stream
 static int storage_skip_snapshot(checkpoint_t *checkpoint, const storage_snapshot_header_t *header) {
     if (header->has_data) {
-        // Skip all block data
+        // Skip all block data, one block at a time through a stack buffer:
+        // the size comes from the stream, so bound it as storage_new does
+        if (header->block_size == 0 || header->block_size > STORAGE_MAX_BLOCK_SIZE) {
+            LOG(0, "storage: snapshot block size %u out of range", header->block_size);
+            return GS_ERROR;
+        }
         uint8_t discard[STORAGE_MAX_BLOCK_SIZE];
         for (uint64_t i = 0; i < header->block_count; i++) {
             system_read_checkpoint_data(checkpoint, discard, header->block_size);

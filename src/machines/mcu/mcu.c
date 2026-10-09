@@ -517,7 +517,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     machine_part(cfg, cp, "dafb", part_save_dafb, st->dafb);
-    dafb_attach_scheduler(st->dafb, cfg->scheduler);
+    dafb_attach_scheduler(st->dafb, cfg->scheduler, cp);
     dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
     dafb_attach_objects(st->dafb); // machine.video{,.framebuffer}
 

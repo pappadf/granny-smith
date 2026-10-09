@@ -87,7 +87,6 @@
         system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
         cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
      * error is delivered at the FAULTING instruction's epilogue.  The 68030 decoder                                   \
@@ -97,6 +96,7 @@
      * unrelated (supervisor / MMU-setup) code, where it was delivered with the wrong                                  \
      * context and vectored through the ROM, resetting the machine. */                                                 \
     g_bus_error_instr_ptr = instructions;                                                                              \
+    cpu_check_interrupt(cpu);                                                                                          \
     while (*instructions > 0) {                                                                                        \
         /* The MC68000 has a 24-bit address bus (A0-A23); bits 24-31 of the PC are                                     \
          * not driven.  Control transfers through a pointer whose high byte is a                                       \
@@ -160,5 +160,10 @@
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)
+
+// MOVES does not exist on the 68000: both direction arms are OP_UNDEFINED, so
+// don't let cpu_decode.h's live extension-word read issue a bus cycle the
+// real chip never makes.
+#define CPU_MOVES_DIR() 0
 
 #include "cpu_decode.h"

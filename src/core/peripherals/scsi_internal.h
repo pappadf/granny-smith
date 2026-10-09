@@ -451,7 +451,7 @@ void phase_message_out(scsi_t *scsi);
 const char *phase_name(int p);
 void phase_selection(scsi_t *scsi);
 void run_cmd(scsi_t *scsi);
-void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
+bool scsi_buf_ensure(scsi_t *scsi, size_t bytes);
 
 // 5380 services the bus calls back into.  Three of these are the chip's
 // interrupt and DRQ wiring, which the bus pokes when a phase changes; the

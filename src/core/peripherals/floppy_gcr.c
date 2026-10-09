@@ -452,9 +452,12 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     floppy_track_t *track = &drive->tracks[sel][drive->track];
 
     if (track->data == NULL) {
-        track->size = iwm_track_length(drive->track);
-        track->data = malloc(track->size);
-        if (!track->data) {
+        // Build into a local buffer and cache it only once fully encoded: a
+        // failure below must not leave an uninitialised buffer cached for
+        // every later call to serve.
+        size_t track_size = iwm_track_length(drive->track);
+        uint8_t *data = malloc(track_size);
+        if (!data) {
             LOG(1, "Allocation failed track=%d side=%d", drive->track, sel);
             return NULL;
         }
@@ -478,16 +481,20 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         uint8_t *sector_data = malloc(track_bytes);
         if (!sector_data) {
             LOG(1, "Failed to allocate sector buffer for track=%d", drive->track);
+            free(data);
             return NULL;
         }
         size_t read = disk_read_data(img, track_offset, sector_data, track_bytes);
         if (read != track_bytes) {
             LOG(1, "disk_read_data truncated track=%d (expected=%zu got=%zu)", drive->track, track_bytes, read);
             free(sector_data);
+            free(data);
             return NULL;
         }
-        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u);
+        encode_track(data, track_size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u);
         free(sector_data);
+        track->data = data;
+        track->size = track_size;
     }
 
     return track->data;
@@ -839,8 +846,11 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
     drive->write_hdr_start = -1;
 
+    // hdr_side is checked against the medium, not NUM_SIDES: a single-sided
+    // image has no side-1 block, and iwm_disk_image_offset ignores the side
+    // there, so a side-1 header would overwrite side 0 of the same track.
     int num_sides = iwm_image_num_sides(img);
-    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= NUM_SIDES || hdr_sector < 0 ||
+    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= num_sides || hdr_sector < 0 ||
         hdr_sector >= iwm_sectors_per_track(hdr_track))
         return;
     size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
@@ -849,7 +859,11 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
     disk_write_data(img, off, buf, 512);
     disk_write_tag(img, off / 512u, tag, sizeof tag);
-    t->modified = false; // this sector is in the image now
+    // `modified` stays set: this sector is in the image now, but the track
+    // buffer may already hold nibbles of the next one (a header with no data
+    // field yet), and the checkpoint saves a track only while it is modified.
+    // The eject/teardown flush rewrites the completed sectors with the same
+    // bytes, which is harmless.
     LOG(5, "Drive %d: Wrote through track=%d side=%d sector=%d", drive_index, hdr_track, hdr_side, hdr_sector);
 }
 
@@ -909,7 +923,8 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                     // the start of its own track, into neighbouring tracks'
                     // data -- arbitrary corruption of a mounted writable image
                     // from one track write.
-                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES &&
+                    // hdr_side likewise: see iwm_write_through.
+                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < num_sides &&
                         hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
                         size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
                         if (off + 512 <= disk_size(img)) {

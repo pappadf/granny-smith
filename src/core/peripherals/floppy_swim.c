@@ -66,7 +66,10 @@ static bool ism_fifo_push(floppy_t *floppy, uint8_t byte, bool is_mark) {
 // hardware which preloads CRC with 0xFFFF on each mark byte detection.
 static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
     if (floppy->ism_fifo_count == 0) {
-        // Underrun: set error if not already set
+        // Underrun: set error if not already set.  The guard is the chip's
+        // rule, not an oversight: "Once one error bit is set, no other bits
+        // can be set until the register is cleared" (SWIM Chip User's Ref.
+        // rev 1.5, ERROR register).  Every other error site follows it too.
         if (!floppy->ism_error)
             floppy->ism_error |= ISM_ERR_OVERRUN;
         if (is_mark_out)
@@ -437,6 +440,12 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
     LOG(3, "ISM write: flushed T=%d S=%d Sec=%d (%zu bytes written)", track, side, sector, written);
 
+    // The head has passed this sector: the next data field written in the same
+    // ACTION (a format writes a whole track in one) belongs to the next one,
+    // in the model's 1:1 rotation order (mfm_advance_sector).  Without this
+    // every field of the track landed on the same image block.
+    floppy->mfm_cur_sector = (uint8_t)(sector >= sectors_per_track ? 1 : sector + 1);
+
     // Invalidate MFM read buffer so subsequent reads pick up the new data
     floppy->mfm_buf_len = 0;
 }
@@ -749,18 +758,40 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
     }
 }
 
+// Latch head select into mfm_cur_side when ACTION rises: Setup bit 0 selects
+// the source.
+static void ism_latch_head(floppy_t *floppy) {
+    if (floppy->ism_setup & ISM_SETUP_HDSEL_EN)
+        floppy->mfm_cur_side = (floppy->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
+    else
+        floppy->mfm_cur_side = floppy->sel ? 1 : 0;
+}
+
 // Helper: handles ACTION-set logic for both wZeros and wOnes
 static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
+    // A write ACTION latches where the head is, exactly as a read one does:
+    // ism_write_capture_flush targets mfm_cur_track/side.  Skipping this when
+    // WRITE was already set let a driver that sets WRITE|ACTION in one store
+    // flush to whatever track a previous read left behind (0 on a fresh boot).
+    // The sector stays as the read path left it: the header just found.
+    if ((floppy->ism_mode & ISM_MODE_ACTION) && (floppy->ism_mode & ISM_MODE_WRITE) && !(old_mode & ISM_MODE_ACTION)) {
+        uint8_t buf_side = floppy->mfm_cur_side;
+        uint8_t buf_track = floppy->mfm_cur_track;
+        ism_latch_head(floppy);
+        int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+        floppy->mfm_cur_track = (uint8_t)floppy->drives[drv_idx].track;
+        // The read buffer describes the old position; drop it if that moved.
+        if (floppy->mfm_cur_side != buf_side || floppy->mfm_cur_track != buf_track)
+            floppy->mfm_buf_len = 0;
+        LOG(3, "ISM: ACTION set for write, track=%d side=%d sector=%d", floppy->mfm_cur_track, floppy->mfm_cur_side,
+            floppy->mfm_cur_sector);
+    }
     if ((floppy->ism_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_WRITE)) {
         if (!(old_mode & ISM_MODE_ACTION)) {
             // Save buffer's track/side before latching new values
             uint8_t buf_side = floppy->mfm_cur_side;
             uint8_t buf_track = floppy->mfm_cur_track;
-            // Latch head select: Setup bit 0 selects source
-            if (floppy->ism_setup & ISM_SETUP_HDSEL_EN)
-                floppy->mfm_cur_side = (floppy->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
-            else
-                floppy->mfm_cur_side = floppy->sel ? 1 : 0;
+            ism_latch_head(floppy);
             LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", floppy->mfm_cur_side, floppy->sel,
                 floppy->ism_setup);
             int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;

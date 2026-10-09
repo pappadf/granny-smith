@@ -257,6 +257,28 @@ static void rx_deliver(sonic_t *s, const uint8_t *frame, uint32_t len) {
     uint32_t rx_len = len + ((s->reg[R_TCR] & TCR_CRCI) ? 0 : 4);
 
     uint32_t rba = ((uint32_t)s->reg[R_CRBA1] << 16) | s->reg[R_CRBA0];
+    uint32_t words = (rx_len + 1) >> 1;
+    uint32_t rbwc = ((uint32_t)s->reg[R_RBWC1] << 16) | s->reg[R_RBWC0];
+
+    // RBA limit exceeded (datasheet 3.4.7): the packet does not fit in what
+    // is left of the RBA.  The SONIC buffers no further than the RBA's end
+    // -- it halts DMA "to prevent writing into unauthorized memory" -- sets
+    // up no RDA for the truncated packet, does not reuse the space, reads
+    // the RRA for another RBA and raises RBAE.  Writing it all used to
+    // clobber whatever guest memory followed the RBA the driver had sized.
+    if (words > rbwc) {
+        uint32_t fit = rbwc * 2u;
+        for (uint32_t i = 0; i < fit; i++)
+            bus_write(s, rba + i, i < len ? frame[i] : 0x5A, 1);
+        LOG(1, "RX %u bytes exceed the RBA (%u words left): truncated, RBAE", rx_len, rbwc);
+        s->rba_seq++;
+        s->pkt_seq = 0;
+        if (!cmd_read_rra(s))
+            raise_isr(s, ISR_RBE);
+        raise_isr(s, ISR_RBAE);
+        return;
+    }
+
     for (uint32_t i = 0; i < len; i++)
         bus_write(s, rba + i, frame[i], 1);
     for (uint32_t i = len; i < rx_len; i++)
@@ -264,9 +286,7 @@ static void rx_deliver(sonic_t *s, const uint8_t *frame, uint32_t len) {
 
     // Buffer accounting: word count consumed, LPKT when the remainder
     // drops below EOBC (datasheet 3.4.2).
-    uint32_t words = (rx_len + 1) >> 1;
-    uint32_t rbwc = ((uint32_t)s->reg[R_RBWC1] << 16) | s->reg[R_RBWC0];
-    rbwc = (rbwc > words) ? rbwc - words : 0;
+    rbwc -= words;
     s->reg[R_RBWC0] = (uint16_t)rbwc;
     s->reg[R_RBWC1] = (uint16_t)(rbwc >> 16);
     bool last_in_rba = rbwc < s->reg[R_EOBC];
@@ -335,12 +355,15 @@ static void cmd_transmit(sonic_t *s) {
 
         // Gather the fragment list.
         uint32_t total = 0;
+        bool truncated = false; // fragment bytes past SONIC_FRAME_MAX
         uint32_t off = tda + 4 * step;
         for (unsigned f = 0; f < frag_count; f++) {
             uint16_t p0 = field_read(s, off);
             uint16_t p1 = field_read(s, off + step);
             uint16_t fsize = field_read(s, off + 2 * step);
             uint32_t src = ((uint32_t)p1 << 16) | p0;
+            if (fsize > sizeof(frame) - total)
+                truncated = true;
             for (uint32_t i = 0; i < fsize && total < sizeof(frame); i++)
                 frame[total++] = (uint8_t)bus_read(s, src + i, 1);
             off += 3 * step;
@@ -354,8 +377,12 @@ static void cmd_transmit(sonic_t *s) {
         s->reg[R_TFC] = frag_count;
 
         uint16_t status;
-        if (total != pkt_size) {
-            // Byte count mismatch aborts the transmission [D].
+        if (total != pkt_size || truncated) {
+            // Byte count mismatch aborts the transmission [D].  A frame larger
+            // than the model gathers is reported the same way rather than
+            // sent short as if it were whole.
+            if (truncated)
+                LOG(1, "TX frame larger than %u bytes is not modelled; reported as BCM", (unsigned)SONIC_FRAME_MAX);
             status = TCR_BCM;
             s->reg[R_TCR] = (uint16_t)((s->reg[R_TCR] & TCR_CTL) | status);
             field_write(s, tda, status);

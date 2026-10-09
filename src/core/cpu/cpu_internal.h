@@ -469,6 +469,9 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
+    // calculate_ea bumps An by 4 in (An)+ mode; the success path overwrites it
+    // with the final address below, but a fault return must put it back.
+    uint32_t saved_an = cpu->a[opcode & 7];
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
 
     // Stage register updates so a mid-instruction bus error leaves Dn/An
@@ -479,8 +482,10 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (register_mask & (1 << i)) {
             uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
-            if (g_bus_error_pending)
+            if (g_bus_error_pending) {
+                cpu->a[opcode & 7] = saved_an;
                 return;
+            }
             new_d[i] = v;
             d_set |= (uint8_t)(1 << i);
         }
@@ -488,8 +493,10 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (register_mask & (0x100 << i)) {
             uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
-            if (g_bus_error_pending)
+            if (g_bus_error_pending) {
+                cpu->a[opcode & 7] = saved_an;
                 return;
+            }
             new_a[i] = v;
             a_set |= (uint8_t)(1 << i);
         }
@@ -658,11 +665,26 @@ static inline __attribute__((always_inline)) bool conditional_test(cpu_t *restri
     }
 }
 
+// A bus error while stacking an exception frame or fetching its vector is a
+// double fault: the processor halts (MC68030UM 8.3).  `kind` is 1 for the
+// frame push, 2 for the vector read, as in the bus-error paths.
+static __attribute__((noinline, cold)) void exception_double_fault(cpu_t *restrict cpu, uint32_t vector, uint32_t pc,
+                                                                   uint16_t sr, int kind) {
+    cpu->halted = 1;
+    g_bus_error_pending = false;
+    memory_end_sprint(g_bus_error_instr_ptr);
+    exc_trace_record(vector, cpu->instruction_pc, pc, g_bus_error_address, g_bus_error_rw, cpu->vbr, sr, 0, kind);
+}
+
 // Raise a CPU exception by pushing state and loading exception vector.
 // On 68030, determines frame format from vector number: vectors 5 (divide by
 // zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
 // instruction address); all others use Format $0. Uses VBR on 68030.
+// A fault during the frame push or vector fetch halts the CPU; a fault
+// already pending on entry (the instruction's own access) is left for the
+// decoder epilogue to deliver, as before.
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
+    const bool fault_on_entry = g_bus_error_pending;
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
     // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
@@ -717,18 +739,24 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         memory_write_uint32(cpu->a[7], pc);
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
-        cpu->pc = memory_read_uint32(cpu->vbr + vector);
-        // Exception processing clears T1/T0 per M68000 PRM
-        cpu->trace = 0;
     } else {
         // 68000 frame: PC then SR (6 bytes, no format word)
         cpu->a[7] -= 4;
         memory_write_uint32(cpu->a[7], pc);
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
-        cpu->pc = memory_read_uint32(vector);
-        cpu->trace = 0;
     }
+    if (__builtin_expect(g_bus_error_pending, 0) && !fault_on_entry) {
+        exception_double_fault(cpu, vector, pc, sr, 1);
+        return;
+    }
+    cpu->pc = memory_read_uint32((cpu->cpu_model >= CPU_MODEL_68030 ? cpu->vbr : 0) + vector);
+    if (__builtin_expect(g_bus_error_pending, 0) && !fault_on_entry) {
+        exception_double_fault(cpu, vector, pc, sr, 2);
+        return;
+    }
+    // Exception processing clears T1/T0 per M68000 PRM
+    cpu->trace = 0;
 }
 
 // Push the MC68040 format $7 access-error frame (30 words, MC68040UM §8.4.4).
@@ -984,7 +1012,21 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // instruction completed, matching the $A path below).
     if (cpu->cpu_model >= CPU_MODEL_68040) {
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            memory_end_sprint(g_bus_error_instr_ptr);
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 1);
+            return;
+        }
         cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            memory_end_sprint(g_bus_error_instr_ptr);
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 2);
+            return;
+        }
         cpu->trace = 0;
         if (saved_pc != faulting_pc)
             cpu->last_bus_error_pc = 0;
@@ -1068,7 +1110,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
                 cpu->a[7] = cpu->ssp;
         }
         cpu->m = new_m;
-        cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // T1 in bit 1, T0 in bit 0.  Documented divergence: T0 (trace on change
+        // of flow, MC68030UM 8.1.7) is stored so SR reads back what was written,
+        // but nothing acts on it -- every trace decision tests T1 (bit 1) only,
+        // so T0-only mode never traces.  Implementing it needs a flow-change
+        // hook in every branch/jump/return/SR-write op.
+        cpu->trace = ((sr >> 14) & 3);
         // Switch SoA active pointers when supervisor bit changes
         if ((bool)new_s != old_s) {
             g_active_read = new_s ? g_supervisor_read : g_user_read;

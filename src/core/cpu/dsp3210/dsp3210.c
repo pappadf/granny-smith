@@ -1419,25 +1419,50 @@ static int64_t alaw_decode_2x(unsigned b) {
     return S ? -y : y;
 }
 
+/* Byte for the sign/magnitude index u (bit 7 = S, bits 6-0 = N:M). */
+static unsigned companded_code(unsigned u, int alaw) {
+    return alaw ? (u ^ 0xD5u) & 0xFFu : ~u & 0xFFu;
+}
+
+static int64_t companded_decode_2x(unsigned b, int alaw) {
+    return alaw ? alaw_decode_2x(b) : mulaw_decode_2x(b);
+}
+
 /* Nearest-code encode, compared on the exact doubled integers so no host
- * float rounding enters.  256 candidates; performance is a non-goal. */
+ * float rounding enters.  Within each sign the magnitude rises strictly
+ * with the 7-bit N:M index, so a binary search per sign finds the two
+ * neighbours of the target, and only those can be nearest.  Ties go to the
+ * lowest code byte -- the answer the full 256-code scan this replaces gave
+ * (checked equal over every target in +/-100000 and the int32 extremes). */
 static int64_t acc_to_int(dsp3210_acc a, unsigned dauc, int bits);
 
 static unsigned companded_encode_acc(dsp3210_acc v, int alaw) {
     dsp3210_acc t = v;
     int64_t v2;
-    unsigned b, best = 0;
+    unsigned best = 0;
     int64_t bestd = INT64_MAX;
     if (t.e)
         t.e = (int16_t)(t.e + 1); /* * 2 exactly */
     v2 = acc_to_int(t, 0 /* round to nearest */, 32);
-    for (b = 0; b < 256; b++) {
-        int64_t d = (alaw ? alaw_decode_2x(b) : mulaw_decode_2x(b)) - v2;
-        if (d < 0)
-            d = -d;
-        if (d < bestd) {
-            bestd = d;
-            best = b;
+    for (unsigned sgn = 0; sgn < 2; sgn++) {
+        int64_t want = sgn ? -v2 : v2; /* target magnitude for this sign */
+        unsigned lo = 0, hi = 128; /* first index whose magnitude >= want */
+        while (lo < hi) {
+            unsigned mid = (lo + hi) / 2;
+            if (companded_decode_2x(companded_code(mid, alaw), alaw) < want)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        for (unsigned k = lo ? lo - 1 : 0; k <= lo && k < 128; k++) {
+            unsigned b = companded_code((sgn << 7) | k, alaw);
+            int64_t d = companded_decode_2x(b, alaw) - v2;
+            if (d < 0)
+                d = -d;
+            if (d < bestd || (d == bestd && b < best)) {
+                bestd = d;
+                best = b;
+            }
         }
     }
     return best;
@@ -1650,6 +1675,10 @@ static int exec_da(dsp3210_t *s, uint32_t w) {
 
     if (fmt == 3 && m >= 6)
         return exec_da_special(s, w);
+    /* The M values with no accumulator behind them -- fmt 1 M=111 and
+     * fmt 2 M=11x, opcodes $0F/$16/$17 -- never get here: they are among
+     * the illegal-opcode patterns exec_insn traps first, so the a_pipe[2][m]
+     * and a[m] reads below always see m <= 3 (or the 0.0/1.0/tap cases). */
 
     /* Operand fetch order is X then Y: the X and Y registers are loaded
      * in machine states 1 and 2 of the same instruction cycle

@@ -108,6 +108,8 @@ def decode(path: Path):
     # Stored (uncompressed) deflate: the emulator reads it, but a 640x480
     # frame is 1.2 MB of it against ~12 KB deflated, and every checkout
     # carries it.  The emulator's own writer deflates (save_framebuffer_as_png).
+    # IDAT is a zlib stream: past its 2-byte header (CMF, FLG), idat[2] opens
+    # the first deflate block, BFINAL in bit 0 and BTYPE in bits 1-2.
     if len(idat) > 2 and (idat[2] >> 1) & 3 == 0:
         return None, "stored (uncompressed) deflate blocks; re-encode it deflated"
     width, height, depth, colour, _, _, interlace = ihdr

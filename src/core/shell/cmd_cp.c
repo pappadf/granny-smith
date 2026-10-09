@@ -130,8 +130,15 @@ static int maybe_write_fork_sidecar(const char *src, const char *dst, struct cp_
 
     uint8_t *rsrc = NULL, *finf = NULL;
     size_t rsrc_len = 0, finf_len = 0;
-    (void)read_vfs_file_all(rsrc_path, &rsrc, &rsrc_len); // absent => rsrc_len 0
-    (void)read_vfs_file_all(finf_path, &finf, &finf_len);
+    // A source with no fork node at all (a host file) answers ENOENT or
+    // ENOTDIR; any other failure means a fork that exists but could not be
+    // read (over FORK_READ_CAP, out of memory), which must not pass as none.
+    int rrc = read_vfs_file_all(rsrc_path, &rsrc, &rsrc_len);
+    if (rrc < 0 && rrc != -ENOENT && rrc != -ENOTDIR) {
+        snprintf(s->detail, sizeof(s->detail), "cannot read resource fork of '%.200s': %s", src, strerror(-rrc));
+        return rrc;
+    }
+    (void)read_vfs_file_all(finf_path, &finf, &finf_len); // 32 bytes at most; absent => none
 
     // Only Finder Info of exactly 32 bytes and not all-zero is worth carrying.
     const uint8_t *finder = (finf_len == AD_FINDER_INFO_SIZE && !all_zero(finf, finf_len)) ? finf : NULL;

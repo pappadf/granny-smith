@@ -299,10 +299,12 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);
+    // ...and the scanout depends on the restored video_off / halted bits: a
+    // checkpoint taken while RvVIDOff was set must come back blanked, not
+    // scanning the framebuffer pointer card_init left in display.bits.
+    rbv_video_apply_scanout(p);
 
-    // p->display.bits still points into p->fb (card_init set it up and the
-    // buffer address has not moved), but everything the frontend caches about
-    // this display is now stale.
+    // Everything the frontend caches about this display is now stale.
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;
     p->display.fb_dirty = true;

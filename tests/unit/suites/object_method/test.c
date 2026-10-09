@@ -452,6 +452,50 @@ TEST(test_grouped_slot_cannot_be_skipped) {
     object_root_reset();
 }
 
+// A rest slot takes any number of trailing arguments -- up to the
+// validator's scratch capacity (OBJ_VALIDATE_MAX_ARGS, 16).  One more is an
+// error; it used to be written past the end of that stack scratch.
+static value_t rest_count_fn(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argv;
+    return val_int(argc);
+}
+
+static const arg_decl_t rest_args[] = {
+    {.name = "items", .kind = V_UINT, .validation_flags = OBJ_ARG_REST, .doc = "items"},
+};
+
+static const member_t rest_members[] = {
+    {.kind = M_METHOD,
+     .name = "count",
+     .doc = "count the rest items",
+     .method = {.args = rest_args, .nargs = 1, .result = V_INT, .fn = rest_count_fn}},
+};
+
+static const class_desc_t rest_class = {.name = "rest", .members = rest_members, .n_members = 1};
+
+TEST(test_rest_args_capped_at_scratch) {
+    object_root_reset();
+    struct object *o = object_new(&rest_class, NULL, "rs");
+    object_attach(object_root(), o);
+    node_t n = object_resolve(object_root(), "rs.count");
+    ASSERT_TRUE(node_valid(n));
+    value_t items[17];
+    for (int i = 0; i < 17; i++)
+        items[i] = val_uint(4, (uint64_t)i);
+    value_t r = node_call(n, 16, items);
+    ASSERT_TRUE(!val_is_error(&r));
+    bool ok = false;
+    ASSERT_EQ_INT((int)val_as_i64(&r, &ok), 16);
+    value_free(&r);
+    r = node_call(n, 17, items);
+    ASSERT_TRUE(val_is_error(&r));
+    ASSERT_TRUE(strstr(r.err, "too many arguments") != NULL);
+    value_free(&r);
+    object_root_reset();
+}
+
 // A counter block published through OBJ_U64_FIELD (the object's data) and
 // OBJ_U64_FIELD_WITH (a getter of its own): each attribute reads its field,
 // read-only, and follows the block as it changes.
@@ -597,5 +641,6 @@ int main(void) {
     RUN(test_any_attribute_slot_rejected);
     RUN(test_interior_optional_slot_can_be_skipped);
     RUN(test_grouped_slot_cannot_be_skipped);
+    RUN(test_rest_args_capped_at_scratch);
     return 0;
 }

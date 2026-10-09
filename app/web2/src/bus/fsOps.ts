@@ -151,7 +151,9 @@ export async function deleteItems(paths: string[], onItem?: ProgressFn): Promise
 // Save a Blob to the user's machine via a transient object-URL anchor.  An
 // untyped Blob is sent as application/octet-stream: given none, Safari takes
 // a file with no extension (hd0_2026-10-05_11-42-50) for text and saves it
-// as .txt.
+// as .txt.  The URL is revoked later, not at once: the download resolves it
+// after the click (a lazy OPFS-backed File is read only then), so an
+// immediate revoke can fail it (logs.svelte.ts delays the same way).
 function saveBlob(blob: Blob, filename: string): void {
   if (!blob.type) blob = new Blob([blob], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
@@ -162,7 +164,7 @@ function saveBlob(blob: Blob, filename: string): void {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 // Download one file. A plain OPFS file is read straight from OPFS; a file

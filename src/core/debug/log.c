@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "debug.h" // debug_trace_capture_log()
 #include "log.h"
 
 #include "log_categories.h"
@@ -429,11 +428,6 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     // Also pass to optional global sink if one was installed by the host
     if (s_sink_fn)
         s_sink_fn(line, s_sink_user);
-
-    // Capture to trace buffer if tracing is active
-    if (debug_trace_is_active()) {
-        debug_trace_capture_log(line);
-    }
 }
 
 // Convenience wrapper for variadic emission.

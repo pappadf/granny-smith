@@ -111,11 +111,22 @@ fi
 
 EXPANDED_ARGS=$(expand "$TEST_ARGS")
 
-# Optional extra shell variables (ROW=, REGEN=, KEEP_GOING=, ...).
-VAR_ARGS=""
-for v in ${TEST_VARS:-}; do
-    VAR_ARGS="$VAR_ARGS --var $v"
+# Optional extra shell variables (ROW=, REGEN=, KEEP_GOING=, ...):
+# whitespace-separated KEY=VALUE words, so a value cannot hold a space.  A
+# word with no '=' (the tail of a quoted value that had one) is an error,
+# not a silently bogus definition.  `read -a` splits without globbing.
+read -ra TEST_VAR_WORDS <<< "${TEST_VARS:-}"
+VAR_ARGV=()
+for v in "${TEST_VAR_WORDS[@]}"; do
+    if [[ "$v" != [A-Za-z_]*=* ]]; then
+        echo "ERROR: TEST_VARS word '$v' is not KEY=VALUE (values cannot contain spaces)"
+        echo "FAIL" > "$TEST_RESULTS_DIR/status"
+        exit 1
+    fi
+    VAR_ARGV+=(--var "$v")
 done
+# Custom runners take them as one string, which they word-split.
+VAR_ARGS="${VAR_ARGV[*]}"
 
 # Under a wrapper, hand custom runners a real executable rather than a
 # multi-word "valgrind --flags... /path/to/bin" string: every run.sh
@@ -150,7 +161,7 @@ if [ -n "$TEST_RUNNER" ]; then
         timeout -k 30 "$TEST_TIMEOUT" bash "$TEST_RUNNER" || rc=$?
     check_rc "${rc:-0}"
 else
-    # shellcheck disable=SC2086 — args and vars are intentionally word-split
+    # shellcheck disable=SC2086 — the args are intentionally word-split
     # $ROM mirrors the startup rom= so scripts can re-boot with an explicit
     # rom="${$ROM}" (machine.boot inherits nothing from the running machine).
     # $TEST_DATA is the fixture root, for rows that name a second file by
@@ -164,7 +175,7 @@ else
         --var ROM="$ROM_PATH" \
         --var TEST_DATA="$TEST_DATA" \
         --var EXTRA_MEDIA="$EXTRA_MEDIA" \
-        $VAR_ARGS \
+        "${VAR_ARGV[@]}" \
         --speed=turbo || rc=$?
     check_rc "${rc:-0}"
 fi

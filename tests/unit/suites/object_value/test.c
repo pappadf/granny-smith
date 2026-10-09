@@ -372,6 +372,27 @@ TEST(test_range_count_does_not_overflow) {
     ASSERT_TRUE(n == (uint64_t)INT64_MAX + (uint64_t)INT64_MAX + 1u);
 }
 
+// A float converts to an integer only inside the target's range: NaN, inf
+// and out-of-range values are refused (the C conversion is undefined, a
+// trap under wasm) rather than producing whatever the host does.
+TEST(test_float_to_int_refuses_out_of_range) {
+    bool ok = true;
+    value_t v = val_float(42.9);
+    ASSERT_EQ_INT(42, (int)val_as_i64(&v, &ok));
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(val_as_u64(&v, &ok) == 42u && ok);
+    v = val_float(-2.0);
+    ASSERT_TRUE(val_as_u64(&v, &ok) == (uint64_t)-2 && ok);
+    const double bad[] = {1e300, -1e300, 1.0 / 0.0, -1.0 / 0.0, 0.0 / 0.0};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        v = val_float(bad[i]);
+        ok = true;
+        ASSERT_TRUE(val_as_i64(&v, &ok) == 0 && !ok);
+        ok = true;
+        ASSERT_TRUE(val_as_u64(&v, &ok) == 0 && !ok);
+    }
+}
+
 int main(void) {
     RUN(test_inline_free_is_noop);
     RUN(test_string_ownership);
@@ -390,5 +411,6 @@ int main(void) {
     RUN(test_bytes_invariant_holds);
     RUN(test_range_is_lazy_and_counts_correctly);
     RUN(test_range_count_does_not_overflow);
+    RUN(test_float_to_int_refuses_out_of_range);
     return 0;
 }

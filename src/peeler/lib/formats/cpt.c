@@ -34,6 +34,10 @@
 #define CP_OFF_COUNT   128
 #define CP_MAX_CODELEN 15
 
+// The directory's total entry count is 16 bits (cpt.md § 3.2.1), so no
+// well-formed archive lists more; folder counts that disagree with it can.
+#define CP_MAX_ENTRIES 65535
+
 // ============================================================================
 // Byte-supplier callback type
 //
@@ -269,7 +273,7 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
                 return -1;
             unsigned lower6 = peel_msb_get(&lz->bits, 6);
 
-            unsigned offset = ((unsigned)off_sym << 6) | lower6;
+            unsigned offset = ((unsigned)off_sym << 6) | lower6; // off_sym < CP_OFF_COUNT: at most 8191
             unsigned mlen = (unsigned)mlen_sym;
             // Offset 0 is legitimate and means a full window back (8192): the
             // field is 13 bits, so 8192 cannot be written any other way, and
@@ -559,6 +563,10 @@ typedef struct {
 
 // Append a file entry to the archive's entry list, growing as needed.
 static int cp_push_entry(cp_archive_t *ar, const cp_entry_t *e) {
+    // Folder counts that overrun their parent's let three-byte entries
+    // multiply into millions, and ncap * sizeof toward a 32-bit size_t's limit.
+    if (ar->count >= CP_MAX_ENTRIES)
+        return -1;
     if (ar->count >= ar->cap) {
         size_t ncap = ar->cap ? ar->cap * 2 : 16;
         void *tmp = realloc(ar->entries, ncap * sizeof(cp_entry_t));

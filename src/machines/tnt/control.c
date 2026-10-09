@@ -392,6 +392,10 @@ static void control_compose(config_t *cfg) {
             uint32_t px = x + i;
             if (px >= w)
                 continue;
+            // The width is the guest's, not clamped to the pitch: a pixel
+            // past the row's stride would write past the composite buffer.
+            if ((uint64_t)(px + 1u) * bpx > stride)
+                continue;
             const uint8_t *pal = c->crsr[nib & 7u];
             uint8_t *dst = line + (size_t)px * bpx;
             switch (bpx) {
@@ -440,10 +444,14 @@ void tnt_control_host_vbl(config_t *cfg) {
 // W1Cs it — the line must stay ASSERTED until that acknowledge, or the
 // kernel's dispatch (which samples the live Levels) never sees the
 // source and the driver's SlotVBL chain (cursor tasks!) starves.  The
-// ROM ndrv's polled use (T11) is indifferent to the line.
+// ROM ndrv's polled use (T11) is indifferent to the line.  The output
+// gate (INTR_ENA bit 3) holds the line low while the pending latch -- the
+// status the poll reads -- keeps latching: a frame that lands mid-acknowledge
+// (ENA = $4) must not assert the line the driver has just gated.
 static void control_vbl_sync(config_t *cfg) {
     tnt_control_t *c = ctl(cfg);
-    tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & CONTROL_INT_VBL));
+    const uint32_t en = CONTROL_INT_VBL | CONTROL_INT_GATE;
+    tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & en) == en);
 }
 
 // Control's own vertical retrace, and NOT the Macintosh 60.15 Hz tick.

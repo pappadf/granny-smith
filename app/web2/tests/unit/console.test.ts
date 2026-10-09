@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const runs: string[] = [];
 let release: (() => void) | null = null;
+let failWith: string | null = null;
 
 vi.mock('@/bus/emulator', () => ({
   getRuntimePrompt: () => 'gs>',
@@ -14,6 +15,7 @@ vi.mock('@/bus/emulator', () => ({
   gsEvalLine: async (line: string) => {
     runs.push(line);
     await new Promise<void>((r) => (release = r));
+    return failWith;
   },
 }));
 
@@ -26,6 +28,7 @@ let c: Console;
 beforeEach(() => {
   runs.length = 0;
   release = null;
+  failWith = null;
   c = createConsole();
 });
 afterEach(() => c.dispose());
@@ -58,6 +61,19 @@ describe('createConsole', () => {
     expect(texts(c)).toEqual([
       ['command', 'echo one'],
       ['command', 'echo two'],
+    ]);
+  });
+
+  it('shows why a line failed when the core did not print it', async () => {
+    failWith = 'mailbox request failed: lost';
+    c.submit('echo one');
+    await vi.waitFor(() => expect(runs).toEqual(['echo one']));
+    release?.();
+    await vi.waitFor(() => expect(c.state.runningSince).toBeNull());
+    await nextFrame();
+    expect(texts(c)).toEqual([
+      ['command', 'echo one'],
+      ['text', 'Command failed: mailbox request failed: lost'],
     ]);
   });
 

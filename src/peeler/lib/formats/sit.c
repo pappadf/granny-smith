@@ -45,9 +45,6 @@
 // sit.md § 4.7 "Classic Iteration Rules" — max folder nesting depth.
 #define SIT_MAX_DEPTH 10
 
-// sit.md § 5.7 "Iteration Rules" — max directory map entries for SIT5.
-#define SIT5_MAX_DIRS 32
-
 // sit.md § 5.3 "Entry Header" — SIT5 entry magic value.
 #define SIT5_ENTRY_MAGIC 0xA5A5A5A5
 
@@ -111,6 +108,7 @@ typedef struct {
     int code_bits; // Current code width
     int prev; // Previous code (-1 = none)
     int block_count; // Codes emitted since last clear
+    bool bad; // A code no encoder could have written was read
 
     uint8_t stage[LZW_TABLE_CAP]; // Staging buffer for reversed expansion
     size_t stage_rd; // Read position in staging buffer
@@ -123,6 +121,15 @@ typedef struct {
     uint32_t offset; // Byte offset of the folder header
     char path[512]; // Reconstructed full path
 } sit5_dir_entry_t;
+
+// Growable SIT5 directory map: every folder seen so far, so a child's parent
+// offset always resolves (a fixed table dropped folders past its size, and
+// their files surfaced at the top level).
+typedef struct {
+    sit5_dir_entry_t *items;
+    int count;
+    int cap;
+} sit5_dir_map_t;
 
 // ============================================================================
 // Static Helpers — CRC-16
@@ -351,12 +358,22 @@ static size_t lzw_decode(lzw_state_t *z, uint8_t *dst, size_t want) {
             z->block_count = 0;
             continue;
         }
-        // First code after reset: single byte, no dict entry added
+        // First code after reset: single byte, no dict entry added.  The
+        // dictionary is empty, so anything but a literal is corrupt (and
+        // would leave prev naming a stale or never-built entry).
         if (z->prev < 0) {
-            if (code < 256)
-                dst[got++] = (uint8_t)code;
+            if (code >= 256) {
+                z->bad = true;
+                break;
+            }
+            dst[got++] = (uint8_t)code;
             z->prev = code;
             continue;
+        }
+        // Only the next free slot may be referenced before it exists (KwKwK)
+        if (code > z->tbl_next) {
+            z->bad = true;
+            break;
         }
         // sit.md § 9.8 "The KwKwK Case" — determine first byte of expansion
         uint8_t first_ch;
@@ -537,6 +554,8 @@ static int sit_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n
         break;
     case 2:
         got = lzw_decode(p->lzw, out, want);
+        if (p->lzw->bad)
+            return sit_prod_fail(p, "SIT: corrupt LZW code");
         break;
     default:
         rc = p->inner->run(p->inner, out, want, &got);
@@ -645,8 +664,12 @@ static bool parse_classic(peel_reader_t *rd, uint64_t archive_off, sit_entry_lis
 
     while (done < file_count) {
         const uint8_t *hdr = peel_reader_at(rd, archive_off + cursor, SIT_ENTRY_HDR_SIZE);
-        if (!hdr)
-            break;
+        if (!hdr) {
+            // The header promised more entries than the input holds: a
+            // truncated archive, not a shorter one
+            *err = make_err("SIT classic: archive ends after %u of %u entries", (unsigned)done, (unsigned)file_count);
+            return false;
+        }
 
         uint8_t rm = hdr[0];
         uint8_t dm = hdr[1];
@@ -787,10 +810,31 @@ static int64_t find_sit5_magic(const uint8_t *src, size_t len) {
     return -1;
 }
 
+// Record one SIT5 folder in the directory map, growing it as needed.  Folders
+// are listing entries too, so SIT_MAX_FILES bounds the map as it does them.
+static bool dir_map_push(sit5_dir_map_t *m, uint32_t offset, const char *path, peel_err_t **err) {
+    if (m->count == m->cap) {
+        int new_cap = m->cap ? m->cap * 2 : 16;
+        sit5_dir_entry_t *tmp = realloc(m->items, (size_t)new_cap * sizeof(sit5_dir_entry_t));
+        if (!tmp) {
+            *err = make_err("SIT5: out of memory growing the folder map");
+            return false;
+        }
+        m->items = tmp;
+        m->cap = new_cap;
+    }
+    m->items[m->count].offset = offset;
+    snprintf(m->items[m->count].path, sizeof(m->items[m->count].path), "%s", path);
+    m->count++;
+    return true;
+}
+
 // Parse all file entries from a SIT5 archive through `rd`: a linked list of
-// headers with explicit offsets, each read on its own.
+// headers with explicit offsets, each read on its own.  `dmap` collects the
+// folders for path resolution; the caller frees it.
 // sit.md § 5.7 "Iteration Rules" and Appendix C
-static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t *entries, peel_err_t **err) {
+static bool parse_sit5_walk(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t *entries, sit5_dir_map_t *dmap,
+                            peel_err_t **err) {
     uint64_t blob_len = rd->size;
     uint64_t avail = blob_len - archive_off;
 
@@ -804,10 +848,6 @@ static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t
     uint16_t entry_count = rd16be(top + 92);
     uint32_t cursor = rd32be(top + 94);
     uint32_t remaining = entry_count;
-
-    // Directory map for path resolution
-    sit5_dir_entry_t dmap[SIT5_MAX_DIRS];
-    int dmap_cnt = 0;
 
     while (remaining > 0 && cursor != 0 && (uint64_t)cursor + 48 <= avail) {
         const uint8_t *h1 = peel_reader_at(rd, archive_off + cursor, 48);
@@ -942,10 +982,9 @@ static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t
         // Build the parent path from the directory map
         char ppath[512] = "";
         if (parent_off != 0) {
-            for (int i = 0; i < dmap_cnt; ++i) {
-                if (dmap[i].offset == parent_off) {
-                    strncpy(ppath, dmap[i].path, sizeof(ppath) - 1);
-                    ppath[sizeof(ppath) - 1] = '\0';
+            for (int i = 0; i < dmap->count; ++i) {
+                if (dmap->items[i].offset == parent_off) {
+                    memcpy(ppath, dmap->items[i].path, sizeof(ppath)); // same size, NUL-terminated
                     break;
                 }
             }
@@ -956,11 +995,8 @@ static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t
             // Record folder in directory map
             char folder_full[512];
             build_path(folder_full, sizeof(folder_full), ppath, namebuf);
-            if (dmap_cnt < SIT5_MAX_DIRS) {
-                dmap[dmap_cnt].offset = cursor;
-                snprintf(dmap[dmap_cnt].path, sizeof(dmap[dmap_cnt].path), "%s", folder_full);
-                dmap_cnt++;
-            }
+            if (!dir_map_push(dmap, cursor, folder_full, err))
+                return false;
             // The folder itself is an entry of the listing.
             sit_entry_t *dent = entry_list_push(entries, err);
             if (!dent)
@@ -1027,6 +1063,14 @@ static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t
     }
 
     return true;
+}
+
+// Parse a SIT5 archive: parse_sit5_walk with a directory map it owns.
+static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off, sit_entry_list_t *entries, peel_err_t **err) {
+    sit5_dir_map_t dmap = {0};
+    bool ok = parse_sit5_walk(rd, archive_off, entries, &dmap, err);
+    free(dmap.items);
+    return ok;
 }
 
 // ============================================================================

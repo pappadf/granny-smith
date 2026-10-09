@@ -1071,7 +1071,7 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         if (!c->attr_data)
             c->attr_index = value & 0x1Fu;
         else
-            c->attr[c->attr_index] = value;
+            c->attr[c->attr_index & (C54M30_ATTR_REGS - 1u)] = value;
         c->attr_data = !c->attr_data;
         return;
     case C54M30_DAC_WINDEX:
@@ -1383,11 +1383,13 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     c->seq_index = latches[0];
     c->crtc_index = latches[1];
     c->gr_index = latches[2];
-    c->attr_index = latches[3];
+    // attr_index and dac_phase index fixed arrays; the live write paths keep
+    // them in range (& 0x1F, wrap at 3), and a checkpoint is file content.
+    c->attr_index = latches[3] & (C54M30_ATTR_REGS - 1u);
     c->attr_data = latches[4] != 0;
     c->dac_write_index = latches[5];
     c->dac_read_index = latches[6];
-    c->dac_phase = latches[7];
+    c->dac_phase = latches[7] < 3u ? latches[7] : 0u;
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     system_read_checkpoint_data(cp, &c->blt, sizeof(c->blt));
     // The palette view and the scanout descriptor are DERIVED: rebuild them
