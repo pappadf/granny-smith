@@ -339,9 +339,9 @@ its drawing section on the default (the thread) and replays it
 entirely on `raster=sw`, the normative walker, against the same pinned
 pixel values and counts (including a rotate-mode stipple probe: nine
 of tri1's 136 pixels pass `$80000001`, the register ends at `$180`);
-`tnt-voodoo2-glide` runs Quake on the default and saves the machine at
-the moment it launches it; `tnt-voodoo2-glide-sw` restores that
-checkpoint, switches the card to the walker (`regs.raster = "sw"`, which
+`tnt-voodoo2-glide` runs Quake on the default; `tnt-voodoo2-glide-sw`
+runs the same boot and launch, saves the machine at the launch and
+restores it, switches the card to the walker (`regs.raster = "sw"`, which
 fences the old backend and builds the new one on the same target) and
 plays the launch from there, against a frame the **thread** backend drew
 from the same restored launch.  (A restored run is deterministic but is

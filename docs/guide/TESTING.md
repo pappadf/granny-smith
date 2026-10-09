@@ -267,11 +267,10 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 
 ### Checkpoint fixtures
 
-Some tests start where another test has already been: `tnt-voodoo2-glide-sw`
-plays Quake from the moment `tnt-voodoo2-glide` launched it, and
-`gossamer-checkpoint` restores the 6 G mid-boot point `suite-gossamer`'s g3dt
-row passes through.  Instead of booting there again, the consumer restores
-the producer's checkpoint:
+Some tests start where another test has already been: `gossamer-checkpoint`
+restores the 6 G mid-boot point `suite-gossamer`'s g3dt row passes through.
+Instead of booting there again, the consumer restores the producer's
+checkpoint:
 
 - The producer's `config.mk` says `TEST_PROVIDES := <name>` and its script
   calls `fixture_save("<name>")` at that point; the consumer says
@@ -292,6 +291,12 @@ the producer's checkpoint:
   on from a restore does a save and a load itself when it boots inline.
 - A producer that fails leaves no fixture; its consumers then boot inline
   rather than fail with it.  Fixtures never cross runs or builds.
+- A consumer starts only when its producer has **finished**, not when it
+  saved.  Use a fixture when the producer is short after the save, or the
+  consumer is: two long tests chained this way run back to back where they
+  used to run side by side.  (`tnt-voodoo2-glide-sw` was a consumer of its
+  sibling's Quake launch until CI showed exactly that: ~460 + ~260 s on one
+  shard set the run's floor.  It now saves and restores the launch itself.)
 
 ### What CI runs
 

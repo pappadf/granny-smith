@@ -20,7 +20,9 @@ TEST_SETUP := test ! -f "$(TEST_DATA)/apps/quake_8_1_voodoo2.img" || cp "$(TEST_
 TEST_ARGS := model=pm7500 ram=65536
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
-# The sibling's Quake launch (lib/mac.script, "checkpoint fixtures").
-TEST_NEEDS := pm7500-81-glide-launch
+# Not a fixture consumer of the sibling's launch, deliberately: a consumer
+# starts only when its producer has finished, and the two Quake runs
+# back to back (~460 + ~260 s pooled) set the CI floor, where side by side
+# they cost one boot more.
 
 TEST_TIER := extended

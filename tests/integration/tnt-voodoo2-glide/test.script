@@ -37,11 +37,6 @@ let img = "${$WORK_DIR}/quake.img"
 if have_media($img) {
     glide_to_launch($RASTER)
 
-    # The launch is in the guest's queue: tnt-voodoo2-glide-sw plays it from
-    # here on the walker (a checkpoint fixture; saving does not disturb this
-    # run's timeline).
-    if $RASTER == "thread" { fixture_save("pm7500-81-glide-launch") }
-
     glide_play("quake-ingame.png", $RASTER, "tnt-voodoo2-glide/${$RASTER}")
 } else {
     skip_test("tnt-voodoo2-glide (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
