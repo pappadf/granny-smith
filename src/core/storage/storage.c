@@ -648,6 +648,44 @@ int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
     return GS_SUCCESS;
 }
 
+int storage_read_blocks(storage_t *storage, size_t offset, void *buffer, size_t count) {
+    if (!storage || (!buffer && count))
+        return GS_ERROR;
+    if (offset % storage->block_size != 0)
+        return GS_ERROR;
+    uint64_t first = offset / storage->block_size;
+    if (first > storage->block_count || count > storage->block_count - first)
+        return GS_ERROR;
+
+    uint8_t *out = buffer;
+    size_t bs = storage->block_size;
+    size_t i = 0;
+    while (i < count) {
+        uint32_t lba = (uint32_t)(first + i);
+        if (!storage->base || bitmap_test(storage->bitmap, lba)) {
+            // A modified block (the delta), or a blank disk's zeros.
+            if (storage_read_block(storage, (size_t)lba * bs, out + i * bs) != GS_SUCCESS)
+                return GS_ERROR;
+            i++;
+            continue;
+        }
+        // The run of unmodified blocks from here: one read of the base.  A
+        // run the base cannot serve whole (a short base, a failed read) is
+        // read again block by block, so each block reads exactly as
+        // storage_read_block reads it.
+        size_t run = 1;
+        while (i + run < count && !bitmap_test(storage->bitmap, lba + (uint32_t)run))
+            run++;
+        if (gs_source_read_exact(storage->base, block_pos(0, lba, bs), out + i * bs, run * bs) != 0) {
+            for (size_t k = 0; k < run; k++)
+                if (storage_read_block(storage, (size_t)(lba + k) * bs, out + (i + k) * bs) != GS_SUCCESS)
+                    return GS_ERROR;
+        }
+        i += run;
+    }
+    return GS_SUCCESS;
+}
+
 int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     if (!storage || !buffer)
         return GS_ERROR;

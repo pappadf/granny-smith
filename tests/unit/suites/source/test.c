@@ -455,6 +455,61 @@ TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
     gs_source_release(s);
 }
 
+// A source that passes reads through to its parent and counts them.
+static int g_passthru_reads;
+static int64_t passthru_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    g_passthru_reads++;
+    return gs_source_read(s->ctx, off, buf, len);
+}
+static uint64_t passthru_size(gs_source_t *s) {
+    return gs_source_size(s->ctx);
+}
+static const char *passthru_key(gs_source_t *s) {
+    return gs_source_key(s->ctx);
+}
+static gs_tier_t passthru_tier(gs_source_t *s) {
+    return gs_source_tier(s->ctx);
+}
+static void passthru_close(gs_source_t *s) {
+    (void)s; // the parent reference is the source's own
+}
+static const gs_source_ops_t passthru_ops = {passthru_read, passthru_size, passthru_key, passthru_tier, passthru_close};
+
+// A large read of a LisaEm ProFile image returns what block-by-block reads
+// return, at any offset, and reads the file a group at a time -- two reads
+// per 16 blocks, not two per block.
+TEST(test_lisaem_profile_large_reads) {
+    const uint32_t blocks = 64;
+    size_t len = 0;
+    uint8_t *f = make_dc42(blocks, 20, 0, &len);
+    gs_source_t *mem = gs_source_memory(f, len, true, "/x/lisaem-profile.dc42");
+    gs_source_t *file = peel_source_new(&passthru_ops, mem, mem);
+    gs_unwrapped_t u;
+    ASSERT_EQ_INT(0, gs_format_unwrap(file, NULL, &u));
+    ASSERT_TRUE(strcmp(u.chain, "lisaem") == 0);
+    size_t size = (size_t)blocks * 532;
+    uint8_t *want = malloc(size), *got = malloc(size);
+    for (uint32_t k = 0; k < blocks; k++)
+        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, (uint64_t)k * 532, want + (size_t)k * 532, 532));
+    g_passthru_reads = 0;
+    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 0, got, size));
+    ASSERT_TRUE(memcmp(want, got, size) == 0);
+    ASSERT_TRUE(g_passthru_reads <= (int)(2 * blocks / 16));
+    // Unaligned windows that start and end inside groups and blocks.
+    static const size_t offs[] = {1, 19, 20, 531, 532 * 15 + 7, 532 * 16 - 1, 532 * 33 + 100};
+    for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+        size_t n = size - offs[i] < 532 * 20 ? size - offs[i] : 532 * 20;
+        memset(got, 0, size);
+        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, offs[i], got, n));
+        ASSERT_TRUE(memcmp(want + offs[i], got, n) == 0);
+    }
+    free(want);
+    free(got);
+    gs_unwrapped_free(&u);
+    gs_source_release(file);
+    gs_source_release(mem);
+}
+
 // Only exactly 20 tag bytes per block, in whole interleave groups, is a
 // LisaEm ProFile image; every near miss stays a plain DiskCopy 4.2 image.
 TEST(test_lisaem_profile_detection_is_exact) {
@@ -609,6 +664,7 @@ int main(void) {
     RUN(test_unwrap_diskcopy_inside_gzip);
     RUN(test_lisaem_profile_interleave);
     RUN(test_lisaem_profile_unwraps_to_profile_blocks);
+    RUN(test_lisaem_profile_large_reads);
     RUN(test_lisaem_profile_detection_is_exact);
     RUN(test_not_yet_is_waited_out_with_poll);
     RUN(test_chunk_cache_budgets_change_at_run_time);
