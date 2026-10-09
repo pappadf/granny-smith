@@ -111,6 +111,11 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
 // Reads one block (block_size bytes) at the given byte offset.
 int storage_read_block(storage_t *storage, size_t offset, void *buffer);
 
+// Reads `count` consecutive blocks at the given byte offset, as `count`
+// storage_read_block calls would, but with one base read per run of
+// unmodified blocks: a host file is read in large pieces, not per block.
+int storage_read_blocks(storage_t *storage, size_t offset, void *buffer, size_t count);
+
 // Writes one block (block_size bytes) at the given byte offset.
 int storage_write_block(storage_t *storage, size_t offset, const void *buffer);
 

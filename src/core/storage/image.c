@@ -558,7 +558,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 }
 
 // Read whole blocks at `offset` of the image's volume (past any wrapper
-// prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes read before a backing failure.
+// prefix; wrap_base bytes into the storage).  Returns `size`, or 0 on a backing failure.
 static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // An undersized / truncated image (a host file shorter than the media it
@@ -577,13 +577,11 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
             "disk_read_data: %zu-byte read at offset %zu runs past image end (raw_size=%zu); zero-filled %zu-byte tail",
             size, offset, disk->raw_size, size - backed);
     }
-    size_t transferred = 0;
-    while (transferred < backed) {
-        int rc = storage_read_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
-        GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
+    if (backed) {
+        int rc = storage_read_blocks(disk->storage, disk->wrap_base + offset, buf, backed / disk->block_size);
+        GS_ASSERTF(rc == GS_SUCCESS, "storage_read_blocks failed (%d)", rc);
         if (rc != GS_SUCCESS)
-            return transferred; // genuine in-bounds backing-store failure
-        transferred += disk->block_size;
+            return 0; // genuine in-bounds backing-store failure
     }
     // Buffer fully populated: real data plus any zero-filled tail past EOF.
     return size;
