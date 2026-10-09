@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.9.1] — 2026-10-09
+
+### Fixed
+- **Disk conversion on Windows hosts** — storing a downloaded or dropped disk as UDIF ("Compressing…") took minutes in Windows browsers: the image was read one 512-byte block at a time, and each file access is slow there. Images are now read, written and verified in large pieces (a 51 MB disk: from 2–3 minutes to about 10 s; a 20 MB disk: 41,886 file reads down to 87).
+- URL boot downloads a Mac archive once: when the disk inside a `.sit` has to be unpacked first (a Disk Copy 6 image), the archive already downloaded is used instead of being fetched again.
+
 ## [v0.9.0] — 2026-10-08
 
 ### Added
