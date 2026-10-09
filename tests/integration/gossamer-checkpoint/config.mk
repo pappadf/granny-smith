@@ -16,4 +16,9 @@ TEST_RUNNER := run.sh
 TEST_TIMEOUT := 3600
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+# Under `make test`, step 1 is suite-gossamer's g3dt row: it saves the same
+# 6 G mid-boot state, and this test restores that file instead of booting
+# there itself.  Run alone, it does both steps.
+TEST_NEEDS := g3dt-921-midboot
+
 TEST_TIER := matrix

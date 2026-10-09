@@ -29,4 +29,8 @@ TEST_SETUP := test ! -f "$(TEST_DATA)/apps/quake_8_1_voodoo2.img" || cp "$(TEST_
 TEST_ARGS := model=pm7500 ram=65536
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+# The Quake launch, for tnt-voodoo2-glide-sw (lib/mac.script, "checkpoint
+# fixtures").
+TEST_PROVIDES := pm7500-81-glide-launch
+
 TEST_TIER := extended

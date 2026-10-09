@@ -339,9 +339,15 @@ its drawing section on the default (the thread) and replays it
 entirely on `raster=sw`, the normative walker, against the same pinned
 pixel values and counts (including a rotate-mode stipple probe: nine
 of tri1's 136 pixels pass `$80000001`, the register ends at `$180`);
-`tnt-voodoo2-glide` runs Quake on the default and `tnt-voodoo2-glide-sw`
-runs it on the walker against the **same** in-game golden (a symlink
-into the sibling row).
+`tnt-voodoo2-glide` runs Quake on the default and saves the machine at
+the moment it launches it; `tnt-voodoo2-glide-sw` restores that
+checkpoint, switches the card to the walker (`regs.raster = "sw"`, which
+fences the old backend and builds the new one on the same target) and
+plays the launch from there, against a frame the **thread** backend drew
+from the same restored launch.  (A restored run is deterministic but is
+not the straight run's timeline: the attract demo is a few frames
+elsewhere at the same instruction count, so the restored frame is a golden
+of its own.)
 
 **The walker-optimization ladder** (bit-exact by construction; the
 three rows above are the oracle, `GS_V2_XCHECK=1` is the soak-run
