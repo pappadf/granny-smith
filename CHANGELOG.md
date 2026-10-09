@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.9.1] — 2026-10-09
+
+### Fixed
+- **Disk conversion on Windows hosts** — storing a downloaded or dropped disk as UDIF ("Compressing…") took minutes in Windows browsers: the image was read one 512-byte block at a time, and each file access is slow there. Images are now read, written and verified in large pieces (a 51 MB disk: from 2–3 minutes to about 10 s; a 20 MB disk: 41,886 file reads down to 87).
+- URL boot downloads a Mac archive once: when the disk inside a `.sit` has to be unpacked first (a Disk Copy 6 image), the archive already downloaded is used instead of being fetched again.
+
 ## [v0.9.0] — 2026-10-08
 
 ### Added
@@ -19,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ImageWriter printing to PDF** — ImageWriter and ImageWriter II on a Mac serial port, the ImageWriter II with LocalTalk Option on AppleTalk (in the Chooser beside the LaserWriter), and an ImageWriter on the Lisa's Serial A, so the Lisa Office System prints. The guest's unmodified drivers print with the printers' own fonts, graphics modes, colour ribbons and flow control; selectable in the New Machine dialog.
 - **AppleTalk PPC Toolbox and Apple events** (ADSP) for scripted guest control, and a complete **AppleShare (AFP) server**; IIfx and Quadra 900/950 get AppleTalk through the SCC IOP.
 - **Floppy on the Quadra 840AV and Centris 660AV** — the New Age controller, so the AV machines read, write, format and boot from floppies.
-- **Disk images** — UDIF (`.dmg`) read and write; **UDIF is now the stored format** (streamed import, compressed, compact deltas); bare HFS volumes and driverless partitioned disks (archive.org, Mini vMac, Disk Copy, SheepShaver shapes) boot as SCSI disks; LisaEm ProFile images attach as they are; one byte-source model for images, filesystems and archives (ISO 9660 and MFS in the image VFS).
+- **Disk images** — UDIF (`.dmg`) read and write; **UDIF is now the stored format** (streamed import, compressed, compact deltas); bare HFS volumes and driverless partitioned disks (such as many archive.org images) boot as SCSI disks; LisaEm ProFile images attach as they are; one byte-source model for images, filesystems and archives (ISO 9660 and MFS in the image VFS).
 - **URL boot** — ROMs and disks fetched from any CORS-enabled URL, also from inside a `.zip` or `.sit` (`…/x.zip/<member>`); download progress, and a disk downloaded once is reused.
 - **Machine configuration** — one configuration tree per model drives `machine.boot`, URLs and one New Machine dialog; 24/32-bit addressing is an option.
 - **Object model, console and command browser** — a self-describing tree (docs, types, defaults); a new Terminal console (replacing xterm.js) with syntax highlighting, completion, signature hints and object links; a structural command browser; SYSTEM-tab editing; shell **commands** (`ls`, `cd`, `cp`, `run`, `step`, …).

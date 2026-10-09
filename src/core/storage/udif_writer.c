@@ -61,8 +61,11 @@ typedef struct {
     uint64_t sector, count, offset, length;
 } wext_t;
 
+#define UDIF_WRITE_BUFFER (1u << 20) // bytes of output gathered per host write
+
 struct udif_writer {
     FILE *f;
+    char *fbuf; // f's buffer (UDIF_WRITE_BUFFER): freed after f is closed
     char *path;
     char *source_name;
     char *origin;
@@ -146,6 +149,12 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
         return NULL;
     }
     w->f = fdopen(fd, "wb");
+    // Write the file in large pieces: each write is a host call (on the web
+    // build an OPFS write proxied to another thread), and stdio's default
+    // buffer would make one per compressed chunk or smaller.
+    w->fbuf = w->f ? malloc(UDIF_WRITE_BUFFER) : NULL;
+    if (w->fbuf)
+        setvbuf(w->f, w->fbuf, _IOFBF, UDIF_WRITE_BUFFER);
     w->path = gs_strdup(path);
     w->source_name = o.source_name ? gs_strdup(o.source_name) : NULL;
     w->origin = o.origin && *o.origin ? gs_strdup(o.origin) : NULL;
@@ -331,6 +340,7 @@ static void writer_free(udif_writer_t *w) {
         return;
     if (w->f)
         fclose(w->f);
+    free(w->fbuf);
     free(w->path);
     free(w->source_name);
     free(w->origin);
@@ -651,6 +661,39 @@ int udif_create_empty(const char *path, uint64_t size) {
 
 // --- Verification -------------------------------------------------------------
 
+#define UDIF_VERIFY_WINDOW (1u << 20) // bytes of the data fork read at a time
+
+// Reads of a data fork through one window: the chunks of an image lie in
+// order in its data fork, so a pass over them reads the file in large
+// pieces rather than once per chunk.  `end` is where the data fork ends.
+typedef struct {
+    gs_source_t *src;
+    uint64_t end;
+    uint8_t *buf;
+    uint64_t at;
+    size_t len;
+} read_window_t;
+
+static int window_read(read_window_t *w, uint64_t off, void *dst, size_t n) {
+    if (off >= w->at && n <= w->len && off - w->at <= w->len - n) {
+        memcpy(dst, w->buf + (off - w->at), n);
+        return 0;
+    }
+    if (n > UDIF_VERIFY_WINDOW || off >= w->end)
+        return gs_source_read_exact(w->src, off, dst, n);
+    size_t fill = w->end - off < UDIF_VERIFY_WINDOW ? (size_t)(w->end - off) : UDIF_VERIFY_WINDOW;
+    if (fill < n)
+        fill = n;
+    w->len = 0;
+    int rc = gs_source_read_exact(w->src, off, w->buf, fill);
+    if (rc)
+        return rc;
+    w->at = off;
+    w->len = fill;
+    memcpy(dst, w->buf, n);
+    return 0;
+}
+
 int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap) {
 #define FAIL(rc_, ...)                                                                                                 \
     do {                                                                                                               \
@@ -661,6 +704,7 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
     } while (0)
     int rc = 0;
     uint8_t *xml = NULL, *in = NULL, *outb = NULL;
+    read_window_t win = {.src = data};
     udif_map_t *map = NULL;
     udif_writer_stats_t st = {0};
     size_t in_cap = 0, out_cap = 0;
@@ -681,16 +725,20 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
         FAIL(-EINVAL, "the block map does not parse");
     if (tr.data_fork_offset > size || tr.data_fork_length > size - tr.data_fork_offset)
         FAIL(-EINVAL, "the data fork lies outside the file");
+    win.end = tr.data_fork_offset + tr.data_fork_length;
+    win.buf = malloc(UDIF_VERIFY_WINDOW);
+    if (!win.buf)
+        FAIL(-ENOMEM, "out of memory");
 
     // The data fork's CRC, streamed.
     if (tr.checksum_type == UDIF_CHECKSUM_CRC32) {
-        uint8_t buf[65536];
         uint32_t crc = 0;
         for (uint64_t at = 0; at < tr.data_fork_length;) {
-            size_t n = tr.data_fork_length - at < sizeof(buf) ? (size_t)(tr.data_fork_length - at) : sizeof(buf);
-            if (gs_source_read_exact(data, tr.data_fork_offset + at, buf, n) != 0)
+            size_t n =
+                tr.data_fork_length - at < UDIF_VERIFY_WINDOW ? (size_t)(tr.data_fork_length - at) : UDIF_VERIFY_WINDOW;
+            if (gs_source_read_exact(data, tr.data_fork_offset + at, win.buf, n) != 0)
                 FAIL(-EIO, "cannot read the data fork at %llu", (unsigned long long)at);
-            crc = gs_crc32(crc, buf, n);
+            crc = gs_crc32(crc, win.buf, n);
             at += n;
         }
         if (crc != tr.checksum)
@@ -728,7 +776,7 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
             }
             if (!in || !outb)
                 FAIL(-ENOMEM, "out of memory");
-            if (gs_source_read_exact(data, tr.data_fork_offset + c->offset, in, (size_t)c->length) != 0)
+            if (window_read(&win, tr.data_fork_offset + c->offset, in, (size_t)c->length) != 0)
                 FAIL(-EIO, "cannot read the chunk at sector %llu", (unsigned long long)(tbl->base_sector + c->sector));
             int drc = udif_decode_chunk(c, in, (size_t)c->length, outb, (size_t)bytes);
             if (drc != 0)
@@ -751,6 +799,7 @@ out:
     free(xml);
     free(in);
     free(outb);
+    free(win.buf);
     return rc;
 #undef FAIL
 }
