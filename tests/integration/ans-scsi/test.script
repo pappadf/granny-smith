@@ -8,6 +8,7 @@
 # interrupts.  The text the firmware then prints is the INQUIRY data that
 # came back off the emulated bus.
 
+include "../lib/mac.script"
 include "../lib/ans.script"
 
 def probe(model, ram_kb) {
@@ -57,6 +58,7 @@ def probe(model, ram_kb) {
     let d0 = ans_go()
     assert !contains($d0, "not found") "S8: ${$model} the disk0 alias does not resolve"
 
+    report_perf("ans-scsi/${$model}", scheduler.instr_count)
     echo "ans-scsi ${$model}: SCRIPTS engine ran INQUIRY on both fast/wide channels"
 }
 

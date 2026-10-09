@@ -22,9 +22,10 @@
 #
 # BUDGET.  A Normal-key cold boot is slow by the machine's design — POST
 # runs its full memory test, and cfgmgr pays one selection time-out plus a
-# bus reset for every absent id on two wide buses.  Sampled
-# in 500 M-cycle strides and polled against the login golden; ~260
-# strides to the prompt on the reference host, capped at 400.
+# bus reset for every absent id on two wide buses.  The row boots with
+# 64 MB so POST has less to test, samples in 100 M-cycle strides polled
+# against the login golden (capped at 200 G), and waits for the root
+# shell's golden rather than a fixed budget after the login.
 
 include "../lib/mac.script"
 include "../lib/ans.script"
@@ -34,7 +35,7 @@ include "../lib/ans.script"
 let aix_disk = "../../data/systems/aix_4_1_5_lp240s_234mb.img"
 
 def installed_boot() {
-    machine.boot model="ans500" ram=524288 rom="${$ROM}"
+    machine.boot model="ans500" ram=65536 rom="${$ROM}"
     machine.board.keyswitch = "normal"
     assert machine.board.keyswitch == "normal" "the front keyswitch did not take the Normal position"
 
@@ -47,8 +48,8 @@ def installed_boot() {
     let saw_scsi2 = 0
     let saw_integrated = 0
     let saw_login = 0
-    for i in 0..400 {
-        scheduler.run 500000000
+    for i in 0..2000 {
+        scheduler.run 100000000
         if contains(machine.lcd.text, "890") {
             $saw_scsi2 = 1
         }
@@ -61,7 +62,7 @@ def installed_boot() {
         # The syslogd Subsystem has been started. Subsystem PID is 3320.`)
         # and one of them differs from boot to boot, so the compare
         # excludes them.
-        if $i >= 20 {
+        if $i >= 100 {
             if machine.screen.matches("console-login.png", 0, 0, 64, 640) {
                 $saw_login = 1
                 break
@@ -81,11 +82,11 @@ def installed_boot() {
 
     # --- The ADB keyboard: log in as root (the install set no password) ----
     machine.adb.keyboard.type "root\n"
-    scheduler.run 3000000000
-    check("root-shell.png")
+    wait_match("root-shell.png", 3000000000, 100000000)
 
     # And the disk is still the one it booted from.
     assert machine.scsi.device[2].type == "hd" "S13: the boot disk went away under AIX"
+    report_perf("ans-aix-installed-boot/root-shell", scheduler.instr_count)
 
     echo "ans-aix-installed-boot: an installed AIX 4.1.5 cold-boots through Open Firmware's disk2:aix to 'Console login:' on the graphics console, and root logs in from the ADB keyboard (rung S13)"
 }
@@ -93,7 +94,7 @@ def installed_boot() {
 if have_media($aix_disk) {
     installed_boot()
 } else {
-    echo "skip: ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — run scripts/fetch-test-data.sh)"
+    skip_test("ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — run scripts/fetch-test-data.sh)")
 }
 
 quit
