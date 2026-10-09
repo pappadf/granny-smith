@@ -3,7 +3,10 @@
 # Copyright (c) pappadf
 """Regenerate tests/integration/test-weights.json from runner durations.
 
-Usage: gen-test-weights.py DURATIONS.jsonl... > tests/integration/test-weights.json
+Usage: gen-test-weights.py [--source TEXT] DURATIONS.jsonl... > tests/integration/test-weights.json
+
+--source records where the durations came from (a CI run, say) in the
+file's "source" field; without it the field names the input files.
 
 Each input line is one record the integration runner appends
 ({"test": "suite-av", "secs": 700, "status": "PASS"}); several files (CI
@@ -26,8 +29,12 @@ def main(argv):
             old = json.load(f)
     except FileNotFoundError:
         old = {"weights": {}}
+    args = argv[1:]
+    source = None
+    if len(args) >= 2 and args[0] == "--source":
+        source, args = args[1], args[2:]
     samples = {}
-    for path in argv[1:]:
+    for path in args:
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -39,7 +46,7 @@ def main(argv):
     for test, secs in samples.items():
         weights[test] = int(round(statistics.median(secs)))
     out = {k: v for k, v in old.items() if k != "weights"}
-    out["source"] = "gen-test-weights.py over " + ", ".join(argv[1:])
+    out["source"] = source or ("gen-test-weights.py over " + ", ".join(args))
     out["weights"] = dict(sorted(weights.items()))
     json.dump(out, sys.stdout, indent=2)
     sys.stdout.write("\n")

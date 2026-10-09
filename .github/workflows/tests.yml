@@ -169,23 +169,29 @@ jobs:
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
+          mkdir -p shard-out
           make integration-test PLATEN=1 WERROR=1 TIER="unit matrix extended" \
             SHARD=${{ matrix.shard }}/3 TEST_VARS="KEEP_GOING=1" -j"$(nproc)" \
-            2>&1 | tee /tmp/it-shard.log
+            2>&1 | tee shard-out/it-shard.log
           exit "${PIPESTATUS[0]}"
 
       # The log carries the @@COV / @@PERF records the contracts job checks;
       # durations.jsonl is what scripts/gen-test-weights.py regenerates the
-      # weights from.
+      # weights from.  Both go into ONE directory and are uploaded from
+      # there: upload-artifact keeps paths relative to the files' common
+      # ancestor, and two files from different trees land at different depths
+      # in the artifact, which the contracts job's glob then misses.
+      - name: Collect shard durations
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        run: cp tests/integration/test-results/durations.jsonl shard-out/ 2>/dev/null || true
+
       - name: Upload shard log
         if: always() && steps.fetch-data.outputs.has_test_data == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: integration-shard-${{ matrix.shard }}
-          path: |
-            /tmp/it-shard.log
-            tests/integration/test-results/durations.jsonl
-          if-no-files-found: ignore
+          path: shard-out/
+          if-no-files-found: error
 
       - name: Upload failure artifacts
         if: failure()
@@ -212,13 +218,28 @@ jobs:
           pattern: integration-shard-*
           path: shards
 
+      # Skipping is right only when there was no test data to run with (a
+      # fork PR has no token).  With data, every shard must have uploaded its
+      # log: a missing one would otherwise turn the contracts into a green
+      # check of nothing.
       - name: Gather shard logs
         id: logs
+        env:
+          HAS_DATA: ${{ secrets.GS_TEST_DATA_TOKEN != '' }}
         run: |
-          ls shards/*/it-shard.log >/dev/null 2>&1 \
-            && echo "have=true" >> "$GITHUB_OUTPUT" \
-            || { echo "have=false" >> "$GITHUB_OUTPUT"; echo "::notice::No shard logs (no test data): contracts skipped"; }
-          cat shards/*/it-shard.log > /tmp/it-all.log 2>/dev/null || true
+          n=$(ls shards/*/it-shard.log 2>/dev/null | wc -l)
+          if [ "$HAS_DATA" != "true" ]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No test data (no token): contracts skipped"
+            exit 0
+          fi
+          if [ "$n" -ne 3 ]; then
+            echo "::error::expected 3 shard logs, found $n"
+            ls -R shards || true
+            exit 1
+          fi
+          echo "have=true" >> "$GITHUB_OUTPUT"
+          cat shards/*/it-shard.log > /tmp/it-all.log
           cat shards/*/durations.jsonl > /tmp/durations.jsonl 2>/dev/null || true
 
       # A declared cell that went uncovered fails; cells owed by another
