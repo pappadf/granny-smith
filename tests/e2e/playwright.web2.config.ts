@@ -15,8 +15,8 @@ import { defineConfig } from '@playwright/test';
 const PORT = 18090;
 
 // Specs that must not share the machine with another running emulator: they
-// measure pacing or wall-clock jitter, or feed real-time media into the
-// guest.  They run in the `serial` project, one at a time; everything else
+// measure pacing, latency or wall-clock jitter, or feed real-time media into
+// the guest.  They run in the `serial` project, one at a time; everything else
 // runs in `parallel`, GS_E2E_WORKERS at once (each test has its own browser
 // context, so its own OPFS).  CI runs the two projects one after the other
 // (`--project=parallel`, then `--project=serial`), so the serial specs
@@ -31,11 +31,15 @@ const SERIAL = [
   'av-speech-recognition.spec.ts',
   'checkpoint-stall.spec.ts',
   'copy-jitter.spec.ts',
+  'highlight.spec.ts',
 ];
 const WORKERS = Number(process.env.GS_E2E_WORKERS ?? 1);
 
 export default defineConfig({
   testDir: './web2-specs',
+  // The baselines are named for the single `chromium` project this config
+  // had before it split into `parallel` and `serial`; both keep that name.
+  snapshotPathTemplate: '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-chromium{-snapshotSuffix}{ext}',
   timeout: 120_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

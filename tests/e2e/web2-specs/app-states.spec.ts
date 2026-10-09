@@ -69,7 +69,9 @@ const TABS = [
   "logs",
 ];
 
-test.use({ viewport: { width: 1280, height: 800 } });
+// Keep web2's default pacing: the toolbar's pacing control is in every
+// screenshot, and the baselines show it at Real.
+test.use({ viewport: { width: 1280, height: 800 }, gsSpeed: null });
 
 // The skin comes from the persisted preference; the preview
 // notice is already dismissed, so no first-visit modal covers the page.
