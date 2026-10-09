@@ -92,7 +92,7 @@ You will need a ROM image and a bootable system disk image for the machine you w
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
 6. ROMs and disks can also be fetched from any CORS-enabled URL, including from inside a `.zip` or `.sit` archive (`…/x.zip/<member>`)
 
-Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), bare HFS volumes or driverless partitioned disks (archive.org, Mini vMac, Disk Copy, SheepShaver shapes), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
+Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), bare HFS volumes or driverless partitioned disks (such as many archive.org images), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
 
 Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind. End-user documentation lives in [docs/user/](docs/user/), and the UI offers Midnight (the default), Starlight and Aqua skins.
 
