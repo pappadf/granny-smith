@@ -24,7 +24,6 @@ import { gsEval, gsErrorText } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
-import { routePrintLine } from './logSink';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
@@ -508,20 +507,14 @@ async function importMacArchive(
     handedOver = true;
     return { handled: false, path: null, archive: staged };
   };
-  // DEBUG(convert-timing): step times on the Terminal console.
-  const dbg = (step: string, t0: number) =>
-    routePrintLine(`[url-boot] ${name} ${step}: ${Math.round(performance.now() - t0)} ms`);
   try {
-    const tDownload = performance.now();
     if (
       !(await streamToOpfs(staged, body, (n) =>
         opts.onProgress?.(n, src.kind === 'blob' ? src.blob.size : src.total, 0),
       ))
     )
       throw new Error('could not stage the archive');
-    dbg('archive download', tDownload);
     setActivityDetail('decoding the archive...');
-    const tImport = performance.now();
     const r = (await gsEval('files.archive.import', [
       staged,
       part,
@@ -532,7 +525,6 @@ async function importMacArchive(
       bytes_in?: number;
       stored_bytes?: number;
     } | null;
-    dbg('files.archive.import', tImport);
     if (!r || typeof r !== 'object' || typeof r.member !== 'string') return leave();
     const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {

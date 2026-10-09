@@ -6,8 +6,6 @@
 
 #include "source.h"
 
-#include "convert_debug.h"
-
 #include "appledouble.h"
 #include "resource_fork.h"
 #include "storage_util.h"
@@ -44,8 +42,6 @@ typedef struct {
     char *key; // "<canonical path>@<size>:<mtime>"
 } host_src_t;
 
-gs_dbg_counter_t g_dbg_host_open, g_dbg_host_read; // DEBUG(convert-timing)
-
 static int64_t host_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     host_src_t *h = s->ctx;
     if (off >= h->size)
@@ -53,9 +49,7 @@ static int64_t host_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     if (len > h->size - off)
         len = (size_t)(h->size - off);
     for (;;) {
-        double t0 = gs_dbg_now_ms(); // DEBUG(convert-timing)
         ssize_t n = pread(h->fd, buf, len, (off_t)off);
-        gs_dbg_add(&g_dbg_host_read, n > 0 ? (uint64_t)n : 0, t0); // DEBUG(convert-timing)
         if (n >= 0)
             return (int64_t)n;
         if (errno != EINTR)
@@ -97,9 +91,7 @@ gs_source_t *gs_source_host(const char *path, int *err) {
         *err = -EINVAL;
         return NULL;
     }
-    double t_open = gs_dbg_now_ms(); // DEBUG(convert-timing)
     int fd = open(path, O_RDONLY);
-    gs_dbg_add(&g_dbg_host_open, 0, t_open); // DEBUG(convert-timing)
     if (fd < 0) {
         *err = -errno;
         return NULL;

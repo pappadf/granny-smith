@@ -102,7 +102,6 @@ import {
   type MediaResult,
 } from './media';
 import { importImage, type DiskCategory, type ImportSource } from './importImage';
-import { routePrintLine } from './logSink';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -517,13 +516,6 @@ async function storedFromUrl(
   return null;
 }
 
-// DEBUG(convert-timing): one Terminal console line per URL-boot step with its
-// wall time, for diagnosing slow downloads and conversions on some hosts.
-function dbgStep(slot: string, step: string, t0: number, extra = ''): void {
-  const ms = Math.round(performance.now() - t0);
-  routePrintLine(`[url-boot] ${slot} ${step}: ${ms} ms${extra ? ` (${extra})` : ''}`);
-}
-
 // Fetch a URL, stage it, and persist it as `category`.  Returns the
 // persisted /opfs/images/<category>/ path to attach from, or undefined when
 // the fetch failed or the file is not valid as that category (rejected,
@@ -539,20 +531,11 @@ async function fetchAndPersist(
   if (category === 'hd' || category === 'cdrom') {
     const stored = await storedFromUrl(slot, url, category);
     if (stored) return stored;
-    const tImport = performance.now(); // DEBUG(convert-timing)
     const imported = await fetchAndImport(slot, url, category);
-    dbgStep(
-      slot,
-      'streamed import',
-      tImport,
-      typeof imported === 'object' ? 'archive left to the staged flow' : '',
-    );
     if (imported !== false && typeof imported !== 'object') return imported;
     if (typeof imported === 'object') archive = imported.archive;
   }
-  const tStage = performance.now(); // DEBUG(convert-timing)
   const staged = await fetchAndStage(slot, url, archive);
-  dbgStep(slot, archive ? 'unpack (no second download)' : 'download + unpack', tStage);
   if (!staged) return undefined;
   try {
     if (category === 'hd' || category === 'cdrom') {
@@ -588,7 +571,6 @@ async function storeCompact(
   const before = urlBoot.files.find((f) => f.slot === slot)?.status;
   updateUrlFile(slot, { status: 'storing', stored: { done: 0, total: 0 } });
   let last = 0;
-  const tConvert = performance.now(); // DEBUG(convert-timing)
   try {
     const r = await gsEvalWithProgress(
       'files.convert',
@@ -603,16 +585,13 @@ async function storeCompact(
         updateUrlFile(slot, { stored: { done, total } });
       },
     );
-    dbgStep(slot, 'files.convert', tConvert, 'core breakdown: the convert-timing line above');
     if (!r || typeof r !== 'object' || 'error' in (r as object)) {
       // The caller stores the staged file as it is.
       if (before) updateUrlFile(slot, { status: before });
       return false;
     }
     const name = `${staged.name}.dmg`;
-    const tPersist = performance.now(); // DEBUG(convert-timing)
     const stored = await persistAs(part, name, category);
-    dbgStep(slot, 'store the .dmg', tPersist);
     if (stored.ok) {
       updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name, status: 'done' });
       return stored.path;
@@ -839,10 +818,7 @@ async function fetchAndStage(
       updateUrlFile(slot, { total });
       ct = res.headers.get('Content-Type') ?? '';
       const body = res.body ?? (await res.blob());
-      const tDownload = performance.now(); // DEBUG(convert-timing)
-      const ok = await streamToOpfs(staged, body, progressReporter(slot));
-      dbgStep(slot, 'download', tDownload, total ? `${(total / 1048576).toFixed(1)} MB` : '');
-      if (!ok) {
+      if (!(await streamToOpfs(staged, body, progressReporter(slot)))) {
         updateUrlFile(slot, { status: 'failed', error: 'could not store the download' });
         return null;
       }
@@ -853,10 +829,7 @@ async function fetchAndStage(
 
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
-      const tExtract = performance.now(); // DEBUG(convert-timing)
-      const got = await extractMember(slot, staged, plan);
-      dbgStep(slot, 'extract member', tExtract);
-      if (!got) return null;
+      if (!(await extractMember(slot, staged, plan))) return null;
     } else if (archive === 'zip' || /zip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
