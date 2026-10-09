@@ -1,5 +1,161 @@
 {
   "rows": {
+    "ans-aix-installed-boot/root-shell": {
+      "instr": 46100000000,
+      "tolerance": 0.2
+    },
+    "ans-device-tree/ans500": {
+      "instr": 3880000000,
+      "tolerance": 0.2
+    },
+    "ans-device-tree/ans700": {
+      "instr": 4005000000,
+      "tolerance": 0.2
+    },
+    "ans-nt-installed-boot/desktop": {
+      "instr": 11394000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-50348b3d0126096b": {
+      "instr": 1650000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-c60da96de537f08a": {
+      "instr": 1000000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-d540b3dd5bcf9caa": {
+      "instr": 3450000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-9630c68b-a71fb907dd180b8a": {
+      "instr": 1650000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-962f6c13-50348b3d0126096b": {
+      "instr": 1825000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-962f6c13-c60da96de537f08a": {
+      "instr": 3575000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-9630c68b-a71fb907dd180b8a": {
+      "instr": 1825000000,
+      "tolerance": 0.2
+    },
+    "ans-scsi/ans500": {
+      "instr": 4070000000,
+      "tolerance": 0.2
+    },
+    "ans-scsi/ans700": {
+      "instr": 4275000000,
+      "tolerance": 0.2
+    },
+    "default-configs/ans500": {
+      "instr": 750000000,
+      "tolerance": 0.2
+    },
+    "default-configs/ans700": {
+      "instr": 750000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iici": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iicx": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iifx": {
+      "instr": 6000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iisi": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iix": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/lisa": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/macxl": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/plus": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm6100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm7100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm7500": {
+      "instr": 240000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm8100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm8500": {
+      "instr": 240000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm9500": {
+      "instr": 320000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pmg3dt": {
+      "instr": 720000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pmg3mt": {
+      "instr": 810000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q660av": {
+      "instr": 20000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q700": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q840av": {
+      "instr": 20000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q900": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q950": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/se30": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "gossamer-checkpoint/restored-desktop": {
+      "instr": 2250000000,
+      "tolerance": 0.2
+    },
+    "gossamer-restore-fail/finder": {
+      "instr": 3147084947,
+      "tolerance": 0.2
+    },
     "iici-aux3-8bpp/login": {
       "instr": 302331169,
       "tolerance": 0.2
@@ -37,7 +193,7 @@
       "tolerance": 0.2
     },
     "mklinux-boot/pm7500": {
-      "instr": 4750000000,
+      "instr": 3830000000,
       "tolerance": 0.2
     },
     "mklinux-boot/pm8100": {
@@ -48,8 +204,16 @@
       "instr": 6389983600,
       "tolerance": 0.2
     },
+    "pm7100-copland-boot/copland-desktop": {
+      "instr": 8639983600,
+      "tolerance": 0.2
+    },
+    "pm7100-copland-boot/copland-logo": {
+      "instr": 1699983600,
+      "tolerance": 0.2
+    },
     "pm8100-24ac-sysinfo/bench": {
-      "instr": 10302983600,
+      "instr": 9802983600,
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {
@@ -113,7 +277,7 @@
       "tolerance": 0.2
     },
     "suite-av/av-checkpoint": {
-      "instr": 758089740,
+      "instr": 278259186,
       "tolerance": 0.2
     },
     "suite-av/av-chime": {
@@ -129,23 +293,23 @@
       "tolerance": 0.2
     },
     "suite-av/av-floppy-800k": {
-      "instr": 1351839699,
+      "instr": 302134412,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-boot": {
-      "instr": 7930329616,
+      "instr": 682744563,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-format": {
-      "instr": 4775565956,
+      "instr": 2496370329,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-mount": {
-      "instr": 1350274155,
+      "instr": 320632958,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-write-eject": {
-      "instr": 1525581225,
+      "instr": 1084644617,
       "tolerance": 0.2
     },
     "suite-av/av-identity": {
@@ -177,7 +341,7 @@
       "tolerance": 0.2
     },
     "suite-av/q660av-71-hd-desktop": {
-      "instr": 703831738,
+      "instr": 203989467,
       "tolerance": 0.2
     },
     "suite-av/q660av-71-video-in": {
@@ -185,11 +349,23 @@
       "tolerance": 0.2
     },
     "suite-av/q840av-71-hd-desktop": {
-      "instr": 720599412,
+      "instr": 240768440,
       "tolerance": 0.2
     },
     "suite-av/q840av-71-video-in": {
       "instr": 784237992,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3dt-floppy": {
+      "instr": 4558994063,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3dt-hd": {
+      "instr": 4519729234,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3mt-hd": {
+      "instr": 4689258957,
       "tolerance": 0.2
     },
     "suite-iici/iici-24ac-dual": {
@@ -401,19 +577,19 @@
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-800k": {
-      "instr": 2619983600,
+      "instr": 1379983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-boot": {
-      "instr": 7599983600,
+      "instr": 3499983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-mount": {
-      "instr": 3856983600,
+      "instr": 3066983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-write-eject": {
-      "instr": 2612983600,
+      "instr": 1822983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-swim3-reset": {
@@ -421,19 +597,19 @@
       "tolerance": 0.2
     },
     "suite-pdm/pm6100-75-hd": {
-      "instr": 1919483600,
+      "instr": 1089483600,
       "tolerance": 0.2
     },
     "suite-pdm/pm7100-75-hd": {
-      "instr": 1946983600,
+      "instr": 1156983600,
       "tolerance": 0.2
     },
     "suite-pdm/pm8100-75-24ac": {
-      "instr": 1639983600,
+      "instr": 1229983600,
       "tolerance": 0.2
     },
     "suite-pdm/pm8100-75-hd": {
-      "instr": 2012483600,
+      "instr": 1601483600,
       "tolerance": 0.2
     },
     "suite-plus/plus-20-fd": {
@@ -477,7 +653,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 703998333,
+      "instr": 224303220,
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-monitors": {
@@ -501,7 +677,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 702417598,
+      "instr": 262856423,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
@@ -570,6 +746,14 @@
     },
     "tnt-pci-voodoo2": {
       "instr": 400200000,
+      "tolerance": 0.2
+    },
+    "tnt-voodoo2-glide-sw/sw": {
+      "instr": 8589000000,
+      "tolerance": 0.2
+    },
+    "tnt-voodoo2-glide/thread": {
+      "instr": 8589000000,
       "tolerance": 0.2
     }
   }
