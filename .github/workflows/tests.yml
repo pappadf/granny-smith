@@ -296,15 +296,18 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # New Svelte UI at app/web2. Typecheck + lint + Vitest + Vite build, then
-  # the WASM build and the browser end-to-end suites: prod-smoke (always) and
-  # the functional web2 Playwright specs (gated on proprietary test data).
-  # This is the sole home of browser e2e since the legacy web UI was retired.
+  # The web2 frontend (app/web2) is three kinds of job, run in parallel: the
+  # static checks and fast tests (ui), the component-gallery screenshots
+  # (ui-gallery), and the functional browser end-to-end suite, sharded across
+  # runners (ui-e2e).  Each Playwright shard keeps the suite's single worker,
+  # so no spec runs any differently than it did in one job -- they just run
+  # on three machines.  This is the sole home of browser e2e since the legacy
+  # web UI was retired.
   ui:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    # Every make in this job -- the explicit steps and the ones the Playwright
-    # webServers run (`make ui2` builds the core) -- must see the same flags,
+    timeout-minutes: 30
+    # Every make in this job -- the explicit steps and the one the Playwright
+    # webServer runs (`make ui2` builds the core) -- must see the same flags,
     # or the flags stamp changes and the core is rebuilt from scratch.
     env:
       WERROR: "1"
@@ -320,47 +323,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
-      # web2 e2e specs boot from (see the matching step in the test job).
-      - name: Verify 7z presence
-        shell: bash
-        run: |
-          which 7z || {
-            echo '7z not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          7z i | sed -n '1,2p'
-
-      # m68k binutils for the WASM build's declaration-ROM fragments —
-      # verified, not installed (see the matching step in the test job).
+      # m68k binutils for the WASM build's declaration-ROM fragments --
+      # verified, not installed (see the matching step in the static job).
       - name: Verify m68k binutils presence
-        shell: bash
         run: |
           which m68k-linux-gnu-as || {
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | sed -n '1p'
-
-      # Fetch proprietary test data (internal builds with token access only).
-      # Gates the functional web2 e2e below; the token is scoped to this step.
-      - name: Fetch test data
-        id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::notice::Test data not available — running prod-smoke only, skipping functional web2 e2e."
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
-
-      - name: Show tool versions
-        run: |
-          node -v
-          npm -v
 
       - name: Install (app/web2)
         working-directory: app/web2
@@ -404,32 +374,12 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # The UI gallery: every component story, both colour schemes, compared
-      # pixel for pixel with the committed baselines (Vite dev server, no
-      # WASM or test data needed). Styling refactors claim zero diff here.
-      - name: UI gallery screenshots (Playwright)
-        env:
-          CI: true
-        run: make ui2-gallery
-
       # End-to-end smoke: serves dist/ from a subpath WITHOUT
       # COOP/COEP headers, asserts the page reaches __gsReady and
       # crossOriginIsolated === true. This is the production env
       # GitHub Pages provides; `make run` masks it.
       - name: prod-smoke (Playwright)
         run: make ui2-prod-smoke
-
-      # Functional web2 end-to-end suite (tests/e2e/web2-specs/**): config
-      # dialog, checkpoint resume, display drop, URL boot, A/UX realtime boot,
-      # video-mode shader baselines, Lisa/Xenix, filesystem tab. Needs the
-      # proprietary ROMs/disks, so it's gated on the fetch above. `make
-      # ui2-e2e`'s webServer rebuilds + serves app/web2/dist with COOP/COEP
-      # (the core is already fresh, so its WASM build is a no-op).
-      - name: web2 e2e (Playwright)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        env:
-          CI: true
-        run: make ui2-e2e
 
       - name: Upload UI build (on failure)
         if: failure()
@@ -439,10 +389,133 @@ jobs:
           path: app/web2/dist
           if-no-files-found: ignore
 
+  # The UI gallery: every component story, both colour schemes, compared
+  # pixel for pixel with the committed baselines (Vite dev server, no WASM or
+  # test data needed). Styling refactors claim zero diff here.
+  ui-gallery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install (app/web2)
+        working-directory: app/web2
+        run: npm ci
+
+      - name: Install Playwright (tests/e2e)
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: UI gallery screenshots (Playwright)
+        env:
+          CI: true
+        run: make ui2-gallery
+
+      - name: Upload gallery traces (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-gallery-traces
+          path: tests/e2e/test-results
+          if-no-files-found: ignore
+
+  # Functional web2 end-to-end suite (tests/e2e/web2-specs/**): config dialog,
+  # checkpoint resume, display drop, URL boot, A/UX realtime boot, video-mode
+  # shader baselines, Lisa/Xenix, filesystem tab, ...  Needs the proprietary
+  # ROMs/disks, so a job without the token skips it.  Playwright's --shard
+  # splits the spec files across the three runners; `npx playwright test
+  # --config=playwright.web2.config.ts --shard=K/3` reproduces one locally.
+  ui-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # Every make in this job -- the explicit steps and the one the Playwright
+    # webServer runs (`make ui2` builds the core) -- must see the same flags,
+    # or the flags stamp changes and the core is rebuilt from scratch.
+    env:
+      WERROR: "1"
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 7z extracts the large binary archives (e.g. the A/UX HD) the specs
+      # boot from.  Verified, not installed (see the static job).
+      - name: Verify 7z presence
+        run: |
+          which 7z || {
+            echo '7z not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+
+      # m68k binutils for the WASM build's declaration-ROM fragments --
+      # verified, not installed (see the matching step in the static job).
+      - name: Verify m68k binutils presence
+        run: |
+          which m68k-linux-gnu-as || {
+            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+
+      # Proprietary test data (internal builds with token access only); the
+      # token is scoped to this step.
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_data=false" >> $GITHUB_OUTPUT
+            echo "::notice::Test data not available — skipping the functional web2 e2e."
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      # Built here rather than by the Playwright webServer's `make ui2`, so
+      # the build does not count against that server's start-up timeout; the
+      # webServer's own `make ui2` is then a no-op.
+      - name: WASM build + ui2
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: make ui2
+
+      - name: Install Playwright (tests/e2e)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          CI: true
+        working-directory: tests/e2e
+        run: npx playwright test --config=playwright.web2.config.ts --shard=${{ matrix.shard }}/3
+
       - name: Upload e2e traces (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: web2-e2e-traces
+          name: web2-e2e-traces-shard-${{ matrix.shard }}
           path: tests/e2e/test-results
           if-no-files-found: ignore

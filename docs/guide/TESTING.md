@@ -13,7 +13,7 @@ emulator), and browser-based end-to-end tests (Playwright).
 | Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
 | Integration, extended tier | `make integration-test TIER=extended -j$(nproc)` | 31 min of CPU (8 min at -j4) | Yes |
 | Integration, all tiers as CI runs them | `make integration-test TIER="unit matrix extended" SHARD=1/3 -j$(nproc)` | one third of the work per shard | Yes |
-| E2E | `make e2e-test` | 16 min, one worker | Yes |
+| E2E | `make e2e-test` | 21 min, one worker (CI splits it over three runners) | Yes |
 | Unit + every integration tier | `make test` | the sum of the rows above | Yes, for the integration part |
 
 The times are CI step times on GitHub's 4-core `ubuntu-24.04` runner
@@ -262,7 +262,7 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 
 | Trigger | Runs |
 |---|---|
-| PR / push (`tests.yml`) | `static` (headless build, core layering, tier check, golden distinctness), `unit` (native and wasm32 unit suites) and three `integration` shards run in parallel; each shard runs its third of **all three tiers** as one longest-first `-j` pool (the extended tier is on the PR gate while the integration-test rework settles; in the pool it costs CPU on whichever shard it lands rather than a serial half hour). `contracts` then checks coverage (both tiers) and the perf baselines over the union of the shard logs, and puts coverage, milestone rows, per-row spends and the slowest tests into the step summary. |
+| PR / push (`tests.yml`) | `static` (headless build, core layering, tier check, golden distinctness), `unit` (native and wasm32 unit suites) and three `integration` shards run in parallel; each shard runs its third of **all three tiers** as one longest-first `-j` pool (the extended tier is on the PR gate while the integration-test rework settles; in the pool it costs CPU on whichever shard it lands rather than a serial half hour). `contracts` then checks coverage (both tiers) and the perf baselines over the union of the shard logs, and puts coverage, milestone rows, per-row spends and the slowest tests into the step summary. The web2 frontend runs beside them as `ui` (svelte-check, lint, Vite and WASM builds, Vitest, prod-smoke), `ui-gallery` (component screenshots) and three `ui-e2e` jobs, each running a third of the Playwright spec files (`--shard=K/3`) with the suite's single worker. |
 | Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier, one short run per PowerPC family the unit tier does not boot (`pdm-rom-ladder`, `tnt-pci-slots`) and one 68k boot, with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
