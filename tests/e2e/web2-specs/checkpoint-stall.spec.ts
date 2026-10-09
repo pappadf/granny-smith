@@ -15,7 +15,7 @@
 // import.meta.env.DEV or when GS_MEASURE is set); it is not a shipped
 // surface.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";

@@ -11,7 +11,7 @@
 // which is the write-durability guarantee (a reopen would mint a fresh delta
 // and discard every write made since the attach).
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';

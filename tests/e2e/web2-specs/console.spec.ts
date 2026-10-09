@@ -7,7 +7,7 @@
 // and "Copy as commands" of a three-command transcript, pasted back and run,
 // is one command whose output entries equal the original three's.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { CONSOLE_INPUT, consoleLine, terminalRun } from '../helpers/terminal';
 

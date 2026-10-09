@@ -7,7 +7,7 @@
 // fall back to the thread backend at creation and say so, and the overlay
 // must never appear.  A file of its own because launchOptions are per file.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import { BASE_ARGS, bootWithCard, probe } from "../helpers/voodoo2";
 
 test.use({ launchOptions: { args: BASE_ARGS } });

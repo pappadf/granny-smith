@@ -7,7 +7,7 @@
 // CodeMirror input included, without a reload; an unknown ?skin= falls back
 // to the default skin.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 
 // The persisted skin, set before the page's own scripts.
 async function prefs(page: Page, skin: string | null): Promise<void> {

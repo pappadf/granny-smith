@@ -82,6 +82,7 @@ tests/e2e/
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
 │
 ├── helpers/
+│   ├── test.ts                      # the specs' `test`: every page.goto() at max speed
 │   └── web2-fs.ts                   # gotoWeb2, OPFS staging, tree/file drag helpers
 │
 └── test-results/                    # Generated: traces, screenshots, reports
@@ -194,6 +195,23 @@ matrices, boot baselines) live in the headless integration tests
 (`tests/integration/`); the web2 specs pin the *post-shader canvas* and UI
 behaviour that only a browser exercises.
 
+## Speed and parallelism
+
+Specs import `test` from `helpers/test.ts`, not from `@playwright/test`. Its
+`page` fixture appends `speed=turbo` to every URL `page.goto()` loads (unless
+the URL names a speed): web2 paces machines in real time by default, and a
+spec waiting for a guest only needs it to get there.  A spec whose point is
+the pacing, or that feeds real-time media into the guest, opts out with
+`test.use({ gsSpeed: null })`.
+
+`playwright.web2.config.ts` has two projects.  `serial` holds the specs that
+must not share the machine with another running emulator (its `SERIAL`
+list: pacing, wall-clock jitter, real-time media) and runs one at a time;
+`parallel` holds the rest and runs `GS_E2E_WORKERS` specs at once (default
+1; CI uses 3).  Each test has its own browser context, so its own OPFS.
+CI runs `--project=parallel` and then `--project=serial` on each shard, so
+the serial specs never overlap anything.
+
 ## Driving the emulator from a spec
 
 Read and call the object model with `gsEvalInPage` / `gsCallInPage`
@@ -213,9 +231,11 @@ synthesised; the handlers, worker, and OPFS run for real).
 ## Notes
 
 - CI runs the functional suite in the `ui-e2e` jobs, split three ways with
-  Playwright's `--shard` (one worker per shard, as locally; gated on test
-  data); `npx playwright test --config=playwright.web2.config.ts --shard=K/3`
-  reproduces one shard.  The always-on prod-smoke runs in the `ui` job and
+  Playwright's `--shard` (gated on test data), each shard in the two passes
+  above; `GS_E2E_WORKERS=3 npx playwright test
+  --config=playwright.web2.config.ts --project=parallel --shard=K/3` and then
+  `--project=serial` reproduce one shard.  Each shard uploads a JSON report
+  (`web2-e2e-report-shard-K`) with every test's duration.  The always-on prod-smoke runs in the `ui` job and
   the gallery in `ui-gallery`; see `.github/workflows/tests.yml`.
 - Devcontainers mount a small `/dev/shm`; the web2 config passes
   `--disable-dev-shm-usage` so the renderer doesn't crash under memory-heavy

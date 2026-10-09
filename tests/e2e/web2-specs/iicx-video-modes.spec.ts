@@ -29,11 +29,15 @@
 // per-mode page reloads; each reload after the first answers the
 // checkpoint-resume prompt with "Start fresh" to keep the cold-boot flow.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { gsEvalInPage } from '../helpers/web2-eval';
 import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Keep web2's default pacing: the splash capture relies on the paced boot
+// sitting at the splash until the spec stops the machine.
+test.use({ gsSpeed: null });
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>

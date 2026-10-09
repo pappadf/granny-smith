@@ -14,15 +14,39 @@ import { defineConfig } from '@playwright/test';
 
 const PORT = 18090;
 
+// Specs that must not share the machine with another running emulator: they
+// measure pacing or wall-clock jitter, or feed real-time media into the
+// guest.  They run in the `serial` project, one at a time; everything else
+// runs in `parallel`, GS_E2E_WORKERS at once (each test has its own browser
+// context, so its own OPFS).  CI runs the two projects one after the other
+// (`--project=parallel`, then `--project=serial`), so the serial specs
+// never overlap anything.
+const SERIAL = [
+  'iifx-aux3-realtime.spec.ts',
+  'scheduler-accelerated.spec.ts',
+  'perf-bench.spec.ts',
+  'av-camera.spec.ts',
+  'av-microphone.spec.ts',
+  'av-sound-record.spec.ts',
+  'av-speech-recognition.spec.ts',
+  'checkpoint-stall.spec.ts',
+  'copy-jitter.spec.ts',
+];
+const WORKERS = Number(process.env.GS_E2E_WORKERS ?? 1);
+
 export default defineConfig({
   testDir: './web2-specs',
   timeout: 120_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
-  workers: 1,
+  workers: WORKERS,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  reporter: process.env.CI ? 'github' : 'list',
+  // The JSON report keeps per-test durations (the github reporter prints
+  // none); CI uploads it.
+  reporter: process.env.CI
+    ? [['github'], ['json', { outputFile: process.env.GS_E2E_JSON ?? 'test-results/report.json' }]]
+    : 'list',
   webServer: {
     // Build the web2 bundle (`make ui2` brings the wasm core up to date
     // first — a no-op that keeps the build ID when it is fresh — and copies
@@ -58,5 +82,8 @@ export default defineConfig({
       ],
     },
   },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    { name: 'parallel', use: { browserName: 'chromium' }, testIgnore: SERIAL },
+    { name: 'serial', use: { browserName: 'chromium' }, testMatch: SERIAL, workers: 1 },
+  ],
 });

@@ -12,7 +12,7 @@
 // Baselines are platform-sensitive and are recorded only in the CI image
 // (tests/e2e/README.md, "UI screenshots").
 
-import { test, expect, type Page, type Locator } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gsEvalInPage } from "../helpers/web2-eval";
