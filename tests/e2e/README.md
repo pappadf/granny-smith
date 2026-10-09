@@ -212,8 +212,11 @@ synthesised; the handlers, worker, and OPFS run for real).
 
 ## Notes
 
-- CI runs the functional suite in the `ui` job (`make ui2-e2e`, gated on test
-  data) plus the always-on prod-smoke; see `.github/workflows/tests.yml`.
+- CI runs the functional suite in the `ui-e2e` jobs, split three ways with
+  Playwright's `--shard` (one worker per shard, as locally; gated on test
+  data); `npx playwright test --config=playwright.web2.config.ts --shard=K/3`
+  reproduces one shard.  The always-on prod-smoke runs in the `ui` job and
+  the gallery in `ui-gallery`; see `.github/workflows/tests.yml`.
 - Devcontainers mount a small `/dev/shm`; the web2 config passes
   `--disable-dev-shm-usage` so the renderer doesn't crash under memory-heavy
   specs.

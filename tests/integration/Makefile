@@ -75,15 +75,26 @@ ifneq ($(UNTIERED),)
 $(error tests with no recognised TEST_TIER (unit | matrix | extended): $(UNTIERED))
 endif
 
+# TIER may name several tiers ("matrix extended"): CI runs them as ONE -j
+# pool, so the machine never idles at the boundary between two tails.
+space := $(empty) $(empty)
 TIER ?=
 ifeq ($(TIER),)
-TEST_DIRS := $(ALL_TEST_DIRS)
+UNORDERED_DIRS := $(ALL_TEST_DIRS)
 else
-TEST_DIRS := $(patsubst %/config.mk,%,$(shell grep -l '^TEST_TIER := $(TIER)$$' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null))
-ifeq ($(TEST_DIRS),)
+UNORDERED_DIRS := $(patsubst %/config.mk,%,$(shell grep -lE '^TEST_TIER := ($(subst $(space),|,$(strip $(TIER))))$$' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null))
+ifeq ($(UNORDERED_DIRS),)
 $(error TIER=$(TIER) matches no tests (expected unit, matrix, or extended))
 endif
 endif
+
+# Longest first (scripts/order-tests.py, weights in test-weights.json):
+# make -j starts targets in list order, so the long suites start at once
+# instead of when the alphabet reaches them.  SHARD=K/N keeps one of N
+# bin-packed shards (CI splits the integration run across runners).
+SHARD ?=
+TEST_WEIGHTS := test-weights.json
+TEST_DIRS := $(shell python3 $(ROOT_DIR)/scripts/order-tests.py $(TEST_WEIGHTS) $(if $(SHARD),--shard $(SHARD)) $(UNORDERED_DIRS))
 TEST_TARGETS := $(addprefix test-,$(TEST_DIRS))
 VALGRIND_TARGETS := $(addprefix test-valgrind-,$(TEST_DIRS))
 
@@ -160,9 +171,10 @@ $(DUMP_BIN):
 # writes, which stays accurate under parallel interleaving.
 test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
-	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(TIER), [tier: $(TIER)])"
+	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(TIER), [tier: $(TIER)])$(if $(SHARD), [shard $(SHARD)])"
 	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
 	@echo "========================================"
+	@mkdir -p $(TEST_RESULTS_BASE) && : > $(TEST_RESULTS_BASE)/durations.jsonl
 	@$(MAKE) --no-print-directory -k $(TEST_TARGETS); \
 	failed=""; \
 	for dir in $(TEST_DIRS); do \

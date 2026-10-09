@@ -38,9 +38,21 @@ LABEL="${WRAPPER:+ (valgrind)}"
 # so and record it, rather than exiting silently with no status file.
 trap 'echo "=== FAIL${LABEL}: $TEST (runner error at line $LINENO) ==="; echo FAIL > "${TEST_RESULTS_DIR:-/nonexistent}/status" 2>/dev/null || true' ERR
 
+# Wall seconds per test: printed on the result line and appended, one JSON
+# record per test, to durations.jsonl beside the per-test result dirs --
+# what scripts/gen-test-weights.py turns into test-weights.json, the
+# longest-first order make -j starts the tests in.  An O_APPEND write of one
+# short line is atomic, so concurrent tests do not interleave records.
+SECONDS=0
+record_duration() {
+    printf '{"test":"%s","secs":%d,"status":"%s"}\n' "$TEST" "$SECONDS" "$1" \
+        >> "$(dirname "$TEST_RESULTS_DIR")/durations.jsonl" 2>/dev/null || true
+}
+
 fail() {
-    echo "=== FAIL${LABEL}: $TEST ==="
+    echo "=== FAIL${LABEL}: $TEST (${SECONDS}s) ==="
     echo "FAIL" > "$TEST_RESULTS_DIR/status" 2>/dev/null
+    record_duration FAIL
     exit 1
 }
 
@@ -98,6 +110,7 @@ check_rc() {
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
         echo "=== FAIL${LABEL}: $TEST (timeout after ${TEST_TIMEOUT}s) ==="
         echo "FAIL" > "$TEST_RESULTS_DIR/status" 2>/dev/null
+        record_duration TIMEOUT
         exit 1
     fi
     fail
@@ -169,5 +182,6 @@ else
     check_rc "${rc:-0}"
 fi
 
-echo "=== PASS${LABEL}: $TEST ==="
+echo "=== PASS${LABEL}: $TEST (${SECONDS}s) ==="
 echo "PASS" > "$TEST_RESULTS_DIR/status"
+record_duration PASS

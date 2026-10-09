@@ -49,9 +49,16 @@ const MINIMAL_PDF = Array.from(
 const SKINS = MANIFESTS.map((m) => m.id);
 // Chromium re-rasters anti-aliased edges, gradients and translucency a level
 // or few apart depending on the page's compositing history (the same DOM,
-// shot twice, differs): every skin allows that much colour noise per pixel,
-// and still not a single pixel beyond it.
+// shot twice, differs): every skin allows that much colour noise per pixel.
 const RASTER_NOISE = 0.05;
+// ...and a handful of pixels beyond it.  Occasionally a single anti-aliased
+// edge lands further off: PR #299's first sharded e2e run (a fresh runner,
+// shard 1/3) failed url-boot-aqua on four pixels at the top of the disabled
+// Save State icon's circle, 16-24 grey levels darker than the baseline, with
+// nothing else on the page moved.  Any real change -- a wording change, a
+// moved control, a different colour -- alters far more than this many
+// pixels, so the shots still catch it.
+const RASTER_STRAYS = 8;
 const TABS = [
   "terminal",
   "machine",
@@ -114,7 +121,7 @@ async function shot(
   // too, so one run reports (and uploads the actual image of) every changed
   // state -- a wording change shows in every tab shot, not just the first.
   await expect.soft(page).toHaveScreenshot(name, {
-    maxDiffPixels: 0,
+    maxDiffPixels: RASTER_STRAYS,
     threshold: RASTER_NOISE,
     animations: "disabled",
     caret: "hide",
