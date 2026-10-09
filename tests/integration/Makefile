@@ -12,6 +12,7 @@
 # Usage:
 #   make test              - Run all integration tests
 #   make test TIER=matrix  - Run one tier (unit | matrix | extended)
+#   make test TESTS="a b"  - Run just those tests (fixture producers too, if listed)
 #   make test -j$(nproc)   - Run tests in parallel (safe: per-test
 #                            GS_STORAGE_CACHE keeps tests/data pristine)
 #   make test-<name>       - Run a specific test (e.g. make test-boot-matrix)
@@ -79,7 +80,12 @@ endif
 # pool, so the machine never idles at the boundary between two tails.
 space := $(empty) $(empty)
 TIER ?=
-ifeq ($(TIER),)
+# TESTS="a b" runs just those directories through the aggregate `test`
+# target (fixtures, ordering and the summary included).
+TESTS ?=
+ifneq ($(strip $(TESTS)),)
+UNORDERED_DIRS := $(filter $(ALL_TEST_DIRS),$(TESTS))
+else ifeq ($(TIER),)
 UNORDERED_DIRS := $(ALL_TEST_DIRS)
 else
 UNORDERED_DIRS := $(patsubst %/config.mk,%,$(shell grep -lE '^TEST_TIER := ($(subst $(space),|,$(strip $(TIER))))$$' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null))
@@ -96,6 +102,20 @@ SHARD ?=
 TEST_WEIGHTS := test-weights.json
 TEST_DIRS := $(shell python3 $(ROOT_DIR)/scripts/order-tests.py $(TEST_WEIGHTS) $(if $(SHARD),--shard $(SHARD)) $(UNORDERED_DIRS))
 TEST_TARGETS := $(addprefix test-,$(TEST_DIRS))
+
+# Checkpoint fixtures (scripts/order-tests.py; docs/guide/TESTING.md,
+# "Checkpoint fixtures").  Only the aggregate run uses them: `test` clears
+# FIXTURE_DIR and runs its targets with FIXTURE_RUN=1, which makes each
+# consumer wait for its producer (an order-only prerequisite), hands every
+# test --var FIXTURES=, and lets a failed test not stop the targets after it
+# (the summary reads the status files, so nothing is lost).  A single
+# `make test-<name>` gets no FIXTURES and boots everything itself.
+FIXTURE_DIR := $(abspath $(WORK_DIR_BASE))/fixtures
+FIXTURE_RUN ?=
+ifneq ($(FIXTURE_RUN),)
+FIXTURE_EDGES := $(shell python3 $(ROOT_DIR)/scripts/order-tests.py $(TEST_WEIGHTS) --deps $(TEST_DIRS))
+$(foreach e,$(FIXTURE_EDGES),$(eval test-$(firstword $(subst :, ,$(e))): | test-$(lastword $(subst :, ,$(e)))))
+endif
 VALGRIND_TARGETS := $(addprefix test-valgrind-,$(TEST_DIRS))
 
 # Extra --var definitions forwarded to the shell (suite row filters,
@@ -175,14 +195,17 @@ test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
 	@echo "========================================"
 	@mkdir -p $(TEST_RESULTS_BASE) && : > $(TEST_RESULTS_BASE)/durations.jsonl
-	@$(MAKE) --no-print-directory -k $(TEST_TARGETS); \
-	failed=""; \
+	@rm -rf $(FIXTURE_DIR) && mkdir -p $(FIXTURE_DIR)
+	@$(MAKE) --no-print-directory -k $(TEST_TARGETS) FIXTURE_RUN=1; \
+	failed=""; skipped=""; \
 	for dir in $(TEST_DIRS); do \
 		[ "$$(cat "$(TEST_RESULTS_BASE)/$$dir/status" 2>/dev/null)" = "PASS" ] || failed="$$failed $$dir"; \
+		[ ! -f "$(TEST_RESULTS_BASE)/$$dir/skipped" ] || skipped="$$skipped $$dir"; \
 	done; \
 	echo "========================================"; \
+	[ -z "$$skipped" ] || echo "SKIPPED (no media):$$skipped"; \
 	if [ -z "$$failed" ]; then \
-		echo "All $(words $(TEST_DIRS)) integration test(s) passed"; \
+		echo "All $(words $(TEST_DIRS)) integration test(s) passed$${skipped:+, $$(echo $$skipped | wc -w) of them skipped}"; \
 	else \
 		echo "FAILED:$$failed"; \
 		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED"; \
@@ -214,11 +237,12 @@ check-tiers:
 # default.
 WRAPPER ?=
 test-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
-	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
+	$(if $(FIXTURE_RUN),-)@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
 	DUMP_BIN="$(DUMP_BIN_ABS)" \
 	TEST_DATA="$(TEST_DATA_ABS)" \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
 	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
+	FIXTURE_DIR="$(if $(FIXTURE_RUN),$(FIXTURE_DIR))" \
 	WRAPPER="$(WRAPPER)" \
 	bash $(RUNNER) "$*"
 

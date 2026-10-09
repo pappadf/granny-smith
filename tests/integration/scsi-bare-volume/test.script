@@ -284,7 +284,7 @@ if have_media($vol753) && have_media($vol701) {
         }
     }
 } else {
-    echo "skip: scsi-bare-volume (no bare volumes at ${$vol753} / ${$vol701})"
+    skip_test("scsi-bare-volume (no bare volumes at ${$vol753} / ${$vol701})")
 }
 
 suite_done()
