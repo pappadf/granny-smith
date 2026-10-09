@@ -786,7 +786,8 @@ serial driver made.)
   ImageWriter command stream into the file; with no output set, the driver
   reports "difficulty printing" and sends nothing. Port B (AppleBus) has no
   wired handshake. See [scc.md](../../hardware/scc.md), "The far end
-  of a port", and the `lisa-serial-output` integration row.
+  of a port", and the `lisa-imagewriter` integration test (its first
+  print).
 
 ---
 

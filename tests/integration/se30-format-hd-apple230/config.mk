@@ -19,8 +19,6 @@ TEST_DESC := Creates an HD230SC (QUANTUM LP240S) image, boots 7.0.1, and verifie
 # SE/30 Universal ROM
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# Remove stale delta/journal files so the floppy boots from a clean base image
-TEST_SETUP := rm -f $(TEST_DATA)/systems/System_7_0_1.image.delta $(TEST_DATA)/systems/System_7_0_1.image.journal
 
 # Boot from floppy with 8 MB RAM; the HD is created and attached in test.script
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image ram=8192
