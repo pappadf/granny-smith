@@ -23,7 +23,6 @@
 // Link stubs: a scheduler with a clock the test moves, and the pins
 // ============================================================
 
-
 static double g_now_ns; // the guest clock
 static bool g_pb3 = true; // VIA PB3 as the mouse last drove it (true = up)
 
