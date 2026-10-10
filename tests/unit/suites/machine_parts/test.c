@@ -45,7 +45,7 @@ bool system_checkpoint_probe(void) {
 const char *find_valid_checkpoint_path(void) {
     return NULL;
 }
-int gs_background_checkpoint(const char *label) {
+int system_background_checkpoint(const char *label) {
     (void)label;
     return -1;
 }
@@ -56,7 +56,7 @@ int platform_checkpoint_auto_set(bool on) {
     (void)on;
     return -2;
 }
-int gs_checkpoint_clear(void) {
+int system_checkpoint_clear(void) {
     return 0;
 }
 

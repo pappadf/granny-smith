@@ -100,7 +100,7 @@ typedef struct {
     uint32_t tables; // 'mish' block tables
     uint32_t crc; // the block table's checksum, when there is one table
     uint64_t max_chunk_bytes; // largest decoded compressed chunk
-    bool gs_profile; // written by this emulator
+    bool is_gs_profile; // written by this emulator
     char source_name[256]; // gs-source, or ""
     char origin[UDIF_ORIGIN_MAX]; // gs-origin, or "" (cut short when longer)
 } udif_info_t;

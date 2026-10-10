@@ -351,7 +351,7 @@ TEST(origin_round_trips_through_udif_info) {
         ASSERT_TRUE(host != NULL);
         udif_info_t in;
         ASSERT_EQ_INT(0, udif_info(host, &in));
-        ASSERT_TRUE(in.gs_profile);
+        ASSERT_TRUE(in.is_gs_profile);
         ASSERT_TRUE(strcmp(in.source_name, "disk.img") == 0);
         ASSERT_TRUE(strcmp(in.origin, with ? url : "") == 0);
         source_release(host);

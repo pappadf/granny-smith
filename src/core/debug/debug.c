@@ -2122,7 +2122,7 @@ void debug_set_failure_hook(debug_failure_hook_fn fn) {
     g_failure_hook = fn;
 }
 
-// Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
+// Shared tail of gs_assert_fail and unimplemented_fail: dump what the host
 // and the guest were doing, stop the machine, and hand the shell back.  Neither
 // aborts -- a stopped machine with a message on it is worth more than a dead
 // process, and in the browser it is the difference between a diagnosable page
@@ -2203,7 +2203,7 @@ void gs_assert_failf(const char *expr, const char *file, int line, const char *f
 // The banner goes to stderr, unbuffered: if a platform's failure hook
 // aborts -- the unit harness does -- a buffered stdout banner is lost at the
 // moment it was written for.
-void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+void unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
     fprintf(stderr, "\n\n============= UNIMPLEMENTED =============\n");
     if (fmt) {
         fprintf(stderr, "  ");

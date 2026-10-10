@@ -375,7 +375,7 @@ static DEF_METHOD(files_method_find_media) {
     if (!dir || !*dir)
         return val_err("files.find_media: expected a non-empty directory path");
     const char *dst = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    int rc = gs_find_media(dir, dst);
+    int rc = system_find_media(dir, dst);
     if (rc != 0)
         return val_err("files.find_media: no recognised media found under '%s'", dir);
     return val_bool(true);
@@ -1363,8 +1363,8 @@ static DEF_METHOD(files_method_udif_info) {
     val_map_put(b, "tables", val_uint(4, in.tables));
     val_map_put(b, "crc", val_uint(4, in.crc));
     val_map_put(b, "max_chunk_bytes", val_uint(8, in.max_chunk_bytes));
-    val_map_put(b, "gs_profile", val_bool(in.gs_profile));
-    val_map_put(b, "in_place", val_bool(in.gs_profile || in.max_chunk_bytes <= udif_inplace_max_chunk()));
+    val_map_put(b, "gs_profile", val_bool(in.is_gs_profile));
+    val_map_put(b, "in_place", val_bool(in.is_gs_profile || in.max_chunk_bytes <= udif_inplace_max_chunk()));
     val_map_put(b, "source_name", val_str(in.source_name));
     val_map_put(b, "origin", val_str(in.origin));
     return val_map_finish(b);

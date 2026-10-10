@@ -33,7 +33,7 @@ Background checkpoints (quick checkpoints saved automatically) are serialised in
 - `<created>` is a UTC timestamp in compact ISO 8601 (`YYYYMMDDTHHMMSSZ`) — purely for human legibility in `ls /opfs/checkpoints/`. Code never parses it.
 - `<id>` (per-image instance id) is also 16 hex chars, minted by the image layer in `image_create`. Each writable image gets a fresh one — reusing the same base image for an unrelated machine no longer replays stale deltas.
 
-The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `gs_register_machine`, which calls `checkpoint_machine_set`.
+The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `system_register_machine`, which calls `checkpoint_machine_set`.
 
 `checkpoint_machine_set` is called **at most once per process lifetime**. Rotation is a JS-driven page reload; the C side does not support changing machine identity in-place.
 

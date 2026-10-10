@@ -712,9 +712,9 @@ static DEF_METHOD(machine_method_restart) {
 }
 
 // machine.register(id, created) — record the active machine identity for
-// checkpointing. Routes to the platform's gs_register_machine.
+// checkpointing. Routes to the platform's system_register_machine.
 static DEF_METHOD(machine_method_register) {
-    return val_bool(gs_register_machine(argv[0].s, argv[1].s) == 0);
+    return val_bool(system_register_machine(argv[0].s, argv[1].s) == 0);
 }
 
 // Every field is optional to the binder (a field left out, even before a later

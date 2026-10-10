@@ -304,21 +304,21 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error);
 //                            — save state.checkpoint in the machine's
 //                              directory (tmp + rename), at most once per
 //                              750 ms when rate-limited.  A status_t.
-//   gs_background_checkpoint(reason)
+//   system_background_checkpoint(reason)
 //                            — the same, unthrottled and verbose.
-//   gs_checkpoint_clear()    — delete the machine's checkpoint files.
-//   gs_register_machine(id, created)
+//   system_checkpoint_clear()    — delete the machine's checkpoint files.
+//   system_register_machine(id, created)
 //                            — set the machine identity that scopes its
 //                              checkpoint directory.
-//   gs_find_media(dir, [dest])
+//   system_find_media(dir, [dest])
 //                            — find the first floppy image in `dir`,
 //                              optionally copy it to `dest`; prints the
 //                              path on success.
 status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
-int gs_background_checkpoint(const char *reason);
-int gs_checkpoint_clear(void);
-int gs_register_machine(const char *machine_id, const char *created);
-int gs_find_media(const char *dir_path, const char *dest);
+int system_background_checkpoint(const char *reason);
+int system_checkpoint_clear(void);
+int system_register_machine(const char *machine_id, const char *created);
+int system_find_media(const char *dir_path, const char *dest);
 
 // The path of the active machine's current valid quick checkpoint
 // (<machine_dir>/state.checkpoint from this build), in a static buffer, or

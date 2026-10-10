@@ -42,7 +42,7 @@ void gs_assert_failf(const char *expr, const char *file, int line, const char *f
 // model into a corner the emulator does not model, which is a test failure --
 // so this aborts, like the assert stub above, rather than pausing a scheduler
 // the suites do not have.
-void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+void unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
     va_list ap;
     fprintf(stderr, "[unit] UNIMPLEMENTED: %s:%d", file ? file : "?", line);
     if (func)

@@ -926,7 +926,7 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
     }
 }
 
-int gs_background_checkpoint(const char *reason) {
+int system_background_checkpoint(const char *reason) {
     // A snapshot promises a complete file when it returns: let a publish in
     // flight land first, save, and wait for this one's publish too.
     checkpoint_quick_wait();
@@ -996,13 +996,13 @@ static int clear_checkpoint_files(void) {
     return removed;
 }
 
-int gs_checkpoint_clear(void) {
+int system_checkpoint_clear(void) {
     int removed = clear_checkpoint_files();
     out_printf("Cleared %d checkpoint file(s)\n", removed);
     return 0;
 }
 
-int gs_register_machine(const char *machine_id, const char *created) {
+int system_register_machine(const char *machine_id, const char *created) {
     if (!machine_id || !created)
         return -1;
     int rc = checkpoint_machine_set(machine_id, created);
@@ -1017,7 +1017,7 @@ int gs_register_machine(const char *machine_id, const char *created) {
 // found" / IO error.  The web frontend runs it after an archive extraction
 // (FS.readdir from the main thread is broken with WasmFS pthreads, so this
 // runs on the worker).
-int gs_find_media(const char *dir_path, const char *dest) {
+int system_find_media(const char *dir_path, const char *dest) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
         out_printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));

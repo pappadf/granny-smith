@@ -154,7 +154,7 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     static const struct {
         uint16_t board_id;
         const char *card_id;
-    } gs_boards[] = {
+    } vrom_boards[] = {
         {0x0027, "mdc_8_24"          },
         {0x05FA, "display_card_24ac" },
         {0x002C, "824gc"             },
@@ -162,12 +162,12 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     };
     uint16_t board_id = 0;
     if (declrom_identify_vendor(img, size, "granny-smith", &board_id)) {
-        for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
-            if (gs_boards[i].board_id == board_id) {
+        for (size_t i = 0; i < sizeof(vrom_boards) / sizeof(vrom_boards[0]); i++) {
+            if (vrom_boards[i].board_id == board_id) {
                 if (out) {
                     out->crc = crc;
                     out->chip_size = size;
-                    out->card_id = gs_boards[i].card_id;
+                    out->card_id = vrom_boards[i].card_id;
                 }
                 return VROM_ID_KNOWN;
             }

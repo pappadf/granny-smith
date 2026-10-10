@@ -34,7 +34,7 @@ static DEF_METHOD(checkpoint_method_probe) {
 
 static DEF_METHOD(checkpoint_method_clear) {
     checkpoint_quick_wait(); // a publish in flight lands first, or the clear would race its rename
-    return val_bool(gs_checkpoint_clear() == 0);
+    return val_bool(system_checkpoint_clear() == 0);
 }
 
 // `checkpoint.load([path])` — load the named checkpoint file or, when path is
@@ -66,9 +66,9 @@ static DEF_METHOD(checkpoint_method_save) {
 
 // `checkpoint.snapshot(name)` — capture a quick (background) checkpoint
 // under the given label, filed under the registered machine identity.  Routes
-// to gs_background_checkpoint (system.c), which every platform shares.
+// to system_background_checkpoint (system.c), which every platform shares.
 static DEF_METHOD(checkpoint_method_snapshot) {
-    return val_bool(gs_background_checkpoint(argv[0].s) == 0);
+    return val_bool(system_background_checkpoint(argv[0].s) == 0);
 }
 
 // `checkpoint.auto` (VK_BOOL, RW) — exposes the WASM background-checkpoint

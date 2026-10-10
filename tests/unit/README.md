@@ -112,7 +112,7 @@ suite can add one with `STUBS` or drop one with `OMIT_STUBS`.
 
 | Stub | Default in | Provides |
 |---|---|---|
-| `stub_assert.c` | isolated, cpu | `gs_assert_fail()`, `gs_unimplemented_fail()`, `init_tests()` |
+| `stub_assert.c` | isolated, cpu | `gs_assert_fail()`, `unimplemented_fail()`, `init_tests()` |
 | `stub_checkpoint.c` | isolated, cpu | No-op checkpoint read/write (`system_read_checkpoint_data_loc()`, `checkpoint_has_error()`, ...) |
 | `stub_cpu.c` | | `cpu_set_an()`, `cpu_set_pc()` |
 | `stub_debugger.c` | isolated, cpu | No-op debugger hooks (`debugger_init()`, `debug_break_and_trace()`, ...) |

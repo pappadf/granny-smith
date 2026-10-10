@@ -61,17 +61,17 @@ void gs_assert_failf(const char *expr, const char *file, int line, const char *f
 // not, and sends whoever is debugging it to look at the driver.  Fault at the
 // host, name the missing function, and stop.
 //
-// Handled rather than fatal: gs_unimplemented_fail prints the banner and the
+// Handled rather than fatal: unimplemented_fail prints the banner and the
 // same diagnostics an assertion does, then stops the scheduler and returns
 // control to the shell.  A dead browser tab tells a user less than a stopped
 // machine with a message does.
-void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...)
+void unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 4, 5)))
 #endif
     ;
 
-#define GS_UNIMPLEMENTED(fmt, ...) gs_unimplemented_fail(__FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__)
+#define GS_UNIMPLEMENTED(fmt, ...) unimplemented_fail(__FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__)
 
 #ifdef __cplusplus
 }

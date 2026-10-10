@@ -23,12 +23,21 @@ other compilers.
 - Use `snake_case` for identifiers: `parse_header()`, `file_info`.
 - Constants and macros are `ALL_CAPS_WITH_UNDERSCORES`.
 - Prefix internal/private functions with `static` and, if needed, a module prefix: `static int hqx_decode_byte(...)`.
-- No project-wide `gs_` / `GS_` prefix, with two exceptions: names with a high
-  risk of colliding with libc or third-party headers (the assertion macros
-  `GS_ASSERT` / `GS_ASSERTF` and `gs_assert_fail` are the canonical case), and
-  symbols exported out of the WASM core, where `gs_` tells a JS caller the
-  name is Granny Smith's.  Everything else (`checkpoint_t`, `status_t`, ...)
-  is unprefixed.
+- The `gs_` prefix is used only where it is needed to avoid a collision with
+  a standard or library name (`gs_strdup`, `gs_assert_fail`); never
+  otherwise.  A name takes its module's prefix instead (`source_read`,
+  `mailbox_drain`, `out_printf`), and everything else (`checkpoint_t`,
+  `status_t`, ...) is unprefixed.  Uppercase `GS_` macros, environment
+  variables and build flags are unaffected.  The `gs_` names that remain,
+  and the name each one avoids:
+
+  | Name | Avoids |
+  |------|--------|
+  | `gs_strdup` | POSIX `strdup` |
+  | `gs_assert_fail`, `gs_assert_failf` (and the file `gs_assert.h`) | `<assert.h>`'s `assert` / `__assert_fail` |
+  | `gs_crc32`, `gs_crc32_zeros` | zlib's `crc32` family |
+  | `gs_adler32` | zlib's `adler32` |
+
 - The enumerators of a kind/discriminator enum carry a short prefix derived
   from the type's name: `VK_*` (`value_kind_t`), `MK_*` (`member_kind_t`),
   `AK_*` (`alias_kind_t`), `NK_*` (`num_kind_t`).  Flag bits get their own,

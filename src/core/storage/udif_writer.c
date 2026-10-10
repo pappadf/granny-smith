@@ -871,7 +871,7 @@ int udif_info(source_t *data, udif_info_t *out) {
         out->data_fork_bytes = tr.data_fork_length;
         out->tables = (uint32_t)map->n_tables;
         char v[64];
-        out->gs_profile = plist_value(xml, xl, "gs-profile", v, sizeof(v));
+        out->is_gs_profile = plist_value(xml, xl, "gs-profile", v, sizeof(v));
         if (plist_value(xml, xl, "gs-byte-length", v, sizeof(v))) {
             uint64_t n = strtoull(v, NULL, 10);
             if (n && n <= out->byte_length)
