@@ -178,6 +178,9 @@ struct cops {
     uint8_t clock_set[CLK_SET_DIGITS];
     int clock_set_count;
     bool clock_setting;
+    // Emulated time (ns) at which clock[] was exact; the clock is brought up
+    // to date from it whenever it is read (cops_clock_advance).
+    double clock_epoch_ns;
 
     // Pointers last (not checkpointed)
     via_t *via1;
@@ -196,6 +199,50 @@ struct cops {
 #define CLK_DEFAULT_YEAR 1984
 #define CLK_DEFAULT_DAY  1
 
+// The COPS clock counts tenths of a second.  Rather than a 10 Hz scheduler
+// event, it is advanced lazily: on every read, by the whole tenths of
+// emulated time elapsed since clock_epoch_ns.  Emulated time is
+// deterministic, so a given command sequence still reads the same clock.
+// Until 2026-10 the clock never advanced at all, and LOS's GET_TIME stayed
+// at 1 January 1984 00:00:00 for the whole session.
+static int cops_clock_days_in_year(int year_nibble) {
+    return (CLK_YEAR_BASE + year_nibble) % 4 == 0 ? 366 : 365;
+}
+
+static void cops_clock_advance(cops_t *c) {
+    double now = scheduler_time_ns(c->sched);
+    if (now <= c->clock_epoch_ns)
+        return;
+    uint64_t tenths = (uint64_t)((now - c->clock_epoch_ns) / 1e8);
+    if (!tenths)
+        return;
+    c->clock_epoch_ns += (double)tenths * 1e8;
+
+    uint8_t *k = c->clock;
+    uint64_t of_day =
+        ((((uint64_t)(k[4] * 10 + k[5]) * 60 + (k[6] * 10 + k[7])) * 60 + (k[8] * 10 + k[9])) * 10) + k[10] + tenths;
+    uint64_t days = of_day / 864000;
+    of_day %= 864000;
+    int year = k[0] & 0x0F;
+    int day = k[1] * 100 + k[2] * 10 + k[3] + (int)(days % (366 * 16));
+    while (day > cops_clock_days_in_year(year)) {
+        day -= cops_clock_days_in_year(year);
+        year = (year + 1) & 0x0F;
+    }
+    int hh = (int)(of_day / 36000), mm = (int)(of_day / 600 % 60), ss = (int)(of_day / 10 % 60);
+    k[0] = (uint8_t)year;
+    k[1] = (uint8_t)(day / 100);
+    k[2] = (uint8_t)(day / 10 % 10);
+    k[3] = (uint8_t)(day % 10);
+    k[4] = (uint8_t)(hh / 10);
+    k[5] = (uint8_t)(hh % 10);
+    k[6] = (uint8_t)(mm / 10);
+    k[7] = (uint8_t)(mm % 10);
+    k[8] = (uint8_t)(ss / 10);
+    k[9] = (uint8_t)(ss % 10);
+    k[10] = (uint8_t)(of_day % 10);
+}
+
 static void cops_clock_reset(cops_t *c) {
     int y = CLK_DEFAULT_YEAR - CLK_YEAR_BASE;
     int d = CLK_DEFAULT_DAY;
@@ -207,6 +254,7 @@ static void cops_clock_reset(cops_t *c) {
         c->clock[i] = 0; // hh:mm:ss.t = 00:00:00.0
     c->clock_setting = false;
     c->clock_set_count = 0;
+    c->clock_epoch_ns = scheduler_time_ns(c->sched);
 }
 
 // Pack the eleven digits into the five bytes after the $Ey marker, plus the
@@ -235,6 +283,7 @@ static void cops_clock_commit(cops_t *c) {
     for (int i = 0; i < CLK_DIGITS; i++)
         c->clock[i] = c->clock_set[CLK_SET_ALARM_DIGITS + i] & 0x0F;
     c->clock_set_count = 0;
+    c->clock_epoch_ns = scheduler_time_ns(c->sched);
     LOG(2, "cops clock set to %d, day %d%d%d, %d%d:%d%d:%d%d.%d", CLK_YEAR_BASE + c->clock[0], c->clock[1], c->clock[2],
         c->clock[3], c->clock[4], c->clock[5], c->clock[6], c->clock[7], c->clock[8], c->clock[9], c->clock[10]);
 }
@@ -517,6 +566,7 @@ static void cops_command(cops_t *c, uint8_t cmd) {
         // warping the cursor onto its OK button.
         uint8_t reply[7];
         reply[0] = COPS_RSTCODE;
+        cops_clock_advance(c);
         cops_clock_pack(c, &reply[1]);
         fifo_push_msg(c, reply, 7);
         cops_kick_pump(c);
