@@ -313,9 +313,13 @@ void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t
     *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
 }
 
-// Encodes a sector to GCR format with header and data fields
+// Encodes a sector to GCR format with header and data fields.  `bad_data`
+// lays the data field down with a checksum that does not match it: what an
+// unreadable sector on a real disk gives the controller's reader (the Sony
+// driver's badDCksum), so a sector the backing image cannot read fails the
+// guest's read of it -- and only of it.
 static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side,
-                              int num_sides) {
+                              int num_sides, bool bad_data) {
     GS_ASSERT(data != NULL);
 
     uint16_t ca = 0, cb = 0, cc = 0; // checksum registers
@@ -370,6 +374,8 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
     GCR2(ba, bb);
 
     // Encode 24-bit checksum
+    if (bad_data)
+        ca ^= 0xFF;
     GCR3(ca, cb, cc);
 
     // End markers
@@ -381,8 +387,10 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
 }
 
 // Encodes an entire track with interleaved sectors to GCR format
+// `bad` has bit n set for each sector n the image could not read; those are
+// laid down with a bad data checksum (encode_sector).
 static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides,
-                         image_t *img, size_t first_block) {
+                         image_t *img, size_t first_block, uint32_t bad) {
     GS_ASSERT(data != NULL);
 
     int i;
@@ -423,7 +431,7 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         if (img)
             disk_read_tag(img, first_block + (size_t)sector, tag, sizeof tag);
 
-        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides);
+        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides, (bad >> sector) & 1u);
     }
 
     GS_ASSERT(dst < end_of_track);
@@ -479,15 +487,27 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         uint8_t *sector_data = malloc(track_bytes);
         if (!sector_data) {
             LOG(1, "Failed to allocate sector buffer for track=%d", drive->track);
+            free(track->data);
+            track->data = NULL;
             return NULL;
         }
+        // A track the image cannot read whole is read a sector at a time:
+        // the sectors that still fail are laid down unreadable (a bad data
+        // checksum), as a damaged disk presents them, and the rest read.
+        uint32_t bad = 0;
         size_t read = disk_read_data(img, track_offset, sector_data, track_bytes);
         if (read != track_bytes) {
-            LOG(1, "disk_read_data truncated track=%d (expected=%zu got=%zu)", drive->track, track_bytes, read);
-            free(sector_data);
-            return NULL;
+            for (size_t s = 0; s < sector_count; s++) {
+                uint8_t *at = sector_data + s * 512u;
+                if (disk_read_data(img, track_offset + s * 512u, at, 512) != 512) {
+                    memset(at, 0, 512);
+                    bad |= 1u << s;
+                }
+            }
+            LOG(1, "floppy: track=%d side=%d: unreadable sectors mask $%03X", drive->track, sel, bad);
         }
-        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u);
+        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u,
+                     bad);
         free(sector_data);
     }
 

@@ -593,9 +593,24 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
     }
     if (backed) {
         status_t rc = storage_read_blocks(disk->storage, disk->wrap_base + offset, buf, backed / disk->block_size);
-        GS_ASSERTF(rc == STATUS_OK, "storage_read_blocks failed (%d)", rc);
-        if (rc != STATUS_OK)
-            return 0; // genuine in-bounds backing-store failure
+        // E_INVAL / E_RANGE would be this function's own arithmetic gone
+        // wrong (the range is clamped to the volume above).  E_IO is the
+        // medium: a base the image cannot read where it should hold data.
+        // That is the guest's error to see, as an unreadable sector on a
+        // real disk is -- never a halt, never silent zeros: the short count
+        // makes each device model report its own read error.
+        GS_ASSERTF(rc == STATUS_OK || rc == STATUS_E_IO, "storage_read_blocks failed (%d)", rc);
+        if (rc != STATUS_OK) {
+            if (disk->read_errors++ == 0)
+                LOG(0,
+                    "%s: unreadable at offset %zu (%zu bytes): the backing image failed the read; the guest sees a "
+                    "read error",
+                    disk->filename ? disk->filename : "image", offset, backed);
+            else
+                LOG(1, "%s: unreadable at offset %zu (%zu bytes), read error %llu",
+                    disk->filename ? disk->filename : "image", offset, backed, (unsigned long long)disk->read_errors);
+            return 0;
+        }
     }
     // Buffer fully populated: real data plus any zero-filled tail past EOF.
     return size;
@@ -763,7 +778,9 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
             return -ECANCELED;
         }
         if (err)
-            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+            snprintf(err, err_cap,
+                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
+                     e->dest);
         return -EIO;
     }
     rc = udif_writer_finish(w, NULL);
@@ -799,7 +816,9 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
             return -ECANCELED;
         }
         if (err)
-            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+            snprintf(err, err_cap,
+                     rc == STATUS_E_IO ? "the disk image could not be read; '%s' not written" : "write to '%s' failed",
+                     e->dest);
         return -EIO;
     }
     return 0;
@@ -972,8 +991,12 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (image->storage) {
         status_t rc = storage_checkpoint(image->storage, checkpoint);
         if (rc != STATUS_OK) {
-            LOG(1, "image_checkpoint: storage_checkpoint failed for %s (%d)",
+            // A checkpoint missing this disk's blocks (or carrying a short
+            // stream of them) must not replace a good one: failing the stream
+            // is what keeps the consolidated .tmp from being renamed over it.
+            LOG(0, "image_checkpoint: storage_checkpoint failed for %s (%d)",
                 image->filename ? image->filename : "<unknown>", rc);
+            checkpoint_set_error(checkpoint);
         }
     }
 }

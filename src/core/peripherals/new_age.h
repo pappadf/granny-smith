@@ -160,6 +160,7 @@ void new_age_write(new_age_t *na, unsigned reg, uint8_t value);
 #define NEW_AGE_ST1_NW 0x02u
 #define NEW_AGE_ST1_MA 0x01u
 // ST2
+#define NEW_AGE_ST2_DD 0x20u
 #define NEW_AGE_ST2_NC 0x10u
 #define NEW_AGE_ST2_MD 0x01u
 

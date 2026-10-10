@@ -118,6 +118,21 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 
 **Reading/Writing image data**
 - **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce `disk->block_size` alignment (512 for flat disks, 532 for a ProFile) and forward to `storage_read_block` / `storage_write_block` in a loop.
+- **A read the backing image cannot serve** (a corrupt compressed chunk, a damaged archive member, a host or OPFS I/O error: `storage_read_blocks` returns `STATUS_E_IO`) makes `disk_read_data` return a short count. It neither halts the emulator nor hands back zeros; the first failure per image is logged at level 0 (`image` category), later ones at level 1. Each device model turns the short count into the read error its hardware reports, so the guest sees an I/O error:
+
+  | Device | What the guest sees |
+  |---|---|
+  | SCSI hard disk / CD-ROM (`scsi_bus.c`), ATAPI CD-ROM | READ(6/10/12): CHECK CONDITION, MEDIUM ERROR / UNRECOVERED READ ERROR (11h). VERIFY: the same, with or without BytChk (a medium verification reads the blocks). ATAPI reports it as sense key 3 in the error register. |
+  | ATA hard disk (`ata.c`) | Status ERR, error register UNC (uncorrectable data error), the task file addressing the first sector of the failing block. |
+  | IWM/SWIM GCR floppy (`floppy_gcr.c`) | The track is read a sector at a time; each unreadable sector is laid down with a bad data checksum (the .Sony driver's badDCksum). The other sectors read. |
+  | SWIM ISM MFM floppy (`floppy_swim.c`) | The sector is laid down with a data CRC that fails the ISM's CRC check. |
+  | SWIM3 (`swim3_xfer.c`) | Data CRC error (`SWIM3_E_CRC_DATA`). |
+  | New Age FDC (`new_age.c`) | Abnormal termination, ST1 DE / ST2 DD (data error in the data field). |
+  | IOP SWIM block transfer (`iop_swim.c`) | ioErr. |
+  | Lisa FDC (`lisa_fdc.c`) | Status $17 (unreadable). |
+  | Lisa ProFile (`lisa_profile.c`) | Status byte 0 $09, the CRC error on read. |
+
+  Image-layer readers (`image_read_bytes`, partition and filesystem walkers, the wrapper sniff) get `-EIO` / false and fail their operation.
 
 **Background work**
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).

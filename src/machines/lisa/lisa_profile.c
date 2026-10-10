@@ -164,8 +164,16 @@ static void pro_fill_read(lisa_profile_t *pf, uint32_t block) {
         LOG(2, "device-info: %u blocks", pf->nblocks);
     } else if (pf->image && block < pf->nblocks) {
         // The whole 532-byte block is opaque (data + inline tag): one aligned
-        // storage read, base or delta, no de-interleave.
-        disk_read_data(pf->image, (size_t)block * PRO_BLOCK, &pf->buf[PRO_STATUS], PRO_BLOCK);
+        // storage read, base or delta, no de-interleave.  A block the image
+        // cannot give back reports what a ProFile reports for a sector it
+        // cannot read: status byte 0 $09, the CRC error on read that the OS
+        // driver retries and then fails through its checksum-error path
+        // (docs/reference/machines/lisa/profile.md, "Status bytes").
+        if (disk_read_data(pf->image, (size_t)block * PRO_BLOCK, &pf->buf[PRO_STATUS], PRO_BLOCK) != PRO_BLOCK) {
+            memset(&pf->buf[PRO_STATUS], 0, PRO_BLOCK);
+            pf->buf[0] = 0x09;
+            LOG(1, "read block %u: unreadable in the image; CRC error status", block);
+        }
     } else {
         pf->buf[1] = 0x02; // out-of-range → flag in status (non-fatal here)
         LOG(1, "read block %u out of range (%u blocks)", block, pf->nblocks);

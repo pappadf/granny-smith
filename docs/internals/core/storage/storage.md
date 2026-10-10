@@ -118,7 +118,9 @@ Every storage snapshot in a checkpoint starts with a 24-byte little-endian heade
 
 **Quick checkpoints:** `storage_checkpoint()` writes the current bitmap to the checkpoint stream (in-memory, fast), then the delta's layout: `cluster_blocks` (0 for a v1 delta), the slots in use, and the cluster table. Then `storage_clear_rollback()` copies the current bitmap and table to committed, records the slot high-water mark, flushes the metadata to the delta, and truncates the journal. If no blocks were modified since the last checkpoint, the flush is skipped entirely (zero OPFS I/O).
 
-**Consolidated checkpoints:** `storage_save_state()` streams every block (from delta where bitmap is set, from base otherwise) into the checkpoint.
+**Consolidated checkpoints:** `storage_save_state()` streams every block (from delta where bitmap is set, from base otherwise) into the checkpoint. The stream reads as `storage_read_block` does: a block past the end of a short base streams as zeros, and a block the base holds and cannot read fails the stream with `STATUS_E_IO` — an export or a consolidated checkpoint never embeds zeros in its place. `image_checkpoint` then marks the checkpoint failed, so its `.tmp` is never renamed over a good one.
+
+A restore that has no disk to load a snapshot into skips it. It checks the snapshot's geometry first, as `storage_new` would: a block size outside `[512, STORAGE_MAX_BLOCK_SIZE]` or a block count past `UINT32_MAX` is refused (`STATUS_E_INVAL`), so a crafted checkpoint cannot overrun the skip's stack buffer.
 
 **Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The rollback comes first because the emulator may have kept running after the checkpoint was saved: the blocks it overwrote since are restored from their preimages and the slots it allocated are cut away, which leaves the delta's data exactly as it was at the commit the checkpoint made. The checkpoint's bitmap and table then name that data.
 

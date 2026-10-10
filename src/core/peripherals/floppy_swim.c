@@ -212,11 +212,15 @@ static void mfm_build_sector(floppy_t *floppy) {
         return;
     }
 
+    // A sector the image cannot read is still laid down -- its header is
+    // intact -- but with a data CRC that does not match its data, as an
+    // unreadable sector on a damaged disk is: the ISM's CRC check fails the
+    // guest's read of it, rather than the sector going missing.
     uint8_t sector_data[512];
-    size_t read = disk_read_data(img, offset, sector_data, 512);
-    if (read != 512) {
-        floppy->mfm_buf_len = 0;
-        return;
+    bool unreadable = disk_read_data(img, offset, sector_data, 512) != 512;
+    if (unreadable) {
+        memset(sector_data, 0, sizeof sector_data);
+        LOG(1, "SWIM ISM: T=%d S=%d Sec=%d unreadable in the image; bad data CRC", track, side, sector);
     }
 
     // Fill the sector buffer from the one MFM layout (floppy_geometry.h).
@@ -224,9 +228,12 @@ static void mfm_build_sector(floppy_t *floppy) {
     // description of the same format as swim3_xfer.c's.
     mfm_buf_sink_t sink = {floppy->mfm_sector_buf, floppy->mfm_sector_mark, 0};
     memset(sink.marks, 0, MFM_SECTOR_BUF_SIZE);
-    floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, (sectors_per_track == 18) ? 101 : 80,
-                           true);
+    int gap3 = (sectors_per_track == 18) ? 101 : 80;
+    floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, gap3, true);
     int pos = sink.pos;
+    // The layout ends: data CRC (2 bytes), gap 3.
+    if (unreadable && pos >= gap3 + 2)
+        floppy->mfm_sector_buf[pos - gap3 - 1] ^= 0xFF;
 
     floppy->mfm_buf_len = (uint16_t)pos;
     floppy->mfm_buf_pos = 0;
