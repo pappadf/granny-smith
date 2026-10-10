@@ -261,8 +261,7 @@ def row_plus_keyboard() {
 def row_plus_checkpoint() {
     machine.boot model="plus" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
-    scheduler.run 30000000
-    wait_stable(300000000)
+    reach("goldens/plus-6.0.8-512x342-finder.png", 30000000, 300000000, 5000000)
     check("goldens/plus-6.0.8-512x342-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-plus.gsc") "plus-checkpoint: save failed"
     machine.boot model="plus" ram=1024 rom="${$ROM}"

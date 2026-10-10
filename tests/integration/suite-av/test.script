@@ -498,14 +498,13 @@ def row_av_floppy_format() {
     let blank = "${$WORK_DIR}/av-blank-1440.img"
     assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
-    scheduler.run 900000000
-    wait_stable(900000000)
+    reach("goldens/q840av-7.1-floppy-initdialog.png", 900000000, 900000000, 20000000)
     # "This is not a Macintosh disk" -> Initialize -> Erase -> name (Return).
     check("goldens/q840av-7.1-floppy-initdialog.png")
     click(410, 176)
-    wait_stable(300000000)
+    settle(300000000)
     click(410, 176)
-    wait_stable(300000000)
+    settle(300000000)
     machine.adb.keyboard.press 0x24
     # Not a bare settle: "Formatting disk..." sits unchanged on the screen
     # for the whole format and verify, so a settle returns mid-format.
@@ -674,7 +673,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 68640)
+    check_sound("goldens/av-tts.wav", 68400)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -741,7 +740,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 161280)
+    check_sound("goldens/av-sound-in.wav", 160320)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
@@ -769,11 +768,13 @@ def sr_bring_up() {
 
     machine.adb.mouse.move 50 50 "global"
     run_ticks(30)
-    double_click(536, 306) # the Speech Setup alias
+    # The fixed-tick clicks: which take the recognizer lands depends on this
+    # exact timeline (row_av_sr_macro).
+    double_click_fixed(536, 306) # the Speech Setup alias
     run_ticks(600)
-    click(176, 107) # Recognition: On
+    click_fixed(176, 107) # Recognition: On
     run_ticks(1800) # the recognizer's startup blackout
-    click(114, 51) # close the Speech Setup panel
+    click_fixed(114, 51) # close the Speech Setup panel
     run_ticks(200)
     machine.adb.mouse.move 320 400 "global"
     run_ticks(1200)

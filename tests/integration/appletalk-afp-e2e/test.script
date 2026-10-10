@@ -73,12 +73,12 @@ assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not 
 machine.adb.mouse.move 468 108
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 # The info bar carries the host filesystem's free space, which is not ours to
 # pin; the listing is.
@@ -94,8 +94,8 @@ assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the staged files were
 machine.adb.mouse.move 105 105
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 10000000
 machine.adb.mouse.move 47 10
 scheduler.run 2000000
@@ -104,7 +104,7 @@ scheduler.run 8000000
 machine.adb.mouse.move 60 139
 scheduler.run 6000000
 machine.adb.mouse.click false
-scheduler.run 80000000
+run_until_match_ex("e2e-duplicated.png", 58, 140, 80, 420, 80000000, 5000000)
 check_ex("e2e-duplicated.png", 58, 140, 80, 420)
 
 # The copy is an AppleDouble pair of exactly the same shape as the original.
@@ -128,13 +128,13 @@ assert appletalk.afp.stats.commands_served > 30 "the duplicate served no AFP com
 machine.adb.mouse.move 147 118
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
-scheduler.run 80000000
+wait_mouse_taken(100000000)
+run_until_match("e2e-app-running.png", 80000000, 5000000)
 check("e2e-app-running.png")
 
 quit

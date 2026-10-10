@@ -18,6 +18,8 @@
 # the smallest catalog entry above the installer's floor.  Formatting it here
 # yields a 479,254-block (245,378,048 byte) HFS volume, which clears 230 MB
 # whether the installer means decimal MB or MiB.
+include "../lib/mac.script"
+
 assert files.hd_create("${$WORK_DIR}/apple230.img", "HD230SC") "hd_create HD230SC failed"
 assert files.path_size("${$WORK_DIR}/apple230.img") == 245427200 "HD230SC wrong image size"
 
@@ -30,32 +32,32 @@ assert machine.scsi.device[0].revision == "6.3 " "unexpected SCSI revision"
 
 # Boot to the Finder desktop (SE/30, 8 MB RAM).  The drive is unformatted, so
 # it must NOT mount here — only HD SC Setup should be able to touch it.
-scheduler.run 80000000
+run_until_match("desktop.png", 80000000, 5000000)
 machine.screen.match desktop.png
 
 # Double-click "Disk Tools" to open the floppy
 machine.adb.mouse.move 480 55 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
-scheduler.run 50000000
+wait_mouse_taken(100000000)
+run_until_match("floppy.png", 50000000, 5000000)
 machine.screen.match floppy.png
 
 # Double-click Apple HD SC Setup
 machine.adb.mouse.move 167 83 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 50000000
 
 # THE ACCEPTANCE CHECK.  A drive the formatter rejects reports "This program
@@ -65,29 +67,29 @@ machine.screen.match ready.png
 
 # Initialize
 machine.adb.mouse.move 167 115 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.screen.match confirm.png
 
 # Confirm "Init" in the erase-warning dialog
 machine.adb.mouse.move 360 190 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # Writing the driver, partition map and volume across 479,350 blocks
 scheduler.run 800000000
 
 # "Please name this volume." — accept the default
 machine.adb.mouse.move 200 180 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 
 # "Disk initialization successfully completed." plus the now-mounted volume,

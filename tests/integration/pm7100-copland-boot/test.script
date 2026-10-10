@@ -133,8 +133,7 @@ def row_copland_logo() {
 # instructions; wait_stable settles the frame.
 def row_copland_desktop() {
     boot_image($img, true)
-    scheduler.run 7000000000
-    wait_stable(900000000)
+    reach("copland-desktop.png", 7000000000, 900000000, 100000000)
     check("copland-desktop.png")
     report_perf("pm7100-copland-boot/copland-desktop", scheduler.instr_count)
 }

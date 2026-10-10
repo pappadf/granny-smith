@@ -58,7 +58,7 @@ scheduler.run 400000
 machine.adb.mouse.move 472 300
 scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 40000000
+run_until_match("desktop-unmounted.png", 40000000, 5000000)
 check("desktop-unmounted.png")
 
 # The session closed with the unmount -- not two minutes later.

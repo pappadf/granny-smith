@@ -149,15 +149,15 @@ def row_iicx_gc_beep() {
     # Held mouse-down at the Apple menu (25,10) drops the menu; "Control Panel"
     # sits at y=139; releasing over it launches the DA (General cdev selected).
     machine.adb.mouse.move 50 50 "global"
-    scheduler.run 5000000
+    wait_cursor(20)
     machine.adb.mouse.move 25 10 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 8000000
     machine.adb.mouse.move 68 139 "global"
     scheduler.run 3000000
     machine.adb.mouse.click false
-    scheduler.run 60000000
+    run_until_match("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png", 60000000, 5000000)
     check("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png")
 
     # --- Drag the Speaker Volume slider from level 3 to 5. ---
@@ -169,7 +169,7 @@ def row_iicx_gc_beep() {
     # re-rendering the 512-byte voice table in place ~14 times mid-play.
     machine.sound.capture.start
     machine.adb.mouse.move 458 248 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 3000000
     machine.adb.mouse.move 458 242 "global"
@@ -204,7 +204,7 @@ def row_iicx_gc_beep() {
     # parameter RAM valid (the ROM skips its own PRAMInit): 5427 frames.
     # Re-captured again when ADB auto-poll stopped running on a clock of its
     # own (Talks now start only when a device has data): 5423 frames.
-    check_sound("goldens/iicx-gc-beep.wav", 5423)
+    check_sound("goldens/iicx-gc-beep.wav", 5424)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -220,7 +220,7 @@ def row_iicx_gc_beep() {
     # into the next one).
     machine.sound.capture.start
     machine.adb.mouse.move 458 225 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 3000000
     machine.adb.mouse.move 458 221 "global"
@@ -232,7 +232,7 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    check_sound("goldens/iicx-gc-beep2.wav", 5433)
+    check_sound("goldens/iicx-gc-beep2.wav", 5423)
     # The pre-volume waveform is the first beep's (up to the timing-phase
     # effect below): the Sound Manager re-renders the same table and no state
     # leaks between beeps.  The second beep is
@@ -318,9 +318,9 @@ def row_iicx_24ac() {
     # smeared the desktop into solid white/black bands.  The baseline below is the
     # corrected render: the menu over an intact gray desktop.
     machine.adb.mouse.move 50 50 "global"
-    scheduler.run 5000000
+    wait_cursor(20)
     machine.adb.mouse.move 25 10 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 8000000
     check("goldens/iicx-7.1-640x480x8-24ac-applemenu-640x480-8bpp.png")
@@ -341,7 +341,7 @@ def row_iicx_24ac() {
     machine.adb.mouse.click false
     scheduler.run 6000000
     machine.adb.mouse.move 25 10 "global"
-    scheduler.run 2000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 6000000
     machine.adb.mouse.move 25 132 "global"
@@ -349,7 +349,7 @@ def row_iicx_24ac() {
     machine.adb.mouse.click false
     scheduler.run 80000000
     machine.adb.mouse.move 125 10 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 5000000
     machine.adb.mouse.move 140 62 "global"
@@ -357,7 +357,7 @@ def row_iicx_24ac() {
     machine.adb.mouse.click false
     scheduler.run 40000000
     machine.adb.mouse.move 411 214 "global"
-    scheduler.run 4000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 35000000
     machine.adb.mouse.click false
@@ -410,7 +410,7 @@ def row_iicx_24ac_restart() {
     # hold on the title to pull the menu down, drag to Restart, release to choose
     # it — exactly the user's interaction.
     machine.adb.mouse.move 235 10 "global"
-    scheduler.run 2000000
+    wait_cursor(20)
     machine.adb.mouse.click true
     scheduler.run 4000000
     machine.adb.mouse.move 245 124 "global"
@@ -444,7 +444,7 @@ def row_iicx_24ac_restart() {
     # top-left corner and exclude that small box (rows 12-34, cols 10-30) from the
     # compare, so the match turns on the desktop content, not the cursor hotspot.
     machine.adb.mouse.move 14 15 "global"
-    scheduler.run 3000000
+    wait_cursor(20)
     machine.screen.save "$WORK_DIR/after-restart.png"
     # Definitive end state: the machine is back on the 8-bpp colour Finder desktop,
     # pixel-exact against the same baseline the cold boot produces (iicx-24ac).

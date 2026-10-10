@@ -9,6 +9,8 @@
 # relative deltas are accelerated, so only absolute moves land where the
 # coordinates say.
 
+include "../lib/mac.script"
+
 machine.boot model="iici" ram=16384 video_card="builtin_rbv_video" rom="${$ROM}"
 machine.scsi.attach_hd "../../data/systems/system_7_5_0_77mb_mode32_24ac.img" 0
 machine.rtc.time = "2026-09-30T00:00:00"
@@ -28,7 +30,7 @@ assert appletalk.printer.documents == 0 "a document exists before any print"
 # --- Chooser: pick the LaserWriter ------------------------------------------
 # Apple menu -> Chooser
 machine.adb.mouse.move 22 9 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 6000000
 machine.adb.mouse.move 70 114 "global"
@@ -38,50 +40,50 @@ scheduler.run 60000000
 
 # The LaserWriter 8 driver icon in the left-hand list
 machine.adb.mouse.move 245 220 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 
 # The printer itself in the right-hand list
 machine.adb.mouse.move 420 111 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 150000000
 
 # Close the Chooser; System 7 then advises "choose Page Setup..." -- OK it.
 machine.adb.mouse.move 101 67 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 machine.adb.mouse.move 437 261 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 
 # --- Open the volume window and print it ------------------------------------
 # Double-click the "Macintosh HD" icon
 machine.adb.mouse.move 600 52 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 300000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 300000
 machine.adb.mouse.click true
-scheduler.run 300000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 
 # File -> Print Window...
 machine.adb.mouse.move 52 9 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 6000000
 machine.adb.mouse.move 95 268 "global"
@@ -92,10 +94,10 @@ scheduler.run 120000000
 # The Print button of the LaserWriter 8.1.1 dialog; the clock starts on its
 # release.
 machine.adb.mouse.move 520 45 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 let c0 = scheduler.cycles
 let hz = scheduler.frequency
 

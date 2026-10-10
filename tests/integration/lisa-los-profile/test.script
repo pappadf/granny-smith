@@ -113,7 +113,7 @@ scheduler.run 3000000
 machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
-scheduler.run 25000000
+run_until_match("expected_insert5.png", 25000000, 5000000)
 check("expected_insert5.png")
 
 # --- copy Office System 5 -> "reinsert Office System 1" ---
@@ -170,7 +170,7 @@ assert machine.hd.pram_init(2, true, true) "pram_init failed"
 # Clipboard / Disk icons).  This used to arrive at a "clock not set" note that the
 # row dismissed by warping onto OK and clicking; the COPS clock powers up at
 # 1 January 1984 now and the note does not appear.
-scheduler.run 112000000
+run_until_match("expected_desktop.png", 112000000, 5000000)
 check("expected_desktop.png")
 
 # Press the soft power-off switch.  LOS catches the COPS $FB, runs its orderly
@@ -178,7 +178,7 @@ check("expected_desktop.png")
 # the machine powers off.  After this the saved image cold-boots clean (no
 # "startup disk was in use" scavenge).
 machine.power.off
-scheduler.run 40000000
+run_until_match("expected_poweroff.png", 40000000, 5000000)
 check("expected_poweroff.png")
 
 # Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
