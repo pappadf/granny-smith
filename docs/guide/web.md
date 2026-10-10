@@ -1442,7 +1442,14 @@ Same-origin media need no CORS, and nothing has to be published to fetch it.
 
 The release also carries `granny-smith-headless-<tag>-linux-{x86_64,arm64}.tar.gz`:
 a statically linked `gs-headless` (no glibc version dependency) for scripted
-runs and coding agents, from the `headless` job of `publish.yml`.
+runs and coding agents, from the `headless` job of `publish.yml`. Its
+LaserWriter spools print jobs but does not render them: the PostScript
+interpreter (`PLATEN=1`) does not link statically.
+
+`SHA256SUMS` on the release covers every attached file, so a project that
+pins a version can check what it downloads (`sha256sum -c --ignore-missing
+SHA256SUMS`). The build jobs only read the repository; the one job that
+writes to the release (`release-assets`) runs no build code.
 
 ## Styling and skins
 

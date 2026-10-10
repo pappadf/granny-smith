@@ -8,12 +8,16 @@
 #   3. Copies build artifacts into a versioned folder AND /latest/.
 #   4. Regenerates the landing page (index.html) listing all versions.
 #   5. Pushes the changes to gs-pages, which publishes via GitHub Pages.
-#   6. Attaches the same build to the release as granny-smith-web-<tag>.zip
-#      (web/ + dev_server.py), for projects that serve a pinned emulator
-#      build themselves (scripts/package_web.py).
-#   7. (job `headless`) Attaches statically linked gs-headless binaries for
+#   6. Packages the same build as granny-smith-web-<tag>.zip (web/ +
+#      dev_server.py), for projects that serve a pinned emulator build
+#      themselves (scripts/package_web.py).
+#   7. (job `headless`) Builds statically linked gs-headless binaries for
 #      Linux x86_64 and arm64, so projects, their devcontainers and coding
 #      agents can script the emulator without building it.
+#   8. (job `release-assets`) Attaches both, with a SHA256SUMS file that
+#      covers them, to the release.  Only this job can write to the
+#      repository, and it runs no build code: the build jobs hand their
+#      files over as workflow artifacts.
 #
 # Required secrets:
 #   DEPLOY_TOKEN  — a GitHub PAT (fine-grained) with Contents: Read & Write
@@ -25,10 +29,11 @@ on:
   release:
     types: [published]
 
-# The deploy pushes with DEPLOY_TOKEN; GITHUB_TOKEN reads the source and
-# uploads the web build to the release (contents: write).
+# The deploy pushes with DEPLOY_TOKEN; GITHUB_TOKEN only reads, except in
+# release-assets, which uploads to the release (contents: write there).
+# The build jobs run npm ci and make, so they never hold a write token.
 permissions:
-  contents: write
+  contents: read
   packages: read
 
 # Allow only one publish at a time to avoid push conflicts
@@ -204,16 +209,15 @@ jobs:
           git commit -m "Deploy ${{ github.event.release.tag_name }}"
           git push origin main
 
-      # 8. Attach the packaged build to the release (last, so a failed upload
-      #    never holds back the gs-pages deploy)
-      - name: Attach web distribution to the release
-        working-directory: ./source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "granny-smith-web-${{ github.event.release.tag_name }}.zip" \
-            --repo "${{ github.repository }}" --clobber
+      # 8. Hand the packaged build to release-assets (last, so a failed
+      #    hand-over never holds back the gs-pages deploy)
+      - name: Hand the web distribution to release-assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-web
+          path: source/granny-smith-web-${{ github.event.release.tag_name }}.zip
+          if-no-files-found: error
+          retention-days: 1
 
   # Static gs-headless for Linux, one per architecture (native runners: the
   # dev image is multi-arch).  -static drops the glibc version dependency, so
@@ -263,11 +267,45 @@ jobs:
             > "$NAME/README.txt"
           tar czf "$NAME.tar.gz" "$NAME"
 
+      - name: Hand to release-assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-headless-${{ matrix.arch }}
+          path: source/granny-smith-headless-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Attach every packaged file to the release, with SHA256SUMS so a project
+  # that pins a version can verify what it downloads.  The one job with
+  # contents: write; it runs no build code (artifacts in, gh release out).
+  # It runs even when one build job failed, so the others still ship and
+  # the checksums cover exactly what was attached.
+  release-assets:
+    needs: [build-and-deploy, headless]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the packaged files
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: ./assets
+        run: |
+          ls -la
+          test -n "$(ls)" || { echo "no release assets were built"; exit 1; }
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Attach to the release
-        working-directory: ./source
+        working-directory: ./assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "granny-smith-headless-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz" \
-            --repo "${{ github.repository }}" --clobber
+          gh release upload --repo "${{ github.repository }}" --clobber \
+            "${{ github.event.release.tag_name }}" ./*
