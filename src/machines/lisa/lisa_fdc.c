@@ -44,6 +44,8 @@ LOG_USE_CATEGORY_NAME("floppy");
     32 // $00FCC041: NON-ZERO = disk in drive.  LisaOS's Sony driver
        // (SOURCE-SONYASM `ISDISKIN`/`DISKIN .EQU $41`) polls this byte at
        // drive init; a zero here makes FS_Mount abort with nodiskpres (614).
+#define FDC_IMSK    44 // interrupt mask ($00C059): bit 3 gates IST bits 0-3, bit 7 bits 4-7
+#define IMSK_BOTH   0x88 // both drives' interrupts enabled
 #define FDC_DRVSTAT 47 // drive status byte ($00C05F: present/eject/complete)
 
 // FDC_DISKTYPE encoding the boot loader's block->(track,sector) converter reads
@@ -132,6 +134,17 @@ static void fdc_set_fdir(lisa_fdc_t *fdc, bool asserted) {
         fdc->fdir_cb(fdc->fdir_ctx, asserted);
 }
 
+// Recompute FDIR from the latched events and the interrupt mask, as the
+// 6504's UpdInt does: FDIR = (IST AND IMsk) != 0, where IMsk bit 3 gates the
+// drive-0 nibble and bit 7 the drive-80 nibble (fdc.md section 3.4).  A
+// drive whose interrupt is disabled keeps its events latched but does not
+// interrupt; re-enabling it ($86) raises FDIR for what is still pending.
+static void fdc_update_int(lisa_fdc_t *fdc) {
+    uint8_t imsk = fdc->ram[FDC_IMSK];
+    uint8_t gate = (uint8_t)(((imsk & 0x08) ? 0x0F : 0) | ((imsk & 0x80) ? 0xF0 : 0));
+    fdc_set_fdir(fdc, (fdc->ram[FDC_DRVSTAT] & gate) != 0);
+}
+
 // Deferred RWTS completion.  Real floppy reads take milliseconds; the OS Sony
 // driver (SOURCE-SONYASM) issues an interrupt-generating command and *blocks*
 // (WAIT_INT) waiting for the completion interrupt.  Signalling completion
@@ -162,7 +175,7 @@ static void fdc_complete(void *source, uint64_t data) {
     if (ist == 0)
         ist = DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // drive 0: fall back to legacy bits 2/3
     fdc->ram[FDC_DRVSTAT] |= ist; // RWTS complete (drive-encoded interrupt source)
-    fdc_set_fdir(fdc, true); // raise FDIR / IPL1 now that the driver has blocked
+    fdc_update_int(fdc); // raise FDIR / IPL1 now that the driver has blocked (if enabled)
 }
 
 // Report the Sony disk geometry the boot loader's block->(track,sector)
@@ -275,8 +288,19 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
         fdc->ram[FDC_CMDREG] = 0;
         fdc_set_fdir(fdc, false); // clear interrupt
         break;
-    case CMD_SETMASK:
-    case CMD_CLRMASK:
+    case CMD_SETMASK: // enable drive interrupts: IMsk |= mask
+        fdc->ram[FDC_IMSK] |= fdc->ram[FDC_RWTS];
+        fdc->ram[FDC_CMDREG] = 0;
+        fdc_update_int(fdc);
+        break;
+    case CMD_CLRMASK: // disable drive interrupts: IMsk &= ~mask.  The OS's
+        // SONYINT does this ($88) for an interrupt that arrives before the
+        // Sony driver is configured -- e.g. a diskette present at power-on --
+        // and returns; if FDIR stayed up the handler would run forever.
+        fdc->ram[FDC_IMSK] &= (uint8_t)~fdc->ram[FDC_RWTS];
+        fdc->ram[FDC_CMDREG] = 0;
+        fdc_update_int(fdc);
+        break;
     case CMD_LOOP:
         fdc->ram[FDC_CMDREG] = 0; // accepted, no interrupt
         break;
@@ -426,7 +450,7 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
         // the upper drive, so Mount kept returning nodiskpres/614 and the installer
         // silently re-prompted.)
         fdc->ram[FDC_DRVSTAT] |= DRVSTAT_DISKIN2 | DRVSTAT_OR2;
-        fdc_set_fdir(fdc, true);
+        fdc_update_int(fdc);
     }
 }
 void lisa_fdc_eject(lisa_fdc_t *fdc) {
@@ -630,6 +654,9 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // precomputed checksum word, which only stayed correct because nothing
     // else in the region was ever set.
     lisa_fdc_pram_init(fdc, 1, true, false); // BootVol = 1 (Sony floppy), valid, factory-fresh
+    // Both drives' interrupts enabled until software says otherwise (the boot
+    // ROM and the OS driver enable before use; the OS disables with $87).
+    fdc->ram[FDC_IMSK] = IMSK_BOTH;
     // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
     // read back exactly what lisa_fdc_checkpoint wrote, in the same order.  The
     // diskette that was in the drive is resolved in the restored image list
@@ -668,6 +695,10 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
         system_read_checkpoint_data(cp, &sides, sizeof(sides));
         fdc->num_sides = (int)sides;
         system_read_checkpoint_data(cp, fdc->ram, FDC_RAM_BYTES);
+        // A checkpoint from before the mask was modelled holds 0 there, which
+        // would silence the floppy for good: those ran with both enabled.
+        if (fdc->ram[FDC_IMSK] == 0)
+            fdc->ram[FDC_IMSK] = IMSK_BOTH;
     }
     if (disk)
         lisa_fdc_insert(fdc, disk);

@@ -69,6 +69,28 @@ encoding. (Drive 0 / MacWorks keep a legacy bits-2/3
 fallback; the Mac ROM drains `$C05F & $77`, which includes bit 6, so it is
 unaffected — `xl-boot` still pixel-matches.)
 
+### Interrupt mask (byte 44, `$C059` IMSK)
+
+FDIR follows the 6504's `UpdInt`: it is up exactly while `(IST AND IMsk) ≠ 0`,
+where IMsk bit 3 gates IST bits 0–3 and bit 7 gates bits 4–7
+(docs/reference/machines/lisa/fdc.md §3.4). `$86` ORs the mask byte (byte 1)
+into IMsk and `$87` clears those bits; both recompute FDIR, and so do the
+completion and disk-insert events. A disabled drive keeps its events latched
+without interrupting, and re-enabling it raises FDIR for what is still pending.
+
+This matters for a diskette that is **in the drive at power-on**. Its insert
+event is latched before the OS has configured the Sony driver, and LOS's
+`SONYINT` (`source-mover`) answers such an interrupt by disabling floppy
+interrupts (`$87`, mask `$88`) and returning. If the mask were ignored and FDIR
+stayed up, the level-1 handler would re-enter forever and the boot would hang
+at the ROM's hourglass. With the mask honoured, the driver's `INITDISK` later
+re-enables it (`$86`) and the pending event mounts the diskette
+(`tests/integration/lisa-floppy-at-boot`).
+
+IMsk powers up as `$88` (both drives enabled), and a checkpoint from before
+the mask was modelled (byte 44 = 0) restores as `$88`. Either way, flows
+that never disable a drive behave exactly as before.
+
 > Note: a faithful `STOP` instruction is a prerequisite for the deferred model to
 > matter — the OS scheduler's idle `Pause` is `STOP #$2000`, and the CPU must
 > actually halt there until the floppy IPL-1 interrupt arrives. See docs/reference/machines/lisa/lisa.md
