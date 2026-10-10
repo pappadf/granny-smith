@@ -1440,6 +1440,10 @@ python3 dev_server.py --root web --fallback-root ../disks \
 
 Same-origin media need no CORS, and nothing has to be published to fetch it.
 
+The release also carries `granny-smith-headless-<tag>-linux-{x86_64,arm64}.tar.gz`:
+a statically linked `gs-headless` (no glibc version dependency) for scripted
+runs and coding agents, from the `headless` job of `publish.yml`.
+
 ## Styling and skins
 
 Every visual value is a design token, a `--gs-*` CSS custom property, and
