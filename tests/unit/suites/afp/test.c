@@ -26,6 +26,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1851,6 +1852,84 @@ TEST(comments_live_in_the_sidecar_and_follow_the_file) {
 // ============================================================================
 // WP-10 — error fidelity
 // ============================================================================
+
+// Read a host file under the share into `out` (NUL-terminated); its length,
+// or -1 when it cannot be read.
+static int read_host_file(const char *rel, char *out, size_t cap) {
+    char path[512];
+    host_path(rel, path, sizeof(path));
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+    size_t n = fread(out, 1, cap - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    return (int)n;
+}
+
+// A hard create that cannot open the data file for writing fails with
+// AccessDenied and leaves the file -- data and sidecar (resource fork,
+// Finder Info) -- as it was.  A read-only host file is the usual case; as
+// root, which writes through any mode bits, a FIFO (no reader: ENXIO)
+// stands in for it.
+TEST(hard_create_that_cannot_open_the_file_keeps_its_sidecar) {
+    fixture_up("createro");
+    char path[512], buf[64];
+    host_path("Doc", path, sizeof(path));
+    write_file("Doc", "data");
+    ASSERT_EQ_INT(0, chmod(path, 0444));
+    int probe = open(path, O_WRONLY);
+    bool read_only = probe < 0;
+    if (!read_only) {
+        close(probe);
+        unlink(path);
+        if (mkfifo(path, 0644) != 0) {
+            printf("  (skipped: neither a read-only file nor a FIFO can be made here)\n");
+            fixture_down();
+            return;
+        }
+    }
+    write_file("._Doc", "sidecar");
+    req_reset();
+    put8(0x80); // hard create
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("Doc");
+    ASSERT_EQ_INT((int)ERR_ACCESS_DENIED, (int)call(OP_CREATE_FILE));
+    ASSERT_EQ_INT(7, read_host_file("._Doc", buf, sizeof(buf)));
+    ASSERT_TRUE(strcmp(buf, "sidecar") == 0);
+    if (read_only) {
+        ASSERT_EQ_INT(4, read_host_file("Doc", buf, sizeof(buf)));
+        ASSERT_TRUE(strcmp(buf, "data") == 0);
+        chmod(path, 0644);
+    }
+    fixture_down();
+}
+
+// A hard create that succeeds resets the file whole: data truncated, the old
+// sidecar gone.  A soft create clears a sidecar a deletion left behind,
+// rather than inheriting its fork.
+TEST(create_resets_data_and_sidecar) {
+    fixture_up("createreset");
+    write_file("Doc", "data");
+    write_file("._Doc", "sidecar");
+    req_reset();
+    put8(0x80);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("Doc");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CREATE_FILE));
+    char buf[64];
+    ASSERT_EQ_INT(0, read_host_file("Doc", buf, sizeof(buf)));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Doc", 0x0400, 0));
+    ASSERT_EQ_INT(0, (int)rd32(g_reply + 6)); // no resource fork
+
+    write_file("._Orphan", "stale");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Orphan"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Orphan", 0x0400, 0));
+    ASSERT_EQ_INT(0, (int)rd32(g_reply + 6));
+    fixture_down();
+}
 
 TEST(golden_error_codes_per_command) {
     fixture_up("errors");
@@ -4008,6 +4087,8 @@ int main(void) {
     RUN(comments_live_in_the_sidecar_and_follow_the_file);
 
     RUN(golden_error_codes_per_command);
+    RUN(hard_create_that_cannot_open_the_file_keeps_its_sidecar);
+    RUN(create_resets_data_and_sidecar);
     RUN(copy_file_copies_both_forks_and_refuses_an_existing_destination);
     RUN(get_srvr_parms_lists_every_volume);
 

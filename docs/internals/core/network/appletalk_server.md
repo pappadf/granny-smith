@@ -502,6 +502,7 @@ _The reply doesn't carry any payload_
 - **Soft create rights:** Requires Search or Write access to all ancestors except parent, and Write access to parent.
 - **Hard create rights:** Requires Search access to all ancestors except parent, and Read/Write access to parent.
 - **Precondition:** Volume must be opened via `FPOpenVol`.
+- **On the host:** the data file is opened first (a soft create with `O_EXCL`, a hard create without truncating it); only once that succeeds is the AppleDouble sidecar removed and the data truncated. A hard create that cannot open the file (a read-only host file) answers `AccessDenied` with the old file, resource fork and Finder Info intact. A sidecar left behind by a deletion is cleared, not inherited.
 
 ---
 

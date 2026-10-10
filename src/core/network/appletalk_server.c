@@ -1082,19 +1082,32 @@ static uint32_t afp_cmd_create_file(afp_req_t *r) {
         if (afp_inhibited(full, AFP_ATTR_WRITEINHIBIT))
             return AFPERR_ObjectLocked;
     }
-    // A create resets the file completely, metadata included: the sidecar
-    // goes first (a hard create's, or one a deletion left behind), so a
-    // failure leaves the old file whole rather than truncated under its old
-    // resource fork.
-    if (!afp_sidecar_remove(full))
-        return AFPERR_AccessDenied;
-    // A soft create is O_EXCL: a file made between the stat and here is not
-    // overwritten.  (A symlink at the name of a hard create is followed, as
-    // every symlink in a share is: appletalk_server.md §4.)
-    int flags = O_WRONLY | O_CREAT | (exists ? O_TRUNC : O_EXCL);
+    // A create resets the file completely, metadata included.  The data file
+    // is opened first, without truncating it: when that fails (a read-only
+    // host file, a full disk) the old file keeps its data and its sidecar --
+    // resource fork and Finder Info -- untouched.  A soft create is O_EXCL, so
+    // a file made between the stat and here is neither overwritten nor
+    // stripped of its sidecar.  O_NONBLOCK keeps a FIFO at the name from
+    // stalling the worker thread.  (A symlink at the name of a hard create is
+    // followed, as every symlink in a share is: appletalk_server.md §4.)
+    int flags = O_WRONLY | O_NONBLOCK | (exists ? O_CREAT : O_CREAT | O_EXCL);
     int fd = open(full, flags, 0644);
     if (fd < 0)
         return errno == EEXIST ? AFPERR_ObjectExists : errno == ENOSPC ? AFPERR_DiskFull : AFPERR_AccessDenied;
+    // Only now the sidecar goes (a hard create's, or one a deletion left
+    // behind), then the data: a file is never left truncated under its old
+    // resource fork.
+    if (!afp_sidecar_remove(full)) {
+        close(fd);
+        if (!exists)
+            unlink(full); // the soft create made it: leave nothing behind
+        return AFPERR_AccessDenied;
+    }
+    if (exists && ftruncate(fd, 0) != 0) {
+        int err = errno;
+        close(fd);
+        return err == ENOSPC ? AFPERR_DiskFull : AFPERR_AccessDenied;
+    }
     close(fd);
 
     // A newly created file gets its dates from the server clock and a backup
