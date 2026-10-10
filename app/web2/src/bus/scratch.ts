@@ -19,7 +19,7 @@ export async function claimScratch(): Promise<void> {
       });
     });
   }
-  await gsEval('files.mkdir', [TAB_SCRATCH_DIR]);
+  await gsEval('files.mkdir', [TAB_SCRATCH_DIR], { quiet: true });
   if (!locks) return;
 
   const held = new Set(((await locks.query()).held ?? []).map((l) => l.name ?? ''));

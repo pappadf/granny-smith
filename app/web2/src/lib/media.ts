@@ -35,7 +35,11 @@ export interface MediaTypeDescriptor {
 }
 
 // Function type for the gsEval injection — keeps lib/ free of bus imports.
-export type GsEval = (path: string, args?: unknown[]) => Promise<unknown>;
+export type GsEval = (
+  path: string,
+  args?: unknown[],
+  opts?: { quiet?: boolean },
+) => Promise<unknown>;
 
 // Common floppy disk sizes (matches detect_diskcopy: 400/800/1440 KB, +84 if
 // the image is wrapped with a DiskCopy 4.2 header, plus 12 bytes of tag data
@@ -288,7 +292,9 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_hd', [path])) === true };
+      return {
+        valid: (await gsEval('machine.scsi.identify_hd', [path], { quiet: true })) === true,
+      };
     },
   },
 
@@ -297,7 +303,9 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_cdrom', [path])) === true };
+      return {
+        valid: (await gsEval('machine.scsi.identify_cdrom', [path], { quiet: true })) === true,
+      };
     },
   },
 };

@@ -290,7 +290,7 @@ async function placeUdif(
     const d = MEDIA_TYPES[cat];
     const v = await d.validate(part, gsEval);
     if (!v.valid) continue;
-    await gsEval('files.mkdir', [d.persistDir]);
+    await gsEval('files.mkdir', [d.persistDir], { quiet: true });
     const dest = await uniquePath(d.persistDir, storedDmgName(name));
     const moved = await gsEval('files.mv', [part, dest]);
     if (moved !== true) {

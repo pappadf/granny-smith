@@ -592,7 +592,7 @@ async function persist(
   // to the worker's WasmFS (the same asymmetry that forces staging onto the
   // worker — see stageUpload). Creating it on one side and copying on the
   // other is exactly the bug this is fixing.
-  await gsEval('files.mkdir', [targetDir]);
+  await gsEval('files.mkdir', [targetDir], { quiet: true });
   // A file of that name already stored is replaced only when it is the same
   // file (a content-named ROM uploaded again): a different one keeps its
   // place and this one is stored beside it ("name 2.ext"), so two media of
