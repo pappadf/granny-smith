@@ -1008,9 +1008,12 @@ int main(void) {
     prom_offer_dir("/opfs/images/prom", NULL);
 
     // Volatile scratch space on memory backend (visible from all threads).
+    // WasmFS already provides a /tmp in its (memory-backed) root, so the
+    // mount reports -EEXIST there; only another failure is worth a word.
     backend_t membk = wasmfs_create_memory_backend();
-    if (!membk || wasmfs_create_directory("/tmp", 0777, membk) != 0)
-        fprintf(stderr, "cannot create the memory-backed /tmp\n");
+    int tmp_rc = membk ? wasmfs_create_directory("/tmp", 0777, membk) : -ENOMEM;
+    if (tmp_rc != 0 && tmp_rc != -EEXIST)
+        fprintf(stderr, "cannot create the memory-backed /tmp (%d)\n", tmp_rc);
     mkdir("/tmp/upload", 0777);
     mkdir("/tmp/extract", 0777);
 
