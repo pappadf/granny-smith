@@ -1,6 +1,6 @@
 {
   "_comment": "Per web2 spec file: the seconds its tests took (secs) and its longest test (max_test), from CI's e2e JSON reports. scripts/e2e-shard.py packs the files across the ui-e2e runners with it. Regenerate with scripts/gen-e2e-weights.py; only the balance depends on it, never which specs run.",
-  "source": "CI run 38013018795 (PR #306); iicx-video-modes estimated (4 per-mode tests of ~65 s, split after that run)",
+  "source": "CI run 38013018795 (PR #306); iicx-video-modes from a local run of its per-mode split (4 tests, 3 workers)",
   "files": {
     "web2-specs/ans-bitblt-repro.spec.ts": {
       "secs": 0,
@@ -91,8 +91,8 @@
       "max_test": 1
     },
     "web2-specs/iicx-video-modes.spec.ts": {
-      "secs": 260,
-      "max_test": 70
+      "secs": 338,
+      "max_test": 118
     },
     "web2-specs/iifx-aux3-realtime.spec.ts": {
       "secs": 47,
