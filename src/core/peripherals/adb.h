@@ -74,6 +74,10 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 void adb_mouse_move(adb_t *adb, int dx, int dy);
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 
+// True while host mouse input waits for the guest: motion or a button change
+// no Talk R0 has carried yet, or events queued behind an unreported change.
+bool adb_mouse_input_pending(const adb_t *adb);
+
 // === Auto-poll, as the host sees it =======================================
 //
 // Every ADB transceiver -- the VIA-side one, Egret, Cuda, the IIfx's SWIM IOP

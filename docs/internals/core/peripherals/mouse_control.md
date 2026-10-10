@@ -566,11 +566,25 @@ drive the bus, and the host's poll times out.  `adb.c` models exactly that:
   report of the press; every later report (on motion) carries the level, and
   the release is one more report.
 - `prepare_mouse_reply()` clears `mouse_data_pending` once the accumulated
-  motion has been sent (large deltas take several reports).
+  motion has been sent (large deltas take several reports) and no queued
+  event is waiting.
+- **Button changes are never merged.**  A button change no report has carried
+  yet (`mouse_button_unreported`) holds the line: a host event that arrives
+  behind it -- the release of a click quicker than the poll, or anything after
+  it -- waits in `mouse_queue` (16 entries; more motion at the same level
+  merges into the newest), and each later Talk R0 takes the next one.  So a
+  press and release between two polls reach the guest as a press report and
+  then a release report, as a real mouse's microcontroller reports every
+  transition; with the single state alone the release overwrote the press and
+  the click was lost.  When the host polls faster than the input changes (every
+  script that waits between press and release) the queue stays empty and the
+  reports are exactly the single-state ones.  A Flush drops the queued motion
+  but leaves the switch at the level the last queued event set.
 - **An aborted Talk** (the ROM goes CMD → IDLE without fetching a byte, as it
   does during its SRQ scan) restores exactly what the Talk consumed: the
   keyboard queue tail for a keyboard Talk R0, the deltas and the pending flag
-  for a mouse Talk R0.  A register Talk (R2, R3) consumed nothing and restores
+  for a mouse Talk R0 (and whether its button change was still unreported).
+  A register Talk (R2, R3) consumed nothing and restores
   nothing; in particular it does not make the mouse answer the next poll.
 
 `tests/unit/suites/adb` covers each of these.
@@ -587,6 +601,14 @@ drive the bus, and the host's poll times out.  `adb.c` models exactly that:
 > `aux`, was missing from this document entirely. The retired vocabulary still
 > appears in the *analysis* sections above, which are kept as written because
 > they are a record of how the behaviour was measured.
+
+### `mouse.pending`
+
+True while host mouse input waits for the guest: on ADB, motion or a button
+change no report has carried yet, or events queued behind one (§10); on the
+quadrature mouse, motion counts still being played out.  A script that clicks
+can run until it reads false (`wait_mouse_taken` in
+`tests/integration/lib/mac.script`) instead of guessing a tick count.
 
 ### `mouse.move`
 

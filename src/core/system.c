@@ -126,6 +126,20 @@ void system_mouse_update(bool button, int dx, int dy) {
         mouse_update(global_emulator->mouse, button, dx, dy);
 }
 
+// True while host mouse input still waits for the guest to take it (ADB:
+// motion or a button change not yet reported, or events queued behind one;
+// quadrature: motion counts still to play out).  Lisa and machines without
+// either path answer false.
+bool system_mouse_input_pending(void) {
+    if (!global_emulator)
+        return false;
+    if (global_emulator->adb)
+        return adb_mouse_input_pending(global_emulator->adb);
+    if (global_emulator->mouse)
+        return mouse_input_pending(global_emulator->mouse);
+    return false;
+}
+
 // Injects mouse movement deltas without changing button state.
 // Routes to the appropriate hardware path (ADB or quadrature).
 // Returns true if deltas were injected, false if no mouse device is available.
