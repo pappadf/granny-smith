@@ -1425,6 +1425,33 @@ server [`scripts/dev_server.py`](../../scripts/dev_server.py) sends both
 unconditionally; serving `index.html` directly (no redirect) keeps the
 headers intact through Codespaces' port-forwarding proxy.
 
+### Self-hosting a release
+
+Each GitHub release carries the web build as `granny-smith-web-<tag>.zip`
+(packaged by [`scripts/package_web.py`](../../scripts/package_web.py) in
+`publish.yml`): `web/` (the same tree deployed to gs-pages), `dev_server.py`
+and a short `README.txt`. A project that wants a pinned emulator, say in a
+devcontainer, downloads it and serves it with the bundled server, adding its
+own disk images on the same origin with `--fallback-root`:
+
+```bash
+python3 dev_server.py --root web --fallback-root ../disks \
+    --default-params 'model=lisa&rom=/lisa.rom&hd=/profile.image'
+```
+
+Same-origin media need no CORS, and nothing has to be published to fetch it.
+
+The release also carries `granny-smith-headless-<tag>-linux-{x86_64,arm64}.tar.gz`:
+a statically linked `gs-headless` (no glibc version dependency) for scripted
+runs and coding agents, from the `headless` job of `publish.yml`. Its
+LaserWriter spools print jobs but does not render them: the PostScript
+interpreter (`PLATEN=1`) does not link statically.
+
+`SHA256SUMS` on the release covers every attached file, so a project that
+pins a version can check what it downloads (`sha256sum -c --ignore-missing
+SHA256SUMS`). The build jobs only read the repository; the one job that
+writes to the release (`release-assets`) runs no build code.
+
 ## Styling and skins
 
 Every visual value is a design token, a `--gs-*` CSS custom property, and
