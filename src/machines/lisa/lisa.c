@@ -568,6 +568,66 @@ static DEF_METHOD(lisa_fd_drive_eject) {
     return val_none();
 }
 
+// DiskCopy 4.2 checksum: add each big-endian word, rotate right by one.
+static uint32_t dc42_checksum(const uint8_t *p, size_t n) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        sum += (uint32_t)(p[i] << 8 | p[i + 1]);
+        sum = (sum >> 1) | (sum << 31);
+    }
+    return sum;
+}
+
+static void put_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+// `save(path)` — write the diskette as it is now (source + delta + the sector
+// tags, which live only in memory) to a new self-contained DiskCopy 4.2 file.
+// The tag checksum skips the first sector's tag, as DiskCopy does.
+static DEF_METHOD(lisa_fd_drive_save) {
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
+    if (!img)
+        return val_err("floppy.drive.0: no disk inserted");
+    size_t sectors = disk_size(img) / 512;
+    size_t tag_bytes = img->tags ? img->tag_bytes : 0;
+    uint8_t *data = (uint8_t *)calloc(sectors, 512);
+    uint8_t *tags = (uint8_t *)calloc(sectors ? sectors : 1, tag_bytes ? tag_bytes : 1);
+    if (!data || !tags) {
+        free(data);
+        free(tags);
+        return val_err("out of memory");
+    }
+    for (size_t i = 0; i < sectors; i++) {
+        disk_read_data(img, i * 512, data + i * 512, 512);
+        if (tag_bytes)
+            disk_read_tag(img, i, tags + i * tag_bytes, tag_bytes);
+    }
+    uint8_t hdr[84] = {0};
+    static const char name[] = "-not a Macintosh disk-";
+    hdr[0] = (uint8_t)(sizeof name - 1);
+    memcpy(hdr + 1, name, sizeof name - 1);
+    put_be32(hdr + 0x40, (uint32_t)(sectors * 512));
+    put_be32(hdr + 0x44, (uint32_t)(sectors * tag_bytes));
+    put_be32(hdr + 0x48, dc42_checksum(data, sectors * 512));
+    put_be32(hdr + 0x4C, sectors > 1 ? dc42_checksum(tags + tag_bytes, (sectors - 1) * tag_bytes) : 0);
+    hdr[0x50] = sectors > 800 ? 0x01 : 0x00; // Sony 800K / 400K
+    hdr[0x51] = sectors > 800 ? 0x22 : 0x02;
+    hdr[0x52] = 0x01;
+    FILE *f = fopen(argv[0].s, "wb");
+    bool ok = f && fwrite(hdr, sizeof hdr, 1, f) == 1 && fwrite(data, 512, sectors, f) == sectors &&
+              (!tag_bytes || fwrite(tags, tag_bytes, sectors, f) == sectors);
+    if (f && fclose(f) != 0)
+        ok = false;
+    free(data);
+    free(tags);
+    return val_bool(ok);
+}
+
 static DEF_GETTER(lisa_fd_drive_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
@@ -591,26 +651,34 @@ static const arg_decl_t lisa_fd_insert_args[] = {
      .doc = "Mount writable"},
 };
 
+static const arg_decl_t lisa_fd_save_args[] = {
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Host path of the new image"},
+};
+
 static const member_t lisa_fd_drive_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .doc = "Drive number on the Sony floppy controller (0 = upper, 1 = lower on a Lisa 2/10)",
-     .attr = {.type = V_INT, .get = lisa_fd_drive_index}                                              },
+     .attr = {.type = V_INT, .get = lisa_fd_drive_index}                                                             },
     {.kind = M_ATTR,
      .name = "present",
      .doc = "True when a disk is clamped in this drive",
-     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}                                           },
+     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}                                                          },
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
-     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                          },
+     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                                         },
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
-     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}},
+     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}               },
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Write the diskette as it is now (with its sector tags) to a new DiskCopy 4.2 file",
+     .method = {.ui_flags = MM_IO, .args = lisa_fd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_fd_drive_save}},
 };
 static const class_desc_t lisa_fd_drive_class = {
-    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 4};
+    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 5};
 
 static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
