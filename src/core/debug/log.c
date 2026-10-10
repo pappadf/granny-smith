@@ -9,6 +9,7 @@
 // each line (the debug trace) comes in through log_set_context_hooks
 // (installed by log_context.c).
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -123,8 +124,10 @@ static void close_category_file(struct log_category *c) {
 
 // Set file sink path ("off" or NULL disables). Returns 0 on success, -1 on error (keeps previous).
 static int set_category_file(struct log_category *c, const char *path) {
-    if (!c)
+    if (!c) {
+        errno = EINVAL; // no category: not a file problem, but say why
         return -1;
+    }
     if (!path || strcmp(path, "off") == 0 || *path == '\0') {
         // disable file sink
         close_category_file(c);
@@ -145,6 +148,7 @@ static int set_category_file(struct log_category *c, const char *path) {
     c->file_path = strdup(path);
     if (!c->file_path) {
         fclose(fp);
+        errno = ENOMEM; // fclose may have overwritten strdup's errno
         return -1;
     }
     c->file_fp = fp;
@@ -202,8 +206,11 @@ int log_set_category_show_pc(const char *category, bool on) {
 // `path` NULL or "off" closes any open file for this category.
 int log_set_category_file(const char *category, const char *path) {
     struct log_category *c = (struct log_category *)log_register_category(category);
-    if (!c)
+    if (!c) {
+        // Not a file error either: an unknown name, or no memory to create it.
+        errno = (category && name_in_manifest(category)) ? ENOMEM : EINVAL;
         return -1;
+    }
     return set_category_file(c, path ? path : "off");
 }
 

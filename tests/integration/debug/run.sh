@@ -65,6 +65,9 @@ expect_not "ASSERT FAILED" "all in-script assertions must pass"
 expect "bp-contract-ok" "breakpoint entry contract section must run to its end"
 expect "irq-entry-probe-ok" "probes on an interrupt handler's first instruction fire on every entry"
 expect "step-matches-run-ok" "debug.step N must match scheduler.run N across VBLs"
+expect "log-file-probe-done" "the log-file probe must not end the script"
+expect "cannot set log file '/nonexistent-gs-dir/cpu.log': No such file or directory" \
+    "log.set file= must report fopen's errno"
 
 # Format specs in ${expr:fmt}. The literal $ is doubled here so the
 # shell that runs run.sh doesn't expand the value before grep sees it.
