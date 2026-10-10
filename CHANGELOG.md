@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.9.3] — 2026-10-10
+
+### Fixed
+- **Lisa: boots with a diskette already inserted** — LOS no longer hangs at the hourglass when a floppy is in the drive at power-on (e.g. a URL boot with both `hd0=` and `fd0=`); the floppy controller's interrupt mask is now honoured.
+
 ## [v0.9.2] — 2026-10-10
 
 ### Added
