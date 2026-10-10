@@ -125,8 +125,8 @@ def row_q700_71_fd() {
 # bar, so desktop/About goldens exclude the menu-bar right corner and
 # the RTC is pinned for determinism.
 def row_q700_75_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="q700" ram=8192 rom="${$quadra_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     wait_desktop(1500000000)
     assert machine.id == "q700" "q700-75-hd: machine.id != q700"
@@ -266,8 +266,8 @@ def row_q700_dafb_senses() {
 # (so does the existing 640x480 row). The excluded strip is the menu-bar clock,
 # same convention as the other 7.5/7.6 rows, scaled to each raster.
 def row_q700_75_monitors() {
-    machine.rtc.time = 3000000000
     machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=10
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 400000000
     wait_stable(1200000000)
@@ -292,8 +292,8 @@ def row_q700_75_monitors() {
 # mailbox transaction — the transport row, re-media'd (Q900 ×
 # 7.1 stays lit via q900-checkpoint).
 def row_q900_76_fd() {
-    machine.rtc.time = 3000000000
     machine.boot model="q900" ram=8192 rom="${$quadra_rom}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$disk_tools_76}"
     scheduler.run 300000000
     wait_stable(900000000)
@@ -312,8 +312,8 @@ def row_q900_76_fd() {
 # IOP firmware + mailboxes, dual 53C96) under 7.5; About proves the
 # Gestalt identity ("Macintosh Quadra 900") and the 16 MB RAM option.
 def row_q900_75_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="q900" ram=16384 rom="${$quadra_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     # The Q900 is the only 68k machine with two SCSI buses, and both used to
     # mount as `machine.scsi`.  object_attach head-pushes and the lookup takes
@@ -389,8 +389,8 @@ def row_q950_71_hd() {
 # as "taken", and 7.6 put up "AppleTalk cannot be used because no AppleTalk
 # address is available" -- which this row used to dismiss.)
 def row_q950_76_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="q950" ram=32768 rom="${$q950_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_76}" 0
     scheduler.run 700000000
     wait_stable(1600000000)

@@ -54,12 +54,18 @@ endif
 # --track-origins=yes: Track origin of uninitialized values
 # --show-leak-kinds=definite,possible: Report definite and possible leaks
 # --errors-for-leak-kinds=definite: Only fail on definite leaks
+# --fair-sched=yes: Hand the CPU to threads in turn.  Valgrind runs one
+#   thread at a time, and by default the emulator thread (busy running the
+#   guest) can win the lock back after every syscall the I/O worker makes,
+#   so a host-side copy crawls: vfs-rsrc's recursive files.cp took over an
+#   hour instead of seconds.
 VALGRIND := valgrind
 VALGRIND_FLAGS := --error-exitcode=1 \
                   --leak-check=full \
                   --track-origins=yes \
                   --show-leak-kinds=definite,possible \
                   --errors-for-leak-kinds=definite \
+                  --fair-sched=yes \
                   --quiet
 
 # Auto-discover test directories (those containing test.script); TIER=

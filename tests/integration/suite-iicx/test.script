@@ -53,8 +53,8 @@ def row_iicx_chime() {
 # RawMouse and Mouse are all asserted, which also proves the slot VBL
 # task is firing.
 def gc_boot_8bpp() {
-    machine.rtc.time = 3000000000
     machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_608_gc}" 0
 }
 
@@ -89,8 +89,8 @@ def row_iicx_gc_accel8() {
 }
 
 def row_iicx_gc_decline8() {
-    machine.rtc.time = 3000000000
     machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.nubus.slot[9].card.gc.force_decline = true
     machine.scsi.attach_hd "${$hd_608_gc}" 0
     scheduler.run 200000000

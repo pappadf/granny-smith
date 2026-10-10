@@ -445,9 +445,12 @@ jobs:
   # Functional web2 end-to-end suite (tests/e2e/web2-specs/**): config dialog,
   # checkpoint resume, display drop, URL boot, A/UX realtime boot, video-mode
   # shader baselines, Lisa/Xenix, filesystem tab, ...  Needs the proprietary
-  # ROMs/disks, so a job without the token skips it.  Playwright's --shard
-  # splits the spec files across the three runners; `npx playwright test
-  # --config=playwright.web2.config.ts --shard=K/3` reproduces one locally.
+  # ROMs/disks, so a job without the token skips it.  scripts/e2e-shard.py
+  # splits the spec files across the three runners by their measured
+  # durations (tests/e2e/e2e-weights.json, regenerated with
+  # scripts/gen-e2e-weights.py from the web2-e2e-report-shard-* artifacts);
+  # `npx playwright test --config=playwright.web2.config.ts --project=P
+  # $(python3 ../../scripts/e2e-shard.py K/3 P)` reproduces one locally.
   ui-e2e:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -531,7 +534,11 @@ jobs:
           GS_E2E_WORKERS: "3"
           GS_E2E_JSON: e2e-report/parallel.json
         working-directory: tests/e2e
-        run: npx playwright test --config=playwright.web2.config.ts --project=parallel --shard=${{ matrix.shard }}/3 --pass-with-no-tests --output=test-results/parallel
+        run: |
+          specs=$(python3 ../../scripts/e2e-shard.py ${{ matrix.shard }}/3 parallel)
+          if [ -z "$specs" ]; then echo "No parallel specs on this shard."; exit 0; fi
+          # shellcheck disable=SC2086 -- one spec path per word
+          npx playwright test --config=playwright.web2.config.ts --project=parallel --output=test-results/parallel $specs
 
       - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3, serial)
         if: always() && steps.fetch-data.outputs.has_test_data == 'true' && steps.e2e-parallel.outcome != 'skipped'
@@ -539,7 +546,11 @@ jobs:
           CI: true
           GS_E2E_JSON: e2e-report/serial.json
         working-directory: tests/e2e
-        run: npx playwright test --config=playwright.web2.config.ts --project=serial --shard=${{ matrix.shard }}/3 --pass-with-no-tests --output=test-results/serial
+        run: |
+          specs=$(python3 ../../scripts/e2e-shard.py ${{ matrix.shard }}/3 serial)
+          if [ -z "$specs" ]; then echo "No serial specs on this shard."; exit 0; fi
+          # shellcheck disable=SC2086 -- one spec path per word
+          npx playwright test --config=playwright.web2.config.ts --project=serial --output=test-results/serial $specs
 
       # Per-test durations (the github reporter prints none).
       - name: Upload e2e report

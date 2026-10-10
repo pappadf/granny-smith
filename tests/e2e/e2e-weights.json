@@ -1,0 +1,198 @@
+{
+  "_comment": "Per web2 spec file: the seconds its tests took (secs) and its longest test (max_test), from CI's e2e JSON reports. scripts/e2e-shard.py packs the files across the ui-e2e runners with it. Regenerate with scripts/gen-e2e-weights.py; only the balance depends on it, never which specs run.",
+  "source": "median of CI runs 38013018795 (PR #306) and 38017596421 (PR #307; iicx-video-modes and compact-import as split there)",
+  "files": {
+    "web2-specs/ans-bitblt-repro.spec.ts": {
+      "secs": 0,
+      "max_test": 0
+    },
+    "web2-specs/app-states.spec.ts": {
+      "secs": 113,
+      "max_test": 10
+    },
+    "web2-specs/appearance.spec.ts": {
+      "secs": 3,
+      "max_test": 2
+    },
+    "web2-specs/av-boot-no-slots.spec.ts": {
+      "secs": 4,
+      "max_test": 4
+    },
+    "web2-specs/av-camera.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/av-microphone.spec.ts": {
+      "secs": 46,
+      "max_test": 46
+    },
+    "web2-specs/av-sound-record.spec.ts": {
+      "secs": 91,
+      "max_test": 91
+    },
+    "web2-specs/av-speech-recognition.spec.ts": {
+      "secs": 108,
+      "max_test": 108
+    },
+    "web2-specs/checkpoint-resume.spec.ts": {
+      "secs": 74,
+      "max_test": 23
+    },
+    "web2-specs/checkpoint-stall.spec.ts": {
+      "secs": 1,
+      "max_test": 1
+    },
+    "web2-specs/command-browser.spec.ts": {
+      "secs": 5,
+      "max_test": 3
+    },
+    "web2-specs/compact-import.spec.ts": {
+      "secs": 109,
+      "max_test": 34
+    },
+    "web2-specs/console.spec.ts": {
+      "secs": 7,
+      "max_test": 7
+    },
+    "web2-specs/copy-jitter.spec.ts": {
+      "secs": 1,
+      "max_test": 1
+    },
+    "web2-specs/debug-panel.spec.ts": {
+      "secs": 14,
+      "max_test": 3
+    },
+    "web2-specs/display-card-config.spec.ts": {
+      "secs": 2,
+      "max_test": 2
+    },
+    "web2-specs/display-drop.spec.ts": {
+      "secs": 59,
+      "max_test": 17
+    },
+    "web2-specs/download-transfer.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/fd-duplicate-name.spec.ts": {
+      "secs": 1,
+      "max_test": 1
+    },
+    "web2-specs/filesystem-tab.spec.ts": {
+      "secs": 16,
+      "max_test": 3
+    },
+    "web2-specs/highlight.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/host-state-across-machines.spec.ts": {
+      "secs": 3,
+      "max_test": 2
+    },
+    "web2-specs/iicx-video-modes.spec.ts": {
+      "secs": 326,
+      "max_test": 117
+    },
+    "web2-specs/iifx-aux3-realtime.spec.ts": {
+      "secs": 50,
+      "max_test": 50
+    },
+    "web2-specs/imagewriter-print.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/laserwriter-print.spec.ts": {
+      "secs": 55,
+      "max_test": 55
+    },
+    "web2-specs/lisa-xenix-profile.spec.ts": {
+      "secs": 4,
+      "max_test": 2
+    },
+    "web2-specs/machine-config-sections.spec.ts": {
+      "secs": 4,
+      "max_test": 2
+    },
+    "web2-specs/machine-restart.spec.ts": {
+      "secs": 1,
+      "max_test": 1
+    },
+    "web2-specs/panel-tabs-overflow.spec.ts": {
+      "secs": 9,
+      "max_test": 1
+    },
+    "web2-specs/pci-prom-ingest.spec.ts": {
+      "secs": 15,
+      "max_test": 12
+    },
+    "web2-specs/pdm-double-boot.spec.ts": {
+      "secs": 0,
+      "max_test": 0
+    },
+    "web2-specs/perf-bench.spec.ts": {
+      "secs": 94,
+      "max_test": 94
+    },
+    "web2-specs/rom-upload-identity.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/rom-upload-listing.spec.ts": {
+      "secs": 4,
+      "max_test": 4
+    },
+    "web2-specs/scheduler-accelerated.spec.ts": {
+      "secs": 30,
+      "max_test": 30
+    },
+    "web2-specs/screen-scroll.spec.ts": {
+      "secs": 2,
+      "max_test": 2
+    },
+    "web2-specs/shell-prompt.spec.ts": {
+      "secs": 12,
+      "max_test": 4
+    },
+    "web2-specs/system-edit.spec.ts": {
+      "secs": 5,
+      "max_test": 5
+    },
+    "web2-specs/terminal-jobs.spec.ts": {
+      "secs": 14,
+      "max_test": 14
+    },
+    "web2-specs/upload.spec.ts": {
+      "secs": 4,
+      "max_test": 3
+    },
+    "web2-specs/url-archive-boot.spec.ts": {
+      "secs": 27,
+      "max_test": 12
+    },
+    "web2-specs/url-blank-disk.spec.ts": {
+      "secs": 6,
+      "max_test": 4
+    },
+    "web2-specs/url-boot.spec.ts": {
+      "secs": 24,
+      "max_test": 12
+    },
+    "web2-specs/voodoo2-thread.spec.ts": {
+      "secs": 28,
+      "max_test": 28
+    },
+    "web2-specs/voodoo2-webgpu-fallback.spec.ts": {
+      "secs": 10,
+      "max_test": 10
+    },
+    "web2-specs/voodoo2-webgpu.spec.ts": {
+      "secs": 17,
+      "max_test": 14
+    },
+    "web2-specs/vrom-offer-ingest.spec.ts": {
+      "secs": 2,
+      "max_test": 2
+    }
+  }
+}

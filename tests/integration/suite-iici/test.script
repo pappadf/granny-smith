@@ -156,8 +156,8 @@ def row_iici_701_depths() {
 # addressing mode). At 16 MB the flag reads a clean 0: 7.5 + MODE32 still boots
 # 24-bit under default PRAM, matching the IIcx measurement.
 def row_iici_75_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iici" ram=16384 video_card="builtin_rbv_video" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     wait_stable(1500000000)
@@ -174,8 +174,8 @@ def row_iici_75_hd() {
 # selects 32-bit itself on a clean-ROM machine (measured), so 32 MB
 # is fully visible — the RAM-sizing and addressing axes interact here.
 def row_iici_76_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iici" ram=32768 video_card="builtin_rbv_video" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_76}" 0
     scheduler.run 400000000
     wait_stable(1800000000)
@@ -194,8 +194,8 @@ def row_iici_76_hd() {
 # twice: 7.6 sets the bit and restarts.  Each boot's RAM clear writes a long
 # zero to Ticks ($16A) once, so those writes count the boots.
 def row_iici_76_hd_addr32() {
-    machine.rtc.time = 3000000000
     machine.boot model="iici" ram=32768 video_card="builtin_rbv_video" rom="${$ROM}" config="{\"options\":{\"addressing\":\"32\"}}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_76}" 0
     let boots = debug.logpoints.add(addr=0x16A, width="l", mode="write", value=0, level=9)
     scheduler.run 400000000
@@ -221,8 +221,8 @@ def row_iici_76_hd_addr32() {
 # the boot, which is what the record now says and what iici-24ac-dual now
 # guards.
 def row_iici_71_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_71_gc}" 0
     scheduler.run 300000000
     wait_stable(1200000000)
@@ -286,8 +286,8 @@ def row_iici_lowram() {
 # the Finder: that is now the iici-71-hd row above. Two arms agreeing on an
 # EXACT checksum was the clue that they were the same arm.
 def row_iici_24ac_dual() {
-    machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_71_gc}" 0
     scheduler.run 900000000
     wait_stable(1500000000)

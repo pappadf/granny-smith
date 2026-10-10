@@ -142,8 +142,8 @@ def row_plus_608_fd() {
 # desktop — so a regression that changed WHICH modules fail, or that lost
 # the dialog entirely, shows up as a golden mismatch.
 def row_plus_71_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="plus" ram=4096 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_71}" 0
     scheduler.run 60000000
     wait_stable(1200000000)

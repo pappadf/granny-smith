@@ -251,8 +251,8 @@ def row_av_hd_device() {
 # screen can match a blank golden, so the facts that prove a System is running
 # are asserted first and the pixels only confirm what it drew.
 def row_q840av_71_hd_desktop() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     wait_desktop(1500000000)
 
@@ -289,8 +289,8 @@ def row_q840av_71_hd_desktop() {
 # quietly kept the old machine cannot pass, load, and re-match the pre-save
 # golden once the restored guest is quiescent again.
 def row_av_checkpoint() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     wait_desktop(1500000000)
     check("goldens/q840av-7.1-640x480x8-hd-finder.png")
@@ -308,8 +308,8 @@ def row_av_checkpoint() {
 # ---- q660av-71-hd-desktop ---------------------------------------------------
 # The same volume on the sibling board: 25 MHz, strap nibble $B, and no MUNI.
 def row_q660av_71_hd_desktop() {
-    machine.rtc.time = 3000000000
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     wait_desktop(1500000000)
 
@@ -350,8 +350,8 @@ def row_q660av_71_hd_desktop() {
 # (see the -hd-finder goldens).
 
 def row_video_in(model, golden) {
-    machine.rtc.time = 3000000000
     machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     # A fixed head start, not wait_desktop(): the captured frame at the
     # golden instant depends on the boot timeline it was captured on.
@@ -404,8 +404,8 @@ let av_fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 
 # The 7.1 desktop off the hard disk, as the HD rows reach it.
 def av_hd_desktop(model) {
-    machine.rtc.time = 3000000000
     machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     wait_desktop(1500000000)
 }
@@ -525,8 +525,8 @@ def row_av_floppy_format() {
 # opens, reads the boot blocks, and the Mac OS 7.6 Installer comes up — every
 # byte of it through the New Age datapath.
 def row_av_floppy_boot() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$av_fd_boot}"
     assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
     # A budget, not a settle: a floppy boot has long quiet stretches.  It
@@ -552,8 +552,8 @@ def row_av_floppy_boot() {
 # kernel still reads state "running" (waiti with the timer free-running),
 # so emr is the aliveness check (docs/internals/machines/av/dsp.md).
 def row_av_beep() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     # A fixed head start, not wait_desktop(): the sound capture is
     # sample-exact, so the boot timeline it was captured on is fixed.
@@ -610,8 +610,8 @@ def row_av_beep() {
 # synthesized audio, captured sample-exact.  Kernel aliveness = emr stays
 # $8000.
 def row_av_tts() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     # A fixed head start, not wait_desktop(): the sound capture is
     # sample-exact, so the boot timeline it was captured on is fixed.
@@ -688,8 +688,8 @@ def row_av_tts() {
 # scale), sample-exact against the golden.  Cancel at the end so the sound is
 # never added to the System file.
 def row_av_sound_in() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "tone"
     assert machine.audioin.connected "av-sound-in: tone source not connected"
@@ -757,8 +757,8 @@ def row_av_sound_in() {
 # plays once on its own during the blackout, which would recognize early
 # and change the state the row asserts on.
 def sr_bring_up() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "none"
     # A fixed head start, not wait_desktop(): the sound capture is
@@ -871,8 +871,8 @@ def row_av_sr_macro() {
 # signed in — idling until a sound client enables frame ticks.  Hardware truths
 # only — no golden.
 def row_av_dsp_boot() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     # The RTM init runs ~65-90M instructions into boot; sample the window.
     scheduler.run 60000000
@@ -917,13 +917,13 @@ def dsp_fingerprint() {
 }
 
 def row_av_dsp_determinism() {
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 100000000
     let fp1 = dsp_fingerprint()
-    machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 100000000
     let fp2 = dsp_fingerprint()

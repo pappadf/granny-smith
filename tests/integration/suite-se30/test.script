@@ -84,8 +84,8 @@ def row_se30_608_fd() {
 # genuinely 7.1 (the rule: a 7.1 row never uses an 800K "7.1" disk).
 # The About box confirms the System version and the 4 MB total.
 def row_se30_71_fd() {
-    machine.rtc.time = 3000000000
     machine.boot model="se30" ram=4096 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     scheduler.run 40000000
     scheduler.run 600000000
@@ -107,8 +107,8 @@ def row_se30_71_fd() {
 # it: the boot reaches the Finder, off the generated declaration ROM.  (The
 # other rows run Apple's SE/30 video ROM, which the test data offers.)
 def row_se30_701_gsvrom() {
-    machine.rtc.time = 3000000000
     machine.boot model="se30" ram=8192 rom="${$ROM}" slots="14=builtin_se30_video,rom=substitute"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 50000000
     # golden-collision-ok: se30-7.0.1-512x342-gsvrom-finder.png se30-7.1-512x342-finder.png
@@ -133,8 +133,8 @@ def row_se30_701_gsvrom() {
 # but under default PRAM it still boots 24-bit (measured), so the
 # addressing assert records reality and MemTop is capped at 8 MB.
 def row_se30_75_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="se30" ram=16384 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     scheduler.run 700000000
