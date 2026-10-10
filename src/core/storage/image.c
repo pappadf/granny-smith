@@ -205,10 +205,11 @@ static uint32_t geometry_block_size(image_geometry_t geom) {
     return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
 }
 
-// Load the DiskCopy 4.2 tag section (after the data) into image->tags.  These
-// are read-only per-sector tags the Lisa boot ROM/OS read (e.g. the boot
-// block's FILEID = $AAAA).  Best-effort: on any failure the image simply has
-// no tags (disk_read_tag returns 0).  `dc42` is the DiskCopy file itself.
+// Load the DiskCopy 4.2 tag section (after the data) into image->tags, and
+// keep the header's disk name and format byte for a DiskCopy export.  The
+// tags are the per-sector page labels the Lisa boot ROM/OS read (e.g. the
+// boot block's FILEID = $AAAA).  Best-effort: on any failure the image simply
+// has no tags from the file.  `dc42` is the DiskCopy file itself.
 static void image_load_diskcopy_tags(image_t *image, gs_source_t *dc42) {
     uint8_t header[DISKCOPY_HEADER_SIZE];
     if (gs_source_read_exact(dc42, 0, header, sizeof(header)) != 0)
@@ -220,6 +221,10 @@ static void image_load_diskcopy_tags(image_t *image, gs_source_t *dc42) {
     uint32_t data_size = 0, tag_size = 0;
     if (!dc42_parse_header(header, sizeof(header), gs_source_size(dc42), &data_size, &tag_size))
         return;
+    // The disk's own label, padding and all, so an unchanged disk exports
+    // back to the same bytes.
+    memcpy(image->dc42_name, header, DC42_NAME_FIELD);
+    image->dc42_format_byte = header[DC42_OFF_FORMAT_BYTE];
     uint32_t count = data_size / STORAGE_BLOCK_SIZE;
     if (tag_size == 0 || count == 0 || (tag_size % count) != 0)
         return; // no tags (or unexpected layout)
@@ -235,6 +240,31 @@ static void image_load_diskcopy_tags(image_t *image, gs_source_t *dc42) {
     image->tag_count = count;
 }
 
+// A 400K/800K GCR disk has a 12-byte tag beside every sector whatever file
+// it came from; give one opened from a raw image (or a DiskCopy file without
+// a tag section) a zeroed tag area, so the guest's tag writes are kept
+// rather than dropped.  Reads are unchanged: every reader zero-fills first.
+#define GCR_TAG_BYTES 12u
+
+static void image_ensure_gcr_tags(image_t *image) {
+    if (image->tags || (image->type != image_fd_ss && image->type != image_fd_ds) ||
+        image->block_size != STORAGE_BLOCK_SIZE)
+        return;
+    uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
+    image->tags = (uint8_t *)calloc(count, GCR_TAG_BYTES);
+    if (!image->tags)
+        return; // no tags: the disk still works, its tag writes are dropped
+    image->tag_bytes = GCR_TAG_BYTES;
+    image->tag_count = count;
+}
+
+void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t format_byte) {
+    if (!image || image->from_diskcopy)
+        return; // a DiskCopy source keeps the label it came with
+    dc42_name_field(image->dc42_name, name);
+    image->dc42_format_byte = format_byte;
+}
+
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
     if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
         return 0;
@@ -246,7 +276,8 @@ size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
 // Persist a sector's tag (pagelabel).  The Lisa Sony controller writes the
 // 512-byte data sector *and* its tag together; modelling only the data drops
 // the FS pagelabel updates the OS makes on every write.  Tags live in the
-// in-memory image->tags buffer (per-run; the read-only base file is untouched).
+// in-memory image->tags buffer, which checkpoints carry and a DiskCopy 4.2
+// export writes out; the read-only base file is untouched.
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size) {
     if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
         return 0;
@@ -385,6 +416,8 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     gs_source_release(padded);
     if (rc == GS_SUCCESS && u.dc42)
         image_load_diskcopy_tags(image, u.dc42);
+    if (rc == GS_SUCCESS)
+        image_ensure_gcr_tags(image);
     gs_unwrapped_free(&u);
     if (rc != GS_SUCCESS) {
         gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
@@ -663,12 +696,93 @@ static char *stream_set_large_buffer(FILE *f) {
     return buf;
 }
 
+// The format an export writes, picked from the destination's name.
+typedef enum { EXPORT_RAW, EXPORT_UDIF, EXPORT_DC42 } export_format_t;
+
 struct image_export {
     storage_export_view_t *view;
     char *dest;
     char *name; // the image's own name, recorded in a UDIF export
     uint32_t block_size;
+    export_format_t format;
+    // DiskCopy 4.2 only: the tags as they were at begin (the view's moment),
+    // and the header's label.
+    uint8_t *tags; // tag_count * tag_bytes, or NULL for an untagged disk
+    uint32_t tag_bytes;
+    uint32_t tag_count;
+    uint8_t dc42_name[DC42_NAME_FIELD]; // the header's name field
+    uint8_t disk_format;
+    uint8_t format_byte;
 };
+
+// True when `path` ends in `ext` (case-insensitive).
+static bool path_has_ext(const char *path, const char *ext) {
+    size_t n = strlen(path), e = strlen(ext);
+    return n > e && strcasecmp(path + n - e, ext) == 0;
+}
+
+// DiskCopy 4.2's disk-format code for a floppy kind, or -1 for anything else.
+static int dc42_disk_format(enum image_type t) {
+    switch (t) {
+    case image_fd_ss:
+        return 0; // 400K GCR
+    case image_fd_ds:
+        return 1; // 800K GCR
+    case image_fd_dd_mfm:
+        return 2; // 720K MFM
+    case image_fd_hd:
+        return 3; // 1440K MFM
+    default:
+        return -1;
+    }
+}
+
+// Fill in the DiskCopy half of an export: a copy of the tags (the guest goes
+// on writing them while the export runs) and the header's label.  False on
+// a medium DiskCopy 4.2 cannot hold, or out of memory.
+static bool export_prepare_dc42(image_export_t *e, const image_t *image, char *err, size_t err_cap) {
+    int fmt = dc42_disk_format(image->type);
+    if (fmt < 0 || image->block_size != STORAGE_BLOCK_SIZE || image->wrap_prefix) {
+        if (err)
+            snprintf(err, err_cap, "DiskCopy 4.2 holds 400K, 800K, 720K and 1440K floppies only");
+        return false;
+    }
+    e->disk_format = (uint8_t)fmt;
+    // The source's (or a machine's) format byte, else the Mac's: $12 for a
+    // 400K disk, $22 for the rest.
+    e->format_byte = image->dc42_format_byte ? image->dc42_format_byte : (fmt == 0 ? 0x12 : 0x22);
+    if (image->dc42_name[0]) {
+        memcpy(e->dc42_name, image->dc42_name, DC42_NAME_FIELD);
+    } else {
+        // No label of its own: the source file's name, without directory or
+        // extension.
+        const char *full = image->filename ? image->filename : "";
+        const char *base = strrchr(full, '/') ? strrchr(full, '/') + 1 : full;
+        const char *dot = strrchr(base, '.');
+        char *stem = gs_str_printf("%.*s", (int)(dot && dot != base ? dot - base : (ptrdiff_t)strlen(base)), base);
+        if (!stem) {
+            if (err)
+                snprintf(err, err_cap, "out of memory");
+            return false;
+        }
+        dc42_name_field(e->dc42_name, stem);
+        free(stem);
+    }
+    if (image->tags && image->tag_bytes && image->tag_count) {
+        size_t n = (size_t)image->tag_count * image->tag_bytes;
+        e->tags = (uint8_t *)malloc(n);
+        if (e->tags)
+            memcpy(e->tags, image->tags, n);
+        e->tag_bytes = image->tag_bytes;
+        e->tag_count = image->tag_count;
+    }
+    if (image->tags && !e->tags) {
+        if (err)
+            snprintf(err, err_cap, "out of memory");
+        return false;
+    }
+    return true;
+}
 
 image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap) {
     if (err && err_cap)
@@ -695,6 +809,16 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
         const char *slash = strrchr(image->filename, '/');
         e->name = strdup(slash ? slash + 1 : image->filename);
     }
+    // The destination's name picks the format (image.h, image_export_to).
+    if (e->block_size == UDIF_SECTOR_SIZE && path_has_ext(dest_path, ".dmg"))
+        e->format = EXPORT_UDIF;
+    else if (path_has_ext(dest_path, ".dc42") || path_has_ext(dest_path, ".diskcopy") ||
+             (path_has_ext(dest_path, ".image") && image_is_floppy(image->type)))
+        e->format = EXPORT_DC42;
+    if (e->format == EXPORT_DC42 && !export_prepare_dc42(e, image, err, err_cap)) {
+        image_export_end(e);
+        return NULL;
+    }
     e->view = storage_export_view_begin(image->storage);
     if (!e->dest || !e->view) {
         if (err)
@@ -707,12 +831,7 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
 
 // A destination named .dmg gets a UDIF (udif_writer.h): zero runs cost
 // nothing and the rest is deflated, so a modified 2 GB disk exports at its
-// content's size.  Any other name gets the flat raw image.
-static bool export_is_udif(const image_export_t *e) {
-    size_t n = strlen(e->dest);
-    return e->block_size == UDIF_SECTOR_SIZE && n >= 4 && strcasecmp(e->dest + n - 4, ".dmg") == 0;
-}
-
+// content's size.
 static int udif_write_cb(void *ctx, const void *data, size_t size) {
     return udif_writer_append((udif_writer_t *)ctx, data, size) == 0 ? 0 : -1;
 }
@@ -740,11 +859,59 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
     return rc;
 }
 
+// The data section streams through here on its way to the file, so the
+// DiskCopy data checksum is taken in the same pass.
+typedef struct {
+    FILE *f;
+    uint32_t sum; // running data checksum
+    uint64_t bytes; // data bytes written
+} dc42_stream_t;
+
+static int dc42_write_cb(void *ctx, const void *data, size_t size) {
+    dc42_stream_t *d = (dc42_stream_t *)ctx;
+    // Blocks are 512 bytes, so every piece is whole words.
+    d->sum = dc42_checksum(d->sum, (const uint8_t *)data, size);
+    d->bytes += size;
+    return fwrite(data, 1, size, d->f) == size ? 0 : -1;
+}
+
+// A DiskCopy 4.2 file: a header, the data section, then one tag per sector.
+// The header goes last, once the data checksum is known; a space is held for
+// it first.
+static int image_export_run_dc42(image_export_t *e, FILE *f) {
+    uint8_t hdr[DISKCOPY_HEADER_SIZE] = {0};
+    if (fwrite(hdr, sizeof hdr, 1, f) != 1)
+        return -EIO;
+    dc42_stream_t d = {.f = f};
+    int rc = storage_export_view_write(e->view, &d, dc42_write_cb);
+    if (rc != GS_SUCCESS)
+        return rc == -ECANCELED ? -ECANCELED : -EIO;
+    if (d.bytes > UINT32_MAX)
+        return -EFBIG;
+    uint32_t sectors = (uint32_t)(d.bytes / STORAGE_BLOCK_SIZE);
+    uint32_t tag_bytes = e->tags ? e->tag_bytes : 0;
+    // One tag per sector; a sector the tag area does not reach gets zeros.
+    uint32_t tag_sum = 0;
+    uint8_t zero[64] = {0};
+    for (uint32_t i = 0; tag_bytes && i < sectors; i++) {
+        const uint8_t *t = (i < e->tag_count && tag_bytes <= sizeof zero) ? e->tags + (size_t)i * tag_bytes : zero;
+        if (i > 0) // the first sector's tag is not summed (as DiskCopy does)
+            tag_sum = dc42_checksum(tag_sum, t, tag_bytes);
+        if (fwrite(t, 1, tag_bytes, f) != tag_bytes)
+            return -EIO;
+    }
+    dc42_build_header(hdr, e->dc42_name, (uint32_t)d.bytes, sectors * tag_bytes, d.sum, tag_sum, e->disk_format,
+                      e->format_byte);
+    if (fseek(f, 0, SEEK_SET) != 0 || fwrite(hdr, sizeof hdr, 1, f) != 1)
+        return -EIO;
+    return 0;
+}
+
 int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     if (!e || !e->view)
         return -EINVAL;
     gs_mkdir_parents(e->dest);
-    if (export_is_udif(e))
+    if (e->format == EXPORT_UDIF)
         return image_export_run_udif(e, err, err_cap);
     FILE *f = fopen(e->dest, "wb");
     if (!f) {
@@ -754,7 +921,8 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
         return -rc;
     }
     char *iobuf = stream_set_large_buffer(f);
-    int rc = storage_export_view_write(e->view, f, file_write_cb);
+    int rc =
+        e->format == EXPORT_DC42 ? image_export_run_dc42(e, f) : storage_export_view_write(e->view, f, file_write_cb);
     bool closed = fclose(f) == 0;
     free(iobuf);
     if (rc != GS_SUCCESS || !closed) {
@@ -777,6 +945,7 @@ void image_export_end(image_export_t *e) {
     storage_export_view_end(e->view);
     free(e->dest);
     free(e->name);
+    free(e->tags);
     free(e);
 }
 
@@ -967,4 +1136,13 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
                 image->filename ? image->filename : "<unknown>", rc);
         }
     }
+    // The sector tags last: they live only in memory (disk_write_tag), so
+    // a restore without them would hand the guest the base file's labels
+    // under the delta's data.
+    uint32_t tag_bytes = image->tags ? image->tag_bytes : 0;
+    uint32_t tag_count = image->tags ? image->tag_count : 0;
+    system_write_checkpoint_data(checkpoint, &tag_bytes, sizeof(tag_bytes));
+    system_write_checkpoint_data(checkpoint, &tag_count, sizeof(tag_count));
+    if (tag_bytes && tag_count)
+        system_write_checkpoint_data(checkpoint, image->tags, (size_t)tag_bytes * tag_count);
 }

@@ -568,6 +568,29 @@ static DEF_METHOD(lisa_fd_drive_eject) {
     return val_none();
 }
 
+// `export(path)` — write the diskette as it is now to a NEW file; the name
+// picks the format (image_export_to).  A .dc42 or .image destination is a
+// self-contained DiskCopy 4.2 file with the 12-byte sector tags, which the
+// Lisa file system needs (they hold the file ids and page links) and which
+// neither the source file nor a raw export carries.  An I/O job, like
+// profile.save: snapshotted here, streamed on the I/O worker.
+static DEF_METHOD(lisa_fd_drive_export) {
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
+    if (!img)
+        return val_err("floppy.drive.0: no disk inserted");
+    return io_leaf_export_image(img, argv[0].s, "floppy.export");
+}
+
+// The source path the inserted diskette was loaded from ("" when empty):
+// the web UI's Save As suggests it, so a .dc42 disk saves as DiskCopy.
+static DEF_GETTER(lisa_fd_drive_filename) {
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    image_t *img = (ls && ls->fdc) ? lisa_fdc_image(ls->fdc) : NULL;
+    const char *name = img ? image_get_filename(img) : NULL;
+    return val_str(name ? name : "");
+}
+
 static DEF_GETTER(lisa_fd_drive_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
@@ -591,6 +614,13 @@ static const arg_decl_t lisa_fd_insert_args[] = {
      .doc = "Mount writable"},
 };
 
+static const arg_decl_t lisa_fd_export_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "New file: .dc42/.image = DiskCopy 4.2 with tags, else raw"},
+};
+
 static const member_t lisa_fd_drive_members[] = {
     {.kind = M_ATTR,
      .name = "index",
@@ -600,6 +630,10 @@ static const member_t lisa_fd_drive_members[] = {
      .name = "present",
      .doc = "True when a disk is clamped in this drive",
      .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}                                           },
+    {.kind = M_ATTR,
+     .name = "filename",
+     .doc = "Source path the inserted diskette was loaded from",
+     .attr = {.type = V_STRING, .get = lisa_fd_drive_filename}                                        },
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
@@ -608,9 +642,17 @@ static const member_t lisa_fd_drive_members[] = {
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
      .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}},
+    {.kind = M_METHOD,
+     .name = "export",
+     .doc = "Save the diskette as it is now to a new image file (Save As)",
+     .method = {.ui_flags = MM_MUTATE | MM_IO,
+                .args = lisa_fd_export_args,
+                .nargs = 1,
+                .result = V_BOOL,
+                .fn = lisa_fd_drive_export}                                                           },
 };
 static const class_desc_t lisa_fd_drive_class = {
-    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 4};
+    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 6};
 
 static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));

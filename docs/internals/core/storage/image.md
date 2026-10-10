@@ -19,6 +19,8 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
 	- `type`: detected category (`image_fd_ds`, `image_hd`, ...).
 	- `from_diskcopy`: marks DiskCopy 4.2 sources so their headers can be skipped.
+	- `tags` / `tag_bytes` / `tag_count`: the per-sector tags, 12 bytes beside each 512-byte GCR sector. The Lisa file system keeps its page labels there (file id, page links) and the Lisa boot ROM checks the boot block's; the Mac file systems write them too. Loaded from a DiskCopy 4.2 source's tag section; a 400K/800K GCR disk from any other source gets a zeroed area, so the guest's tag writes (`disk_write_tag`, from the IWM/SWIM, SWIM3, IOP SWIM and Lisa controllers) are kept rather than dropped. `NULL` for anything else. They live only in memory: a checkpoint carries them and a DiskCopy 4.2 export writes them out.
+	- `dc42_name` / `dc42_format_byte`: how a DiskCopy 4.2 export labels the disk — a DiskCopy source's own header values, or a machine's (`image_set_diskcopy_identity()`: the Lisa's controller sets `-not a Macintosh disk-` and `$02` on insert); else derived at export.
 	- `wrap_prefix` / `wrap_blocks` / `wrap_base` / `wrap_storage_size`: the volume wrapper's synthesised partition map + driver, served in front of an HFS volume when a bare volume or a driverless partitioned disk is attached as a SCSI hard disk ([bare-volume-wrapper.md](bare-volume-wrapper.md)). The volume starts `wrap_base` bytes into `storage` (0 for a bare volume, the `Apple_HFS` partition's start otherwise); `raw_size` is the prefix plus the volume, and `wrap_storage_size` the storage's own size.
 
 **Module lifecycle**
@@ -123,7 +125,12 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).
 
 **Persisting changes / Exporting**
-- **`image_export_to(image_t *image, const char *dest_path)`** streams the disk (base + delta) to a new file: a dense raw copy, or, when `dest_path` ends in `.dmg` (and the disk has 512-byte blocks), a UDIF written by the streaming writer — a modified 2 GB disk exports at its content's size. The base image is never written in place.
+- **`image_export_to(image_t *image, const char *dest_path)`** streams the disk (base + delta) to a new file, in the format the destination's name picks:
+	- `.dmg` (512-byte blocks): a UDIF written by the streaming writer — a modified 2 GB disk exports at its content's size.
+	- `.dc42`, `.diskcopy`, or `.image` for a floppy (the classic Mac name for a DiskCopy file): a self-contained DiskCopy 4.2 file — header, data, then one tag per sector, with the data and tag checksums (the tag sum skips the first sector's tag, as DiskCopy does). The tags are copied when the export begins, with the read side. 400K, 800K, 720K and 1440K floppies only; anything else is refused. The header carries `dc42_name` and `dc42_format_byte` when set, so a DiskCopy disk exported unchanged comes back byte for byte; otherwise the source file's name and the Mac format byte (`$12` for 400K, `$22` otherwise).
+	- anything else: a dense raw copy (no tags).
+
+  It refuses to overwrite and never writes the base image in place. Every device's Save As goes through it: `machine.scsi.device[N].image.export`, `machine.floppy.drive[N].disk.export` (IWM/SWIM/SWIM3/New Age), the Lisa's `machine.floppy.drive[0].export` and `machine.hd.save`, the ATA `export`, and `files.export_raw` (which exports a file's source, not a mounted disk).
 
 **Creating blank hard disks**
 - **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 4 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
@@ -132,7 +139,7 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.
 
 **Checkpointing & metadata**
-- **`image_checkpoint()`** writes `{uint32 len, path bytes, writable flag, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}` and then calls `storage_checkpoint()`. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
+- **`image_checkpoint()`** writes `{uint32 len, path bytes, writable flag, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}`, calls `storage_checkpoint()`, and ends with the sector tags `{uint32 tag_bytes, uint32 tag_count, tags}` — they are not in the delta, so without them a restored disk would pair the delta's data with the base file's labels. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
 - During restore the machine init code reads back the same fields and chooses an opener based on `(writable, kind)`:
 	- writable + quick → `image_open(base, instance_path)` reopens the same delta files.
 	- writable + consolidated → `image_create(base, checkpoint_machine_dir())` mints a fresh instance; the embedded blocks then repopulate it via `storage_restore_from_checkpoint()`.

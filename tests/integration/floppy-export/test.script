@@ -1,0 +1,27 @@
+# Integration test: machine.floppy.drive[N].disk.export on a Plus.
+# fd0 holds a raw 800K System 6.0.8 disk.  A raw export reproduces it; a
+# DiskCopy 4.2 export adds the header and one 12-byte tag per sector:
+# 84 + 1600 x 512 + 1600 x 12 = 838484 bytes.  The runner cd's into this
+# directory, so WORK_DIR is absolute.
+
+scheduler.run 50000
+assert machine.floppy.drive[0].disk.present "disk not inserted"
+
+assert machine.floppy.drive[0].disk.export("${$WORK_DIR}/disk.img") "raw export returned false"
+assert files.path_compare("../../data/systems/System_6_0_8.dsk", "${$WORK_DIR}/disk.img") == -1 "raw export differs from the source"
+
+assert machine.floppy.drive[0].disk.export("${$WORK_DIR}/disk.dc42") "DiskCopy export returned false"
+assert files.path_size("${$WORK_DIR}/disk.dc42") == 838484 "DiskCopy export has the wrong size"
+
+# .image is the classic Mac name for a DiskCopy file.
+assert machine.floppy.drive[0].disk.export("${$WORK_DIR}/disk.image") "DiskCopy (.image) export returned false"
+assert files.path_compare("${$WORK_DIR}/disk.dc42", "${$WORK_DIR}/disk.image") == -1 ".image and .dc42 exports differ"
+
+# Never overwrites.
+assert try(machine.floppy.drive[0].disk.export("${$WORK_DIR}/disk.dc42"), false) == false "export overwrote an existing file"
+
+# The DiskCopy export mounts back as the same 800K disk.
+machine.floppy.drive[0].eject
+machine.floppy.drive[0].insert "${$WORK_DIR}/disk.dc42"
+assert machine.floppy.drive[0].disk.density == "800k" "DiskCopy export did not mount as 800K"
+quit

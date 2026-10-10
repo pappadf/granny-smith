@@ -115,6 +115,33 @@ void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *s
 // header is `hdr`, in a file of `file_size` bytes.  True when it is one.
 bool dc42_parse_header(const uint8_t *hdr, size_t len, uint64_t file_size, uint32_t *data_size, uint32_t *tag_size);
 
+// Header fields past the two section sizes: the two checksums, the disk
+// format (0 = 400K GCR, 1 = 800K GCR, 2 = 720K MFM, 3 = 1440K MFM), the
+// format byte ($12 Mac 400K, $22 Mac 800K and MFM, $02 Lisa 400K) and the
+// $0100 "private" word the parser takes as the signature.
+#define DC42_NAME_FIELD      64 // the name: a Pascal string padded to 64 bytes
+#define DC42_NAME_MAX        63
+#define DC42_OFF_DATA_SUM    0x48
+#define DC42_OFF_TAG_SUM     0x4C
+#define DC42_OFF_DISK_FORMAT 0x50
+#define DC42_OFF_FORMAT_BYTE 0x51
+
+// Fold `n` bytes (even) of big-endian words into a running DiskCopy 4.2
+// checksum: add each word, rotate right by one.  Start from 0; the data
+// sum covers the whole data section, the tag sum every tag but the first
+// sector's (DiskCopy skips it, so a tool that recomputes it does too).
+uint32_t dc42_checksum(uint32_t sum, const uint8_t *p, size_t n);
+
+// Make the 64-byte name field from a C string: a Pascal string of at most
+// DC42_NAME_MAX bytes (longer is cut), zero-padded.
+void dc42_name_field(uint8_t field[DC42_NAME_FIELD], const char *name);
+
+// Fill a DiskCopy 4.2 header.  `name_field` goes in as it is, padding and
+// all, so a disk keeps the exact field its source file had.
+void dc42_build_header(uint8_t hdr[DISKCOPY_HEADER_SIZE], const uint8_t name_field[DC42_NAME_FIELD], uint32_t data_size,
+                       uint32_t tag_size, uint32_t data_sum, uint32_t tag_sum, uint8_t disk_format,
+                       uint8_t format_byte);
+
 // === LisaEm ProFile images ===================================================
 //
 // Compatibility with LisaEm: this format exists only so that the Lisa hard

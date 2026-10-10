@@ -75,12 +75,23 @@ struct image {
     uint64_t reads;
     uint64_t writes;
 
-    // DiskCopy 4.2 per-sector tags (read-only metadata).  The Lisa boot ROM and
-    // OS read these (e.g. the boot block's FILEID = $AAAA); loaded from the
-    // file's tag section at open time.  NULL when the image has no tags.
+    // Per-sector tags: the 12 bytes a GCR sector carries beside its 512 data
+    // bytes.  The Lisa file system keeps its page labels (file id, page
+    // links) there and the Lisa boot ROM checks the boot block's FILEID =
+    // $AAAA; the Mac file systems write them too.  Loaded from a DiskCopy
+    // 4.2 file's tag section, else zero for a 400K/800K GCR disk; NULL for
+    // anything else.  Guest writes land here, travel in checkpoints
+    // (image_checkpoint) and leave in a DiskCopy 4.2 export -- the base
+    // file is never touched.
     uint8_t *tags; // tag_count * tag_bytes bytes, or NULL
     uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
     uint32_t tag_count; // number of tagged sectors
+
+    // How a DiskCopy 4.2 export names and labels the disk: the source
+    // header's own values for a DiskCopy image, a machine's for one it
+    // knows (image_set_diskcopy_identity), else derived at export.
+    uint8_t dc42_name[64]; // the header's name field (Pascal string, padded); length 0 = none
+    uint8_t dc42_format_byte; // format byte, or 0 to derive from the size
 
     // Volume wrapper (image_wrap.h): a synthesised partition-map + driver
     // prefix served in front of an HFS volume.  wrap_blocks blocks of
@@ -174,7 +185,7 @@ bool image_key_is_open_writable(const char *key);
 #define IMAGE_CKPT_WRITABLE 0x01
 #define IMAGE_CKPT_WRAPPED  0x02 // re-wrap on restore (image_wrap.h)
 
-// Write image metadata to checkpoint
+// Write image metadata to checkpoint (ends with the sector tags)
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
 // === Operations ===
@@ -188,6 +199,12 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 // boot-block header the ROM validates (FILEID = $AAAA).
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
+
+// Label the disk for a DiskCopy 4.2 export: the name and format byte its
+// header gets.  A machine whose disks differ from the Mac's defaults (the
+// Lisa: "-not a Macintosh disk-", $02) sets them on insert; a DiskCopy
+// source already carries its own, which this leaves alone.
+void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t format_byte);
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 
@@ -243,7 +260,10 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
 int image_create_blank_profile(const char *filename, uint32_t block_count);
 
 // Export the full disk content (base + delta) of an open image to a new file.
-// Returns 0 on success, -1 on failure.
+// The destination's name picks the format: .dmg is UDIF; .dc42 and
+// .diskcopy are DiskCopy 4.2 with the sector tags (floppies only), as is
+// .image for a floppy -- the classic Mac name for a DiskCopy file; any
+// other name is the flat raw image.  Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);
 
 // The same export in three steps, so the write can run off the emulator
