@@ -12,6 +12,7 @@
 
 #include "cpu_internal.h"
 #include "fpu.h"
+#include "gs_assert.h"
 #include "mmu.h"
 
 #include "log.h"
@@ -606,7 +607,11 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
          * Plain bus timeouts (unmapped physical in NuBus-probe range) use                                             \
          * Format $A (skip) so ROM probes advance past the bad access.                                                 \
          * g_bus_error_is_pmmu is set by mmu_handle_fault based on which                                               \
-         * code path produced the false return. */                                                                     \
+         * code path produced the false return.  That ran on the memory                                                \
+         * layer's g_mmu, while this reads cpu->mmu: boards set the two                                                \
+         * together (memory_map_set_pmmu + cpu_attach_mmu), and the assert                                             \
+         * holds them to it. */                                                                                        \
+        GS_ASSERT(cpu->mmu == (void *)g_mmu);                                                                          \
         if (cpu->mmu && ((mmu_state_t *)cpu->mmu)->enabled && g_bus_error_is_pmmu)                                     \
             exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
         else                                                                                                           \

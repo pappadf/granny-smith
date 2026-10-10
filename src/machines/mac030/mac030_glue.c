@@ -81,6 +81,8 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
         LOG(0, "Error: out of memory constructing the PMMU");
         return NULL; // mac030_build_mmu returns the MMU, not a status
     }
+    // Set both, always together: the fault hook runs on the map's PMMU and
+    // the 68030 bus-error path reads cpu->mmu (asserted equal there).
     memory_map_set_pmmu(cfg->memory_map, mmu);
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
@@ -237,6 +239,8 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
     if (cp) {
         mmu_invalidate_tlb(st->mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
         memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
