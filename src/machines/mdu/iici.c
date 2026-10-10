@@ -27,11 +27,12 @@
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "iici_internal.h"
@@ -121,8 +122,8 @@ static void iici_memory_layout_init(config_t *cfg) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
 
     // Two physical RAM banks, each a socket group of four 30-pin SIMMs:
     // Bank A at physical 0, Bank B at $04000000.  Each bank mirrors its
@@ -135,27 +136,28 @@ static void iici_memory_layout_init(config_t *cfg) {
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
     uint8_t *bank_b = ram_base + bank_a_size;
-    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_size >> PAGE_SHIFT, mac030_fill_page, true);
-    mac030_map_mirrored(IICI_BANK_B_PHYS >> PAGE_SHIFT, IICI_BANK_WINDOW >> PAGE_SHIFT, bank_b,
-                        bank_b_size >> PAGE_SHIFT, mac030_fill_page, true);
+    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_size >> MEM_PAGE_SHIFT,
+                        mac030_fill_page, true);
+    mac030_map_mirrored(IICI_BANK_B_PHYS >> MEM_PAGE_SHIFT, IICI_BANK_WINDOW >> MEM_PAGE_SHIFT, bank_b,
+                        bank_b_size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
     // — but ram_a_size must still be set so window mirroring resolves).
     mmu_set_ram_bank_b(st->mmu, bank_a_size, bank_b, IICI_BANK_B_PHYS, bank_b_size, IICI_BANK_WINDOW);
 
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IICI_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = IICI_ROM_END >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = IICI_ROM_START >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = IICI_ROM_END >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->memory_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // Wire any registered host regions (a socketed card's VRAM) and their
     // Mode-24 slot aliases into the page table — same machinery as the IIcx
@@ -310,7 +312,6 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
-    setup_images(cfg);
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
@@ -318,7 +319,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
@@ -376,7 +377,9 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
     }
     machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);

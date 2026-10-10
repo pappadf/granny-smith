@@ -45,32 +45,32 @@ static value_t nt_raw(struct object *self, const member_t *m, int argc, const va
     return val_int(argc);
 }
 
-static const value_t k_seven = {.kind = V_INT, .i = 7};
-static const value_t k_nine = {.kind = V_INT, .i = 9};
+static const value_t k_seven = {.kind = VK_INT, .i = 7};
+static const value_t k_nine = {.kind = VK_INT, .i = 9};
 
 static const arg_decl_t trip_args[] = {
-    {.name = "a", .kind = V_INT, .doc = "a"},
-    {.name = "b", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &k_seven, .doc = "b"},
-    {.name = "c", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &k_nine, .doc = "c"},
+    {.name = "a", .kind = VK_INT, .doc = "a"},
+    {.name = "b", .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &k_seven, .doc = "b"},
+    {.name = "c", .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &k_nine, .doc = "c"},
 };
 static const arg_decl_t sum_args[] = {
-    {.name = "first", .kind = V_INT, .doc = "first"},
-    {.name = "rest", .kind = V_INT, .validation_flags = OBJ_ARG_REST, .doc = "rest"},
+    {.name = "first", .kind = VK_INT, .doc = "first"},
+    {.name = "rest", .kind = VK_INT, .validation_flags = OBJ_ARG_REST, .doc = "rest"},
 };
 
 static const member_t nt_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "trip",
      .doc = "three named args",
-     .method = {.args = trip_args, .nargs = 3, .result = V_INT, .fn = nt_trip}},
-    {.kind = M_METHOD,
+     .method = {.args = trip_args, .nargs = 3, .result = VK_INT, .fn = nt_trip}},
+    {.kind = MK_METHOD,
      .name = "sum",
      .doc = "two named args",
-     .method = {.args = sum_args, .nargs = 2, .result = V_INT, .fn = nt_sum}  },
-    {.kind = M_METHOD,
+     .method = {.args = sum_args, .nargs = 2, .result = VK_INT, .fn = nt_sum}  },
+    {.kind = MK_METHOD,
      .name = "raw",
      .doc = "no declared args",
-     .method = {.args = NULL, .nargs = 0, .result = V_INT, .fn = nt_raw}      },
+     .method = {.args = NULL, .nargs = 0, .result = VK_INT, .fn = nt_raw}      },
 };
 
 static const class_desc_t nt_class = {
@@ -112,7 +112,7 @@ TEST(test_named_only_fills_slots) {
         {.name = "c", .value = val_int(2)}
     };
     value_t r = bind_call("nt.trip", 0, NULL, 2, named);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(172, (int)r.i); // a=1, b default 7, c=2
     value_free(&r);
     object_root_reset();
@@ -125,7 +125,7 @@ TEST(test_positional_then_named) {
         {.name = "c", .value = val_int(3)}
     };
     value_t r = bind_call("nt.trip", 1, pos, 1, named);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(473, (int)r.i); // interior hole b filled from default
     value_free(&r);
     object_root_reset();
@@ -200,7 +200,7 @@ TEST(test_rest_method_fixed_slot_by_name) {
         {.name = "first", .value = val_int(5)}
     };
     value_t r = bind_call("nt.sum", 0, NULL, 1, named);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(5, (int)r.i);
     value_free(&r);
     object_root_reset();
@@ -210,7 +210,7 @@ TEST(test_rest_tail_stays_positional) {
     install_nt();
     value_t pos[3] = {val_int(1), val_int(2), val_int(3)};
     value_t r = bind_call("nt.sum", 3, pos, 0, NULL);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(6, (int)r.i);
     value_free(&r);
     object_root_reset();
@@ -232,7 +232,7 @@ TEST(test_no_arg_table_positional_passthrough) {
     install_nt();
     value_t pos[2] = {val_int(1), val_int(2)};
     value_t r = bind_call("nt.raw", 2, pos, 0, NULL);
-    ASSERT_EQ_INT(V_INT, r.kind);
+    ASSERT_EQ_INT(VK_INT, r.kind);
     ASSERT_EQ_INT(2, (int)r.i);
     value_free(&r);
     object_root_reset();
@@ -243,7 +243,7 @@ TEST(test_no_arg_table_positional_passthrough) {
 TEST(test_call_form_named) {
     install_nt();
     value_t v = eval_with_root("nt.trip(a=1, c=2)");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(172, (int)v.i);
     value_free(&v);
     object_root_reset();
@@ -252,7 +252,7 @@ TEST(test_call_form_named) {
 TEST(test_call_form_named_reordered) {
     install_nt();
     value_t v = eval_with_root("nt.trip(b=1, a=2)");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(219, (int)v.i); // a=2, b=1, c default 9
     value_free(&v);
     object_root_reset();
@@ -261,7 +261,7 @@ TEST(test_call_form_named_reordered) {
 TEST(test_call_form_mixed) {
     install_nt();
     value_t v = eval_with_root("nt.trip(4, c=3)");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(473, (int)v.i);
     value_free(&v);
     object_root_reset();
@@ -270,7 +270,7 @@ TEST(test_call_form_mixed) {
 TEST(test_call_form_value_is_expression) {
     install_nt();
     value_t v = eval_with_root("nt.trip(1, c=1+1)");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(172, (int)v.i);
     value_free(&v);
     object_root_reset();
@@ -288,7 +288,7 @@ TEST(test_call_form_equality_still_parses) {
     install_nt();
     // `==` inside call args must not be taken for a named argument.
     value_t v = eval_with_root("nt.trip(1, 2, 3) == 123");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
     object_root_reset();
@@ -302,6 +302,27 @@ TEST(test_call_form_unknown_name_errors) {
     object_root_reset();
 }
 
+// A rest tail longer than the validator's scratch capacity is refused,
+// not written past node_call's stack array.
+TEST(test_rest_tail_over_cap_errors) {
+    install_nt();
+    node_t n = object_resolve(object_root(), "nt.sum");
+    ASSERT_TRUE(node_valid(n));
+    value_t argv[OBJ_VALIDATE_MAX_ARGS + 4];
+    for (int i = 0; i < OBJ_VALIDATE_MAX_ARGS + 4; i++)
+        argv[i] = val_int(1);
+    value_t r = node_call(n, OBJ_VALIDATE_MAX_ARGS + 4, argv);
+    ASSERT_TRUE(val_is_error(&r));
+    ASSERT_TRUE(strstr(r.err, "too many arguments") != NULL);
+    value_free(&r);
+    // Exactly at the cap still works.
+    r = node_call(n, OBJ_VALIDATE_MAX_ARGS, argv);
+    ASSERT_EQ_INT(VK_INT, r.kind);
+    ASSERT_EQ_INT(OBJ_VALIDATE_MAX_ARGS, (int)r.i);
+    value_free(&r);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_named_only_fills_slots);
     RUN(test_positional_then_named);
@@ -312,6 +333,7 @@ int main(void) {
     RUN(test_rest_slot_not_nameable);
     RUN(test_rest_method_fixed_slot_by_name);
     RUN(test_rest_tail_stays_positional);
+    RUN(test_rest_tail_over_cap_errors);
     RUN(test_no_arg_table_rejects_named);
     RUN(test_no_arg_table_positional_passthrough);
     RUN(test_call_form_named);

@@ -27,6 +27,11 @@
 // The pre-existing sub-230 MB entries keep revision "1.0" - the value the
 // attach path hard-coded before this field existed - so their INQUIRY response
 // is unchanged.
+//
+// Apple sold the HD20SC with two mechanisms, so two entries carry that
+// label.  A label lookup (drive_catalog_parse_size("HD20SC")) resolves to the
+// first, the Miniscribe; the Seagate is reached by its size, which is how
+// drive_catalog_find_closest picks a model for an existing image.
 static const struct drive_model catalog[] = {
     {"HD20SC",   "MINISCRB", "8425S",            "1.0",  21307392  },
     {"HD20SC",   " SEAGATE", "ST225N",           "1.0",  21411840  },

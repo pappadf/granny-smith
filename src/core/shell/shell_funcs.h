@@ -35,7 +35,7 @@ void shell_func_release(script_func_t *f);
 
 // Call: bind positional + named arguments to the declared parameters,
 // push a scope (16-frame recursion cap), run the body, pop, and return
-// the function's value (V_NONE when the body falls off the end).
+// the function's value (VK_NONE when the body falls off the end).
 value_t shell_func_call(script_func_t *f, int argc, const value_t *argv, int named_n, const named_arg_t *named);
 
 // Remove a function by name. Returns 0, -1 if absent.

@@ -4,11 +4,12 @@
 // archive.c
 // Mac archive file handling: files.archive.identify and files.archive.extract.
 // Archives are namespaces of the VFS (namespace.h), so identify is a bounded
-// probe of the file and extract is a copy of its tree; the in-tree peeler
-// library does the format work, and its name does not leak to users.
+// probe of the file and extract is a copy of its tree.  The in-tree peeler
+// library does the format work; the user-facing concept is a Mac archive,
+// so the object surface is `files.archive` and no message names peeler.
 
 #include "archive.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "io_leaf.h"
 #include "io/io_worker.h"
@@ -43,7 +44,7 @@ const char *archive_identify_file(const char *path) {
     // Through the VFS, so an archive inside an image or another archive is
     // identified too; detection reads a bounded probe, never the whole file.
     int err = 0;
-    gs_source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
+    source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
     if (!src)
         return NULL;
     peel_probe_t p;
@@ -53,7 +54,7 @@ const char *archive_identify_file(const char *path) {
         format = d ? d->name : NULL;
         peel_probe_free(&p);
     }
-    gs_source_release(src);
+    source_release(src);
     return format;
 }
 
@@ -61,7 +62,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
     if (!path)
         return -1;
     const char *dir = (out_dir && *out_dir) ? out_dir : ".";
-    if (gs_mkdir_p(dir) != 0) {
+    if (mkdir_p(dir) != 0) {
         fprintf(stderr, "archive: cannot create output directory '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -83,7 +84,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
         fprintf(stderr, "archive: no files extracted from '%s'\n", path);
         return -1;
     }
-    gs_outf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
+    out_printf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
     return 0;
 }
 
@@ -273,13 +274,13 @@ static int work_archive_import(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
         return -EEXIST;
     }
-    gs_source_t *src = vfs_open_source(j->a, GS_FORK_DATA, &e);
+    source_t *src = vfs_open_source(j->a, GS_FORK_DATA, &e);
     if (!src) {
         snprintf(j->err, sizeof j->err, "cannot open '%s'", j->a);
         return -ENOENT;
     }
     peel_source_t *arc = innermost_archive(src, j->err, sizeof j->err);
-    gs_source_release(src);
+    source_release(src);
     if (!arc)
         return -EINVAL;
 
@@ -330,7 +331,7 @@ static int work_archive_import(io_leaf_t *j) {
     import_sink_t *k = calloc(1, sizeof(*k));
     const char *base = strrchr(u->member, '/');
     udif_writer_opts_t o = {.level = 1, .source_name = base ? base + 1 : u->member, .origin = u->origin};
-    gs_mkdir_parents(j->b);
+    mkdir_parents(j->b);
     if (k)
         k->w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
     if (!k || !k->w) {
@@ -435,7 +436,7 @@ static DEF_METHOD(archive_method_extract) {
 // at `dst`, without extracting anything.  Answers {member, bytes_in,
 // stored_bytes, sectors}.
 static DEF_METHOD(archive_method_import) {
-    const char *member = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
+    const char *member = (argc >= 3 && argv[2].kind == VK_STRING && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
     io_leaf_t *j = io_leaf_new(argv[0].s, argv[1].s);
     import_job_t *u = calloc(1, sizeof *u);
     if (!j || !u) {
@@ -445,7 +446,7 @@ static DEF_METHOD(archive_method_import) {
         return val_err("files.archive.import: out of memory");
     }
     u->want = member ? strdup(member) : NULL;
-    if (argc >= 4 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+    if (argc >= 4 && argv[3].kind == VK_STRING && argv[3].s && *argv[3].s)
         u->origin = strdup(argv[3].s);
     j->ud = u;
     j->work = work_archive_import;
@@ -458,12 +459,12 @@ static const arg_decl_t archive_import_args[] = {
     ARG_PATH("path", "Archive file path"),
     ARG_PATH("dst", "The UDIF (.dmg) to write (must not exist)"),
     {.name = "member",
-                                                          .kind = V_STRING,
+                                                          .kind = VK_STRING,
                                                           .validation_flags = OBJ_ARG_OPTIONAL,
                                                           .doc = "The member to take (exact, case-blind, or by its last name component)",
                                                           .default_doc = "the largest file"},
     {.name = "origin",
-                                                          .kind = V_STRING,
+                                                          .kind = VK_STRING,
                                                           .validation_flags = OBJ_ARG_OPTIONAL,
                                                           .doc = "Where the archive came from (e.g. a URL), recorded in the image as is",
                                                           .default_doc = "none"            },
@@ -476,15 +477,15 @@ static const arg_decl_t archive_path_arg[] = {
 static const arg_decl_t archive_extract_args[] = {
     ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
-                                   .kind = V_STRING,
-                                   .presentation_flags = VAL_PATH,
+                                   .kind = VK_STRING,
+                                   .presentation_flags = VFLAG_PATH,
                                    .validation_flags = OBJ_ARG_OPTIONAL,
                                    .doc = "Output directory",
                                    .default_doc = "the current directory"},
 };
 
 static const member_t archive_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "identify",
      .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
      .doc = "Identify a Mac archive's format",
@@ -492,16 +493,19 @@ static const member_t archive_members[] = {
                     "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
                 .args = archive_path_arg,
                 .nargs = 1,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = archive_method_identify}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "extract",
      .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
      "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\""),
      .doc = "Extract a Mac archive into out_dir",
-     .method =
-         {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
-    {.kind = M_METHOD,
+     .method = {.ui_flags = MM_IO,
+                .args = archive_extract_args,
+                .nargs = 2,
+                .result = VK_BOOL,
+                .fn = archive_method_extract}},
+    {.kind = MK_METHOD,
      .name = "import",
      .examples =
          EXAMPLES("files.archive.import \"/opfs/upload/disk.sit\" \"/opfs/upload/disk.dmg.part\"",
@@ -511,7 +515,7 @@ static const member_t archive_members[] = {
                 .ui_flags = MM_IO,
                 .args = archive_import_args,
                 .nargs = 4,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = archive_method_import}},
 };
 

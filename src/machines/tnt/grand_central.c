@@ -27,6 +27,7 @@
 
 #include "tnt.h"
 
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "irq_controller.h"
 #include "log.h"
@@ -355,7 +356,7 @@ static const irq_controller_ops_t gc_irq_ops = {
         (void)m;                                                                                                       \
         const tnt_gc_t *gc = gc_obj(object_data(self));                                                                \
         value_t v = val_uint(4, (EXPR));                                                                               \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -369,27 +370,29 @@ static DEF_GETTER(gc_attr_clear_mode) {
 }
 
 static const member_t gc_members[] = {
-    IRQ_CONTROLLER_MEMBERS(&gc_irq_ops){
-                                        .kind = M_ATTR,
+    IRQ_CONTROLLER_MEMBERS(&gc_irq_ops){.kind = MK_ATTR,
                                         .name = "events",
                                         .doc = "Edge-latched source rising edges (write-1-to-clear in mode 0)",
-                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_events, .set = NULL}},
-    {.kind = M_ATTR,
+                                        .attr = {.type = VK_UINT,
+                                                 .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE,
+                                                 .get = gc_attr_events,
+                                                 .set = NULL}                                                                                          },
+    {.kind = MK_ATTR,
                                         .name = "source_levels",
                                         .doc = "Live source picture, never latched",
-                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_levels, .set = NULL}},
-    {.kind = M_ATTR,
+                                        .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = gc_attr_levels, .set = NULL}},
+    {.kind = MK_ATTR,
                                         .name = "mask",
                                         .doc = "Per-source enables",
-                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_mask, .set = NULL}                 },
-    {.kind = M_ATTR,
+                                        .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = gc_attr_mask, .set = NULL}                   },
+    {.kind = MK_ATTR,
                                         .name = "latch",
                                         .doc = "Mode-1 per-source output latch",
-                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_latch, .set = NULL} },
-    {.kind = M_ATTR,
+                                        .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = gc_attr_latch, .set = NULL} },
+    {.kind = MK_ATTR,
                                         .name = "clear_mode",
                                         .doc = "0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
-                                        .attr = {.type = V_UINT, .get = gc_attr_clear_mode, .set = NULL}                                          },
+                                        .attr = {.type = VK_UINT, .get = gc_attr_clear_mode, .set = NULL}                                              },
 };
 
 static const class_desc_t gc_class = {
@@ -429,8 +432,8 @@ static DEF_METHOD(nvram_method_poke) {
         return val_err("nvram not available");
     uint64_t addr = argv[0].u;
     const value_t *bytes = &argv[1];
-    if (bytes->kind != V_BYTES || !bytes->bytes.p)
-        return val_err("nvram.poke: bytes argument must be V_BYTES (use the :N width suffix, e.g. 0x80:1)");
+    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
+        return val_err("nvram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0x80:1)");
     size_t n = bytes->bytes.n;
     if (n == 0)
         return val_err("nvram.poke: bytes argument is empty");
@@ -467,9 +470,9 @@ static DEF_METHOD(nvram_method_restore) {
     if (!nv)
         return val_err("nvram not available");
     const value_t *bytes = &argv[0];
-    if (bytes->kind != V_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
-        return val_err("nvram.restore: expected V_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
-                       bytes->kind == V_BYTES ? bytes->bytes.n : 0);
+    if (bytes->kind != VK_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
+        return val_err("nvram.restore: expected VK_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
+                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
     memcpy(nv, bytes->bytes.p, TNT_NVRAM_SIZE);
     return val_none();
 }
@@ -488,11 +491,11 @@ static DEF_METHOD(nvram_method_clear) {
 // written into the store the way the firmware or Mac OS itself writes it.
 
 static const arg_decl_t nvram_getenv_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
+    {.name = "name", .kind = VK_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
 };
 static const arg_decl_t nvram_setenv_args[] = {
-    {.name = "name",  .kind = V_STRING, .doc = "Open Firmware variable"                 },
-    {.name = "value", .kind = V_STRING, .doc = "true/false, a hex number, or the string"},
+    {.name = "name",  .kind = VK_STRING, .doc = "Open Firmware variable"                 },
+    {.name = "value", .kind = VK_STRING, .doc = "true/false, a hex number, or the string"},
 };
 
 // getenv(name): the variable as printenv shows it.
@@ -612,65 +615,65 @@ static DEF_GETTER(nvram_attr_size) {
 }
 
 static const arg_decl_t nvram_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
 };
 static const arg_decl_t nvram_poke_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
-    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
 };
 static const arg_decl_t nvram_dump_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
-    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "n", .kind = VK_UINT, .doc = "byte count"},
 };
 static const arg_decl_t nvram_restore_args[] = {
-    {.name = "bytes", .kind = V_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
 };
 
 static const member_t nvram_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Store size in bytes (256 banks of 32)",
-     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}                                   },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = nvram_attr_size, .set = NULL}                                   },
+    {.kind = MK_METHOD,
      .name = "peek",
      .doc = "Read one byte at a flat offset (the Mac OS XPRAM image is at $1300 + PRAM address)",
-     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}      },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = VK_UINT, .fn = nvram_method_peek}      },
+    {.kind = MK_METHOD,
      .name = "poke",
      .doc = "Write 1..N bytes at a flat offset",
-     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}      },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = VK_NONE, .fn = nvram_method_poke}      },
+    {.kind = MK_METHOD,
      .name = "dump",
      .doc = "Read N bytes starting at a flat offset",
-     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}     },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = VK_BYTES, .fn = nvram_method_dump}     },
+    {.kind = MK_METHOD,
      .name = "snapshot",
      .doc = "Read the whole 8 KB store",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}            },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BYTES, .fn = nvram_method_snapshot}            },
+    {.kind = MK_METHOD,
      .name = "restore",
      .doc = "Write the whole store from a snapshot",
-     .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
-    {.kind = M_METHOD,
+     .method = {.args = nvram_restore_args, .nargs = 1, .result = VK_NONE, .fn = nvram_method_restore}},
+    {.kind = MK_METHOD,
      .name = "clear",
      .doc = "Pull the battery: back to the store a new board carries (blank on the Network Server)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = nvram_method_clear}                },
+    {.kind = MK_METHOD,
      .name = "getenv",
      .doc = "Read an Open Firmware variable, as printenv shows it",
-     .method = {.args = nvram_getenv_args, .nargs = 1, .result = V_STRING, .fn = nvram_method_getenv}},
-    {.kind = M_METHOD,
+     .method = {.args = nvram_getenv_args, .nargs = 1, .result = VK_STRING, .fn = nvram_method_getenv}},
+    {.kind = MK_METHOD,
      .name = "setenv",
      .doc = "Set an Open Firmware variable, as setenv does (repacks, re-checksums)",
-     .method = {.args = nvram_setenv_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_setenv}  },
-    {.kind = M_ATTR,
+     .method = {.args = nvram_setenv_args, .nargs = 2, .result = VK_NONE, .fn = nvram_method_setenv}  },
+    {.kind = MK_ATTR,
      .name = "startup_disk",
      .doc = "Mac OS's default startup device as a SCSI ID (XPRAM $78-$7B); -1 = none",
-     .attr = {.type = V_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
+    {.kind = MK_ATTR,
      .name = "depth",
      .doc = "Built-in video's saved depth in bpp (8/16/32; 0 = not saved yet), read at boot",
-     .attr = {.type = V_UINT, .get = nvram_attr_depth, .set = nvram_attr_depth_set}                  },
+     .attr = {.type = VK_UINT, .get = nvram_attr_depth, .set = nvram_attr_depth_set}                  },
 };
 
 static const class_desc_t nvram_class = {

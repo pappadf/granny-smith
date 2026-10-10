@@ -12,10 +12,11 @@
 #include "machine_teardown.h"
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -310,7 +311,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
@@ -421,7 +422,7 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     uint32_t rom_size = cfg->machine->rom_size;
     if (rom_size == 0)
         return;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     if (!st->fmc_inverted_rom) {
         st->fmc_inverted_rom = malloc(rom_size);
         if (!st->fmc_inverted_rom) {
@@ -442,10 +443,10 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     }
     uint8_t *src = enable ? st->fmc_inverted_rom : rom_data;
     // Pages $40008000-$4000FFFF (8 pages × 4 KB = 32 KB) get repointed.
-    uint32_t start_page = 0x40008000u >> PAGE_SHIFT;
-    uint32_t end_page = 0x40010000u >> PAGE_SHIFT;
+    uint32_t start_page = 0x40008000u >> MEM_PAGE_SHIFT;
+    uint32_t end_page = 0x40010000u >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page; p++) {
-        uint32_t guest = p << PAGE_SHIFT;
+        uint32_t guest = p << MEM_PAGE_SHIFT;
         uint8_t *host_ptr = src + ((guest - 0x40000000u) % rom_size);
         iifx_fill_page(p, host_ptr, false);
     }
@@ -479,17 +480,17 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     st->rom_overlay = overlay;
 
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, cfg->ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     // Dropping the overlay restores the same wrapped RAM mapping
     // iifx_memory_layout_init installs (identical to a linear one while
     // rom_size ≤ ram_size, but keep the two expressions in lock-step).
-    uint32_t ram_pages = cfg->ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = cfg->ram_size >> MEM_PAGE_SHIFT;
 
     for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
-        uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + ((p % ram_pages) << PAGE_SHIFT);
+        uint8_t *host_ptr = overlay ? rom_data + (p << MEM_PAGE_SHIFT) : ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT);
         iifx_fill_page(p, host_ptr, !overlay);
     }
 
@@ -505,13 +506,13 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     // costing ~3.6x whole-machine throughput vs the IIcx.  RESET re-arms the
     // trap.  The FMC ROM-invert POST window ($40008000-$4000FFFF) re-points
     // its 8 pages after this via the same iifx_fill_page path.
-    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> PAGE_SHIFT);
-    uint32_t wend = (uint32_t)(IIFX_ROM_END >> PAGE_SHIFT);
+    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> MEM_PAGE_SHIFT);
+    uint32_t wend = (uint32_t)(IIFX_ROM_END >> MEM_PAGE_SHIFT);
     for (uint32_t p = wstart; p < wend && p < g_page_count; p++) {
         if (overlay) {
             iifx_arm_rom_trap_page(st, cfg, p);
         } else {
-            uint32_t guest = p << PAGE_SHIFT;
+            uint32_t guest = p << MEM_PAGE_SHIFT;
             iifx_fill_page(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
         }
     }
@@ -523,8 +524,8 @@ static uint8_t iifx_rom_byte(void *ctx, uint32_t addr, bool peek) {
     config_t *cfg = (config_t *)ctx;
     if (!peek)
         iifx_set_rom_overlay(cfg, false);
-    const uint8_t *rom = memory_rom_bytes(cfg->mem_map);
-    uint32_t rom_size = memory_rom_size(cfg->mem_map);
+    const uint8_t *rom = memory_rom_bytes(cfg->memory_map);
+    uint32_t rom_size = memory_rom_size(cfg->memory_map);
     if (!rom || rom_size == 0)
         return 0xff;
     return rom[addr % rom_size];
@@ -879,8 +880,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // visible in the object model -- none of which an env var offered.  Unlike
     // the other env-var overrides this replaced, this one only ever produced
     // output and never changed emulated behaviour.
-    if (log_would_log(_log_get_local_category(), 9)) {
-        extern uint64_t cpu_instr_count(void);
+    if (log_would_log(log_local_category(), 9)) {
         unsigned long long ic = (unsigned long long)cpu_instr_count();
         if (off == 0x020 || off == 0x050 || off == 0x070) {
             LOG(9, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x", ic, off, value, cpu_get_pc(cfg->cpu),
@@ -1274,7 +1274,7 @@ static uint32_t iifx_io_read_uint32(void *ctx, uint32_t addr) {
 static void iifx_oss_irq_changed(void *context) {
     config_t *cfg = (config_t *)context;
     iifx_state_t *st = iifx_state(cfg);
-    cfg->irq = oss_pending(st->oss);
+    cfg->rt.irq = oss_pending(st->oss);
     cpu_set_ipl(cfg->cpu, oss_highest_ipl(st->oss));
     cpu_reschedule(cfg->scheduler);
 }
@@ -1427,7 +1427,7 @@ static void iifx_trigger_vbl(config_t *cfg) {
 static void iifx_memory_layout_init(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     // Installed RAM is one contiguous region at physical 0 that mirrors
     // itself throughout the 64 MB RAM decode window.  The boot ROM sizes
@@ -1439,8 +1439,8 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // Unlike the two-bank MDU machines (iici.c, iisi.c) there is no second
     // decode window at $04000000: modelling one regressed the 32 MB case,
     // which the ROM sizes correctly as a single contiguous 32 MB region.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    uint32_t window_pages = IIFX_RAM_WINDOW >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
+    uint32_t window_pages = IIFX_RAM_WINDOW >> MEM_PAGE_SHIFT;
     // RAM larger than the decode window still maps in full (the ROM's
     // descending probe walks above the window), so the span is the larger.
     mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, iifx_fill_page,
@@ -1455,7 +1455,8 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint32 = iifx_rom_write_uint32,
         .peek_uint8 = iifx_rom_peek_uint8,
     };
-    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface, cfg);
+    memory_map_add(cfg->memory_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface,
+                   cfg);
 
     // Reads keep the machID pre-check (above the mirror) then delegate to the
     // shared engine; writes go straight to the engine.  ctx is the engine's
@@ -1469,7 +1470,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint32 = mac030_io_write_uint32,
         .peek_uint8 = iifx_io_peek_uint8,
     };
-    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
+    memory_map_add(cfg->memory_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
 
     // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
     // slot aliases into the page table (shared helper; see iicx.c).
@@ -1560,7 +1561,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     }
     cfg->machine_context = st;
 
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    // Build the shared II-family core (memory_map, cpu-from-profile, scheduler).
     mac030_build_core(cfg, &iifx_board_desc, checkpoint);
     machine_part_irq(cfg, checkpoint);
 
@@ -1598,7 +1599,6 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
-    setup_images(cfg);
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
@@ -1606,7 +1606,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
@@ -1652,7 +1652,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->mmu = mac030_build_mmu(cfg, iifx_board_desc.rom_base, iifx_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF, from power-on
+    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER; // from power-on
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
 
@@ -1673,7 +1673,9 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     if (checkpoint) {
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }

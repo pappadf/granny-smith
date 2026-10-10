@@ -10,6 +10,8 @@
 // === Includes ===
 #include "addr_format.h"
 #include "common.h"
+#include "debug_cpu.h"
+#include "gs_assert.h"
 #include "object.h"
 #include "value.h"
 
@@ -92,7 +94,7 @@ extern const char *const debug_space_values[];
 // The `debug.find` class (memory search, cmd_find.c).
 extern const class_desc_t find_class;
 
-// Read the optional `space` argument at argv[idx] (V_ENUM over
+// Read the optional `space` argument at argv[idx] (VK_ENUM over
 // debug_space_values, or its string): "logical" (the default, also when
 // omitted) or "physical".  Returns false for anything else.
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
@@ -119,64 +121,12 @@ enum logpoint_kind {
     LP_KIND_RW = 3, // fire on read or write
 };
 
-// === Constants ===
-#define TRACE_ENTRY_PC  0
-#define TRACE_ENTRY_LOG 1
-
 // === Type Definitions ===
 
-// Single trace entry: either a PC value or a log message index
-typedef struct trace_entry {
-    uint8_t type; // TRACE_ENTRY_PC or TRACE_ENTRY_LOG
-    uint32_t value; // PC address or log message index
-} trace_entry_t;
-
-// Log message stored in trace log buffer
-typedef struct trace_log_msg {
-    char *text; // Log message text (owned)
-} trace_log_msg_t;
-
-// Debug state (exposed for performance-critical access)
-struct debug {
-    bool active;
-    int step;
-    breakpoint_t *breakpoints;
-    uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
-    logpoint_t *logpoints;
-    // A watchpoint (a stopping memory logpoint, in the list above) fired
-    // inside the instruction in flight; debug_break_and_trace stops the
-    // machine after that instruction and clears it.
-    bool watch_hit;
-    // Sparse stable id counters. Incremented on every
-    // add; never reset, never recycled. The first allocated id is 0.
-    int next_breakpoint_id;
-    int next_logpoint_id;
-    // Trace buffer for PC entries
-    uint32_t *trace_buffer;
-    uint32_t trace_buffer_size;
-    int trace_head;
-    int trace_tail;
-    int trace_size;
-    // Trace log message buffer
-    trace_log_msg_t *trace_log_buffer;
-    uint32_t trace_log_buffer_size;
-    uint32_t trace_log_head;
-    uint32_t trace_log_count;
-    // Combined trace entries (PC + log references)
-    trace_entry_t *trace_entries;
-    uint32_t trace_entries_size;
-    uint32_t trace_entries_head;
-    uint32_t trace_entries_tail;
-    // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
-    struct object *object; // root `debug` node
-    struct object *bp_collection_object;
-    struct object *lp_collection_object;
-    struct object *wp_collection_object;
-    struct object *mac_object; // debug.mac
-    struct object *mac_globals_object; // debug.mac.globals
-    struct object *find_object; // debug.find
-};
-
+// Debugger state.  Opaque: the definition (breakpoint/logpoint lists, trace
+// rings, sparse-id counters, object-tree nodes) is private to debug.c, and
+// every consumer goes through the functions below.
+struct debug;
 typedef struct debug debug_t;
 
 // === Lifecycle (Constructor / Destructor) ===
@@ -200,18 +150,6 @@ void debug_cleanup(debug_t *debug);
 
 // === Operations ===
 
-breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
-
-bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
-
-// Bulk break/logpoint management — used by typed root wrappers as direct
-// implementations (no shell_dispatch indirection). list_* prints to
-// stdout; delete_all_* returns the count of entries removed.
-void list_breakpoints(debug_t *debug);
-int delete_all_breakpoints(debug_t *debug);
-void list_logpoints(debug_t *debug);
-int delete_all_logpoints(debug_t *debug);
-
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command.  Each takes a const display_t * so the
 // helper can read `bits`, `width`, `height`, `stride`, `format`, and, for
@@ -233,11 +171,10 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 
 // === Object-model accessors ================================================
 //
-// debug.{breakpoints,logpoints}.add(...) / .N.remove() and the
-// per-entry attribute getters live in src/core/object/debug_classes.c.
-// They reach into the debug_t lists via these accessors so the
-// debug.c internals stay private (struct breakpoint / struct logpoint
-// definitions live in debug.c).
+// debug.{breakpoints,logpoints,watchpoints}.add(...) / .N.remove(), the
+// per-entry classes and their factories live in debug.c, below the
+// operations.  They reach into the debug_t lists via these accessors, which
+// keep struct breakpoint / struct logpoint (also defined in debug.c) opaque.
 //
 // Identity: every breakpoint and logpoint carries a sparse stable id
 // (never recycled, max-id-ever + 1 on add). The id is
@@ -265,7 +202,6 @@ int debug_logpoint_next_id(debug_t *debug, int prev_id);
 // collections split between them (`debug.logpoints` never lists one).
 int debug_watchpoint_count(debug_t *debug);
 int debug_watchpoint_next_id(debug_t *debug, int prev_id);
-int delete_all_watchpoints(debug_t *debug);
 
 // Remove by sparse id. Returns true if an entry was removed. Frees the
 // entry's attached object_t (which fires invalidators) before freeing
@@ -276,7 +212,7 @@ bool debug_remove_logpoint(debug_t *debug, int id);
 // Per-entry attribute getters (read-only at this stage; setters arrive
 // alongside writable conditions / messages in a future milestone).
 uint32_t breakpoint_get_addr(const breakpoint_t *bp);
-int breakpoint_get_space(const breakpoint_t *bp); // 0 = LOGICAL, 1 = PHYSICAL
+addr_space_t breakpoint_get_space(const breakpoint_t *bp);
 const char *breakpoint_get_condition(const breakpoint_t *bp); // NULL if none
 uint32_t breakpoint_get_hit_count(const breakpoint_t *bp);
 int breakpoint_get_id(const breakpoint_t *bp);

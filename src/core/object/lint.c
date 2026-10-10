@@ -8,7 +8,7 @@
 //
 // Per class, once, under the path of the first object of that class:
 //   - the members' own documentation gaps (object_member_doc_gaps: argument
-//     docs, untyped arguments, V_ANY results)
+//     docs, untyped arguments, VK_ANY results)
 //   - an example that does not read as a valid statement against the live
 //     tree (checked by the caller's example_ok: a path in it that does not
 //     resolve)
@@ -64,7 +64,7 @@ static void lint_gap(const member_t *m, const arg_decl_t *a, const char *rule, v
 // The class rules, checked on the first object of each class.
 static void lint_member(struct object *o, const member_t *m, const char *path, bool first, void *ud) {
     lint_ctx_t *cx = (lint_ctx_t *)ud;
-    if (!first || m->kind != M_METHOD)
+    if (!first || m->kind != MK_METHOD)
         return;
     (void)o;
     cx->path = path;

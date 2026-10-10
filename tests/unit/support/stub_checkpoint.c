@@ -7,18 +7,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Pull in the checkpoint typedef from common.h
+// The API stubbed here (checkpoint_t, checkpoint_kind_t and the prototypes)
+#include "checkpoint.h"
 #include "machine_parts.h"
-#include "../../../src/core/common.h"
-
-// Minimal checkpoint kind enum (for tests not linking with system.h)
-#ifndef CHECKPOINT_KIND_DEFINED
-typedef enum {
-    CHECKPOINT_KIND_QUICK = 0,
-    CHECKPOINT_KIND_CONSOLIDATED = 1,
-} checkpoint_kind_t;
-#define CHECKPOINT_KIND_DEFINED
-#endif
 
 // Checkpoint read/write helpers referenced via x_system_* from cpu.c when
 // checkpoint instrumentation is compiled in. Provide no-op versions.

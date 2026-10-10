@@ -112,7 +112,7 @@ suite can add one with `STUBS` or drop one with `OMIT_STUBS`.
 
 | Stub | Default in | Provides |
 |---|---|---|
-| `stub_assert.c` | isolated, cpu | `gs_assert_fail()`, `gs_unimplemented_fail()`, `init_tests()` |
+| `stub_assert.c` | isolated, cpu | `gs_assert_fail()`, `unimplemented_fail()`, `init_tests()` |
 | `stub_checkpoint.c` | isolated, cpu | No-op checkpoint read/write (`system_read_checkpoint_data_loc()`, `checkpoint_has_error()`, ...) |
 | `stub_cpu.c` | | `cpu_set_an()`, `cpu_set_pc()` |
 | `stub_debugger.c` | isolated, cpu | No-op debugger hooks (`debugger_init()`, `debug_break_and_trace()`, ...) |
@@ -123,7 +123,7 @@ suite can add one with `STUBS` or drop one with `OMIT_STUBS`.
 | `stub_peripherals.c` | isolated, cpu | No-op floppy and RTC entry points |
 | `stub_prom.c` | | The PROM catalog (`prom_identify_card()`, `prom_card_resolvable()`), for suites linking `pci.c` without the ROM layer |
 | `stub_platform.c` | isolated, cpu | Sound and timing platform hooks |
-| `stub_shell.c` | isolated, cpu | `shell_init()`, `shell_dispatch()`, `parse_address()` |
+| `stub_shell.c` | isolated, cpu | `shell_init()`, `parse_address()` |
 | `stub_system.c` | isolated, cpu | `system_*()` accessors routed to the harness context |
 
 `scripts/check-doc-inventories.py` (Hygiene workflow) fails if a

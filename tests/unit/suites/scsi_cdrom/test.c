@@ -41,7 +41,10 @@
 // drives (select -> CDB -> data-in), so the references are satisfied here
 // rather than by linking system.c and pulling in the whole machine.
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -58,10 +61,6 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 // The bus-explicit forms, which `scsi.attach_hd` / `scsi.attach_cdrom` call
 // so a machine with more than one visible SCSI bus (the Apple Network
 // Servers' two fast/wide channels) can attach to the one it was asked for.
@@ -69,7 +68,7 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }

@@ -8,11 +8,46 @@ This document describes the coding, formatting, and documentation conventions fo
 
 - Use the formatting rules specified in `.clang-format`
 
+### Compiler Extensions
+
+The project builds with GCC and Clang only (the WASM build is Clang, via
+Emscripten's `emcc`; the headless build defaults to GCC — `CC := gcc` in
+`Makefile.headless` — and builds with Clang too), and relies on GNU C extensions where they buy
+something real: the `, ##__VA_ARGS__` comma swallow in variadic macros
+(`GS_ASSERTF`, `LOG`), `__attribute__((cleanup))` (`VALUE_AUTO`),
+`__builtin_*` intrinsics, and `-std=gnu11`.  No portability shim is kept for
+other compilers.
+
 ### Naming Conventions
 
 - Use `snake_case` for identifiers: `parse_header()`, `file_info`.
 - Constants and macros are `ALL_CAPS_WITH_UNDERSCORES`.
 - Prefix internal/private functions with `static` and, if needed, a module prefix: `static int hqx_decode_byte(...)`.
+- The `gs_` prefix is used only where it is needed to avoid a collision with
+  a standard or library name (`gs_strdup`, `gs_assert_fail`); never
+  otherwise.  A name takes its module's prefix instead (`source_read`,
+  `mailbox_drain`, `out_printf`), and everything else (`checkpoint_t`,
+  `status_t`, ...) is unprefixed.  Uppercase `GS_` macros, environment
+  variables and build flags are unaffected.  The `gs_` names that remain,
+  and the name each one avoids:
+
+  | Name | Avoids |
+  |------|--------|
+  | `gs_strdup` | POSIX `strdup` |
+  | `gs_assert_fail`, `gs_assert_failf` (and the file `gs_assert.h`) | `<assert.h>`'s `assert` / `__assert_fail` |
+  | `gs_crc32`, `gs_crc32_zeros` | zlib's `crc32` family |
+  | `gs_adler32` | zlib's `adler32` |
+
+- The enumerators of a kind/discriminator enum carry a short prefix derived
+  from the type's name: `VK_*` (`value_kind_t`), `MK_*` (`member_kind_t`),
+  `AK_*` (`alias_kind_t`), `NK_*` (`num_kind_t`).  Flag bits get their own,
+  distinct prefix (`VFLAG_*` for the value display flags), so a kind and a
+  flag on the same struct never read alike.
+- Global variables: `g_` for an object shared across translation units
+  (declared `extern` in a header), `s_` for a file-scope `static`.
+- No identifier starts with an underscore.  A macro-local temporary that
+  must not capture a caller's name takes a trailing underscore instead
+  (`ea_`, `lg_cat_`).
 
 ### Comments
 
@@ -210,7 +245,7 @@ there is nothing to forget. This has now been re-flagged by four separate
 reviews; it is recorded here so it stops being.
 
 **3. Three kinds of "this should not happen", and they are not the same.**
-See `src/core/common.h` for the first two.
+See `src/core/gs_assert.h` for the first two.
 
 | situation | use | why |
 |---|---|---|

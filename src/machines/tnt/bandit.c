@@ -55,6 +55,7 @@
 
 #include "tnt.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "pci.h"
 
@@ -413,9 +414,9 @@ static tnt_bandit_t *bridge_add(config_t *cfg, checkpoint_t *cp, uint32_t base, 
     b->data_if.write_uint32 = data_write32;
     char label[32];
     snprintf(label, sizeof(label), "%s cfg addr", name);
-    memory_map_add(cfg->mem_map, base + TNT_PCI_CFG_ADDR, MEM_PAGE_SIZE, label, &b->addr_if, b);
+    memory_map_add(cfg->memory_map, base + TNT_PCI_CFG_ADDR, MEM_PAGE_SIZE, label, &b->addr_if, b);
     snprintf(label, sizeof(label), "%s cfg data", name);
-    memory_map_add(cfg->mem_map, base + TNT_PCI_CFG_DATA, MEM_PAGE_SIZE, label, &b->data_if, b);
+    memory_map_add(cfg->memory_map, base + TNT_PCI_CFG_DATA, MEM_PAGE_SIZE, label, &b->data_if, b);
 
     b->bus = pci_bus_create(cfg->pci, name, bus_index);
     b->mode_select = BANDIT_BIG_ENDIAN; // power-on: straight lanes

@@ -6,8 +6,6 @@
 
 #include "value_format.h"
 
-#include "meta.h"
-
 #include "object.h"
 
 #include <inttypes.h>
@@ -16,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// V_BYTES is capped in the composed modes so a 1 MiB bytes attribute does not
+// VK_BYTES is capped in the composed modes so a 1 MiB bytes attribute does not
 // render 2 MiB of hex into a `name = value` row.  Top-level output is not
 // capped: asking for the value IS asking for all of it.
 #define VFMT_BYTES_INLINE_CAP 64
@@ -39,6 +37,11 @@ void vbuf_append(vbuf_t *b, const char *s, size_t n) {
     memcpy(b->p + b->len, s, n);
     b->len += n;
     b->p[b->len] = '\0';
+}
+
+void vbuf_append_str(vbuf_t *b, const char *s) {
+    if (s)
+        vbuf_append(b, s, strlen(s));
 }
 
 void vbuf_appendf(vbuf_t *b, const char *fmt, ...) {
@@ -82,10 +85,18 @@ static bool mode_is_json(value_format_mode_t m) {
     return m == VFMT_JSON || m == VFMT_JSON_TAGGED;
 }
 
-// RFC 8259 string literal: quotes plus the escapes JSON requires.
+// RFC 8259 string literal: quotes plus the escapes JSON requires. Runs of
+// ordinary characters are appended in one call, not byte by byte.
 static void append_json_string(vbuf_t *b, const char *s) {
     vbuf_append(b, "\"", 1);
     for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
+        const unsigned char *run = p;
+        while (*p >= 0x20 && *p != '"' && *p != '\\')
+            p++;
+        if (p > run)
+            vbuf_append(b, (const char *)run, (size_t)(p - run));
+        if (!*p)
+            break;
         switch (*p) {
         case '"':
             vbuf_append(b, "\\\"", 2);
@@ -109,10 +120,7 @@ static void append_json_string(vbuf_t *b, const char *s) {
             vbuf_append(b, "\\f", 2);
             break;
         default:
-            if (*p < 0x20)
-                vbuf_appendf(b, "\\u%04x", (unsigned)*p);
-            else
-                vbuf_append(b, (const char *)p, 1);
+            vbuf_appendf(b, "\\u%04x", (unsigned)*p); // the remaining control characters
             break;
         }
     }
@@ -151,7 +159,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
     }
 
     switch (v->kind) {
-    case V_NONE:
+    case VK_NONE:
         if (mode_is_json(mode))
             vbuf_append(out, "null", 4);
         else if (mode == VFMT_CELL)
@@ -161,53 +169,57 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         // DISPLAY: the empty string.
         return;
 
-    case V_BOOL:
-        vbuf_append(out, v->b ? "true" : "false", v->b ? 4 : 5);
+    case VK_BOOL:
+        vbuf_append_str(out, v->b ? "true" : "false");
         return;
 
-    case V_INT:
-        // VAL_HEX is honoured in every text mode.  format_value_print used to
-        // ignore it for V_INT while format_scalar_inline honoured it, so the
-        // same attribute rendered two ways depending on whether it was asked
-        // for alone or inside a table.  JSON keeps V_INT numeric so the
-        // document stays machine-readable.
-        if (mode_is_json(mode))
+    case VK_INT:
+        // VFLAG_HEX is honoured in every text mode: format_value_print used to
+        // ignore it for VK_INT while format_scalar_inline honoured it, so the
+        // same attribute rendered two ways.  Hex shows the two's-complement
+        // bit pattern at the value's width (-1 at width 4 is 0xffffffff).
+        // JSON keeps VK_INT a bare number whatever its presentation, so web
+        // consumers of a signed attribute (a NuBus slot number) read a number.
+        if (!mode_is_json(mode) && (v->flags & VFLAG_HEX)) {
+            uint64_t bits = (uint64_t)v->i;
+            // mask to the value's width so a negative shows its own bit pattern
+            if (v->width > 0 && v->width < 8)
+                bits &= ((uint64_t)1 << (8 * v->width)) - 1;
+            vbuf_appendf(out, "0x%" PRIx64, bits);
+        } else {
             vbuf_appendf(out, "%" PRId64, v->i);
-        else if (v->flags & VAL_HEX)
-            vbuf_appendf(out, "0x%" PRIx64, (uint64_t)v->i);
-        else
-            vbuf_appendf(out, "%" PRId64, v->i);
+        }
         return;
 
-    case V_UINT:
+    case VK_UINT:
         // A hex-flagged unsigned becomes a JSON *string*, because "0x1f" is
         // not a JSON number and both encoders already agreed on that.
-        if (mode_is_json(mode) && (v->flags & VAL_HEX))
+        if (mode_is_json(mode) && (v->flags & VFLAG_HEX))
             vbuf_appendf(out, "\"0x%" PRIx64 "\"", v->u);
         else if (mode_is_json(mode))
             vbuf_appendf(out, "%" PRIu64, v->u);
-        else if (v->flags & VAL_HEX)
+        else if (v->flags & VFLAG_HEX)
             vbuf_appendf(out, "0x%" PRIx64, v->u);
         else
             vbuf_appendf(out, "%" PRIu64, v->u);
         return;
 
-    case V_FLOAT:
+    case VK_FLOAT:
         vbuf_appendf(out, "%g", v->f);
         return;
 
-    case V_STRING: {
+    case VK_STRING: {
         const char *s = v->s ? v->s : "";
         if (mode_is_json(mode))
             append_json_string(out, s);
         else if (mode == VFMT_INLINE)
             vbuf_appendf(out, "\"%s\"", s);
         else
-            vbuf_append(out, s, strlen(s));
+            vbuf_append_str(out, s);
         return;
     }
 
-    case V_BYTES: {
+    case VK_BYTES: {
         size_t n = v->bytes.n;
         bool capped = (mode == VFMT_INLINE || mode == VFMT_CELL) && n > VFMT_BYTES_INLINE_CAP;
         size_t shown = capped ? VFMT_BYTES_INLINE_CAP : n;
@@ -226,7 +238,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
     }
 
-    case V_ENUM: {
+    case VK_ENUM: {
         const char *label = enum_label(v);
         if (mode == VFMT_JSON_TAGGED) {
             vbuf_append(out, "{\"enum\":", 8);
@@ -244,7 +256,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             if (mode == VFMT_INLINE)
                 vbuf_appendf(out, "\"%s\"", label);
             else
-                vbuf_append(out, label, strlen(label));
+                vbuf_append_str(out, label);
         } else {
             bool bare = (mode == VFMT_TEXT || mode == VFMT_REPL);
             vbuf_appendf(out, bare ? "<enum:%d>" : "enum:%d", v->enm.idx);
@@ -252,7 +264,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
     }
 
-    case V_LIST:
+    case VK_LIST:
         if (mode == VFMT_CELL) {
             vbuf_appendf(out, "<list:%zu>", v->list.len);
             return;
@@ -271,7 +283,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         vbuf_append(out, "]", 1);
         return;
 
-    case V_MAP:
+    case VK_MAP:
         if (mode == VFMT_CELL || mode == VFMT_INLINE) {
             vbuf_appendf(out, "<map:%zu>", v->map.len);
             return;
@@ -293,7 +305,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         }
         return;
 
-    case V_OBJECT: {
+    case VK_OBJECT: {
         const char *cls = object_class_name(v);
         const char *nm = v->obj ? object_name(v->obj) : NULL;
         if (mode == VFMT_JSON_TAGGED) {
@@ -320,7 +332,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
     }
 
-    case V_ERROR: {
+    case VK_ERROR: {
         const char *msg = v->err ? v->err : "";
         if (mode == VFMT_JSON_TAGGED) {
             vbuf_append(out, "{\"error\":", 9);
@@ -339,19 +351,19 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
     }
 
-    case V_REF: {
+    case VK_REF: {
         const char *r = v->ref ? v->ref : "";
         if (mode_is_json(mode))
             append_json_string(out, r);
         else
-            vbuf_append(out, r, strlen(r));
+            vbuf_append_str(out, r);
         return;
     }
 
-    case V_RANGE: {
-        // api.c's encoder handled neither V_REF nor V_RANGE and had no
+    case VK_RANGE: {
+        // api.c's encoder handled neither VK_REF nor VK_RANGE and had no
         // default, so either emitted NOTHING -- a malformed document rather
-        // than a wrong one.  Latent today (gs_eval takes a path, and ranges
+        // than a wrong one.  Latent today (object_eval takes a path, and ranges
         // come only from expression evaluation), but it is the shape that
         // makes an eighth kind break the bridge silently.
         vbuf_t inner = {0};

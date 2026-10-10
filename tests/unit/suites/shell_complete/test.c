@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 // Unit tests for argument-value completion (src/core/shell/cmd_complete.c).
 //
-// Filesystem candidates are offered for a string argument declared VAL_PATH,
+// Filesystem candidates are offered for a string argument declared VFLAG_PATH,
 // and only for one: an argument merely NAMED `path` (an object path, say)
 // gets none.  The VFS is a stub directory holding `disk.img` and `roms/`.
 
@@ -40,9 +40,22 @@ struct vfs_dir {
 };
 static struct vfs_dir g_dir;
 static int g_opendir_calls;
+// When nonzero the stub directory instead lists g_big_n entries, each name
+// twice ("e0", "e0", "e1", "e1", ...), to exercise dedup and the bound.
+static int g_big_n;
 
 static int stub_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
     static const char *const names[] = {"disk.img", "roms"};
+    if (g_big_n) {
+        if (d->pos >= 2 * g_big_n)
+            return 0;
+        memset(out, 0, sizeof(*out));
+        snprintf(out->name, sizeof(out->name), "e%d", d->pos / 2); // every name twice
+        out->has_stat = true;
+        out->st.mode = VFS_MODE_FILE;
+        d->pos++;
+        return 1;
+    }
     if (d->pos >= 2)
         return 0;
     memset(out, 0, sizeof(*out));
@@ -82,28 +95,28 @@ static value_t method_none(struct object *self, const member_t *m, int argc, con
 }
 
 static const arg_decl_t load_args[] = {
-    {.name = "image", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file"},
+    {.name = "image", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file"},
 };
 static const arg_decl_t resolve_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Object path"},
+    {.name = "path", .kind = VK_STRING, .doc = "Object path"},
 };
 static const arg_decl_t copy_args[] = {
-    {.name = "src", .kind = V_STRING, .presentation_flags = VAL_PATH,       .doc = "Source"},
-    {.name = "dst", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Label" },
+    {.name = "src", .kind = VK_STRING, .presentation_flags = VFLAG_PATH,     .doc = "Source"},
+    {.name = "dst", .kind = VK_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Label" },
 };
 static const member_t tool_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "load",
      .doc = "Load",
-     .method = {.args = load_args, .nargs = 1, .result = V_NONE, .fn = method_none}   },
-    {.kind = M_METHOD,
+     .method = {.args = load_args, .nargs = 1, .result = VK_NONE, .fn = method_none}   },
+    {.kind = MK_METHOD,
      .name = "resolve",
      .doc = "Resolve",
-     .method = {.args = resolve_args, .nargs = 1, .result = V_NONE, .fn = method_none}},
-    {.kind = M_METHOD,
+     .method = {.args = resolve_args, .nargs = 1, .result = VK_NONE, .fn = method_none}},
+    {.kind = MK_METHOD,
      .name = "copy",
      .doc = "Copy",
-     .method = {.args = copy_args, .nargs = 2, .result = V_NONE, .fn = method_none}   },
+     .method = {.args = copy_args, .nargs = 2, .result = VK_NONE, .fn = method_none}   },
 };
 static const class_desc_t tool_class = {.name = "tool", .members = tool_members, .n_members = 3};
 
@@ -115,7 +128,7 @@ static void build_tree(void) {
 static struct completion g_out;
 
 static void complete(const char *line) {
-    memset(&g_out, 0, sizeof(g_out));
+    completion_free(&g_out);
     g_opendir_calls = 0;
     shell_complete(line, (int)strlen(line), &g_out);
 }
@@ -150,7 +163,7 @@ TEST(test_flag_not_name_decides_per_slot) {
     complete("tool.copy d");
     ASSERT_TRUE(g_opendir_calls == 1);
     ASSERT_TRUE(has("disk.img"));
-    // `dst` would have matched the old name heuristic; it is not VAL_PATH.
+    // `dst` would have matched the old name heuristic; it is not VFLAG_PATH.
     complete("tool.copy disk.img ");
     ASSERT_TRUE(g_opendir_calls == 0);
     ASSERT_TRUE(!has("disk.img"));
@@ -164,7 +177,7 @@ TEST(test_command_word_completes_and_takes_its_methods_arguments) {
     // A command is a word at the start of a line, with its method's doc.
     complete("l");
     ASSERT_TRUE(has("ld"));
-    // Its arguments are the method's: `image` is VAL_PATH.
+    // Its arguments are the method's: `image` is VFLAG_PATH.
     complete("ld ");
     ASSERT_TRUE(g_opendir_calls == 1);
     ASSERT_TRUE(has("disk.img"));
@@ -210,11 +223,55 @@ TEST(test_statement_positions_follow_the_parser) {
     ASSERT_EQ_INT(0, g_out.count);
 }
 
+// qsort comparator over candidate strings.
+static int cmp_str(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+// True when no candidate string appears twice in g_out.
+static bool all_distinct(void) {
+    const char **copy = malloc((size_t)g_out.count * sizeof(*copy));
+    if (!copy)
+        return false;
+    memcpy(copy, g_out.items, (size_t)g_out.count * sizeof(*copy));
+    qsort(copy, (size_t)g_out.count, sizeof(*copy), cmp_str);
+    bool ok = true;
+    for (int i = 1; i < g_out.count && ok; i++)
+        ok = strcmp(copy[i - 1], copy[i]) != 0; // sorted: a duplicate is adjacent
+    free(copy);
+    return ok;
+}
+
+// Every repeated candidate is dropped, whatever the set's size, and the
+// sanity bound cuts a huge set at CMD_MAX_COMPLETIONS with `truncated`.
+TEST(test_dedup_and_bound_on_large_sets) {
+    build_tree();
+    g_big_n = 3000; // under the bound once deduplicated
+    complete("tool.load ");
+    ASSERT_EQ_INT(3001, g_out.count); // the entries plus the `image=` name
+    ASSERT_TRUE(!g_out.truncated);
+    ASSERT_TRUE(all_distinct());
+    ASSERT_TRUE(has("e0") && has("e2999"));
+    g_big_n = CMD_MAX_COMPLETIONS + 500; // over it
+    complete("tool.load ");
+    ASSERT_EQ_INT(CMD_MAX_COMPLETIONS, g_out.count);
+    ASSERT_TRUE(g_out.truncated);
+    ASSERT_TRUE(all_distinct());
+    // The prefix filter still applies before dedup.
+    g_big_n = 3000;
+    complete("tool.load e299");
+    ASSERT_EQ_INT(11, g_out.count); // e299, e2990..e2999
+    ASSERT_TRUE(all_distinct());
+    g_big_n = 0;
+    completion_free(&g_out);
+}
+
 int main(void) {
     RUN(test_statement_positions_follow_the_parser);
     RUN(test_val_path_argument_gets_files);
     RUN(test_argument_named_path_without_flag_gets_none);
     RUN(test_flag_not_name_decides_per_slot);
     RUN(test_command_word_completes_and_takes_its_methods_arguments);
+    RUN(test_dedup_and_bound_on_large_sets);
     return 0;
 }

@@ -818,7 +818,7 @@ static void lisa_mmureg_write(lisa_mmu_t *m, const lisa_resolved_t *r, uint16_t 
 static inline void lisa_logpoint_notify(uint32_t addr, unsigned size, uint32_t value, bool is_write) {
     if (!g_mem_logpoint_hook || !g_mem_logpoint_page_count)
         return;
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     if (page < g_page_count && g_mem_logpoint_page_count[page])
         g_mem_logpoint_hook(addr, size, value, is_write);
 }
@@ -1001,7 +1001,7 @@ static value_t lisa_method_descriptor(struct object *self, const member_t *mb, i
     uint64_t first = argv[0].u;
     if (first > 127)
         return val_err("descriptor: segment must be 0-127");
-    int ctx = (argc > 2 && argv[2].kind == V_UINT) ? (int)argv[2].u : ((m->seg2 << 1) | m->seg1);
+    int ctx = (argc > 2 && argv[2].kind == VK_UINT) ? (int)argv[2].u : ((m->seg2 << 1) | m->seg1);
     if (ctx < 0 || ctx > 3)
         return val_err("descriptor: context must be 0-3");
     uint32_t count = debug_mmu_desc_count(argc, argv);
@@ -1038,7 +1038,7 @@ static value_t lisa_method_peek(struct object *self, const member_t *mb, int arg
     (void)mb;
     if (!lisa_mmu_from(self))
         return val_err("mmu not present");
-    unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
+    unsigned size = (argc >= 2 && argv[1].kind == VK_UINT) ? (unsigned)argv[1].u : 4;
     bool physical;
     if (!debug_parse_space(argc, argv, 2, &physical))
         return val_err("peek: space must be \"logical\" or \"physical\"");
@@ -1050,30 +1050,30 @@ static value_t lisa_method_peek(struct object *self, const member_t *mb, int arg
 }
 
 // peek's default size.
-static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 static const arg_decl_t lisa_desc_args[] = {
-    {.name = "segment", .kind = V_UINT, .doc = "first segment number (0-127; logical address bits 23-17)"},
+    {.name = "segment", .kind = VK_UINT, .doc = "first segment number (0-127; logical address bits 23-17)"},
     {.name = "count",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &debug_mmu_desc_count_default,
      .doc = "how many consecutive segments"},
     {.name = "context",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "the context's descriptor set (0-3; supervisor mode uses 0)",
      .default_doc = "the context the SEG1/SEG2 latches select"},
 };
 static const arg_decl_t lisa_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical address"},
     {.name = "size",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"logical\"; \"physical\" is refused on the Lisa",
@@ -1081,55 +1081,55 @@ static const arg_decl_t lisa_peek_args[] = {
 };
 
 static const member_t lisa_mmu_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "start",
      .doc = "START/SETUP latch: set at power-on, translation bypassed while set",
-     .attr = {.type = V_BOOL, .get = lisa_attr_start}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = lisa_attr_start}},
+    {.kind = MK_ATTR,
      .name = "context",
      .doc = "User context selected by the SEG1/SEG2 latches (0-3); supervisor mode always uses 0",
-     .attr = {.type = V_INT, .get = lisa_attr_context}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = lisa_attr_context}},
+    {.kind = MK_METHOD,
      .name = "translate",
      .examples = EXAMPLES("machine.cpu.mmu.translate 0x20000"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind, plus the segment space)",
      .method = {.result_doc = "{phys, valid, via, access, space}",
                 .args = debug_mmu_xlate_args,
                 .nargs = DEBUG_MMU_XLATE_NARGS,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = lisa_method_translate}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "walk",
      .examples = EXAMPLES("machine.cpu.mmu.walk 0x20000"),
      .doc = "Translate an address and show the segment descriptor it went through",
      .method = {.result_doc = "{phys, valid, via, access, space, steps: [{step, outcome, ...}]}",
                 .args = debug_mmu_xlate_args,
                 .nargs = DEBUG_MMU_XLATE_NARGS,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = lisa_method_walk}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "map",
      .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map supervisor=false"),
      .doc = "List the mapped address ranges: runs that translate linearly with the same via, access and space",
      .method = {.result_doc = "[{start, size, phys, via, access, space}]",
                 .args = debug_mmu_map_args,
                 .nargs = DEBUG_MMU_MAP_NARGS,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = lisa_method_map}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "descriptor",
      .examples = EXAMPLES("machine.cpu.mmu.descriptor 0 4", "machine.cpu.mmu.descriptor 127 1 0"),
      .doc = "Decode segment descriptors (SOR/SLR) from the MMU's descriptor RAM",
      .method = {.result_doc = "[{segment, context, base, sor, slr, type, limit?, stack?, ro?, phys?}]",
                 .args = lisa_desc_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = lisa_method_descriptor}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x20000"),
      .doc = "Read memory through the segment MMU; side-effect-free",
-     .method = {.args = lisa_peek_args, .nargs = 3, .result = V_UINT, .fn = lisa_method_peek}},
+     .method = {.args = lisa_peek_args, .nargs = 3, .result = VK_UINT, .fn = lisa_method_peek}},
 };
 
 static const class_desc_t lisa_mmu_class = {

@@ -171,7 +171,7 @@ void ppc_mmu_invalidate_all(ppc_t *p) {
 // flush loops (one tlbie per class).
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
     uint32_t mask = tlbie_class_mask(p);
-    uint32_t cls = (ea >> PAGE_SHIFT) & mask;
+    uint32_t cls = (ea >> MEM_PAGE_SHIFT) & mask;
     if (g_fill_track_overflow) {
         user_soa_invalidate_all();
     } else {
@@ -184,10 +184,10 @@ void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
         }
     }
     for (int i = 0; i < XTLB_SIZE; i++)
-        if (((g_xtlb[i].tag >> PAGE_SHIFT) & mask) == cls)
+        if (((g_xtlb[i].tag >> MEM_PAGE_SHIFT) & mask) == cls)
             g_xtlb[i].tag = 0;
     for (int i = 0; i < FTLB_SIZE; i++)
-        if (((g_ftlb[i].tag >> PAGE_SHIFT) & mask) == cls)
+        if (((g_ftlb[i].tag >> MEM_PAGE_SHIFT) & mask) == cls)
             g_ftlb[i].tag = 0;
     g_ppc_fetch.span = 0;
 }
@@ -366,17 +366,17 @@ static bool bat604_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea
 // tracks HMC bank moves); HTAB reads must not touch the mode-dependent
 // SoA maps.
 static inline uint8_t *phys_host(uint32_t pa) {
-    uint32_t pg = pa >> PAGE_SHIFT;
+    uint32_t pg = pa >> MEM_PAGE_SHIFT;
     if (pg >= g_page_count)
         return NULL;
     uint8_t *host = g_page_table[pg].host_base;
-    return host ? host + (pa & PAGE_MASK) : NULL;
+    return host ? host + (pa & MEM_PAGE_MASK) : NULL;
 }
 
 // True when the physical page holding a PTE group is host-writable.  Mirrors
 // the check mmu_write_physical_uint8 makes on the 68K side.
 static inline bool ppc_pte_page_writable(uint32_t pa) {
-    uint32_t pg = pa >> PAGE_SHIFT;
+    uint32_t pg = pa >> MEM_PAGE_SHIFT;
     return pg < g_page_count && g_page_table[pg].host_base && g_page_table[pg].writable;
 }
 
@@ -596,8 +596,8 @@ static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool ifet
 // tracking) but touches ONLY the user arrays.  `write_ok` is the walk's
 // w_ok — protection allows stores and no C update remains owed.
 static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
-    uint32_t lpage = ea >> PAGE_SHIFT;
-    uint32_t ppage = pa >> PAGE_SHIFT;
+    uint32_t lpage = ea >> MEM_PAGE_SHIFT;
+    uint32_t ppage = pa >> MEM_PAGE_SHIFT;
     if (lpage >= g_page_count || ppage >= g_page_count)
         return;
     page_entry_t *pe = &g_page_table[ppage];
@@ -617,7 +617,7 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
         g_fill_track_overflow = true;
     else
         g_fill_track[g_fill_track_count++] = lpage;
-    uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << PAGE_SHIFT);
+    uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
     if (write_ok && pe->writable)
         g_user_write[lpage] = adjusted;
@@ -661,7 +661,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     // access keeps its LOGICAL address through the memory slow path — the
     // logpoint must fire with the address the guest used, and the slow
     // path resolves the physical backing via g_mem_logical_xlate.
-    bool lp_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[ea >> PAGE_SHIFT];
+    bool lp_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[ea >> MEM_PAGE_SHIFT];
 
     // Translation TLB (serves supervisor accesses and user pages that
     // could not be SoA-filled).
@@ -690,7 +690,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     // tag would cost tag space and buy nothing.  The invariant lives in two
     // other files, which is why it is written down here.
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
-    xtlb_entry_t *te = &g_xtlb[(ea >> PAGE_SHIFT) & (XTLB_SIZE - 1)];
+    xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
         *addr = te->pa_page | (ea & 0xFFFu);
         return false;
@@ -738,7 +738,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     // rewrite: the slow path would misdispatch a logical address on the
     // identity page table.
     if (lp_watched) {
-        uint32_t ppg = out.pa >> PAGE_SHIFT;
+        uint32_t ppg = out.pa >> MEM_PAGE_SHIFT;
         if (ppg < g_page_count && g_page_table[ppg].host_base && !g_page_table[ppg].dev)
             return false; // *addr stays the EA
     }
@@ -746,7 +746,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     if (user && dt) {
         // Prefer a logical SoA fill so the page goes fast-path.
         user_soa_fill(ea, out.pa, out.w_ok);
-        uintptr_t filled = (store ? g_user_write : g_user_read)[ea >> PAGE_SHIFT];
+        uintptr_t filled = (store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT];
         if (filled) {
             *addr = ea;
             return false;
@@ -809,7 +809,7 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     }
     if (user && dt) {
         user_soa_fill(ea, out.pa, out.w_ok);
-        if (g_user_write[ea >> PAGE_SHIFT]) {
+        if (g_user_write[ea >> MEM_PAGE_SHIFT]) {
             *addr = ea;
             return 0;
         }
@@ -827,7 +827,7 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
 // this is the identity map read through the physical page table (never
 // the mode-dependent SoA arrays).  Returns false when ISI was raised.
 bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
-    uint32_t page = pc & ~(uint32_t)PAGE_MASK;
+    uint32_t page = pc & ~(uint32_t)MEM_PAGE_MASK;
     bool user = (p->msr & PPC_MSR_PR) != 0;
     uint32_t pa = pc;
     // LE-mode fetch munge (PEM §3.2.2): the instruction word is read from
@@ -839,7 +839,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
 
     if (p->msr & PPC_MSR_IT) {
         uint32_t tag = page | (user ? 2u : 0u) | 1u;
-        ftlb_entry_t *fe = &g_ftlb[(pc >> PAGE_SHIFT) & (FTLB_SIZE - 1)];
+        ftlb_entry_t *fe = &g_ftlb[(pc >> MEM_PAGE_SHIFT) & (FTLB_SIZE - 1)];
         if (fe->tag == tag) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
@@ -878,9 +878,9 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             return false;
         }
         pa = out.pa;
-        uint8_t *host = phys_host(pa & ~(uint32_t)PAGE_MASK);
-        bool watched = (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page >> PAGE_SHIFT]) ||
-                       (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[pa >> PAGE_SHIFT]);
+        uint8_t *host = phys_host(pa & ~(uint32_t)MEM_PAGE_MASK);
+        bool watched = (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page >> MEM_PAGE_SHIFT]) ||
+                       (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[pa >> MEM_PAGE_SHIFT]);
         if (host && !watched) {
             uintptr_t adj = (uintptr_t)host - page;
             fe->tag = tag;
@@ -892,8 +892,8 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             return true;
         }
     } else {
-        uint32_t ppg = pa >> PAGE_SHIFT;
-        uint8_t *host = phys_host(pa & ~(uint32_t)PAGE_MASK);
+        uint32_t ppg = pa >> MEM_PAGE_SHIFT;
+        uint8_t *host = phys_host(pa & ~(uint32_t)MEM_PAGE_MASK);
         bool watched = (g_mem_logpoint_page_count && g_mem_logpoint_page_count[ppg]) ||
                        (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[ppg]);
         if (host && !watched) {

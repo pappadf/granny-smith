@@ -30,10 +30,12 @@
 #include "av.h"
 #include "civic.h"
 
+#include "checkpoint.h"
 #include "debug.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
 #include "value.h"
@@ -61,7 +63,7 @@ typedef enum {
     VDC_SRC_NONE = 0, // nothing plugged in (default; DMSD reports no lock)
     VDC_SRC_PATTERN, // deterministic colour bars + frame counter strip
     VDC_SRC_FILE, // a PNG loaded via machine.videoin.load
-    VDC_SRC_HOST, // the platform webcam through the gs_video_in_* seam
+    VDC_SRC_HOST, // the platform webcam through the platform_video_in_* seam
 } vdc_src_t;
 
 struct av_vdc {
@@ -106,7 +108,7 @@ bool av_vdc_connected(av_vdc_t *vdc) {
     case VDC_SRC_FILE:
         return true;
     case VDC_SRC_HOST:
-        return gs_video_in_connected();
+        return platform_video_in_connected();
     default:
         return false;
     }
@@ -238,7 +240,7 @@ static void vdc_fill_frame(av_vdc_t *vdc) {
         memset(vdc->frame, 0, (size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
         break;
     case VDC_SRC_HOST:
-        if (gs_video_in_frame(vdc->frame) == 0)
+        if (platform_video_in_frame(vdc->frame) == 0)
             break;
         memset(vdc->frame, 0, (size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
         break;
@@ -379,7 +381,7 @@ void av_vdc_clock_gate(av_vdc_t *vdc, bool clock_off) {
     vdc->clock_on = on;
     LOG(2, "VDC clock %s", on ? "on (capture running)" : "off");
     // Camera lifecycle: the host attaches/stops its capture with the guest.
-    gs_video_in_state(on);
+    platform_video_in_state(on);
 }
 
 // ============================================================
@@ -461,32 +463,32 @@ static DEF_METHOD(videoin_method_load) {
 
 static const arg_decl_t videoin_load_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "640x480 PNG to use as the video source frame"},
 };
 
 static const member_t videoin_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "source",
      .doc = "Host video source: none | pattern | file | host (webcam)",
-     .attr = {.type = V_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}    },
+    {.kind = MK_ATTR,
      .name = "connected",
      .doc = "True when the source reports a signal (drives the DMSD lock status)",
-     .attr = {.type = V_BOOL, .get = videoin_attr_connected, .set = NULL}                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = videoin_attr_connected, .set = NULL}                          },
+    {.kind = MK_ATTR,
      .name = "fields",
      .doc = "Fields the capture engine has written since power-on",
-     .attr = {.type = V_UINT, .get = videoin_attr_fields, .set = NULL}                             },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = videoin_attr_fields, .set = NULL}                             },
+    {.kind = MK_METHOD,
      .name = "pattern",
      .doc = "Select the built-in deterministic test pattern as the source",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = videoin_method_pattern}          },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = videoin_method_pattern}          },
+    {.kind = MK_METHOD,
      .name = "load",
      .doc = "Load a 640x480 PNG and select it as the source frame",
-     .method = {.args = videoin_load_args, .nargs = 1, .result = V_NONE, .fn = videoin_method_load}},
+     .method = {.args = videoin_load_args, .nargs = 1, .result = VK_NONE, .fn = videoin_method_load}},
 };
 
 static const class_desc_t videoin_class = {

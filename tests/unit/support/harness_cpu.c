@@ -24,7 +24,6 @@ test_context_t *test_harness_init(void) {
 
     // Populate Plus memory layout (RAM/ROM pages + Phase Read) for CPU tests
     // The CPU test harness emulates the Plus, so we use Plus-specific layout constants.
-    extern void memory_populate_pages(memory_map_t * mem, uint32_t rom_start, uint32_t rom_end);
     memory_populate_pages(ctx->memory, 0x400000, 0x580000);
 
     // Set as active context BEFORE cpu_init (CPU may call system_memory())

@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "checkpoint.h"
 #include "common.h"
 #include "iw_interp.h"
 #include "scc.h"

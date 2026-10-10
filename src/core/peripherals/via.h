@@ -8,6 +8,7 @@
 #define VIA_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -86,11 +87,16 @@ void via_checkpoint(via_t *restrict via, checkpoint_t *checkpoint);
 // === Operations ===
 
 // Input signals to the VIA
-extern void via_input(via_t *via, int port, int pin, bool value);
+void via_input(via_t *via, int port, int pin, bool value);
 
-extern void via_input_sr(via_t *via, uint8_t byte);
+// Shift-register input from an external-clock device.  Mode 3 (shift-in):
+// `byte` is latched into SR and IFR_SR set.  Mode 7 (shift-out, external
+// clock): the call only signals that the device clocked all 8 bits out --
+// any pending byte is delivered to shift_cb and IFR_SR set; `byte` itself
+// is ignored (logged only).  Other modes drop the call.
+void via_input_sr(via_t *via, uint8_t byte);
 
-extern void via_input_c(via_t *via, int port, int c, bool value);
+void via_input_c(via_t *via, int port, int c, bool value);
 
 // Re-drive outputs after initialization of dependent devices (e.g., floppy)
 void via_redrive_outputs(via_t *via);

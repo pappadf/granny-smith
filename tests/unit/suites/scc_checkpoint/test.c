@@ -4,10 +4,11 @@
 // SCC checkpoint round-trip.
 //
 // `scc_checkpoint` wrote both channels as ONE block of
-// `offsetof(ch_t, scc) * 2` bytes starting at ch[0]. That assumes the two
+// `offsetof(scc_channel_t, scc) * 2` bytes starting at ch[0]. That assumes the two
 // channels are packed at the PREFIX size. They are not: the stride is
-// sizeof(ch_t), eight bytes larger because of the `scc` back-pointer each
-// channel carries. Measured on this tree: prefix 11424, sizeof 11432.
+// sizeof(scc_channel_t), larger by the `scc` back-pointer each channel carries
+// (eight bytes on a 64-bit host; the absolute sizes move as the struct grows --
+// prefix 11440, sizeof 11448 on x86-64 when this was last checked).
 //
 // So the block ran eight bytes past the end of ch[0]'s prefix and straight over
 // ch[0]'s `scc` pointer -- a host heap address, written into every save file,
@@ -31,6 +32,7 @@
 // save "the way via_t, scc_t and rtc_t do". scc_t was the one doing it
 // wrong.)
 
+#include "checkpoint.h"
 #include "scc.h"
 
 #include "scheduler.h"
@@ -75,9 +77,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }
-void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                       void *device) {
-    (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
+    (void)mem, (void)addr, (void)device;
 }
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;

@@ -10,6 +10,7 @@
 #include "gossamer.h"
 
 #include "bmac.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "machine.h"
 #include "object.h"
@@ -222,34 +223,34 @@ static value_t bmac_method_receive(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t bmac_receive_args[] = {
-    {.name = "frame", .kind = V_STRING, .doc = "the frame as hex bytes, destination address first, no FCS"},
+    {.name = "frame", .kind = VK_STRING, .doc = "the frame as hex bytes, destination address first, no FCS"},
 };
 
 static const member_t bmac_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "mac",
      .doc = "Station address in the cell's serial EEPROM",
-     .attr = {.type = V_STRING, .get = bmac_attr_mac, .set = NULL}                                 },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = bmac_attr_mac, .set = NULL}                                 },
+    {.kind = MK_ATTR,
      .name = "link",
      .doc = "Link state the transceiver reports (XCVRIF bit 8)",
-     .attr = {.type = V_BOOL, .get = bmac_attr_link, .set = bmac_attr_link_set}                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = bmac_attr_link, .set = bmac_attr_link_set}                    },
+    {.kind = MK_ATTR,
      .name = "tx_frames",
      .doc = "Frames the transmitter has sent",
-     .attr = {.type = V_INT, .get = bmac_attr_tx, .set = NULL}                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = bmac_attr_tx, .set = NULL}                                     },
+    {.kind = MK_ATTR,
      .name = "rx_frames",
      .doc = "Frames the receiver has handed to DMA",
-     .attr = {.type = V_INT, .get = bmac_attr_rx, .set = NULL}                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = bmac_attr_rx, .set = NULL}                                     },
+    {.kind = MK_ATTR,
      .name = "last_tx",
      .doc = "The last frame transmitted (padded, no FCS), as hex",
-     .attr = {.type = V_STRING, .get = bmac_attr_last_tx, .set = NULL}                             },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = bmac_attr_last_tx, .set = NULL}                             },
+    {.kind = MK_METHOD,
      .name = "receive",
      .doc = "Deliver a frame to the receiver as if from the wire; true when the address filter queued it",
-     .method = {.args = bmac_receive_args, .nargs = 1, .result = V_BOOL, .fn = bmac_method_receive}},
+     .method = {.args = bmac_receive_args, .nargs = 1, .result = VK_BOOL, .fn = bmac_method_receive}},
 };
 
 static const class_desc_t bmac_class = {

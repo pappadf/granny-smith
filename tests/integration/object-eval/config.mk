@@ -1,5 +1,5 @@
 # Integration test: object-model `eval` command
-# Verifies that the new gs_eval entry point resolves paths against a
+# Verifies that the new object_eval entry point resolves paths against a
 # booted Plus image and prints the expected JSON shapes. The legacy
 # shell continues to operate alongside.
 

@@ -18,7 +18,7 @@
 #include "mdu_io.h"
 #include "memory.h"
 #include "mmu.h"
-#include "system_config.h" // for config_t.machine_context
+#include "system_internal.h" // for config_t.machine_context
 #include <stdbool.h>
 #include <stdint.h>
 

@@ -179,7 +179,7 @@ static const collection_desc_t ring_entries = {
 };
 
 static const member_t ring_members[] = {
-    {.kind = M_CHILD, .name = "items", .child = {.collection = &ring_entries}},
+    {.kind = MK_CHILD, .name = "items", .child = {.collection = &ring_entries}},
 };
 static const class_desc_t ring_cls = {
     .name = "ring",
@@ -295,7 +295,7 @@ static int count_children(struct object *o) {
 // free()d it -- skipping object_fire_invalidators and the destructor hook,
 // both of which object_delete runs.  The invalidator contract is what makes a
 // held node safe: shell_var.c's binding_store registers one on whatever
-// V_OBJECT it holds, so without the fire it kept a `watched` pointer into
+// VK_OBJECT it holds, so without the fire it kept a `watched` pointer into
 // freed memory, was never marked stale, and the next read dereferenced it.
 // This was the one path in the object model that opted out.
 TEST(test_root_reset_fires_invalidators) {

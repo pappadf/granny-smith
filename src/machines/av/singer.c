@@ -5,7 +5,7 @@
 // Singer codec + PSC sound frame engine — see singer.h.  The structural
 // twin of the VDC field engine: a cadenced scheduler event, guest-
 // programmed geometry (sndSize/pSndRate/bases), a host seam (audio out
-// via audio_out.h, audio in via the gs_audio_in seam), and interrupt
+// via audio_out.h, audio in via the platform_audio_in seam), and interrupt
 // lines (PSC-VIA2 bit 6 + DSP EXT1, both gated by pFrmIntEn).
 //
 // The engine is phase-locked to the same absolute time formula as the
@@ -23,16 +23,19 @@
 #include "dsp3210.h" // DSP3210_VEC_EXT1
 
 #include "audio_out.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "mmu.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "sound_surface.h"
 #include "system.h"
 #include "value.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,7 +56,7 @@ typedef enum {
     AIN_SRC_NONE = 0, // no microphone (default; input records silence)
     AIN_SRC_TONE, // deterministic sawtooth, pure function of the sample counter
     AIN_SRC_WAV, // a WAV loaded via machine.audioin.load (position checkpointed)
-    AIN_SRC_HOST, // the platform microphone through the gs_audio_in seam
+    AIN_SRC_HOST, // the platform microphone through the platform_audio_in seam
 } ain_src_t;
 
 struct av_singer {
@@ -224,7 +227,7 @@ static bool singer_ain_connected(av_singer_t *s) {
     case AIN_SRC_WAV:
         return s->wav_frames != 0;
     case AIN_SRC_HOST:
-        return gs_audio_in_connected();
+        return platform_audio_in_connected();
     default:
         return false;
     }
@@ -285,7 +288,7 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         break;
     }
     case AIN_SRC_HOST:
-        gs_audio_in_frames(s->stage, nframes, rate);
+        platform_audio_in_frames(s->stage, nframes, rate);
         break;
     default:
         break;
@@ -550,7 +553,7 @@ static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         // The platform's own view of the capture, when it has one: the
         // guest-side level says audio is missing, never which side lost it.
         char host[192];
-        if (!gs_audio_in_debug(host, sizeof host))
+        if (!platform_audio_in_debug(host, sizeof host))
             host[0] = 0;
         LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS) adgain %.2fx %s %s", ain_src_name(s->ain_src),
             s->ain_peak, pk, s->ain_level, rm, (double)s->ain_adgain / 65536.0, host,
@@ -645,14 +648,14 @@ static void singer_frame_event(void *source, uint64_t data) {
         LOG(2, "sndComCtl now $%04X at frame %llu (int %d out %d in %d)", com, (unsigned long long)frame,
             !!(com & SND_FRM_INT_EN), !!(com & SND_OUT_EN), !!(com & SND_IN_EN));
     // Host capture lifecycle, on the GUEST's own gate — the mirror of the
-    // VDC clock driving gs_video_in_state.  A browser platform attaches its
+    // VDC clock driving platform_video_in_state.  A browser platform attaches its
     // microphone track here, so the recording indicator is lit only while
     // the guest is genuinely recording.  This must NOT be driven from the
     // machine.audioin source setter: that merely echoes back the selection
     // the caller just made, which re-enters the frontend's own stream
     // reconciliation and races it.
     if ((com ^ s->last_com) & SND_IN_EN)
-        gs_audio_in_state((com & SND_IN_EN) != 0);
+        platform_audio_in_state((com & SND_IN_EN) != 0);
     s->last_com = com;
 
     if (com & SND_FRM_INT_EN) {
@@ -868,7 +871,7 @@ static DEF_METHOD(ain_method_inject) {
     if (singer_load_wav(s, argv[0].s) < 0)
         return val_err("audioin.inject: cannot load '%s' as a PCM16 WAV", argv[0].s);
     s->ain_src = AIN_SRC_WAV;
-    gs_audio_in_injected(argv[0].s);
+    platform_audio_in_injected(argv[0].s);
     return val_uint(4, s->wav_frames);
 }
 
@@ -916,60 +919,60 @@ static DEF_GETTER(ain_attr_peak) {
 
 static const arg_decl_t ain_load_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
 };
 
 static const member_t av_audioin_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "source",
      .doc = "Host audio source: none | tone | wav | host (microphone)",
-     .attr = {.type = V_STRING, .get = ain_attr_source_get, .set = ain_attr_source_set}                                                                                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ain_attr_source_get, .set = ain_attr_source_set}                                                                                                        },
+    {.kind = MK_ATTR,
      .name = "connected",
      .doc = "True when the source reports a signal (the mic-present sense)",
-     .attr = {.type = V_BOOL, .get = ain_attr_connected, .set = NULL}                                                                                                                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = ain_attr_connected, .set = NULL}                                                                                                                          },
+    {.kind = MK_ATTR,
      .name = "gain",
      .doc = "Input gain in percent (100 = unity; bring-up level sweeps)",
-     .attr = {.type = V_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}                                                                                                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "advise",
      .doc = "Judge the incoming audio ~1/s (level, clipping, spectrum); needs log.set singer level=1",
-     .attr = {.type = V_BOOL, .get = ain_attr_advise_get, .set = ain_attr_advise_set}                                                                                                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = ain_attr_advise_get, .set = ain_attr_advise_set}                                                                                                          },
+    {.kind = MK_ATTR,
      .name = "monitor",
      .doc = "Log the input level ~1/s; needs the singer category on: log.set singer level=1",
-     .attr = {.type = V_BOOL, .get = ain_attr_monitor_get, .set = ain_attr_monitor_set}                                                                                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = ain_attr_monitor_get, .set = ain_attr_monitor_set}                                                                                                        },
+    {.kind = MK_ATTR,
      .name = "level",
      .doc = "RMS of the last second of input, in int16 counts (the codec's dither floor is ~1)",
-     .attr = {.type = V_INT, .get = ain_attr_level, .set = NULL}                                                                                                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = ain_attr_level, .set = NULL}                                                                                                                               },
+    {.kind = MK_ATTR,
      .name = "peak",
      .doc = "Peak |sample| of the last second of input, in int16 counts",
-     .attr = {.type = V_INT, .get = ain_attr_peak, .set = NULL}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = ain_attr_peak, .set = NULL}                                                                                                                                },
+    {.kind = MK_ATTR,
      .name = "samples",
      .doc = "Sample frames pulled from the source since power-on",
-     .attr = {.type = V_UINT, .get = ain_attr_samples, .set = NULL}                                                                                                                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = ain_attr_samples, .set = NULL}                                                                                                                            },
+    {.kind = MK_ATTR,
      .name = "position",
      .doc = "Playback position in the loaded WAV (frames)",
-     .attr = {.type = V_UINT, .get = ain_attr_position, .set = NULL}                                                                                                                           },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = ain_attr_position, .set = NULL}                                                                                                                           },
+    {.kind = MK_METHOD,
      .name = "load",
      .doc = "Inject a PCM16 WAV as the microphone: selects the wav source and feeds it "
-            "from the top to whatever is listening; returns its length in frames",                     .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_load}  },
-    {.kind = M_METHOD,
+            "from the top to whatever is listening; returns its length in frames",                     .method = {.args = ain_load_args, .nargs = 1, .result = VK_UINT, .fn = ain_method_load}  },
+    {.kind = MK_METHOD,
      .name = "rewind",
      .doc = "Replay the loaded WAV from its start (no reload)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = ain_method_rewind}                                                                                                           },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = ain_method_rewind}                                                                                                           },
+    {.kind = MK_METHOD,
      .name = "inject",
      .doc = "Like load, and additionally monitors the file through the host "
-            "speakers (browser) so an audience hears what the guest was fed",                          .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_inject}},
+            "speakers (browser) so an audience hears what the guest was fed",                          .method = {.args = ain_load_args, .nargs = 1, .result = VK_UINT, .fn = ain_method_inject}},
 };
 
 static const class_desc_t av_audioin_class = {
@@ -1017,7 +1020,7 @@ static DEF_METHOD(ain_cap_method_stop) {
         return val_err("audioin not available");
     s->ain_cap_active = 0;
     uint64_t frames = s->ain_cap_n / 2;
-    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
+    if (argc >= 1 && argv[0].kind == VK_STRING && argv[0].s && *argv[0].s) {
         if (!s->ain_cap_n)
             return val_err("audioin.capture.stop: nothing captured — was a source connected?");
         if (audio_wav_write(argv[0].s, s->ain_cap, s->ain_cap_n, s->ain_cap_rate, 2) < 0)
@@ -1029,33 +1032,33 @@ static DEF_METHOD(ain_cap_method_stop) {
 
 static const arg_decl_t ain_cap_stop_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Write the capture here as a PCM16 WAV (replayable with audioin.load)"},
 };
 
 static const member_t ain_capture_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "active",
      .doc = "True while a capture is recording",
-     .attr = {.type = V_BOOL, .get = ain_cap_attr_active, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = ain_cap_attr_active, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "frames",
      .doc = "Sample frames accumulated in the current or last capture",
-     .attr = {.type = V_UINT, .get = ain_cap_attr_frames, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = ain_cap_attr_frames, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "seconds",
      .doc = "Length of the current or last capture, in seconds",
-     .attr = {.type = V_FLOAT, .get = ain_cap_attr_seconds, .set = NULL}                           },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_FLOAT, .get = ain_cap_attr_seconds, .set = NULL}                           },
+    {.kind = MK_METHOD,
      .name = "start",
      .doc = "Begin recording what the audio-in source delivers",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = ain_cap_method_start}            },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = ain_cap_method_start}            },
+    {.kind = MK_METHOD,
      .name = "stop",
      .doc = "Stop recording; with a path, write it as a WAV. Returns frames",
-     .method = {.args = ain_cap_stop_args, .nargs = 1, .result = V_UINT, .fn = ain_cap_method_stop}},
+     .method = {.args = ain_cap_stop_args, .nargs = 1, .result = VK_UINT, .fn = ain_cap_method_stop}},
 };
 
 static const class_desc_t av_audioin_capture_class = {

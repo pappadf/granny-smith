@@ -25,7 +25,7 @@
 // Keys
 // ============================================================================
 
-bool gs_key_within(const char *key, const char *parent) {
+bool source_key_within(const char *key, const char *parent) {
     if (!key || !parent || !*parent)
         return false;
     size_t n = strlen(parent);
@@ -42,7 +42,7 @@ typedef struct {
     char *key; // "<canonical path>@<size>:<mtime>"
 } host_src_t;
 
-static int64_t host_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t host_read(source_t *s, uint64_t off, void *buf, size_t len) {
     host_src_t *h = s->ctx;
     if (off >= h->size)
         return 0;
@@ -57,20 +57,20 @@ static int64_t host_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     }
 }
 
-static uint64_t host_size(gs_source_t *s) {
+static uint64_t host_size(source_t *s) {
     return ((host_src_t *)s->ctx)->size;
 }
 
-static const char *host_key(gs_source_t *s) {
+static const char *host_key(source_t *s) {
     return ((host_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t host_tier(gs_source_t *s) {
+static source_tier_t host_tier(source_t *s) {
     (void)s;
     return GS_TIER_RANDOM;
 }
 
-static void host_close(gs_source_t *s) {
+static void host_close(source_t *s) {
     host_src_t *h = s->ctx;
     if (!h)
         return;
@@ -80,9 +80,9 @@ static void host_close(gs_source_t *s) {
     free(h);
 }
 
-static const gs_source_ops_t host_ops = {host_read, host_size, host_key, host_tier, host_close};
+static const source_ops_t host_ops = {host_read, host_size, host_key, host_tier, host_close};
 
-gs_source_t *gs_source_host(const char *path, int *err) {
+source_t *source_host(const char *path, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -111,8 +111,7 @@ gs_source_t *gs_source_host(const char *path, int *err) {
     // The key names the file's content: the canonical path (one spelling for
     // every relative, absolute or symlinked route to it) plus size and mtime.
     char *canon = realpath(path, NULL);
-    char *key =
-        gs_str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, (uint64_t)st.st_size, (long long)st.st_mtime);
+    char *key = str_printf("%s@%" PRIu64 ":%lld", canon ? canon : path, (uint64_t)st.st_size, (long long)st.st_mtime);
     free(canon);
     if (!h || !key) {
         free(h);
@@ -124,7 +123,7 @@ gs_source_t *gs_source_host(const char *path, int *err) {
     h->fd = fd;
     h->size = (uint64_t)st.st_size;
     h->key = key;
-    gs_source_t *s = peel_source_new(&host_ops, h, NULL);
+    source_t *s = peel_source_new(&host_ops, h, NULL);
     if (!s)
         *err = -ENOMEM;
     return s;
@@ -134,15 +133,15 @@ gs_source_t *gs_source_host(const char *path, int *err) {
 // View and memory
 // ============================================================================
 
-gs_source_t *gs_source_view(gs_source_t *parent, uint64_t off, uint64_t len, const char *key) {
+source_t *source_view(source_t *parent, uint64_t off, uint64_t len, const char *key) {
     return peel_source_view_keyed(parent, off, len, key);
 }
 
-gs_source_t *gs_source_memory(const void *buf, size_t len, bool own, const char *key) {
+source_t *source_memory(const void *buf, size_t len, bool own, const char *key) {
     return peel_source_memory_keyed(buf, len, own, key);
 }
 
-// A parent lengthened with a zero tail carrying one patch (gs_source_pad).
+// A parent lengthened with a zero tail carrying one patch (source_pad).
 typedef struct {
     uint64_t size, psize, patch_off;
     uint8_t *patch;
@@ -150,7 +149,7 @@ typedef struct {
     char *key;
 } pad_src_t;
 
-static int64_t pad_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t pad_read(source_t *s, uint64_t off, void *buf, size_t len) {
     pad_src_t *p = s->ctx;
     if (off >= p->size)
         return 0;
@@ -166,19 +165,19 @@ static int64_t pad_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return (int64_t)len;
 }
 
-static uint64_t pad_size(gs_source_t *s) {
+static uint64_t pad_size(source_t *s) {
     return ((pad_src_t *)s->ctx)->size;
 }
 
-static const char *pad_key(gs_source_t *s) {
+static const char *pad_key(source_t *s) {
     return ((pad_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t pad_tier(gs_source_t *s) {
+static source_tier_t pad_tier(source_t *s) {
     return peel_source_tier(s->parent);
 }
 
-static void pad_close(gs_source_t *s) {
+static void pad_close(source_t *s) {
     pad_src_t *p = s->ctx;
     if (p) {
         free(p->patch);
@@ -187,10 +186,9 @@ static void pad_close(gs_source_t *s) {
     free(p);
 }
 
-static const gs_source_ops_t pad_ops = {pad_read, pad_size, pad_key, pad_tier, pad_close, NULL};
+static const source_ops_t pad_ops = {pad_read, pad_size, pad_key, pad_tier, pad_close, NULL};
 
-gs_source_t *gs_source_pad(gs_source_t *parent, uint64_t size, uint64_t patch_off, const void *patch,
-                           size_t patch_len) {
+source_t *source_pad(source_t *parent, uint64_t size, uint64_t patch_off, const void *patch, size_t patch_len) {
     if (!parent)
         return NULL;
     uint64_t psize = peel_source_size(parent);
@@ -205,10 +203,10 @@ gs_source_t *gs_source_pad(gs_source_t *parent, uint64_t size, uint64_t patch_of
     p->patch_off = patch_off;
     p->patch_len = patch_len;
     const char *pk = peel_source_key(parent);
-    p->key = gs_str_printf("%s#pad%" PRIu64, pk ? pk : "", size);
+    p->key = str_printf("%s#pad%" PRIu64, pk ? pk : "", size);
     p->patch = patch_len ? malloc(patch_len) : NULL;
     if (!p->key || (patch_len && !p->patch)) {
-        pad_close(&(gs_source_t){.ctx = p});
+        pad_close(&(source_t){.ctx = p});
         return NULL;
     }
     if (patch_len)
@@ -237,7 +235,7 @@ static char key_next(const char *k, size_t *i, bool skip_times) {
     return k[*i];
 }
 
-bool gs_key_same(const char *a, const char *b, bool ignore_host_times) {
+bool source_key_same(const char *a, const char *b, bool ignore_host_times) {
     if (!a || !b)
         return false;
     if (!ignore_host_times)
@@ -254,23 +252,23 @@ bool gs_key_same(const char *a, const char *b, bool ignore_host_times) {
     }
 }
 
-bool gs_key_same_source(const char *saved, const char *now) {
+bool source_key_same_source(const char *saved, const char *now) {
 #ifdef __EMSCRIPTEN__
-    return gs_key_same(saved, now, true);
+    return source_key_same(saved, now, true);
 #else
-    return gs_key_same(saved, now, false);
+    return source_key_same(saved, now, false);
 #endif
 }
 
-int gs_source_read_exact(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+int source_read_exact(source_t *s, uint64_t off, void *buf, size_t len) {
     int rc = peel_source_read_exact(s, off, buf, len);
     return rc == -5 ? -EIO : rc; // peeler's "short" is EIO's value; keep errno spelling
 }
 
-int gs_source_read_all(gs_source_t *s, size_t max, uint8_t **out, size_t *out_len) {
+int source_read_all(source_t *s, size_t max, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
-    uint64_t size = gs_source_size(s);
+    uint64_t size = source_size(s);
     if (size > max)
         return -EFBIG;
     if (size == 0)
@@ -278,7 +276,7 @@ int gs_source_read_all(gs_source_t *s, size_t max, uint8_t **out, size_t *out_le
     uint8_t *buf = malloc((size_t)size);
     if (!buf)
         return -ENOMEM;
-    int rc = gs_source_read_exact(s, 0, buf, (size_t)size);
+    int rc = source_read_exact(s, 0, buf, (size_t)size);
     if (rc != 0) {
         free(buf);
         return rc;
@@ -288,19 +286,19 @@ int gs_source_read_all(gs_source_t *s, size_t max, uint8_t **out, size_t *out_le
     return 0;
 }
 
-int gs_read_path(const char *path, size_t max, uint8_t **out, size_t *out_len) {
+int source_read_path(const char *path, size_t max, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
     int err = 0;
-    gs_source_t *s = gs_source_open_path(path, GS_FORK_DATA, &err);
+    source_t *s = source_open_path(path, GS_FORK_DATA, &err);
     if (!s)
         return err ? err : -ENOENT;
-    int rc = gs_source_read_all(s, max, out, out_len);
-    gs_source_release(s);
+    int rc = source_read_all(s, max, out, out_len);
+    source_release(s);
     return rc;
 }
 
-const char *gs_tier_name(gs_tier_t t) {
+const char *source_tier_name(source_tier_t t) {
     switch (t) {
     case GS_TIER_RANDOM:
         return "random";
@@ -320,14 +318,14 @@ const char *gs_tier_name(gs_tier_t t) {
 // Opening a path
 // ============================================================================
 
-static gs_path_opener_t g_opener;
+static source_path_opener_t g_opener;
 
-void gs_source_set_path_opener(gs_path_opener_t opener) {
+void source_set_path_opener(source_path_opener_t opener) {
     g_opener = opener;
 }
 
-gs_source_t *gs_source_open_path(const char *path, gs_fork_t fork, int *err) {
-    return (g_opener ? g_opener : gs_source_open_host_path)(path, fork, err);
+source_t *source_open_path(const char *path, source_fork_t fork, int *err) {
+    return (g_opener ? g_opener : source_open_host_path)(path, fork, err);
 }
 
 // "<dir>/<prefix><name>" for `path`.
@@ -341,17 +339,17 @@ static void sidecar_path(const char *path, const char *prefix, char *out, size_t
 
 // A fork out of the AppleDouble / AppleSingle companion of `path`: "._NAME",
 // then the legacy "%NAME".  NULL when there is none (or it lacks the fork).
-static gs_source_t *sidecar_fork(const char *path, gs_fork_t fork) {
+static source_t *sidecar_fork(const char *path, source_fork_t fork) {
     static const char *const prefixes[] = {"._", "%"};
     char side[PATH_MAX];
     for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
         sidecar_path(path, prefixes[i], side, sizeof(side));
         uint8_t *raw = NULL;
         size_t raw_len = 0;
-        if (gs_read_file(side, RFORK_MAX_FORK_LEN + 65536, &raw, &raw_len) != 0)
+        if (read_file(side, RFORK_MAX_FORK_LEN + 65536, &raw, &raw_len) != 0)
             continue;
         ad_file_t ad;
-        gs_source_t *s = NULL;
+        source_t *s = NULL;
         if (ad_detect(raw, raw_len) && ad_parse(raw, raw_len, &ad) == 0) {
             const uint8_t *p = fork == GS_FORK_RSRC ? ad.rsrc : ad.finder;
             size_t n = fork == GS_FORK_RSRC ? ad.rsrc_len : ad.finder_len;
@@ -361,8 +359,8 @@ static gs_source_t *sidecar_fork(const char *path, gs_fork_t fork) {
                 uint8_t *copy = calloc(1, keep);
                 if (copy) {
                     memcpy(copy, p, n < keep ? n : keep);
-                    char *key = gs_str_printf("%s/%s", side, fork == GS_FORK_RSRC ? "rsrc" : "finf");
-                    s = gs_source_memory(copy, keep, true, key);
+                    char *key = str_printf("%s/%s", side, fork == GS_FORK_RSRC ? "rsrc" : "finf");
+                    s = source_memory(copy, keep, true, key);
                     free(key);
                 }
             }
@@ -374,14 +372,14 @@ static gs_source_t *sidecar_fork(const char *path, gs_fork_t fork) {
     return NULL;
 }
 
-gs_source_t *gs_source_open_host_path(const char *path, gs_fork_t fork, int *err) {
+source_t *source_open_host_path(const char *path, source_fork_t fork, int *err) {
     int e = 0;
     if (!err)
         err = &e;
     *err = 0;
     if (fork == GS_FORK_DATA)
-        return gs_source_host(path, err);
-    gs_source_t *s = sidecar_fork(path, fork);
+        return source_host(path, err);
+    source_t *s = sidecar_fork(path, fork);
     if (s)
         return s;
     if (fork == GS_FORK_RSRC) {
@@ -390,7 +388,7 @@ gs_source_t *gs_source_open_host_path(const char *path, gs_fork_t fork, int *err
         snprintf(raw, sizeof(raw), "%s.rsrc", path);
         struct stat st;
         if (stat(raw, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
-            return gs_source_host(raw, err);
+            return source_host(raw, err);
     }
     *err = -ENOENT;
     return NULL;

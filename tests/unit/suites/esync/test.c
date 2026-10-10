@@ -20,18 +20,11 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
-// --- globals referenced by the memory.h inline helpers ----------------------
-uint32_t g_io_penalty_remainder = 0;
-uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi_x256 = 0;
-uint32_t *g_sprint_burndown_ptr = NULL;
-uint32_t g_io_stall_owed = 0;
-uint32_t g_sprint_unrun_slots = 0;
-uint64_t g_sprint_base_cycles = 0;
-uint32_t g_sprint_frac_x256 = 0;
-uint32_t g_sprint_total_slots = 0;
-uint32_t g_esync_period_x256 = 0;
+// --- the sprint state the memory.h inline helpers use (stored in memory.c,
+// which this suite does not link) ---------------------------------------------
+sprint_io_t g_sprint_io;
 
 // E period x256 for a CPU frequency (the scheduler_set_frequency formula)
 static uint32_t period_x256(uint32_t freq_hz) {
@@ -112,14 +105,14 @@ TEST(test_tight_loop_locks_to_one_access_per_period) {
 TEST(test_wrapper_charges_via_penalty_slots) {
     // Simulate a sprint: CPI 4 (x256 = 1024), base cycles 0, 1000-slot budget.
     uint32_t burndown = 1000;
-    g_io_cpi_x256 = 4 << 8;
-    g_io_penalty_remainder = 0;
-    g_io_phantom_instructions = 0;
-    g_sprint_base_cycles = 0;
-    g_sprint_frac_x256 = 0;
-    g_sprint_total_slots = 1000;
-    g_sprint_burndown_ptr = &burndown;
-    g_esync_period_x256 = period_x256(15667200); // 20-cycle grid
+    g_sprint_io.cpi_x256 = 4 << 8;
+    g_sprint_io.penalty_remainder = 0;
+    g_sprint_io.phantom_instructions = 0;
+    g_sprint_io.base_cycles = 0;
+    g_sprint_io.frac_x256 = 0;
+    g_sprint_io.total_slots = 1000;
+    g_sprint_io.burndown = &burndown;
+    g_sprint_io.esync_period_x256 = period_x256(15667200); // 20-cycle grid
 
     // First access at slot 0 (now = 0): pays a full 20-cycle period = 5
     // slots of burndown at CPI 4.
@@ -134,28 +127,28 @@ TEST(test_wrapper_charges_via_penalty_slots) {
     ASSERT_EQ_INT((int)burndown, 990);
 
     // Disabled paths: no CPI (no sprint armed) or no grid → no charge
-    g_io_cpi_x256 = 0;
+    g_sprint_io.cpi_x256 = 0;
     memory_io_esync_penalty();
     ASSERT_EQ_INT((int)burndown, 990);
-    g_io_cpi_x256 = 4 << 8;
-    g_esync_period_x256 = 0;
+    g_sprint_io.cpi_x256 = 4 << 8;
+    g_sprint_io.esync_period_x256 = 0;
     memory_io_esync_penalty();
     ASSERT_EQ_INT((int)burndown, 990);
 
-    g_sprint_burndown_ptr = NULL;
+    g_sprint_io.burndown = NULL;
 }
 
 // Outside a sprint (an inspection access dispatching into a device handler)
 // a penalty never touches guest timing: no burn, no remainder.
 TEST(test_penalty_outside_a_sprint_is_ignored) {
-    g_io_cpi_x256 = 4 << 8;
-    g_io_penalty_remainder = 0;
-    g_io_phantom_instructions = 0;
-    g_sprint_burndown_ptr = NULL;
+    g_sprint_io.cpi_x256 = 4 << 8;
+    g_sprint_io.penalty_remainder = 0;
+    g_sprint_io.phantom_instructions = 0;
+    g_sprint_io.burndown = NULL;
     memory_io_penalty(20);
-    ASSERT_EQ_INT((int)g_io_penalty_remainder, 0);
-    ASSERT_EQ_INT((int)g_io_phantom_instructions, 0);
-    g_io_cpi_x256 = 0;
+    ASSERT_EQ_INT((int)g_sprint_io.penalty_remainder, 0);
+    ASSERT_EQ_INT((int)g_sprint_io.phantom_instructions, 0);
+    g_sprint_io.cpi_x256 = 0;
 }
 
 TEST(test_wrapper_fractional_cpi) {
@@ -163,27 +156,27 @@ TEST(test_wrapper_fractional_cpi) {
     // burns floor(20 / 1.5) = 13 slots and carries the remaining half slot
     // (x256 cycles: 5120 - 13*384 = 128) into the next charge.
     uint32_t burndown = 1000;
-    g_io_cpi_x256 = 384;
-    g_io_penalty_remainder = 0;
-    g_io_phantom_instructions = 0;
-    g_sprint_base_cycles = 0;
-    g_sprint_frac_x256 = 0;
-    g_sprint_total_slots = 1000;
-    g_sprint_burndown_ptr = &burndown;
-    g_esync_period_x256 = 0; // charge raw penalties, not the E grid
+    g_sprint_io.cpi_x256 = 384;
+    g_sprint_io.penalty_remainder = 0;
+    g_sprint_io.phantom_instructions = 0;
+    g_sprint_io.base_cycles = 0;
+    g_sprint_io.frac_x256 = 0;
+    g_sprint_io.total_slots = 1000;
+    g_sprint_io.burndown = &burndown;
+    g_sprint_io.esync_period_x256 = 0; // charge raw penalties, not the E grid
 
     memory_io_penalty(20);
     ASSERT_EQ_INT((int)burndown, 1000 - 13);
-    ASSERT_EQ_INT((int)g_io_penalty_remainder, 20 * 256 - 13 * 384); // 128
+    ASSERT_EQ_INT((int)g_sprint_io.penalty_remainder, 20 * 256 - 13 * 384); // 128
 
     // Second 20-cycle penalty: (5120 + 128) / 384 = 13 slots, remainder 256
     // x256 cycles (one whole cycle banked toward the next burn) — no penalty
     // time is ever dropped at fractional CPIs.
     memory_io_penalty(20);
     ASSERT_EQ_INT((int)burndown, 1000 - 26);
-    ASSERT_EQ_INT((int)g_io_penalty_remainder, 256);
+    ASSERT_EQ_INT((int)g_sprint_io.penalty_remainder, 256);
 
-    g_sprint_burndown_ptr = NULL;
+    g_sprint_io.burndown = NULL;
 }
 
 // ============================================================================

@@ -13,7 +13,7 @@
 // source of truth.
 
 #include "rom.h"
-#include "gs_out.h"
+#include "out.h"
 #include "source.h"
 
 #include "machine_profile.h"
@@ -236,11 +236,11 @@ int rom_info_compatible_count(const rom_info_t *info) {
 uint8_t *rom_read_file(const char *filename, size_t *out_size, bool quiet) {
     uint8_t *rom_data = NULL;
     size_t file_size = 0;
-    int rc = gs_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
+    int rc = source_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
     if (rc != 0 || file_size == 0) {
         free(rom_data);
         if (!quiet)
-            gs_outf("Failed to read ROM file: %s\n", filename);
+            out_printf("Failed to read ROM file: %s\n", filename);
         return NULL;
     }
     *out_size = file_size;
@@ -318,7 +318,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
             }
         }
     } else {
-        gs_outf("Lisa ROM: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
+        out_printf("Lisa ROM: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
     }
 
     free(a);
@@ -328,7 +328,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
     rom_identity_t id;
     rom_identity_compute(combined, LISA_ROM_SIZE, &id);
     if (id.kind != ROM_KIND_LISA || !id.intact)
-        gs_outf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
+        out_printf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
     *out_size = LISA_ROM_SIZE;
     return combined;
 }
@@ -390,7 +390,7 @@ static DEF_GETTER(rom_attr_name) {
 // recognised: the id is in the ROM table; supported: its row names at least
 // one emulated model (compatible).  An unrecognised file still reports its
 // kind, id, intact and reason.  id is the only field anything names a file by,
-// and only when intact.  Returns V_ERROR if the path can not be opened (caller
+// and only when intact.  Returns VK_ERROR if the path can not be opened (caller
 // treats that as "no info, skip this entry").
 static DEF_METHOD(rom_method_identify) {
     rom_file_info_t fi = {0};
@@ -420,38 +420,38 @@ static DEF_METHOD(rom_method_identify) {
 }
 
 static const arg_decl_t rom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "ROM file path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "ROM file path"},
 };
 
 static const member_t rom_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Path of the currently loaded ROM (empty if none)",
-     .attr = {.type = V_STRING, .get = rom_attr_path, .set = NULL}                                                                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = rom_attr_path, .set = NULL}                                                                                                                  },
+    {.kind = MK_ATTR,
      .name = "loaded",
      .doc = "True if a ROM has been loaded into the active machine",
-     .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}                                                                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = rom_attr_loaded, .set = NULL}                                                                                                                  },
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Content id of the loaded ROM (its own stored checksum fields, lowercase hex)",
-     .attr = {.type = V_STRING, .get = rom_attr_id, .set = NULL}                                                                                                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = rom_attr_id, .set = NULL}                                                                                                                    },
+    {.kind = MK_ATTR,
      .name = "intact",
      .doc = "True if the loaded ROM's own checksum verifies",
-     .attr = {.type = V_BOOL, .get = rom_attr_intact, .set = NULL}                                                                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = rom_attr_intact, .set = NULL}                                                                                                                  },
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "ROM region size in bytes",
-     .attr = {.type = V_UINT, .get = rom_attr_size, .set = NULL}                                                                                                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = rom_attr_size, .set = NULL}                                                                                                                    },
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "Family name of the loaded ROM (e.g. \"Universal IIx/IIcx/SE/30 ROM\")",
-     .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}                                                                                                                  },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = rom_attr_name, .set = NULL}                                                                                                                  },
+    {.kind = MK_METHOD,
      .name = "identify",
      .doc = "Return a typed info map for a ROM file "
-            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)",    .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
+            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)",    .method = {.args = rom_path_arg, .nargs = 1, .result = VK_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {

@@ -55,6 +55,8 @@ The header records `block_size`, so a delta is self-describing: reopen validates
 
 The current bitmap and table track what has been written; the committed copies are a snapshot at the last successful checkpoint. Both are kept in memory and flushed to the delta at checkpoint time, after the data they point at.
 
+**Byte order.** Every multi-byte field is little-endian: the header (written field by field), the journal's LBAs, and the cluster tables (arrays of `uint32_t` stored in place, which `storage.c` asserts at build time is little-endian on the host — every target is). A bitmap is a byte stream with no byte order: block N is bit `N & 7` (least significant first) of byte `N >> 3`.
+
 **Version 1** (still opened, never created) is a 24-byte header (magic, version 1, `block_count`, `block_size`, reserved), the two bitmaps, and a block area with block N at `24 + 2·bm + N × block_size`.
 
 ## 4. Journal Format
@@ -62,14 +64,14 @@ The current bitmap and table track what has been written; the committed copies a
 The journal is an append-only file of preimage entries:
 
 ```
-[uint32_t LBA][block_size bytes block data]   # 4 + block_size bytes per entry
+[uint32_t LBA, little-endian][block_size bytes block data]   # 4 + block_size bytes per entry
 ```
 
 The entry stride follows the instance's `block_size` (516 bytes for a 512-byte
 disk, 536 for a 532-byte ProFile); the header's `block_size` lets a reopen
 recompute it.
 
-Before overwriting a committed block in the delta, the storage engine appends the old data to the journal. This enables crash recovery: if the browser closes between checkpoints, the journal can be replayed to restore the delta to its last committed state.
+Before overwriting a committed block in the delta, the storage engine appends the old data to the journal and flushes it, so the preimage is out of the journal's stdio buffer before the overwrite can leave the delta's (write-ahead). This enables crash recovery: if the browser closes between checkpoints, the journal can be replayed to restore the delta to its last committed state. A block is journaled once per commit: an in-memory bitmap (one bit per block) records which blocks already have a preimage, so the check on each write is O(1), and a commit clears it with the journal.
 
 ## 5. API Summary
 
@@ -91,31 +93,36 @@ int storage_load_state(storage_t*, void* ctx, storage_read_callback_t cb);
 
 | Field | Meaning |
 | ----- | ------- |
-| `base_path` | Path to original image file (read-only). |
+| `base` | The original image as a read-only byte source (`source.h`), or NULL for a blank disk. A DiskCopy header, an NDIF chunk map or an archive member is a source of its own, so no offset is needed. |
 | `delta_path` | Path to delta file (created if missing). |
 | `journal_path` | Path to preimage journal (created if missing). |
 | `block_count` | Number of logical blocks. |
 | `block_size` | Bytes per block: a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (512 default, 532 for a ProFile). |
-| `base_data_offset` | Byte offset to data in base file (e.g. DiskCopy header skip). |
+
+`storage_checkpoint` needs a checkpoint stream (NULL is an error); a commit without one is `storage_clear_rollback`.
 
 ## 6. Reads & Writes
 
-**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read one block (`block_size` bytes). Otherwise, seek into the base file and read. If no base file exists, return zeros.
+**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read one block (`block_size` bytes). Otherwise, read it from the base. If no base exists, or the block lies past the end of a base shorter than the geometry, return zeros. A block that is there and cannot be read — from the delta or the base — is an error (`STATUS_E_IO`, buffer zeroed), never silent zeros.
 
 **Write:**
 1. If the block is committed (bit set in committed bitmap) and not yet journaled, read the old data from the delta and append it to the journal.
 2. Seek into the delta's data area and write one block (`block_size` bytes).
-3. Set the bitmap bit (in memory only — flushed at checkpoint time).
+3. Set the bitmap bit (in memory only — flushed at checkpoint time, after the block data, so the on-disk bitmap never names a block still in the delta's stdio buffer).
 
 Common case (no preimage needed): one seek + one write.
 
 ## 7. Checkpoint Integration
 
+Every storage snapshot in a checkpoint starts with a 24-byte little-endian header, written field by field: `version` (u32), `has_data` (u8, 1 for consolidated), 3 reserved bytes, `block_count` (u64), `block_size` (u32), 4 reserved bytes. The quick payload's `cluster_blocks` (u32) and slot count (u64) are little-endian too.
+
 **Quick checkpoints:** `storage_checkpoint()` writes the current bitmap to the checkpoint stream (in-memory, fast), then the delta's layout: `cluster_blocks` (0 for a v1 delta), the slots in use, and the cluster table. Then `storage_clear_rollback()` copies the current bitmap and table to committed, records the slot high-water mark, flushes the metadata to the delta, and truncates the journal. If no blocks were modified since the last checkpoint, the flush is skipped entirely (zero OPFS I/O).
 
-**Consolidated checkpoints:** `storage_save_state()` streams every block (from delta where bitmap is set, from base otherwise) into the checkpoint.
+**Consolidated checkpoints:** `storage_save_state()` streams every block (from delta where bitmap is set, from base otherwise) into the checkpoint. The stream reads as `storage_read_block` does: a block past the end of a short base streams as zeros, and a block the base holds and cannot read fails the stream with `STATUS_E_IO` — an export or a consolidated checkpoint never embeds zeros in its place. `image_checkpoint` then marks the checkpoint failed, so its `.tmp` is never renamed over a good one.
 
-**Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The delta's block data is already correct (OPFS auto-persisted every write).
+A restore that has no disk to load a snapshot into skips it. It checks the snapshot's geometry first, as `storage_new` would: a block size outside `[512, STORAGE_MAX_BLOCK_SIZE]` or a block count past `UINT32_MAX` is refused (`STATUS_E_INVAL`), so a crafted checkpoint cannot overrun the skip's stack buffer.
+
+**Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The rollback comes first because the emulator may have kept running after the checkpoint was saved: the blocks it overwrote since are restored from their preimages and the slots it allocated are cut away, which leaves the delta's data exactly as it was at the commit the checkpoint made. The checkpoint's bitmap and table then name that data.
 
 **Restore from consolidated checkpoint:** `storage_load_state()` reads all blocks into the delta, sets all bitmap bits, and commits. The stream yields a block at a time, but the delta is written a run at a time (blocks whose delta positions are contiguous, up to the 4 MB streaming chunk): a seek and write per block was a filesystem call per 512 bytes, which under WasmFS/OPFS made opening a Save State with a hard disk take minutes.
 
@@ -132,7 +139,7 @@ If the browser closes between checkpoints, the delta may contain uncommitted mod
 
 This restores the delta to its last committed state. The operation is idempotent.
 
-**When to call:** If no checkpoint will be loaded (fresh boot with existing delta), call `storage_apply_rollback()` before normal operation. If a checkpoint will be loaded, skip rollback — the checkpoint's bitmap is authoritative and the delta data is correct.
+**When to call:** If no checkpoint will be loaded (fresh boot with existing delta), call `storage_apply_rollback()` before normal operation. If a quick checkpoint will be loaded, there is no need: `storage_restore_from_checkpoint()` rolls back itself before applying the checkpoint's bitmap.
 
 ## 9. Recovery
 
@@ -145,7 +152,7 @@ Unit tests live in `tests/unit/suites/storage/test.c` and exercise:
 - Basic read/write with base image verification
 - State save/load round-trip
 - Delta persistence across close/reopen
-- Rollback (preimage journal replay)
+- Rollback (preimage journal replay); one preimage per block per commit
 - Delta v2: the last block of a 2 GiB disk costs the metadata and one slot; rollback truncates the slots allocated since the commit; a reopen without one lands at the commit; a v1 delta still opens, reads, and rolls back
 
 ## 11. Resource forks as VFS paths

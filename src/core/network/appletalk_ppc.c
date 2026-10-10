@@ -22,6 +22,7 @@
 #include "appletalk_adsp.h"
 #include "appletalk_internal.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "value.h"
@@ -444,7 +445,7 @@ static void ppc_on_nbp_reply(void *ctx, const atalk_nbp_info_t *info) {
     (void)ctx;
     if (!info || !g_ppc->browse_active)
         return;
-    if (info->node == LLAP_HOST_NODE)
+    if (info->node == ATALK_HOST_NODE)
         return; // that is our own advertisement
     for (int i = 0; i < g_ppc->machine_count; i++) {
         if (g_ppc->machines[i].node == info->node && g_ppc->machines[i].socket == info->socket)
@@ -943,7 +944,7 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
         .type = PPC_NBP_TYPE,
         .zone = "*",
         .socket = PPC_HOST_SOCKET,
-        .node = LLAP_HOST_NODE,
+        .node = ATALK_HOST_NODE,
         .net = 0,
     };
     if (atalk_nbp_publish(&g_host->nbp, &desc) != 0) {
@@ -1081,30 +1082,30 @@ static DEF_GETTER(ppc_port_attr_auth) {
 }
 
 static const member_t ppc_port_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "Port name as the guest's PPC browser shows it",
-     .attr = {.type = V_STRING, .get = ppc_port_attr_name}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ppc_port_attr_name}            },
+    {.kind = MK_ATTR,
      .name = "type",
      .doc = "Port type string; applications use <signature>ep01",
-     .attr = {.type = V_STRING, .get = ppc_port_attr_type}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ppc_port_attr_type}            },
+    {.kind = MK_ATTR,
      .name = "machine",
      .doc = "NBP name of the machine holding the port",
-     .attr = {.type = V_STRING, .get = ppc_port_attr_machine}         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ppc_port_attr_machine}         },
+    {.kind = MK_ATTR,
      .name = "node",
      .doc = "LLAP node of that machine",
-     .attr = {.type = V_UINT, .width = 1, .get = ppc_port_attr_node}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .get = ppc_port_attr_node}  },
+    {.kind = MK_ATTR,
      .name = "socket",
      .doc = "Its PPC connection-listening socket",
-     .attr = {.type = V_UINT, .width = 1, .get = ppc_port_attr_socket}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .get = ppc_port_attr_socket}},
+    {.kind = MK_ATTR,
      .name = "auth_required",
      .doc = "True if the port refuses guest links",
-     .attr = {.type = V_BOOL, .get = ppc_port_attr_auth}              },
+     .attr = {.type = VK_BOOL, .get = ppc_port_attr_auth}              },
 };
 
 static const class_desc_t ppc_port_class = {
@@ -1176,34 +1177,34 @@ static DEF_GETTER(ppc_session_attr_bytes_out) {
 }
 
 static const member_t ppc_session_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identity of this session",
-     .attr = {.type = V_UINT, .width = 4, .get = ppc_session_attr_id}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 4, .get = ppc_session_attr_id}                               },
+    {.kind = MK_ATTR,
      .name = "state",
      .doc = "Session state",
-     .attr = {.type = V_ENUM, .enum_values = PPC_SESSION_STATE_NAMES, .get = ppc_session_attr_state}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .enum_values = PPC_SESSION_STATE_NAMES, .get = ppc_session_attr_state}},
+    {.kind = MK_ATTR,
      .name = "role",
      .doc = "initiator if we asked for the session, else responder",
-     .attr = {.type = V_STRING, .get = ppc_session_attr_role}                                       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ppc_session_attr_role}                                       },
+    {.kind = MK_ATTR,
      .name = "port",
      .doc = "The port at the far end",
-     .attr = {.type = V_STRING, .get = ppc_session_attr_port}                                       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = ppc_session_attr_port}                                       },
+    {.kind = MK_ATTR,
      .name = "peer_node",
      .doc = "LLAP node of the far end",
-     .attr = {.type = V_UINT, .width = 1, .get = ppc_session_attr_peer_node}                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 1, .get = ppc_session_attr_peer_node}                        },
+    {.kind = MK_ATTR,
      .name = "bytes_in",
      .doc = "Session bytes received",
-     .attr = {.type = V_UINT, .width = 8, .get = ppc_session_attr_bytes_in}                         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .width = 8, .get = ppc_session_attr_bytes_in}                         },
+    {.kind = MK_ATTR,
      .name = "bytes_out",
      .doc = "Session bytes sent",
-     .attr = {.type = V_UINT, .width = 8, .get = ppc_session_attr_bytes_out}                        },
+     .attr = {.type = VK_UINT, .width = 8, .get = ppc_session_attr_bytes_out}                        },
 };
 
 static const class_desc_t ppc_session_class = {
@@ -1283,14 +1284,14 @@ static DEF_GETTER(ppc_attr_browsing) {
 }
 
 static const member_t ppc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "browsing",
      .doc = "True while a port browse is still waiting on the network",
-     .attr = {.type = V_BOOL, .get = ppc_attr_browsing}                                                    },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = ppc_attr_browsing}                                                    },
+    {.kind = MK_METHOD,
      .name = "browse",
      .doc = "Look for program-linking ports on the network; run the scheduler, then read `ports`",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = ppc_method_browse, .ui_flags = MM_MUTATE}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = ppc_method_browse, .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t ppc_class = {

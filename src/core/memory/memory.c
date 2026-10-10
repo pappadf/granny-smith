@@ -9,14 +9,17 @@
 // ============================================================================
 
 #include "memory.h"
-#include "gs_out.h"
 #include "lisa_mmu.h"
+#include "memory_class.h"
 #include "mmu.h"
+#include "out.h"
 
 #include "addr_format.h"
+#include "checkpoint.h"
 #include "common.h"
 #include "cpu.h"
 #include "debug.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "platform.h"
@@ -44,14 +47,8 @@ bool memory_addr_faults_when_unmapped(uint32_t addr) {
 
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
-
-// Forward declarations — class descriptors are at the bottom of the file but
-// memory_map_init / memory_map_delete reference them.
-static const class_desc_t memory_class;
-static const class_desc_t mem_peek_class;
-static const class_desc_t mem_poke_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -62,7 +59,14 @@ static const class_desc_t mem_poke_class;
 // Constants and Macros
 // ============================================================================
 
-// Page table globals (defined here, declared extern in memory.h)
+// Page table globals (defined here, declared extern in memory.h).
+//
+// One map is active at a time, by design: the fast path reads these globals
+// rather than taking a memory_map_t*, because threading a context pointer
+// through every guest memory access would cost the hot path for a use (two
+// maps live at once) nothing needs.  Each map owns its arrays; these alias
+// the selected one (memory_map_select), so building or inspecting a second
+// machine means selecting its map, not sharing state.
 page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0; // set by memory_map_init; 0 here means "pre-init, do not use"
 uint32_t g_page_count = 0; // number of pages in current page table
@@ -82,12 +86,8 @@ uintptr_t *g_active_write = NULL;
 bool g_bus_error_pending = false;
 uint32_t g_bus_error_address = 0;
 bool g_bus_error_rw = false;
-// FC value (SSW[2:0]) of the faulting access.  Set alongside g_bus_error_pending
-// so exception frame reflects the FC the access was issued with — critical for
-// MOVES in a kernel that points DFC/SFC at user-data while in supervisor mode
-// (A/UX's copyin/copyout/copyinstr path).  If the frame's FC bits say
-// supervisor-data for what was really a user-data probe, the kernel's
-// page-fault arbiter will treat it as a kernel fault and skip demand-fill.
+// FC (SSW[2:0]) of the faulting access, set with g_bus_error_pending; see
+// docs/internals/core/memory/memory.md ("The faulting function code").
 uint32_t g_bus_error_fc = 5;
 // 1 if the fault came from a PMMU descriptor failure (invalid/perm/write-
 // protect) and the handler is expected to fix-up the PTE and retry; 0 if the
@@ -103,20 +103,10 @@ uint32_t *g_bus_error_instr_ptr = NULL;
 // host-region list and its fill walk.
 void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable) = NULL;
 
-// I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
-// Penalty cycles are converted to "phantom instructions" that consume sprint
-// burndown slots, causing sprints with I/O to end sooner and keeping event
-// timing accurate.
-uint32_t g_io_penalty_remainder = 0; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
-uint64_t g_sprint_base_cycles = 0; // scheduler cpu_cycles at sprint start
-uint32_t g_sprint_frac_x256 = 0; // sub-cycle remainder at sprint start (x256)
-uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
-uint32_t g_esync_period_x256 = 0; // E period in CPU cycles x256 (0 = unset)
-uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sprint
-uint32_t g_sprint_unrun_slots = 0;
-uint32_t g_io_stall_owed = 0; // stall slots owed past the sprint's end
-uint32_t g_io_cpi_x256 = 0; // effective CPI for penalty conversion, x256 (0 = disabled)
-uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown during sprint
+// The running sprint's state shared with the slow paths (memory.h).  The
+// scheduler sets it up at each sprint's start and harvests it at its end;
+// it is stored here so every build that links the memory slow paths has it.
+sprint_io_t g_sprint_io;
 
 // Memory logpoint support: non-zero entries force the page through the slow
 // path even when the underlying page is plain RAM/ROM.  See memory.h.
@@ -159,27 +149,6 @@ uint64_t g_mem_slowpath_count = 0;
 #define MEM_SLOWPATH_BUCKET(a) (((a) < 0x01000000u) ? (((a) >> 20) & 0xFu) : (0x10u | (((a) >> 28) & 0xFu)))
 uint64_t g_mem_slowpath_hist[32] = {0};
 
-// Value-trap support: catches a specific (PA, size, value) write on the fast
-// path.  Disabled when g_value_trap_active == 0 (the common case).
-uint32_t g_value_trap_active = 0;
-uint32_t g_value_trap_pa = 0;
-uint32_t g_value_trap_value = 0;
-uint32_t g_value_trap_size = 0;
-value_trap_hook_t g_value_trap_hook = NULL;
-
-void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size) {
-    // Compute physical address.  Translate via active SoA mode (super or user).
-    uint32_t phys_addr = logical_addr;
-    if (g_mmu && g_mmu->enabled) {
-        bool supervisor = (g_active_write == g_supervisor_write);
-        phys_addr = mmu_translate_debug(g_mmu, logical_addr, supervisor);
-    }
-    if (phys_addr != g_value_trap_pa)
-        return;
-    if (g_value_trap_hook)
-        g_value_trap_hook(logical_addr, phys_addr, value, size);
-}
-
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -192,6 +161,18 @@ typedef struct mapping {
     uint32_t size;
     memory_interface_t memory_interface;
 } mapping_t;
+
+// Host regions on a machine with no 68k MMU (the PowerPC families): the
+// page-fill hook is the machine's own physical view, so memory_map_host_region
+// fills straight into it and remembers the window here -- the alias call is
+// the only thing that needs to look one up again.
+#define MEM_HOST_FILL_MAX 16
+typedef struct mem_host_fill_region {
+    uint8_t *host;
+    uint32_t phys_base;
+    uint32_t size;
+    bool writable;
+} mem_host_fill_region_t;
 
 typedef struct memory {
 
@@ -206,14 +187,23 @@ typedef struct memory {
     uint32_t address_mask;
     uintptr_t *supervisor_read, *supervisor_write, *user_read, *user_write;
     uint16_t *logpoint_page_count, *logpoint_phys_page_count;
-    tlb_track_t *tlb_track; // pages populated since the last invalidation (mmu.c)
+    // SoA population tracker: the page indices written into the SoA arrays
+    // since the last invalidation, so memory_soa_invalidate zeroes those
+    // rather than the whole arrays.  A list that outgrows its capacity
+    // (TLB_TRACK_LIMIT) sets track_overflow, and the next invalidation
+    // zeroes everything instead.
+    uint32_t *track_page;
+    uint32_t track_count, track_cap;
+    bool track_overflow;
 
     // What the machine hangs on its map (aliased while selected).
     memory_cpu_hooks_t cpu_hooks;
     void (*host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
     struct mmu_state *pmmu;
     struct lisa_mmu *lisa_mmu;
-    void *host_fill_regions; // mmu.c's table
+    // Host windows filled through host_fill (memory_map_host_region)
+    mem_host_fill_region_t host_fill_regions[MEM_HOST_FILL_MAX];
+    int host_fill_count;
 
     // The board's bus-error window (aliased by g_bus_err_lo/hi while installed)
     memory_bus_err_window_t bus_err;
@@ -225,7 +215,10 @@ typedef struct memory {
     uint32_t ram_size; // RAM region size in bytes
     uint32_t rom_size; // ROM content size in bytes
 
-    // Path to the ROM file loaded via cmd_rom (if any)
+    // Path of the ROM file the map was built with (or the one a checkpoint
+    // names), reported as rom.path and written back into checkpoints; NULL
+    // when the ROM came from bytes with no file behind them.  The ROM's
+    // identity is computed from the bytes on demand (rom.c), not stored.
     char *rom_filename;
 
     // Object-tree binding — lifetime tied to memory_map_init / delete.
@@ -270,7 +263,7 @@ static inline bool can_lazy_install(uint32_t page, const page_entry_t *pe) {
 // logpoints armed even the call/return overhead was measurable (~3% of a
 // PDM boot under callgrind).
 static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writable_out) {
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     bool logical_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[page];
     bool phys_watched = false;
     uint32_t phys_addr = addr;
@@ -291,8 +284,8 @@ static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writa
     // MMU-translated, PPC-translated, or the address itself (which IS
     // physical when a PPC slow translation already rewrote it, and equals
     // logical on MMU-less machines).
-    if (g_mem_logpoint_phys_page_count && (phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count &&
-        g_mem_logpoint_phys_page_count[phys_addr >> PAGE_SHIFT])
+    if (g_mem_logpoint_phys_page_count && (phys_addr >> MEM_PAGE_SHIFT) < (uint32_t)g_page_count &&
+        g_mem_logpoint_phys_page_count[phys_addr >> MEM_PAGE_SHIFT])
         phys_watched = true;
 
     if (!logical_watched && !phys_watched)
@@ -301,14 +294,14 @@ static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writa
     if (g_mmu && g_mmu->enabled) {
         // Route through the real physical address so writes land in the page
         // the guest actually sees, not the g_page_table identity alias.
-        uint8_t *base = mmu_phys_to_host(g_mmu, phys_addr & ~(uint32_t)PAGE_MASK);
-        *host_out = base ? base + (phys_addr & PAGE_MASK) : NULL;
+        uint8_t *base = mmu_phys_to_host(g_mmu, phys_addr & ~(uint32_t)MEM_PAGE_MASK);
+        *host_out = base ? base + (phys_addr & MEM_PAGE_MASK) : NULL;
         *writable_out = base ? mmu_phys_is_writable(g_mmu, phys_addr) : false;
-    } else if ((phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count) {
+    } else if ((phys_addr >> MEM_PAGE_SHIFT) < (uint32_t)g_page_count) {
         // No 68K MMU: phys_addr is the identity address or the PPC
         // translation from above — dispatch on ITS page entry.
-        page_entry_t *pe = &g_page_table[phys_addr >> PAGE_SHIFT];
-        *host_out = pe->host_base ? pe->host_base + (phys_addr & PAGE_MASK) : NULL;
+        page_entry_t *pe = &g_page_table[phys_addr >> MEM_PAGE_SHIFT];
+        *host_out = pe->host_base ? pe->host_base + (phys_addr & MEM_PAGE_MASK) : NULL;
         *writable_out = pe->writable;
     } else {
         *host_out = NULL;
@@ -456,10 +449,10 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
     // map, so use the validity-reporting walk here.
     if (!mmu_translate_checked(g_mmu, addr, supervisor, &phys))
         return false; // translation failed → fall through to the MMU fault path
-    if ((phys & ~(uint32_t)PAGE_MASK) == (addr & ~(uint32_t)PAGE_MASK))
+    if ((phys & ~(uint32_t)MEM_PAGE_MASK) == (addr & ~(uint32_t)MEM_PAGE_MASK))
         return true; // identity mapping — dispatch as usual
     // Non-identity: only divert to the table walk when the target is real RAM.
-    return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)PAGE_MASK) == NULL;
+    return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)MEM_PAGE_MASK) == NULL;
 }
 
 // Latch a deferred bus error on behalf of a DEVICE that terminates an
@@ -514,10 +507,10 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
                            : lisa_mmu_read32(addr, supervisor);
 
     // A byte can never straddle a page, so this is constant-true for size 1.
-    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+    const bool in_page = (size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size);
     const uint32_t fill = size == 1 ? 0xFFu : size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
 
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
     // Memory logpoint: page is forced to the slow path but backed by RAM/ROM.
@@ -534,7 +527,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
     // Lazy-install identity SoA for a host-backed page when the MMU is off.
     if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
-        return load_be_n(pe->host_base + (addr & PAGE_MASK), size);
+        return load_be_n(pe->host_base + (addr & MEM_PAGE_MASK), size);
     }
 
     // Gate logical-device dispatch via dispatch_device_at_logical(): identity /
@@ -558,13 +551,13 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
         if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
             return dev_read_n(pe, addr, addr - pe->base_addr, size);
         if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
-            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            uintptr_t base = g_active_read[addr >> MEM_PAGE_SHIFT];
             if (base != 0)
                 return load_be_n((uint8_t *)(base + addr), size);
             // SoA still 0: the physical page is a device, unmapped, or
             // logpointed.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
+            uint32_t phys_page = phys >> MEM_PAGE_SHIFT;
             if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev)
@@ -695,12 +688,12 @@ uint8_t memory_debug_read_uint8(uint32_t addr) {
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
         return 0xFF;
-    uint32_t page = phys >> PAGE_SHIFT;
+    uint32_t page = phys >> MEM_PAGE_SHIFT;
     if (page >= g_page_count)
         return 0xFF;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base)
-        return LOAD_BE8(pe->host_base + (phys & PAGE_MASK));
+        return LOAD_BE8(pe->host_base + (phys & MEM_PAGE_MASK));
     if (pe->dev)
         return (uint8_t)debug_dev_read(pe, phys, 1);
     return 0xFF;
@@ -712,15 +705,15 @@ uint16_t memory_debug_read_uint16(uint32_t addr) {
         return (uint16_t)lisa_mmu_debug_read(addr, 2, g_active_read == g_supervisor_read);
     // Single-page word reads hit the device's own width handler; byte-split
     // only when the access straddles a page.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFF;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
-                return LOAD_BE16(pe->host_base + (phys & PAGE_MASK));
+                return LOAD_BE16(pe->host_base + (phys & MEM_PAGE_MASK));
             if (pe->dev)
                 return (uint16_t)debug_dev_read(pe, phys, 2);
         }
@@ -733,15 +726,15 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_read(addr, 4, g_active_read == g_supervisor_read);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFFFFFFu;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
-                return LOAD_BE32(pe->host_base + (phys & PAGE_MASK));
+                return LOAD_BE32(pe->host_base + (phys & MEM_PAGE_MASK));
             if (pe->dev)
                 return debug_dev_read(pe, phys, 4);
         }
@@ -758,13 +751,13 @@ uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
     uint32_t value = 0;
     for (unsigned i = 0; i < size; i++) { // byte-wise: an access may straddle pages
         uint32_t a = phys + i;
-        uint32_t page = a >> PAGE_SHIFT;
+        uint32_t page = a >> MEM_PAGE_SHIFT;
         if (page >= g_page_count)
             return 0;
         page_entry_t *pe = &g_page_table[page];
         uint8_t b;
         if (pe->host_base)
-            b = pe->host_base[a & PAGE_MASK];
+            b = pe->host_base[a & MEM_PAGE_MASK];
         else if (pe->dev)
             b = (uint8_t)debug_dev_read(pe, a, 1);
         else
@@ -785,7 +778,7 @@ uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
 void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
     while (len) {
         uint32_t a = addr & g_address_mask;
-        uint32_t off = a & PAGE_MASK;
+        uint32_t off = a & MEM_PAGE_MASK;
         uint32_t chunk = MEM_PAGE_SIZE - off; // stay within one page per iteration
         if (chunk > len)
             chunk = len;
@@ -797,11 +790,11 @@ void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
             bool ok = !(g_mmu && g_mmu->enabled) ||
                       mmu_translate_checked(g_mmu, a, g_active_read == g_supervisor_read, &phys);
             if (ok) {
-                uint32_t page = phys >> PAGE_SHIFT;
+                uint32_t page = phys >> MEM_PAGE_SHIFT;
                 if (page < g_page_count) {
                     page_entry_t *pe = &g_page_table[page];
                     if (pe->host_base && !pe->dev) {
-                        memcpy(dst, pe->host_base + (phys & PAGE_MASK), chunk);
+                        memcpy(dst, pe->host_base + (phys & MEM_PAGE_MASK), chunk);
                         dst += chunk;
                         addr += chunk;
                         len -= chunk;
@@ -831,14 +824,14 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
         return false;
-    uint32_t page = phys >> PAGE_SHIFT;
+    uint32_t page = phys >> MEM_PAGE_SHIFT;
     if (page >= g_page_count)
         return false;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base) {
         if (!pe->writable)
             return false; // ROM/VROM — drop silently
-        STORE_BE8(pe->host_base + (phys & PAGE_MASK), value);
+        STORE_BE8(pe->host_base + (phys & MEM_PAGE_MASK), value);
         return true;
     }
     if (pe->dev) {
@@ -852,17 +845,17 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_write(addr, 2, g_active_write == g_supervisor_write, value);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
-                STORE_BE16(pe->host_base + (phys & PAGE_MASK), value);
+                STORE_BE16(pe->host_base + (phys & MEM_PAGE_MASK), value);
                 return true;
             }
             if (pe->dev) {
@@ -881,17 +874,17 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
     addr &= g_address_mask;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_debug_write(addr, 4, g_active_write == g_supervisor_write, value);
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    if ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
-        uint32_t page = phys >> PAGE_SHIFT;
+        uint32_t page = phys >> MEM_PAGE_SHIFT;
         if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
-                STORE_BE32(pe->host_base + (phys & PAGE_MASK), value);
+                STORE_BE32(pe->host_base + (phys & MEM_PAGE_MASK), value);
                 return true;
             }
             if (pe->dev) {
@@ -948,9 +941,9 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     }
 
     // A byte can never straddle a page, so this is constant-true for size 1.
-    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+    const bool in_page = (size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size);
 
-    uint32_t page = addr >> PAGE_SHIFT;
+    uint32_t page = addr >> MEM_PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
     // Memory logpoint: forced slow path for a RAM write on a logged page.
@@ -968,7 +961,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
         if (pe->writable)
-            store_be_n(pe->host_base + (addr & PAGE_MASK), value, size);
+            store_be_n(pe->host_base + (addr & MEM_PAGE_MASK), value, size);
         return;
     }
 
@@ -994,7 +987,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             return;
         }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
-            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            uintptr_t base = g_active_write[addr >> MEM_PAGE_SHIFT];
             if (base != 0) {
                 store_be_n((uint8_t *)(base + addr), value, size);
                 return;
@@ -1002,7 +995,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             // SoA still 0: the physical page is a device, unmapped, or covered
             // by a logpoint.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
+            uint32_t phys_page = phys >> MEM_PAGE_SHIFT;
             if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev) {
@@ -1069,7 +1062,8 @@ uint32_t memory_read(unsigned int size, uint32_t addr) {
     case 4:
         return memory_read_uint32(addr);
     default:
-        assert(0);
+        // Not a guest bus width: log it in every build, not just debug
+        LOG(0, "memory_read: unsupported size %u at $%08X", size, addr);
         return 0;
     }
 }
@@ -1087,7 +1081,8 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
         memory_write_uint32(addr, (uint32_t)value);
         break;
     default:
-        assert(0);
+        LOG(0, "memory_write: unsupported size %u at $%08X", size, addr);
+        break;
     }
 }
 
@@ -1120,9 +1115,8 @@ static void rebuild_soa_page(uint32_t p) {
     // logpoint count applies directly too.
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[p])
         return;
-    uint32_t guest_base = p << PAGE_SHIFT;
+    uint32_t guest_base = p << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
-    tlb_track_page(p); // ensure the next mmu_invalidate_tlb zeroes this entry
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
     if (g_user_read && !g_user_soa_reserved)
@@ -1133,6 +1127,80 @@ static void rebuild_soa_page(uint32_t p) {
         if (g_user_write && !g_user_soa_reserved)
             g_user_write[p] = adjusted;
     }
+    tlb_track_page(p); // ensure the next mmu_invalidate_tlb zeroes this entry
+}
+
+// ============================================================================
+// SoA population tracking (for fast invalidation)
+// ============================================================================
+
+// Instead of zeroing all 1M+ page entries on every TLB invalidation (32 MB of
+// memset on a 32-bit address space), the selected map lists which pages have
+// been populated and only those are zeroed.  Typical working sets are
+// ~2000-3000 pages (8-12 MB of RAM + ROM + VRAM), reducing invalidation cost
+// from O(address_space) to O(working_set).  The list grows on demand up to
+// TLB_TRACK_LIMIT entries, so only a working set past that (512 MB of touched
+// pages) falls back to the full memset.
+#define TLB_TRACK_INITIAL 8192
+#define TLB_TRACK_LIMIT   (1u << 17)
+
+// Zero all four SoA arrays of the selected map.
+static void soa_zero_all(void) {
+    size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
+    if (g_supervisor_read)
+        memset(g_supervisor_read, 0, sz);
+    if (g_supervisor_write)
+        memset(g_supervisor_write, 0, sz);
+    if (g_user_read)
+        memset(g_user_read, 0, sz);
+    if (g_user_write)
+        memset(g_user_write, 0, sz);
+}
+
+// Start a fresh (empty, exact) list: every SoA entry is zero right now.
+static void tlb_track_reset(memory_map_t *m) {
+    m->track_count = 0;
+    m->track_overflow = false;
+}
+
+void tlb_track_page(uint32_t page_index) {
+    memory_map_t *m = g_installed_map;
+    if (!m || m->track_overflow)
+        return; // no map, or already in zero-everything mode
+    if (m->track_count >= m->track_cap) {
+        uint32_t cap = m->track_cap ? m->track_cap * 2 : TLB_TRACK_INITIAL;
+        uint32_t *grown = cap <= TLB_TRACK_LIMIT ? realloc(m->track_page, (size_t)cap * sizeof(uint32_t)) : NULL;
+        if (!grown) {
+            m->track_overflow = true; // past the limit (or out of memory): zero everything next time
+            return;
+        }
+        m->track_page = grown;
+        m->track_cap = cap;
+    }
+    m->track_page[m->track_count++] = page_index;
+}
+
+void memory_soa_invalidate(void) {
+    memory_map_t *m = g_installed_map;
+    if (!m || m->track_overflow) {
+        soa_zero_all();
+    } else {
+        for (uint32_t i = 0; i < m->track_count; i++) {
+            uint32_t p = m->track_page[i];
+            if (p >= g_page_count)
+                continue;
+            if (g_supervisor_read)
+                g_supervisor_read[p] = 0;
+            if (g_supervisor_write)
+                g_supervisor_write[p] = 0;
+            if (g_user_read)
+                g_user_read[p] = 0;
+            if (g_user_write)
+                g_user_write[p] = 0;
+        }
+    }
+    if (m)
+        tlb_track_reset(m);
 }
 
 // Count one logpoint armed (+1) or disarmed (-1) on the installed map and
@@ -1197,14 +1265,10 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     // arrays.  All logical pages re-walk on next access, and the fill path
     // (mmu_fill_soa_entry) suppresses any alias hitting the watched physical.
     // One-time cost at install; fast-path unaffected once entries repopulate.
-    if (g_supervisor_read)
-        memset(g_supervisor_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_supervisor_write)
-        memset(g_supervisor_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_user_read)
-        memset(g_user_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_user_write)
-        memset(g_user_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
+    soa_zero_all();
+    // Every entry is zero now, so the population list starts over exact.
+    if (g_installed_map)
+        tlb_track_reset(g_installed_map);
     if (g_mem_map_changed)
         g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
@@ -1280,8 +1344,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
 
     // Populate page table entries for the device's address range
     if (g_page_table) {
-        uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
-        uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+        uint32_t start_page = (addr & g_address_mask) >> MEM_PAGE_SHIFT;
+        uint32_t end_page = ((addr + size - 1) & g_address_mask) >> MEM_PAGE_SHIFT;
         assert(start_page < g_page_count && "device start address exceeds page table bounds");
         if (end_page < start_page)
             LOG(0, "memory_map_add('%s'): page range $%X..$%X is inverted; the region claims no pages",
@@ -1321,8 +1385,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
 static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const memory_interface_t *iface_ptr) {
     if (!g_page_table || size == 0)
         return;
-    uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
-    uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+    uint32_t start_page = (addr & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t end_page = ((addr + size - 1) & g_address_mask) >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_page_table[p].dev == iface_ptr) {
             g_page_table[p].host_base = NULL;
@@ -1336,12 +1400,9 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
         g_mem_map_changed(); // ditto: a freed window may still be cached by PC
 }
 
-// Remove a memory-mapped device from the memory map
-void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, const char *name,
-                       memory_interface_t *iface, void *device) {
-    (void)size; // the mapping is found by device and address; its own size is used
-    (void)name;
-    (void)iface;
+// Remove a memory-mapped device from the memory map: the mapping is found by
+// device and address, and its own size is used
+void memory_map_remove(memory_map_t *memory_map, uint32_t addr, void *device) {
     if (!memory_map || !memory_map->map)
         return; // empty list — nothing to remove
     mapping_t *map = memory_map->map;
@@ -1403,11 +1464,11 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     uint32_t rom_size = mem->rom_size;
 
     // RAM pages: 0x000000 – ram_size (writable, direct access)
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < ram_pages && p < g_page_count; p++) {
-        assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
-        uint8_t *host_ptr = mem->image + (p << PAGE_SHIFT);
-        uint32_t guest_base = p << PAGE_SHIFT;
+        assert((p << MEM_PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
+        uint8_t *host_ptr = mem->image + (p << MEM_PAGE_SHIFT);
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
 
         // AoS cold-path entry (device dispatch)
@@ -1434,9 +1495,9 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     //   offset % (2*rom_size) in [rom_size, 2*rom_size) → I/O / undefined (left unmapped)
     // This produces ROM mirrors at every 2*rom_size (256 KB for the 128 KB Plus ROM),
     // matching the old flat-buffer copy loop: addr += 2 * ROM_SIZE.
-    uint32_t rom_start_page = (rom_start_addr & g_address_mask) >> PAGE_SHIFT;
-    uint32_t rom_end_page = (rom_region_end & g_address_mask) >> PAGE_SHIFT;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT; // content pages per ROM copy
+    uint32_t rom_start_page = (rom_start_addr & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = (rom_region_end & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT; // content pages per ROM copy
     uint32_t mirror_stride = rom_pages * 2; // mirror cycle in pages (A17 stride)
 
     // Protect against a zero-length ROM (degenerate case)
@@ -1447,8 +1508,8 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
         if (offset_in_cycle >= rom_pages)
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
-        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
-        uint32_t guest_base = p << PAGE_SHIFT;
+        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << MEM_PAGE_SHIFT);
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
 
         // AoS cold-path entry
@@ -1468,7 +1529,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
 
 // Populate page-table entries for a RAM-mirror region.  Each page in
 // [mirror_start, mirror_end) is set up as a full read+write alias of RAM at
-// (guest_page << PAGE_SHIFT) % ram_size.  This models the physical
+// (guest_page << MEM_PAGE_SHIFT) % ram_size.  This models the physical
 // address-bus wraparound on a Macintosh Plus: high address bits beyond the
 // installed RAM range are undecoded, so accesses in the unmapped gap fold
 // down into actual RAM.  The Plus ROM relies on this for its exception save
@@ -1481,11 +1542,11 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
         return;
 
     uint32_t ram_size = mem->ram_size;
-    uint32_t start_page = (mirror_start & g_address_mask) >> PAGE_SHIFT;
-    uint32_t end_page = (mirror_end & g_address_mask) >> PAGE_SHIFT;
+    uint32_t start_page = (mirror_start & g_address_mask) >> MEM_PAGE_SHIFT;
+    uint32_t end_page = (mirror_end & g_address_mask) >> MEM_PAGE_SHIFT;
 
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
-        uint32_t guest_base = p << PAGE_SHIFT;
+        uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uint32_t ram_off = guest_base % ram_size;
         uint8_t *host_ptr = mem->image + ram_off;
         uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
@@ -1541,8 +1602,6 @@ void memory_map_select(memory_map_t *mem) {
     g_mem_host_fill = mem ? mem->host_fill : NULL;
     g_mmu = mem ? mem->pmmu : NULL;
     g_lisa_mmu = mem ? mem->lisa_mmu : NULL;
-    mmu_host_fill_regions_select(mem ? mem->host_fill_regions : NULL);
-    tlb_track_select(mem ? mem->tlb_track : NULL);
     if (mem && mem->cpu_hooks.selected)
         mem->cpu_hooks.selected(mem->cpu_hooks.ctx);
 }
@@ -1571,8 +1630,76 @@ void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu) {
         g_lisa_mmu = mmu;
 }
 
-void *memory_map_host_fill_regions(memory_map_t *mem) {
-    return mem ? mem->host_fill_regions : NULL;
+// === Host-backed regions on the bus map ======================================
+
+// Fill one host window through the hook, page by page.
+static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
+    for (uint32_t off = 0; off < size; off += MEM_PAGE_SIZE)
+        g_mem_host_fill((phys_base + off) >> MEM_PAGE_SHIFT, host_ptr + off, writable);
+}
+
+// Runs only at machine build, on the map under construction -- the selected
+// one, whose aliases (g_mem_host_fill, g_mmu) this reads.
+void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
+                            bool writable) {
+    (void)m; // the selected map: the one under construction
+    (void)name; // regions are matched by physical window, not name
+    // A machine that installed a page-fill hook owns its own physical view
+    // (the PowerPC families, whose page table no mmu_state_t manages).  The
+    // hook -- not the absence of g_mmu -- is the discriminator.
+    memory_map_t *sel = g_installed_map;
+    if (g_mem_host_fill && sel) {
+        if (!host_ptr || size == 0)
+            return;
+        host_fill_region(host_ptr, phys_base, size, writable);
+        // Re-registration of the same window replaces its record (same rule
+        // as mmu_register_host_region).
+        for (int i = 0; i < sel->host_fill_count; i++) {
+            mem_host_fill_region_t *r = &sel->host_fill_regions[i];
+            if (r->phys_base == phys_base && r->size == size) {
+                r->host = host_ptr;
+                r->writable = writable;
+                if (g_mem_map_changed)
+                    g_mem_map_changed();
+                return;
+            }
+        }
+        if (sel->host_fill_count >= MEM_HOST_FILL_MAX) {
+            LOG(0, "memory_map_host_region: fill list full (%d); region $%08X+$%X not recorded", MEM_HOST_FILL_MAX,
+                phys_base, size);
+            return;
+        }
+        sel->host_fill_regions[sel->host_fill_count++] =
+            (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
+        if (g_mem_map_changed)
+            g_mem_map_changed();
+        return;
+    }
+    // 68k: the PMMU's host-region list, which its table walks resolve through
+    mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
+}
+
+void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
+    (void)m; // the selected map, as above
+    memory_map_t *sel = g_installed_map;
+    if (g_mem_host_fill && sel) {
+        // Machine-owned physical view: the alias is a second page fill of the
+        // same host bytes.  Card register windows are registered AFTER their
+        // aliases (display_card_24ac.c), so a device page still wins its page.
+        for (int i = 0; i < sel->host_fill_count; i++) {
+            const mem_host_fill_region_t *r = &sel->host_fill_regions[i];
+            if (r->phys_base == original_phys_base) {
+                host_fill_region(r->host, alias_phys_base, r->size, r->writable);
+                return;
+            }
+        }
+    } else if (mmu_register_host_region_alias(g_mmu, alias_phys_base, original_phys_base)) {
+        return;
+    }
+    LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
+        alias_phys_base);
 }
 
 // ============================================================================
@@ -1597,8 +1724,13 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // The board's bus-error window (the slow path's alias while selected).
     mem->bus_err = bus_err;
 
-    mem->tlb_track = tlb_track_new();
-    GS_ASSERTF(mem->tlb_track != NULL, "memory_map_init: out of memory allocating the TLB tracker");
+    // The layout fills (memory_populate_pages, memory_populate_ram_mirror and
+    // the machines' own page fills) write SoA entries before anything
+    // tracks them, so the tracker starts overflowed: the first real
+    // invalidation zeroes the whole arrays, and the list is exact from then
+    // on.  On a machine whose MMU never invalidates (no PMMU) it simply
+    // stays that way, unused.
+    mem->track_overflow = true;
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
@@ -1608,11 +1740,11 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // Allocate page table sized for the given address space
     if (address_bits == 32) {
         mem->address_mask = 0xFFFFFFFFUL; // full 32-bit
-        mem->page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
+        mem->page_count = 1 << (32 - MEM_PAGE_SHIFT); // 1,048,576 pages
     } else {
         // 24-bit (Macintosh Plus / SE)
         mem->address_mask = 0x00FFFFFFUL;
-        mem->page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
+        mem->page_count = 1 << (24 - MEM_PAGE_SHIFT); // 4,096 pages
     }
     size_t pages = (size_t)mem->page_count;
 
@@ -1633,8 +1765,6 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     mem->logpoint_page_count = (uint16_t *)calloc(pages, sizeof(uint16_t));
     mem->logpoint_phys_page_count = (uint16_t *)calloc(pages, sizeof(uint16_t));
     assert(mem->logpoint_page_count && mem->logpoint_phys_page_count);
-
-    mem->host_fill_regions = mmu_host_fill_regions_new();
 
     // The machine under construction builds into its own map: select it.
     memory_map_select(mem);
@@ -1663,18 +1793,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // Object-tree binding — instance_data is the memory_map_t itself,
     // memory.peek's accessors call into the global memory_read_* helpers
     // directly so its instance_data is unused.
-    mem->memory_object = object_new(&memory_class, mem, "memory");
-    if (mem->memory_object) {
-        object_set_label(mem->memory_object, "Memory");
-        object_set_order(mem->memory_object, 20);
-        object_attach(machine_object(), mem->memory_object);
-        mem->peek_object = object_new(&mem_peek_class, NULL, "peek");
-        if (mem->peek_object)
-            object_attach(mem->memory_object, mem->peek_object);
-        mem->poke_object = object_new(&mem_poke_class, NULL, "poke");
-        if (mem->poke_object)
-            object_attach(mem->memory_object, mem->poke_object);
-    }
+    mem->memory_object = memory_object_new(mem, &mem->peek_object, &mem->poke_object);
 
     return mem;
 }
@@ -1687,21 +1806,8 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 void memory_map_delete(memory_map_t *mem) {
     if (!mem)
         return;
-    if (mem->peek_object) {
-        object_detach(mem->peek_object);
-        object_delete(mem->peek_object);
-        mem->peek_object = NULL;
-    }
-    if (mem->poke_object) {
-        object_detach(mem->poke_object);
-        object_delete(mem->poke_object);
-        mem->poke_object = NULL;
-    }
-    if (mem->memory_object) {
-        object_detach(mem->memory_object);
-        object_delete(mem->memory_object);
-        mem->memory_object = NULL;
-    }
+    memory_object_delete(mem->memory_object, mem->peek_object, mem->poke_object);
+    mem->memory_object = mem->peek_object = mem->poke_object = NULL;
     // Free mappings
     mapping_t *m = mem->map;
     while (m) {
@@ -1715,14 +1821,13 @@ void memory_map_delete(memory_map_t *mem) {
     if (g_installed_map == mem)
         memory_map_select(NULL);
     free(mem->page_table);
-    tlb_track_free(mem->tlb_track);
+    free(mem->track_page);
     free(mem->supervisor_read);
     free(mem->supervisor_write);
     free(mem->user_read);
     free(mem->user_write);
     free(mem->logpoint_page_count);
     free(mem->logpoint_phys_page_count);
-    mmu_host_fill_regions_free(mem->host_fill_regions);
     // Free RAM/ROM image buffer
     if (mem->image) {
         free(mem->image);
@@ -1762,416 +1867,7 @@ void memory_map_print(memory_map_t *restrict mem) {
 
     while (map != NULL) {
 
-        gs_outf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
+        out_printf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
         map = map->next;
     }
 }
-
-// === Object-model class descriptor =========================================
-//
-// instance_data on the memory node is the memory_map_t* itself.
-// Lifetime is tied to memory_map_init / memory_map_delete.
-
-static DEF_GETTER(attr_mem_ram_size) {
-    memory_map_t *mem = (memory_map_t *)object_data(self);
-    return val_uint(4, mem ? mem->ram_size : 0u);
-}
-
-static DEF_GETTER(attr_mem_rom_size) {
-    memory_map_t *mem = (memory_map_t *)object_data(self);
-    return val_uint(4, mem ? mem->rom_size : 0u);
-}
-
-// === memory.read_cstring ====================================================
-//
-// Read a NUL-terminated string from guest memory at addr, escaping
-// non-printable bytes. Used to migrate the legacy `$str.<src>`
-// vocabulary onto the unified ${...} interpolator.
-
-static DEF_METHOD(method_mem_read_cstring) {
-    uint32_t addr = (uint32_t)argv[0].u;
-    int max_chars = 96;
-    if (argc >= 2) {
-        int64_t mc = argv[1].i;
-        if (mc > 0 && mc <= 4096)
-            max_chars = (int)mc;
-    }
-    char buf[8192];
-    size_t out = 0;
-    buf[out++] = '"';
-    // Reserve 2 bytes for the closing quote and the NUL terminator so the
-    // body never lands the buffer in a state where the closing quote drops.
-    for (int i = 0; i < max_chars && out + 4 + 2 <= sizeof(buf); i++) {
-        uint8_t b = memory_debug_read_uint8(addr + (uint32_t)i);
-        if (b == 0)
-            break;
-        if (b >= 0x20 && b <= 0x7E) {
-            buf[out++] = (char)b;
-        } else {
-            int n = snprintf(buf + out, sizeof(buf) - out, "\\x%02X", b);
-            if (n < 0)
-                break;
-            out += (size_t)n;
-        }
-    }
-    buf[out++] = '"';
-    buf[out] = '\0';
-    return val_str(buf);
-}
-
-static const value_t mem_def_max_chars = {.kind = V_INT, .i = 96};
-static const arg_decl_t mem_read_cstring_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "max_chars",
-     .kind = V_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &mem_def_max_chars,
-     .doc = "max chars to read (1..4096)"},
-};
-
-// `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
-// Replaces the legacy gdb-style `x` / `examine` command. `addr` accepts an
-// integer or a string (alias / register name / expression resolved by the
-// rich-parser). Output goes to stdout in the legacy `x` layout; the method
-// returns true on dispatch success.
-static DEF_METHOD(method_mem_dump) {
-    // addr is V_NONE-kind: an integer, or a string symbol/alias the
-    // address parser resolves (parse_address handles $hex / 0x / symbol).
-    uint32_t addr = 0;
-    bool addr_ok = false;
-    uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
-    if (addr_ok) {
-        addr = (uint32_t)addr_u;
-    } else if (argv[0].kind == V_STRING && argv[0].s) {
-        addr_space_t sp;
-        if (!parse_address(argv[0].s, &addr, &sp))
-            return val_err("memory.dump: cannot resolve address '%s'", argv[0].s);
-    } else {
-        return val_err("memory.dump: addr must be an integer or a symbol name");
-    }
-
-    uint32_t nbytes = 64;
-    if (argc >= 2) {
-        int64_t count = argv[1].i;
-        if (count <= 0)
-            return val_err("memory.dump: byte count must be > 0");
-        nbytes = (uint32_t)count;
-    }
-    if (nbytes > 512)
-        nbytes = 512;
-
-    // Classic hex + ASCII layout, 16 bytes per row. Uses the
-    // side-effect-free debug read so a dump across unmapped pages can't
-    // latch a spurious guest bus error.
-    for (uint32_t i = 0; i < nbytes; i += 16) {
-        gs_outf("$%08X  ", addr + i);
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes)
-                gs_outf("%02x ", memory_debug_read_uint8(addr + i + j));
-            else
-                gs_outf("   ");
-        }
-        gs_outf(" ");
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes) {
-                uint8_t byte = memory_debug_read_uint8(addr + i + j);
-                gs_outf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
-            }
-        }
-        gs_outf("\n");
-    }
-    return val_none();
-}
-
-static const value_t mem_def_dump_count = {.kind = V_INT, .i = 64};
-static const arg_decl_t mem_dump_args[] = {
-    {.name = "addr",
-     .kind = V_NONE,
-     .validation_flags = OBJ_ARG_POLY,
-     .doc = "guest memory address: an integer, or a symbol / alias name"},
-    {.name = "count",
-     .kind = V_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &mem_def_dump_count,
-     .doc = "byte count (max 512)"},
-};
-
-// `memory.translate(addr)` — report the debug-path translation of a logical
-// address: MMU enabled state, supervisor/user walk results (validity +
-// physical address), and the page-table backing of the physical page.
-// Diagnostic aid for when memory.peek/find results look wrong: the debug
-// read path is only trustworthy where this reports a valid mapping.
-static DEF_METHOD(method_mem_translate) {
-    uint32_t addr = (uint32_t)argv[0].u & g_address_mask;
-    char buf[256];
-    // No 68K PMMU/040 state, but the CPU translates by other means (the
-    // PowerPC MMU, the Lisa's segment MMU): ask it, through the debug
-    // interface.  This used to report "mmu=off" and the address itself.
-    const cpu_debug_if_t *dif = system_cpu_debug_if();
-    if (!g_mmu && dif && dif->translate && (g_lisa_mmu || dif->translate_mac)) {
-        bool ok = false;
-        uint32_t pa = dif->translate(dif->ctx, addr, &ok);
-        snprintf(buf, sizeof(buf), "mmu=%s phys=0x%08x %s (machine.cpu.mmu.translate gives the typed form)",
-                 dif->arch ? dif->arch : "cpu", pa, ok ? "valid" : "INVALID");
-        return val_str(buf);
-    }
-    if (!g_mmu || !g_mmu->enabled) {
-        uint32_t page = addr >> PAGE_SHIFT;
-        const char *backing = "unmapped";
-        if (page < g_page_count) {
-            page_entry_t *pe = &g_page_table[page];
-            backing = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
-        }
-        snprintf(buf, sizeof(buf), "mmu=off phys=0x%08x backing=%s", addr, backing);
-        return val_str(buf);
-    }
-    uint32_t pa_s = 0, pa_u = 0;
-    bool ok_s = mmu_translate_checked(g_mmu, addr, true, &pa_s);
-    bool ok_u = mmu_translate_checked(g_mmu, addr, false, &pa_u);
-    const char *backing_s = "unmapped";
-    uint32_t page_s = pa_s >> PAGE_SHIFT;
-    if (ok_s && page_s < g_page_count) {
-        page_entry_t *pe = &g_page_table[page_s];
-        backing_s = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
-    }
-    snprintf(buf, sizeof(buf), "mmu=on super=%s phys_s=0x%08x user=%s phys_u=0x%08x backing_s=%s",
-             ok_s ? "valid" : "INVALID", pa_s, ok_u ? "valid" : "INVALID", pa_u, backing_s);
-    return val_str(buf);
-}
-
-static const arg_decl_t mem_translate_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical guest address"},
-};
-
-static DEF_GETTER(attr_mem_slowpath_count) {
-    return val_uint(8, g_mem_slowpath_count);
-}
-
-static DEF_GETTER(attr_mem_slowpath_hist) {
-    char buf[1024];
-    size_t off = 0;
-    for (int i = 0; i < 32; i++)
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%02X:%llu", i ? " " : "", i,
-                                (unsigned long long)g_mem_slowpath_hist[i]);
-    return val_str(buf);
-}
-
-static const member_t memory_members[] = {
-    {.kind = M_ATTR,
-     .name = "ram_size",
-     .doc = "Installed RAM in bytes, as the machine's memory map reports it",
-     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "slowpath_count",
-     .flags = M_CAT_ADVANCED,
-     .doc = "CPU memory accesses taken through the slow path since process start (diagnostic)",
-     .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "slowpath_hist",
-     .flags = M_CAT_ADVANCED,
-     .doc = "Slow-path accesses bucketed by MB of (masked) address (diagnostic)",
-     .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "rom_size",
-     .doc = "Size in bytes of the loaded ROM image",
-     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "read_cstring",
-     .examples = EXAMPLES("machine.memory.read_cstring 0x910"),
-     .doc = "Read a quoted, escape-encoded C string at addr",
-     .method = {.result_doc = "the string, quoted, with non-printable bytes escaped as \\xNN",
-                .args = mem_read_cstring_args,
-                .nargs = 2,
-                .result = V_STRING,
-                .fn = method_mem_read_cstring}},
-    {.kind = M_METHOD,
-     .name = "dump",
-     .examples = EXAMPLES("machine.memory.dump 0x400", "machine.memory.dump $pc 32"),
-     .doc = "Hex-dump count bytes at addr",
-     .method = {.args = mem_dump_args, .nargs = 2, .result = V_NONE, .fn = method_mem_dump}},
-    {.kind = M_METHOD,
-     .name = "translate",
-     .examples = EXAMPLES("machine.memory.translate 0x400"),
-     .doc = "Show the debug-path MMU translation of a logical address",
-     .method = {.result_doc = "one line: MMU state, the supervisor and user walks, and the physical page's backing",
-                .args = mem_translate_args,
-                .nargs = 1,
-                .result = V_STRING,
-                .fn = method_mem_translate}},
-};
-
-static const class_desc_t memory_class = {
-    .name = "memory",
-    .members = memory_members,
-    .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
-    .doc = "Guest memory: map, peek and poke",
-};
-
-// === memory.peek child class ================================================
-//
-// Three methods (b/w/l) that read sized values from guest memory at a
-// caller-supplied address. Used by ${...} interpolation in logpoint
-// messages and any expression that needs a peek.
-
-static DEF_METHOD(method_mem_peek_b) {
-    value_t v = val_uint(1, memory_debug_read_uint8((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
-    return v;
-}
-static DEF_METHOD(method_mem_peek_w) {
-    value_t v = val_uint(2, memory_debug_read_uint16((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
-    return v;
-}
-static DEF_METHOD(method_mem_peek_l) {
-    value_t v = val_uint(4, memory_debug_read_uint32((uint32_t)argv[0].u));
-    v.flags |= VAL_HEX;
-    return v;
-}
-
-// `memory.peek.bytes(addr, count)` — bulk byte read. Returns a
-// V_BYTES blob, capped to 4 KB so the bridge output slot can hold the
-// JSON-encoded payload. Replaces the per-byte fan-out the debug UI's
-// memory pane used to do (128 separate gsEval calls → 128 bridge
-// round-trips → noticeable lag while stepping). One call now suffices.
-// One byte for peek.bytes with an explicit space.  "physical" reads the
-// physical page table; "logical" reads through the CPU's own translation on
-// every architecture -- the 68K MMU (or the Lisa's) inside
-// memory_debug_read_uint8, and on a PowerPC machine, where the plain debug
-// read is physical, the core's data-side translation first.
-static uint8_t peek_byte_in_space(uint32_t addr, bool physical) {
-    if (physical) {
-        bool ok;
-        uint32_t v = memory_debug_read_phys(addr, 1, &ok);
-        return ok ? (uint8_t)v : 0xFF;
-    }
-    const cpu_debug_if_t *dif = system_cpu_debug_if();
-    if (!g_mmu && !g_lisa_mmu && dif && dif->translate_mac && dif->translate) { // PowerPC
-        bool ok;
-        uint32_t pa = dif->translate(dif->ctx, addr, &ok);
-        return ok ? memory_debug_read_uint8(pa) : 0xFF;
-    }
-    return memory_debug_read_uint8(addr);
-}
-
-static DEF_METHOD(method_mem_peek_bytes) {
-    uint32_t addr = (uint32_t)argv[0].u;
-    uint64_t count = argv[1].u;
-    // `space` omitted keeps the historical meaning (through the 68K MMU;
-    // physical on PowerPC); given, it means the same on every architecture.
-    bool have_space = argc >= 3 && argv[2].kind == V_ENUM;
-    bool physical;
-    if (!debug_parse_space(argc, argv, 2, &physical))
-        return val_err("memory.peek.bytes: space must be \"logical\" or \"physical\"");
-    if (have_space && physical && g_lisa_mmu)
-        return val_err("memory.peek.bytes: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
-    if (count == 0)
-        return val_bytes(NULL, 0);
-    // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
-    // string; 4 KB × 4/3 ≈ 5.5 KB, well under the mailbox result limit (GS_MBX_RESULT_MAX).
-    if (count > 4096)
-        count = 4096;
-    uint8_t *buf = (uint8_t *)malloc(count);
-    if (!buf)
-        return val_err("memory.peek.bytes: out of memory");
-    for (uint64_t i = 0; i < count; i++)
-        buf[i] = have_space ? peek_byte_in_space((uint32_t)(addr + i), physical)
-                            : memory_debug_read_uint8((uint32_t)(addr + i));
-    value_t v = val_bytes(buf, (size_t)count);
-    free(buf);
-    return v;
-}
-
-static const arg_decl_t mem_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-};
-
-static const arg_decl_t mem_peek_bytes_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "count", .kind = V_UINT, .doc = "byte count (max 4096)"},
-    {.name = "space",
-     .kind = V_ENUM,
-     .enum_values = debug_space_values,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" (through the CPU's translation) or \"physical\"",
-     .default_doc = "68K logical, PowerPC physical"},
-};
-
-static const member_t mem_peek_members[] = {
-    {.kind = M_METHOD,
-     .name = "b",
-     .examples = EXAMPLES("machine.memory.peek.b 0x12f"),
-     .doc = "Read 1 byte at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}           },
-    {.kind = M_METHOD,
-     .name = "w",
-     .examples = EXAMPLES("machine.memory.peek.w 0x28e"),
-     .doc = "Read 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}           },
-    {.kind = M_METHOD,
-     .name = "l",
-     .examples = EXAMPLES("machine.memory.peek.l 0x16a"),
-     .doc = "Read 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}           },
-    {.kind = M_METHOD,
-     .name = "bytes",
-     .examples = EXAMPLES("machine.memory.peek.bytes 0x400 16"),
-     .doc = "Read count bytes at addr (bulk; max 4096 bytes per call)",
-     .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = V_BYTES, .fn = method_mem_peek_bytes}},
-};
-
-static const class_desc_t mem_peek_class = {
-    .name = "peek",
-    .doc = "Side-effect-free reads of guest memory by width",
-    .members = mem_peek_members,
-    .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
-};
-
-// === memory.poke child class ================================================
-//
-// Three methods (b/w/l) that write sized values to guest memory at a
-// caller-supplied address. Pairs with memory.peek, replacing the legacy
-// `set <addr>.<size> <value>` shell form.
-
-static DEF_METHOD(method_mem_poke_b) {
-    memory_debug_write_uint8((uint32_t)argv[0].u, (uint8_t)argv[1].u);
-    return val_none();
-}
-static DEF_METHOD(method_mem_poke_w) {
-    memory_debug_write_uint16((uint32_t)argv[0].u, (uint16_t)argv[1].u);
-    return val_none();
-}
-static DEF_METHOD(method_mem_poke_l) {
-    memory_debug_write_uint32((uint32_t)argv[0].u, (uint32_t)argv[1].u);
-    return val_none();
-}
-
-static const arg_decl_t mem_poke_args[] = {
-    {.name = "addr",  .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"      },
-};
-
-static const member_t mem_poke_members[] = {
-    {.kind = M_METHOD,
-     .name = "b",
-     .examples = EXAMPLES("machine.memory.poke.b 0x12f 0"),
-     .doc = "Write 1 byte at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_b}},
-    {.kind = M_METHOD,
-     .name = "w",
-     .examples = EXAMPLES("machine.memory.poke.w 0x28e 0x3fff"),
-     .doc = "Write 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_w}},
-    {.kind = M_METHOD,
-     .name = "l",
-     .examples = EXAMPLES("machine.memory.poke.l 0x16a 0"),
-     .doc = "Write 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
-};
-
-static const class_desc_t mem_poke_class = {
-    .name = "poke",
-    .doc = "Writes to guest memory by width",
-    .members = mem_poke_members,
-    .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),
-};

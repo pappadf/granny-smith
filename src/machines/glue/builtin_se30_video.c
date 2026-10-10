@@ -22,8 +22,6 @@
 #include "display.h"
 #include "gsvrom.h"
 #include "log.h"
-#include "system.h"
-#include "system_config.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -194,7 +192,11 @@ static const nubus_card_ops_t builtin_se30_video_ops = {
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
-    .on_vbl = NULL, // VBL slot-IRQ flow stays in se30_trigger_vbl for v1
+    // No per-card VBL hook: the SE/30's built-in video has no slot
+    // interrupt logic of its own.  The machine raises its pseudo-slot $E
+    // VBL from its frame timer (se30_trigger_vbl in se30.c, the board's
+    // trigger_vbl), which is where that wiring lives on the real board.
+    .on_vbl = NULL,
     .display = card_display,
 };
 

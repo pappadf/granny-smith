@@ -5,6 +5,7 @@
 // Byte-granular and partition-bounded image reads.  See image_part.h.
 
 #include "image_part.h"
+#include "image_internal.h"
 
 #include <errno.h>
 #include <string.h>
@@ -50,7 +51,7 @@ int image_read_partition(image_t *img, uint64_t part_off, uint64_t part_size, ui
 
 // ---- The image as a source ------------------------------------------------
 
-static int64_t img_src_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t img_src_read(source_t *s, uint64_t off, void *buf, size_t len) {
     image_t *img = s->ctx;
     uint64_t size = disk_size(img);
     if (off >= size)
@@ -61,32 +62,32 @@ static int64_t img_src_read(gs_source_t *s, uint64_t off, void *buf, size_t len)
     return rc < 0 ? rc : (int64_t)len;
 }
 
-static uint64_t img_src_size(gs_source_t *s) {
+static uint64_t img_src_size(source_t *s) {
     return disk_size(s->ctx);
 }
 
-static const char *img_src_key(gs_source_t *s) {
+static const char *img_src_key(source_t *s) {
     image_t *img = s->ctx;
     return img->source_key ? img->source_key : (img->filename ? img->filename : "image");
 }
 
-static gs_tier_t img_src_tier(gs_source_t *s) {
+static source_tier_t img_src_tier(source_t *s) {
     (void)s;
     return GS_TIER_RANDOM;
 }
 
-static void img_src_close(gs_source_t *s) {
+static void img_src_close(source_t *s) {
     (void)s; // the image is the caller's
 }
 
-static const gs_source_ops_t img_src_ops = {img_src_read, img_src_size, img_src_key, img_src_tier, img_src_close};
+static const source_ops_t img_src_ops = {img_src_read, img_src_size, img_src_key, img_src_tier, img_src_close};
 
-gs_source_t *image_source(image_t *img) {
+source_t *image_source(image_t *img) {
     return img ? peel_source_new(&img_src_ops, img, NULL) : NULL;
 }
 
-int source_read_partition(gs_source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n) {
+int source_read_partition(source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n) {
     if (!image_range_fits(off, n, part_size))
         return -EIO;
-    return gs_source_read_exact(src, part_off + off, buf, n) == 0 ? 0 : -EIO;
+    return source_read_exact(src, part_off + off, buf, n) == 0 ? 0 : -EIO;
 }

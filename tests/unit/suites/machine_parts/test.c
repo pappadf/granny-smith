@@ -13,7 +13,9 @@
 #include "build_id.h"
 #include "checkpoint.h"
 #include "machine_parts.h"
-#include "system_config.h"
+#include "platform_hooks.h"
+#include "status.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -25,17 +27,17 @@
 
 // === Stubs for what checkpoint.c reaches outside its module ==================
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return "unit-test-build-0001";
 }
 int system_checkpoint_load(const char *filename) {
     (void)filename;
     return 1;
 }
-int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     (void)filename;
     (void)kind;
-    return 1;
+    return STATUS_ERROR;
 }
 bool system_checkpoint_probe(void) {
     return false;
@@ -43,18 +45,18 @@ bool system_checkpoint_probe(void) {
 const char *find_valid_checkpoint_path(void) {
     return NULL;
 }
-int gs_background_checkpoint(const char *label) {
+int system_background_checkpoint(const char *label) {
     (void)label;
     return -1;
 }
-bool gs_checkpoint_auto_get(void) {
+bool platform_checkpoint_auto_get(void) {
     return false;
 }
-int gs_checkpoint_auto_set(bool on) {
+int platform_checkpoint_auto_set(bool on) {
     (void)on;
     return -2;
 }
-int gs_checkpoint_clear(void) {
+int system_checkpoint_clear(void) {
     return 0;
 }
 

@@ -23,6 +23,7 @@
 #include "appletalk_internal.h"
 #include "atalk_id.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "scheduler.h"
 
@@ -96,6 +97,8 @@ struct asp_link {
     uint32_t next_sess_ref; // atalk_id_alloc cursors
     uint32_t next_sess_id;
     atalk_timer_t sweep_timer; // idle-session expiry, armed while any session is open
+    // A command's reply, at most a full eight-packet response
+    uint8_t reply_buf[ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD];
 };
 
 // The link of the connection plugged into the network, NULL while none is.
@@ -243,7 +246,7 @@ int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
         return -1;
     atp_request_params_t params = {
         .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
-        .src_socket = HOST_AFP_SOCKET,
+        .src_socket = ATALK_HOST_AFP_SOCKET,
         .bitmap = 0x01, // one response packet is enough for an attention
         .mode = ATP_TRANSACTION_ALO,
         .trel_timer_hint = 0,
@@ -305,6 +308,18 @@ static void asp_arm_session_sweep(void) {
 
 // === Replies =====================================================================
 
+// How many response packets a request's bitmap leaves room for: up to its
+// highest set bit.  A first request asks for a run of low bits, one per
+// buffer; a retransmitted one (ALO) clears the bits of the packets already
+// received, so counting only the low run read 0xFC as one packet.
+static int asp_bitmap_packets(uint8_t bitmap) {
+    int n = 0;
+    for (int i = 0; i < ATP_MAX_RESPONSE_FRAGMENTS; i++)
+        if (bitmap & (1u << i))
+            n = i + 1;
+    return n > 0 ? n : 1;
+}
+
 // Answer a request with `user` and `data`, split across as many response
 // packets as the request's bitmap allows.
 static void asp_reply(const ddp_header_t *ddp, const atp_packet_t *atp, const uint8_t user[4], const uint8_t *data,
@@ -313,16 +328,14 @@ static void asp_reply(const ddp_header_t *ddp, const atp_packet_t *atp, const ui
         atp_responder_send_simple(ddp, atp, user, len > 0 ? data : NULL, len, false);
         return;
     }
-    int max_packets = 0;
-    for (uint8_t bm = atp->bitmap; bm & 1; bm >>= 1)
-        max_packets++;
-    if (max_packets < 1)
-        max_packets = 1;
-    if (max_packets > ATP_MAX_RESPONSE_FRAGMENTS)
-        max_packets = ATP_MAX_RESPONSE_FRAGMENTS;
+    int max_packets = asp_bitmap_packets(atp->bitmap);
     int num_packets = (len + ATP_MAX_ATP_PAYLOAD - 1) / ATP_MAX_ATP_PAYLOAD;
-    if (num_packets > max_packets)
+    if (num_packets > max_packets) {
+        // The command handlers size their replies to the bitmap; only a reply
+        // that ignores it (a status block too big for the request) lands here.
+        LOG(1, "ASP: %d-byte reply cut to the %d packet(s) the request has room for", len, max_packets);
         num_packets = max_packets;
+    }
     atp_response_packet_desc_t descs[ATP_MAX_RESPONSE_FRAGMENTS];
     int offset = 0;
     for (int i = 0; i < num_packets; i++) {
@@ -391,14 +404,16 @@ static void asp_wc_on_complete(atp_request_handle_t *handle, atp_request_result_
         afp_result = AFPERR_MiscErr;
     } else {
         // The command's parameters, then the data (FPWrite: 11 bytes + data)
-        int combined_len = w->afp_params_len + w->write_len;
-        uint8_t *combined = (uint8_t *)malloc((size_t)combined_len);
+        // Both lengths are bounded by their buffers (578 + 4624 bytes), so
+        // the sum cannot overflow; it is sized as size_t all the same.
+        size_t combined_len = (size_t)w->afp_params_len + (size_t)w->write_len;
+        uint8_t *combined = (uint8_t *)malloc(combined_len);
         if (!combined) {
             afp_result = AFPERR_MiscErr;
         } else {
             memcpy(combined, w->afp_params, (size_t)w->afp_params_len);
             memcpy(combined + w->afp_params_len, w->write_buf, (size_t)w->write_len);
-            afp_result = asp_client_command(s->sess_ref, w->afp_opcode, combined, combined_len, afp_out,
+            afp_result = asp_client_command(s->sess_ref, w->afp_opcode, combined, (int)combined_len, afp_out,
                                             (int)sizeof(afp_out), &afp_len);
             free(combined);
         }
@@ -457,7 +472,7 @@ static void asp_write(asp_session_t *s, const ddp_header_t *ddp, const atp_packe
     WR_BE16(wc_data, ASP_WRITE_QUANTUM);
     atp_request_params_t wc_params = {
         .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
-        .src_socket = HOST_AFP_SOCKET,
+        .src_socket = ATALK_HOST_AFP_SOCKET,
         .bitmap = 0xFF, // request up to 8 response packets
         .mode = ATP_TRANSACTION_XO,
         .trel_timer_hint = 0,
@@ -492,8 +507,14 @@ static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
                  ? g_asp_server->client->get_status(g_asp_server->client_ctx, &block, &block_len)
                  : -1;
     static const uint8_t zero[4] = {0, 0, 0, 0};
-    int len = (rc == 0 && block) ? (int)(block_len > ATP_MAX_ATP_PAYLOAD ? ATP_MAX_ATP_PAYLOAD : block_len) : 0;
-    atp_responder_send_simple(ddp, atp, zero, len > 0 ? block : NULL, len, false);
+    // A block longer than one packet goes out in as many as the request has
+    // room for (asp_reply logs a block cut short); it used to be clamped to
+    // one packet without a word.
+    size_t max_len = (size_t)ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD;
+    if (rc == 0 && block && block_len > max_len)
+        LOG(1, "ASP GetStatus: status block of %zu bytes cut to %zu", block_len, max_len);
+    int len = (rc == 0 && block) ? (int)(block_len > max_len ? max_len : block_len) : 0;
+    asp_reply(ddp, atp, zero, len > 0 ? block : NULL, len);
     free(block);
 }
 
@@ -534,7 +555,7 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
         s->client_node = ddp->llap.src;
         s->last_activity_ns = atalk_now_ns();
         asp_arm_session_sweep();
-        user[0] = HOST_AFP_SOCKET;
+        user[0] = ATALK_HOST_AFP_SOCKET;
         user[1] = s->sess_id;
         LOG(3, "ASP OpenSess: id=0x%02X ref=0x%04X node=%u wss=%u", s->sess_id, s->sess_ref, s->client_node, wss);
     } else {
@@ -601,14 +622,10 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
         LOG(6, "ASP Command: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", s->sess_id,
             (unsigned)RD_BE16(&atp->user[2]), opcode, cmd_len);
-        int max_packets = 0;
-        for (uint8_t bm = atp->bitmap; bm & 1; bm >>= 1)
-            max_packets++;
-        if (max_packets < 1)
-            max_packets = 1;
-        if (max_packets > ATP_MAX_RESPONSE_FRAGMENTS)
-            max_packets = ATP_MAX_RESPONSE_FRAGMENTS;
-        uint8_t afp_out[ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD];
+        int max_packets = asp_bitmap_packets(atp->bitmap);
+        // The reply is built in the link's buffer, not a 4.6 KB stack array:
+        // commands run one at a time, to completion, on the worker thread.
+        uint8_t *afp_out = g_asp->reply_buf;
         int afp_len = 0;
         uint32_t result =
             asp_client_command(s->sess_ref, opcode, (cmd_len > 0) ? (cmd + 1) : NULL, (cmd_len > 0) ? (cmd_len - 1) : 0,
@@ -643,8 +660,8 @@ asp_server_t *asp_init(void) {
         return NULL;
     g_asp_server = server;
     static const atp_socket_handler_t handler = {.handle_request = asp_in};
-    atp_register_socket_handler(HOST_AFP_SOCKET, &handler, NULL);
-    atp_register_socket_handler(HOST_AFP_COMPAT_SOCKET, &handler, NULL);
+    atp_register_socket_handler(ATALK_HOST_AFP_SOCKET, &handler, NULL);
+    atp_register_socket_handler(ATALK_HOST_AFP_COMPAT_SOCKET, &handler, NULL);
     return server;
 }
 

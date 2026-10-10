@@ -17,7 +17,7 @@
 // single clean streams.
 
 #include "appledouble.h"
-#include "gs_out.h"
+#include "out.h"
 #include "shell.h"
 #include "vfs.h"
 #include "io/io_worker.h"
@@ -42,13 +42,17 @@ struct cp_stats {
     char detail[320];
 };
 
-// Concatenate two path components with exactly one separator.
+// Concatenate two path components with exactly one separator, however many
+// trailing slashes `a` has and leading slashes `b` has.  (The VFS has no
+// join helper of its own; this is the only one in the tree.)
 static void path_join(char *dst, size_t cap, const char *a, const char *b) {
     size_t alen = strlen(a);
+    while (alen > 1 && a[alen - 1] == '/')
+        alen--; // keep a lone "/" (the root) intact
     bool has_sep = alen > 0 && a[alen - 1] == '/';
-    if (b[0] == '/')
+    while (b[0] == '/')
         b++;
-    snprintf(dst, cap, "%s%s%s", a, has_sep ? "" : "/", b);
+    snprintf(dst, cap, "%.*s%s%s", (int)alen, a, has_sep ? "" : "/", b);
 }
 
 // Return the basename (last path component) of `path` into `out`.
@@ -214,10 +218,10 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
     // One chunk per read and write call (GS_IO_CHUNK_KB: one proxied
     // filesystem operation each on WasmFS), progress reported and the
     // cancel flag checked between chunks.  A small stack buffer when the
-    // chunk cannot be allocated.
+    // chunk cannot be allocated (kept small: this is the low-memory path).
     size_t chunk = (size_t)GS_IO_CHUNK_KB * 1024u;
     uint8_t *buf = (uint8_t *)malloc(chunk);
-    uint8_t small[64 * 1024];
+    uint8_t small[4 * 1024];
     if (!buf) {
         buf = small;
         chunk = sizeof small;
@@ -251,8 +255,11 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
         }
         if (got == 0)
             break;
+        // fwrite need not set errno on a short write, so clear it first: a
+        // stale value from an earlier call must not be reported as the cause.
+        errno = 0;
         if (fwrite(buf, 1, got, out) != got) {
-            int e = errno;
+            int e = errno ? errno : EIO;
             snprintf(s->detail, sizeof(s->detail), "write error on '%s' at offset %llu: %s", dst,
                      (unsigned long long)off, strerror(e));
             fclose(out);
@@ -280,6 +287,31 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
     return maybe_write_fork_sidecar(src, dst, s);
 }
 
+// Append a copy of `name` to the growable list *names (n entries, cap
+// slots); false on OOM.  Each entry is its own allocation, sized to the name.
+static bool name_list_push(char ***names, size_t *n, size_t *cap, const char *name) {
+    if (*n == *cap) {
+        size_t ncap = *cap ? *cap * 2 : 32;
+        char **nb = (char **)realloc(*names, ncap * sizeof(*nb));
+        if (!nb)
+            return false;
+        *names = nb;
+        *cap = ncap;
+    }
+    char *copy = strdup(name);
+    if (!copy)
+        return false;
+    (*names)[(*n)++] = copy;
+    return true;
+}
+
+// Free a list built by name_list_push
+static void name_list_free(char **names, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        free(names[i]);
+    free(names);
+}
+
 // Recursive copy.  src may be a file or a directory.  dst is the final
 // path to write (not a container).
 static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) {
@@ -305,9 +337,8 @@ static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) 
         return rc;
 
     // Collect entries first, then recurse — some backends can't tolerate
-    // interleaved readdir across nested opens, and the per-dir entry count
-    // is bounded.
-    char(*names)[256] = NULL;
+    // interleaved readdir across nested opens.
+    char **names = NULL;
     size_t n = 0, cap = 0;
     vfs_dirent_t e;
     int r;
@@ -321,17 +352,10 @@ static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) 
             rc = -EINVAL;
             goto done;
         }
-        if (n == cap) {
-            size_t ncap = cap ? cap * 2 : 32;
-            char(*nb)[256] = realloc(names, ncap * 256);
-            if (!nb) {
-                rc = -ENOMEM;
-                goto done;
-            }
-            names = nb;
-            cap = ncap;
+        if (!name_list_push(&names, &n, &cap, e.name)) {
+            rc = -ENOMEM;
+            goto done;
         }
-        snprintf(names[n++], 256, "%s", e.name);
     }
     if (r < 0) {
         rc = r;
@@ -353,7 +377,7 @@ static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) 
 done:
     if (d)
         be->closedir(d);
-    free(names);
+    name_list_free(names, n);
     return rc;
 }
 
@@ -371,24 +395,17 @@ int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_
             snprintf(err_buf, err_cap, "cannot open '%s': %s", src, strerror(-rc));
         return rc;
     }
-    char(*names)[256] = NULL;
+    char **names = NULL;
     size_t n = 0, cap = 0;
     vfs_dirent_t e;
     int r;
     while ((r = be->readdir(d, &e)) > 0) {
         if (strcmp(e.name, ".") == 0 || strcmp(e.name, "..") == 0)
             continue;
-        if (n == cap) {
-            size_t ncap = cap ? cap * 2 : 32;
-            char(*nb)[256] = realloc(names, ncap * 256);
-            if (!nb) {
-                r = -ENOMEM;
-                break;
-            }
-            names = nb;
-            cap = ncap;
+        if (!name_list_push(&names, &n, &cap, e.name)) {
+            r = -ENOMEM;
+            break;
         }
-        snprintf(names[n++], 256, "%s", e.name);
     }
     be->closedir(d);
     rc = r < 0 ? r : 0;
@@ -406,7 +423,7 @@ int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_
         path_join(sub_dst, sizeof(sub_dst), dst, names[i]);
         rc = copy_recursive(sub_src, sub_dst, &s);
     }
-    free(names);
+    name_list_free(names, n);
     if (files)
         *files = s.files_copied;
     if (bytes)
@@ -416,10 +433,10 @@ int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_
     return rc;
 }
 
-// Public entry point: copy `src` to `dst`. Returns 0 on success, negative
-// errno on failure. `*out_err` (if not NULL) is set to a static error
-// message describing the failure (e.g. "omitting directory 'X' (use recursive=true)").
-int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap) {
+// Public entry point: copy `src` (any VFS path) to the host path `dst`.
+// Returns 0 on success, negative errno on failure, with a message in
+// err_buf (e.g. "omitting directory 'X' (use recursive=true)").
+int shell_cp_to_host(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap) {
     if (err_buf && err_cap)
         err_buf[0] = '\0';
     if (!src || !dst) {
@@ -463,10 +480,10 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
         return rc;
     }
     if (s.dirs_created > 0)
-        gs_outf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
-                (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
+        out_printf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
+                   (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
     else
-        gs_outf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
-                (unsigned long long)s.bytes_copied);
+        out_printf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
+                   (unsigned long long)s.bytes_copied);
     return 0;
 }

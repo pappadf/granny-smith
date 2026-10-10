@@ -27,6 +27,7 @@
 #ifndef MACHINE_PARTS_H
 #define MACHINE_PARTS_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 struct config;

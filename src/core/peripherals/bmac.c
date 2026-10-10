@@ -10,6 +10,7 @@
 
 #include "bmac.h"
 
+#include "checkpoint.h"
 #include "crc32.h"
 #include "log.h"
 

@@ -23,6 +23,7 @@
 #include "egret.h"
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "rtc.h"
 #include "via.h"
 

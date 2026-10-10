@@ -130,7 +130,7 @@ peel_file_list_t peel_path(const char *path, peel_err_t **err);
 // identity (key) and a cost tier.  Everything peeler takes as input and
 // everything it hands back as a fork is a source, so an archive can be
 // listed without extracting it and a member opened on its own.  The core
-// emulator adopts this type unchanged as its gs_source_t.
+// emulator adopts this type unchanged as its source_t.
 //
 // Sources are reference counted: peel_source_new returns one reference,
 // peel_source_retain adds one, peel_source_release drops one and closes the
@@ -261,10 +261,12 @@ typedef struct {
     bool (*detect)(const peel_probe_t *p);
 } peel_format_desc_t;
 
-// Every format peeler reads, wrappers first, in detection order.
+// Every format peeler reads, wrappers first, in detection order.  The
+// descriptors (and their names) are static: valid for the program's life.
 const peel_format_desc_t *peel_formats(int *count);
 
-// The first format whose detect() accepts the probe, or NULL.
+// The first format whose detect() accepts the probe, or NULL.  One of the
+// static descriptors peel_formats lists.
 const peel_format_desc_t *peel_identify(const peel_probe_t *p);
 
 // === Structure-first archive access ======================================

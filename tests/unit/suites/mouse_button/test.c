@@ -11,7 +11,7 @@
 
 #include "host_input.h"
 #include "scheduler.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "test_assert.h"
 
@@ -22,8 +22,6 @@
 // ============================================================
 // Link stubs: a scheduler with a clock the test moves, and the pins
 // ============================================================
-
-config_t *global_emulator;
 
 static double g_now_ns; // the guest clock
 static bool g_pb3 = true; // VIA PB3 as the mouse last drove it (true = up)

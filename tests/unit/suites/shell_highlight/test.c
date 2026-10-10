@@ -49,19 +49,19 @@ static value_t method_none(struct object *self, const member_t *m, int argc, con
 }
 
 static const member_t cpu_members[] = {
-    {.kind = M_ATTR, .name = "pc", .doc = "PC", .attr = {.type = V_UINT, .get = get_zero, .set = set_any}},
+    {.kind = MK_ATTR, .name = "pc", .doc = "PC", .attr = {.type = VK_UINT, .get = get_zero, .set = set_any}},
 };
 static const class_desc_t cpu_class = {.name = "cpu", .members = cpu_members, .n_members = 1};
 
 static const arg_decl_t insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image"},
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Writable"},
+    {.name = "path", .kind = VK_STRING, .doc = "Image"},
+    {.name = "writable", .kind = VK_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Writable"},
 };
 static const member_t drive_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Insert",
-     .method = {.args = insert_args, .nargs = 2, .result = V_NONE, .fn = method_none}},
+     .method = {.args = insert_args, .nargs = 2, .result = VK_NONE, .fn = method_none}},
 };
 static const class_desc_t drive_class = {.name = "drive", .members = drive_members, .n_members = 1};
 
@@ -79,50 +79,50 @@ static const collection_desc_t floppy_entries = {
 };
 
 static const member_t floppy_members[] = {
-    {.kind = M_CHILD, .name = "drive", .doc = "Drives", .child = {.collection = &floppy_entries}},
+    {.kind = MK_CHILD, .name = "drive", .doc = "Drives", .child = {.collection = &floppy_entries}},
 };
 static const class_desc_t floppy_class = {.name = "floppy", .members = floppy_members, .n_members = 1};
 static const class_desc_t machine_class = {.name = "machine", .members = NULL, .n_members = 0};
 
 static const char *const k_modes[] = {"paced", "accelerated", "turbo", NULL};
 static const arg_decl_t run_args[] = {
-    {.name = "n", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Instructions"},
+    {.name = "n", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Instructions"},
 };
 static const member_t sched_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "Mode",
-     .attr = {.type = V_ENUM, .get = get_mode, .set = set_any, .enum_values = k_modes}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_ENUM, .get = get_mode, .set = set_any, .enum_values = k_modes}},
+    {.kind = MK_METHOD,
      .name = "run",
      .doc = "Run",
-     .method = {.args = run_args, .nargs = 1, .result = V_NONE, .fn = method_none}    },
+     .method = {.args = run_args, .nargs = 1, .result = VK_NONE, .fn = method_none}    },
 };
 static const class_desc_t sched_class = {.name = "scheduler", .members = sched_members, .n_members = 2};
 
 static const char *const k_spaces[] = {"logical", "physical", NULL};
 static const arg_decl_t add_args[] = {
-    {.name = "addr", .kind = V_UINT, .doc = "Address"},
-    {.name = "condition", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Condition"},
-    {.name = "space", .kind = V_ENUM, .validation_flags = OBJ_ARG_OPTIONAL, .enum_values = k_spaces, .doc = "Space"},
+    {.name = "addr", .kind = VK_UINT, .doc = "Address"},
+    {.name = "condition", .kind = VK_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Condition"},
+    {.name = "space", .kind = VK_ENUM, .validation_flags = OBJ_ARG_OPTIONAL, .enum_values = k_spaces, .doc = "Space"},
 };
 static const member_t bp_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .doc = "Add",
-     .method = {.args = add_args, .nargs = 3, .result = V_NONE, .fn = method_none}},
+     .method = {.args = add_args, .nargs = 3, .result = VK_NONE, .fn = method_none}},
 };
 static const class_desc_t bp_class = {.name = "breakpoints", .members = bp_members, .n_members = 1};
 static const class_desc_t debug_class = {.name = "debug", .members = NULL, .n_members = 0};
 
 static const arg_decl_t echo_args[] = {
-    {.name = "args", .kind = V_ANY, .validation_flags = OBJ_ARG_REST | OBJ_ARG_OPTIONAL, .doc = "Words"},
+    {.name = "args", .kind = VK_ANY, .validation_flags = OBJ_ARG_REST | OBJ_ARG_OPTIONAL, .doc = "Words"},
 };
 static const member_t util_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Echo",
-     .method = {.args = echo_args, .nargs = 1, .result = V_NONE, .fn = method_none}},
+     .method = {.args = echo_args, .nargs = 1, .result = VK_NONE, .fn = method_none}},
 };
 static const class_desc_t util_class = {.name = "util", .members = util_members, .n_members = 1};
 
@@ -176,7 +176,7 @@ static const char *map_s(const value_t *m, const char *key) {
 // spans are ordered, non-overlapping and inside the line.
 static void render(const char *line, char *out, size_t size) {
     value_t v = shell_highlight(line);
-    ASSERT_EQ_INT(V_LIST, v.kind);
+    ASSERT_EQ_INT(VK_LIST, v.kind);
     size_t n = 0, prev_end = 0, len = strlen(line);
     out[0] = '\0';
     for (size_t i = 0; i < v.list.len; i++) {
@@ -272,7 +272,7 @@ TEST(test_offsets_are_utf8_bytes) {
     // "ü" is two bytes: the string span covers 13 bytes, the number after it
     // starts at byte 14.
     value_t v = shell_highlight("util.echo \"über\" 5");
-    ASSERT_EQ_INT(V_LIST, v.kind);
+    ASSERT_EQ_INT(VK_LIST, v.kind);
     ASSERT_EQ_INT(4, (int)v.list.len);
     ASSERT_EQ_INT(10, (int)map_u(&v.list.items[2], "start"));
     ASSERT_EQ_INT(17, (int)map_u(&v.list.items[2], "end"));

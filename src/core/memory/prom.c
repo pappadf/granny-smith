@@ -17,8 +17,8 @@
 
 #include "prom.h"
 #include "common.h"
-#include "gs_out.h"
 #include "offer_registry.h"
+#include "out.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -446,18 +446,18 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t prom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "PCI expansion-ROM file path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "PCI expansion-ROM file path"},
 };
 
 static const member_t prom_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "offer",
      .doc = "Offer a candidate expansion ROM; true iff recognised and registered",
-     .method = {.args = prom_path_arg, .nargs = 1, .result = V_BOOL, .fn = prom_method_offer}  },
-    {.kind = M_METHOD,
+     .method = {.args = prom_path_arg, .nargs = 1, .result = VK_BOOL, .fn = prom_method_offer}  },
+    {.kind = MK_METHOD,
      .name = "identify",
      .doc = "Typed map: {recognised, card_id?, compatible?, vendor_id?, device_id?, id?, intact?, size, reason?}.",
-     .method = {.args = prom_path_arg, .nargs = 1, .result = V_MAP, .fn = prom_method_identify}},
+     .method = {.args = prom_path_arg, .nargs = 1, .result = VK_MAP, .fn = prom_method_identify}},
 };
 
 static const class_desc_t prom_class = {

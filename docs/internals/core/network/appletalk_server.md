@@ -413,6 +413,7 @@ _The reply doesn't carry any payload_
 - Source and destination may be on the same or different volumes.
 - The caller must have Search access to all ancestors of the source file except the source parent, and Read access to the source parent directory.
 - The caller must have Search or Write access to all ancestors of the destination except the destination parent, and Write access to the destination parent directory.
+- **On the host:** the copy (data file, then sidecar) is synced before `NoErr`; a failed sidecar copy removes the data copy. A host filesystem that cannot sync at all (`fsync` answers `EINVAL` or `ENOTSUP`) does not fail the copy.
 
 ---
 
@@ -502,6 +503,7 @@ _The reply doesn't carry any payload_
 - **Soft create rights:** Requires Search or Write access to all ancestors except parent, and Write access to parent.
 - **Hard create rights:** Requires Search access to all ancestors except parent, and Read/Write access to parent.
 - **Precondition:** Volume must be opened via `FPOpenVol`.
+- **On the host:** the data file is opened first (a soft create with `O_EXCL`, a hard create without truncating it); only once that succeeds is the AppleDouble sidecar removed and the data truncated. A hard create that cannot open the file (a read-only host file) answers `AccessDenied` with the old file, resource fork and Finder Info intact. A sidecar left behind by a deletion is cleared, not inherited.
 
 ---
 
@@ -2619,7 +2621,9 @@ state, two homes:
 
 `.gs-afp` and every `._*` sidecar are filtered out of FPEnumerate and of the
 offspring count, and a client pathname that names either is rejected with
-`ParamErr` before it can resolve.
+`ParamErr` before it can resolve. The host's other dotfiles (`.git`,
+`.DS_Store`) are ordinary files to the server: they are listed, counted as
+offspring and found by FPCatSearch, and a folder holding one is not empty.
 
 **Names and paths.** A pathname from the client is CNode names separated by
 NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and
@@ -2791,8 +2795,10 @@ name, enablement and message, the printer, the Apple event port -- belongs
 to the network, which no machine checkpoints.
 
 A machine checkpoint therefore carries the connection's block only: the
-link's enabled flag and counters, and the session numbering (the next
-session reference and wire session id). A restored connection has no
+link's enabled flag and counters, the session numbering (the next
+session reference and wire session id) and the ATP transaction-id cursor,
+so a restored connection does not reuse a TID the guest's exactly-once
+cache may still hold. A restored connection has no
 sessions, which to the guest is a **server restart**: its next request on
 the session it held is answered `SessClosed` -- never dropped, which would
 leave it waiting out a timeout -- the AppleShare client sees the connection

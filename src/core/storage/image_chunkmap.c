@@ -36,7 +36,7 @@ typedef struct {
 } cm_run_t;
 
 typedef struct {
-    gs_source_t *data; // the data fork (retained)
+    source_t *data; // the data fork (retained)
     cm_run_t *runs; // sorted by out_off, non-overlapping
     size_t n_runs, cap_runs;
     uint64_t size; // decoded image size
@@ -97,7 +97,7 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     uint8_t *in = malloc(r->in_len ? (size_t)r->in_len : 1);
     if (!in)
         return -ENOMEM;
-    int rc = r->in_len ? gs_source_read_exact(f->m->data, r->in_off, in, (size_t)r->in_len) : 0;
+    int rc = r->in_len ? source_read_exact(f->m->data, r->in_off, in, (size_t)r->in_len) : 0;
     if (rc == 0) {
         if (r->kind == RUN_NDIF) {
             ndif_chunk_t c = {.sector = 0,
@@ -119,7 +119,7 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     return rc != 0 ? (rc < 0 ? rc : -EIO) : (int64_t)r->out_len;
 }
 
-static int64_t cm_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t cm_read(source_t *s, uint64_t off, void *buf, size_t len) {
     cm_src_t *m = s->ctx;
     if (off >= m->size)
         return 0;
@@ -144,13 +144,13 @@ static int64_t cm_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
         if (r->kind == RUN_ZERO) {
             memset(out + done, 0, n);
         } else if (r->kind == RUN_RAW) {
-            int rc = gs_source_read_exact(m->data, r->in_off + in, out + done, n);
+            int rc = source_read_exact(m->data, r->in_off + in, out + done, n);
             if (rc != 0)
                 return done ? (int64_t)done : rc;
         } else {
             cm_fetch_t f = {m, r};
-            int64_t got = gs_chunk_cache_get(gs_chunk_cache_images(), m->key, i, (size_t)r->out_len, in, out + done, n,
-                                             cm_fetch, &f);
+            int64_t got =
+                chunk_cache_get(chunk_cache_images(), m->key, i, (size_t)r->out_len, in, out + done, n, cm_fetch, &f);
             if (got < 0)
                 return done ? (int64_t)done : got;
             if ((size_t)got != n)
@@ -162,15 +162,15 @@ static int64_t cm_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return (int64_t)done;
 }
 
-static uint64_t cm_size(gs_source_t *s) {
+static uint64_t cm_size(source_t *s) {
     return ((cm_src_t *)s->ctx)->size;
 }
 
-static const char *cm_key(gs_source_t *s) {
+static const char *cm_key(source_t *s) {
     return ((cm_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t cm_tier(gs_source_t *s) {
+static source_tier_t cm_tier(source_t *s) {
     (void)s;
     return GS_TIER_INDEXED; // the chunk table is the index
 }
@@ -178,25 +178,25 @@ static gs_tier_t cm_tier(gs_source_t *s) {
 static void cm_free(cm_src_t *m) {
     if (!m)
         return;
-    gs_source_release(m->data);
+    source_release(m->data);
     free(m->runs);
     free(m->key);
     free(m);
 }
 
-static void cm_close(gs_source_t *s) {
+static void cm_close(source_t *s) {
     cm_free(s->ctx);
 }
 
-static const gs_source_ops_t cm_ops = {cm_read, cm_size, cm_key, cm_tier, cm_close};
+static const source_ops_t cm_ops = {cm_read, cm_size, cm_key, cm_tier, cm_close};
 
-static cm_src_t *cm_new(gs_source_t *data, const char *what) {
+static cm_src_t *cm_new(source_t *data, const char *what) {
     cm_src_t *m = calloc(1, sizeof(*m));
     if (!m)
         return NULL;
-    m->data = gs_source_retain(data);
+    m->data = source_retain(data);
     m->what = what;
-    m->key = gs_str_printf("%s#%s", gs_source_key(data), what);
+    m->key = str_printf("%s#%s", source_key(data), what);
     if (!m->key) {
         cm_free(m);
         return NULL;
@@ -208,19 +208,19 @@ static cm_src_t *cm_new(gs_source_t *data, const char *what) {
 // NDIF
 // ============================================================================
 
-bool ndif_source_detect(gs_source_t *rsrc) {
+bool ndif_source_detect(source_t *rsrc) {
     if (!rsrc)
         return false;
     uint8_t *buf = NULL;
     size_t len = 0;
-    if (gs_source_read_all(rsrc, RFORK_MAX_FORK_LEN, &buf, &len) != 0)
+    if (source_read_all(rsrc, RFORK_MAX_FORK_LEN, &buf, &len) != 0)
         return false;
     bool yes = ndif_detect(buf, len);
     free(buf);
     return yes;
 }
 
-gs_source_t *ndif_source_open(gs_source_t *data, gs_source_t *rsrc, int *err) {
+source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -229,7 +229,7 @@ gs_source_t *ndif_source_open(gs_source_t *data, gs_source_t *rsrc, int *err) {
         return NULL;
     uint8_t *rbuf = NULL;
     size_t rlen = 0;
-    if (gs_source_read_all(rsrc, RFORK_MAX_FORK_LEN, &rbuf, &rlen) != 0)
+    if (source_read_all(rsrc, RFORK_MAX_FORK_LEN, &rbuf, &rlen) != 0)
         return NULL;
     ndif_map_t *map = NULL;
     int rc = ndif_detect(rbuf, rlen) ? ndif_parse(rbuf, rlen, &map) : -EINVAL;
@@ -245,7 +245,7 @@ gs_source_t *ndif_source_open(gs_source_t *data, gs_source_t *rsrc, int *err) {
         return NULL;
     }
     m->size = (uint64_t)map->sectors * CM_SECTOR;
-    uint64_t dsize = gs_source_size(data);
+    uint64_t dsize = source_size(data);
     rc = 0;
     for (size_t i = 0; i < map->n_chunks && rc == 0; i++) {
         const ndif_chunk_t *c = &map->chunks[i];
@@ -284,12 +284,12 @@ gs_source_t *ndif_source_open(gs_source_t *data, gs_source_t *rsrc, int *err) {
     if (rc == 0)
         rc = cm_finish(m);
     if (rc != 0) {
-        LOG(1, "NDIF '%s': unusable block map (%d)", gs_source_key(data), rc);
+        LOG(1, "NDIF '%s': unusable block map (%d)", source_key(data), rc);
         cm_free(m);
         *err = rc;
         return NULL;
     }
-    gs_source_t *s = peel_source_new(&cm_ops, m, NULL);
+    source_t *s = peel_source_new(&cm_ops, m, NULL);
     *err = s ? 0 : -ENOMEM;
     return s;
 }
@@ -328,25 +328,25 @@ bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len) {
     return false;
 }
 
-gs_source_t *udif_source_open(gs_source_t *data, int *err) {
+source_t *udif_source_open(source_t *data, int *err) {
     return udif_source_open_bounded(data, 0, err);
 }
 
-gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *err) {
+source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
     int e = 0;
     if (!err)
         err = &e;
     *err = -EINVAL;
-    uint64_t dsize = gs_source_size(data);
+    uint64_t dsize = source_size(data);
     uint8_t trailer[UDIF_TRAILER_SIZE];
-    if (dsize < UDIF_TRAILER_SIZE || gs_source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)))
+    if (dsize < UDIF_TRAILER_SIZE || source_read_exact(data, dsize - UDIF_TRAILER_SIZE, trailer, sizeof(trailer)))
         return NULL;
     if (!udif_detect(trailer, sizeof(trailer)))
         return NULL;
     udif_trailer_t tr;
     int rc = udif_parse_trailer(trailer, sizeof(trailer), &tr);
     if (rc != 0) {
-        LOG(1, "unsupported UDIF trailer in '%s' (%d)", gs_source_key(data), rc);
+        LOG(1, "unsupported UDIF trailer in '%s' (%d)", source_key(data), rc);
         *err = rc;
         return NULL;
     }
@@ -360,7 +360,7 @@ gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *
         return NULL;
     }
     udif_map_t *map = NULL;
-    rc = gs_source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
+    rc = source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
     if (rc == 0)
         rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
     // An image this emulator wrote has chunks of its own bounded size; any
@@ -370,7 +370,7 @@ gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *
         max_chunk = ours ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
     free(xml);
     if (rc != 0) {
-        LOG(1, "UDIF '%s': block map unreadable (%d)", gs_source_key(data), rc);
+        LOG(1, "UDIF '%s': block map unreadable (%d)", source_key(data), rc);
         *err = rc;
         return NULL;
     }
@@ -410,11 +410,11 @@ gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *
                 r.kind = RUN_UDIF;
                 if (r.out_len > max_chunk || c->length > NDIF_MAX_CHUNK_BYTES) {
                     LOG(0, "UDIF '%s': a chunk decodes to %llu KB, more than the %zu KB read in place",
-                        gs_source_key(data), (unsigned long long)(r.out_len >> 10), max_chunk >> 10);
+                        source_key(data), (unsigned long long)(r.out_len >> 10), max_chunk >> 10);
                     rc = -EFBIG;
                 }
             } else {
-                LOG(1, "UDIF '%s': chunk codec %#x not supported", gs_source_key(data), c->type);
+                LOG(1, "UDIF '%s': chunk codec %#x not supported", source_key(data), c->type);
                 rc = -ENOTSUP; // bzip2 / LZFSE / LZMA
             }
             if (rc == 0 && r.kind != RUN_ZERO && (r.in_off > dsize || r.in_len > dsize - r.in_off))
@@ -427,12 +427,12 @@ gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *
     if (rc == 0)
         rc = cm_finish(m);
     if (rc != 0) {
-        LOG(1, "UDIF '%s': unusable block map (%d)", gs_source_key(data), rc);
+        LOG(1, "UDIF '%s': unusable block map (%d)", source_key(data), rc);
         cm_free(m);
         *err = rc;
         return NULL;
     }
-    gs_source_t *s = peel_source_new(&cm_ops, m, NULL);
+    source_t *s = peel_source_new(&cm_ops, m, NULL);
     *err = s ? 0 : -ENOMEM;
     return s;
 }

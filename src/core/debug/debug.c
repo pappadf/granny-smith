@@ -9,7 +9,7 @@
 // ============================================================================
 
 #include "debug.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "addr_format.h"
 #include "alias.h"
@@ -17,11 +17,13 @@
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "crc32.h"
+#include "debug_data.h"
 #include "debug_mac.h"
 #include "deflate.h"
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
+#include "gs_assert.h"
 #include "inflate.h"
 #include "log.h"
 #include "log_categories.h"
@@ -30,14 +32,13 @@
 #include "nubus.h"
 #include "object.h"
 #include "pci.h"
-#include "root.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "shell_var.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // debug_init / debug_cleanup reference them.
@@ -48,16 +49,6 @@ static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
 static const class_desc_t debug_mac_globals_class;
 
-// Mac low-memory globals table (defined in mac_globals_data.c). Used by
-// debug.mac.globals.{read,write,address,list}.
-extern struct {
-    const char *name;
-    uint32_t address;
-    int size;
-    const char *description;
-} mac_global_vars[];
-extern const size_t mac_global_vars_count;
-
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -67,6 +58,75 @@ extern const size_t mac_global_vars_count;
 // ============================================================================
 // Type Definitions
 // ============================================================================
+
+// What a combined trace entry refers to (trace_entry_t.kind).
+typedef enum trace_entry_kind {
+    TRACE_ENTRY_PC = 0, // `value` is a PC address
+    TRACE_ENTRY_LOG = 1, // `value` is an index into the trace log buffer
+} trace_entry_kind_t;
+
+// Single trace entry: either a PC value or a log message index
+typedef struct trace_entry {
+    trace_entry_kind_t kind;
+    uint32_t value; // PC address or log message index
+} trace_entry_t;
+
+// Log message stored in trace log buffer
+typedef struct trace_log_msg {
+    char *text; // Log message text (owned)
+} trace_log_msg_t;
+
+// Debugger state (opaque outside this file; see debug.h)
+struct debug {
+    bool active;
+    int step;
+    breakpoint_t *breakpoints;
+    uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
+    logpoint_t *logpoints;
+    // Per-instruction / per-access fast paths, rebuilt by index_breakpoints
+    // and index_logpoints after every add or remove.  The step hook skips the
+    // breakpoint walk unless the PC's bit is set in bp_pc_filter (a one-word
+    // Bloom filter over the logical breakpoint addresses) or any physical
+    // breakpoint exists; the two logpoint chains (linked through
+    // lp->kind_next) let the step hook and the memory hook each walk only
+    // the logpoints of their own kind.
+    uint64_t bp_pc_filter;
+    bool bp_any_physical;
+    logpoint_t *pc_logpoints;
+    logpoint_t *mem_logpoints;
+    // A watchpoint (a stopping memory logpoint, in the list above) fired
+    // inside the instruction in flight; debug_break_and_trace stops the
+    // machine after that instruction and clears it.
+    bool watch_hit;
+    // Sparse stable id counters. Incremented on every
+    // add; never reset, never recycled. The first allocated id is 0.
+    int next_breakpoint_id;
+    int next_logpoint_id;
+    // Trace buffer for PC entries
+    uint32_t *trace_buffer;
+    uint32_t trace_buffer_size;
+    int trace_head;
+    int trace_tail;
+    int trace_size;
+    // Trace log message buffer
+    trace_log_msg_t *trace_log_buffer;
+    uint32_t trace_log_buffer_size;
+    uint32_t trace_log_head;
+    uint32_t trace_log_count;
+    // Combined trace entries (PC + log references)
+    trace_entry_t *trace_entries;
+    uint32_t trace_entries_size;
+    uint32_t trace_entries_head;
+    uint32_t trace_entries_tail;
+    // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
+    struct object *object; // root `debug` node
+    struct object *bp_collection_object;
+    struct object *lp_collection_object;
+    struct object *wp_collection_object;
+    struct object *mac_object; // debug.mac
+    struct object *mac_globals_object; // debug.mac.globals
+    struct object *find_object; // debug.find
+};
 
 struct breakpoint {
 
@@ -114,18 +174,25 @@ struct logpoint {
     // Hit counter for this logpoint
     uint32_t hit_count;
 
-    // For logical-space memory logpoints, the physical page range bumped at
-    // install time (to catch current aliases).  end_phys_page < start_phys_page
-    // means "no physical range was installed" (e.g. MMU off, or P:-space lp).
+    // For memory logpoints, the physical page range bumped at install time
+    // (to catch current aliases); only meaningful when has_phys_pages is set
+    // (it is not for, e.g., a logical logpoint installed with the MMU off).
+    bool has_phys_pages;
     uint32_t start_phys_page;
     uint32_t end_phys_page;
 
     // For PC logpoints, the install-time physical *address* range (not page —
     // a page-granular compare fires on every instruction sharing the page,
-    // which made PC logpoints unusable).  end_phys < start_phys means "no
-    // physical range was recorded"; the logical compare is then the only test.
+    // which made PC logpoints unusable); only meaningful when has_phys is
+    // set, otherwise the logical compare is the only test.
+    bool has_phys;
     uint32_t start_phys;
     uint32_t end_phys;
+    // Both physical ranges are a SNAPSHOT of the MMU mapping at install time
+    // and are never refreshed: if the guest later remaps the logical range to
+    // different physical pages, the physical match keeps following the old
+    // pages (the logical match still follows the new ones).  Re-add the
+    // logpoint after a remap to watch the new physical pages.
 
     // Optional value filter for memory logpoints: when value_filter_active is
     // true, the hook fires only if the access value equals value_filter.
@@ -147,23 +214,78 @@ struct logpoint {
     struct object *entry_object;
 
     logpoint_t *next;
+    logpoint_t *kind_next; // next in debug->pc_logpoints or ->mem_logpoints
 };
 
 // ============================================================================
 // Static Helpers
 // ============================================================================
 
-static uint16_t cpu_get_uint16(uint32_t addr) {
+// Read the opcode word at addr for a disassembly line.  Returns false when
+// there is no memory to read (no machine yet), so the caller can show the
+// word as unreadable rather than as a plausible-looking $0000.
+static bool cpu_get_uint16(uint32_t addr, uint16_t *out) {
     if (!system_memory())
-        return 0;
-    return memory_debug_read_uint16(addr);
+        return false;
+    *out = memory_debug_read_uint16(addr);
+    return true;
 }
+
+// Mask selecting the low `size` bytes of a bus value.  `size` is 1, 2 or 4
+// for every access the memory layer reports; anything else (0 included,
+// where the shift arithmetic would produce an all-zero mask) is treated as
+// a full 32-bit access rather than silently masking the value away.
+static uint32_t access_width_mask(unsigned size) {
+    return (size == 1) ? 0xFFu : (size == 2) ? 0xFFFFu : 0xFFFFFFFFu;
+}
+
+// Width letter for an access size, as printed after an address ($1234.w)
+static char access_width_letter(unsigned size) {
+    return (size == 1) ? 'b' : (size == 2) ? 'w' : 'l';
+}
+
+// Bit of debug->bp_pc_filter that a logical breakpoint at `addr` sets
+static uint64_t bp_filter_bit(uint32_t addr) {
+    return 1ull << ((addr >> 1) & 63); // instructions are word-aligned
+}
+
+// Rebuild the breakpoint fast-path filter after the list changed.
+// Disabled entries are kept in the filter; it only has to be conservative.
+static void index_breakpoints(debug_t *debug) {
+    debug->bp_pc_filter = 0;
+    debug->bp_any_physical = false;
+    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next) {
+        if (bp->space == ADDR_SPACE_PHYSICAL)
+            debug->bp_any_physical = true;
+        else
+            debug->bp_pc_filter |= bp_filter_bit(bp->addr);
+    }
+}
+
+// Rebuild the per-kind logpoint chains after the list changed
+static void index_logpoints(debug_t *debug) {
+    logpoint_t **pc_tail = &debug->pc_logpoints;
+    logpoint_t **mem_tail = &debug->mem_logpoints;
+    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
+        logpoint_t ***tail = (lp->kind == LP_KIND_PC) ? &pc_tail : &mem_tail;
+        **tail = lp;
+        *tail = &lp->kind_next;
+    }
+    *pc_tail = NULL;
+    *mem_tail = NULL;
+}
+
+// Per-entry object factories for debug.breakpoints[id] / debug.logpoints[id]
+// (defined with their entry classes below).
+static struct object *make_breakpoint_object(breakpoint_t *bp);
+static struct object *make_logpoint_object(logpoint_t *lp);
 
 // ============================================================================
 // Operations
 // ============================================================================
 
-breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
+// Add a breakpoint at addr in the given space; NULL on allocation failure
+static breakpoint_t *add_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
 
     breakpoint_t *bp = calloc(1, sizeof(breakpoint_t));
 
@@ -175,14 +297,15 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     bp->condition = NULL;
     bp->hit_count = 0;
     bp->id = debug->next_breakpoint_id++;
-    // The entry object is created lazily by the root install path the first time
-    // someone resolves debug.breakpoints[id]; we just hold the slot.
-    bp->entry_object = gs_classes_make_breakpoint_object(bp);
+    // The per-entry object exposed as debug.breakpoints[id]; object_delete
+    // fires its invalidator hooks when the breakpoint is removed.
+    bp->entry_object = make_breakpoint_object(bp);
     object_set_logical_parent(bp->entry_object, debug->bp_collection_object, NULL, bp->id, NULL);
 
     // add bp to a linked list
     bp->next = debug->breakpoints;
     debug->breakpoints = bp;
+    index_breakpoints(debug);
 
     debug->active = true;
 
@@ -206,7 +329,7 @@ static value_t debug_shell_binding(void *ud, const char *name) {
 //   memory.peek.l(0x1201D420) == 0xE000
 //   cpu.supervisor && cpu.pc >= 0x10000000
 //
-// Unknown / parse-failed / V_ERROR expressions evaluate to true so a
+// Unknown / parse-failed / VK_ERROR expressions evaluate to true so a
 // typo doesn't silently swallow hits.
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
@@ -225,25 +348,25 @@ static bool eval_breakpoint_condition(const char *expr) {
     value_t v = expr_eval(expr, &ctx);
     bool result;
     switch (v.kind) {
-    case V_BOOL:
+    case VK_BOOL:
         result = v.b;
         break;
-    case V_INT:
+    case VK_INT:
         result = (v.i != 0);
         break;
-    case V_UINT:
+    case VK_UINT:
         result = (v.u != 0);
         break;
-    case V_FLOAT:
+    case VK_FLOAT:
         result = (v.f != 0.0);
         break;
-    case V_STRING:
+    case VK_STRING:
         result = (v.s && *v.s);
         break;
-    case V_NONE:
+    case VK_NONE:
         result = false;
         break;
-    case V_ERROR:
+    case VK_ERROR:
         // Parse / resolution error — safer default is to fire so the
         // user notices the typo rather than missing the breakpoint.
         result = true;
@@ -257,7 +380,7 @@ static bool eval_breakpoint_condition(const char *expr) {
 }
 
 // Set a logpoint at the specified address range (end_addr == addr for single address)
-logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_category_t *category, int level) {
+static logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_category_t *category, int level) {
 
     logpoint_t *lp = calloc(1, sizeof(logpoint_t));
 
@@ -266,7 +389,7 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
     lp->addr = addr;
     lp->end_addr = end_addr;
-    lp->space = ADDR_LOGICAL;
+    lp->space = ADDR_SPACE_LOGICAL;
     lp->kind = LP_KIND_PC;
     lp->category = category;
     lp->level = level;
@@ -278,18 +401,15 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     // same physical instruction is executed via an aliased VA — same intent as
     // de9bde3 for memory logpoints, but address-exact: comparing pages made a
     // single-address logpoint fire on every instruction sharing its page.
-    // When MMU is off or translation fails, leave the range "empty"
-    // (end < start) and fall back to the logical match.
-    lp->start_phys_page = 1;
-    lp->end_phys_page = 0;
-    lp->start_phys = 1;
-    lp->end_phys = 0;
+    // When MMU is off or translation fails, leave has_phys clear and fall
+    // back to the logical match.
     if (g_mmu && g_mmu->enabled) {
         bool is_identity, valid;
         uint32_t phys_start = debug_translate_address(addr, &is_identity, NULL, &valid);
         if (valid) {
             uint32_t phys_end = debug_translate_address(end_addr, &is_identity, NULL, &valid);
             if (valid) {
+                lp->has_phys = true;
                 lp->start_phys = phys_start;
                 lp->end_phys = phys_end;
                 if (lp->end_phys < lp->start_phys) {
@@ -303,12 +423,13 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     lp->value_filter_active = false;
     lp->value_filter = 0;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = gs_classes_make_logpoint_object(lp);
+    lp->entry_object = make_logpoint_object(lp);
     object_set_logical_parent(lp->entry_object, debug->lp_collection_object, NULL, lp->id, NULL);
 
     // add lp to a linked list
     lp->next = debug->logpoints;
     debug->logpoints = lp;
+    index_logpoints(debug);
 
     debug->active = true;
 
@@ -317,10 +438,10 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
 // Install a memory-access logpoint (write/read/rw).  Forces the covered pages
 // through the memory slow path so the hook can observe every access.  No
-// impact on the fast path for other pages.  When space == ADDR_LOGICAL the
+// impact on the fast path for other pages.  When space == ADDR_SPACE_LOGICAL the
 // current MMU mapping is also consulted and the corresponding physical pages
 // are watched, so an access via an alias of the same physical page still
-// fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
+// fires the hook.  When space == ADDR_SPACE_PHYSICAL only the physical watch is
 // installed (no logical-page watch) — the caller observes every alias.
 static struct object *make_watchpoint_object(logpoint_t *lp);
 
@@ -328,19 +449,12 @@ static struct object *make_watchpoint_object(logpoint_t *lp);
 // makes the entry a watchpoint (its own entry class, the stopping hook path).
 static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space,
                                            int kind, log_category_t *category, int level, bool stops) {
-    // calloc, and the no-range sentinel set explicitly below, matching
-    // set_logpoint.  This used to malloc and then assign 14 of the 16 fields
-    // by hand, leaving start_phys/end_phys as heap garbage.  Inert today only
-    // because the single reader is guarded by `lp->kind == LP_KIND_PC` -- a
-    // coincidence of the current control flow, not an invariant anyone stated,
-    // and any future pass that iterates all logpoints (a unified hit test, an
-    // entries column, a checkpoint of the list) reads uninitialised memory.
-    // MSan and valgrind flag it now.
+    // calloc, so has_phys / has_phys_pages start clear ("no physical
+    // range"), matching set_logpoint.  This used to malloc and then assign
+    // 14 of the 16 fields by hand, leaving the physical range as heap garbage.
     logpoint_t *lp = calloc(1, sizeof(logpoint_t));
     if (!lp)
         return NULL;
-    lp->start_phys = 1; // start > end == "no physical range", as set_logpoint
-    lp->end_phys = 0;
     lp->addr = addr;
     lp->end_addr = end_addr;
     lp->space = space;
@@ -349,24 +463,22 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     lp->level = level;
     lp->hit_count = 0;
     lp->message = NULL;
-    // Mark "no physical range installed" until we do so below.
-    lp->start_phys_page = 1;
-    lp->end_phys_page = 0;
     lp->value_filter_active = false;
     lp->value_filter = 0;
     lp->stops = stops;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = stops ? make_watchpoint_object(lp) : gs_classes_make_logpoint_object(lp);
+    lp->entry_object = stops ? make_watchpoint_object(lp) : make_logpoint_object(lp);
     object_set_logical_parent(lp->entry_object, stops ? debug->wp_collection_object : debug->lp_collection_object, NULL,
                               lp->id, NULL);
     lp->next = debug->logpoints;
     debug->logpoints = lp;
+    index_logpoints(debug);
     debug->active = true;
 
-    uint32_t start_page = addr >> PAGE_SHIFT;
-    uint32_t end_page = end_addr >> PAGE_SHIFT;
+    uint32_t start_page = addr >> MEM_PAGE_SHIFT;
+    uint32_t end_page = end_addr >> MEM_PAGE_SHIFT;
 
-    if (space == ADDR_LOGICAL) {
+    if (space == ADDR_SPACE_LOGICAL) {
         memory_logpoint_install(start_page, end_page);
         // Also watch the physical pages the current MMU mapping points at —
         // catches aliases (same physical reached via different logical addrs).
@@ -375,14 +487,15 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
         // installed while user code is running watches the user mapping.
         if (g_mmu && g_mmu->enabled) {
             bool supervisor = debug_cpu_is_supervisor();
-            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> PAGE_SHIFT;
-            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> PAGE_SHIFT;
+            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> MEM_PAGE_SHIFT;
+            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> MEM_PAGE_SHIFT;
             if (phys_end < phys_start) {
                 uint32_t tmp = phys_start;
                 phys_start = phys_end;
                 phys_end = tmp;
             }
             memory_logpoint_install_phys(phys_start, phys_end);
+            lp->has_phys_pages = true;
             lp->start_phys_page = phys_start;
             lp->end_phys_page = phys_end;
         } else if (g_mem_logical_xlate) {
@@ -394,8 +507,8 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             if (dif && dif->translate_mac) {
                 bool ok_start = false, ok_end = false;
-                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> PAGE_SHIFT;
-                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> PAGE_SHIFT;
+                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> MEM_PAGE_SHIFT;
+                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> MEM_PAGE_SHIFT;
                 if (ok_start && ok_end) {
                     if (phys_end < phys_start) {
                         uint32_t tmp = phys_start;
@@ -403,6 +516,7 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
                         phys_end = tmp;
                     }
                     memory_logpoint_install_phys(phys_start, phys_end);
+                    lp->has_phys_pages = true;
                     lp->start_phys_page = phys_start;
                     lp->end_phys_page = phys_end;
                 }
@@ -411,14 +525,16 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     } else {
         // Physical-space logpoint: only the physical array is bumped.
         memory_logpoint_install_phys(start_page, end_page);
+        lp->has_phys_pages = true;
         lp->start_phys_page = start_page;
         lp->end_phys_page = end_page;
     }
     return lp;
 }
 
-logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
-                                log_category_t *category, int level) {
+// Install a memory logpoint (write/read/rw) that logs rather than stops
+static logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
+                                       log_category_t *category, int level) {
     return install_memory_logpoint(debug, addr, end_addr, space, kind, category, level, false);
 }
 
@@ -440,21 +556,20 @@ static value_t lp_binding(void *ud, const char *name) {
     if (strcmp(name, "value") == 0) {
         // Mask the value to its declared width so 1/2-byte writes don't
         // print as full 32-bit words.
-        uint64_t mask = (lp->size >= 4) ? 0xFFFFFFFFu : ((1u << (lp->size * 8)) - 1u);
         int w = (lp->size == 1) ? 1 : (lp->size == 2) ? 2 : 4;
-        value_t v = val_uint((uint8_t)w, lp->value & mask);
-        v.flags |= VAL_HEX;
+        value_t v = val_uint((uint8_t)w, lp->value & access_width_mask(lp->size));
+        v.flags |= VFLAG_HEX;
         return v;
     }
     if (strcmp(name, "addr") == 0) {
         value_t v = val_uint(4, lp->addr);
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     if (strcmp(name, "size") == 0)
         return val_uint(1, lp->size);
     // Everything else falls through to the shell's binding store
-    // (scoped `let` bindings, then the alias table as V_REF).
+    // (scoped `let` bindings, then the alias table as VK_REF).
     return shell_binding_get(name);
 }
 
@@ -496,7 +611,7 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
     };
     value_t v = expr_interpolate_body(msg, &ctx);
 
-    const char *s = (v.kind == V_STRING && v.s) ? v.s : (v.kind == V_ERROR && v.err) ? v.err : "";
+    const char *s = (v.kind == VK_STRING && v.s) ? v.s : (v.kind == VK_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)
         n = buf_size - 1;
@@ -551,8 +666,9 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     // /OS call trace instead of a wall of identical vector numbers.  Only done
     // when streaming is on — the read is a debug-path memory access.
     const char *trap_name = "";
+    char trap_buf[8];
     if (vector == 0x028 && log_get_level(cat) >= 1)
-        trap_name = macos_atrap_name(memory_debug_read_uint16(faulting_pc));
+        trap_name = debug_mac_atrap_name(memory_debug_read_uint16(faulting_pc), trap_buf, sizeof(trap_buf));
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
              double_fault_kind ? "  [DOUBLE FAULT]" : "");
@@ -566,10 +682,10 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
 void debug_exc_trace_dump(int filter) {
     uint32_t total = (uint32_t)s_exc_trace_count;
     uint32_t count = total < EXC_TRACE_RING_SIZE ? total : EXC_TRACE_RING_SIZE;
-    gs_outf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
-            filter ? ", routine traps/IRQs filtered" : "");
+    out_printf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
+               filter ? ", routine traps/IRQs filtered" : "");
     if (count == 0) {
-        gs_outf("(empty)\n");
+        out_printf("(empty)\n");
         return;
     }
     // Walk from oldest to newest. With s_exc_trace_count <= ring size, oldest is at idx 0.
@@ -589,15 +705,27 @@ void debug_exc_trace_dump(int filter) {
         // entry carries MSR in the vbr slot, the vector offset in
         // format_frame, and DAR in fault_addr.
         if (e->arch == EXC_ARCH_PPC) {
-            gs_outf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
-                    e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
-                    e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            out_printf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
+                       e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
+                       e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         } else {
-            gs_outf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
-                    (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
-                    e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            out_printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+                       (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
+                       e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         }
     }
+}
+
+// True when the memory access the logpoint hook is servicing runs with
+// supervisor privileges.  The hook runs inside the access (on the memory
+// slow path), and the 68K core repoints g_active_read / g_active_write at
+// the supervisor or user SoA tables on every S-bit change (cpu_internal.h),
+// always as a pair, so the active write table identifies the privilege of
+// the access in flight -- for reads as well as writes.  This answers from
+// the memory layer's own view of the access instead of re-reading CPU state
+// through the debug interface (debug_cpu_is_supervisor) from inside it.
+static bool current_access_is_supervisor(void) {
+    return g_active_write == g_supervisor_write;
 }
 
 // The debug_t whose construction installed g_mem_logpoint_hook; only its
@@ -605,7 +733,7 @@ void debug_exc_trace_dump(int filter) {
 static debug_t *g_mem_hook_owner = NULL;
 
 // Hook invoked from the memory slow path for every access on a logpoint page.
-// Walks the logpoint list and emits a log line for each memory logpoint that
+// Walks the memory-logpoint chain and emits a log line for each one that
 // matches this access.  Cost is O(num memory logpoints) per access on logged
 // pages only — unrelated accesses take the fast path and never reach here.
 static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t value, bool is_write) {
@@ -614,8 +742,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         return;
     uint32_t phys_addr = addr;
     bool phys_computed = false;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->kind == LP_KIND_PC || lp->disabled)
+    for (logpoint_t *lp = debug->mem_logpoints; lp; lp = lp->kind_next) {
+        if (lp->disabled)
             continue;
         bool match_kind = (lp->kind == LP_KIND_RW) || (is_write && lp->kind == LP_KIND_WRITE) ||
                           (!is_write && lp->kind == LP_KIND_READ);
@@ -624,13 +752,13 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         // Check the access against the logpoint's address range — using the
         // physical address for P:-space logpoints, logical for L:-space.
         uint32_t cmp_addr;
-        if (lp->space == ADDR_PHYSICAL) {
+        if (lp->space == ADDR_SPACE_PHYSICAL) {
             if (!phys_computed) {
-                bool supervisor = (g_active_write == g_supervisor_write);
+                bool supervisor = current_access_is_supervisor();
                 if (g_mmu && g_mmu->enabled) {
                     phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
                 } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
-                           g_mem_logpoint_page_count[addr >> PAGE_SHIFT]) {
+                           g_mem_logpoint_page_count[addr >> MEM_PAGE_SHIFT]) {
                     // PPC keep-logical route: a logically-watched page
                     // arrives with its logical address — translate it for
                     // the physical compare.  Unwatched pages arrive
@@ -655,7 +783,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         // write of 0x4244E607 has byte-extracted view that we don't compute
         // here — match the full transaction width instead).
         if (lp->value_filter_active) {
-            uint32_t mask = (size >= 4) ? 0xFFFFFFFFu : ((1u << (size * 8)) - 1u);
+            uint32_t mask = access_width_mask(size);
             if ((value & mask) != (lp->value_filter & mask))
                 continue;
         }
@@ -667,12 +795,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             if (!debug->watch_hit) {
                 const cpu_debug_if_t *dif = system_cpu_debug_if();
                 uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
-                gs_outf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
-                        addr,
-                        (size == 1)   ? 'b'
-                        : (size == 2) ? 'w'
-                                      : 'l',
-                        (int)(size * 2), value, pc);
+                out_printf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id,
+                           is_write ? "WRITE" : "READ", addr, access_width_letter(size), (int)(size * 2), value, pc);
                 debug->watch_hit = true;
             }
             continue;
@@ -680,27 +804,19 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         char formatted[256];
         if (lp->message) {
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
-            LOG_WITH(lp->category, lp->level, "logpoint %s $%08X (size=%u, value=$%0*X): %s",
-                     is_write ? "WRITE" : "READ", addr, size, (int)(size * 2), value, formatted);
+            LOG_WITH(lp->category, lp->level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
+                     access_width_letter(size), (int)(size * 2), value, formatted);
         } else {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
             LOG_WITH(lp->category, lp->level, "logpoint %s $%08X.%c value=$%0*X pc=$%08X", is_write ? "WRITE" : "READ",
-                     addr,
-                     (size == 1)   ? 'b'
-                     : (size == 2) ? 'w'
-                                   : 'l',
-                     (int)(size * 2), value, pc);
+                     addr, access_width_letter(size), (int)(size * 2), value, pc);
         }
     }
 }
 
 // Forward declarations for trace functions
 static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
-
-// Forward declarations for logpoint management (IMP-604)
-void list_logpoints(debug_t *debug);
-int delete_all_logpoints(debug_t *debug);
 
 // Disassemble one instruction at pc through the main-CPU debug interface,
 // splitting the core's "mnemonic\toperands" text.  Returns bytes consumed
@@ -754,10 +870,19 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     // dc19792 enlarged the inner operands buffer but missed callers; this
     // bounds the final write so a complex full-extension-word instruction
     // can't overflow.
+    // The mnemonic is padded to a 9-column field and then always followed by
+    // a space, so a longer one (trap names run to 32 characters) pushes the
+    // operands right instead of running into them.
     char addr_str[40];
     format_address_pair(addr_str, sizeof(addr_str), addr);
-    if (buf_size > 0)
-        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)cpu_get_uint16(addr), mnemonic, operands);
+    char word_str[5] = "????"; // opcode word, or ???? when unreadable
+    uint16_t word;
+    if (cpu_get_uint16(addr, &word))
+        snprintf(word_str, sizeof(word_str), "%04x", word);
+    if (buf_size > 0 && operands[0])
+        snprintf(buf, buf_size, "%s  %s  %-9s %s", addr_str, word_str, mnemonic, operands);
+    else if (buf_size > 0)
+        snprintf(buf, buf_size, "%s  %s  %s", addr_str, word_str, mnemonic);
 
     return n;
 }
@@ -795,8 +920,9 @@ int debug_break_and_trace(void) {
     if (debug->last_breakpoint_pc != 0 && current_pc == debug->last_breakpoint_pc) {
         // Clear the flag after skipping once
         debug->last_breakpoint_pc = 0;
-    } else {
-        // Check for breakpoints at current PC
+    } else if (debug->bp_any_physical || (debug->bp_pc_filter & bp_filter_bit(current_pc))) {
+        // Check for breakpoints at current PC (the filter rules out most
+        // PCs without walking the list)
         breakpoint_t *bp = debug->breakpoints;
         while (bp != NULL) {
             // A disabled breakpoint is kept but ignored.
@@ -805,7 +931,7 @@ int debug_break_and_trace(void) {
                 continue;
             }
             bool hit = false;
-            if (bp->space == ADDR_LOGICAL) {
+            if (bp->space == ADDR_SPACE_LOGICAL) {
                 // Logical breakpoint: compare directly with PC
                 hit = (bp->addr == current_pc);
             } else {
@@ -821,13 +947,13 @@ int debug_break_and_trace(void) {
                     continue;
                 }
                 bp->hit_count++;
-                if (bp->space == ADDR_PHYSICAL) {
-                    gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+                if (bp->space == ADDR_SPACE_PHYSICAL) {
+                    out_printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
-                    gs_outf("breakpoint hit at $%08X\n", bp->addr);
+                    out_printf("breakpoint hit at $%08X\n", bp->addr);
                 }
-                gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
-                               bp->addr);
+                event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
+                            bp->addr);
                 // Remember this PC to skip it next time we check
                 debug->last_breakpoint_pc = current_pc;
                 stop = true;
@@ -841,36 +967,31 @@ int debug_break_and_trace(void) {
     // Match on either the logical PC (install-time VA) or the exact physical
     // address (catches the same physical instruction reached via a different
     // VA — e.g. user and supervisor mappings of shared kernel code).
-    logpoint_t *lp = debug->logpoints;
     uint32_t phys_pc_addr = 0;
     bool phys_pc_resolved = false;
     bool phys_pc_valid = false;
-    while (lp != NULL) {
-        if (lp->kind == LP_KIND_PC) {
-            bool hit = (current_pc >= lp->addr && current_pc <= lp->end_addr);
-            if (!hit && lp->start_phys <= lp->end_phys) {
-                // Lazy-translate once across all logpoints with a phys range.
-                if (!phys_pc_resolved) {
-                    bool is_identity;
-                    phys_pc_addr = debug_translate_address(current_pc, &is_identity, NULL, &phys_pc_valid);
-                    phys_pc_resolved = true;
-                }
-                if (phys_pc_valid && phys_pc_addr >= lp->start_phys && phys_pc_addr <= lp->end_phys)
-                    hit = true;
+    for (logpoint_t *lp = debug->pc_logpoints; lp; lp = lp->kind_next) {
+        bool hit = (current_pc >= lp->addr && current_pc <= lp->end_addr);
+        if (!hit && lp->has_phys) {
+            // Lazy-translate once across all logpoints with a phys range.
+            if (!phys_pc_resolved) {
+                bool is_identity;
+                phys_pc_addr = debug_translate_address(current_pc, &is_identity, NULL, &phys_pc_valid);
+                phys_pc_resolved = true;
             }
-            if (hit) {
-                lp->hit_count++;
-                if (lp->message) {
-                    char formatted[256];
-                    format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
-                    LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
-                } else {
-                    LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc,
-                             lp->hit_count);
-                }
+            if (phys_pc_valid && phys_pc_addr >= lp->start_phys && phys_pc_addr <= lp->end_phys)
+                hit = true;
+        }
+        if (hit) {
+            lp->hit_count++;
+            if (lp->message) {
+                char formatted[256];
+                format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
+                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
+            } else {
+                LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc, lp->hit_count);
             }
         }
-        lp = lp->next;
     }
 
     if (debug->trace_buffer) {
@@ -908,29 +1029,6 @@ static void free_breakpoint(breakpoint_t *bp) {
     free(bp);
 }
 
-// Delete a breakpoint at the specified address and space
-// Returns true if breakpoint was found and deleted, false otherwise
-bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
-    breakpoint_t *prev = NULL;
-    breakpoint_t *bp = debug->breakpoints;
-
-    while (bp != NULL) {
-        if (bp->addr == addr && bp->space == space) {
-            // Found the breakpoint, remove it from the list
-            if (prev == NULL) {
-                debug->breakpoints = bp->next;
-            } else {
-                prev->next = bp->next;
-            }
-            free_breakpoint(bp);
-            return true;
-        }
-        prev = bp;
-        bp = bp->next;
-    }
-    return false;
-}
-
 // Delete breakpoint by sparse stable id. Walks the list
 // matching `bp->id` rather than the position-in-list — positions shift
 // when other entries are removed, ids do not.
@@ -941,6 +1039,7 @@ static bool delete_breakpoint_by_id(debug_t *debug, int id) {
             breakpoint_t *bp = *pp;
             *pp = bp->next;
             free_breakpoint(bp);
+            index_breakpoints(debug);
             return true;
         }
         pp = &(*pp)->next;
@@ -950,7 +1049,7 @@ static bool delete_breakpoint_by_id(debug_t *debug, int id) {
 
 // Delete all breakpoints
 // Returns the number of breakpoints deleted
-int delete_all_breakpoints(debug_t *debug) {
+static int delete_all_breakpoints(debug_t *debug) {
     int count = 0;
     breakpoint_t *bp = debug->breakpoints;
 
@@ -961,40 +1060,16 @@ int delete_all_breakpoints(debug_t *debug) {
         count++;
     }
     debug->breakpoints = NULL;
+    index_breakpoints(debug);
     return count;
-}
-
-// List all breakpoints
-void list_breakpoints(debug_t *debug) {
-    breakpoint_t *bp = debug->breakpoints;
-    int count = 0;
-
-    if (bp == NULL) {
-        gs_outf("No breakpoints set.\n");
-        return;
-    }
-
-    gs_outf("Breakpoints:\n");
-    while (bp != NULL) {
-        if (bp->space == ADDR_PHYSICAL)
-            gs_outf("  #%d: P:$%08X", count, (unsigned int)bp->addr);
-        else
-            gs_outf("  #%d: $%08X", count, (unsigned int)bp->addr);
-        if (bp->condition)
-            gs_outf("  if %s", bp->condition);
-        if (bp->disabled)
-            gs_outf("  (disabled)");
-        gs_outf("\n");
-        bp = bp->next;
-        count++;
-    }
 }
 
 // Check if tracing is active (for log capture hook)
 // The ACTIVE machine's trace: a log line goes there whichever machine wrote
 // it, including one being built alongside it.
 int debug_trace_is_active(void) {
-    debug_t *debug = global_emulator ? global_emulator->debugger : NULL;
+    config_t *cfg = system_running();
+    debug_t *debug = cfg ? cfg->debugger : NULL;
     return debug && debug->trace_entries != NULL;
 }
 
@@ -1049,7 +1124,7 @@ void debug_trace_capture_log(const char *line) {
 
     // Add trace entry referencing this log
     uint32_t entry_idx = debug->trace_entries_head;
-    debug->trace_entries[entry_idx].type = TRACE_ENTRY_LOG;
+    debug->trace_entries[entry_idx].kind = TRACE_ENTRY_LOG;
     debug->trace_entries[entry_idx].value = log_idx;
 
     // Advance entries head
@@ -1065,7 +1140,7 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
         return;
 
     uint32_t entry_idx = debug->trace_entries_head;
-    debug->trace_entries[entry_idx].type = TRACE_ENTRY_PC;
+    debug->trace_entries[entry_idx].kind = TRACE_ENTRY_PC;
     debug->trace_entries[entry_idx].value = pc;
 
     debug->trace_entries_head = (debug->trace_entries_head + 1) % debug->trace_entries_size;
@@ -1229,7 +1304,7 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
 static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        gs_outf("Error: Cannot open '%s' for reading.\n", filename);
+        out_printf("Error: Cannot open '%s' for reading.\n", filename);
         return -1;
     }
     fseek(fp, 0, SEEK_END);
@@ -1238,13 +1313,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     uint8_t *file_data = malloc(file_size);
     if (!file_data) {
         fclose(fp);
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         return -1;
     }
     if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
         free(file_data);
         fclose(fp);
-        gs_outf("Error: Failed to read file.\n");
+        out_printf("Error: Failed to read file.\n");
         return -1;
     }
     fclose(fp);
@@ -1252,7 +1327,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
         free(file_data);
-        gs_outf("Error: Not a valid PNG file.\n");
+        out_printf("Error: Not a valid PNG file.\n");
         return -1;
     }
 
@@ -1278,7 +1353,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
                 if (!new_idat) {
                     free(idat_data);
                     free(file_data);
-                    gs_outf("Error: Out of memory.\n");
+                    out_printf("Error: Out of memory.\n");
                     return -1;
                 }
                 idat_data = new_idat;
@@ -1294,18 +1369,18 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
 
     if (width != expected_width || height != expected_height) {
         free(idat_data);
-        gs_outf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
-                expected_height);
+        out_printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+                   expected_height);
         return -1;
     }
     if (!idat_data || idat_len == 0) {
         free(idat_data);
-        gs_outf("Error: No image data in PNG.\n");
+        out_printf("Error: No image data in PNG.\n");
         return -1;
     }
     if (bit_depth != 8) {
         free(idat_data);
-        gs_outf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
+        out_printf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
         return -1;
     }
 
@@ -1316,7 +1391,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
     if (!raw_data) {
-        gs_outf("Error: Failed to decompress PNG..\n");
+        out_printf("Error: Failed to decompress PNG..\n");
         return -1;
     }
 
@@ -1329,13 +1404,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
         bpp_in = 1; // Grayscale
     else {
         free(raw_data);
-        gs_outf("Error: Unsupported PNG color type %d.\n", color_type);
+        out_printf("Error: Unsupported PNG color type %d.\n", color_type);
         return -1;
     }
     size_t row_size = 1 + (size_t)width * bpp_in;
     if (raw_size != row_size * (size_t)height) {
         free(raw_data);
-        gs_outf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
+        out_printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
         return -1;
     }
 
@@ -1400,7 +1475,7 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // row exists to make -- sitting between the two.
 int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
     if (!d || !d->bits) {
-        gs_outf("Error: No active display.\n");
+        out_printf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1413,12 +1488,12 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        gs_outf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
+        out_printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        gs_outf("Error: PNG match: indexed format with no CLUT.\n");
+        out_printf("Error: PNG match: indexed format with no CLUT.\n");
         return -1;
     }
 
@@ -1428,7 +1503,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     if (!fb_rgba || !ref_rgba) {
         free(fb_rgba);
         free(ref_rgba);
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         return -1;
     }
     for (uint32_t y = 0; y < d->height; y++)
@@ -1469,7 +1544,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 // indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
     if (!d || !d->bits) {
-        gs_outf("Error: No active display.\n");
+        out_printf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1482,12 +1557,12 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        gs_outf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
+        out_printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        gs_outf("Error: PNG save: indexed format with no CLUT.\n");
+        out_printf("Error: PNG save: indexed format with no CLUT.\n");
         return -1;
     }
     const int width = (int)d->width;
@@ -1496,7 +1571,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     // Open output file
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        gs_outf("Error: Cannot open file '%s' for writing.\n", filename);
+        out_printf("Error: Cannot open file '%s' for writing.\n", filename);
         return -1;
     }
 
@@ -1524,7 +1599,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     size_t raw_size = row_size * (size_t)height;
     uint8_t *raw_data = malloc(raw_size);
     if (!raw_data) {
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
@@ -1546,7 +1621,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     uint8_t *zlib_data = zlib_compress(raw_data, raw_size, &zpos);
     free(raw_data);
     if (!zlib_data) {
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
@@ -1563,11 +1638,11 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         goto write_error;
 
     fclose(fp);
-    gs_outf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
+    out_printf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
     return 0;
 
 write_error:
-    gs_outf("Error: Failed to write to file '%s'.\n", filename);
+    out_printf("Error: Failed to write to file '%s'.\n", filename);
     fclose(fp);
     return -1;
 }
@@ -1580,72 +1655,39 @@ write_error:
 // Configurable status line / prompt (IMP-308)
 // ============================================================================
 
+// Process-wide (one prompt setting for every shell connection), written by
+// the platform's CLI parsing and read by whichever thread renders a prompt,
+// so it is accessed atomically.
 static bool g_prompt_enabled = true;
 
 // Check if prompt/status line is enabled
 bool debug_prompt_enabled(void) {
-    return g_prompt_enabled;
+    return __atomic_load_n(&g_prompt_enabled, __ATOMIC_RELAXED);
 }
 
 // Set prompt default at startup (e.g. from --no-prompt CLI flag).
 // Persists across all subsequent client connections.
 void debug_set_prompt_default(bool enabled) {
-    g_prompt_enabled = enabled;
+    __atomic_store_n(&g_prompt_enabled, enabled, __ATOMIC_RELAXED);
 }
 
 // ============================================================================
 // Logpoint management (IMP-604)
 // ============================================================================
 
-// Kind label for display
-static const char *lp_kind_label(int kind) {
-    switch (kind) {
-    case LP_KIND_WRITE:
-        return "WRITE";
-    case LP_KIND_READ:
-        return "READ";
-    case LP_KIND_RW:
-        return "RW";
-    default:
-        return "PC";
-    }
-}
-
-// List all logpoints
-void list_logpoints(debug_t *debug) {
-    if (!debug || !debug->logpoints) {
-        gs_outf("No logpoints set\n");
-        return;
-    }
-    int count = 0;
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        gs_outf("  #%d  %-5s", count, lp_kind_label(lp->kind));
-        if (lp->end_addr != lp->addr) {
-            gs_outf("  $%08X-$%08X", lp->addr, lp->end_addr);
-        } else {
-            gs_outf("  $%08X          ", lp->addr);
-        }
-        if (lp->message)
-            gs_outf("  \"%s\"", lp->message);
-        gs_outf("  (hits: %u)\n", lp->hit_count);
-        count++;
-    }
-    gs_outf("%d logpoint(s)\n", count);
-}
-
 // Helper: free one logpoint node, releasing memory-logpoint page refcounts too
 static void free_logpoint(logpoint_t *lp) {
     if (!lp)
         return;
     if (lp->kind != LP_KIND_PC) {
-        if (lp->space == ADDR_LOGICAL) {
-            uint32_t start_page = lp->addr >> PAGE_SHIFT;
-            uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
+        if (lp->space == ADDR_SPACE_LOGICAL) {
+            uint32_t start_page = lp->addr >> MEM_PAGE_SHIFT;
+            uint32_t end_page = lp->end_addr >> MEM_PAGE_SHIFT;
             memory_logpoint_uninstall(start_page, end_page);
         }
         // Physical range tracked separately; populated for both LOGICAL
         // (when MMU was enabled at install) and PHYSICAL logpoints.
-        if (lp->end_phys_page >= lp->start_phys_page)
+        if (lp->has_phys_pages)
             memory_logpoint_uninstall_phys(lp->start_phys_page, lp->end_phys_page);
     }
     if (lp->entry_object) {
@@ -1666,6 +1708,7 @@ static int delete_logpoint_by_id(debug_t *debug, int id) {
             logpoint_t *lp = *pp;
             *pp = lp->next;
             free_logpoint(lp);
+            index_logpoints(debug);
             return 0;
         }
         pp = &(*pp)->next;
@@ -1692,14 +1735,15 @@ static int delete_all_where(debug_t *debug, bool stops) {
         free_logpoint(lp);
         count++;
     }
+    index_logpoints(debug);
     return count;
 }
 
-int delete_all_logpoints(debug_t *debug) {
+static int delete_all_logpoints(debug_t *debug) {
     return delete_all_where(debug, false);
 }
 
-int delete_all_watchpoints(debug_t *debug) {
+static int delete_all_watchpoints(debug_t *debug) {
     return delete_all_where(debug, true);
 }
 
@@ -1818,8 +1862,8 @@ bool debug_remove_logpoint(debug_t *debug, int id) {
 uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
     return bp ? bp->addr : 0;
 }
-int breakpoint_get_space(const breakpoint_t *bp) {
-    return bp ? (bp->space == ADDR_PHYSICAL ? 1 : 0) : 0;
+addr_space_t breakpoint_get_space(const breakpoint_t *bp) {
+    return bp ? bp->space : ADDR_SPACE_LOGICAL;
 }
 const char *breakpoint_get_condition(const breakpoint_t *bp) {
     return bp ? bp->condition : NULL;
@@ -1994,6 +2038,8 @@ void debug_cleanup(debug_t *debug) {
         lp = next;
     }
     debug->logpoints = NULL;
+    debug->pc_logpoints = NULL;
+    debug->mem_logpoints = NULL;
     // The hook is process-global but installed and cleared by cfg-scoped
     // construction and teardown, and the documented reload order is
     // system_create(new) THEN system_destroy(old).  Clearing unconditionally
@@ -2051,10 +2097,10 @@ void debug_print_target_trace(void) {
         return;
     }
 
-    gs_outf("\n=== Target 68K instruction trace (most recent last) ===\n");
+    out_printf("\n=== Target 68K instruction trace (most recent last) ===\n");
 
     if (dbg->trace_head == dbg->trace_tail) {
-        gs_outf("(empty)\n");
+        out_printf("(empty)\n");
         return;
     }
 
@@ -2062,7 +2108,7 @@ void debug_print_target_trace(void) {
     for (i = dbg->trace_tail; i != dbg->trace_head; i = (i + 1) % dbg->trace_buffer_size) {
         char buf[160];
         debugger_disasm(buf, sizeof(buf), dbg->trace_buffer[i]);
-        gs_outf("%s\n", buf);
+        out_printf("%s\n", buf);
     }
 }
 
@@ -2076,7 +2122,7 @@ void debug_set_failure_hook(debug_failure_hook_fn fn) {
     g_failure_hook = fn;
 }
 
-// Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
+// Shared tail of gs_assert_fail and unimplemented_fail: dump what the host
 // and the guest were doing, stop the machine, and hand the shell back.  Neither
 // aborts -- a stopped machine with a message on it is worth more than a dead
 // process, and in the browser it is the difference between a diagnosable page
@@ -2087,7 +2133,7 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     debug_mac_print_process_info_header();
     debug_print_target_trace();
 
-    gs_outf("================================================\n\n");
+    out_printf("================================================\n\n");
 
     bool paused = false;
     scheduler_t *sched = system_scheduler();
@@ -2097,35 +2143,53 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     }
 
     if (paused)
-        gs_outf("Emulation paused (%s); returning control to shell.\n", kind);
+        out_printf("Emulation paused (%s); returning control to shell.\n", kind);
     else
-        gs_outf("Handled %s while scheduler idle; shell remains available.\n", kind);
+        out_printf("Handled %s while scheduler idle; shell remains available.\n", kind);
     fflush(stdout);
 
     // Notify the platform layer (the browser tells its test harness; headless
-    // fails the run).
-    if (g_failure_hook)
+    // fails the run).  Guarded against re-entry: a hook that itself trips an
+    // assertion (a harness re-asserting during cleanup) would otherwise
+    // recurse through gs_assert_fail without bound.
+    static bool in_failure_hook = false;
+    if (g_failure_hook && in_failure_hook) {
+        out_printf("(%s raised inside the failure hook; not re-entering it)\n", kind);
+    } else if (g_failure_hook) {
+        in_failure_hook = true;
         g_failure_hook(kind, expr, file, line, func);
+        in_failure_hook = false;
+    }
 }
 
-// Main assertion failure handler - prints diagnostics and pauses execution
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
-    // Header
-    gs_outf("\n\n==================== ASSERT ====================\n");
+// Prints the ASSERT banner: the failed expression and where it sits
+static void print_assert_header(const char *expr, const char *file, int line, const char *func) {
+    out_printf("\n\n==================== ASSERT ====================\n");
     if (expr && *expr)
-        gs_outf("Assertion failed: (%s)\n", expr);
+        out_printf("Assertion failed: (%s)\n", expr);
     else
-        gs_outf("Assertion failed\n");
-    gs_outf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+        out_printf("Assertion failed\n");
+    out_printf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+}
+
+// Main assertion failure handler (GS_ASSERT) - prints diagnostics and pauses execution
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func) {
+    print_assert_header(expr, file, line, func);
+    diagnose_and_halt("assertion", expr, file, line, func);
+}
+
+// Assertion failure handler with a message (GS_ASSERTF)
+void gs_assert_failf(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+    print_assert_header(expr, file, line, func);
 
     // Optional message
     if (fmt) {
-        gs_outf("Message: ");
+        out_printf("Message: ");
         va_list ap;
         va_start(ap, fmt);
-        gs_voutf(fmt, ap);
+        out_vprintf(fmt, ap);
         va_end(ap);
-        gs_outf("\n");
+        out_printf("\n");
     }
 
     diagnose_and_halt("assertion", expr, file, line, func);
@@ -2133,13 +2197,13 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 
 // The unimplemented-function handler.  Same diagnostics and the same halt --
 // what differs is the claim being made, so the banner says so and nothing here
-// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
+// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in gs_assert.h for why a
 // release build is exactly where this one matters).
 //
 // The banner goes to stderr, unbuffered: if a platform's failure hook
 // aborts -- the unit harness does -- a buffered stdout banner is lost at the
 // moment it was written for.
-void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+void unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
     fprintf(stderr, "\n\n============= UNIMPLEMENTED =============\n");
     if (fmt) {
         fprintf(stderr, "  ");
@@ -2173,21 +2237,25 @@ static breakpoint_t *bp_from(struct object *self) {
 
 // The address-space enumeration, declared ONCE.
 //
-// It was a V_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
-// V_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
+// It was a VK_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
+// VK_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
 // file.  So reads were typed and writes were not: an unrecognised string
 // silently meant "logical", nothing could complete the values, and
 // object-model.md explicitly lists enum membership as something bodies must
 // not re-check.
+// Indexed by addr_space_t, so an addr_space_t converts to its VK_ENUM index
+// unchanged; the assert keeps the table and the enum from drifting apart.
 const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
+_Static_assert(ADDR_SPACE_LOGICAL == 0 && ADDR_SPACE_PHYSICAL == 1 && DEBUG_SPACE_COUNT == ADDR_SPACE_PHYSICAL + 1,
+               "debug_space_values must list every addr_space_t, in enum order");
 
 static DEF_GETTER(bp_attr_addr) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
     value_t v = val_uint(4, breakpoint_get_addr(bp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -2195,8 +2263,7 @@ static DEF_GETTER(bp_attr_space) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    int idx = breakpoint_get_space(bp);
-    return val_enum(idx, debug_space_values, DEBUG_SPACE_COUNT);
+    return val_enum((int)breakpoint_get_space(bp), debug_space_values, DEBUG_SPACE_COUNT);
 }
 
 static DEF_GETTER(bp_attr_condition) {
@@ -2267,37 +2334,37 @@ static DEF_METHOD(bp_method_remove) {
 }
 
 static const member_t bp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "Address this breakpoint watches, in the space named by `space`",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = bp_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "space",
      .doc = "\"logical\" or \"physical\" — which address `addr` is in (they coincide with the MMU off)",
-     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "condition",
      .flags = 0,
      .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
-     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the breakpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this breakpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = bp_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other breakpoints (indices do not)",
-     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = bp_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this breakpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = bp_method_remove}},
 };
 
 static const class_desc_t breakpoint_entry_class = {
@@ -2306,7 +2373,7 @@ static const class_desc_t breakpoint_entry_class = {
     .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
 };
 
-struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp) {
+static struct object *make_breakpoint_object(breakpoint_t *bp) {
     if (!bp)
         return NULL;
     return object_new(&breakpoint_entry_class, bp, NULL);
@@ -2323,7 +2390,7 @@ static DEF_GETTER(lpe_attr_addr) {
     if (!lp)
         return val_err("logpoint detached");
     value_t v = val_uint(4, logpoint_get_addr(lp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(lpe_attr_end_addr) {
@@ -2331,18 +2398,20 @@ static DEF_GETTER(lpe_attr_end_addr) {
     if (!lp)
         return val_err("logpoint detached");
     value_t v = val_uint(4, logpoint_get_end_addr(lp));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(lpe_attr_kind) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
+    // Indexed by enum logpoint_kind; an out-of-range kind is reported as
+    // an error rather than shown as one of the known kinds.
     static const char *const names[] = {"pc", "write", "read", "rw"};
     int idx = logpoint_get_kind(lp);
-    if (idx < 0 || idx > 3)
-        idx = 0;
-    return val_enum(idx, names, 4);
+    if (idx < 0 || idx >= (int)(sizeof(names) / sizeof(names[0])))
+        return val_err("logpoint has unknown kind %d", idx);
+    return val_enum(idx, names, (int)(sizeof(names) / sizeof(names[0])));
 }
 static DEF_GETTER(lpe_attr_level) {
     logpoint_t *lp = lp_from(self);
@@ -2390,43 +2459,43 @@ static DEF_METHOD(lpe_method_remove) {
 }
 
 static const member_t lp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "end_addr",
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "kind",
      .doc = "What triggers it: \"pc\" on execution, or \"read\"/\"write\"/\"rw\" on a data access",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "level",
      .doc = "Log level each fire is emitted at",
-     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "category",
      .doc = "Log category each fire is emitted under",
-     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = lpe_attr_category, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "message",
      .doc = "Fire-time template; $value/$addr/$size bind per fire. Empty = the default one-line report",
-     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = lpe_attr_message, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this logpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other logpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this logpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t logpoint_entry_class = {
@@ -2435,7 +2504,7 @@ static const class_desc_t logpoint_entry_class = {
     .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
 };
 
-struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
+static struct object *make_logpoint_object(logpoint_t *lp) {
     if (!lp)
         return NULL;
     return object_new(&logpoint_entry_class, lp, NULL);
@@ -2451,7 +2520,7 @@ static DEF_GETTER(wpe_attr_space) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("watchpoint detached");
-    return val_enum(lp->space == ADDR_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
+    return val_enum((int)lp->space, debug_space_values, DEBUG_SPACE_COUNT);
 }
 static DEF_GETTER(wpe_attr_enabled) {
     logpoint_t *lp = lp_from(self);
@@ -2472,40 +2541,40 @@ static DEF_SETTER(wpe_attr_enabled_set) {
 }
 
 static const member_t wp_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "addr",
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "end_addr",
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "The access that stops the machine: \"read\", \"write\" or \"rw\"",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "space",
      .doc = "\"logical\" or \"physical\" -- which address `addr` is in",
-     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = wpe_attr_space, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the watchpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "hit_count",
      .doc = "Times this watchpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Stable identifier; survives the removal of other watchpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this watchpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t watchpoint_entry_class = {
@@ -2527,7 +2596,7 @@ static struct object *make_watchpoint_object(logpoint_t *lp) {
 // single helper recovers it whether you're holding the debug node
 // or one of its collection children. The collection class declares:
 //   - method members (add, clear) for the legacy mutation API;
-//   - one indexed M_CHILD member that exposes per-entry objects, so
+//   - one indexed MK_CHILD member that exposes per-entry objects, so
 //     `debug.breakpoints.0` and `[0]` both resolve via the integer-
 //     segment rule in node_child (object.c).
 
@@ -2567,10 +2636,11 @@ static DEF_METHOD(bp_method_add) {
     // Physical-space breakpoints are only meaningful on the 68030 with
     // the MMU active; on the Plus the two address spaces coincide.
     //
-    // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
+    // Read the enum index, not `.s`: on a VK_ENUM the string pointer shares
     // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
     // dereferenced an index as a pointer.
-    addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc >= 3 && argv[2].kind == VK_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
     // stacking a duplicate that would fire twice and need removing twice.
@@ -2578,10 +2648,10 @@ static DEF_METHOD(bp_method_add) {
     while (bp && !(bp->addr == (uint32_t)addr && bp->space == space))
         bp = bp->next;
     if (!bp)
-        bp = set_breakpoint(debug, (uint32_t)addr, space);
+        bp = add_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+    if (argc >= 2 && argv[1].kind == VK_STRING && argv[1].s && *argv[1].s)
         breakpoint_set_condition(bp, argv[1].s);
     return val_obj(breakpoint_get_entry_object(bp));
 }
@@ -2617,7 +2687,7 @@ static DEF_METHOD(lp_method_add) {
     //       6 category, 7 value, 8 space
     uint32_t addr = (uint32_t)argv[0].u;
 
-    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "pc";
+    const char *mode = (argc > 1 && argv[1].kind == VK_STRING && argv[1].s) ? argv[1].s : "pc";
     int kind;
     if (strcmp(mode, "pc") == 0)
         kind = LP_KIND_PC;
@@ -2631,7 +2701,7 @@ static DEF_METHOD(lp_method_add) {
         return val_err("logpoints.add: mode must be pc, read, write, or rw");
 
     unsigned size = 0;
-    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+    if (argc > 2 && argv[2].kind == VK_STRING && argv[2].s && argv[2].s[0]) {
         const char *w = argv[2].s;
         if (strcmp(w, "b") == 0)
             size = 1;
@@ -2643,17 +2713,17 @@ static DEF_METHOD(lp_method_add) {
             return val_err("logpoints.add: width must be b, w, or l");
     }
 
-    // The slot is V_UINT, so validate_slot has already coerced anything the
-    // caller passed; V_NONE means it passed nothing.
+    // The slot is VK_UINT, so validate_slot has already coerced anything the
+    // caller passed; VK_NONE means it passed nothing.
     uint32_t end_addr = addr;
-    if (argc > 3 && argv[3].kind == V_UINT)
+    if (argc > 3 && argv[3].kind == VK_UINT)
         end_addr = (uint32_t)argv[3].u;
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
         end_addr = addr + size - 1;
 
-    const char *message = (argc > 4 && argv[4].kind == V_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
+    const char *message = (argc > 4 && argv[4].kind == VK_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
 
     int level = 0;
     if (argc > 5) {
@@ -2665,22 +2735,23 @@ static DEF_METHOD(lp_method_add) {
             return val_err("logpoints.add: level must be >= 0");
     }
 
-    const char *category_name = (argc > 6 && argv[6].kind == V_STRING && argv[6].s && argv[6].s[0])
+    const char *category_name = (argc > 6 && argv[6].kind == VK_STRING && argv[6].s && argv[6].s[0])
                                     ? argv[6].s
                                     : (kind == LP_KIND_PC ? "logpoint" : "memory");
 
     bool have_value_filter = false;
     uint32_t value_filter = 0;
-    if (argc > 7 && argv[7].kind == V_UINT) {
+    if (argc > 7 && argv[7].kind == VK_UINT) {
         have_value_filter = true;
         value_filter = (uint32_t)argv[7].u;
     }
     if (have_value_filter && kind == LP_KIND_PC)
         return val_err("logpoints.add: value filter is only supported on memory logpoints");
 
-    // The slot is V_ENUM against debug_space_values, so the index is the
+    // The slot is VK_ENUM against debug_space_values, so the index is the
     // answer -- validate_slot rejected anything that is not in the table.
-    addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 8 && argv[8].kind == VK_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2706,63 +2777,63 @@ static DEF_METHOD(lp_method_add) {
 
 // "logical" — the default for every space= argument below.
 static const value_t def_space_logical = {
-    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
+    .kind = VK_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
 };
 
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "Address to stop at"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "Address to stop at"},
     {.name = "condition",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Expression; the breakpoint fires only when it is true"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
      .doc = "Address space"},
 };
 
-static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
-static const value_t lp_def_level = {.kind = V_INT, .i = 0};
+static const value_t lp_def_mode = {.kind = VK_STRING, .s = (char *)"pc"};
+static const value_t lp_def_level = {.kind = VK_INT, .i = 0};
 
 static const arg_decl_t lp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address (or range start)"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &lp_def_mode,
      .doc = "pc, read, write, or rw"},
     {.name = "width",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "access width for memory modes: b, w, or l"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "range end address, inclusive"},
     {.name = "message",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
      .doc = "fire-time template; $value/$addr/$size bind per fire"},
     {.name = "level",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &lp_def_level,
      .doc = "log level"},
     {.name = "category",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "log category",
      .default_doc = "logpoint (pc mode) or memory"},
     {.name = "value",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "only fire when the accessed value matches (memory modes)"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
@@ -2774,20 +2845,20 @@ static const collection_desc_t bp_collection_entries = {
 };
 
 static const member_t bp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.breakpoints.add 0x408986", "debug.breakpoints.add 0x408986 \"d0 == 0\" physical"),
      .doc = "Add a breakpoint; adding an address that already has one returns that entry. space=physical stops on a "
             "physical address (through the 68030 PMMU)", .method = {.result_doc = "the breakpoint entry",
                 .args = bp_add_args,
                 .nargs = 3,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = bp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.breakpoints.clear"),
      .doc = "Remove every breakpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = bp_method_clear}},
     // `list` retired: read `entries` — the REPL renders
     // an object list as a table.
     OBJ_ENTRIES(&bp_collection_entries, NULL),
@@ -2805,7 +2876,7 @@ static const collection_desc_t lp_collection_entries = {
 };
 
 static const member_t lp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.logpoints.add 0x40800000 message=\"reached\"",
      "debug.logpoints.add 0x16a mode=write width=l message=\"Ticks=${$value:08x}\""),
@@ -2813,13 +2884,13 @@ static const member_t lp_collection_members[] = {
             "message is a template filled in at each fire", .method = {.result_doc = "the logpoint entry",
                 .args = lp_add_args,
                 .nargs = 9,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = lp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.logpoints.clear"),
      .doc = "Remove every logpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = lp_method_clear}},
     // `list` retired: read `entries`.
     OBJ_ENTRIES(&lp_collection_entries, NULL),
 };
@@ -2855,7 +2926,7 @@ static DEF_METHOD(wp_method_add) {
     // argv: 0 addr, 1 mode, 2 width, 3 end, 4 space
     uint32_t addr = (uint32_t)argv[0].u;
 
-    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
+    const char *mode = (argc > 1 && argv[1].kind == VK_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
     int kind;
     if (strcmp(mode, "read") == 0)
         kind = LP_KIND_READ;
@@ -2867,7 +2938,7 @@ static DEF_METHOD(wp_method_add) {
         return val_err("watchpoints.add: mode must be read, write, or rw");
 
     unsigned size = 0;
-    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+    if (argc > 2 && argv[2].kind == VK_STRING && argv[2].s && argv[2].s[0]) {
         const char *w = argv[2].s;
         if (strcmp(w, "b") == 0)
             size = 1;
@@ -2882,14 +2953,15 @@ static DEF_METHOD(wp_method_add) {
     // A width and no explicit range widen to every access overlapping the
     // address, as logpoints.add does.
     uint32_t end_addr = addr;
-    if (argc > 3 && argv[3].kind == V_UINT)
+    if (argc > 3 && argv[3].kind == VK_UINT)
         end_addr = (uint32_t)argv[3].u;
     if (size > 0 && end_addr == addr)
         end_addr = addr + size - 1;
     if (end_addr < addr)
         return val_err("watchpoints.add: end must not precede addr");
 
-    addr_space_t space = (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    addr_space_t space =
+        (argc > 4 && argv[4].kind == VK_ENUM && argv[4].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
     // The hit is printed, not logged, so the category only labels the entry.
     log_category_t *category = log_get_category("memory");
@@ -2909,26 +2981,26 @@ static DEF_METHOD(wp_method_clear) {
     return val_none();
 }
 
-static const value_t wp_def_mode = {.kind = V_STRING, .s = (char *)"write"};
+static const value_t wp_def_mode = {.kind = VK_STRING, .s = (char *)"write"};
 
 static const arg_decl_t wp_add_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address (or range start)"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &wp_def_mode,
      .doc = "write, read, or rw"},
     {.name = "width",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "b, w, or l: widen to every access overlapping addr"},
     {.name = "end",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .presentation_flags = VAL_HEX,
+     .presentation_flags = VFLAG_HEX,
      .doc = "range end, inclusive"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
      .default_value = &def_space_logical,
@@ -2940,20 +3012,20 @@ static const collection_desc_t wp_collection_entries = {
 };
 
 static const member_t wp_collection_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("debug.watchpoints.add 0x16a", "debug.watchpoints.add 0x400 mode=rw end=0x4ff"),
      .doc = "Install a watchpoint: stop the machine after an instruction that accesses the address or range",
      .method = {.result_doc = "the watchpoint entry",
                 .args = wp_add_args,
                 .nargs = 5,
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = wp_method_add}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .examples = EXAMPLES("debug.watchpoints.clear"),
      .doc = "Remove every watchpoint",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = wp_method_clear}},
     OBJ_ENTRIES(&wp_collection_entries, NULL),
 };
 
@@ -2968,15 +3040,14 @@ static const class_desc_t wp_collection_class = {
 // filter=0 prints everything; filter=1 skips routine traps (A/F-line, TRAP #N,
 // IRQ autovectors, trace) so fatal exceptions (bus error/addr error/illegal/
 // privilege) stand out.
-static const value_t k_int0 = {.kind = V_INT, .i = 0};
+static const value_t k_int0 = {.kind = VK_INT, .i = 0};
 static const arg_decl_t debug_exceptions_args[] = {
     {.name = "filter",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int0,
      .doc = "0 = print all; 1 = filter out routine traps/IRQs"},
 };
-extern void debug_exc_trace_dump(int filter);
 static DEF_METHOD(debug_method_exceptions) {
     int filter = (argc >= 1) ? (int)argv[0].i : 0;
     debug_exc_trace_dump(filter);
@@ -2991,8 +3062,8 @@ static DEF_METHOD(debug_method_exceptions) {
 // operation: same family as debug.breakpoints, debug.logpoints,
 // debug.mac.* — debugger affordances that *use* the CPU's encoding
 // knowledge but aren't themselves part of running the CPU.
-// Prints `count` disassembled instructions to stdout (one line each)
-// and returns V_BOOL so `${debug.disasm(5)}` is a truthy single-token
+// Prints `count` disassembled instructions to the output sink (one line each)
+// and returns VK_BOOL so `${debug.disasm(5)}` is a truthy single-token
 // predicate for shell-script asserts. The web2 UI does NOT consume
 // this method's return value — it pulls a structured snapshot via
 // `debug.frame` instead — so this can keep the historical
@@ -3002,14 +3073,14 @@ static DEF_METHOD(debug_method_disasm) {
     if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
-    // Either slot may be absent (V_NONE), so read by kind rather than argc:
+    // Either slot may be absent (VK_NONE), so read by kind rather than argc:
     // `disasm(20)` is a count, `disasm(0x400000, 20)` is address + count, and
     // `disasm(count=20)` -- which used to fail with "missing argument
     // 'addr_or_count'" -- is a count from the PC.
     uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
-    bool have_first = argc >= 1 && argv[0].kind == V_INT;
-    bool have_second = argc >= 2 && argv[1].kind == V_INT;
+    bool have_first = argc >= 1 && argv[0].kind == VK_INT;
+    bool have_second = argc >= 2 && argv[1].kind == VK_INT;
     if (have_first && have_second) {
         addr = (uint32_t)argv[0].i;
         count = argv[1].i;
@@ -3026,7 +3097,7 @@ static DEF_METHOD(debug_method_disasm) {
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
-        gs_outf("%s\n", buf);
+        out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
     return val_bool(true);
@@ -3034,11 +3105,11 @@ static DEF_METHOD(debug_method_disasm) {
 
 static const arg_decl_t debug_disasm_args[] = {
     {.name = "addr_or_count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Alone: the instruction count, from the PC (16 when omitted). Followed by count: the start address"},
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Number of instructions, when the first argument is an address"                                    },
 };
@@ -3078,7 +3149,7 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
     value_map_builder_t *b = val_map_new();
     if (valid) {
         value_t p = val_uint(4, phys);
-        p.flags |= VAL_HEX;
+        p.flags |= VFLAG_HEX;
         val_map_put(b, "phys", p);
     }
     val_map_put(b, "valid", val_bool(valid));
@@ -3088,13 +3159,13 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
 
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     *physical = false;
-    if (argc <= idx || argv[idx].kind == V_NONE)
+    if (argc <= idx || argv[idx].kind == VK_NONE)
         return true; // omitted: logical
-    if (argv[idx].kind == V_ENUM) {
+    if (argv[idx].kind == VK_ENUM) {
         *physical = argv[idx].enm.idx == 1;
         return true;
     }
-    if (argv[idx].kind != V_STRING || !argv[idx].s)
+    if (argv[idx].kind != VK_STRING || !argv[idx].s)
         return false;
     if (strcmp(argv[idx].s, "logical") == 0)
         return true;
@@ -3135,7 +3206,7 @@ static void frame_split_disasm(const char *buf, char *mnem, size_t mnem_len, cha
 // 601/604 and the DSP3210; before, debug.frame read the 68K cpu_t and failed
 // on every PowerPC machine, and the DSP had no frame at all.
 //
-// Output (a V_MAP):
+// Output (a VK_MAP):
 //   {
 //     "arch": "m68k" | "ppc" | "dsp3210",
 //     "pc":   <int>,
@@ -3158,9 +3229,9 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
         return val_err("%s: CPU not initialised", who);
 
     uint32_t pc = dif->get_pc(dif->ctx);
-    bool have_addr = argc >= 1 && argv[0].kind == V_INT;
-    int64_t count = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 32;
-    int64_t before = (argc >= 3 && argv[2].kind == V_INT) ? argv[2].i : 0;
+    bool have_addr = argc >= 1 && argv[0].kind == VK_INT;
+    int64_t count = (argc >= 2 && argv[1].kind == VK_INT) ? argv[1].i : 32;
+    int64_t before = (argc >= 3 && argv[2].kind == VK_INT) ? argv[2].i : 0;
     if (count <= 0)
         count = 32;
     if (count > 256)
@@ -3223,21 +3294,21 @@ static DEF_METHOD(debug_method_frame) {
 }
 
 // The frame's default row count.
-static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
+static const value_t k_frame_count32 = {.kind = VK_INT, .i = 32};
 
 const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
     {.name = "addr",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Start address",
      .default_doc = "the PC"                                   },
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_frame_count32,
      .doc = "Number of rows"                                   },
     {.name = "before",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int0,
      .doc = "Rows to show ahead of the PC when addr is omitted"},
@@ -3265,26 +3336,26 @@ static DEF_METHOD(debug_method_step) {
     if (!scheduler_run_with_budget(s, (uint64_t)count))
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))
-        scheduler_run_frame(s, global_emulator, platform_pacing());
+        scheduler_run_frame(s, system_config(), platform_pacing());
     return val_bool(true);
 }
 
-static const value_t k_int1 = {.kind = V_INT, .i = 1};
+static const value_t k_int1 = {.kind = VK_INT, .i = 1};
 static const arg_decl_t debug_step_args[] = {
     {.name = "count",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_int1,
      .doc = "Number of instructions"},
 };
 
 static const member_t debug_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "disasm",
      .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}},
-    {.kind = M_METHOD,
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_BOOL, .fn = debug_method_disasm}},
+    {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
      .doc = "The CPU's debug frame: registers, disassembly, per-row translation (= machine.cpu.frame)",
@@ -3293,18 +3364,18 @@ static const member_t debug_members[] = {
               "{arch, pc, regs, rows, fpu?}: registers, and a disassembly row per instruction with its translation",
           .args = debug_frame_args,
           .nargs = DEBUG_FRAME_NARGS,
-          .result = V_MAP,
+          .result = VK_MAP,
           .fn = debug_method_frame}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "step",
      .examples = EXAMPLES("debug.step", "debug.step 100"),
      .doc = "Run count instructions and stop, through the frame loop exactly as scheduler.run does (VBL and timers "
-            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
-    {.kind = M_METHOD,
+            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_step}},
+    {.kind = MK_METHOD,
      .name = "exceptions",
      .examples = EXAMPLES("debug.exceptions", "debug.exceptions 1"),
      .doc = "Dump the always-on 256-entry exception trace ring",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}},
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_exceptions}},
 };
 
 static const class_desc_t debug_class = {
@@ -3327,46 +3398,37 @@ static const class_desc_t debug_class = {
 //   debug.mac.globals.address(name)     — return the static address
 //   debug.mac.globals.list()            — list of known names
 //
-// Lookup is O(N) over the table; this is a debugging-only surface.
-
-static int mac_global_lookup(const char *name) {
-    if (!name)
-        return -1;
-    for (size_t i = 0; i < mac_global_vars_count; i++) {
-        if (mac_global_vars[i].name && strcmp(mac_global_vars[i].name, name) == 0)
-            return (int)i;
-    }
-    return -1;
-}
+// Lookup is a binary search over a name index (mac_global_find,
+// mac_globals_data.c).
 
 static DEF_METHOD(method_mac_globals_read) {
-    int idx = mac_global_lookup(argv[0].s);
-    if (idx < 0)
+    const mac_global_info_t *g = mac_global_find(argv[0].s);
+    if (!g)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
     // Globals live in the mac world's logical space (identity on 68K
     // machines; the user-data view on PDM — debug_mac_xlate).
-    uint32_t addr = mac_global_vars[idx].address;
-    int sz = mac_global_vars[idx].size;
+    uint32_t addr = g->address;
+    int sz = g->size;
     switch (sz) {
     case 1: {
         value_t v = val_uint(1, memory_debug_read_uint8(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     case 2: {
         value_t v = val_uint(2, memory_debug_read_uint16(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     case 4: {
         value_t v = val_uint(4, memory_debug_read_uint32(debug_mac_xlate(addr)));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         return v;
     }
     default: {
         // Wider entries (KeyMap 16, EventQueue 10, FileVars 184, …) come
         // back as a byte buffer; the method's result slot is declared
-        // V_ANY precisely so this branch is legal (issue #106).
+        // VK_ANY precisely so this branch is legal (issue #106).
         uint8_t buf[256];
         if (sz <= 0)
             return val_err("debug.mac.globals.read: '%s' is a region marker with no size — "
@@ -3382,12 +3444,12 @@ static DEF_METHOD(method_mac_globals_read) {
 }
 
 static DEF_METHOD(method_mac_globals_write) {
-    int idx = mac_global_lookup(argv[0].s);
-    if (idx < 0)
+    const mac_global_info_t *g = mac_global_find(argv[0].s);
+    if (!g)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
     uint64_t v = argv[1].u;
-    uint32_t addr = mac_global_vars[idx].address;
-    int sz = mac_global_vars[idx].size;
+    uint32_t addr = g->address;
+    int sz = g->size;
     // On a mac-world-translated machine (PDM) the resolved address is
     // physical, so the write must take the debug path; 68K machines keep
     // the historical live-CPU write.
@@ -3419,77 +3481,71 @@ static DEF_METHOD(method_mac_globals_write) {
 }
 
 static DEF_METHOD(method_mac_globals_address) {
-    int idx = mac_global_lookup(argv[0].s);
-    if (idx < 0)
+    const mac_global_info_t *g = mac_global_find(argv[0].s);
+    if (!g)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
-    value_t v = val_uint(4, mac_global_vars[idx].address);
-    v.flags |= VAL_HEX;
+    value_t v = val_uint(4, g->address);
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_METHOD(method_mac_globals_list) {
-    // Build a deduplicated list of names (the table has a few historical
-    // duplicates such as TimeSCSIDB; the legacy resolver kept first-found).
-    value_t *items = (value_t *)calloc(mac_global_vars_count, sizeof(value_t));
-    if (!items)
-        return val_err("debug.mac.globals.list: out of memory");
-    size_t out = 0;
+    // Build a deduplicated list of names in table order (the table has a
+    // few historical duplicates such as TimeSCSIDB): an entry is listed when
+    // it is the one its name resolves to, i.e. its name's first entry.
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
     for (size_t i = 0; i < mac_global_vars_count; i++) {
         const char *nm = mac_global_vars[i].name;
-        if (!nm)
+        if (mac_global_find(nm) != &mac_global_vars[i])
             continue;
-        bool dup = false;
-        for (size_t j = 0; j < out; j++) {
-            if (items[j].kind == V_STRING && items[j].s && strcmp(items[j].s, nm) == 0) {
-                dup = true;
-                break;
-            }
+        if (!val_list_push(&items, &len, &cap, val_str(nm))) {
+            value_t partial = val_list(items, len);
+            value_free(&partial);
+            return val_err("debug.mac.globals.list: out of memory");
         }
-        if (dup)
-            continue;
-        items[out++] = val_str(nm);
     }
-    return val_list(items, out);
+    return val_list(items, len);
 }
 
 static const arg_decl_t mac_globals_name_arg[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol (e.g. \"Ticks\")"},
+    {.name = "name", .kind = VK_STRING, .doc = "Mac low-memory global symbol (e.g. \"Ticks\")"},
 };
 static const arg_decl_t mac_globals_write_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol"},
-    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"},
+    {.name = "name", .kind = VK_STRING, .doc = "Mac low-memory global symbol"},
+    {.name = "value", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "value to write"},
 };
 
 static const member_t debug_mac_globals_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "read",
      .examples = EXAMPLES("debug.mac.globals.read \"Ticks\"", "debug.mac.globals.read \"KeyMap\""),
      .doc = "Read a Mac low-memory global by name",
-     // V_ANY, not V_UINT: the result kind follows the entry's width — 49
-     // of the 471 globals are wider than 4 bytes and read as V_BYTES.
+     // VK_ANY, not VK_UINT: the result kind follows the entry's width — 49
+     // of the 471 globals are wider than 4 bytes and read as VK_BYTES.
      .method = {.result_doc = "a hex uint for a 1-, 2- or 4-byte global; bytes for a wider one",
                 .args = mac_globals_name_arg,
                 .nargs = 1,
-                .result = V_ANY,
+                .result = VK_ANY,
                 .fn = method_mac_globals_read}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "write",
      .examples = EXAMPLES("debug.mac.globals.write \"CrsrNew\" 1"),
      .doc = "Write a 1/2/4-byte Mac low-memory global by name",
-     .method = {.args = mac_globals_write_args, .nargs = 2, .result = V_NONE, .fn = method_mac_globals_write}},
-    {.kind = M_METHOD,
+     .method = {.args = mac_globals_write_args, .nargs = 2, .result = VK_NONE, .fn = method_mac_globals_write}},
+    {.kind = MK_METHOD,
      .name = "address",
      .examples = EXAMPLES("debug.mac.globals.address \"Ticks\""),
      .doc = "Return the address of a named Mac low-memory global",
-     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_address}},
-    {.kind = M_METHOD,
+     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = VK_UINT, .fn = method_mac_globals_address}},
+    {.kind = MK_METHOD,
      .name = "list",
      .examples = EXAMPLES("debug.mac.globals.list"),
      .doc = "List all known Mac low-memory global names",
      .method = {.result_doc = "the global names, as strings",
                 .args = NULL,
                 .nargs = 0,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = method_mac_globals_list}},
 };
 
@@ -3507,22 +3563,23 @@ static const class_desc_t debug_mac_globals_class = {
 // in time; for now this covers the typed-bridge needs.
 
 static DEF_METHOD(method_mac_atrap) {
-    return val_str(macos_atrap_name((uint16_t)argv[0].u));
+    char buf[8];
+    return val_str(debug_mac_atrap_name((uint16_t)argv[0].u, buf, sizeof(buf)));
 }
 
 static const arg_decl_t mac_atrap_args[] = {
-    {.name = "opcode", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
+    {.name = "opcode", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
 };
 
 static const member_t debug_mac_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "atrap",
      .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),
      .doc = "Resolve an A-trap opcode to its symbolic name",
      .method = {.result_doc = "the trap name, e.g. \"_GetResource\"",
                 .args = mac_atrap_args,
                 .nargs = 1,
-                .result = V_STRING,
+                .result = VK_STRING,
                 .fn = method_mac_atrap}},
 };
 
@@ -3601,20 +3658,20 @@ static DEF_METHOD(screen_method_match) {
         return err;
     int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0) {
-        gs_outf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
+        out_printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
     }
     if (result == 0) {
-        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
+        out_printf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
-    gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    out_printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
 // `screen.matches(reference[, top, left, bottom, right])` — the non-fatal
 // twin of `screen.match`: same comparison (including the optional exclude
-// rectangle), V_BOOL result, no abort, no diff artifacts, and no per-call
+// rectangle), VK_BOOL result, no abort, no diff artifacts, and no per-call
 // output (it is a polling primitive — wait_match() in the integration
 // library calls it every few million cycles).  An unreadable reference is
 // still a hard error: polling against a missing golden would spin to the
@@ -3643,20 +3700,20 @@ static DEF_METHOD(screen_method_match_or_save) {
         return val_err("screen.match_or_save: framebuffer not available");
     int result = match_framebuffer_with_png(d, ref, NULL, 0);
     if (result < 0) {
-        gs_outf("MATCH FAILED: Error loading reference image.\n");
+        out_printf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
             save_framebuffer_as_png(d, actual);
         return val_bool(false);
     }
     if (result == 0) {
-        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
+        out_printf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
     if (actual) {
         save_framebuffer_as_png(d, actual);
-        gs_outf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
+        out_printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
     } else {
-        gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+        out_printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     }
     return val_bool(false);
 }
@@ -3666,13 +3723,13 @@ static DEF_METHOD(screen_method_checksum) {
     if (!d || !d->bits)
         return val_err("screen.checksum: framebuffer not available");
     if (argc == 0)
-        return val_int((int64_t)(int32_t)framebuffer_checksum(d));
+        return val_uint(4, framebuffer_checksum(d)); // unsigned: no sign-extension of bit 31
     if (argc < 4)
         return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
     int64_t t = argv[0].i, l = argv[1].i, b = argv[2].i, r = argv[3].i;
     if (t < 0 || l < 0 || b <= t || r <= l || b > (int64_t)d->height || r > (int64_t)d->width)
         return val_err("screen.checksum: invalid region bounds (0,0)-(%u,%u)", d->width, d->height);
-    return val_int((int64_t)(int32_t)framebuffer_region_checksum(d, (int)t, (int)l, (int)b, (int)r));
+    return val_uint(4, framebuffer_region_checksum(d, (int)t, (int)l, (int)b, (int)r));
 }
 
 // `screen.width` / `screen.height` — read the active display's pixel
@@ -3732,128 +3789,128 @@ static struct object *screen_source_lookup(struct object *self, const char *name
 }
 
 static const arg_decl_t screen_save_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output PNG path (must end in .png)"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output PNG path (must end in .png)"},
 };
 static const arg_decl_t screen_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "top",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region top edge"},
     {.name = "left",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region bottom edge"},
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region right edge"},
     {.name = "top2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region top edge"},
     {.name = "left2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
     {.name = "right2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
     {.name = "top3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region top edge"},
     {.name = "left3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region left edge"},
     {.name = "bottom3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region bottom edge"},
     {.name = "right3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "top",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region top edge"},
     {.name = "left",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region bottom edge"},
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Exclude-region right edge"},
     {.name = "top2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region top edge"},
     {.name = "left2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
     {.name = "right2",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
     {.name = "top3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region top edge"},
     {.name = "left3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region left edge"},
     {.name = "bottom3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region bottom edge"},
     {.name = "right3",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "reference", .kind = VK_STRING, .doc = "Reference PNG path"},
     {.name = "actual",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to write current screen on miss"},
 };
 static const arg_decl_t screen_checksum_args[] = {
-    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
-    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
+    {.name = "top",    .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
+    {.name = "left",   .kind = VK_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
     {.name = "bottom",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Region bottom edge"                                                                                       },
+     .doc = "Region bottom edge"                                                                                        },
     {.name = "right",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
-     .doc = "Region right edge"                                                                                        },
+     .doc = "Region right edge"                                                                                         },
 };
 // Stride and format: every per-card framebuffer node has had these, and the
 // generic `screen` node -- the one node that exists on EVERY machine,
@@ -3868,63 +3925,63 @@ static DEF_GETTER(screen_attr_format) {
 }
 
 static const member_t screen_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "width",
      .doc = "Active display width in pixels",
-     .attr = {.type = V_INT, .get = screen_attr_width, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_width, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "height",
      .doc = "Active display height in pixels",
-     .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_height, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "depth",
      .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
-     .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_depth, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "stride",
      .flags = M_CAT_ADVANCED,
      .doc = "Row stride in bytes (rowBytes) of the active display",
-     .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = screen_attr_stride, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "format",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel encoding of the active display",
-     .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = screen_attr_format, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "par_w",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
-     .attr = {.type = V_INT, .get = screen_attr_par_w, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = screen_attr_par_w, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "par_h",
      .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio denominator (display pixel height; 1 = square)",
-     .attr = {.type = V_INT, .get = screen_attr_par_h, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_INT, .get = screen_attr_par_h, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "save",
      .doc = "Save the current framebuffer to a PNG file",
-     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}},
-    {.kind = M_METHOD,
+     .method = {.args = screen_save_args, .nargs = 1, .result = VK_BOOL, .fn = screen_method_save}},
+    {.kind = MK_METHOD,
      .name = "match",
      .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_match}},
-    {.kind = M_METHOD,
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_match}},
+    {.kind = MK_METHOD,
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_matches}},
-    {.kind = M_METHOD,
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = VK_BOOL, .fn = screen_method_matches}},
+    {.kind = MK_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
-     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = V_BOOL, .fn = screen_method_match_or_save}},
-    {.kind = M_METHOD,
+     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = VK_BOOL, .fn = screen_method_match_or_save}},
+    {.kind = MK_METHOD,
      .name = "checksum",
      .flags = M_CAT_ADVANCED,
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
-     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}},
-    {.kind = M_CHILD,
+     .method = {.args = screen_checksum_args, .nargs = 4, .result = VK_UINT, .fn = screen_method_checksum}},
+    {.kind = MK_CHILD,
      .name = "source",
      .flags = M_CAT_ADVANCED,
      .doc = "Reference to the active card's framebuffer node driving this screen",
@@ -3943,7 +4000,7 @@ static const class_desc_t screen_class = {
 //
 // `screen` is a stateless facade — checksum/save read the framebuffer
 // from whatever machine is currently booted. Register once at
-// shell_init.
+// core_init.
 
 static struct object *s_screen_object = NULL;
 

@@ -50,7 +50,7 @@ describe('bus/debug against the real object-model paths', () => {
   });
 
   it('removes by id through the entry, and reports a core error as failure', async () => {
-    bridge.reply('debug.breakpoints.entries[5].remove', null); // V_NONE success
+    bridge.reply('debug.breakpoints.entries[5].remove', null); // VK_NONE success
     expect(await removeBreakpoint(5)).toBe(true);
     expect(bridge.calls.at(-1)).toEqual({
       path: 'debug.breakpoints.entries[5].remove',

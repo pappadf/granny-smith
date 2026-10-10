@@ -16,7 +16,7 @@
 #include "mac030_glue.h"
 #include "memory.h"
 #include "mmu.h"
-#include "system_config.h" // for config_t.machine_context
+#include "system_internal.h" // for config_t.machine_context
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,8 +25,8 @@ struct asc;
 struct floppy;
 
 // IIcx/IIx state is the unified GLUE state struct (mac030_glue.h).  The IIcx
-// uses last_via2_port_b / soft_power_armed for its PB2 soft-power detector;
-// both machines leave the SE/30 vram/vrom/video_card members NULL.
+// uses soft_power_armed for its PB2 soft-power detector; both machines leave
+// the SE/30 vram/vrom/video_card members NULL.
 typedef mac030_glue_state_t iicx_state_t;
 
 static inline iicx_state_t *iicx_state(config_t *cfg) {
@@ -48,11 +48,11 @@ void iicx_via1_output(void *context, uint8_t port, uint8_t output);
 // RAM/ROM/IO are the family's, in mac030_glue_memory_layout().
 void iicx_memory_layout_tail(struct config *cfg);
 
-// IRQ source bit assignments.
-#define IICX_IRQ_VIA1 (1 << 0)
-#define IICX_IRQ_VIA2 (1 << 1)
-#define IICX_IRQ_SCC  (1 << 2)
-#define IICX_IRQ_NMI  (1 << 3)
+// IRQ source bits: the family's MAC030_GLUE_IRQ_* (mac030_glue.h).
+
+// The RAM sizes the IIcx and IIx offer (KB, 0-terminated) -- one table, as
+// both boards take the same SIMMs in the same two banks of four.
+extern const uint32_t iicx_iix_ram_options_kb[];
 
 // (I/O bus penalties now live with the shared dispatcher, mac030_glue_io.c.)
 

@@ -72,7 +72,7 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const tmpPath = `${dir}/${name}`;
   try {
     await gsEval('files.mkdir', [dir]);
-    // Both methods return V_BOOL false on failure (a full quota, no machine,
+    // Both methods return VK_BOOL false on failure (a full quota, no machine,
     // a download that could not read the file back) — check each.
     const saved = await gsEval('checkpoint.save', [tmpPath]);
     if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };

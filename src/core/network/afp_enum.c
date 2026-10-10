@@ -197,9 +197,17 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
             continue;
         char child_rel[AFP_MAX_REL_PATH];
         struct stat child_st;
-        if (!afp_build_child_path(dir_rel, dent->d_name, child_rel, sizeof(child_rel)) ||
-            !afp_stat_path(vol, child_rel, &child_st))
+        // A child whose path is too long to address, or that cannot be
+        // stat'ed (a dangling symlink), is left out -- said in the log, since
+        // the folder's offspring count still includes it.
+        if (!afp_build_child_path(dir_rel, dent->d_name, child_rel, sizeof(child_rel))) {
+            LOG(2, "AFP FPEnumerate: '%s/%s' not listed -- path too long", dir_rel, dent->d_name);
             continue;
+        }
+        if (!afp_stat_path(vol, child_rel, &child_st)) {
+            LOG(2, "AFP FPEnumerate: '%s' not listed -- cannot stat it", child_rel);
+            continue;
+        }
         const char *why = NULL;
         if (count == AFP_MAX_ENUM_ENTRIES)
             why = "more entries than a listing can page";

@@ -32,11 +32,12 @@
 #ifndef GS_MACHINES_AV_H
 #define GS_MACHINES_AV_H
 
+#include "checkpoint.h"
 #include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
 #include "mac030_glue_io.h" // the shared I/O dispatch engine
 #include "mac030_rom_overlay.h"
 #include "memory.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -76,7 +77,7 @@ struct scsi_53c96;
 #define AV_MUNI_INTCNTRL 0x00
 #define AV_MUNI_CONTROL  0x08
 
-// IRQ source bits driven into cfg->irq (one per 68k IPL).
+// IRQ source bits driven into cfg->rt.irq (one per 68k IPL).
 #define AV_IRQ_VIA1 (1 << 0) // IPL 1: VIA1 (60 Hz tick, Cuda SR, one-second)
 #define AV_IRQ_VIA2 (1 << 1) // IPL 2: PSC VIA2 window (SCSI, FDC, slots, VBL)
 #define AV_IRQ_L3   (1 << 2) // IPL 3: MACE

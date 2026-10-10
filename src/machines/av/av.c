@@ -30,6 +30,7 @@
 #include "mmu040.h"
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "debug.h"
@@ -277,10 +278,10 @@ const mac030_irq_route_t *av_irq_routes(void) {
 
 void av_update_ipl(config_t *cfg, int source, bool active) {
     if (active)
-        cfg->irq |= source;
+        cfg->rt.irq |= source;
     else
-        cfg->irq &= ~source;
-    int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->irq);
+        cfg->rt.irq &= ~source;
+    int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->rt.irq);
     cpu_set_ipl(cfg->cpu, new_ipl);
     cpu_reschedule(cfg->scheduler);
 }
@@ -563,10 +564,10 @@ static void av_ymca_remap(config_t *cfg) {
     uint32_t end = AV_YMCA_BANK_COUNT * (16u << 20); // the split layout's reach
     if (st->decode_end > end)
         end = st->decode_end;
-    for (uint32_t p = 0; p < (end >> PAGE_SHIFT); p++)
+    for (uint32_t p = 0; p < (end >> MEM_PAGE_SHIFT); p++)
         mac030_clear_page(p);
     st->decode_end = 0;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     for (int b = 0; b < AV_YMCA_BANK_COUNT; b++) {
         uint32_t boundary = 0, code = 0;
         for (int k = 0; k < AV_YMCA_BDRY_BITS; k++)
@@ -577,8 +578,8 @@ static void av_ymca_remap(config_t *cfg) {
             continue;
         uint32_t window = 1u << (20 + (code > 5 ? 5 : code) - 1);
         uint32_t base = boundary << 20;
-        mac030_map_mirrored(base >> PAGE_SHIFT, window >> PAGE_SHIFT, ram + st->bank_image_off[b],
-                            st->bank_size[b] >> PAGE_SHIFT, mac030_fill_page, true);
+        mac030_map_mirrored(base >> MEM_PAGE_SHIFT, window >> MEM_PAGE_SHIFT, ram + st->bank_image_off[b],
+                            st->bank_size[b] >> MEM_PAGE_SHIFT, mac030_fill_page, true);
         if (base + window > st->decode_end)
             st->decode_end = base + window;
     }
@@ -609,7 +610,7 @@ static void av_memory_layout(config_t *cfg) {
     // I/O island: the serialized window at $50F00000 plus its non-serialized
     // alias at $50F40000, folded by the $3FFFF mirror mask.
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00080000u, "I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->memory_map, 0x50F00000u, 0x00080000u, "I/O", &st->io_interface, &st->io);
 
     // CPU-ID register page at $5FFFF000 (the register itself is $5FFFFFFC).
     st->cpuid_interface.read_uint8 = av_cpuid_read8;
@@ -618,12 +619,12 @@ static void av_memory_layout(config_t *cfg) {
     st->cpuid_interface.write_uint8 = av_cpuid_write8;
     st->cpuid_interface.write_uint16 = av_cpuid_write16;
     st->cpuid_interface.write_uint32 = av_cpuid_write32;
-    memory_map_add(cfg->mem_map, 0x5FFFF000u, 0x00001000u, "CPU-ID", &st->cpuid_interface, cfg);
+    memory_map_add(cfg->memory_map, 0x5FFFF000u, 0x00001000u, "CPU-ID", &st->cpuid_interface, cfg);
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
     mac030_rom_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, av_map_ram, "AV");
-    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+    memory_map_add(cfg->memory_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
                    &st->overlay.iface, &st->overlay);
 
     mac030_rom_overlay_arm(&av_st(cfg)->overlay);
@@ -756,7 +757,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // only carries the drive and its media.
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     machine_part_begin(cfg, cp, "new_age");
     st->fdc = av_new_age_init(cfg, cp);
@@ -790,18 +791,16 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // ROM base, the 2 MB ROM at $40800000.  ram aperture max = $40800000 so
     // RAM-sizing probes above installed memory read $FF, not bus-error.
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     st->bus_mmu = mmu_init(ram_base, ram_size, desc->common.rom_base, rom_data, cfg->machine->rom_size,
                            desc->common.rom_base, desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
+    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
-
-    setup_images(cfg);
 
     // Bind the I/O island + CPU-ID + ROM aperture, then arm the overlay.
     av_io_bind(&st->io, cfg, desc);
@@ -834,7 +833,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     }
     cfg->machine_context = st;
 
-    // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
+    // Shared core (memory_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the single VIA (there is no VIA2 chip on this platform).
     mac030_build_core(cfg, &board->desc->common, cp);
     machine_part_irq(cfg, cp);

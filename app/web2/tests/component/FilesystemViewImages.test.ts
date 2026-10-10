@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Mock the emulator bridge so files.list returns canned partition / volume
 // listings — exercises the Filesystem tree's descent into a disk image
 // without a running WASM module. files.list returns a native array of
-// {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
+// {name,kind,size} objects (VK_LIST of VK_MAP through the gsEval bridge), so
 // the mock returns arrays directly rather than JSON strings. Declared via
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
 const { gsEvalMock, mediaMock, core } = vi.hoisted(() => ({

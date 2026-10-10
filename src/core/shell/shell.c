@@ -5,9 +5,9 @@
 // Interactive command shell for emulator debugging and control.
 
 #include "shell.h"
-#include "gs_out.h"
+#include "out.h"
 
-#include "shell_singletons.h"
+#include "shell_internal.h"
 #include "value_format.h"
 
 #include "alias.h"
@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
+#include "log_context.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
@@ -24,7 +25,6 @@
 #include "system.h"
 #include "value.h"
 #include "vfs.h"
-#include "worker_thread.h"
 #include "job/job.h"
 
 #include <inttypes.h>
@@ -41,26 +41,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-// Internal guard for shell_dispatch / dispatch_command. Volatile because
-// shell_init runs on the worker pthread while assertions in tests may
-// read the flag from another thread.
-static volatile int32_t shell_initialized = 0;
-
-// Run a free-form line through the v2 script interpreter (REPL
-// semantics). Used by the Shell class's `run` method.
-bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size) {
-    if (!shell_initialized) {
-        if (err_buf && err_size)
-            snprintf(err_buf, err_size, "shell not initialized");
-        return false;
-    }
-    if (script_run_line(line) != 0) {
-        if (err_buf && err_size)
-            snprintf(err_buf, err_size, "command failed");
-        return false;
-    }
-    return true;
-}
+// Makes shell_init idempotent.  Read and written only by shell_init, on the
+// emulator thread (core_init), so a plain flag.
+static bool shell_initialized = false;
 
 // === Value printing (the REPL formatting surface) ==========================
 
@@ -74,8 +57,22 @@ static void format_scalar_inline(const value_t *v) {
     vbuf_t b = {0};
     value_format(v, VFMT_INLINE, &b);
     if (b.p)
-        gs_outs(b.p);
+        out_puts(b.p);
     vbuf_free(&b);
+}
+
+// Widest name column the REPL tables pad to; longer names are cut to fit
+#define NAME_COL_MAX 24
+
+// Print `name` left-aligned in a column of `width` display cells (width is
+// at most NAME_COL_MAX).  A name longer than the column is cut and ends in
+// an ellipsis, so the separator after it stays in line with the others.
+static void print_name_cell(const char *name, int width) {
+    int len = (int)strlen(name);
+    if (len <= width)
+        out_printf("%-*s", width, name);
+    else
+        out_printf("%.*s\u2026", width - 1, name); // one ellipsis cell keeps the column
 }
 
 // Print an object as a multi-line `name = value` table. Walks the
@@ -89,7 +86,7 @@ static void format_object_table(struct object *o) {
     if (!cls || !cls->members || cls->n_members == 0) {
         const char *cls_name = (cls && cls->name) ? cls->name : "object";
         const char *o_name = object_name(o);
-        gs_outf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        out_printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
         return;
     }
     // Pass 1: compute the longest member name so we can right-pad.
@@ -98,36 +95,38 @@ static void format_object_table(struct object *o) {
         const member_t *mb = &cls->members[i];
         if (!mb->name)
             continue;
-        if (mb->kind == M_METHOD)
+        if (mb->kind == MK_METHOD)
             continue;
         int len = (int)strlen(mb->name);
         if (len > width)
             width = len;
     }
-    if (width > 24)
-        width = 24; // cap so very long attr names don't blow the layout
+    if (width > NAME_COL_MAX)
+        width = NAME_COL_MAX; // cap so very long attr names don't blow the layout
     // Pass 2: print attrs first, then children.
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *mb = &cls->members[i];
         if (!mb->name)
             continue;
-        if (mb->kind != M_ATTR)
+        if (mb->kind != MK_ATTR)
             continue;
         if (!mb->attr.get)
             continue;
         value_t v = mb->attr.get(o, mb);
-        gs_outf("%-*s = ", width, mb->name);
+        print_name_cell(mb->name, width);
+        out_puts(" = ");
         format_scalar_inline(&v);
-        gs_outf("\n");
+        out_printf("\n");
         value_free(&v);
     }
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *mb = &cls->members[i];
-        if (!mb->name || mb->kind != M_CHILD)
+        if (!mb->name || mb->kind != MK_CHILD)
             continue;
         const class_desc_t *ccls = mb->child.collection ? mb->child.collection->entry : mb->child.cls;
         const char *child_cls = (ccls && ccls->name) ? ccls->name : "object";
-        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.collection ? "[]" : "");
+        print_name_cell(mb->name, width);
+        out_printf(" : <%s%s>\n", child_cls, mb->child.collection ? "[]" : "");
     }
 }
 
@@ -140,18 +139,18 @@ static void format_cell(const value_t *v, char *buf, size_t buf_size) {
 #define TABLE_MAX_COLS 12
 #define TABLE_CELL_MAX 48
 
-// A V_LIST whose elements are all objects of one class prints as a
+// A VK_LIST whose elements are all objects of one class prints as a
 // table — columns from the class's attributes. This is what lets
 // `debug.breakpoints.entries` at the prompt render the same table the
 // retired `list` methods used to print. Returns false when the list
 // isn't table-shaped (caller falls back to inline list rendering).
 static bool try_print_object_table(const value_t *v) {
-    if (v->kind != V_LIST || v->list.len == 0)
+    if (v->kind != VK_LIST || v->list.len == 0)
         return false;
     const class_desc_t *cls = NULL;
     for (size_t i = 0; i < v->list.len; i++) {
         const value_t *e = &v->list.items[i];
-        if (e->kind != V_OBJECT || !e->obj)
+        if (e->kind != VK_OBJECT || !e->obj)
             return false;
         const class_desc_t *c = object_class(e->obj);
         if (!c || (cls && c != cls))
@@ -165,7 +164,7 @@ static bool try_print_object_table(const value_t *v) {
     int n_cols = 0;
     for (size_t i = 0; i < cls->n_members && n_cols < TABLE_MAX_COLS; i++) {
         const member_t *mb = &cls->members[i];
-        if (mb->kind == M_ATTR && mb->name && mb->attr.get)
+        if (mb->kind == MK_ATTR && mb->name && mb->attr.get)
             cols[n_cols++] = (int)i;
     }
     if (n_cols == 0)
@@ -188,14 +187,14 @@ static bool try_print_object_table(const value_t *v) {
     }
     // Header + rows.
     for (int c = 0; c < n_cols; c++)
-        gs_outf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
+        out_printf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
             value_t cv = mb->attr.get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
-            gs_outf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
+            out_printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
         }
     }
     return true;
@@ -210,32 +209,32 @@ static bool try_print_object_table(const value_t *v) {
 // decisions about a terminal, not renderings of a value.
 //
 // Scalars render in VFMT_REPL, which differs from the VFMT_TEXT that `${x}`
-// uses in exactly one respect: V_BYTES carries its `0x` and is never capped,
+// uses in exactly one respect: VK_BYTES carries its `0x` and is never capped,
 // because asking for the value alone is asking for all of it.
 static void format_value_print(const value_t *v) {
     if (!v)
         return;
     switch (v->kind) {
-    case V_NONE:
+    case VK_NONE:
         break;
 
-    case V_LIST: {
+    case VK_LIST: {
         // A list of same-class objects renders as an attribute table.
         if (try_print_object_table(v))
             break;
-        gs_outc('[');
+        out_putc('[');
         for (size_t i = 0; i < v->list.len; i++) {
             if (i)
-                gs_outs(", ");
+                out_puts(", ");
             // Elements compose into one line, so they render quoted and
             // capped -- VFMT_INLINE, not the mode the container used.
             format_scalar_inline(&v->list.items[i]);
         }
-        gs_outs("]\n");
+        out_puts("]\n");
         break;
     }
 
-    case V_MAP: {
+    case VK_MAP: {
         // Aligned `key : value` rows; nested maps/lists show as compact
         // placeholders (drill in via map.key / map[i]).
         int width = 0;
@@ -245,23 +244,24 @@ static void format_value_print(const value_t *v) {
             if (klen > width)
                 width = klen;
         }
-        if (width > 24)
-            width = 24; // cap so very long keys don't blow the layout
+        if (width > NAME_COL_MAX)
+            width = NAME_COL_MAX; // cap so very long keys don't blow the layout
         for (size_t i = 0; i < v->map.len; i++) {
-            gs_outf("%-*s : ", width, v->map.entries[i].key ? v->map.entries[i].key : "");
+            print_name_cell(v->map.entries[i].key ? v->map.entries[i].key : "", width);
+            out_puts(" : ");
             format_scalar_inline(&v->map.entries[i].val);
-            gs_outc('\n');
+            out_putc('\n');
         }
         break;
     }
 
-    case V_OBJECT:
+    case VK_OBJECT:
         // Bare-read of an object prints its attributes as a `name = value`
         // table. Methods are skipped; child nodes show as placeholders.
         format_object_table(v->obj);
         break;
 
-    case V_ERROR:
+    case VK_ERROR:
         // The one kind that goes to stderr: results are stdout, diagnostics
         // are stderr, and a script's captured output depends on the split.
         fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
@@ -271,8 +271,8 @@ static void format_value_print(const value_t *v) {
         vbuf_t b = {0};
         value_format(v, VFMT_REPL, &b);
         if (b.p)
-            gs_outs(b.p);
-        gs_outc('\n');
+            out_puts(b.p);
+        out_putc('\n');
         vbuf_free(&b);
         break;
     }
@@ -290,7 +290,7 @@ static void format_value_print(const value_t *v) {
 // structured entry.  The text itself does not change.
 static void print_value_here(void *p) {
     const value_t *v = (const value_t *)p;
-    bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
+    bool annotate = v && v->kind != VK_NONE && v->kind != VK_ERROR;
     if (annotate)
         annotate = job_annotate("value_begin", NULL, NULL, NULL);
     format_value_print(v);
@@ -310,25 +310,6 @@ static void print_value_here(void *p) {
 
 void shell_print_value(const value_t *v) {
     job_on_emulator(print_value_here, (void *)v);
-}
-
-// Dispatch interactively and return integer result. The line runs
-// through the v2 script interpreter with REPL semantics (results
-// print). Errors return -1 so scripted drivers surface failures.
-uint64_t shell_dispatch(char *line) {
-    if (!shell_initialized)
-        return -1;
-
-    worker_thread_assert("shell_dispatch");
-
-    if (!line)
-        return 0;
-    return script_run_line(line) == 0 ? 0 : (uint64_t)-1;
-}
-
-// Tab completion entry point
-void shell_tab_complete(const char *line, int cursor_pos, struct completion *out) {
-    shell_complete(line, cursor_pos, out);
 }
 
 // Compose the current shell prompt.  Short and state-aware:
@@ -364,76 +345,36 @@ static value_t shell_meta_complete_provider(const char *line, int cursor) {
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
     shell_complete(line ? line : "", cursor, &comp);
-    if (comp.count <= 0)
+    if (comp.count <= 0) {
+        completion_free(&comp);
         return val_list(NULL, 0);
+    }
     value_t *items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
-    if (!items)
+    if (!items) {
+        completion_free(&comp);
         return val_err("meta.complete: out of memory");
+    }
     for (int i = 0; i < comp.count; i++)
         items[i] = val_str(comp.items[i] ? comp.items[i] : "");
-    return val_list(items, (size_t)comp.count);
+    int n = comp.count;
+    completion_free(&comp); // the strings were copied by val_str
+    return val_list(items, (size_t)n);
 }
 
 /* --- shell init ---------------------------------------------------------- */
+// The shell's own setup: its binding store and the completion provider.
+// Process bootstrap (logging, the job layer, the object root and its
+// singletons) is core_init's (core_init.c), which calls this.
 int shell_init(void) {
     if (shell_initialized)
         return 0;
 
-    log_init();
-    job_layer_init(); // this is the emulator thread
     shell_var_init();
 
     // Wire the Meta class's `complete(line, cursor)` method to the
-    // shell's tab-completion engine. Done early so any `gs_eval` that
-    // lands during init (vanishingly unlikely but cheap to guarantee)
-    // sees a live provider.
-    meta_set_complete_provider(shell_meta_complete_provider);
+    // shell's tab-completion engine.
+    meta_complete_register(shell_meta_complete_provider);
 
-    // Install the top-level object-root methods (assert, echo, cp,
-    // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
-    // path-form parser can reach them.
-    root_install_class();
-
-    // Register process-singleton namespace objects that exist
-    // independently of any machine instance: rom, machine and catalog
-    // all carry pre-boot surfaces (rom.identify, catalog.vroms.identify,
-    // machine.boot, catalog.profile) that callers reach for *before*
-    // a machine has been created. The WASM URL-media boot path is the
-    // canonical case — drag-drop a Plus ROM, ask rom.identify for the
-    // compatible models, then call machine.boot with the answer.
-    // Hooking these up in system_create was wrong: the WASM platform
-    // doesn't run system_create at startup, so the path-form would
-    // fail to resolve until the legacy `rom load` had already booted
-    // a machine.
-    rom_init();
-    machine_init();
-    checkpoint_init();
-    pacing_init();
-    files_init();
-    log_class_init();
-    catalog_init();
-    mouse_class_register();
-    // `keyboard` is NOT registered here: it is per machine now, built by
-    // system_create (host_input.h).  It needs a scheduler source that lives
-    // and dies with the machine, which a process-lifetime facade cannot have.
-    screen_class_register();
-    scsi_class_register();
-
-    // Install the cfg-scoped namespace stubs (storage, shell, mouse,
-    // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot
-    // surfaces resolve — particularly files.cp and files.find_media,
-    // which the URL-media auto-boot path uses *before* machine.boot to
-    // copy the downloaded ROM into OPFS and to scan extracted archives
-    // for floppy images. system_create will later re-install with the
-    // real cfg (root_install handles the cfg-change uninstall +
-    // reinstall internally).
-    root_install(NULL);
-
-    // Latch the worker pthread for the thread-affinity guard. From now
-    // on (under MODE=debug/sanitize) any call into shell_dispatch() or
-    // gs_eval() from a different thread aborts with GS_ASSERTF.
-    worker_thread_record();
-
-    shell_initialized = 1;
+    shell_initialized = true;
     return 0;
 }

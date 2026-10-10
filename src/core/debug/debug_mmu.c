@@ -13,7 +13,7 @@
 // Put an unsigned hex field (addresses, descriptor words).
 void debug_mmu_put_hex(value_map_builder_t *b, const char *key, uint32_t v) {
     value_t x = val_uint(4, v);
-    x.flags |= VAL_HEX;
+    x.flags |= VFLAG_HEX;
     val_map_put(b, key, x);
 }
 
@@ -79,8 +79,8 @@ value_t debug_mmu_walk_result(const mmu_xlate_t *x, const mmu_trace_t *trace) {
 
 void debug_mmu_parse_mode(int argc, const value_t *argv, int idx, bool default_supervisor, bool *supervisor,
                           bool *fetch) {
-    *supervisor = (argc > idx && argv[idx].kind == V_BOOL) ? argv[idx].b : default_supervisor;
-    *fetch = argc > idx + 1 && argv[idx + 1].kind == V_BOOL && argv[idx + 1].b;
+    *supervisor = (argc > idx && argv[idx].kind == VK_BOOL) ? argv[idx].b : default_supervisor;
+    *fetch = argc > idx + 1 && argv[idx + 1].kind == VK_BOOL && argv[idx + 1].b;
 }
 
 value_t debug_mmu_translate(debug_mmu_xlate_fn fn, void *ctx, bool default_supervisor, int argc, const value_t *argv) {
@@ -113,7 +113,7 @@ static value_t run_value(const map_run_t *r) {
     value_map_builder_t *b = val_map_new();
     debug_mmu_put_hex(b, "start", (uint32_t)r->start);
     value_t size = val_uint(8, r->end - r->start);
-    size.flags |= VAL_HEX;
+    size.flags |= VFLAG_HEX;
     val_map_put(b, "size", size);
     debug_mmu_put_hex(b, "phys", r->phys);
     val_map_put(b, "via", val_str(r->x.via ? r->x.via : "page"));
@@ -131,15 +131,15 @@ static bool same_str(const char *a, const char *b) {
 
 // Default map limit: enough for any real table layout, small enough that a
 // fragmented address space cannot produce an unbounded answer.
-static const value_t k_map_limit_default = {.kind = V_UINT, .u = 512};
+static const value_t k_map_limit_default = {.kind = VK_UINT, .u = 512};
 
 value_t debug_mmu_map(debug_mmu_xlate_fn fn, void *ctx, bool default_supervisor, uint64_t space_end, uint32_t page_bits,
                       int argc, const value_t *argv) {
-    uint64_t start = (argc > 0 && argv[0].kind == V_UINT) ? argv[0].u : 0;
-    uint64_t end = (argc > 1 && argv[1].kind == V_UINT) ? argv[1].u : space_end;
+    uint64_t start = (argc > 0 && argv[0].kind == VK_UINT) ? argv[0].u : 0;
+    uint64_t end = (argc > 1 && argv[1].kind == VK_UINT) ? argv[1].u : space_end;
     bool sup, fetch;
     debug_mmu_parse_mode(argc, argv, 2, default_supervisor, &sup, &fetch);
-    uint64_t limit = (argc > 4 && argv[4].kind == V_UINT) ? argv[4].u : k_map_limit_default.u;
+    uint64_t limit = (argc > 4 && argv[4].kind == VK_UINT) ? argv[4].u : k_map_limit_default.u;
     if (end > space_end)
         end = space_end;
     if (start >= end)
@@ -194,24 +194,24 @@ value_t debug_mmu_map(debug_mmu_xlate_fn fn, void *ctx, bool default_supervisor,
     return val_list(items, len);
 }
 
-const value_t debug_mmu_desc_count_default = {.kind = V_UINT, .u = 1};
+const value_t debug_mmu_desc_count_default = {.kind = VK_UINT, .u = 1};
 
 uint32_t debug_mmu_desc_count(int argc, const value_t *argv) {
-    uint64_t n = (argc > 1 && argv[1].kind == V_UINT) ? argv[1].u : 1;
+    uint64_t n = (argc > 1 && argv[1].kind == VK_UINT) ? argv[1].u : 1;
     if (n < 1)
         n = 1;
     return n > DEBUG_MMU_DESC_MAX ? DEBUG_MMU_DESC_MAX : (uint32_t)n;
 }
 
 const arg_decl_t debug_mmu_xlate_args[DEBUG_MMU_XLATE_NARGS] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical (effective) address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical (effective) address"},
     {.name = "supervisor",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "translate for supervisor (true) or user (false)",
      .default_doc = "the CPU's current state"},
     {.name = "fetch",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "an instruction fetch (the 68040's ITT registers, the PowerPC's IBATs and MSR[IT]) rather than a data "
             "access"},
@@ -219,28 +219,28 @@ const arg_decl_t debug_mmu_xlate_args[DEBUG_MMU_XLATE_NARGS] = {
 
 const arg_decl_t debug_mmu_map_args[DEBUG_MMU_MAP_NARGS] = {
     {.name = "start",
-     .kind = V_UINT,
-     .presentation_flags = VAL_HEX,
+     .kind = VK_UINT,
+     .presentation_flags = VFLAG_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "first logical address",
      .default_doc = "0"},
     {.name = "end",
-     .kind = V_UINT,
-     .presentation_flags = VAL_HEX,
+     .kind = VK_UINT,
+     .presentation_flags = VFLAG_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "end of the range (exclusive)",
      .default_doc = "the end of the address space"},
     {.name = "supervisor",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "map the supervisor (true) or user (false) view",
      .default_doc = "the CPU's current state"},
     {.name = "fetch",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "the instruction-fetch view rather than the data view"},
     {.name = "limit",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_map_limit_default,
      .doc = "most runs to list; continue from the last run's end for more"},

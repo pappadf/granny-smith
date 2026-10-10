@@ -35,7 +35,7 @@ static const char *trim(const char *path, char *buf, size_t cap) {
 }
 
 // Fill a dirent from entry `e`, named `name`.
-static void entry_dirent(const peel_entry_t *e, const char *name, gs_dirent_t *out) {
+static void entry_dirent(const peel_entry_t *e, const char *name, ns_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     snprintf(out->name, sizeof(out->name), "%s", name);
     out->is_dir = e->is_dir;
@@ -52,13 +52,13 @@ static void entry_dirent(const peel_entry_t *e, const char *name, gs_dirent_t *o
 }
 
 // A folder with no entry of its own (a zip that lists only files).
-static void dir_dirent(const char *name, gs_dirent_t *out) {
+static void dir_dirent(const char *name, ns_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     snprintf(out->name, sizeof(out->name), "%s", name);
     out->is_dir = true;
 }
 
-static int arc_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
+static int arc_stat(ns_t *ns, const char *path, ns_dirent_t *out) {
     arc_ns_t *an = ns->ctx;
     char p[512];
     trim(path, p, sizeof(p));
@@ -85,14 +85,14 @@ static int arc_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
     return -ENOENT;
 }
 
-static int arc_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int cap, int *count) {
+static int arc_list(ns_t *ns, const char *path, ns_dirent_t *out, int cap, int *count) {
     arc_ns_t *an = ns->ctx;
     char p[512];
     trim(path, p, sizeof(p));
     size_t pl = strlen(p);
     *count = 0;
     if (pl) {
-        gs_dirent_t self;
+        ns_dirent_t self;
         int rc = arc_stat(ns, p, &self);
         if (rc < 0)
             return rc;
@@ -131,7 +131,7 @@ static int arc_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int 
     return 0;
 }
 
-static gs_source_t *arc_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, int *err) {
+static source_t *arc_open(ns_t *ns, const char *path, source_fork_t fork, int *err) {
     arc_ns_t *an = ns->ctx;
     char p[512];
     trim(path, p, sizeof(p));
@@ -147,15 +147,15 @@ static gs_source_t *arc_open(gs_namespace_t *ns, const char *path, gs_fork_t for
             return NULL;
         }
         uint8_t *fi = malloc(GS_FINDER_INFO_SIZE);
-        char *key = gs_str_printf("%s/%s/finf", gs_source_key(ns->src), p);
+        char *key = str_printf("%s/%s/finf", source_key(ns->src), p);
         if (!fi || !key) {
             free(fi);
             free(key);
             *err = -ENOMEM;
             return NULL;
         }
-        gs_ns_finder_info(e->mac_type, e->mac_creator, e->finder_flags, fi);
-        gs_source_t *s = gs_source_memory(fi, GS_FINDER_INFO_SIZE, true, key);
+        ns_finder_info(e->mac_type, e->mac_creator, e->finder_flags, fi);
+        source_t *s = source_memory(fi, GS_FINDER_INFO_SIZE, true, key);
         free(key);
         *err = s ? 0 : -ENOMEM;
         return s;
@@ -165,7 +165,7 @@ static gs_source_t *arc_open(gs_namespace_t *ns, const char *path, gs_fork_t for
         return NULL;
     }
     peel_err_t *pe = NULL;
-    gs_source_t *raw = peel_open_fork(an->a, i, fork == GS_FORK_RSRC ? PEEL_FORK_RSRC : PEEL_FORK_DATA, &pe);
+    source_t *raw = peel_open_fork(an->a, i, fork == GS_FORK_RSRC ? PEEL_FORK_RSRC : PEEL_FORK_DATA, &pe);
     if (!raw) {
         peel_err_free(pe);
         *err = -EIO;
@@ -173,13 +173,13 @@ static gs_source_t *arc_open(gs_namespace_t *ns, const char *path, gs_fork_t for
     }
     // Peeler's sources are not thread-safe; this one may be a disk the guest
     // and the I/O worker read at once.
-    gs_source_t *s = gs_source_locked(raw);
-    gs_source_release(raw);
+    source_t *s = source_locked(raw);
+    source_release(raw);
     *err = s ? 0 : -ENOMEM;
     return s;
 }
 
-static void arc_close(gs_namespace_t *ns) {
+static void arc_close(ns_t *ns) {
     arc_ns_t *an = ns->ctx;
     if (!an)
         return;
@@ -187,11 +187,11 @@ static void arc_close(gs_namespace_t *ns) {
     free(an);
 }
 
-static const gs_namespace_ops_t arc_ops = {"archive", arc_list, arc_stat, arc_open, arc_close};
+static const ns_ops_t arc_ops = {"archive", arc_list, arc_stat, arc_open, arc_close};
 
-gs_namespace_t *gs_ns_open_archive(gs_source_t *src, const char *format) {
+ns_t *ns_open_archive(source_t *src, const char *format) {
     peel_err_t *err = NULL;
-    peel_archive_t *a = peel_open_as(format, src, gs_scratch_sink(), NULL, &err);
+    peel_archive_t *a = peel_open_as(format, src, source_scratch_sink(), NULL, &err);
     if (!a) {
         peel_err_free(err);
         return NULL;
@@ -203,13 +203,13 @@ gs_namespace_t *gs_ns_open_archive(gs_source_t *src, const char *format) {
     }
     an->a = a;
     an->format = peel_format(a);
-    gs_namespace_t *ns = gs_namespace_new(&arc_ops, an, src);
+    ns_t *ns = ns_new(&arc_ops, an, src);
     if (!ns)
-        arc_close(&(gs_namespace_t){.ctx = an});
+        arc_close(&(ns_t){.ctx = an});
     return ns;
 }
 
 // The archive's peeler format name, or NULL when `ns` is no archive.
-const char *gs_ns_archive_format(gs_namespace_t *ns) {
+const char *ns_archive_format(ns_t *ns) {
     return (ns && ns->ops == &arc_ops) ? ((arc_ns_t *)ns->ctx)->format : NULL;
 }

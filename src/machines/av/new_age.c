@@ -13,6 +13,7 @@
 #include "av.h"
 #include "psc.h"
 
+#include "checkpoint.h"
 #include "floppy.h"
 #include "new_age.h"
 #include "system.h"

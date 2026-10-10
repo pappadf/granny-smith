@@ -21,7 +21,7 @@ Both go through the same statement parser and interpreter
 (`script.c`). Every client reaches it the same way: a free-form line or a
 whole source is posted to the mailbox as a **script job** (`REQ_SCRIPT`,
 see "Scripts" below) and runs on the job thread; typed
-object-model calls (`gs_eval('machine.cpu.pc')`) stay on their typed
+object-model calls (`object_eval('machine.cpu.pc')`) stay on their typed
 paths. The `Shell` class on the object root keeps `shell.run` and
 `shell.eval(text)` as leaves for a caller that wants a line run inline on
 the emulator thread (the unit suites, a script running another script),
@@ -33,7 +33,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | File | Purpose |
 |------|---------|
 | [script.c](../../../../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
-| [shell.c](../../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
+| [shell.c](../../../../src/core/shell/shell.c) | REPL value/table formatter, prompt, `shell_init` (binding store, completion provider; called by `core_init` in `src/core/core_init.c`) |
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [commands.c](../../../../src/core/shell/commands.c) | Commands: the built-ins, `command NAME = PATH`, the `shell.command` surface |
@@ -160,7 +160,7 @@ cap). Reads walk top-down and fall back to the alias table.
 - **`let` creates, `=` mutates.** `let x = 5` declares in the current
   scope; `$x = 6` mutates the innermost scope holding `x`; mutating an
   undeclared name is an error (no typo-shadowing).
-- **Aliases are reference bindings** (`V_REF`): they store *path text*
+- **Aliases are reference bindings** (`VK_REF`): they store *path text*
   and re-resolve on every access, so `$pc` keeps working across
   `machine.boot`. They read and write through: `$pc = 0x400128` sets
   `machine.cpu.pc`. Built-in register aliases (`$pc`, `$d0`, `$sr`, …)
@@ -174,7 +174,7 @@ cap). Reads walk top-down and fall back to the alias table.
 
 ## Errors
 
-`V_ERROR` propagates through expressions; any statement producing one
+`VK_ERROR` propagates through expressions; any statement producing one
 aborts the script after printing `line N: message`. Conditions do not
 treat errors as false — an error reaching `if`/`while`/`for` aborts.
 Code that expects failure says so:
@@ -272,7 +272,7 @@ output cut, or as the full text of a record shortened to fit (which says
 `"truncated":true`).  Headless without `--framed` prints an error record's
 lines to stderr, so its streams read as before; a consumer that wants only
 text ignores the other annotations.  Every record, text included, is bounded by a quarter of the
-event ring (`gs_mailbox_record_max`), measured on the escaped text.
+event ring (`mailbox_record_max`), measured on the escaped text.
 
 ## Scripts
 
@@ -295,7 +295,7 @@ Headless's own loop is the browser's tick minus the frame pacing: one
 frame-unit while the machine runs, then the mailbox drain that serves the
 job's calls and the daemon's or stdin's statements. What a statement
 prints reaches the client through the same drain: every stdout site in the
-core goes through the output sink (`gs_out.h`), a job's text is delivered
+core goes through the output sink (`out.h`), a job's text is delivered
 as output records in order before the statement's result, and the driver
 writes it to stdout (or the daemon's socket) as it arrives. `--framed`
 adds `@event <kind> <json>` lines for every core event (`mode_started`,
@@ -352,7 +352,7 @@ argument get nothing.
   members of the resolved-so-far node.
 - **Method-argument position** — dispatched by the resolved method's
   `arg_decl_t[i]`: enums offer their values, bools `true`/`false`, and a
-  string argument declared `VAL_PATH` completes against the filesystem
+  string argument declared `VFLAG_PATH` completes against the filesystem
   (through the VFS).  The flag decides, not the argument's name: a
   `path` argument that names an object path gets no file candidates.
 
@@ -364,7 +364,9 @@ cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
 not count as positionals; a rest argument absorbs every slot past it — the
 same `script_arg_slot` the interpreter and the highlighter use), all `none`
 outside an argument position.  `truncated` is true when candidates were
-dropped (the item table or the per-call string pool filled).
+dropped: past the 4096-candidate bound, when a composed candidate could not
+be stored, or when the list would render past the mailbox result limit
+(the leading candidates that fit are returned).
 `cursor` and the returned span are UTF-8 byte offsets.
 
 ## Highlighting

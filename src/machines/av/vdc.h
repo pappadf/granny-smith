@@ -21,13 +21,14 @@
 //     window/decimation, packs to the FS format and writes it to VRAM with
 //     the VidInSize stride, then latches the CIVIC field interrupt
 //   * host sources: a deterministic pattern generator, a loaded PNG frame,
-//     or the platform webcam through the gs_video_in_* seam (system.h) —
+//     or the platform webcam through the platform_video_in_* seam (platform_hooks.h) —
 //     selected via the machine.videoin object-model node
 
 #ifndef GS_MACHINES_AV_VDC_H
 #define GS_MACHINES_AV_VDC_H
 
-#include "system_config.h"
+#include "checkpoint.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -77,7 +78,7 @@ bool av_vdc_connected(av_vdc_t *vdc);
 // === CIVIC hooks ============================================================
 
 // CIVIC's VDCClk slot changed (1 = clock off).  Tracks the capture-engine
-// gate and pushes host camera-lifecycle notifications (gs_video_in_state).
+// gate and pushes host camera-lifecycle notifications (platform_video_in_state).
 void av_vdc_clock_gate(av_vdc_t *vdc, bool clock_off);
 
 #endif // GS_MACHINES_AV_VDC_H

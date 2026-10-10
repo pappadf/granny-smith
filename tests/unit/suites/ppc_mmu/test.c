@@ -224,8 +224,8 @@ static void test_user_key_and_soa(void) {
     ppc_update_active_maps(P);
     run_at(0x1000, 1);
     CHECK_EQ(P->gpr[3], 0xA5A5A5A5u);
-    CHECK(g_user_read[0x00200000u >> PAGE_SHIFT] != 0);
-    CHECK(g_user_write[0x00200000u >> PAGE_SHIFT] == 0); // no store yet
+    CHECK(g_user_read[0x00200000u >> MEM_PAGE_SHIFT] != 0);
+    CHECK(g_user_write[0x00200000u >> MEM_PAGE_SHIFT] == 0); // no store yet
 
     // Store fills the write map (C set on the walk)
     P->msr &= (uint32_t) ~(PPC_MSR_DT | PPC_MSR_PR);
@@ -234,7 +234,7 @@ static void test_user_key_and_soa(void) {
     P->msr |= PPC_MSR_DT | PPC_MSR_PR;
     ppc_update_active_maps(P);
     run_at(0x1000, 1);
-    CHECK(g_user_write[0x00200000u >> PAGE_SHIFT] != 0);
+    CHECK(g_user_write[0x00200000u >> MEM_PAGE_SHIFT] != 0);
 
     // The PP=00 page is unreachable from user mode (key 1)
     P->gpr[4] = 0x00201000u;
@@ -353,7 +353,7 @@ static void test_tlbie_class(void) {
     // (stale or fresh both architecturally fine here — no CHECK)
 
     // Same congruence class (page + 128 pages), different EA:
-    ppc_mmu_tlbie(P, 0x00200000u + (128u << PAGE_SHIFT));
+    ppc_mmu_tlbie(P, 0x00200000u + (128u << MEM_PAGE_SHIFT));
     run_at(0x1000, 1);
     CHECK_EQ(P->gpr[3], 0x22222222u); // new mapping visible after tlbie
 }
@@ -375,12 +375,12 @@ static void test_mtsr_invalidation(void) {
     ppc_update_active_maps(P);
     P->gpr[4] = 0x00200000u;
     run_at(0x1000, 1);
-    CHECK(g_user_read[0x00200000u >> PAGE_SHIFT] != 0);
+    CHECK(g_user_read[0x00200000u >> MEM_PAGE_SHIFT] != 0);
 
     ppc_set_sr(P, 0, 0x20000000u); // same value: fills survive
-    CHECK(g_user_read[0x00200000u >> PAGE_SHIFT] != 0);
+    CHECK(g_user_read[0x00200000u >> MEM_PAGE_SHIFT] != 0);
     ppc_set_sr(P, 0, 0x20000001u); // new VSID: fills die
-    CHECK(g_user_read[0x00200000u >> PAGE_SHIFT] == 0);
+    CHECK(g_user_read[0x00200000u >> MEM_PAGE_SHIFT] == 0);
 }
 
 // dcbz to a write-through or cache-inhibited page takes the alignment

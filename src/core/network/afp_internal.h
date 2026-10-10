@@ -30,8 +30,17 @@
 #define PATH_MAX 4096
 #endif
 
-#define AFP_MAX_REL_PATH AFP_CAT_MAX_PATH
+// The name limits, three different things kept apart:
+//  - AFP_MAC_NAME_MAX (31): a Mac name as clients see it, HFS's Str31 -- the
+//    length every name the server sends is held to (afp_params.c says how a
+//    longer host name is shortened);
+//  - AFP_MAX_NAME (255): the most a Pascal-string name on the wire can hold,
+//    and so what a parsed client name or a host name's MacRoman form is
+//    sized for (host buffers allow 3 UTF-8 bytes per character);
+//  - AFP_MAX_REL_PATH: a share-relative host path, the catalog's ceiling.
+#define AFP_MAC_NAME_MAX 31
 #define AFP_MAX_NAME     255
+#define AFP_MAX_REL_PATH AFP_CAT_MAX_PATH
 #define AFP_LOG_HEX_MAX  64
 
 #ifndef ARRAY_LEN

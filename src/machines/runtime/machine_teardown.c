@@ -18,7 +18,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "via.h"
 
 LOG_USE_CATEGORY_NAME("board");
@@ -106,9 +106,9 @@ void machine_teardown_config_devices(config_t *cfg) {
         scheduler_delete(cfg->scheduler);
         cfg->scheduler = NULL;
     }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
+    if (cfg->memory_map) {
+        memory_map_delete(cfg->memory_map);
+        cfg->memory_map = NULL;
     }
     if (cfg->debugger) {
         debug_cleanup(cfg->debugger);

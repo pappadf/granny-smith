@@ -5,17 +5,16 @@
 // Checkpoint file I/O: open/close, block read/write, file serialization.
 // Extracted from system.c to support multi-machine checkpoint handling.
 //
-// Two on-disk formats:
+// Two on-disk formats, told apart by the version byte after the "GSCHKPT"
+// magic:
 //   v2 (GSCHKPT2) — per-block RLE with file/line metadata; used for consolidated checkpoints
-//   v3 (GSCHKPT3) — whole-file RLE, no per-block metadata; used for quick checkpoints
+//   v3 (GSCHKPT3) — one raw (uncompressed) payload, no per-block metadata; used for quick checkpoints
 
 #include "checkpoint.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "build_id.h"
-#include "object.h"
 #include "system.h"
-#include "value.h"
 #include "debug/log.h"
 #include "io/io_worker.h"
 
@@ -24,18 +23,39 @@
 #include <stdlib.h>
 #include <string.h>
 
-// v2 signature for consolidated (full export) checkpoints
-static const char CHECKPOINT_MAGIC_V2[] = "GSCHKPT2";
+// A checkpoint file starts with an 8-byte signature: the magic "GSCHKPT"
+// and one ASCII version digit.  A new format is a new digit, not a new
+// magic (the web app recognises a checkpoint by the magic alone).
+static const char CHECKPOINT_MAGIC[] = "GSCHKPT";
+#define CHECKPOINT_MAGIC_BYTES 7
+#define CHECKPOINT_VERSION_V2  '2' // consolidated (full export)
+#define CHECKPOINT_VERSION_V3  '3' // quick (background auto-save)
 
-// v3 signature for quick (background auto-save) checkpoints
-static const char CHECKPOINT_MAGIC_V3[] = "GSCHKPT3";
+// The whole signature: magic + version
+#define CHECKPOINT_MAGIC_LEN (CHECKPOINT_MAGIC_BYTES + 1)
 
-// Both signatures share the same length
-#define CHECKPOINT_MAGIC_LEN 8
+// Write the signature for `version` into sig[CHECKPOINT_MAGIC_LEN].
+static void checkpoint_signature(char *sig, char version) {
+    memcpy(sig, CHECKPOINT_MAGIC, CHECKPOINT_MAGIC_BYTES);
+    sig[CHECKPOINT_MAGIC_BYTES] = version;
+}
+
+// The version digit of a signature, or 0 when it is not a checkpoint's
+// (or names a version this build does not read).
+static char checkpoint_signature_version(const char *sig) {
+    if (memcmp(sig, CHECKPOINT_MAGIC, CHECKPOINT_MAGIC_BYTES) != 0)
+        return 0;
+    char v = sig[CHECKPOINT_MAGIC_BYTES];
+    return (v == CHECKPOINT_VERSION_V2 || v == CHECKPOINT_VERSION_V3) ? v : 0;
+}
 
 LOG_USE_CATEGORY_NAME("ckpt");
 
-// Blocks >= this size use RLE compression (v2 only)
+// Blocks >= this size use RLE compression (v2 only).  A compressed block
+// costs a 9-byte flag + size header and 5-6 bytes per chunk, so below a few
+// dozen bytes RLE cannot win and only adds a second pass; most small v2
+// blocks are scalar device fields of a handful of bytes.  64 sits safely
+// above that break-even; it is not tuned beyond it.
 #define RLE_THRESHOLD 64
 
 // Pre-allocated buffer capacity for quick checkpoint accumulation (~8 MB)
@@ -50,11 +70,11 @@ LOG_USE_CATEGORY_NAME("ckpt");
 // on 32-bit (WASM) builds.
 #define CHECKPOINT_MAX_ALLOC ((size_t)1024 * 1024 * 1024)
 
-// Persistent write buffer for quick checkpoints (allocated once, reused).
-// Its real capacity is remembered next to it: buf_append grows the buffer
-// with realloc, and a checkpoint opened later must start from that grown
-// capacity, not from QUICK_BUF_CAPACITY, or every save on a machine larger
-// than 8 MB pays a shrink-then-regrow realloc (and its copies) again.
+// Persistent write buffer for quick checkpoints (allocated once, reused,
+// freed by checkpoint_delete).  A quick write borrows it at open and hands
+// it back -- grown, if buf_append had to -- at close, so its capacity is
+// what the largest save so far needed: a machine larger than 8 MB pays one
+// regrow on its first save, not on every save.
 static uint8_t *g_quick_write_buf = NULL;
 static size_t g_quick_write_cap = 0;
 
@@ -194,6 +214,11 @@ struct checkpoint {
     size_t buf_used; // bytes stored (write) or total decompressed size (read)
     size_t buf_pos; // read cursor position (read only)
     bool buf_owned; // true when buf was malloc'd and must be freed
+    // Consolidated write: the file is written as `tmp_path` and renamed
+    // over `final_path` at a clean close (removed otherwise), so a failed
+    // save never leaves a truncated file where a good one was.
+    char *final_path;
+    char *tmp_path;
     // stdio buffer for `file` (CHECKPOINT_STDIO_BUFFER_BYTES; present only
     // when the handle was allocated with a FILE to stream)
     char stdio_buf[];
@@ -217,12 +242,8 @@ static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
         }
         cp->buf = new_buf;
         cp->buf_cap = new_cap;
-        // Update the static pointer and capacity so future checkpoints start
-        // from the grown buffer instead of growing it again
-        if (!cp->buf_owned) {
-            g_quick_write_buf = new_buf;
-            g_quick_write_cap = new_cap;
-        }
+        // A borrowed quick buffer (not buf_owned) is handed back, grown, at
+        // checkpoint_close.
     }
     memcpy(cp->buf + cp->buf_used, data, len);
     cp->buf_used += len;
@@ -355,7 +376,7 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
         return NULL;
     // One byte more than claimed, and terminate unconditionally: the writer
     // includes its own NUL in `len`, but a hostile file need not, and the
-    // result is handed to access(), fopen() and gs_outf("%s").
+    // result is handed to access(), fopen() and out_printf("%s").
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) {
         LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", len, what ? what : "string");
@@ -696,6 +717,8 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
     cp->buf_used = 0;
     cp->buf_pos = 0;
     cp->buf_owned = false;
+    cp->final_path = NULL;
+    cp->tmp_path = NULL;
 
     // Read magic signature to detect format version
     char magic[CHECKPOINT_MAGIC_LEN];
@@ -707,7 +730,8 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         return NULL;
     }
 
-    if (memcmp(magic, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN) == 0) {
+    char version = checkpoint_signature_version(magic);
+    if (version == CHECKPOINT_VERSION_V3) {
         // v3 quick format: read build ID, then sizes, decompress entire payload into buffer
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
@@ -719,10 +743,10 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         }
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
-        if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
+        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
             LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
             LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", get_build_id());
+            LOG(0, "  current:    %s", build_id_get());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -798,7 +822,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         fclose(cp->file);
         cp->file = NULL;
         cp->kind = CHECKPOINT_KIND_QUICK;
-    } else if (memcmp(magic, CHECKPOINT_MAGIC_V2, CHECKPOINT_MAGIC_LEN) == 0) {
+    } else if (version == CHECKPOINT_VERSION_V2) {
         // v2 consolidated format: read build ID, model ID, then per-block streaming from file
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
@@ -810,10 +834,10 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         }
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
-        if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
+        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
             LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
             LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", get_build_id());
+            LOG(0, "  current:    %s", build_id_get());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -842,9 +866,21 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
         return NULL;
 
     cp->file = NULL;
+    cp->final_path = NULL;
+    cp->tmp_path = NULL;
     if (kind != CHECKPOINT_KIND_QUICK) {
-        cp->file = fopen(filename, "wb");
+        size_t n = strlen(filename);
+        cp->final_path = malloc(n + 1);
+        cp->tmp_path = malloc(n + 5);
+        if (cp->final_path && cp->tmp_path) {
+            memcpy(cp->final_path, filename, n + 1);
+            memcpy(cp->tmp_path, filename, n);
+            memcpy(cp->tmp_path + n, ".tmp", 5);
+            cp->file = fopen(cp->tmp_path, "wb");
+        }
         if (!cp->file) {
+            free(cp->final_path);
+            free(cp->tmp_path);
             free(cp);
             return NULL;
         }
@@ -870,7 +906,6 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
             g_quick_write_buf = (uint8_t *)malloc(QUICK_BUF_CAPACITY);
             if (!g_quick_write_buf) {
                 LOG(0, "Error: Failed to allocate quick checkpoint buffer (%d bytes)", QUICK_BUF_CAPACITY);
-                fclose(cp->file);
                 free(cp);
                 return NULL;
             }
@@ -882,16 +917,15 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
         cp->buf_owned = false; // static buffer, not freed on close
     } else {
         // v2 consolidated: write magic + build ID immediately, data streamed per-block
-        if (fwrite(CHECKPOINT_MAGIC_V2, 1, CHECKPOINT_MAGIC_LEN, cp->file) != CHECKPOINT_MAGIC_LEN) {
-            LOG(0, "Error: Failed to write checkpoint signature to %s", filename);
+        char sig[CHECKPOINT_MAGIC_LEN];
+        checkpoint_signature(sig, CHECKPOINT_VERSION_V2);
+        if (fwrite(sig, 1, CHECKPOINT_MAGIC_LEN, cp->file) != CHECKPOINT_MAGIC_LEN ||
+            fwrite(build_id_get(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
+            LOG(0, "Error: Failed to write checkpoint header to %s", filename);
             fclose(cp->file);
-            free(cp);
-            return NULL;
-        }
-        // Write build ID right after the magic signature
-        if (fwrite(get_build_id(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
-            LOG(0, "Error: Failed to write build ID to %s", filename);
-            fclose(cp->file);
+            remove(cp->tmp_path);
+            free(cp->final_path);
+            free(cp->tmp_path);
             free(cp);
             return NULL;
         }
@@ -945,9 +979,9 @@ void checkpoint_quick_note_skipped(void) {
 }
 
 // Close a checkpoint and free its resources
-void checkpoint_close(checkpoint_t *checkpoint) {
+bool checkpoint_close(checkpoint_t *checkpoint) {
     if (!checkpoint)
-        return;
+        return false;
 
     // v3 quick write: write buffer directly.  v3 deliberately skips RLE —
     // the quick-save buffer is dominated by uncompressible RAM state, so the
@@ -959,9 +993,9 @@ void checkpoint_close(checkpoint_t *checkpoint) {
         // uncompressed_size + compressed_size ("compressed" = raw: v3 skips
         // RLE, the buffer being mostly uncompressible RAM).
         uint8_t *h = checkpoint->buf;
-        memcpy(h, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN);
+        checkpoint_signature((char *)h, CHECKPOINT_VERSION_V3);
         h += CHECKPOINT_MAGIC_LEN;
-        memcpy(h, get_build_id(), BUILD_ID_LEN);
+        memcpy(h, build_id_get(), BUILD_ID_LEN);
         h += BUILD_ID_LEN;
         uint64_t uc = (uint64_t)raw_size, cs = (uint64_t)raw_size;
         memcpy(h, &uc, sizeof uc);
@@ -987,15 +1021,33 @@ void checkpoint_close(checkpoint_t *checkpoint) {
         g_publish_final[0] = '\0';
     }
 
-    // Free owned buffer (v3 read mode allocates its own buffer)
+    // Free owned buffer (v3 read mode allocates its own buffer); hand a
+    // borrowed quick buffer back, with whatever capacity it grew to.
     if (checkpoint->buf_owned && checkpoint->buf) {
         free(checkpoint->buf);
+    } else if (checkpoint->is_writing && checkpoint->buf) {
+        g_quick_write_buf = checkpoint->buf;
+        g_quick_write_cap = checkpoint->buf_cap;
     }
 
+    bool ok = !checkpoint->error;
     if (checkpoint->file) {
-        fclose(checkpoint->file);
+        bool closed = fclose(checkpoint->file) == 0;
+        ok = ok && closed;
+        if (checkpoint->tmp_path) {
+            // Consolidated: publish the finished file, or drop the partial one.
+            if (ok && rename(checkpoint->tmp_path, checkpoint->final_path) != 0) {
+                LOG(0, "Error: cannot rename %s over %s", checkpoint->tmp_path, checkpoint->final_path);
+                ok = false;
+            }
+            if (!ok)
+                remove(checkpoint->tmp_path);
+        }
     }
+    free(checkpoint->final_path);
+    free(checkpoint->tmp_path);
     free(checkpoint);
+    return ok;
 }
 
 // Check if a checkpoint encountered an error during read/write
@@ -1329,192 +1381,32 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
     return loaded;
 }
 
-// Validate that a checkpoint file's build ID matches the current build.
-// Opens the file, reads magic + build ID, compares with the running application.
-// Returns true if the build IDs match, false on mismatch or I/O error.
-bool checkpoint_validate_build_id(const char *filename) {
+checkpoint_build_t checkpoint_check_build_id(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f)
-        return false;
+        return CHECKPOINT_BUILD_UNREADABLE;
 
-    // Read and verify magic signature
+    // Signature, then the build ID (immediately follows it in both formats)
     char magic[CHECKPOINT_MAGIC_LEN];
-    if (fread(magic, 1, CHECKPOINT_MAGIC_LEN, f) != CHECKPOINT_MAGIC_LEN) {
-        fclose(f);
-        return false;
-    }
-    if (memcmp(magic, CHECKPOINT_MAGIC_V2, CHECKPOINT_MAGIC_LEN) != 0 &&
-        memcmp(magic, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN) != 0) {
-        fclose(f);
-        return false;
-    }
-
-    // Read build ID (immediately follows magic in both formats)
     char file_build_id[BUILD_ID_LEN];
-    if (fread(file_build_id, 1, BUILD_ID_LEN, f) != BUILD_ID_LEN) {
-        fclose(f);
-        return false;
-    }
+    bool whole = fread(magic, 1, CHECKPOINT_MAGIC_LEN, f) == CHECKPOINT_MAGIC_LEN &&
+                 fread(file_build_id, 1, BUILD_ID_LEN, f) == BUILD_ID_LEN;
     fclose(f);
-
-    // Compare with the current application's build ID
-    return memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) == 0;
-}
-
-// ============================================================================
-// Object-model class descriptor
-// ============================================================================
-//
-// `checkpoint` is a process-singleton (registered at shell_init), so its
-// methods resolve before any machine has been booted — that matters for
-// the `checkpoint.probe` / `checkpoint.load` calls the WASM startup path
-// uses to detect and resume from a quick-saved state. None of the methods
-// read object_data; they all go through the platform-level helpers.
-
-static DEF_METHOD(checkpoint_method_probe) {
-    return val_bool(system_checkpoint_probe());
-}
-
-static DEF_METHOD(checkpoint_method_clear) {
-    checkpoint_quick_wait(); // a publish in flight lands first, or the clear would race its rename
-    return val_bool(gs_checkpoint_clear() == 0);
-}
-
-// `checkpoint.load([path])` — load the named checkpoint file or, when path is
-// omitted/empty, auto-load the latest valid checkpoint for the active machine.
-//
-// This used to build a fake argv[] and hand it to cmd_load_checkpoint, the
-// retired command shape, which then string-matched its way back out.  That was
-// the last place the pre-object-model command layer was load-bearing, and it
-// carried a live collision: cmd_load_checkpoint tested argv[1] against the
-// literal "probe", and argv[1] is where this method put the user's path -- so
-// `checkpoint.load("probe")` ran a probe instead of loading a file called
-// probe.  `checkpoint.probe()` above has been the real entry point all along,
-// so that string-match was vestigial -- reachable, but only by accident.
-static DEF_METHOD(checkpoint_method_load) {
-    const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
-    checkpoint_quick_wait(); // load the file the publish in flight is about to complete
-    return val_bool(system_checkpoint_load(path) == 0);
-}
-
-// `checkpoint.save(path)` — write a consolidated checkpoint to the given path.
-// A consolidated checkpoint is self-contained: every file and every disk is
-// embedded in full.  (A checkpoint that references its disks is a quick one,
-// `checkpoint.snapshot`.)
-static DEF_METHOD(checkpoint_method_save) {
-    if (argc < 1 || !argv[0].s || !*argv[0].s)
-        return val_err("checkpoint.save: path is required");
-    return val_bool(system_checkpoint(argv[0].s, CHECKPOINT_KIND_CONSOLIDATED) == 0);
-}
-
-// `checkpoint.snapshot(name)` — capture a quick (background) checkpoint
-// under the given label, filed under the registered machine identity.  Routes
-// to gs_background_checkpoint (system.c), which every platform shares.
-static DEF_METHOD(checkpoint_method_snapshot) {
-    return val_bool(gs_background_checkpoint(argv[0].s) == 0);
-}
-
-// `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
-// loop's enabled flag.  A platform with no such loop (headless) reads false
-// and refuses the set.
-static DEF_GETTER(checkpoint_attr_auto_get) {
-    return val_bool(gs_checkpoint_auto_get());
-}
-
-static DEF_SETTER(checkpoint_attr_auto_set) {
-    if (gs_checkpoint_auto_set(in.b) != 0)
-        return val_err("checkpoint.auto: not supported on this platform");
-    return val_none();
-}
-
-static const arg_decl_t checkpoint_load_args[] = {
-    {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Checkpoint path; empty auto-loads the latest"},
-};
-
-static const arg_decl_t checkpoint_save_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Checkpoint output path"},
-};
-
-static const arg_decl_t checkpoint_snapshot_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Snapshot label"},
-};
-
-static const member_t checkpoint_members[] = {
-    {.kind = M_ATTR,
-     .name = "auto",
-     .doc = "Automatic background checkpoints enabled: the periodic save and the tab-hidden save (WASM only)",
-     .flags = 0,
-     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
-    {.kind = M_METHOD,
-     .name = "probe",
-     .examples = EXAMPLES("checkpoint.probe"),
-     .doc = "True if a valid checkpoint exists for the active machine",
-     .method = {.result_doc = "true when one exists",
-                .args = NULL,
-                .nargs = 0,
-                .result = V_BOOL,
-                .fn = checkpoint_method_probe}},
-    {.kind = M_METHOD,
-     .name = "clear",
-     .examples = EXAMPLES("checkpoint.clear"),
-     .doc = "Remove all checkpoint files for the active machine, and the image deltas no open image holds",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
-    {.kind = M_METHOD,
-     .name = "load",
-     .examples = EXAMPLES("checkpoint.load", "checkpoint.load \"/opfs/checkpoints/before-install.gscp\""),
-     .doc = "Load a checkpoint",
-     .method = {.result_doc = "true when it loaded",
-                .args = checkpoint_load_args,
-                .nargs = 1,
-                .result = V_BOOL,
-                .fn = checkpoint_method_load}},
-    {.kind = M_METHOD,
-     .name = "save",
-     .examples = EXAMPLES("checkpoint.save \"/opfs/checkpoints/before-install.gscp\""),
-     .doc = "Save the current machine state to a checkpoint file",
-     .method = {.result_doc = "true when it was written",
-                .args = checkpoint_save_args,
-                .nargs = 1,
-                .result = V_BOOL,
-                .fn = checkpoint_method_save}},
-    {.kind = M_METHOD,
-     .name = "snapshot",
-     .examples = EXAMPLES("checkpoint.snapshot \"before-install\""),
-     .doc = "Capture a quick (background) checkpoint under the given label",
-     .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
-};
-
-static const class_desc_t checkpoint_class = {
-    .name = "checkpoint",
-    .members = checkpoint_members,
-    .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),
-    .doc = "Saves and restores the whole machine state",
-};
-
-// ============================================================================
-// Lifecycle (process-singleton, idempotent)
-// ============================================================================
-
-static struct object *s_checkpoint_object = NULL;
-
-void checkpoint_init(void) {
-    if (s_checkpoint_object)
-        return;
-    s_checkpoint_object = object_new(&checkpoint_class, NULL, "checkpoint");
-    if (s_checkpoint_object) {
-        object_set_order(s_checkpoint_object, 20);
-        object_attach(object_root(), s_checkpoint_object);
+    if (!whole) {
+        LOG(1, "%s: too short to be a checkpoint", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
     }
+    if (!checkpoint_signature_version(magic)) {
+        LOG(1, "%s: not a checkpoint this build reads (bad signature)", filename);
+        return CHECKPOINT_BUILD_UNREADABLE;
+    }
+    if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
+        LOG(1, "%s: saved by another build", filename);
+        return CHECKPOINT_BUILD_MISMATCH;
+    }
+    return CHECKPOINT_BUILD_MATCH;
 }
 
-void checkpoint_delete(void) {
-    if (s_checkpoint_object) {
-        object_detach(s_checkpoint_object);
-        object_delete(s_checkpoint_object);
-        s_checkpoint_object = NULL;
-    }
+bool checkpoint_validate_build_id(const char *filename) {
+    return checkpoint_check_build_id(filename) == CHECKPOINT_BUILD_MATCH;
 }

@@ -4,7 +4,7 @@
 // machine_profile.h
 // PUBLIC machine descriptor + capability types.  This is the one machine-
 // subsystem header the platform-agnostic core is allowed to include
-// (system.c / system_config.h store and read a `const hw_profile_t *`).  The
+// (system.c / system_internal.h store and read a `const hw_profile_t *`).  The
 // machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
 // layering check enforces that.
@@ -15,6 +15,7 @@
 #ifndef GS_CORE_MACHINE_PROFILE_H
 #define GS_CORE_MACHINE_PROFILE_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "machine_build_opts.h"
 #include "machine_config_decl.h"
@@ -149,12 +150,12 @@ typedef struct builtin_video_desc {
 // a position whose real counterpart can be empty (an external port, a second
 // internal bay) is `optional` and offers "None".  The document names a
 // position "fd<index>".
-struct floppy_slot {
+typedef struct floppy_slot {
     const char *label; // "Internal floppy drive"; NULL terminates the array
     floppy_kind_t kind; // the drive the position takes
     bool optional; // the position may hold no drive
     bool default_none; // ...and holds none in the default configuration
-};
+} floppy_slot_t;
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
 // peripheral processor executing real guest code on the main timeline
@@ -263,11 +264,11 @@ typedef struct machine_substrate {
     // reset, it pulls the Overlay signal high, which causes the
     // memory-control IC (GLUE or MDU) to use the ROM overlay address map."
     //
-    // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
-    // not a statement about the hardware: both machines physically reset --
-    // the Plus from the programmer's switch, and either from a guest
-    // executing the 68000 RESET opcode -- and today the call silently does
-    // nothing on them.
+    // NULL on the `lisa` substrate, and that is a GAP, not a statement about
+    // the hardware: the Lisa physically resets -- from a guest executing the
+    // 68000 RESET opcode among others -- and system_reset_devices falls back
+    // to system_reset_common_devices for it.  (The Plus had the same gap; it
+    // binds plus_bus_reset now.)
     //
     // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
     // are NULL because the bus genuinely is not on the board.  A NULL that
@@ -418,7 +419,7 @@ typedef struct hw_profile {
     // the explanation on -- q840av_floppy_slots carries "New Age reports 'no
     // drive' (ST3 = $FF) -- no floppy slots offered until a real New Age model
     // lands", which an absent field could not say.
-    const struct floppy_slot *floppy_slots;
+    const floppy_slot_t *floppy_slots;
 
     // The CD-ROM drive this machine takes -- every CD-ROM drive its
     // configuration has, and any CD attach: the identity it answers INQUIRY

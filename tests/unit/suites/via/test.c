@@ -28,12 +28,14 @@
 // control lines, fixed in via_init before this suite existed and pinned so
 // they cannot be silently undone.
 
+#include "gs_assert.h"
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
 #include "via.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // VIA register selects, as via.c decodes them from address lines 9-12.
@@ -168,10 +170,15 @@ static void irq_sink(void *ctx, bool active) {
     (void)ctx;
     s_irq_level = active;
 }
+// Counts port-B publications and keeps the last one, for the PB7 tests.
+static int s_pb_calls;
+static uint8_t s_pb_last;
 static void output_sink(void *ctx, uint8_t port, uint8_t value) {
     (void)ctx;
-    (void)port;
-    (void)value;
+    if (port == 1) {
+        s_pb_calls++;
+        s_pb_last = value;
+    }
 }
 static void shift_sink(void *ctx, uint8_t value) {
     (void)ctx;
@@ -546,6 +553,55 @@ TEST(test_t1_one_shot_counter_runs_on_after_timeout) {
     via_delete(via);
 }
 
+// ============================================================================
+// T1 drives PB7 (ACR modes 2/3); the board sees only real pin changes
+// ============================================================================
+
+// R6522 "Timer 1 One-Shot Mode" with PB7 enabled: PB7 goes low when T1C-H is
+// written and high at timeout.  Re-asserting a level the pin already has is
+// not an event (there is no write strobe on PB7), so the board callback runs
+// only when the driven level actually changes.
+TEST(test_t1_pb7_one_shot_publishes_changes_only) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+    wr(via, REG_DDRB, 0x80);
+    wr(via, REG_ORB, 0x00);
+    wr(via, REG_ACR, 0x80); // one-shot, PB7 output
+    wr(via, REG_T1C_L, 0x10);
+
+    s_pb_calls = 0;
+    wr(via, REG_T1C_H, 0x00); // PB7 already low: nothing to publish
+    ASSERT_EQ_INT(0, s_pb_calls);
+
+    s_cycles += 0x11;
+    fire_armed(); // timeout: PB7 high
+    ASSERT_EQ_INT(1, s_pb_calls);
+    ASSERT_EQ_INT(0x80, s_pb_last);
+
+    wr(via, REG_T1C_H, 0x00); // restart: PB7 low again
+    ASSERT_EQ_INT(2, s_pb_calls);
+    ASSERT_EQ_INT(0x00, s_pb_last);
+    via_delete(via);
+}
+
+// Free-run with PB7: the pin toggles at every timeout, each one a change.
+TEST(test_t1_pb7_free_run_toggles) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+    wr(via, REG_DDRB, 0x80);
+    wr(via, REG_ORB, 0x00);
+    wr(via, REG_ACR, 0xC0); // free-run, PB7 output
+    wr(via, REG_T1C_L, 0x10);
+    wr(via, REG_T1C_H, 0x00);
+
+    s_pb_calls = 0;
+    for (int i = 1; i <= 4; i++) {
+        s_cycles += 0x12;
+        fire_armed();
+        ASSERT_EQ_INT(i, s_pb_calls);
+        ASSERT_EQ_INT((i & 1) ? 0x80 : 0x00, s_pb_last);
+    }
+    via_delete(via);
+}
+
 // The flag must not be set a second time by the counter wrapping again: the
 // datasheet requires a rewrite of T1C-H first, and scheduling no follow-up
 // event is what enforces it.
@@ -654,6 +710,8 @@ int main(void) {
     RUN(test_ier_bit7_is_a_selector_not_storage);
     RUN(test_t1_one_shot_counter_runs_on_after_timeout);
     RUN(test_t1_one_shot_does_not_refire);
+    RUN(test_t1_pb7_one_shot_publishes_changes_only);
+    RUN(test_t1_pb7_free_run_toggles);
     RUN(test_t1_free_run_rearms);
     RUN(test_wide_accesses_compose_from_byte_ops);
     RUN(test_control_lines_idle_high_at_power_on);

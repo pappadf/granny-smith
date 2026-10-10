@@ -295,7 +295,7 @@ static uint8_t na_st3(const new_age_t *na, int d) {
     uint8_t st3 = 0x08 | 0x04 | 0x02; // 2 MB drive, /Mode ID, /Select Media (not ED)
     if (!hd)
         st3 |= 0x80; // /2MB-or-4MB media high: low-density medium (or none)
-    if (img && img->writable)
+    if (img && image_is_writable(img))
         st3 |= 0x40; // /Write protect high: writable
     if (!na_ready(na, d))
         st3 |= 0x20; // /Ready
@@ -436,7 +436,7 @@ static void na_start_data(new_age_t *na) {
         return;
     }
     bool writes = base == 0x05 || base == 0x0D || base == 0x01;
-    if (writes && !(na_image(na, d) && na_image(na, d)->writable)) {
+    if (writes && !(na_image(na, d) && image_is_writable(na_image(na, d)))) {
         na->x_st1 = NEW_AGE_ST1_NW;
         na_arm(na, NA_EV_XFER, d, NA_SHORT_NS);
         return;
@@ -489,7 +489,16 @@ static void na_step_read(new_age_t *na, const floppy_media_t *m, int track, bool
     int idx = (int)na->x_r - na_first_sector(mfm);
     uint8_t buf[FLOPPY_SECTOR_BYTES];
     if (!floppy_media_read_sector(m, track, na->x_head, idx, buf)) {
-        na_fail(na, NEW_AGE_ST1_ND, 0);
+        // A sector the medium holds whose data cannot be read is a data
+        // field CRC error (ST1 DE, ST2 DD [µPD765 family status registers]),
+        // what a damaged sector gives; one the medium does not hold is not
+        // found.
+        bool held = idx >= 0 && idx < floppy_media_spt(m, track) && na->x_head < m->sides &&
+                    floppy_media_sector_offset(m, track, na->x_head, idx) + FLOPPY_SECTOR_BYTES <= disk_size(m->img);
+        if (held)
+            na_fail(na, NEW_AGE_ST1_DE, NEW_AGE_ST2_DD);
+        else
+            na_fail(na, NEW_AGE_ST1_ND, 0);
         return;
     }
     for (int i = 0; i < FLOPPY_SECTOR_BYTES; i++) {

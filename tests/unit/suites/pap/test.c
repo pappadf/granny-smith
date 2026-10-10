@@ -113,7 +113,9 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *p, const at
 void atp_request_cancel(atp_request_handle_t *h) {
     (void)h;
 }
-// What the printer last answered a workstation's read with.
+// What the printer last answered a workstation's read with, and how many
+// reads it has answered.
+static int g_replies;
 static char g_last_reply[256];
 static void record_reply(const uint8_t *pl, int len) {
     int n = len < (int)sizeof g_last_reply - 1 ? len : (int)sizeof g_last_reply - 1;
@@ -126,9 +128,19 @@ int atp_responder_send_packets(const ddp_header_t *d, const atp_packet_t *a, con
                                size_t n) {
     (void)d;
     (void)a;
+    g_replies++;
     if (n)
         record_reply(p[0].payload, p[0].payload_len);
     return 0;
+}
+// Requests a handler declined, leaving them for their retry: their XO
+// entries are dropped so the retry is not taken for a duplicate.
+static int g_xo_forgets;
+static uint16_t g_xo_forgot_tid;
+void atp_xo_forget(const ddp_header_t *d, const atp_packet_t *a) {
+    (void)d;
+    g_xo_forgets++;
+    g_xo_forgot_tid = a->tid;
 }
 static int g_close_replies;
 int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, const uint8_t user[4], const uint8_t *pl,
@@ -137,8 +149,10 @@ int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, cons
     (void)a;
     if (user[1] == PAP_FUNC_CLOSE_REPLY)
         g_close_replies++;
-    else
+    else {
+        g_replies++;
         record_reply(pl, len);
+    }
     (void)sts;
     return 0;
 }
@@ -181,8 +195,8 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
 
 // --- driving a job -------------------------------------------------------------
 
-// A PAP request from `node` on connection `conn`.
-static void request(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *data, int len) {
+// A PAP request from `node` on connection `conn`, ATP transaction `tid`.
+static void request_tid(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *data, int len, uint16_t tid) {
     ddp_header_t ddp = {0};
     ddp.llap.src = node;
     ddp.src_socket = 200;
@@ -193,7 +207,14 @@ static void request(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *dat
     atp.data = data;
     atp.data_len = len;
     atp.bitmap = 1;
+    atp.tid = tid;
+    atp.ctl = 0x40 | 0x20; // TReq, XO: as PAP sends every request
     g_pap->handle_request(&ddp, &atp, g_pap_ctx);
+}
+
+// The same, as transaction 0.
+static void request(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *data, int len) {
+    request_tid(node, conn, func, data, len, 0);
 }
 
 static void open_conn(uint8_t conn) {
@@ -226,6 +247,8 @@ static void setup(void) {
     g_captured_len = 0;
     g_close_requests = 0;
     g_close_replies = 0;
+    g_replies = 0;
+    g_xo_forgets = 0;
     memset(&g_req_cb, 0, sizeof(g_req_cb));
     // The last test's machine goes, and a new one takes the cable.
     atalk_printer_plug(NULL);
@@ -339,6 +362,35 @@ TEST(a_query_split_across_fragments_is_answered) {
     ASSERT_TRUE(g_last_reply[0] == '0');
 }
 
+// More SendData reads outstanding than the flow quantum has credits for: the
+// one past it is left unanswered for its retry, and its XO entry dropped
+// (atp_xo_forget), or the retry would be swallowed as a duplicate until the
+// entry's release timer.  Once a credit drains, the retry is queued.
+TEST(a_senddata_past_the_flow_quantum_is_left_for_its_retry) {
+    setup();
+    open_conn(10);
+    g_replies = 0; // the OpenReply
+    for (uint16_t tid = 1; tid <= PAP_MAX_FLOW_QUANTUM; tid++)
+        request_tid(10, 10, PAP_FUNC_SENDDATA, NULL, 0, tid); // each takes a credit
+    ASSERT_EQ_INT(0, g_xo_forgets);
+    ASSERT_EQ_INT(0, g_replies); // nothing to say yet: all held
+    uint16_t extra = PAP_MAX_FLOW_QUANTUM + 1;
+    request_tid(10, 10, PAP_FUNC_SENDDATA, NULL, 0, extra);
+    ASSERT_EQ_INT(1, g_xo_forgets);
+    ASSERT_EQ_INT((int)extra, (int)g_xo_forgot_tid);
+    ASSERT_EQ_INT(0, g_replies); // declined, not answered
+    request_tid(10, 10, PAP_FUNC_SENDDATA, NULL, 0, extra); // its retry: still no credit
+    ASSERT_EQ_INT(2, g_xo_forgets);
+
+    // A query's answer goes out on the oldest credit, freeing one ...
+    const char *parts[] = {"%!PS\n/PatchPrep where { pop 1 } { 0 } ifelse = flush\n"};
+    answer(parts, 1, false);
+    ASSERT_EQ_INT(1, g_replies);
+    // ... which the next retry takes
+    request_tid(10, 10, PAP_FUNC_SENDDATA, NULL, 0, extra);
+    ASSERT_EQ_INT(2, g_xo_forgets);
+}
+
 // Without the interpreter there is no printer to power-cycle: restart says
 // so, and a session in progress is left alone.
 TEST(restart_without_an_interpreter_is_refused) {
@@ -358,6 +410,7 @@ int main(void) {
     RUN(an_idle_connection_times_out_on_its_own);
     RUN(a_printer_rename_that_cannot_be_published_changes_nothing);
     RUN(a_query_split_across_fragments_is_answered);
+    RUN(a_senddata_past_the_flow_quantum_is_left_for_its_retry);
     RUN(restart_without_an_interpreter_is_refused);
     printf("pap: all tests passed\n");
     return 0;

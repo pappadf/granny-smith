@@ -79,7 +79,7 @@ what is the rule that keeps the machine deterministic:
 | **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
 
 Output follows the same ownership: what a leaf or the interpreter prints goes
-through the sink (`src/core/gs_out.h`) to the client that asked — a job's text
+through the sink (`src/core/out.h`) to the client that asked — a job's text
 as output records before its result, a page leaf's text with its answer —
 and only text printed outside any request (boot messages, a breakpoint hit)
 reaches stdout directly. Headless can fold the job thread and the I/O worker
@@ -137,11 +137,11 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
   - Module-specific operations are exposed through a `class_desc_t`
     declared alongside the module's other code. The class names the
     path segment (`cpu`, `floppy`, `scsi`, …) and lists its members:
-    typed attributes (`M_ATTR`), methods (`M_METHOD`), and child
-    objects (`M_CHILD`, named or indexed).
+    typed attributes (`MK_ATTR`), methods (`MK_METHOD`), and child
+    objects (`MK_CHILD`, named or indexed).
   - The class is attached to the object root by the module's `_init`
     function (cfg-scoped subsystems) or by a dedicated
-    `<module>_class_register` called from `shell_init`
+    `<module>_class_register` called from `core_init` (`src/core/core_init.c`)
     (process-singletons that don't need per-machine state).
   - Built-in `$reg` aliases that the module owns are registered in the
     same `_init` (`alias_register_builtin`).
@@ -179,17 +179,17 @@ Four caller surfaces walk that tree:
 - **Headless scripts**: same dispatcher, reading from a script file
   instead of the terminal. Integration tests in `tests/integration/`
   are scripts.
-- **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
+- **JavaScript / WASM bridge**: `object_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
   The web frontend reaches it through the mailbox — a control block and
   two record rings in shared memory (`src/core/mailbox/mailbox.h`,
-  exposed via one `_get_gs_mailbox` WASM export). JS calls
+  exposed via one `_get_mailbox` WASM export). JS calls
   `gsEval(path, args)`; that writes a `REQ_EVAL` record carrying an id
   into the request ring, and the emulator thread's drain serves every
   pending request each frame and answers each with an `EVT_RESULT` the
   page's reader loop matches by id. What the core says on its own —
   run state, speed, floppies, checkpoint saves, log lines — flows the
-  other way as events on the same ring (`src/core/event/gs_event.h`).
+  other way as events on the same ring (`src/core/event/event.h`).
   See [`web.md`](web.md) for the wire layout and protocol.
 - **Threads**: the emulator thread owns all guest state and runs nothing
   of unbounded length: it ticks frames and drains the mailbox. A script
@@ -198,7 +198,7 @@ Four caller surfaces walk that tree:
   export, an archive's extraction, a download or a checkpoint's write is
   an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
   later, reporting progress and cancellable between chunks. What any of
-  them prints goes through the output sink (`src/core/gs_out.h`) to the
+  them prints goes through the output sink (`src/core/out.h`) to the
   client that asked. Headless runs the same three threads (`--io=sync`
   and `--jobs=inline` fold a thread back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
@@ -225,13 +225,19 @@ initialized in the correct order, dependencies are satisfied, and cross-module
 interactions are handled cleanly.
 
 - **Global instance management:**
-  - The global emulator state is referenced via a single pointer, defined in
-    `system.c` and declared in `system.h`.
+  - The global emulator state is referenced via a single pointer,
+    `global_emulator`, private (`static`) to `system.c`; everyone else reads
+    it through `system_config()` (asserts it is not called while a machine
+    is being built) or `system_running()` (for observers, such as log
+    decoration, that may run during a build).  `system.c` is its only writer
+    (`system_swap_in` publishes a built machine, `system_destroy` clears it);
+    readers are expected to run on the emulator thread.  This is a
+    convention, not an enforced lock.
   - All other modules avoid global variables, instead receiving context through
     constructor parameters or referencing global state for read-only needs.
 
 - **Lifecycle management:**
-  - `setup_init()`: Performs one-time, machine-independent setup — log
+  - `system_init()`: Performs one-time, machine-independent setup — log
     category and process-singleton class registration — run once at startup.
   - `system_create(const hw_profile_t *profile, const machine_build_opts_t
     *opts, checkpoint_t *)`: Allocates the `config_t`, wires the selected
@@ -239,8 +245,8 @@ interactions are handled cleanly.
     `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
     all modules in dependency order and optionally restores from a
     checkpoint, whose event queue is read last.  The new machine is not the
-    active one: constructors use the `cfg` they are given, never
-    `global_emulator` or the `system_*()` accessors (which assert it).
+    active one: constructors use the `cfg` they are given, never the
+    `system_*()` accessors (which assert it).
   - `system_swap_in(config_t *, bool restored)`: makes a built machine the
     active one (global, object root, memory-map selection, label,
     `machine_booted`) and destroys the machine it replaces.
@@ -273,20 +279,21 @@ hardware-level interactions.
 
 ### Dependency Injection and Accessor Functions
 
-To reduce coupling between modules and enable testability, the emulator uses a
-combination of explicit dependency injection and system accessor functions:
+Both patterns are in use, each where it fits:
 
-- **Explicit dependencies (preferred pattern):**
-  - When a module needs another subsystem, it receives a pointer during
-    construction and stores it internally. For example, the sound module
-    receives a `memory_map_t*` pointer during `sound_init()` and stores it for
-    later use.
-  - This pattern makes dependencies explicit, supports testing with mock
-    implementations, and avoids hidden global state access.
+- **Explicit dependencies (constructors):**
+  - When a module needs another subsystem at construction, it receives a
+    pointer and stores it internally. For example, the sound module receives
+    a `memory_map_t*` pointer during `sound_init()`.  Constructors MUST use
+    this pattern: the machine being built is not yet the active one, and the
+    accessors below assert when called during construction.
 
-- **System accessor functions:**
-  - For convenience and backward compatibility, `system.c` provides accessor
-    functions that return pointers to core subsystems:
+- **System accessor functions (everything else):**
+  - Shell and object-model handlers, debug surfaces, logging and other
+    cross-cutting code reach the active machine through accessors.  This is
+    the established pattern, not a fallback; `system.c` provides accessor
+    functions that return pointers to core subsystems (noun-named, no `get_`
+    prefix; each is one `DEFINE_SUBSYSTEM_ACCESSOR` line in `system.c`):
     - `system_scheduler()` — Returns the current scheduler
     - `system_memory()` — Returns the memory map (use `memory_map_interface()` to get read/write functions)
     - `system_cpu()` — Returns the CPU instance
@@ -302,6 +309,14 @@ combination of explicit dependency injection and system accessor functions:
   - `system_mouse_update(button, dx, dy)` — Routes mouse events to the device
   - `system_keyboard_update(event, key)` — Routes keyboard events to the device
   - These wrappers hide the global emulator reference from external callers.
+
+- **Platform seams** (`src/core/platform_hooks.h`):
+  - The `gs_*` hooks the core calls and a platform may provide (camera,
+    microphone, GPU worker, auto-checkpoint flag, quit, download).  Each has
+    a weak default in `platform_hooks.c` modelling "this host has none of
+    it" (answering -2, "not supported", where asked to act); a platform
+    links a strong definition to override it.  A caller includes
+    `platform_hooks.h` itself; `system.h` does not re-export it.
 
 This design keeps the `config_t` struct mostly opaque to external code while
 providing controlled access to subsystems. The platform layer and core modules

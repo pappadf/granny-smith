@@ -9,9 +9,9 @@
 
 #include "audio_out.h"
 #include "common.h"
-#include "gs_out.h"
 #include "log.h"
 #include "object.h"
+#include "out.h"
 #include "platform.h"
 #include "value.h"
 
@@ -301,7 +301,7 @@ static void write_actual(const char *golden) {
     char path[1024];
     snprintf(path, sizeof(path), "%s.actual.wav", golden);
     if (audio_wav_write(path, s.samples, s.nsamples, s.cap_rate, s.cap_channels) == 0)
-        gs_outf("MATCH FAILED: Saved actual capture to '%s'.\n", path);
+        out_printf("MATCH FAILED: Saved actual capture to '%s'.\n", path);
 }
 
 // Sample-exact comparison of the stopped capture against a golden WAV
@@ -321,7 +321,7 @@ value_t audio_out_match_value(const char *golden_wav) {
     int ref_channels = 0;
     char err[512];
     if (wav_read(golden_wav, &ref, &ref_samples, &ref_rate, &ref_channels, err, sizeof(err)) < 0) {
-        gs_outf("MATCH FAILED: Error loading reference WAV: %s\n", err);
+        out_printf("MATCH FAILED: Error loading reference WAV: %s\n", err);
         write_actual(golden_wav);
         return val_err("sound.match: cannot load reference '%s'", golden_wav);
     }
@@ -347,14 +347,14 @@ value_t audio_out_match_value(const char *golden_wav) {
     free(ref);
 
     if (diff == n && s.nsamples == ref_samples) {
-        gs_outf("MATCH OK: Capture matches '%s' (%zu samples).\n", golden_wav, s.nsamples);
+        out_printf("MATCH OK: Capture matches '%s' (%zu samples).\n", golden_wav, s.nsamples);
         return val_bool(true);
     }
 
     // Report frame index + timestamp of the first divergence
     size_t frame = diff / (size_t)s.cap_channels;
     double t = s.cap_rate ? (double)frame / (double)s.cap_rate : 0.0;
-    gs_outf("MATCH FAILED: Capture does not match '%s'.\n", golden_wav);
+    out_printf("MATCH FAILED: Capture does not match '%s'.\n", golden_wav);
     write_actual(golden_wav);
     if (s.nsamples != ref_samples && diff == n)
         return val_err("sound.match: length mismatch — golden %zu vs capture %zu samples (diverge at %.3fs)",
@@ -416,33 +416,33 @@ static DEF_GETTER(capture_attr_peak) {
 
 static const arg_decl_t capture_stop_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional WAV path to write the capture to (golden regeneration)"},
 };
 
 static const member_t capture_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "active",
      .doc = "True while a capture is recording",
-     .attr = {.type = V_BOOL, .get = capture_attr_active, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = capture_attr_active, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "frames",
      .doc = "Frames accumulated in the current or last capture",
-     .attr = {.type = V_UINT, .get = capture_attr_frames, .set = NULL}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = capture_attr_frames, .set = NULL}                             },
+    {.kind = MK_ATTR,
      .name = "peak",
      .doc = "Peak |sample - first sample| of the capture (signal presence check)",
-     .attr = {.type = V_UINT, .get = capture_attr_peak, .set = NULL}                               },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = capture_attr_peak, .set = NULL}                               },
+    {.kind = MK_METHOD,
      .name = "start",
      .doc = "Start recording producer audio at guest rate (deterministic)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = capture_method_start}            },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = capture_method_start}            },
+    {.kind = MK_METHOD,
      .name = "stop",
      .doc = "Stop recording; optionally write the capture as a PCM int16 WAV",
-     .method = {.args = capture_stop_args, .nargs = 1, .result = V_UINT, .fn = capture_method_stop}},
+     .method = {.args = capture_stop_args, .nargs = 1, .result = VK_UINT, .fn = capture_method_stop}},
 };
 
 static const class_desc_t audio_capture_class = {

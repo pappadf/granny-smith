@@ -21,6 +21,7 @@
 // via_t, scc_t and rtc_t do.  This suite exists so the next field added to
 // that region is caught if it does not survive.
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
@@ -69,7 +70,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
 // Link stubs
 // ============================================================
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -100,15 +104,11 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }

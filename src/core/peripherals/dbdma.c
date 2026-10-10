@@ -39,6 +39,7 @@
 // only the in-flight byte cursor survives a stall.
 
 #include "dbdma.h"
+#include "checkpoint.h"
 #include "common.h"
 
 #include "log.h"

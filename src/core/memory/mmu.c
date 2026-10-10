@@ -21,53 +21,6 @@ LOG_USE_CATEGORY_NAME("mmu");
 mmu_state_t *g_mmu = NULL;
 
 // ============================================================================
-// TLB population tracking (for fast invalidation)
-// ============================================================================
-
-// Instead of zeroing all 1M+ page entries on every TLB invalidation (32 MB of
-// memset on a 32-bit address space), track which pages have been populated and
-// only zero those.  Typical working sets are ~2000-3000 pages (8-12 MB of RAM
-// + ROM + VRAM), reducing invalidation cost from O(address_space) to O(working_set).
-//
-// The tracker belongs to the memory map whose arrays it indexes; this aliases
-// the selected map's (memory_map_select), so building another machine -- which
-// selects its own map while it is constructed -- never touches the running
-// machine's list.
-static tlb_track_t *g_tlb = NULL;
-
-tlb_track_t *tlb_track_new(void) {
-    tlb_track_t *t = (tlb_track_t *)calloc(1, sizeof(tlb_track_t));
-    // Start in overflow mode so the first invalidation (after memory_init
-    // populates entries without tracking) does a full memset.  Subsequent
-    // invalidations use the fast tracked path.
-    if (t)
-        t->overflow = true;
-    return t;
-}
-
-void tlb_track_free(tlb_track_t *t) {
-    if (g_tlb == t)
-        g_tlb = NULL;
-    free(t);
-}
-
-void tlb_track_select(tlb_track_t *t) {
-    g_tlb = t;
-}
-
-// Record that a page index has been populated in the SoA TLB arrays
-void tlb_track_page(uint32_t page_index) {
-    tlb_track_t *t = g_tlb;
-    if (!t || t->overflow)
-        return; // already in fallback mode
-    if (t->count >= TLB_TRACK_MAX) {
-        t->overflow = true;
-        return;
-    }
-    t->page[t->count++] = page_index;
-}
-
-// ============================================================================
 // ATC-style block-descriptor cache
 // ============================================================================
 
@@ -192,62 +145,63 @@ static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *m
     return 0; // unmapped physical address
 }
 
-// Resolve a physical address to a host pointer (RAM, ROM, or VRAM).
-// Returns NULL if the physical address is not backed by host memory.
-// ROM addresses are wrapped modulo rom_size to handle mirroring.
+// Resolve a physical address to a host pointer (RAM, ROM, or VRAM), and
+// report through *writable (when non-NULL) whether the backing is writable
+// (RAM and writable host regions; never ROM).  Returns NULL -- and
+// *writable false -- if the physical address is not backed by host memory.
+// ROM addresses are wrapped modulo rom_size to handle mirroring.  One range
+// table for both questions, so the pointer and the writability can never
+// disagree about which region an address is in.
 //
-// Forced inline: hot-path called from mmu_fill_soa_entry on every TLB miss.
+// Forced inline: hot-path called from mmu_fill_soa_page on every TLB miss.
 // Out-of-line, it was the top gprof entry at ~13% of SE/30 boot time.
-static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
-    if (mmu->ram_b_size) {
+static inline __attribute__((always_inline)) uint8_t *phys_resolve(mmu_state_t *mmu, uint32_t phys_addr,
+                                                                   bool *writable) {
+    bool w = false;
+    uint8_t *host = NULL;
+    if (mmu->ram_b_size && phys_addr < mmu->ram_b_phys_base) {
         // Two physical RAM banks (Macintosh IIsi).  Bank A mirrors within
         // [0, ram_b_phys_base); Bank B mirrors within its 64 MB window.
-        if (phys_addr < mmu->ram_b_phys_base)
-            return mmu->physical_ram + (phys_addr % mmu->ram_a_size);
-        if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window)
-            return mmu->physical_ram_b + ((phys_addr - mmu->ram_b_phys_base) % mmu->ram_b_size);
-        // not RAM — fall through to ROM/VRAM/VROM
-    } else if (phys_addr < mmu->physical_ram_size) {
-        return mmu->physical_ram + phys_addr;
+        host = mmu->physical_ram + (phys_addr % mmu->ram_a_size);
+        w = true;
+    } else if (mmu->ram_b_size && phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window) {
+        host = mmu->physical_ram_b + ((phys_addr - mmu->ram_b_phys_base) % mmu->ram_b_size);
+        w = true;
+    } else if (!mmu->ram_b_size && phys_addr < mmu->physical_ram_size) {
+        host = mmu->physical_ram + phys_addr;
+        w = true;
+    } else if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
+        // ROM mirror region: read-only
+        host = mmu->physical_rom + (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
+    } else {
+        // Host-backed regions (card VRAM, declaration ROMs, aliases) in
+        // registration order, each carrying its own writability.  Range
+        // checks use (addr - base < size) so they don't wrap when base+size
+        // would exceed UINT32_MAX (VROM at $FExxxxxx is close enough to flag).
+        for (int i = 0; i < mmu->host_region_count; i++) {
+            const mmu_host_region_t *r = &mmu->host_regions[i];
+            if (phys_addr >= r->phys_base && (phys_addr - r->phys_base) < r->size) {
+                host = r->host + (phys_addr - r->phys_base);
+                w = r->writable;
+                break;
+            }
+        }
     }
-    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
-        uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
-        return mmu->physical_rom + offset;
-    }
-    // Host-backed regions (card VRAM, declaration ROMs, aliases) in
-    // registration order.  Range checks use (addr - base < size) so they
-    // don't wrap when base+size would exceed UINT32_MAX (VROM at $FExxxxxx
-    // is close enough to flag).
-    for (int i = 0; i < mmu->host_region_count; i++) {
-        const mmu_host_region_t *r = &mmu->host_regions[i];
-        if (phys_addr >= r->phys_base && (phys_addr - r->phys_base) < r->size)
-            return r->host + (phys_addr - r->phys_base);
-    }
-    return NULL;
+    if (writable)
+        *writable = w;
+    return host;
+}
+
+// Resolve a physical address to a host pointer; NULL if not host-backed.
+static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
+    return phys_resolve(mmu, phys_addr, NULL);
 }
 
 // Check if physical address is in writable RAM or VRAM (not ROM)
 static inline __attribute__((always_inline)) bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
-    if (mmu->ram_b_size) {
-        // Two physical RAM banks (IIsi): both are writable DRAM.
-        if (phys_addr < mmu->ram_b_phys_base)
-            return true;
-        if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window)
-            return true;
-        // not RAM — fall through to ROM/VRAM checks
-    } else if (phys_addr < mmu->physical_ram_size) {
-        return true;
-    }
-    // ROM mirror region is read-only
-    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
-        return false;
-    // Host-backed regions carry their own writability.
-    for (int i = 0; i < mmu->host_region_count; i++) {
-        const mmu_host_region_t *r = &mmu->host_regions[i];
-        if (phys_addr >= r->phys_base && (phys_addr - r->phys_base) < r->size)
-            return r->writable;
-    }
-    return false;
+    bool w;
+    phys_resolve(mmu, phys_addr, &w);
+    return w;
 }
 
 // ============================================================================
@@ -318,8 +272,12 @@ static const char *mmu_dt_name(uint32_t dt) {
 // but defaults the other way, so the two cannot share a default.
 // `trace`, when non-NULL, records one step per root pointer and table level
 // for the debugger's `walk` (mmu_trace.h); the real translations pass NULL.
-static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
-                                        bool update_um, mmu_trace_t *trace) {
+// `root_ptr` is the root pointer the search starts from (`root_name` names it
+// for the trace): the caller picks it, so a walk against a root other than the
+// live CRP/SRP never has to modify the MMU state.
+static mmu_walk_result_t mmu_table_walk_from(mmu_state_t *mmu, uint64_t root_ptr, const char *root_name,
+                                             uint32_t logical_addr, bool write, bool supervisor, bool update_um,
+                                             mmu_trace_t *trace) {
     mmu_walk_result_t result = {0};
     result.valid = false;
     result.mmusr = 0;
@@ -341,13 +299,6 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     bool limit_is_lower = false;
     uint32_t limit_value = 0;
 
-    // Select root pointer based on SRE bit and supervisor mode
-    uint64_t root_ptr;
-    if (TC_SRE(tc) && supervisor)
-        root_ptr = mmu->srp;
-    else
-        root_ptr = mmu->crp;
-
     // Root pointer: upper 32 bits contain flags, lower 32 bits contain address
     uint32_t root_upper = (uint32_t)(root_ptr >> 32);
     uint32_t root_lower = (uint32_t)(root_ptr & 0xFFFFFFFF);
@@ -356,7 +307,7 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     uint32_t root_dt = root_upper & 3;
     mmu_trace_step_t *ts = mmu_trace_step(trace, "root");
     if (ts) {
-        mmu_trace_str(ts, "name", (TC_SRE(tc) && supervisor) ? "srp" : "crp");
+        mmu_trace_str(ts, "name", root_name);
         mmu_trace_hex(ts, "desc", root_upper);
         mmu_trace_hex(ts, "desc_lo", root_lower);
         mmu_trace_uint(ts, "dt", root_dt);
@@ -545,6 +496,8 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             // pointer block, written through logical $2000, landed at physical
             // $2000 while the ROM trampoline read it (MMU off) at $52000.
             uint32_t ps_mask = (1u << TC_PS(tc)) - 1;
+            // The extra low-bit clear is not redundant for a malformed TC:
+            // a PS below 2 leaves DT bits inside the mask.
             uint32_t phys_base = desc_lo & ~ps_mask & 0xFFFFFFFC;
 
             result.physical_addr = phys_base + (logical_addr & page_mask);
@@ -624,6 +577,15 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     return result;
 }
 
+// Walk from the live root pointer: the SRP for a supervisor access when
+// TC.SRE splits the trees, else the CRP.
+static inline mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
+                                               bool update_um, mmu_trace_t *trace) {
+    bool use_srp = TC_SRE(mmu->tc) && supervisor;
+    return mmu_table_walk_from(mmu, use_srp ? mmu->srp : mmu->crp, use_srp ? "srp" : "crp", logical_addr, write,
+                               supervisor, update_um, trace);
+}
+
 // ============================================================================
 // TLB Fill
 // ============================================================================
@@ -653,9 +615,21 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 //     the same VA to different PAs -- fill only the matching SoA.
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
                                bool write_protected, bool supervisor, bool tt_match) {
-    bool sre_split = TC_SRE(mmu->tc) != 0;
-    bool fill_super = tt_match ? supervisor : (!sre_split || supervisor);
-    bool fill_user = tt_match ? !supervisor : ((!sre_split || !supervisor) && !supervisor_only);
+    bool fill_super, fill_user;
+    if (tt_match) {
+        // TT registers are FC-specific: only the walk's own SoA
+        fill_super = supervisor;
+        fill_user = !supervisor;
+    } else if (!TC_SRE(mmu->tc)) {
+        // One root for both FCs: one walk fills both, but never a
+        // supervisor-only page into the user side
+        fill_super = true;
+        fill_user = !supervisor_only;
+    } else {
+        // Separate roots (SRE=1): only the walk's own FC
+        fill_super = supervisor;
+        fill_user = !supervisor && !supervisor_only;
+    }
     mmu_fill_soa_page(mmu, logical_page, physical_page, fill_super, fill_user, !write_protected);
 }
 
@@ -728,24 +702,25 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
         const mmu_host_region_t *r = &mmu->host_regions[i];
         if (r->alias)
             continue; // resolver-only: device windows may overlap the alias range
-        uint32_t pages = r->size >> PAGE_SHIFT;
-        uint32_t start = r->phys_base >> PAGE_SHIFT;
+        uint32_t pages = r->size >> MEM_PAGE_SHIFT;
+        uint32_t start = r->phys_base >> MEM_PAGE_SHIFT;
         for (uint32_t p = 0; p < pages && start + p < g_page_count; p++)
-            fill(start + p, r->host + (p << PAGE_SHIFT), r->writable);
+            fill(start + p, r->host + (p << MEM_PAGE_SHIFT), r->writable);
         // Mode-24 (24-bit Memory Manager) slot window: slot s ($9..$E) has a
         // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
         // space at $Fs000000 (GLUE/BBU decode both to the same slot).
         if (mode24_alias && r->writable) {
-            uint32_t high = r->phys_base & 0xFF000000u;
-            if (high >= 0xF9000000u && high <= 0xFE000000u) {
-                int slot = (int)((r->phys_base >> 24) & 0xFu);
+            // A region in standard slot space $Fs000000 for slot s = $9..$E.
+            uint32_t slot_nibble = r->phys_base >> 28; // $F for slot space
+            int slot = (int)((r->phys_base >> 24) & 0xFu);
+            if (slot_nibble == 0xFu && slot >= 0x9 && slot <= 0xE) {
                 uint32_t alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
                 if (alias_bytes > r->size)
                     alias_bytes = r->size;
-                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
-                uint32_t start24 = ((uint32_t)slot << 20) >> PAGE_SHIFT; // $00s00000
+                uint32_t alias_pages = alias_bytes >> MEM_PAGE_SHIFT;
+                uint32_t start24 = ((uint32_t)slot << 20) >> MEM_PAGE_SHIFT; // $00s00000
                 for (uint32_t p = 0; p < alias_pages && start24 + p < g_page_count; p++)
-                    fill(start24 + p, r->host + (p << PAGE_SHIFT), true);
+                    fill(start24 + p, r->host + (p << MEM_PAGE_SHIFT), true);
             }
         }
     }
@@ -784,23 +759,26 @@ void mmu_attach_mmu040(mmu_state_t *mmu, struct mmu040_state *m040) {
 // tracking with the PMMU fill above.
 void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool fill_super, bool fill_user,
                        bool writable) {
-    uint8_t *host_ptr = phys_to_host(mmu, physical_page);
+    bool host_writable;
+    uint8_t *host_ptr = phys_resolve(mmu, physical_page, &host_writable);
     if (!host_ptr)
         return; // unmapped physical address — leave SoA entry as zero
 
-    bool host_writable = writable && phys_is_writable(mmu, physical_page);
-    uint32_t page_index = logical_page >> PAGE_SHIFT;
+    host_writable = host_writable && writable;
+    uint32_t page_index = logical_page >> MEM_PAGE_SHIFT;
     if (page_index >= g_page_count)
         return;
 
-    // Memory logpoints force the slow path — see mmu_fill_soa_entry.
+    // Memory logpoints force the slow path — see mmu_fill_soa_entry.  The
+    // physical array is sized by the page table like the logical one, so a
+    // physical page past it cannot be watched (and must not be indexed).
+    uint32_t phys_index = physical_page >> MEM_PAGE_SHIFT;
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
         return;
-    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[physical_page >> PAGE_SHIFT])
+    if (g_mem_logpoint_phys_page_count && phys_index < g_page_count && g_mem_logpoint_phys_page_count[phys_index])
         return;
 
     uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
-    tlb_track_page(page_index);
 
     if (fill_super) {
         if (g_supervisor_read)
@@ -814,135 +792,36 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
         if (g_user_write && host_writable)
             g_user_write[page_index] = adjusted;
     }
+    // Track after the stores: the entry is on the list exactly when it is
+    // populated, so the next invalidation zeroes it (or, past the tracker's
+    // capacity, falls back to zeroing everything).
+    tlb_track_page(page_index);
 }
 
-// === memory_map_host_region — public bus-map API ===========================
-//
-// The names below live on the memory map (declared in memory.h) but the
-// storage they manipulate is still the 4-slot mmu_state_t today; this
-// is a deliberate v1 rename-only move.  The storage refactor (move
-// host-region list into memory_map_t, drop the fixed slots) is a known
-// follow-up that becomes forced when a second card per machine lands.
-// Until then the forwarders use g_mmu, which every glue030-family
-// machine sets up before calling these.  No fast-path change — these
-// run only at machine init.
-
-// Host regions on a machine with no 68k MMU (the PowerPC families): the
-// page-fill hook is the machine's own physical view, so fill straight into
-// it and remember the window here — the alias forwarder below is the only
-// thing that needs to look one up again.
-#define MEM_HOST_FILL_MAX 16
-typedef struct mem_host_fill_region {
-    uint8_t *host;
-    uint32_t phys_base;
-    uint32_t size;
-    bool writable;
-} mem_host_fill_region_t;
-// A memory map's table (memory_map_host_fill_regions); the selected map's is
-// aliased by g_host_fill.
-typedef struct mem_host_fill_table {
-    mem_host_fill_region_t regions[MEM_HOST_FILL_MAX];
-    int count;
-} mem_host_fill_table_t;
-static mem_host_fill_table_t *g_host_fill;
-
-// Fill one host window through the hook, page by page.
-static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
-    for (uint32_t off = 0; off < size; off += MEM_PAGE_SIZE)
-        g_mem_host_fill((phys_base + off) >> PAGE_SHIFT, host_ptr + off, writable);
-}
-
-void *mmu_host_fill_regions_new(void) {
-    return calloc(1, sizeof(mem_host_fill_table_t));
-}
-
-void mmu_host_fill_regions_free(void *table) {
-    if (g_host_fill == table)
-        g_host_fill = NULL;
-    free(table);
-}
-
-void mmu_host_fill_regions_select(void *table) {
-    g_host_fill = (mem_host_fill_table_t *)table;
-}
-
-void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
-                            bool writable) {
-    (void)m; // forwarder uses g_mmu in v1
-    (void)name; // regions are matched by physical window, not name
-    // A machine that installed a page-fill hook owns its own physical view
-    // (the PowerPC families, whose page table no mmu_state_t manages).  The
-    // hook — not the absence of g_mmu — is the discriminator: on a
-    // checkpoint restore the OUTGOING machine's MMU is still installed while
-    // the incoming one builds its cards.
-    if (g_mem_host_fill) {
-        if (!host_ptr || size == 0)
-            return;
-        host_fill_region(host_ptr, phys_base, size, writable);
-        // Re-registration of the same window replaces its record (same rule
-        // as mmu_register_host_region).
-        for (int i = 0; i < g_host_fill->count; i++) {
-            mem_host_fill_region_t *r = &g_host_fill->regions[i];
-            if (r->phys_base == phys_base && r->size == size) {
-                r->host = host_ptr;
-                r->writable = writable;
-                if (g_mem_map_changed)
-                    g_mem_map_changed();
-                return;
-            }
-        }
-        if (g_host_fill->count >= MEM_HOST_FILL_MAX) {
-            LOG(0, "memory_map_host_region: fill list full (%d); region $%08X+$%X not recorded", MEM_HOST_FILL_MAX,
-                phys_base, size);
-            return;
-        }
-        g_host_fill->regions[g_host_fill->count++] =
-            (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
-        if (g_mem_map_changed)
-            g_mem_map_changed();
-        return;
-    }
-    mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
-    if (g_mem_map_changed)
-        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
-}
-
-void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
-    (void)m;
-    if (g_mem_host_fill) {
-        // Machine-owned physical view: the alias is a second page fill of the same host
-        // bytes.  Card register windows are registered AFTER their aliases
-        // (display_card_24ac.c), so a device page still wins its page.
-        for (int i = 0; i < g_host_fill->count; i++) {
-            const mem_host_fill_region_t *r = &g_host_fill->regions[i];
-            if (r->phys_base == original_phys_base) {
-                host_fill_region(r->host, alias_phys_base, r->size, r->writable);
-                return;
-            }
-        }
-        LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
-            alias_phys_base);
-        return;
-    }
-    // Match by physical base and clone the region at the alias address.
-    // The clone is flagged `alias`: it resolves through phys_to_host but is
-    // never page-filled (mmu_host_regions_fill_pages skips it), preserving
-    // the pre-list `vram_phys_alt`/`vrom_phys_alt` semantics.
-    for (int i = 0; i < g_mmu->host_region_count; i++) {
-        const mmu_host_region_t *r = &g_mmu->host_regions[i];
+// Clone the registered host region at `original_phys_base` at a second
+// physical address.  The clone is flagged `alias`: it resolves through
+// phys_to_host but is never page-filled (mmu_host_regions_fill_pages skips
+// it).  False when no region starts at `original_phys_base`.
+bool mmu_register_host_region_alias(mmu_state_t *mmu, uint32_t alias_phys_base, uint32_t original_phys_base) {
+    if (!mmu)
+        return false;
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
         if (r->phys_base == original_phys_base) {
-            mmu_register_host_region(g_mmu, r->host, alias_phys_base, r->size, r->writable);
-            g_mmu->host_regions[g_mmu->host_region_count - 1].alias = true;
-            return;
+            mmu_register_host_region(mmu, r->host, alias_phys_base, r->size, r->writable);
+            // Flag the entry the call created or replaced -- found by its
+            // window, not assumed to be the last one (a full list drops it)
+            for (int j = 0; j < mmu->host_region_count; j++)
+                if (mmu->host_regions[j].phys_base == alias_phys_base && mmu->host_regions[j].size == r->size)
+                    mmu->host_regions[j].alias = true;
+            return true;
         }
     }
-    LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
-        alias_phys_base);
+    return false;
 }
 
-// Invalidate the software TLB.  Uses the tracking list to zero only
-// populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
-// Falls back to full memset if the tracking list overflowed.
+// Invalidate the software TLB.  The memory map's population tracker zeroes
+// only the populated entries (memory_soa_invalidate).
 void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // Fast path: when the MMU is disabled and was disabled the previous
     // time we ran (no enabled→disabled transition), the SoA fast-path
@@ -965,42 +844,10 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // block descriptors along with the SoA fill.  (The dis→dis early-out above
     // and the FD PMOVE forms — which never call here — both preserve them.)
     atc_flush(mmu);
-    tlb_track_t *track = g_tlb;
-    if (!track || track->overflow) {
-        // Tracking overflowed — fall back to zeroing everything
-        size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
-        if (g_supervisor_read)
-            memset(g_supervisor_read, 0, sz);
-        if (g_supervisor_write)
-            memset(g_supervisor_write, 0, sz);
-        if (g_user_read)
-            memset(g_user_read, 0, sz);
-        if (g_user_write)
-            memset(g_user_write, 0, sz);
-    } else {
-        // Fast path: zero only pages that were actually populated.
-        // Bounds-check each index in case the tracker carries entries from a
-        // previous machine with a larger page table (see mmu_delete's reset).
-        for (int i = 0; i < track->count; i++) {
-            uint32_t p = track->page[i];
-            if (p >= g_page_count)
-                continue;
-            if (g_supervisor_read)
-                g_supervisor_read[p] = 0;
-            if (g_supervisor_write)
-                g_supervisor_write[p] = 0;
-            if (g_user_read)
-                g_user_read[p] = 0;
-            if (g_user_write)
-                g_user_write[p] = 0;
-        }
-    }
-
-    // Reset tracking state
-    if (track) {
-        track->count = 0;
-        track->overflow = false;
-    }
+    // Zero every SoA entry populated since the last invalidation -- the
+    // memory map tracks them, so typically ~2000-3000 pages rather than the
+    // whole 1M-page arrays.
+    memory_soa_invalidate();
 
     // When the MMU is disabled, host-backed pages (RAM/ROM/VRAM) are
     // installed lazily on first access by the memory.c slow path via
@@ -1027,11 +874,13 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
 // purpose is to reload the ATC from the current guest tables).
 static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
                                       bool probe_atc) {
-    if (!mmu || !mmu->enabled)
+    if (!mmu || !mmu->enabled) {
+        g_bus_error_is_pmmu = false; // no PMMU to blame: never a retry frame from stale state
         return false;
+    }
 
     // Align to emulator page boundary for SoA entry
-    uint32_t emu_page = logical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t emu_page = logical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
     // Check transparent translation first
     if (mmu_check_tt(mmu, logical_addr, write, supervisor)) {
@@ -1043,7 +892,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         // return 0 silently — the hardware doesn't bus error for internal
         // pseudo-slots like slot $F.  Writes are always silently dropped.
         if (!write) {
-            uint32_t page_index = emu_page >> PAGE_SHIFT;
+            uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
             if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
                 memory_addr_faults_when_unmapped(logical_addr)) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
@@ -1072,7 +921,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
             uint32_t phys_page = b->phys_base + (emu_page - b->log_base);
             bool b_writable = !b->write_protected && b->modified;
             mmu_fill_soa_entry(mmu, emu_page, phys_page, b->supervisor_only, !b_writable, supervisor, false);
-            return mmu_fault_epilogue(mmu, emu_page, phys_page, write);
+            return mmu_fault_epilogue(mmu, emu_page, phys_page, write, supervisor);
         }
     }
 
@@ -1113,7 +962,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // Fill the SoA entry for this emulator page.
     // The physical address from the walk gives us the physical page base.
     // We need to map the emulator's 4KB page granularity.
-    uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
+    uint32_t phys_page = result.physical_addr & ~(uint32_t)MEM_PAGE_MASK;
     // Write-array fill policy: a page becomes writable through the SoA only
     // once it is marked modified -- which this access establishes when it is a
     // write.  A read fault on a clean page deliberately leaves the write entry
@@ -1140,7 +989,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // or a mapping reshaped from block to page tables) always supersedes it.
     atc_invalidate_covering(mmu, logical_addr, supervisor);
     uint32_t ps_bits = result.page_size_bits;
-    if (ps_bits > PAGE_SHIFT && ps_bits < 32) {
+    if (ps_bits > MEM_PAGE_SHIFT && ps_bits < 32) {
         uint32_t log_mask = ~((1u << ps_bits) - 1);
         // The physical range starts at the descriptor's page frame, which need
         // not be aligned to the coverage (see the walk): recover it from the
@@ -1153,7 +1002,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // If phys_to_host returned NULL (unmapped physical), the SoA entry
     // stays zero.  On real hardware, the physical bus access would fail
     // (no device responds) and generate a bus error — see mmu_fault_epilogue.
-    return mmu_fault_epilogue(mmu, emu_page, phys_page, write);
+    return mmu_fault_epilogue(mmu, emu_page, phys_page, write, supervisor);
 }
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.
@@ -1305,8 +1154,8 @@ void mmu_debug_translate(mmu_state_t *mmu, uint32_t logical_addr, bool superviso
 }
 
 // Translate against an explicit CRP root (e.g. a snapshot of MAE's CRP).
-// Side-effect-free: temporarily swaps `mmu->crp`, performs a user-mode walk,
-// restores the original CRP.  TT checks are skipped for the page offset only
+// Side-effect-free: a user-mode walk from the supplied root, which leaves the
+// MMU's own CRP untouched (it used to be swapped in and back out).  TT checks are skipped for the page offset only
 // after the walk to keep the result page-faithful to the supplied CRP.
 bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t crp_root, uint32_t *pa_out) {
     if (!mmu || !pa_out)
@@ -1325,13 +1174,10 @@ bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t cr
         *pa_out = logical_addr;
         return true;
     }
-    // Swap CRP, walk in user mode, restore.  The walk reads guest tables
+    // User-mode walk from the supplied root.  The walk reads guest tables
     // via phys_to_host but does not touch the SoA arrays.
-    uint64_t saved_crp = mmu->crp;
-    mmu->crp = crp_root;
-    mmu_walk_result_t result =
-        mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false, /*update_um=*/false, NULL);
-    mmu->crp = saved_crp;
+    mmu_walk_result_t result = mmu_table_walk_from(mmu, crp_root, "crp", logical_addr, false, /*supervisor=*/false,
+                                                   /*update_um=*/false, NULL);
     if (!result.valid)
         return false;
     *pa_out = result.physical_addr;
@@ -1353,10 +1199,10 @@ uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr) {
 uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr) {
     if (!mmu)
         return 0;
-    uint8_t *host = phys_to_host(mmu, phys_addr);
-    if (!host)
-        return 0;
-    return (uint16_t)(host[0] << 8 | host[1]);
+    // Byte by byte: the two bytes may sit in different regions (or the
+    // second past the end of the first), and each is resolved on its own.
+    return (uint16_t)(((uint16_t)mmu_read_physical_uint8(mmu, phys_addr) << 8) |
+                      mmu_read_physical_uint8(mmu, phys_addr + 1));
 }
 
 // Read a 32-bit big-endian value from physical memory for debug commands.
@@ -1386,14 +1232,28 @@ bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t valu
     return true;
 }
 
-bool mmu_write_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr, uint16_t value) {
-    if (!mmu_write_physical_uint8(mmu, phys_addr, (uint8_t)(value >> 8)))
+// All-or-nothing big-endian write of `size` bytes: every byte is resolved to
+// writable host memory first, so a write that would fault part-way writes
+// nothing rather than leaving the leading bytes changed.
+static bool write_physical_n(mmu_state_t *mmu, uint32_t phys_addr, uint32_t value, unsigned size) {
+    if (!mmu)
         return false;
-    return mmu_write_physical_uint8(mmu, phys_addr + 1, (uint8_t)value);
+    uint8_t *host[4];
+    for (unsigned i = 0; i < size; i++) {
+        bool writable;
+        host[i] = phys_resolve(mmu, phys_addr + i, &writable);
+        if (!host[i] || !writable)
+            return false; // unmapped or ROM/VROM: nothing written
+    }
+    for (unsigned i = 0; i < size; i++)
+        *host[i] = (uint8_t)(value >> (8 * (size - 1 - i))); // most significant byte first
+    return true;
+}
+
+bool mmu_write_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr, uint16_t value) {
+    return write_physical_n(mmu, phys_addr, value, 2);
 }
 
 bool mmu_write_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr, uint32_t value) {
-    if (!mmu_write_physical_uint16(mmu, phys_addr, (uint16_t)(value >> 16)))
-        return false;
-    return mmu_write_physical_uint16(mmu, phys_addr + 2, (uint16_t)value);
+    return write_physical_n(mmu, phys_addr, value, 4);
 }

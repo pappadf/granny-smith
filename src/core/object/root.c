@@ -10,45 +10,47 @@
 // the install hooks it registers (root_register_install).
 
 #include "root.h"
-#include "gs_out.h"
+#include "out.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
 #include "alias.h"
 #include "commands.h"
+#include "log.h"
 #include "object.h"
+#include "platform_hooks.h"
+#include "shell.h"
 #include "shell_funcs.h"
+#include "status.h"
 #include "system.h"
 #include "usage.h"
 #include "value.h"
 
-extern const class_desc_t shell_alias_class; // src/core/object/alias.c
-extern const class_desc_t shell_class; // src/core/shell/shell_class.c
+LOG_USE_CATEGORY_NAME("object");
 
 // === Introspection root methods =============================================
 // `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
 // optional path string; empty / missing resolves to the root itself.
 
 static struct object *resolve_target(const value_t *path_arg) {
-    const char *path = (path_arg && path_arg->kind == V_STRING && path_arg->s) ? path_arg->s : "";
+    const char *path = (path_arg && path_arg->kind == VK_STRING && path_arg->s) ? path_arg->s : "";
     node_t n = object_resolve(object_root(), path);
     if (!node_valid(n))
         return NULL;
     // For attribute / method nodes we report on the parent object's
-    // class. For object-typed nodes (M_CHILD or named children) we
+    // class. For object-typed nodes (MK_CHILD or named children) we
     // descend to the target object.
     if (!n.member)
         return n.obj;
-    if (n.member->kind != M_CHILD)
+    if (n.member->kind != MK_CHILD)
         return n.obj;
     struct object *c =
         n.member->child.collection ? object_entry_at(n.obj, n.member, n.index) : object_named_child(n.obj, n.member);
     return c ? c : n.obj;
 }
 
-// Growable V_STRING list used to accumulate object/attribute/method
+// Growable VK_STRING list used to accumulate object/attribute/method
 // names for the introspection methods.
 typedef struct {
     value_t *items;
@@ -57,7 +59,7 @@ typedef struct {
     bool oom; // set when a push failed; the list must not be returned short
 } string_list_acc_t;
 
-// Append `name` as a V_STRING through the shared accumulator.
+// Append `name` as a VK_STRING through the shared accumulator.
 //
 // This was one of five near-identical {items, len, cap} doublers -- root.c,
 // meta.c, alias.c, an inline one in object.c and another in debug.c -- beside
@@ -89,7 +91,7 @@ static DEF_METHOD(method_root_objects) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_CHILD)
+            if (cls->members[i].kind == MK_CHILD)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -111,7 +113,7 @@ static DEF_METHOD(method_root_attributes) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_ATTR)
+            if (cls->members[i].kind == MK_ATTR)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -132,7 +134,7 @@ static DEF_METHOD(method_root_methods) {
     const class_desc_t *cls = object_class(target);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_METHOD)
+            if (cls->members[i].kind == MK_METHOD)
                 if (!string_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -151,7 +153,7 @@ static DEF_METHOD(method_root_methods) {
 static DEF_METHOD(method_root_help) {
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
     value_t v = object_usage_text(path);
-    if (v.kind == V_ERROR) {
+    if (v.kind == VK_ERROR) {
         value_free(&v);
         return val_err("help: path did not resolve");
     }
@@ -174,7 +176,7 @@ static DEF_METHOD(method_root_time) {
 // quit flag and stops the scheduler; in the browser, which owns the page's
 // lifecycle, it says so rather than doing nothing silently.
 static DEF_METHOD(method_root_quit) {
-    if (gs_quit() != 0)
+    if (platform_quit() != 0)
         return val_err("quit: not supported on this platform");
     return val_none();
 }
@@ -182,85 +184,92 @@ static DEF_METHOD(method_root_quit) {
 // `echo(...)` — print arguments separated by spaces. Mirrors the
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
-// detour. Returns true on success.
+// detour. Its one declared slot is an any-kind rest, so it takes any
+// number of arguments (up to OBJ_VALIDATE_MAX_ARGS). Returns true.
 static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
-            gs_outc(' ');
+            out_putc(' ');
         switch (argv[i].kind) {
-        case V_STRING:
-            gs_outs(argv[i].s ? argv[i].s : "");
+        case VK_STRING:
+            out_puts(argv[i].s ? argv[i].s : "");
             break;
-        case V_BOOL:
-            gs_outs(argv[i].b ? "true" : "false");
+        case VK_BOOL:
+            out_puts(argv[i].b ? "true" : "false");
             break;
-        case V_INT:
-            gs_outf("%lld", (long long)argv[i].i);
+        case VK_INT:
+            out_printf("%lld", (long long)argv[i].i);
             break;
-        case V_UINT:
-            gs_outf("%llu", (unsigned long long)argv[i].u);
+        case VK_UINT:
+            out_printf("%llu", (unsigned long long)argv[i].u);
             break;
-        case V_FLOAT:
-            gs_outf("%g", argv[i].f);
+        case VK_FLOAT:
+            out_printf("%g", argv[i].f);
             break;
         default:
             // Fall back to a path-form-style label for the kinds we
-            // don't usually echo (V_OBJECT, V_LIST). Keeps output
+            // don't usually echo (VK_OBJECT, VK_LIST). Keeps output
             // deterministic for diff-based regression tests.
-            gs_outs("<?>");
+            out_puts("<?>");
             break;
         }
     }
-    gs_outc('\n');
+    out_putc('\n');
     return val_bool(true);
 }
 
 static const arg_decl_t root_path_args[] = {
     {.name = "path",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Object path; empty resolves to the root"},
 };
+static const arg_decl_t root_echo_args[] = {
+    {.name = "values",
+     .kind = VK_ANY,
+     .validation_flags = OBJ_ARG_REST | OBJ_ARG_POLY,
+     .doc = "Values to print, separated by spaces"},
+};
 static const arg_decl_t root_help_args[] = {
     {.name = "path",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to a member or object; empty resolves to the root"},
 };
 static const member_t emu_root_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_objects}   },
+    {.kind = MK_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_attributes}},
+    {.kind = MK_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
-    {.kind = M_METHOD,
+     .method = {.args = root_path_args, .nargs = 1, .result = VK_LIST, .fn = method_root_methods}   },
+    {.kind = MK_METHOD,
      .name = "help",
      .doc = "Usage text of a path: signature, arguments, type, value, doc",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
-    {.kind = M_METHOD,
+     .method = {.args = root_help_args, .nargs = 1, .result = VK_STRING, .fn = method_root_help}    },
+    {.kind = MK_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_UINT, .fn = method_root_time}                },
+    {.kind = MK_METHOD,
      .name = "quit",
-     .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
+     .doc = "Exit the emulator (headless; the browser page owns its own lifecycle and refuses)",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = method_root_quit}                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
+     .method = {.args = root_echo_args, .nargs = 1, .result = VK_BOOL, .fn = method_root_echo}      },
 };
 
-static const class_desc_t emu_root_class_real = {
+static const class_desc_t emu_root_class = {
     .name = "emu",
     .members = emu_root_members,
     .n_members = sizeof(emu_root_members) / sizeof(emu_root_members[0]),
@@ -282,9 +291,10 @@ static const class_desc_t emu_root_class_real = {
 // install has already swapped to the new cfg. The g_installed_cfg
 // pointer guards both directions.
 
-#define MAX_STUBS 40
-static struct object *g_stubs[MAX_STUBS];
+// Grown on demand: a fixed cap made a subtree quietly absent once it filled.
+static struct object **g_stubs = NULL;
 static int g_stub_count = 0;
+static int g_stub_cap = 0;
 static struct config *g_installed_cfg = NULL;
 
 // The registered subsystem install hooks, run in registration order.
@@ -302,7 +312,7 @@ void root_register_install(root_install_fn install, root_uninstall_fn uninstall)
         if (g_hooks[i].install == install)
             return; // already registered
     if (g_hook_count >= MAX_INSTALL_HOOKS) {
-        fprintf(stderr, "root: install-hook table full (%d)\n", MAX_INSTALL_HOOKS);
+        LOG(0, "root: install-hook table full (%d)", MAX_INSTALL_HOOKS);
         return;
     }
     g_hooks[g_hook_count].install = install;
@@ -314,17 +324,23 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
     if (!o)
         return NULL;
     const class_desc_t *cls = object_class(o);
-    if (g_stub_count >= MAX_STUBS) {
-        // A discarded result makes a whole subtree quietly absent -- which
-        // reads as a missing feature, not a resource limit -- so say so.
-        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS,
-                object_name(o) ? object_name(o) : "(unnamed)");
-        object_delete(o);
-        return NULL;
+    if (g_stub_count == g_stub_cap) {
+        int cap = g_stub_cap ? g_stub_cap * 2 : 32;
+        struct object **t = (struct object **)realloc(g_stubs, (size_t)cap * sizeof(*t));
+        if (!t) {
+            // A discarded result makes a whole subtree quietly absent --
+            // which reads as a missing feature, not a resource limit -- so
+            // say so.
+            LOG(0, "root: out of memory; '%s' not attached", object_name(o) ? object_name(o) : "(unnamed)");
+            object_delete(o);
+            return NULL;
+        }
+        g_stubs = t;
+        g_stub_cap = cap;
     }
     char err[200];
-    if (!object_validate_class(cls, err, sizeof(err))) {
-        fprintf(stderr, "root: class '%s' invalid: %s\n", cls && cls->name ? cls->name : "?", err);
+    if (object_validate_class(cls, err, sizeof(err)) != STATUS_OK) {
+        LOG(0, "root: class '%s' invalid: %s", cls && cls->name ? cls->name : "?", err);
         object_delete(o);
         return NULL;
     }
@@ -333,16 +349,11 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
     return o;
 }
 
-// A stub of class `cls` over `data`.
-static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    return root_attach_stub(parent, object_new(cls, data, name));
-}
-
 void root_install_class(void) {
     // Registers the top-level method table on the object root. Safe to
     // call repeatedly — object_root_set_class is idempotent for the
     // same class pointer.
-    object_root_set_class(&emu_root_class_real);
+    object_root_set_class(&emu_root_class);
 }
 
 void root_install(struct config *cfg) {
@@ -359,28 +370,22 @@ void root_install(struct config *cfg) {
         root_uninstall();
     g_installed_cfg = cfg;
 
-    // Top-level methods. Already installed by shell_init via
+    // Top-level methods. Already installed by core_init via
     // root_install_class; the call is repeated here so paths that skip
-    // shell_init still get the methods.
+    // core_init still get the methods.
     root_install_class();
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
     // floppy_init, sound_init, debug_init). The platform-level facades
     // (mouse, screen, files, log, catalog) are process-singletons attached
-    // from shell_init, and the AppleTalk network's `appletalk` tree is
+    // from core_init, and the AppleTalk network's `appletalk` tree is
     // attached once by appletalk_network_init.
     //
     // What remains here is the Shell class instance with its children, and
     // then each registered subsystem hook (files.images, machine.nubus,
     // machine.pci).
-    struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
-    if (shell_obj) {
-        object_set_order(shell_obj, 60);
-        shell_funcs_install(shell_obj); // `shell.functions` container
-        attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
-        attach_stub(shell_obj, &shell_command_class, cfg, "command");
-    }
+    shell_class_register(cfg);
     for (int i = 0; i < g_hook_count; i++)
         g_hooks[i].install(cfg);
 }
@@ -411,7 +416,7 @@ void root_uninstall(void) {
     // `attributes`, `methods`, `help`, `time` and `quit` all stopped
     // resolving until a new machine existed.  The comment that stood here
     // feared "stale members", but the stale things are the STUBS, and the loop
-    // above already detached them.  emu_root_class_real is a static descriptor
+    // above already detached them.  emu_root_class is a static descriptor
     // whose members take a path and walk the tree; not one of them holds or
     // dereferences a cfg, so there is nothing about it to go stale.
     // Aliases (built-in and user) survive machine teardown: they store

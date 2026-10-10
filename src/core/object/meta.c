@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // meta.c
-// The `Meta` class. Every node implicitly carries a `meta` attribute
+// The `meta` class. Every node implicitly carries a `meta` attribute
 // whose value is a synthetic Meta node bound to the inspected object.
 // See docs/internals/core/object/object-model.md.
 //
@@ -27,85 +27,14 @@
 // list instead of erroring (callers expect a tolerant degradation).
 static meta_complete_fn g_complete_provider = NULL;
 
-void meta_set_complete_provider(meta_complete_fn fn) {
+void meta_complete_register(meta_complete_fn fn) {
     g_complete_provider = fn;
-}
-
-// === Path printer ==========================================================
-//
-// Walks `obj` up to the root. The root carries the substrate name
-// ("emu") but doesn't appear in user-facing paths (`cpu.pc`, not
-// `emu.cpu.pc`), so the recursion stops as soon as a node has no
-// parent. Meta nodes are unattached (parent == NULL), so the recursion
-// special-cases them: their path is `<inspected>.meta`.
-
-void object_compute_path(struct object *obj, char *buf, size_t buf_size) {
-    if (!buf || buf_size == 0)
-        return;
-    buf[0] = '\0';
-    if (!obj)
-        return;
-
-    // Meta node: recurse on the inspected target, then append ".meta".
-    if (object_class(obj) == meta_class()) {
-        struct object *inspected = (struct object *)object_data(obj);
-        object_compute_path(inspected, buf, buf_size);
-        size_t len = strlen(buf);
-        const char *suffix = (len > 0) ? ".meta" : "meta";
-        size_t slen = strlen(suffix);
-        if (len + slen + 1 <= buf_size) {
-            memcpy(buf + len, suffix, slen + 1);
-        }
-        return;
-    }
-
-    // Callback-backed child (collection entry, lookup-backed named child):
-    // no attached parent, but a logical one -- `<parent>.<name>`,
-    // `<parent>[<index>]` or `<parent>["<key>"]`.
-    struct object *parent = object_parent(obj);
-    struct object *lparent = parent ? NULL : object_logical_parent(obj);
-    if (lparent) {
-        object_compute_path(lparent, buf, buf_size);
-        size_t len = strlen(buf);
-        char seg[OBJ_KEY_MAX + 8];
-        const char *lname = object_logical_name(obj);
-        const char *lkey = object_logical_key(obj);
-        if (lname)
-            snprintf(seg, sizeof(seg), "%s%s", len > 0 ? "." : "", lname);
-        else if (lkey)
-            snprintf(seg, sizeof(seg), "[\"%s\"]", lkey);
-        else
-            snprintf(seg, sizeof(seg), "[%d]", object_logical_index(obj));
-        size_t slen = strlen(seg);
-        if (len + slen + 1 <= buf_size)
-            memcpy(buf + len, seg, slen + 1);
-        return;
-    }
-
-    // Root (or detached): empty path.
-    if (!parent)
-        return;
-
-    // Recurse on parent, then append "." + own name.
-    object_compute_path(parent, buf, buf_size);
-    size_t len = strlen(buf);
-    const char *name = object_name(obj);
-    if (!name || !*name)
-        return;
-    size_t nlen = strlen(name);
-    // Skip the leading dot when the parent itself was the root (empty).
-    bool need_dot = (len > 0);
-    if (len + (need_dot ? 1 : 0) + nlen + 1 > buf_size)
-        return;
-    if (need_dot)
-        buf[len++] = '.';
-    memcpy(buf + len, name, nlen + 1);
 }
 
 // === Member-list accumulator ==============================================
 //
 // `meta.children`, `meta.attributes`, `meta.methods` all build a
-// V_LIST<V_STRING> by scanning the inspected object's class members and
+// VK_LIST<VK_STRING> by scanning the inspected object's class members and
 // (for children) its statically-attached children. Same pattern as
 // root.c's `objects/attributes/methods` methods.
 
@@ -166,7 +95,7 @@ static DEF_GETTER(meta_get_children) {
     const class_desc_t *cls = object_class(insp);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_CHILD)
+            if (cls->members[i].kind == MK_CHILD)
                 if (!name_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -190,7 +119,7 @@ static DEF_GETTER(meta_get_attributes) {
     const class_desc_t *cls = object_class(insp);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_ATTR)
+            if (cls->members[i].kind == MK_ATTR)
                 if (!name_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -211,7 +140,7 @@ static DEF_GETTER(meta_get_methods) {
     const class_desc_t *cls = object_class(insp);
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
-            if (cls->members[i].kind == M_METHOD)
+            if (cls->members[i].kind == MK_METHOD)
                 if (!name_list_push(&acc, cls->members[i].name))
                     acc.oom = true;
     }
@@ -256,16 +185,16 @@ static DEF_GETTER(meta_get_category) {
 // === Methods ==============================================================
 
 // `complete(line, cursor?)` — defer to the shell-installed provider. The
-// provider returns a V_LIST<V_STRING> on success or a V_ERROR; when no
+// provider returns a VK_LIST<VK_STRING> on success or a VK_ERROR; when no
 // provider is registered (unit tests, headless boot before shell_init),
 // an empty list is the tolerant default.
 static DEF_METHOD(meta_method_complete) {
-    // `line` is a required V_STRING and `cursor` a V_INT, so node_validate_args
+    // `line` is a required VK_STRING and `cursor` a VK_INT, so node_validate_args
     // has already rejected a call that does not supply them that way.  Only
     // `cursor` being absent is still a live case -- it is optional with no
     // default, so a one-argument call truncates argc to 1.
     const char *line = argv[0].s;
-    int cursor = (argc >= 2 && argv[1].kind == V_INT) ? (int)argv[1].i : (int)strlen(line);
+    int cursor = (argc >= 2 && argv[1].kind == VK_INT) ? (int)argv[1].i : (int)strlen(line);
     if (!g_complete_provider)
         return val_list(NULL, 0);
     return g_complete_provider(line, cursor);
@@ -287,13 +216,13 @@ static DEF_METHOD(meta_method_member) {
     }
     const char *kind_str = "?";
     switch (mb->kind) {
-    case M_ATTR:
+    case MK_ATTR:
         kind_str = member_is_readonly(mb) ? "attribute (read-only)" : "attribute";
         break;
-    case M_METHOD:
+    case MK_METHOD:
         kind_str = "method";
         break;
-    case M_CHILD:
+    case MK_CHILD:
         kind_str = member_is_collection(mb) ? "child[]" : "child";
         break;
     }
@@ -327,13 +256,13 @@ static DEF_METHOD(meta_method_member_label) {
 // `method_info(name)` — UI metadata for a method member, a typed map so the
 // context menu and command browser render it without a static catalogue:
 // verb label, destructive/mutate/hidden/io flags, declared arg
-// count, and doc. Returns a V_ERROR if the member
+// count, and doc. Returns a VK_ERROR if the member
 // is not a method.
 static DEF_METHOD(meta_method_method_info) {
     // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
-    if (!mb || mb->kind != M_METHOD)
+    if (!mb || mb->kind != MK_METHOD)
         return val_err("method_info: '%s' is not a method", argv[0].s);
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
@@ -351,8 +280,8 @@ static DEF_METHOD(meta_method_method_info) {
 // `indices(name)` — the live indices of an indexed-child member. Lets a
 // tree walker enumerate a sparse collection's occupants
 // (machine.scsi.device[0], [3], …) instead of stopping at the bare collection
-// member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
-// a V_ERROR for a non-indexed / unknown member — so a caller can use the
+// member. Returns a VK_LIST<VK_INT> for an indexed member (possibly empty), or
+// a VK_ERROR for a non-indexed / unknown member — so a caller can use the
 // error/list distinction to tell "indexed collection" from "named child".
 static value_t indices_of(struct object *insp, const member_t *mb);
 
@@ -374,7 +303,7 @@ static DEF_METHOD(meta_method_indices) {
 // trips per member on member_category / member_label / indices.
 // Values are opt-in: some attributes are volatile or costly to read.
 
-// The live indices of an indexed-child member, as a V_LIST<V_INT>.
+// The live indices of an indexed-child member, as a VK_LIST<VK_INT>.
 static value_t indices_of(struct object *insp, const member_t *mb) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
@@ -395,15 +324,15 @@ static value_t indices_of(struct object *insp, const member_t *mb) {
 // editors, argument forms, usage text and completion.
 
 const char *meta_presentation_text(uint16_t flags) {
-    if (flags & VAL_SENSITIVE)
+    if (flags & VFLAG_SENSITIVE)
         return "sensitive";
-    if (flags & VAL_PATH)
+    if (flags & VFLAG_PATH)
         return "path";
-    if (flags & VAL_HEX)
+    if (flags & VFLAG_HEX)
         return "hex";
-    if (flags & VAL_BIN)
+    if (flags & VFLAG_BIN)
         return "bin";
-    if (flags & VAL_DEC)
+    if (flags & VFLAG_DEC)
         return "dec";
     return NULL;
 }
@@ -426,7 +355,7 @@ value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presenta
     return val_map_finish(b);
 }
 
-// The live keys of a keyed collection member, as a V_LIST<V_STRING>, or none.
+// The live keys of a keyed collection member, as a VK_LIST<VK_STRING>, or none.
 static value_t keys_of(struct object *insp, const member_t *mb) {
     if (!mb->child.collection->by_key.next_key)
         return val_none();
@@ -456,19 +385,19 @@ static void put_collection(value_map_builder_t *b, struct object *child) {
 static value_t describe_member(struct object *insp, const member_t *mb, bool values) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
-    const char *kind = mb->kind == M_ATTR ? "attr" : mb->kind == M_CHILD ? "child" : "method";
+    const char *kind = mb->kind == MK_ATTR ? "attr" : mb->kind == MK_CHILD ? "child" : "method";
     val_map_put(b, "kind", val_str(kind));
     val_map_put(b, "category", val_str(category_name(mb->flags)));
     val_map_put(b, "label", val_str(mb->label ? mb->label : (mb->name ? mb->name : "")));
     struct object *child = NULL;
-    if (mb->kind == M_CHILD && !mb->child.reference)
+    if (mb->kind == MK_CHILD && !mb->child.reference)
         child = object_named_child(insp, mb);
     const char *doc = mb->doc ? mb->doc : "";
-    if (mb->kind == M_CHILD && !*doc && child)
+    if (mb->kind == MK_CHILD && !*doc && child)
         doc = object_doc(child);
     val_map_put(b, "doc", val_str(doc));
     switch (mb->kind) {
-    case M_ATTR:
+    case MK_ATTR:
         val_map_put(b, "readonly", val_bool(member_is_readonly(mb)));
         val_map_put(
             b, "type",
@@ -476,7 +405,7 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
         if (values)
             val_map_put(b, "value", node_get((node_t){.obj = insp, .member = mb, .index = -1}));
         break;
-    case M_CHILD:
+    case MK_CHILD:
         val_map_put(b, "indexed", val_bool(member_is_collection(mb)));
         if (member_is_collection(mb)) {
             val_map_put(b, "indices", by_index(mb) ? indices_of(insp, mb) : val_none());
@@ -486,7 +415,7 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
             put_collection(b, child);
         }
         break;
-    case M_METHOD: {
+    case MK_METHOD: {
         val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
         val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
         val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
@@ -532,7 +461,7 @@ typedef struct {
 } member_list_t;
 
 static void member_list_push(member_list_t *acc, value_t v) {
-    if (v.kind == V_ERROR) {
+    if (v.kind == VK_ERROR) {
         value_free(&v);
         acc->oom = true;
         return;
@@ -560,7 +489,7 @@ static void each_attached_describe(struct object *parent, struct object *child, 
 }
 
 static DEF_METHOD(meta_method_members) {
-    bool values = argc >= 1 && argv[0].kind == V_BOOL && argv[0].b;
+    bool values = argc >= 1 && argv[0].kind == VK_BOOL && argv[0].b;
     struct object *insp = meta_inspected(self);
     if (!insp)
         return val_list(NULL, 0);
@@ -582,9 +511,9 @@ static DEF_METHOD(meta_method_members) {
 // === Class table =========================================================
 
 static const arg_decl_t meta_complete_args[] = {
-    {.name = "line", .kind = V_STRING, .doc = "Input line to complete"},
+    {.name = "line", .kind = VK_STRING, .doc = "Input line to complete"},
     {.name = "cursor",
-     .kind = V_INT,
+     .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Cursor position in line",
      .default_doc = "the end of the line"},
@@ -592,91 +521,90 @@ static const arg_decl_t meta_complete_args[] = {
 
 static const arg_decl_t meta_member_args[] = {
     {.name = "name",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Member name on the inspected class"},
 };
 
 static const arg_decl_t meta_named_member_args[] = {
-    {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
+    {.name = "name", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
 };
 
 static const arg_decl_t meta_members_args[] = {
     {.name = "values",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Also read each attribute's current value"},
 };
 
 static const member_t meta_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "class",
      .doc = "Class name of the inspected node",
-     .attr = {.type = V_STRING, .get = meta_get_class, .set = NULL}                                                                                                                         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = meta_get_class, .set = NULL}                                                                                                                         },
+    {.kind = MK_ATTR,
      .name = "doc",
      .doc = "One-sentence description of the inspected node (its own doc, else its class's)",
-     .attr = {.type = V_STRING, .get = meta_get_doc, .set = NULL}                                                                                                                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = meta_get_doc, .set = NULL}                                                                                                                           },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Absolute dotted path of the inspected node",
-     .attr = {.type = V_STRING, .get = meta_get_path, .set = NULL}                                                                                                                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = meta_get_path, .set = NULL}                                                                                                                          },
+    {.kind = MK_ATTR,
      .name = "label",
      .doc = "Human-facing display label of the inspected node (falls back to name)",
-     .attr = {.type = V_STRING, .get = meta_get_label, .set = NULL}                                                                                                                         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = meta_get_label, .set = NULL}                                                                                                                         },
+    {.kind = MK_ATTR,
      .name = "category",
      .doc = "Visibility tier of the inspected node: basic | advanced | internal",
-     .attr = {.type = V_STRING, .get = meta_get_category, .set = NULL}                                                                                                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = meta_get_category, .set = NULL}                                                                                                                      },
+    {.kind = MK_ATTR,
      .name = "children",
      .doc = "Names of sub-objects on the inspected node",
-     .attr = {.type = V_LIST, .get = meta_get_children, .set = NULL}                                                                                                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_LIST, .get = meta_get_children, .set = NULL}                                                                                                                        },
+    {.kind = MK_ATTR,
      .name = "attributes",
      .doc = "Names of attribute members on the inspected class",
-     .attr = {.type = V_LIST, .get = meta_get_attributes, .set = NULL}                                                                                                                      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_LIST, .get = meta_get_attributes, .set = NULL}                                                                                                                      },
+    {.kind = MK_ATTR,
      .name = "methods",
      .doc = "Names of method members on the inspected class",
-     .attr = {.type = V_LIST, .get = meta_get_methods, .set = NULL}                                                                                                                         },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_LIST, .get = meta_get_methods, .set = NULL}                                                                                                                         },
+    {.kind = MK_METHOD,
      .name = "complete",
      .doc = "Tab-completion candidates for a partial line",
-     .method = {.args = meta_complete_args, .nargs = 2, .result = V_LIST, .fn = meta_method_complete}                                                                                       },
-    {.kind = M_METHOD,
+     .method = {.args = meta_complete_args, .nargs = 2, .result = VK_LIST, .fn = meta_method_complete}                                                                                       },
+    {.kind = MK_METHOD,
      .name = "member",
      .doc = "Short description of one named member",
-     .method = {.args = meta_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member}                                                                                         },
-    {.kind = M_METHOD,
+     .method = {.args = meta_member_args, .nargs = 1, .result = VK_STRING, .fn = meta_method_member}                                                                                         },
+    {.kind = MK_METHOD,
      .name = "member_category",
      .doc = "Visibility tier of a named member: basic | advanced | internal",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_category}                                                                          },
-    {.kind = M_METHOD,
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = VK_STRING, .fn = meta_method_member_category}                                                                          },
+    {.kind = MK_METHOD,
      .name = "member_label",
      .doc = "Display label of a named member (falls back to its name)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}                                                                             },
-    {.kind = M_METHOD,
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = VK_STRING, .fn = meta_method_member_label}                                                                             },
+    {.kind = MK_METHOD,
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, destructive, mutate, hidden, nargs)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}                                                                                 },
-    {.kind = M_METHOD,
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = VK_MAP, .fn = meta_method_method_info}                                                                                 },
+    {.kind = MK_METHOD,
      .name = "members",
      .doc = "Every member in one call: name, kind, category, label, doc, and per kind readonly/value, "
-            "indexed/indices or the method_info fields",                                      .method = {.args = meta_members_args, .nargs = 1, .result = V_LIST, .fn = meta_method_members}},
-    {.kind = M_METHOD,
+            "indexed/indices or the method_info fields",                                      .method = {.args = meta_members_args, .nargs = 1, .result = VK_LIST, .fn = meta_method_members}},
+    {.kind = MK_METHOD,
      .name = "indices",
      .doc = "Live indices of an indexed-child member (errors if not indexed)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}                                                                                    },
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = VK_LIST, .fn = meta_method_indices}                                                                                    },
 };
 
-// Special class name — would normally trip the `meta`-is-reserved check
-// in object_validate_class, but Meta class members do not collide with
-// the reserved literal because none of them are named "meta" themselves.
-// Validation is still safe (no member named "meta" appears below).
+// Lower-case like every other class name. `meta` is reserved only as a
+// MEMBER name (object_validate_class), not as a class name, and none of the
+// members above is named "meta".
 static const class_desc_t g_meta_class = {
-    .name = "Meta",
+    .name = "meta",
     .members = meta_members,
     .n_members = sizeof(meta_members) / sizeof(meta_members[0]),
 };

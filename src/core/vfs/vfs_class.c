@@ -8,7 +8,7 @@
 // core path-resolver don't pull in object-model dependencies.
 
 #include "vfs_class.h"
-#include "gs_out.h"
+#include "out.h"
 #include "vfs.h"
 
 #include "image_vfs.h"
@@ -30,17 +30,17 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0) {
-        gs_outf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
+        out_printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
-        gs_outf("%s\n", entry.name);
+        out_printf("%s\n", entry.name);
     bool ok = (r == 0);
     if (r < 0) {
         // Surface readdir errors instead of silently truncating the listing.
-        gs_outf("ls: readdir error in '%s': %s\n", path, strerror(-r));
+        out_printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
     }
     be->closedir(dir);
     return val_bool(ok);
@@ -56,7 +56,7 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
 // than guessing from the file's extension.  Descends into disk images and
 // archives through the same resolver as `files.ls`, so a bare image path
 // lists its partitions and a partition path lists the HFS/UFS volume.
-// Read-only throughout. Returns V_ERROR (falsy via the bridge) when the path
+// Read-only throughout. Returns VK_ERROR (falsy via the bridge) when the path
 // can't be opened as a directory.
 value_t files_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -77,9 +77,9 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         // The image backend fills `st` during readdir; the host backend leaves
         // has_stat=false, so stat the child path to classify it (dir vs file)
         // and read its size and mtime.
-        uint16_t mode = 0;
+        uint32_t mode = 0;
         uint64_t size = 0;
-        uint32_t mtime = 0;
+        int64_t mtime = 0;
         if (entry.has_stat) {
             mode = entry.st.mode;
             size = entry.st.size;
@@ -108,7 +108,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         val_map_put(b, "name", val_str(entry.name));
         val_map_put(b, "kind", val_str((mode & VFS_MODE_DIR) ? "directory" : "file"));
         val_map_put(b, "size", val_int((int64_t)size));
-        val_map_put(b, "mtime", val_int((int64_t)mtime));
+        val_map_put(b, "mtime", val_int(mtime));
         val_map_put(b, "expandable", val_bool(expandable));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
@@ -134,10 +134,10 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
         return val_err("files.mkdir: expected a non-empty path");
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
-        gs_outf("Directory '%s' created\n", dir);
+        out_printf("Directory '%s' created\n", dir);
         return val_bool(true);
     }
-    gs_outf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
+    out_printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     return val_bool(false);
 }
 
@@ -152,27 +152,36 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
     if (rc < 0) {
-        gs_outf("cat: cannot open '%s': %s\n", path, strerror(-rc));
+        out_printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
-    uint8_t buf[4096];
+    // A heap chunk: this runs at the bottom of a deep shell call chain, and
+    // a WASM stack is small.
+    enum { CAT_CHUNK = 4096 };
+    uint8_t *buf = malloc(CAT_CHUNK);
+    if (!buf) {
+        be->close(f);
+        return val_err("cat: out of memory");
+    }
     uint64_t off = 0;
+    bool ok = true;
     for (;;) {
         size_t got = 0;
-        int rr = be->read(f, off, buf, sizeof(buf), &got);
+        int rr = be->read(f, off, buf, CAT_CHUNK, &got);
         if (rr < 0) {
-            gs_outf("cat: read error on '%s': %s\n", path, strerror(-rr));
-            be->close(f);
-            return val_bool(false);
+            out_printf("cat: read error on '%s': %s\n", path, strerror(-rr));
+            ok = false;
+            break;
         }
         if (got == 0)
             break;
-        // The sink (gs_out.h): the job's output, or stdout.
-        gs_out((const char *)buf, got);
+        // The sink (out.h): the job's output, or stdout.
+        out_write((const char *)buf, got);
         off += got;
     }
+    free(buf);
     be->close(f);
-    return val_bool(true);
+    return val_bool(ok);
 }
 
 // `files.cd(path)` -- make a directory the current one: the directory
@@ -182,15 +191,13 @@ value_t files_method_cd(struct object *self, const member_t *m, int argc, const 
     (void)self;
     (void)m;
     (void)argc;
-    char abs[VFS_PATH_MAX];
-    if (vfs_normalise_path(argv[0].s, abs, sizeof(abs)) < 0)
+    int rc = vfs_set_cwd(argv[0].s);
+    if (rc == -ENAMETOOLONG)
         return val_err("cd: path too long");
-    vfs_stat_t st;
-    if (vfs_stat(abs, &st) < 0)
-        return val_err("cd: no such directory '%s'", argv[0].s);
-    if (!(st.mode & VFS_MODE_DIR))
+    if (rc == -ENOTDIR)
         return val_err("cd: not a directory '%s'", argv[0].s);
-    vfs_set_cwd(abs);
+    if (rc < 0)
+        return val_err("cd: no such directory '%s'", argv[0].s);
     return val_none();
 }
 

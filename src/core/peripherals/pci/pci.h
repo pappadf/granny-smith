@@ -30,6 +30,7 @@
 #ifndef PCI_H
 #define PCI_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "pci_card.h"
 #include "value.h"

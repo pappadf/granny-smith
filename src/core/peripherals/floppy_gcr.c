@@ -6,6 +6,7 @@
 // These functions are used by both IWM and SWIM code paths.
 
 #include "floppy_internal.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
 
@@ -126,7 +127,7 @@ bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
     if (!img)
         return false;
     out->img = img;
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_hd:
         out->hd = true; // the only HD class we model
         floppy_media_apply_format(out, FLOPPY_FMT_MFM_1440K);
@@ -188,7 +189,7 @@ bool floppy_media_write_sector(const floppy_media_t *m, int track, int side, int
     if (!m || !m->valid || sector < 0 || sector >= floppy_media_spt(m, track) || side < 0 || side >= m->sides)
         return false;
     size_t off = floppy_media_sector_offset(m, track, side, sector);
-    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img) || !m->img->writable)
+    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img) || !image_is_writable(m->img))
         return false;
     return disk_write_data(m->img, off, data, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
 }
@@ -213,14 +214,14 @@ int iwm_image_num_sides(image_t *img) {
     if (!img)
         return 2; // Default to double-sided if unknown
     // Only the 400K disk is single-sided; 720K, 800K and 1440K are not.
-    return (img->type == image_fd_ss) ? 1 : 2;
+    return (image_get_type(img) == image_fd_ss) ? 1 : 2;
 }
 
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
 int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason) {
     // TACH produces 60 pulses per revolution; motor not spinning = no pulses
-    // _motoron is active-low: true = motor OFF, false = motor ON
-    if (drive->_motoron) {
+    // motoron is active-low: true = motor OFF, false = motor ON
+    if (drive->motoron) {
         if (reason)
             *reason = "motor off";
         return 1;
@@ -312,9 +313,13 @@ void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t
     *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
 }
 
-// Encodes a sector to GCR format with header and data fields
+// Encodes a sector to GCR format with header and data fields.  `bad_data`
+// lays the data field down with a checksum that does not match it: what an
+// unreadable sector on a real disk gives the controller's reader (the Sony
+// driver's badDCksum), so a sector the backing image cannot read fails the
+// guest's read of it -- and only of it.
 static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side,
-                              int num_sides) {
+                              int num_sides, bool bad_data) {
     GS_ASSERT(data != NULL);
 
     uint16_t ca = 0, cb = 0, cc = 0; // checksum registers
@@ -369,6 +374,8 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
     GCR2(ba, bb);
 
     // Encode 24-bit checksum
+    if (bad_data)
+        ca ^= 0xFF;
     GCR3(ca, cb, cc);
 
     // End markers
@@ -380,8 +387,10 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
 }
 
 // Encodes an entire track with interleaved sectors to GCR format
+// `bad` has bit n set for each sector n the image could not read; those are
+// laid down with a bad data checksum (encode_sector).
 static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides,
-                         image_t *img, size_t first_block) {
+                         image_t *img, size_t first_block, uint32_t bad) {
     GS_ASSERT(data != NULL);
 
     int i;
@@ -422,7 +431,7 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         if (img)
             disk_read_tag(img, first_block + (size_t)sector, tag, sizeof tag);
 
-        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides);
+        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides, (bad >> sector) & 1u);
     }
 
     GS_ASSERT(dst < end_of_track);
@@ -445,7 +454,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
     // (which once classified as a hard disk) was GCR-encoded from
     // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
-    if (image_is_mfm_floppy(img->type))
+    if (image_is_mfm_floppy(image_get_type(img)))
         return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 
@@ -478,15 +487,27 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         uint8_t *sector_data = malloc(track_bytes);
         if (!sector_data) {
             LOG(1, "Failed to allocate sector buffer for track=%d", drive->track);
+            free(track->data);
+            track->data = NULL;
             return NULL;
         }
+        // A track the image cannot read whole is read a sector at a time:
+        // the sectors that still fail are laid down unreadable (a bad data
+        // checksum), as a damaged disk presents them, and the rest read.
+        uint32_t bad = 0;
         size_t read = disk_read_data(img, track_offset, sector_data, track_bytes);
         if (read != track_bytes) {
-            LOG(1, "disk_read_data truncated track=%d (expected=%zu got=%zu)", drive->track, track_bytes, read);
-            free(sector_data);
-            return NULL;
+            for (size_t s = 0; s < sector_count; s++) {
+                uint8_t *at = sector_data + s * 512u;
+                if (disk_read_data(img, track_offset + s * 512u, at, 512) != 512) {
+                    memset(at, 0, 512);
+                    bad |= 1u << s;
+                }
+            }
+            LOG(1, "floppy: track=%d side=%d: unreadable sectors mask $%03X", drive->track, sel, bad);
         }
-        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u);
+        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u,
+                     bad);
         free(sector_data);
     }
 
@@ -503,7 +524,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // or MFM).
 const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
     static uint8_t sync_track[9320]; // iwm_track_length's longest zone
-    if (!img || image_is_mfm_floppy(img->type) || drive->track < 0 || drive->track >= NUM_TRACKS)
+    if (!img || image_is_mfm_floppy(image_get_type(img)) || drive->track < 0 || drive->track >= NUM_TRACKS)
         return NULL;
     const floppy_track_t *track = &drive->tracks[sel][drive->track];
     if (track->data)
@@ -805,7 +826,7 @@ void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int s
 // deliberately do not form valid sectors) have no representation in the image
 // at all, which is why "just flush at checkpoint time" is not a substitute.
 void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side) {
-    if (!img || !img->writable)
+    if (!img || !image_is_writable(img))
         return;
     floppy_track_t *t = &drive->tracks[side][drive->track];
     if (!t->data || t->size == 0)
@@ -874,7 +895,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             LOG(4, "Drive %d: Flush track %d side %d (size=%zu)", drive_index, tr, side, t->size);
 
             // Respect write-protect: do not modify underlying image
-            if (!img->writable) {
+            if (!image_is_writable(img)) {
                 LOG(2, "Drive %d: Skip flush track %d side %d - write-protected", drive_index, tr, side);
                 t->modified = false;
                 continue;

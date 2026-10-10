@@ -19,6 +19,8 @@
 #ifndef GS_OBJECT_ALIAS_H
 #define GS_OBJECT_ALIAS_H
 
+#include "status.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -26,28 +28,29 @@
 extern "C" {
 #endif
 
+// Which tier an alias belongs to (AK_ = alias_kind_t).
 typedef enum {
-    ALIAS_BUILTIN = 1,
-    ALIAS_USER,
+    AK_BUILTIN = 1,
+    AK_USER,
 } alias_kind_t;
 
 // Register a built-in alias. Idempotent: registering the same
 // (name, path) twice is a no-op. Registering a built-in with a name
 // that already exists as a different built-in fails.
 //
-// Returns 0 on success, negative on failure (reserved word, name
-// already a user alias and would conflict, etc.). On failure
+// STATUS_OK on success; on failure STATUS_E_INVAL (invalid or reserved
+// name, a different built-in of that name) or STATUS_E_NOMEM, and
 // `err_buf` (if non-NULL) receives a one-line message.
-int alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size);
+status_t alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size);
 
 // User-side `shell.alias.add NAME PATH`. Fails if name is a reserved
 // word or collides with a built-in. Replaces an existing user alias
 // of the same name.
-int alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size);
+status_t alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size);
 
 // User-side `shell.alias.remove NAME`. Fails if name is a built-in or
-// no user alias of that name exists.
-int alias_remove_user(const char *name, char *err_buf, size_t err_size);
+// no user alias of that name exists (STATUS_E_INVAL / STATUS_E_NOENT).
+status_t alias_remove_user(const char *name, char *err_buf, size_t err_size);
 
 // Look up the path for `name`. Returns a pointer into the table's
 // own storage (valid until the alias is removed) or NULL if no such
@@ -75,6 +78,10 @@ void alias_reset(void);
 // Drop only user aliases — used by checkpoint restore (checkpoints don't
 // preserve user aliases).
 void alias_clear_user(void);
+
+// The `shell.alias` class (alias_class.c), attached by root_install.
+struct class_desc;
+extern const struct class_desc shell_alias_class;
 
 #ifdef __cplusplus
 }

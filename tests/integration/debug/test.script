@@ -1,7 +1,7 @@
 # Integration test: Debug tooling — `find` family (shell v2).
 #
-# `find.{str|bytes|word|long}` return a V_LIST of match addresses; failures
-# return V_ERROR. This script asserts on the typed results and echoes stable
+# `find.{str|bytes|word|long}` return a VK_LIST of match addresses; failures
+# return VK_ERROR. This script asserts on the typed results and echoes stable
 # markers that run.sh greps.
 
 # === find: introspection ================================================
@@ -175,5 +175,10 @@ scheduler.run 600000
 assert machine.cpu.instr_count == $step_n "same instruction count"
 assert machine.cpu.pc == $step_pc "debug.step N must end where scheduler.run N does"
 echo "step-matches-run-ok"
+
+# A log file that cannot be opened reports fopen's own reason.  shell.run
+# prints the error and fails without ending this script.
+let log_probe = try(shell.run("log.set cpu file=/nonexistent-gs-dir/cpu.log"), false)
+echo "log-file-probe-done"
 
 quit

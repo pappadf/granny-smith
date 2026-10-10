@@ -33,6 +33,7 @@ import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
+import { audioTargetLatencyFromQuery } from '@/audio/latency';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
 import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
@@ -84,7 +85,7 @@ interface EmscriptenModule {
     ): number;
     close(stream: unknown): void;
   };
-  _get_gs_mailbox(): number;
+  _get_mailbox(): number;
   // Returns the bytes written, excluding the terminating NUL.
   stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
@@ -109,6 +110,9 @@ interface EmscriptenModuleConfig {
   onPrinterAttach?(ctrl: number, version: string): void;
   // The audio-out AudioWorklet module (em_audio.c addModule()s it).
   gsAudioWorkletUrl?: string;
+  // The audio-out latency target in seconds (?audio_latency=; em_audio.c
+  // keeps its default when unset).
+  gsAudioTargetLatency?: number;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -242,6 +246,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onVoodooGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
+    gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),
   });
 
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
@@ -253,7 +258,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
   mailbox = new Mailbox(
     Module.HEAP32.buffer,
-    Module._get_gs_mailbox(),
+    Module._get_mailbox(),
     CLIENT_PAGE,
     () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
   );
@@ -294,12 +299,12 @@ export function isModuleReady(): boolean {
 
 // The result contract:
 //   - a value     — the method or attribute's result;
-//   - null        — ONLY a successful method that returns nothing (V_NONE);
-//   - { error }   — failure.  A C-side V_ERROR carries the core's message;
+//   - null        — ONLY a successful method that returns nothing (VK_NONE);
+//   - { error }   — failure.  A C-side VK_ERROR carries the core's message;
 //                   a failure of the bridge itself (module not ready, a
 //                   thrown request) also sets `transport: true`.
 // So `r !== null` is never a success test: `{ error }` satisfies it.  Use
-// gsOk() for "did it work", `=== true` for a V_BOOL method, and a shape check
+// gsOk() for "did it work", `=== true` for a VK_BOOL method, and a shape check
 // for a read.
 export interface GsError {
   error: string;
@@ -474,13 +479,13 @@ function routeErrLine(line: string): void {
   routeErrorLine(line);
 }
 
-// True for any failure shape — the core's V_ERROR or a transport failure.
+// True for any failure shape — the core's VK_ERROR or a transport failure.
 export function isGsError(res: unknown): res is GsError {
   return !!res && typeof res === 'object' && 'error' in res;
 }
 
-// "Did the call work?": not an error, and not a V_BOOL method's `false`.
-// A V_NONE success (null) counts as success.
+// "Did the call work?": not an error, and not a VK_BOOL method's `false`.
+// A VK_NONE success (null) counts as success.
 export function gsOk(res: unknown): boolean {
   return !isGsError(res) && res !== false;
 }
@@ -667,7 +672,7 @@ async function executeMailboxRequest(
 
 // --- Events from the core ------------------------------------------------
 
-// What the core emits on its own (src/core/event/gs_event.h), decoded off
+// What the core emits on its own (src/core/event/event.h), decoded off
 // the mailbox's event ring: `kind` is the ring's family, `data` the JSON
 // object the emitter wrote, whose `event` names it.  Today: 'state' with
 // `mode_started {mode, owner, budget}` and `mode_ended {mode, owner,

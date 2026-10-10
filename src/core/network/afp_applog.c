@@ -126,11 +126,11 @@ bool afp_applog_emit(afp_applog_t *log, uint8_t op, const void *payload, uint16_
     return true;
 }
 
-// Rewrite the log from the store's live state, atomically (gs_atomic_open):
+// Rewrite the log from the store's live state, atomically (file_replace_open):
 // a crash leaves the old log or the new one whole.
 static void applog_compact(afp_applog_t *log) {
-    gs_atomic_t out;
-    FILE *f = gs_atomic_open(&out, log->path, NULL);
+    file_replace_t out;
+    FILE *f = file_replace_open(&out, log->path, NULL);
     if (!f)
         return;
     uint8_t m[4];
@@ -140,7 +140,7 @@ static void applog_compact(afp_applog_t *log) {
     bool ok = fwrite(m, 1, sizeof(m), f) == sizeof(m) && log->dump(log->ctx, log);
     log->emit_to = NULL;
     fclose(log->f); // the append handle goes before the file is replaced
-    int rc = gs_atomic_commit(&out, ok);
+    int rc = file_replace_commit(&out, ok);
     if (rc == 0)
         log->records = log->emitted;
     else

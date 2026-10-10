@@ -14,7 +14,7 @@
 #include "keyboard.h" // key_event_t
 #include "mouse.h" // input_mouse_mode_parse
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <string.h>
 
@@ -37,21 +37,21 @@ int mac_input_key(config_t *cfg, int adb_code, bool down) {
     return 0;
 }
 
-// Cursor mode string → debug_mac mode char ('d'/'g'/'h'/'a'); 0 if unknown.
+// Cursor mode string → mouse_route_t (input_mouse_mode_parse, mouse.h).
 
 int mac_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
     (void)cfg;
-    char m = input_mouse_mode_parse(mode);
-    if (!m)
+    mouse_route_t route = input_mouse_mode_parse(mode);
+    if (route == MOUSE_ROUTE_INVALID)
         return -1; // unknown mode
-    return debug_mac_set_mouse_mode((long)x, (long)y, m) < 0 ? -1 : 0;
+    return debug_mac_set_mouse_mode((long)x, (long)y, route) < 0 ? -1 : 0;
 }
 
 int mac_input_mouse_button(config_t *cfg, bool down, const char *mode) {
     (void)cfg;
-    char m = input_mouse_mode_parse(mode);
-    if (!m)
+    mouse_route_t route = input_mouse_mode_parse(mode);
+    if (route == MOUSE_ROUTE_INVALID)
         return -1; // unknown mode
-    debug_mac_mouse_button_mode(down, m);
+    debug_mac_mouse_button_mode(down, route);
     return 0;
 }

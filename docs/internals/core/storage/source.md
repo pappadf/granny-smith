@@ -32,23 +32,23 @@ writes, whatever the base is.
 
 Peeler (`src/peeler/`) is the lowest layer and must build on its own, so it
 defines the type (`peel_source_t`); the core adopts it unchanged
-(`typedef peel_source_t gs_source_t`). An archive member peeler opens is
+(`typedef peel_source_t source_t`). An archive member peeler opens is
 therefore a source the storage engine can mount with no adapter.
 
 ## 2. Key types & files
 
 | Type / function | File | Purpose |
 |---|---|---|
-| `gs_source_t`, `gs_source_ops_t` | `source.h` (= `peel_source_t`) | read / size / key / tier / close; reference counted |
-| `gs_tier_t` | `source.h` | `RANDOM`, `INDEXED`, `EARNED`, `STREAM`, `WHOLE` |
-| `gs_source_host` | `source.c` | a host file, `pread`, thread-safe |
-| `gs_source_view`, `gs_source_memory` | `source.c` | offset window; bytes in memory |
-| `gs_source_open_path` | `source.c` | open a path's data / resource fork / Finder info through the installed opener |
-| `gs_source_decode_through` | `source_cache.c` | cache-backed wrapper for forward-only or expensive sources |
-| `gs_source_locked` | `source_cache.c` | serialise reads of a source that is not thread-safe |
-| `gs_scratch_sink` | `source_cache.c` | where peeler's compressed forks decode to |
-| `gs_chunk_cache_t` | `chunk_cache.c` | LRU of decoded chunks with coalescing and spill |
-| `gs_format_t`, `gs_format_unwrap` | `format_registry.c` | the one table of formats |
+| `source_t`, `source_ops_t` | `source.h` (= `peel_source_t`) | read / size / key / tier / close; reference counted |
+| `source_tier_t` | `source.h` | `RANDOM`, `INDEXED`, `EARNED`, `STREAM`, `WHOLE` |
+| `source_host` | `source.c` | a host file, `pread`, thread-safe |
+| `source_view`, `source_memory` | `source.c` | offset window; bytes in memory |
+| `source_open_path` | `source.c` | open a path's data / resource fork / Finder info through the installed opener |
+| `source_decode_through` | `source_cache.c` | cache-backed wrapper for forward-only or expensive sources |
+| `source_locked` | `source_cache.c` | serialise reads of a source that is not thread-safe |
+| `source_scratch_sink` | `source_cache.c` | where peeler's compressed forks decode to |
+| `chunk_cache_t` | `chunk_cache.c` | LRU of decoded chunks with coalescing and spill |
+| `format_t`, `format_unwrap` | `format_registry.c` | the one table of formats |
 | `ndif_source_open`, `udif_source_open` | `image_chunkmap.c` | NDIF / UDIF as chunk-mapped sources |
 
 ## 3. Behaviour/algorithms
@@ -62,7 +62,7 @@ check can compare sources that were reached by different routes.
   A changed file is a different key, so nothing cached from the old one is served.
   In the browser, WasmFS gives a file in OPFS the time it was loaded as its
   mtime, so across a reload only the path and size are identity:
-  `gs_key_same_source` compares keys that way there and exactly natively.
+  `source_key_same_source` compares keys that way there and exactly natively.
 - A view: its parent's key and the range, or a key the adapter chooses
   (a DiskCopy payload is `<key>#dc42`, a LisaEm ProFile image's 532-byte <!-- lint-allow: LisaEm -->
   view `<key>#lisaem`, a decoded NDIF `<key>#ndif`). <!-- lint-allow: LisaEm -->
@@ -88,7 +88,7 @@ full on first read: its files are small). A decode-through wrapper is
 ### 3.3 Path opening
 
 The storage engine and the ROM loader open what the user named through
-`gs_source_open_path(path, fork)`. The VFS installs itself as the opener at
+`source_open_path(path, fork)`. The VFS installs itself as the opener at
 start-up, so a path may continue through an image or an archive
 (`outer.img/partition1/inner.img`, `roms.zip/Plus.rom`). With no opener
 installed — a unit test — a path is a host file, and its resource fork and
@@ -107,7 +107,7 @@ BinHex, MacBinary and gzip. Namespace formats (a disk, an archive) register
 at start-up from the VFS. Detection reads a bounded probe: 64 KiB of head,
 64 KiB of tail and, for NDIF, the resource fork.
 
-`gs_format_open_namespace` unwraps, detects a namespace format and opens it;
+`format_open_namespace` unwraps, detects a namespace format and opens it;
 when the payload of a peeler wrapper is no tree (an application in a `.bin`),
 the wrapper itself is shown as a one-file namespace.
 
@@ -138,7 +138,7 @@ spilled chunks are only ever a faster way to fetch them again.
 
 ### 3.7 Decode-through and sinks
 
-`gs_source_decode_through(src)` caches another source in 128 KiB chunks.
+`source_decode_through(src)` caches another source in 128 KiB chunks.
 Reading ahead of a forward-only source's cursor stores every chunk passed on
 the way, so a backward read later is a hit rather than a restart.
 
@@ -151,10 +151,10 @@ memory and a larger one in an unlinked-on-close file under
 
 A source whose bytes are not all at hand -- a remote file still downloading
 -- answers a read with `GS_EAGAIN` and implements the optional `poll` op,
-which waits until a read may make progress. `gs_source_poll` asks the
+which waits until a read may make progress. `source_poll` asks the
 nearest source in the parent chain that has one (a view of a remote file
 polls the file; the locked wrapper forwards to what it wraps), and answers
-0 at once for sources that never say "not yet". `gs_source_read_exact`
+0 at once for sources that never say "not yet". `source_read_exact`
 waits `GS_EAGAIN` out with it, so every reader built on it -- the storage
 engine, the chunk cache, peeler's decoders -- works over such a source
 unchanged; a source that keeps refusing without progress is given up on
@@ -163,7 +163,7 @@ rather than spun on.
 ### 3.9 Threads
 
 A host source may be read from any thread. Other sources are not
-thread-safe: the storage engine wraps its base in `gs_source_locked`, as the
+thread-safe: the storage engine wraps its base in `source_locked`, as the
 registry does for every peeler payload, since an export streams the base on
 the I/O worker while the guest reads it.
 
@@ -174,7 +174,7 @@ the I/O worker while the guest reads it.
   `spill_bytes`, `hits`, `misses`, `evictions`.
 - `files.images[n].format` reports each image's wrapper chain (`raw`,
   `dc42`, `bin+ndif`, …); the VFS listing's `expandable` flag comes from
-  `gs_format_is_namespace`.
+  `format_is_namespace`.
 
 ## 5. Checkpointing
 
@@ -183,7 +183,7 @@ restore opens that path again through the resolver, so an image inside an
 archive or another image restores the same way. It persists its source's key
 too. A quick checkpoint holds only the image's delta, so its disk is the base
 plus that delta: the restore compares the reopened base's key with the saved
-one (`gs_key_same_source`) and refuses a base that is no longer the same
+one (`source_key_same_source`) and refuses a base that is no longer the same
 bytes, naming both keys. A consolidated checkpoint carries every block, so
 its base is not compared.
 

@@ -14,6 +14,7 @@
 #include "byte_fifo.h"
 #include "test_assert.h"
 
+#include <stdio.h>
 #include <string.h>
 
 typedef BYTE_FIFO(16) fifo16_t; // the depth both real users have

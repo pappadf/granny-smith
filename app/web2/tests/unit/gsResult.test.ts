@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { gsEval, gsOk, isGsError, gsErrorText } from '@/bus/emulator';
 
-// The gsEval result contract: null is only a V_NONE
+// The gsEval result contract: null is only a VK_NONE
 // success; every failure — the core's or the bridge's — is an { error } shape.
 describe('gsEval result contract', () => {
   it('reports a module that is not ready as a transport error, not null', async () => {
@@ -16,7 +16,7 @@ describe('gsEval result contract', () => {
     expect(isGsError(null)).toBe(false);
   });
 
-  it('treats a V_BOOL false and a core error as failure', () => {
+  it('treats a VK_BOOL false and a core error as failure', () => {
     expect(gsOk(false)).toBe(false);
     expect(gsOk({ error: "path 'x' did not resolve" })).toBe(false);
     expect(gsOk(true)).toBe(true);

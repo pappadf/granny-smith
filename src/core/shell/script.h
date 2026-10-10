@@ -33,7 +33,7 @@ script_t *script_parse(const char *src, char *err_buf, size_t err_size);
 void script_free(script_t *s);
 
 // Execute a parsed script at top level. `interactive` selects REPL
-// semantics (non-V_NONE statement results print); scripts print
+// semantics (non-VK_NONE statement results print); scripts print
 // nothing implicitly. Returns 0 on success, -1 if the script
 // aborted on an error.
 int script_exec(script_t *s, bool interactive);
@@ -85,8 +85,8 @@ void script_interrupt(void);
 void script_expr_ctx(expr_ctx_t *out);
 
 // Execute a function body (owned by the shell_funcs registry) inside an
-// already-pushed scope. Returns the function's return value (V_NONE
-// when the body falls off the end) or V_ERROR.
+// already-pushed scope. Returns the function's return value (VK_NONE
+// when the body falls off the end) or VK_ERROR.
 value_t script_exec_func_body(script_block_t *body);
 void script_block_free(script_block_t *b);
 

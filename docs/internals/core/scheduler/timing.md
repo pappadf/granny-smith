@@ -81,7 +81,7 @@ before the next pending event:
 
 ```c
 cycles_to_event = event->timestamp - cpu_cycles;
-cycles_to_execute = MIN(cycles_to_event, remaining_cycles);
+cycles_to_execute = min(cycles_to_event, remaining_cycles);
 instr_to_exec = cycles_to_execute / CPI;
 ```
 
@@ -139,10 +139,12 @@ struct event {
 
 Events are created via `scheduler_new_cpu_event()`, which accepts a delay in
 either cycles or nanoseconds (exactly one must be non-zero). Nanosecond delays
-are converted to cycles using the machine's clock frequency:
+are converted to cycles using the machine's clock frequency (computed in two
+parts so the product cannot overflow), and a delay shorter than one cycle
+rounds up to one:
 
 ```c
-cycles = ns * frequency / 1e9
+cycles = max(1, floor(ns * frequency / 1e9))
 ```
 
 The event's absolute timestamp is `current_cpu_cycles() + delay_cycles`. The
@@ -191,7 +193,7 @@ When an I/O device handler calls `memory_io_penalty(extra_cycles)`:
 1. The penalty cycles are added to a sub-CPI remainder accumulator
 2. When the remainder reaches one CPI's worth, a phantom instruction is
    "burned" — `sprint_burndown` is decremented by 1
-3. The phantom instruction counter (`g_io_phantom_instructions`) is incremented
+3. The phantom instruction counter (`g_sprint_io.phantom_instructions`) is incremented
 
 This causes the sprint to end sooner: the CPU executes fewer real instructions,
 but the total "slots" consumed (real + phantom) still match the cycle budget.
@@ -232,27 +234,30 @@ function is never even compiled into the fast-path code flow.
 
 ### State and Globals
 
-The penalty mechanism uses these globals, all defined in `memory.c`:
+The penalty mechanism keeps its state in one struct, `sprint_io_t g_sprint_io`
+(declared in `memory.h`, stored in `memory.c`), the single channel between the
+scheduler, which sets it up and harvests it around every sprint, and the slow
+paths that charge a sprint from inside it:
 
-| Global | Type | Description |
+| Field | Type | Description |
 |--------|------|-------------|
-| `g_io_penalty_remainder` | `uint32_t` | Sprint-time alias of the scheduler's `io_penalty_remainder`: the sub-slot penalty fraction, **x256 cycles** |
-| `g_io_phantom_instructions` | `uint32_t` | Phantom instructions consumed this sprint |
-| `g_io_cpi_x256` | `uint32_t` | Effective CPI for conversion, x256 fixed point; 0 = disabled |
-| `g_sprint_burndown_ptr` | `uint32_t *` | Points to scheduler's `sprint_burndown` during sprint |
-| `g_sprint_frac_x256` | `uint32_t` | Scheduler's sub-cycle remainder at sprint start (E-sync "now" reconstruction) |
+| `g_sprint_io.penalty_remainder` | `uint32_t` | Sprint-time alias of the scheduler's `io_penalty_remainder`: the sub-slot penalty fraction, **x256 cycles** |
+| `g_sprint_io.phantom_instructions` | `uint32_t` | Phantom instructions consumed this sprint |
+| `g_sprint_io.cpi_x256` | `uint32_t` | Effective CPI for conversion, x256 fixed point; 0 = disabled |
+| `g_sprint_io.burndown` | `uint32_t *` | Points to scheduler's `sprint_burndown` during sprint |
+| `g_sprint_io.frac_x256` | `uint32_t` | Scheduler's sub-cycle remainder at sprint start (E-sync "now" reconstruction) |
 
-The scheduler sets `g_io_cpi_x256` (to its `cpi_eff_x256`), `g_sprint_frac_x256`
-and `g_sprint_burndown_ptr` at sprint start and clears `g_sprint_burndown_ptr`
+The scheduler sets `g_sprint_io.cpi_x256` (to its `cpi_eff_x256`), `g_sprint_io.frac_x256`
+and `g_sprint_io.burndown` at sprint start and clears `g_sprint_io.burndown`
 at sprint end. The remainder lives in the scheduler and is copied into
-`g_io_penalty_remainder` at sprint start and back at sprint end, so sub-slot
+`g_sprint_io.penalty_remainder` at sprint start and back at sprint end, so sub-slot
 fractions carry from sprint to sprint (penalty cycles enter the accumulator
 `<< 8`, so fractional effective CPIs convert without loss) but never from one
 machine to the next. A penalty charged outside a sprint is ignored.
-`g_io_phantom_instructions` is reset at each sprint start and harvested at
+`g_sprint_io.phantom_instructions` is reset at each sprint start and harvested at
 sprint end.
 
-Setting `g_io_cpi_x256 = 0` disables the entire mechanism. This happens
+Setting `g_sprint_io.cpi_x256 = 0` disables the entire mechanism. This happens
 implicitly when no I/O penalties are configured. Do **not** use it to disable
 penalties in one pacing mode but not the other — I/O penalties are part of the
 guest timeline, and gating them on the mode would break the one-guest-timeline
@@ -284,7 +289,7 @@ instructions:
 
 ```c
 executed_slots = sprint_total;          // real + phantom
-phantom = g_io_phantom_instructions;
+phantom = g_sprint_io.phantom_instructions;
 real_instructions = executed_slots - phantom;
 
 executed_cycles = executed_slots * CPI;  // correct: includes penalty time
@@ -336,8 +341,8 @@ Headless arms no VBL event. Its run loops call `scheduler_run_frame()`
 back-to-back as fast as the host allows, yielding between frame-units only for
 the heartbeat / daemon-poll (pump) or Ctrl-C / `--max-cycles` (REPL). An
 instruction-budget `scheduler.run N` schedules a `run_stop_event` that the inner
-`scheduler_run` clamps to, stopping mid-frame at exactly `N`; no argument runs
-until `scheduler.stop`. No `host_time()` feeds guest execution.
+`scheduler_run_instructions` clamps to, stopping mid-frame at exactly `N`; no argument runs
+until `scheduler.stop`. No `host_time_ms()` feeds guest execution.
 
 Property: a frame-unit is a constant number of instructions with the VBL at its
 boundary, so guest state at a given budget is a pure function of the budget on

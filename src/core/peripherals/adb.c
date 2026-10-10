@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include "adb.h"
+#include "checkpoint.h"
 #include "debug_mac.h"
 #include "keyboard.h"
 #include "log.h"
@@ -322,6 +323,11 @@ static bool kbd_byte_same_key(uint8_t b, uint8_t arg) {
 // Dropping a press does leave its own release to be delivered unpaired, which
 // a guest treats as a release of a key it does not think is held -- harmless,
 // and the benign direction of the two.
+//
+// Threading: the queue has no locking, and the full-queue paths move the
+// READ side (tail) from the writer.  That is sound because every producer
+// (host key events, delivered through the shell/input layer) and the
+// consumer (the transceiver's Talk replies) run on the emulator thread.
 static void kbd_enqueue(adb_t *adb, uint8_t byte) {
     unsigned int head = kbd_queue_next(adb->kbd_queue.head);
     if (head == adb->kbd_queue.tail) {
@@ -1071,7 +1077,10 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
         break;
 
     case CMD_TYPE_TALK:
-        // Build the reply buffer; bytes are delivered via output_cb state transitions
+        // Build the reply buffer; bytes are delivered via output_cb state
+        // transitions.  Address 0 is the host's own and no device answers
+        // there, so a Talk to it gets the no-reply (timeout) path like any
+        // other empty address -- deliberately not special-cased.
         prepare_talk_reply(adb, addr, reg);
         // Track the last Talk R0 target for auto-poll (the transceiver repeats it)
         if (reg == 0)

@@ -26,7 +26,7 @@
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
 #include "swim3.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>

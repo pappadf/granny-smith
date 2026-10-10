@@ -4,6 +4,7 @@
 
 #include "object.h"
 #include "parse.h"
+#include "status.h"
 #include "test_assert.h"
 
 #include "value.h"
@@ -12,18 +13,18 @@
 #include <string.h>
 
 static value_t parse_str(const char *s) {
-    return parse_literal_full(s, NULL, 0);
+    return parse_literal_whole_string(s, NULL, 0);
 }
 
 // Decimal integer.
 TEST(test_int_decimal) {
     value_t v = parse_str("42");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(42, (int)v.u);
     value_free(&v);
 
     v = parse_str("-13");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(-13, (int)v.i);
     value_free(&v);
 }
@@ -31,12 +32,12 @@ TEST(test_int_decimal) {
 // Hex integer in all spellings.
 TEST(test_int_hex) {
     value_t v = parse_str("0x1234");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(0x1234, (int)v.u);
     value_free(&v);
 
     v = parse_str("$DEAD_BEEF");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_TRUE(v.u == 0xDEADBEEFu);
     value_free(&v);
 }
@@ -44,7 +45,7 @@ TEST(test_int_hex) {
 // Binary integer.
 TEST(test_int_binary) {
     value_t v = parse_str("0b1010");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(10, (int)v.u);
     value_free(&v);
 }
@@ -52,12 +53,12 @@ TEST(test_int_binary) {
 // Octal and 0d prefix.
 TEST(test_int_octal_dec) {
     value_t v = parse_str("0o17");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(15, (int)v.u);
     value_free(&v);
 
     v = parse_str("0d100");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(100, (int)v.u);
     value_free(&v);
 }
@@ -65,7 +66,7 @@ TEST(test_int_octal_dec) {
 // Underscore digit separators are ignored.
 TEST(test_int_underscores) {
     value_t v = parse_str("1_000_000");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(1000000, (int)v.u);
     value_free(&v);
 }
@@ -73,32 +74,32 @@ TEST(test_int_underscores) {
 // `u` and `i` suffixes force kind.
 TEST(test_int_suffix) {
     value_t v = parse_str("100u");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     value_free(&v);
 
     v = parse_str("100i");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     value_free(&v);
 }
 
 // Floats: decimal, scientific, hex-float.
 TEST(test_floats) {
     value_t v = parse_str("1.0");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     ASSERT_TRUE(v.f == 1.0);
     value_free(&v);
 
     v = parse_str("1e6");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     ASSERT_TRUE(v.f == 1e6);
     value_free(&v);
 
     v = parse_str("1.5e-3");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     value_free(&v);
 
     v = parse_str("0x1.8p+1");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     ASSERT_TRUE(v.f == 3.0); // 0x1.8 * 2 = 3.0
     value_free(&v);
 }
@@ -106,26 +107,26 @@ TEST(test_floats) {
 // Literal keywords. `true`/`false` are the only boolean spellings in
 // shell v2 (§3.11) — `on`/`off`/`yes`/`no` were demoted to bool-slot
 // input coercions and now parse as plain identifier strings. `none` is
-// the V_NONE literal.
+// the VK_NONE literal.
 TEST(test_bools) {
     value_t v = parse_str("true");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
 
     v = parse_str("false");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(!v.b);
     value_free(&v);
 
     v = parse_str("none");
-    ASSERT_EQ_INT(V_NONE, v.kind);
+    ASSERT_EQ_INT(VK_NONE, v.kind);
     value_free(&v);
 
     const char *demoted[] = {"on", "off", "yes", "no"};
     for (size_t i = 0; i < 4; i++) {
         v = parse_str(demoted[i]);
-        ASSERT_EQ_INT(V_STRING, v.kind);
+        ASSERT_EQ_INT(VK_STRING, v.kind);
         value_free(&v);
     }
 }
@@ -133,22 +134,22 @@ TEST(test_bools) {
 // Strings: double-quoted with the standard escapes.
 TEST(test_strings) {
     value_t v = parse_str("\"hello\"");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "hello") == 0);
     value_free(&v);
 
     v = parse_str("\"line1\\nline2\\ttab\"");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "line1\nline2\ttab") == 0);
     value_free(&v);
 
     v = parse_str("\"with \\\"quotes\\\" inside\"");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "with \"quotes\" inside") == 0);
     value_free(&v);
 
     v = parse_str("\"\\x4Aoy\"");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "Joy") == 0);
     value_free(&v);
 }
@@ -163,7 +164,7 @@ TEST(test_string_unterminated) {
 // Bytes via the NUMBER:N suffix produce a fixed-width big-endian buffer.
 TEST(test_bytes_int_suffix) {
     value_t v = parse_str("0xDEAD_BEEF:4");
-    ASSERT_EQ_INT(V_BYTES, v.kind);
+    ASSERT_EQ_INT(VK_BYTES, v.kind);
     ASSERT_EQ_INT(4, (int)v.bytes.n);
     ASSERT_EQ_INT(0xDE, v.bytes.p[0]);
     ASSERT_EQ_INT(0xAD, v.bytes.p[1]);
@@ -175,12 +176,12 @@ TEST(test_bytes_int_suffix) {
 // Enum tags resolve against the supplied table.
 TEST(test_enum_lookup) {
     static const char *const phases[] = {"idle", "command", "data", "status"};
-    value_t v = parse_literal_full("data", phases, 4);
-    ASSERT_EQ_INT(V_ENUM, v.kind);
+    value_t v = parse_literal_whole_string("data", phases, 4);
+    ASSERT_EQ_INT(VK_ENUM, v.kind);
     ASSERT_EQ_INT(2, v.enm.idx);
     value_free(&v);
 
-    v = parse_literal_full("missing", phases, 4);
+    v = parse_literal_whole_string("missing", phases, 4);
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
 }
@@ -188,30 +189,30 @@ TEST(test_enum_lookup) {
 // Reserved-word rejection for object_validate_name.
 TEST(test_reserved_word_check) {
     char err[160];
-    ASSERT_TRUE(!object_validate_name("true", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("true", err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
-    ASSERT_TRUE(!object_validate_name("while", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("if", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("else", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("def", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("none", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("assert", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("while", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("if", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("else", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("def", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("none", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("assert", err, sizeof(err)) != STATUS_OK);
 
     // `on`/`yes` were demoted from reserved words (shell v2 §3.11).
-    ASSERT_TRUE(object_validate_name("on", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("on", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)) == STATUS_OK);
 
     // Bad identifiers.
-    ASSERT_TRUE(!object_validate_name("", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("1abc", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("a.b", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("a-b", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("1abc", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("a.b", err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(object_validate_name("a-b", err, sizeof(err)) != STATUS_OK);
 
     // Acceptable.
-    ASSERT_TRUE(object_validate_name("pc", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("d0", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("MBState", err, sizeof(err)));
-    ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("pc", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("d0", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("MBState", err, sizeof(err)) == STATUS_OK);
+    ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)) == STATUS_OK);
 }
 
 // Trailing garbage past a literal is an error.
@@ -291,8 +292,26 @@ TEST(test_leading_zero_is_decimal_not_octal) {
     value_free(&vo);
 }
 
+// A digit invalid for the base ends the literal in an error rather than
+// being swallowed (`0b12` is not 1), and the bytes-suffix width is read
+// with the integer grammar (`:010` is ten bytes, not octal eight).
+TEST(test_int_rejects_trailing_digits_and_letters) {
+    const char *bad[] = {"0b12", "0o18", "100u32", "12abc", "0x1g"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        value_t v = parse_str(bad[i]);
+        ASSERT_TRUE(val_is_error(&v));
+        value_free(&v);
+    }
+    value_t v = parse_str("0x1:010");
+    ASSERT_EQ_INT(VK_BYTES, v.kind);
+    ASSERT_EQ_INT(10, (int)v.bytes.n);
+    ASSERT_EQ_INT(1, v.bytes.p[9]);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_int_decimal);
+    RUN(test_int_rejects_trailing_digits_and_letters);
     RUN(test_int_hex);
     RUN(test_int_binary);
     RUN(test_int_octal_dec);

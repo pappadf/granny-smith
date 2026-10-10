@@ -26,11 +26,12 @@
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "egret.h"
 #include "floppy.h"
@@ -81,8 +82,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A (soldered 1 MB)
     // at physical 0 — its bottom is the on-board video frame buffer — and Bank B
@@ -90,28 +91,28 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // memory."  Each bank mirrors its installed size throughout its 64 MB window
     // (the boot ROM sizes a bank by that wrap).  This static (MMU-off) page table
     // models the physical map the ROM probes before it builds its PMMU tree.
-    uint32_t bank_a_pages = IISI_BANK_A_SIZE >> PAGE_SHIFT; // 1 MB / 4 KB = 256
-    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
+    uint32_t bank_a_pages = IISI_BANK_A_SIZE >> MEM_PAGE_SHIFT; // 1 MB / 4 KB = 256
+    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
-    uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
-    uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> PAGE_SHIFT;
-    uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> PAGE_SHIFT;
+    uint32_t bank_b_pages = bank_b_size >> MEM_PAGE_SHIFT;
+    uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> MEM_PAGE_SHIFT;
+    uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> MEM_PAGE_SHIFT;
     mac030_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, mac030_fill_page, true);
 
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = IISI_ROM_END >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = IISI_ROM_START >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = IISI_ROM_END >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << MEM_PAGE_SHIFT), false);
         }
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->memory_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
     // of Bank A (physical 0).  The OS reaches the screen through its PMMU tree
@@ -269,7 +270,6 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
-    setup_images(cfg);
 
     machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
@@ -277,7 +277,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
@@ -307,13 +307,13 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_blank_callback(st->rbv, iisi_rbv_blank, cfg);
     asc_set_irq_handler(st->asc, iisi_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
     st->mmu = mac030_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
-    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF, from power-on
+    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER; // from power-on
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A is the soldered
     // 1 MB at physical 0 (its bottom is the video frame buffer); Bank B is the
@@ -346,7 +346,9 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint) {
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }

@@ -18,6 +18,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "dafb.h"
@@ -143,7 +144,7 @@ static void mcu_bank_layout(config_t *cfg) {
 // it walks down from the top of the window and finds where the image repeats.
 static void mcu_map_ram(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
 
     for (int b = 0; b < st->bank_count; b++) {
         uint32_t size = st->bank_size[b];
@@ -157,8 +158,8 @@ static void mcu_map_ram(config_t *cfg) {
             if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
                 end = st->bank_start[o];
 
-        mac030_map_mirrored(start >> PAGE_SHIFT, (end - start) >> PAGE_SHIFT, ram_base + st->bank_image_off[b],
-                            size >> PAGE_SHIFT, mac030_fill_page, true);
+        mac030_map_mirrored(start >> MEM_PAGE_SHIFT, (end - start) >> MEM_PAGE_SHIFT, ram_base + st->bank_image_off[b],
+                            size >> MEM_PAGE_SHIFT, mac030_fill_page, true);
     }
 }
 
@@ -568,25 +569,25 @@ static void mcu_memory_layout_init(config_t *cfg) {
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
     // Apple-documented extent and let the mirror mask fold accesses).
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->memory_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
 
     // DAFB registers at $F9800000; VRAM pages direct at $F9000000.
-    memory_map_add(cfg->mem_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",
+    memory_map_add(cfg->memory_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",
                    (memory_interface_t *)dafb_reg_interface(st->dafb), st->dafb);
     uint8_t *vram = dafb_vram(st->dafb);
-    uint32_t vram_pages = dafb_vram_size(st->dafb) >> PAGE_SHIFT;
-    uint32_t vram_start = DAFB_VRAM_BASE >> PAGE_SHIFT;
+    uint32_t vram_pages = dafb_vram_size(st->dafb) >> MEM_PAGE_SHIFT;
+    uint32_t vram_start = DAFB_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < vram_pages && vram_start + i < g_page_count; i++)
-        mac030_fill_page(vram_start + i, vram + (i << PAGE_SHIFT), true);
+        mac030_fill_page(vram_start + i, vram + (i << MEM_PAGE_SHIFT), true);
     // Register VRAM with the bus resolver so 040 table walks / TT matches
     // reaching physical $F9xxxxxx resolve to the buffer.
-    memory_map_host_region(cfg->mem_map, "dafb_vram", vram, DAFB_VRAM_BASE, dafb_vram_size(st->dafb),
+    memory_map_host_region(cfg->memory_map, "dafb_vram", vram, DAFB_VRAM_BASE, dafb_vram_size(st->dafb),
                            /*writable*/ true);
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
     mac030_rom_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, mcu_map_ram, "MCU");
-    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+    memory_map_add(cfg->memory_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
                    &st->overlay.iface, &st->overlay);
 
     mac030_rom_overlay_arm(&mcu_st(cfg)->overlay);
@@ -605,7 +606,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     }
     cfg->machine_context = st;
 
-    // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
+    // Shared core (memory_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the two VIAs.
     mac030_build_core(cfg, &board->desc->common, cp);
     machine_part_irq(cfg, cp);

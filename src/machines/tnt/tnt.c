@@ -34,6 +34,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
@@ -73,7 +74,7 @@ void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the USER
     // arrays belong to the PPC MMU front end (logical fills, ppc_mmu.c)
@@ -274,9 +275,9 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     tnt_hh_remap(cfg);
 
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
-    uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    for (uint32_t p = 0; p < (cfg->machine->rom_size >> PAGE_SHIFT); p++)
-        tnt_fill_page((TNT_ROM_BASE >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
+    uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
+    for (uint32_t p = 0; p < (cfg->machine->rom_size >> MEM_PAGE_SHIFT); p++)
+        tnt_fill_page((TNT_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
 
     // Grand Central: the 128 KB island.
     st->gc_interface.read_uint8 = gc_read8;
@@ -288,7 +289,7 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->gc_interface.peek_uint8 = gc_peek8;
     st->gc_interface.peek_uint16 = gc_peek16;
     st->gc_interface.peek_uint32 = gc_peek32;
-    memory_map_add(cfg->mem_map, TNT_GC_BASE, TNT_GC_ISLAND_SIZE, "Grand Central", &st->gc_interface, cfg);
+    memory_map_add(cfg->memory_map, TNT_GC_BASE, TNT_GC_ISLAND_SIZE, "Grand Central", &st->gc_interface, cfg);
 
     // Hammerhead: the register window (page granularity is ours; the file
     // answers $000..$7FF and logs above it).
@@ -298,7 +299,7 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->hh_interface.write_uint8 = hh_write8;
     st->hh_interface.write_uint16 = hh_write16;
     st->hh_interface.write_uint32 = hh_write32;
-    memory_map_add(cfg->mem_map, TNT_HH_BASE, MEM_PAGE_SIZE, "Hammerhead", &st->hh_interface, cfg);
+    memory_map_add(cfg->memory_map, TNT_HH_BASE, MEM_PAGE_SIZE, "Hammerhead", &st->hh_interface, cfg);
 
     // PCI: the root first (the bridges create their buses on it), then the
     // bridges themselves — config ports, per-bridge bus, each bridge's own
@@ -317,8 +318,8 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->chaos_probe_interface.write_uint8 = chaos_probe_write8;
     st->chaos_probe_interface.write_uint16 = chaos_probe_write16;
     st->chaos_probe_interface.write_uint32 = chaos_probe_write32;
-    memory_map_add(cfg->mem_map, TNT_CHAOS_BASE, TNT_PCI_CFG_ADDR, "Chaos window", &st->chaos_probe_interface, cfg);
-    memory_map_add(cfg->mem_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
+    memory_map_add(cfg->memory_map, TNT_CHAOS_BASE, TNT_PCI_CFG_ADDR, "Chaos window", &st->chaos_probe_interface, cfg);
+    memory_map_add(cfg->memory_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
                    &st->chaos_probe_interface, cfg);
 }
 
@@ -345,7 +346,7 @@ static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t 
     config_t *cfg = (config_t *)ctx;
     bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(buf, ram + phys, len);
         else
@@ -361,7 +362,7 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
     config_t *cfg = (config_t *)ctx;
     bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(ram + phys, buf, len);
         else
@@ -605,19 +606,19 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // PDM; whether any TNT guest code times itself against the TB and
     // cares is a ladder observable.
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map =
+    cfg->memory_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
-    memory_map_set_host_fill(cfg->mem_map, tnt_fill_page);
+    memory_map_set_host_fill(cfg->memory_map, tnt_fill_page);
     const int cpu_model = cfg->machine->cpu_model;
     machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cpu_model);
     if (cfg->ppc) {
         memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
     }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
@@ -721,7 +722,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // channel 1.  No memory map of its own: the island decodes it.
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);

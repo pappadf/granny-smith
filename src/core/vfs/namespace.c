@@ -22,46 +22,46 @@
 // Lifecycle
 // ============================================================================
 
-gs_namespace_t *gs_namespace_new(const gs_namespace_ops_t *ops, void *ctx, gs_source_t *src) {
-    gs_namespace_t *ns = calloc(1, sizeof(*ns));
+ns_t *ns_new(const ns_ops_t *ops, void *ctx, source_t *src) {
+    ns_t *ns = calloc(1, sizeof(*ns));
     if (!ns)
         return NULL;
     ns->ops = ops;
     ns->ctx = ctx;
-    ns->src = gs_source_retain(src);
+    ns->src = source_retain(src);
     ns->refs = 1;
     return ns;
 }
 
-gs_namespace_t *gs_namespace_retain(gs_namespace_t *ns) {
+ns_t *ns_retain(ns_t *ns) {
     if (ns)
         ns->refs++;
     return ns;
 }
 
-void gs_namespace_release(gs_namespace_t *ns) {
+void ns_release(ns_t *ns) {
     if (!ns || --ns->refs > 0)
         return;
     if (ns->ops && ns->ops->close)
         ns->ops->close(ns);
-    gs_source_release(ns->src);
+    source_release(ns->src);
     free(ns);
 }
 
-void gs_namespace_close(gs_namespace_t *ns) {
-    gs_namespace_release(ns);
+void ns_close(ns_t *ns) {
+    ns_release(ns);
 }
 
 // ============================================================================
 // Wrappers
 // ============================================================================
 
-int gs_ns_list(gs_namespace_t *ns, const char *path, gs_dirent_t **out, int *count) {
+int ns_list(ns_t *ns, const char *path, ns_dirent_t **out, int *count) {
     *out = NULL;
     *count = 0;
     int cap = 64;
     for (;;) {
-        gs_dirent_t *buf = malloc((size_t)cap * sizeof(*buf));
+        ns_dirent_t *buf = malloc((size_t)cap * sizeof(*buf));
         if (!buf)
             return -ENOMEM;
         int n = 0;
@@ -80,12 +80,12 @@ int gs_ns_list(gs_namespace_t *ns, const char *path, gs_dirent_t **out, int *cou
     }
 }
 
-int gs_ns_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
+int ns_stat(ns_t *ns, const char *path, ns_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     return ns->ops->stat(ns, path ? path : "", out);
 }
 
-gs_source_t *gs_ns_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, int *err) {
+source_t *ns_open(ns_t *ns, const char *path, source_fork_t fork, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -97,7 +97,7 @@ gs_source_t *gs_ns_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, in
 // Helpers
 // ============================================================================
 
-int gs_ns_split(const char *path, char *buf, size_t buf_cap, const char **comps, int max) {
+int ns_split(const char *path, char *buf, size_t buf_cap, const char **comps, int max) {
     size_t n = strlen(path);
     if (n >= buf_cap)
         return -ENAMETOOLONG;
@@ -118,7 +118,7 @@ int gs_ns_split(const char *path, char *buf, size_t buf_cap, const char **comps,
     return count;
 }
 
-void gs_ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t out[GS_FINDER_INFO_SIZE]) {
+void ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t out[GS_FINDER_INFO_SIZE]) {
     memset(out, 0, GS_FINDER_INFO_SIZE);
     for (int i = 0; i < 4; i++) {
         out[i] = (uint8_t)(type >> (24 - 8 * i));
@@ -135,7 +135,7 @@ void gs_ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t 
 // A disk: an Apple Partition Map at block 1, or a bare HFS/HFS+, MFS, UFS
 // or ISO 9660 volume.  From the probe's head alone (the ISO descriptor at
 // 32 KiB is inside it).
-static bool disk_detect(const gs_probe_t *p) {
+static bool disk_detect(const format_probe_t *p) {
     const uint8_t *h = p->p.head;
     size_t n = p->p.head_len;
     if (n >= 1024 && image_apm_probe_magic(h + 512))
@@ -161,14 +161,14 @@ static bool disk_detect(const gs_probe_t *p) {
     return false;
 }
 
-static struct gs_namespace *disk_open(gs_source_t *data, gs_source_t *rsrc) {
+static struct ns *disk_open(source_t *data, source_t *rsrc) {
     (void)rsrc;
-    return gs_ns_open_disk(data);
+    return ns_open_disk(data);
 }
 
 // One registry row per peeler archive format.
 #define ARCHIVE_ROW(fmt, what)                                                                                         \
-    static bool fmt##_detect(const gs_probe_t *p) {                                                                    \
+    static bool fmt##_detect(const format_probe_t *p) {                                                                \
         int n = 0;                                                                                                     \
         const peel_format_desc_t *d = peel_formats(&n);                                                                \
         for (int i = 0; i < n; i++)                                                                                    \
@@ -176,25 +176,25 @@ static struct gs_namespace *disk_open(gs_source_t *data, gs_source_t *rsrc) {
                 return d[i].detect(&p->p);                                                                             \
         return false;                                                                                                  \
     }                                                                                                                  \
-    static struct gs_namespace *fmt##_open(gs_source_t *data, gs_source_t *rsrc) {                                     \
+    static struct ns *fmt##_open(source_t *data, source_t *rsrc) {                                                     \
         (void)rsrc;                                                                                                    \
-        return gs_ns_open_archive(data, #fmt);                                                                         \
+        return ns_open_archive(data, #fmt);                                                                            \
     }                                                                                                                  \
-    static const gs_format_t fmt##_format = {#fmt, GS_FMT_NAMESPACE, what, fmt##_detect, NULL, fmt##_open};
+    static const format_t fmt##_format = {#fmt, GS_FMT_NAMESPACE, what, fmt##_detect, NULL, fmt##_open};
 
 ARCHIVE_ROW(sit, "StuffIt archive")
 ARCHIVE_ROW(cpt, "Compact Pro archive")
 ARCHIVE_ROW(zip, "Zip archive")
 ARCHIVE_ROW(tar, "tar archive")
 
-static const gs_format_t disk_format = {
-    "disk", GS_FMT_NAMESPACE, "disk image (partition map or bare volume)", disk_detect, NULL, disk_open};
+static const format_t disk_format = {"disk", GS_FMT_NAMESPACE, "disk image (partition map or bare volume)", disk_detect,
+                                     NULL,   disk_open};
 
-void gs_ns_register_formats(void) {
-    gs_format_register(&disk_format);
-    gs_format_register(&sit_format);
-    gs_format_register(&cpt_format);
-    gs_format_register(&zip_format);
-    gs_format_register(&tar_format);
-    gs_format_set_wrapper_namespace(gs_ns_open_archive);
+void ns_register_formats(void) {
+    format_register(&disk_format);
+    format_register(&sit_format);
+    format_register(&cpt_format);
+    format_register(&zip_format);
+    format_register(&tar_format);
+    format_set_wrapper_namespace(ns_open_archive);
 }

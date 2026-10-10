@@ -23,7 +23,7 @@
 #include "config_space.h"
 #include "display.h"
 #include "pci.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -35,9 +35,9 @@
 // pixel, so it wants a hexadecimal one.
 #define ASSERT_EQ_HEX(a, b)                                                                                            \
     do {                                                                                                               \
-        unsigned _a = (unsigned)(a), _b = (unsigned)(b);                                                               \
-        if (_a != _b) {                                                                                                \
-            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, _a, _b);          \
+        unsigned a_ = (unsigned)(a), b_ = (unsigned)(b);                                                               \
+        if (a_ != b_) {                                                                                                \
+            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, a_, b_);          \
             exit(1);                                                                                                   \
         }                                                                                                              \
     } while (0)

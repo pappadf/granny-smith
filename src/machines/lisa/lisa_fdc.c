@@ -13,6 +13,7 @@
 
 #include "lisa_fdc.h"
 
+#include "checkpoint.h"
 #include "cpu.h" // cpu_get_pc — guest PC for the floppy command trace
 #include "floppy_geometry.h" // Sony zone geometry (public API, not the controller internals)
 #include "image.h"
@@ -399,7 +400,7 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
             // Re-point to the retained image so its writes (the boot
             // diskette's overmount_stamp) survive the eject+reinsert.  Do
             // NOT close the redundant fresh `image`: images are owned by the
-            // system's tracked list (config->images[]) and freed exactly once
+            // system's tracked list (config_add_image) and freed exactly once
             // at shutdown.  The boot disk's absolute fd= path and this
             // relative reinsert path are tracked as two separate entries, so
             // closing it here would leave a dangling entry that shutdown
@@ -633,7 +634,7 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
     // read back exactly what lisa_fdc_checkpoint wrote, in the same order.  The
     // diskette that was in the drive is resolved in the restored image list
-    // (the FDC does not own images -- cfg->images[] does) and inserted once
+    // (the FDC does not own images -- the tracked list does) and inserted once
     // the rest of the state is read.
     image_t *disk = NULL;
     if (cp) {
@@ -698,7 +699,7 @@ void lisa_fdc_delete(lisa_fdc_t *fdc) {
 //
 // The diskette itself is recorded by NAME, not by image_checkpoint: the ProFile
 // owns its image and can reopen it, but the FDC's image belongs to
-// cfg->images[] and is freed exactly once at shutdown, so a second owner here
+// the tracked list and is freed exactly once at shutdown, so a second owner here
 // would double-free.  mac_checkpoint_save_images (added to lisa_checkpoint_save
 // immediately above this call) carries the content; this only has to say which
 // entry was in the drive.

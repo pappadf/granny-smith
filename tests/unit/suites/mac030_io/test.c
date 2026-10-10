@@ -26,6 +26,7 @@
 #include "via.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define GLUE_MIRROR MAC030_GLUE_IO_MIRROR
@@ -34,18 +35,9 @@
 // --- Stubs ----------------------------------------------------------------
 // The bind() / byte-dispatch code in mac030_glue_io.c + mdu_io.c references
 // these symbols, but this test only calls the pure decode / resolve functions,
-// so trivial definitions satisfy the linker. (g_io_cpi_x256 == 0 makes
+// so trivial definitions satisfy the linker. (g_sprint_io.cpi_x256 == 0 makes
 // memory_io_penalty a no-op anyway.)
-uint32_t g_io_penalty_remainder = 0;
-uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi_x256 = 0;
-uint32_t *g_sprint_burndown_ptr = NULL;
-uint32_t g_io_stall_owed = 0;
-uint32_t g_sprint_unrun_slots = 0;
-uint64_t g_sprint_base_cycles = 0;
-uint32_t g_sprint_frac_x256 = 0;
-uint32_t g_sprint_total_slots = 0;
-uint32_t g_esync_period_x256 = 0;
+sprint_io_t g_sprint_io;
 
 const memory_interface_t *via_get_memory_interface(via_t *v) {
     (void)v;

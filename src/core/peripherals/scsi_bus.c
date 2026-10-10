@@ -30,6 +30,7 @@
 #include "scsi.h"
 
 #include "drive_catalog.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "log.h"
 #include "object.h"
@@ -38,13 +39,14 @@
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 LOG_USE_CATEGORY_NAME("scsi");
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -230,6 +232,13 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
     }
     phase_data_in(scsi, len);
     return len;
+}
+
+int scsi_data_in_copy(scsi_t *scsi, const void *src, int have, int alloc) {
+    int n = scsi_data_in_alloc(scsi, have, alloc);
+    if (n > 0)
+        memcpy(scsi->buf.data, src, (size_t)n);
+    return n;
 }
 
 // How long a target takes to turn a completed WRITE command into a DATA OUT
@@ -424,6 +433,23 @@ static uint8_t scsi_no_medium_asc(const scsi_t *scsi, int target) {
     return scsi->devices[target].type == scsi_dev_cdrom ? ASC_SONY_CADDY_NOT_INSERTED : ASC_MEDIUM_NOT_PRESENT;
 }
 
+// Can every block of [off, off + cnt) be read back from `img`?  Read in
+// staging pieces of whole blocks, so a verify of hundreds of blocks holds
+// no copy of them all.
+static bool scsi_medium_readable(image_t *img, size_t off, size_t cnt, uint16_t blk_sz) {
+    enum { PIECE_BLOCKS = 64 };
+    uint8_t *piece = malloc((size_t)PIECE_BLOCKS * blk_sz);
+    GS_ASSERTF(piece != NULL, "VERIFY: failed to allocate a %u-byte staging piece", PIECE_BLOCKS * blk_sz);
+    bool ok = true;
+    for (size_t done = 0; ok && done < cnt;) {
+        size_t n = cnt - done < (size_t)PIECE_BLOCKS * blk_sz ? cnt - done : (size_t)PIECE_BLOCKS * blk_sz;
+        ok = disk_read_data(img, off + done, piece, n) == n;
+        done += n;
+    }
+    free(piece);
+    return ok;
+}
+
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
@@ -459,7 +485,7 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
     uint64_t blk = scsi->devices[target].block_size;
     uint64_t off = (uint64_t)lba * blk;
     uint64_t cnt = (uint64_t)blocks * blk;
-    if (off + cnt > (uint64_t)img->raw_size)
+    if (off + cnt > (uint64_t)image_get_raw_size(img))
         return false;
     // Both are bounded by raw_size above, so narrowing is safe.
     if (off_out)
@@ -654,7 +680,7 @@ void run_cmd(scsi_t *scsi) {
 
         LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-            scsi->device_images[target] ? scsi->device_images[target]->raw_size : 0);
+            scsi->device_images[target] ? image_get_raw_size(scsi->device_images[target]) : 0);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
@@ -879,10 +905,8 @@ void run_cmd(scsi_t *scsi) {
                 pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
                 if (!is_disk)
                     pg0[3] = 1; // CD-ROMs list only page $00
-                int n = scsi_data_in_alloc(scsi, 4 + pg0[3], scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg0, 4 + pg0[3], scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $00 -> %d bytes", target, n);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg0, (size_t)n);
                 break;
             }
             if (page == 0xC7u && is_disk) {
@@ -917,10 +941,8 @@ void run_cmd(scsi_t *scsi) {
                 pg[59] = 3u; // OS identifier length...
                 memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
                 pg[72] = 3u; // max retry count
-                int n = scsi_data_in_alloc(scsi, (int)sizeof(pg), scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg, (int)sizeof(pg), scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $C7 -> %d bytes (%u MB)", target, n, cap_mb);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg, (size_t)n);
                 break;
             }
             LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
@@ -1159,9 +1181,7 @@ void run_cmd(scsi_t *scsi) {
             // Allocation length 0 is legal and means "no data".  This path
             // always had it right; it now shares the helper with everything
             // else that carries an allocation length.
-            int n = scsi_data_in_alloc(scsi, total, alloc_len);
-            if (n > 0)
-                memcpy(scsi->buf.data, resp, (size_t)n);
+            scsi_data_in_copy(scsi, resp, total, alloc_len);
         }
         break;
     }
@@ -1268,9 +1288,15 @@ void run_cmd(scsi_t *scsi) {
 
         if (!bytchk) {
             // "A BytChk bit of zero causes the verification to be simply a
-            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  A
-            // disk image has no medium to be wrong about, so an in-range
-            // verify succeeds.
+            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  The
+            // image's medium can be wrong in one way -- a block its backing
+            // file cannot give back -- and that is the unrecovered read error
+            // a READ of it reports.
+            if (!scsi_medium_readable(scsi->device_images[target], byte_off, byte_cnt, blk_sz)) {
+                LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+                break;
+            }
             phase_status(scsi, STATUS_GOOD);
             break;
         }
@@ -1404,13 +1430,21 @@ void command_complete(scsi_t *scsi) {
         // answer is known as soon as one byte differs.
         uint8_t *from_medium = malloc(blk_sz);
         GS_ASSERTF(from_medium != NULL, "VERIFY: failed to allocate a %u-byte compare block", blk_sz);
-        bool same = true;
-        for (size_t done = 0; same && done < byte_cnt; done += blk_sz) {
-            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz ||
-                memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
+        bool same = true, readable = true;
+        for (size_t done = 0; same && readable && done < byte_cnt; done += blk_sz) {
+            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz)
+                readable = false;
+            else if (memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
                 same = false;
         }
         free(from_medium);
+        if (!readable) {
+            // A block the medium cannot give back is a read error, as it is
+            // to READ -- not a miscompare against data never read.
+            LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            return;
+        }
         if (!same) {
             LOG(1, "SCSI VERIFY miscompare: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
             scsi_check_condition(scsi, SENSE_MISCOMPARE, ASC_MISCOMPARE_VERIFY, 0x00);
@@ -1636,8 +1670,8 @@ int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int
 // A device's medium came or went: the page refreshes the SCSI subtree on
 // this, as it does on notify:floppy for the floppy drives.
 static void scsi_notify_media(int id, bool present) {
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
-                   present ? "true" : "false");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
+                present ? "true" : "false");
 }
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,

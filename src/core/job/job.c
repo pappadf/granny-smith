@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct gs_job {
+struct job {
     uint32_t client;
     uint32_t req_id;
     char *src;
@@ -32,7 +32,7 @@ struct gs_job {
     // Pending annotations (job_annotate), in order: each is written once
     // the text before its position has been.
     struct job_annot *annot_head, *annot_tail;
-    gs_job_t *next;
+    job_t *next;
 };
 
 // One annotation record waiting for its position in the output stream.
@@ -64,9 +64,9 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv_queue = PTHREAD_COND_INITIALIZER; // job thread waits for work
 static pthread_cond_t g_cv_call = PTHREAD_COND_INITIALIZER; // job thread waits for its call
 static bool g_thread_running;
-static gs_job_t *g_queue, *g_queue_tail; // waiting
-static gs_job_t *g_active; // on the job thread
-static gs_job_t *g_done; // finished, result not yet written
+static job_t *g_queue, *g_queue_tail; // waiting
+static job_t *g_active; // on the job thread
+static job_t *g_done; // finished, result not yet written
 static emu_call_t g_call;
 static volatile uint32_t *g_wake_word; // the mailbox's REQ_HEAD (the emulator parks on it)
 
@@ -78,7 +78,7 @@ bool job_thread_running(void) {
     return g_thread_running;
 }
 
-static void job_free(gs_job_t *j) {
+static void job_free(job_t *j) {
     while (j->annot_head) {
         struct job_annot *a = j->annot_head;
         j->annot_head = a->next;
@@ -92,7 +92,7 @@ static void job_free(gs_job_t *j) {
 
 // --- output ------------------------------------------------------------------
 
-static void job_append_locked(gs_job_t *j, const char *text, size_t len) {
+static void job_append_locked(job_t *j, const char *text, size_t len) {
     if (j->out_cut)
         return;
     if (j->out_len + len > JOB_OUTPUT_MAX) {
@@ -118,7 +118,7 @@ static void job_append_locked(gs_job_t *j, const char *text, size_t len) {
 }
 
 bool job_output_append(const char *text, size_t len) {
-    gs_job_t *j = job_current();
+    job_t *j = job_current();
     if (!j) {
         // The emulator thread, serving a job's call?
         if (!g_call.serving)
@@ -134,7 +134,7 @@ bool job_output_append(const char *text, size_t len) {
     job_append_locked(j, text, len);
     pthread_mutex_unlock(&g_mu);
     if (g_wake_word)
-        gs_mailbox_notify(g_wake_word);
+        mailbox_notify(g_wake_word);
     return true;
 }
 
@@ -152,19 +152,19 @@ static size_t escaped_len(unsigned char c) {
 // Writes the job's buffered output as EVT_LOG output records, and its
 // annotations at their positions, as far as the ring has room.  Each text
 // record is sized by its ESCAPED length so the record fits the ring's record
-// bound (gs_mailbox_record_max) -- a 16 KiB chunk of control bytes escapes to
+// bound (mailbox_record_max) -- a 16 KiB chunk of control bytes escapes to
 // ~96 KiB, which could never fit the headless ring, and the flush used to
 // retry it forever.  A text record never crosses an annotation's position.
 // Returns whether everything was written.  g_mu held by the caller for the
 // buffer; the ring is the emulator thread's own.
-static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
-    size_t budget = gs_mailbox_record_max();
+static bool job_flush_output(struct mailbox *m, job_t *j) {
+    size_t budget = mailbox_record_max();
     budget = budget > JOB_RECORD_OVERHEAD + 64 ? budget - JOB_RECORD_OVERHEAD : 64;
     for (;;) {
         // An annotation whose position has been reached goes next.
         struct job_annot *a = j->annot_head;
         if (a && a->at <= j->out_base) {
-            if (!gs_mailbox_emit_output(m, a->json))
+            if (!mailbox_emit_output(m, a->json))
                 return false;
             j->annot_head = a->next;
             if (!j->annot_head)
@@ -216,7 +216,7 @@ static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
         json[o++] = '"';
         json[o++] = '}';
         json[o] = '\0';
-        bool ok = gs_mailbox_emit_output(m, json);
+        bool ok = mailbox_emit_output(m, json);
         free(json);
         if (!ok)
             return false;
@@ -229,8 +229,8 @@ static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
 // The job an annotation or a line of output belongs to right now: the one
 // on this job thread, or the one whose call the emulator thread is serving.
 // g_mu held.
-static gs_job_t *annotation_target_locked(void) {
-    gs_job_t *j = job_current();
+static job_t *annotation_target_locked(void) {
+    job_t *j = job_current();
     if (j)
         return j;
     return g_call.serving ? g_active : NULL;
@@ -239,7 +239,7 @@ static gs_job_t *annotation_target_locked(void) {
 // The entries of map `m` as JSON object members, without the braces (tagged
 // JSON, the bridge's form); "" for none.  Malloc'd, NULL on failure.
 static char *annotation_fields(const value_t *m) {
-    if (!m || m->kind != V_MAP || m->map.len == 0)
+    if (!m || m->kind != VK_MAP || m->map.len == 0)
         return strdup("");
     vbuf_t b = {0};
     value_format(m, VFMT_JSON_TAGGED, &b);
@@ -262,14 +262,14 @@ bool job_annotate(const char *kind, const value_t *fields, const value_t *reduce
     value_format(&kv, VFMT_JSON, &kjson);
     value_free(&kv);
     char *bodies[2] = {annotation_fields(fields), reduced ? annotation_fields(reduced) : NULL};
-    size_t max = gs_mailbox_record_max();
+    size_t max = mailbox_record_max();
     max = max > 16 ? max - 16 : max; // the record header
     struct job_annot *a = (struct job_annot *)calloc(1, sizeof(*a));
     bool placed = false, shortened = false;
     pthread_mutex_lock(&g_mu);
     // The job is resolved once: the ids in the record and the stream it joins
     // are the same job's.
-    gs_job_t *j = annotation_target_locked();
+    job_t *j = annotation_target_locked();
     // Nothing to attach it to, or past the 1 MiB cut: dropped.
     if (a && kjson.p && bodies[0] && j && !j->out_cut) {
         for (int pass = 0; pass < 2 && !a->json; pass++) {
@@ -314,11 +314,11 @@ bool job_annotate(const char *kind, const value_t *fields, const value_t *reduce
 }
 
 // The output every job has pending, to the ring.  Called from the drain.
-static void jobs_flush_output(struct gs_mailbox *m) {
+static void jobs_flush_output(struct mailbox *m) {
     pthread_mutex_lock(&g_mu);
     if (g_active)
         job_flush_output(m, g_active);
-    for (gs_job_t *j = g_done; j; j = j->next)
+    for (job_t *j = g_done; j; j = j->next)
         job_flush_output(m, j);
     pthread_mutex_unlock(&g_mu);
 }
@@ -327,7 +327,7 @@ static void jobs_flush_output(struct gs_mailbox *m) {
 // stopped, and the platform's notify targets that word.
 static void wake_emulator(void) {
     if (g_wake_word)
-        gs_mailbox_notify(g_wake_word);
+        mailbox_notify(g_wake_word);
 }
 
 // --- the job thread -------------------------------------------------------
@@ -340,7 +340,7 @@ static void *job_thread_main(void *arg) {
         pthread_mutex_lock(&g_mu);
         while (!g_queue)
             pthread_cond_wait(&g_cv_queue, &g_mu);
-        gs_job_t *j = g_queue;
+        job_t *j = g_queue;
         g_queue = j->next;
         if (!g_queue)
             g_queue_tail = NULL;
@@ -460,7 +460,7 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
 bool job_submit_script(uint32_t client, uint32_t req_id, const char *src, size_t len) {
     if (!g_thread_running)
         return false;
-    gs_job_t *j = (gs_job_t *)calloc(1, sizeof(*j));
+    job_t *j = (job_t *)calloc(1, sizeof(*j));
     if (!j)
         return false;
     j->src = (char *)malloc(len + 1);
@@ -487,9 +487,9 @@ static int cancel_matching(uint32_t client, uint32_t req_id, bool any_req) {
     int n = 0;
     pthread_mutex_lock(&g_mu);
     // Queued jobs never start: they finish at once, cancelled.
-    gs_job_t **pp = &g_queue;
+    job_t **pp = &g_queue;
     while (*pp) {
-        gs_job_t *j = *pp;
+        job_t *j = *pp;
         if (j->client == client && (any_req || j->req_id == req_id)) {
             *pp = j->next;
             if (g_queue_tail == j)
@@ -504,7 +504,7 @@ static int cancel_matching(uint32_t client, uint32_t req_id, bool any_req) {
         pp = &j->next;
     }
     if (g_queue && !g_queue_tail) {
-        for (gs_job_t *j = g_queue; j; j = j->next)
+        for (job_t *j = g_queue; j; j = j->next)
             g_queue_tail = j;
     }
     uint32_t stop_mode = 0;
@@ -539,12 +539,12 @@ int job_cancel_client(uint32_t client) {
 bool job_layer_has_work(void) {
     if (__atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL)
         return true;
-    gs_job_t *a = __atomic_load_n(&g_active, __ATOMIC_ACQUIRE);
+    job_t *a = __atomic_load_n(&g_active, __ATOMIC_ACQUIRE);
     return a && (__atomic_load_n(&a->out_len, __ATOMIC_ACQUIRE) != 0 ||
                  __atomic_load_n(&a->annot_head, __ATOMIC_ACQUIRE) != NULL);
 }
 
-int job_layer_service(struct gs_mailbox *m) {
+int job_layer_service(struct mailbox *m) {
     int written = 0;
     // 0. Output the jobs printed since the last drain, before anything
     // that might answer them.
@@ -595,7 +595,7 @@ int job_layer_service(struct gs_mailbox *m) {
     // returned), or an error.
     for (;;) {
         pthread_mutex_lock(&g_mu);
-        gs_job_t *j = g_done;
+        job_t *j = g_done;
         pthread_mutex_unlock(&g_mu);
         if (!j)
             break;
@@ -613,7 +613,7 @@ int job_layer_service(struct gs_mailbox *m) {
         pthread_mutex_unlock(&g_mu);
         if (!flushed)
             break;
-        if (!gs_mailbox_write_result(m, j->req_id, ok, m->out, (uint32_t)strlen(m->out), NULL, 0))
+        if (!mailbox_write_result(m, j->req_id, ok, m->out, (uint32_t)strlen(m->out), NULL, 0))
             break; // no room: keep it for the next drain
         written++;
         pthread_mutex_lock(&g_mu);
@@ -639,7 +639,7 @@ bool job_inline_enabled(void) {
 void job_inline_after_call(uint32_t mode_before) {
     if (!g_inline_frame || g_thread_running)
         return;
-    uint32_t client = gs_mailbox_serving_client();
+    uint32_t client = mailbox_serving_client();
     if (!client || job_glue_mode_id() == mode_before)
         return;
     // Frames until the mode ends -- what holding the call does in threaded

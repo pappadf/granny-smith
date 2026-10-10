@@ -68,7 +68,7 @@ Host source surface, mirroring `machine.videoin`:
 | `none` | default — mic absent, input records the converter's noise floor only |
 | `tone` | deterministic 600 Hz sawtooth (integer math, pure function of the checkpointed sample counter) |
 | `wav`  | a PCM16 WAV loaded via `machine.audioin.load <path>` (prepared offline at the codec rate; playback position checkpointed; `rewind()` restarts) |
-| `host` | the platform microphone through the `gs_audio_in_*` seam |
+| `host` | the platform microphone through the `platform_audio_in_*` seam |
 
 `gain` (percent, default 100) lets bring-up sweep input levels without
 re-mastering assets; it is a test-harness knob, applied *before* the
@@ -84,7 +84,7 @@ via the Filesystem tab and load it by its `/opfs/...` path.
 
 **For demos, `machine.audioin.inject <path>`** does everything `load`
 does and additionally asks the platform to MONITOR the file through the
-host speakers (`gs_audio_in_injected`; the browser plays the same OPFS
+host speakers (`platform_audio_in_injected`; the browser plays the same OPFS
 file via WebAudio), so an audience hears what the guest was just fed —
 e.g. `machine.audioin.inject "/opfs/upload/sr-open-the-trash.wav"`
 against a listening recognizer both plays the phrase aloud and opens the
@@ -120,8 +120,8 @@ slot is the index masked, on both sides.  The index arithmetic is two small
 pure files (`em_mic_ring.c`, `state/micRing.ts`), each tested at the wrap.
 
 > **The lifecycle notification fires on the GUEST's gate.**  `pSndInEn`
-> changing drives `gs_audio_in_state`, exactly as the VDC clock drives
-> `gs_video_in_state` — never the `machine.audioin` source setter, which
+> changing drives `platform_audio_in_state`, exactly as the VDC clock drives
+> `platform_video_in_state` — never the `machine.audioin` source setter, which
 > merely echoes back the selection the caller just made and re-enters the
 > frontend's own stream reconciliation.  That inversion raced the toggle
 > against itself and left the control switching itself back off.

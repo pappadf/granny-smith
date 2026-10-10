@@ -13,6 +13,7 @@
 #include "cops.h"
 
 #include "checkpoint.h"
+#include "lisa_mmu.h"
 #include "log.h"
 #include "mouse.h"
 #include "scheduler.h"
@@ -406,7 +407,6 @@ static void cops_mouse_tick(void *source, uint64_t data) {
     // by emitting a small corrective delta each report (small chunks stay under
     // the OS's acceleration threshold, so movement is ~1:1 and the loop converges).
     if (c->warp_active) {
-        extern bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
         // Read the live on-screen cursor (OS globals $CC00F0/$CC00F2, supervisor
         // context).  The OS scales COPS mouse deltas into screen pixels by a fixed
         // per-axis factor — X ×3/2 (the 720×364 pixel aspect), Y ×1 — measured

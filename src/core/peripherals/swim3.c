@@ -126,7 +126,7 @@ static uint8_t drive_sense(swim3_t *sw, bool peek) {
     case 8: // rNoDiskInPl — 1 = NO disk in place
         return present ? 0 : 1;
     case 9: // rNoWrProtect — 1 = NOT write-protected
-        return (present && disk->writable) ? 1 : 0;
+        return (present && image_is_writable(disk)) ? 1 : 0;
     case 10: // rNotTrack0 — 1 = head is not over track 0
         return (fd && floppy_drive_track(fd, FD) != 0) ? 1 : 0;
     case 11: // rNoTachPulse (GCR) / rIndexPulse (MFM)

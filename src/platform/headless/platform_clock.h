@@ -9,14 +9,11 @@
 
 #include <time.h>
 
-static inline double host_time(void) {
+// Monotonic host time in milliseconds
+static inline double host_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
-
-static inline double host_time_ms(void) {
-    return host_time() * 1000.0;
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
 #endif // PLATFORM_CLOCK_H

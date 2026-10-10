@@ -12,12 +12,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Tab completion maximum items.  Sized for the typed-tree root, which
-// has ~70 root methods plus ~12 attached child objects (cpu, memory,
-// scsi, floppy, mouse, keyboard, screen, vfs, find, debugger, …).  The
-// cap exists so the JSON-encoded completion buffer (4 KiB) doesn't
-// overflow; bumping past ~250 risks that.
-#define CMD_MAX_COMPLETIONS 200
+// Sanity bound on the candidates of one completion.  The item table grows on
+// demand; this only stops a pathological source (a directory of tens of
+// thousands of entries) from building a menu nobody can read -- past it
+// the result says `truncated`.
+#define CMD_MAX_COMPLETIONS 4096
 
 // What a candidate is (shell.complete's detail `kind`).
 typedef enum {
@@ -33,19 +32,28 @@ typedef enum {
 // Text of a comp_kind_t ("value", "object", …).
 const char *comp_kind_name(comp_kind_t k);
 
-// Completion result: a fixed-capacity list of borrowed candidate
-// strings (they point at static class-member names or a per-call
-// string pool inside the completer), plus the half-open [start, end)
-// span of line text each candidate replaces. `end` is the cursor;
-// `start` is the current word's first character — except for
-// filesystem-path candidates, which are bare entry names and replace
-// only the basename after the word's last '/'.
+// Completion result: a growable list of candidate strings (each points at a
+// static class-member name or at a string the completion owns), plus the
+// half-open [start, end) span of line text each candidate replaces. `end` is
+// the cursor; `start` is the current word's first character — except for
+// filesystem-path candidates, which are bare entry names and replace only
+// the basename after the word's last '/'.
 struct completion {
-    const char *items[CMD_MAX_COMPLETIONS];
-    // Detail per item (borrowed like items): kind and one-line doc.
-    uint8_t kinds[CMD_MAX_COMPLETIONS];
-    const char *docs[CMD_MAX_COMPLETIONS];
+    const char **items;
+    // Detail per item: kind and one-line doc (static strings).
+    uint8_t *kinds;
+    const char **docs;
     int count;
+    int cap; // allocated length of items / kinds / docs
+    // Composed candidate strings (indexed children, `name.`, `name=`, file
+    // names) this completion owns; completion_free releases them.
+    char **owned;
+    int n_owned;
+    int cap_owned;
+    // Dedup index: an open-addressed table of item indices (-1 empty), kept
+    // at least twice `cap` so push_match finds a duplicate in O(1).
+    int *seen;
+    int seen_cap;
     int start;
     int end;
     // The detail the next pushed candidates get (set by the completer).
@@ -58,18 +66,21 @@ struct completion {
     char ctx_method[256];
     int ctx_arg_index;
     const char *ctx_arg_name;
-    // Set when candidates were dropped: the per-call string pool or the
-    // item table filled.
+    // Set when candidates were dropped: CMD_MAX_COMPLETIONS was reached,
+    // a candidate did not fit a buffer, or memory ran out.
     bool truncated;
 };
 
-// Lifetime: `items` and `docs` may point into a per-call pool inside the
-// completer, so the next shell_complete() call invalidates them.  A caller
-// that keeps them longer copies them first (shell_meta_complete_provider
-// does).
+// Lifetime: everything `items` and `docs` point at lives until
+// completion_free (or the next shell_complete on the same struct).  Each
+// struct completion has its own storage, so two completions never share it.
 
-// Run tab completion for the given line at cursor_pos.
-// Fills out->items with matching completions.
+// Run tab completion for the given line at cursor_pos into `out`, which must
+// be zero-initialised or hold an earlier result (emptied first).  Release it
+// with completion_free.
 void shell_complete(const char *line, int cursor_pos, struct completion *out);
+
+// Release what a completion holds and leave it empty (zeroed).
+void completion_free(struct completion *c);
 
 #endif // CMD_COMPLETE_H

@@ -26,6 +26,7 @@
 // what the dispatcher receives from a guest stwbrx/lwbrx — the test
 // swaps with TNT_LE32 like a guest would.
 
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "ppc.h"
 #include "tnt.h"

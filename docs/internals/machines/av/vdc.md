@@ -100,7 +100,7 @@ the line when *either* latch is pending, and the two acks are independent:
 | `BusSize` `$04C` | 0 = 32-bit (video-in possible), 1 = 64-bit graphics-only |
 
 `VDCClk` is also the camera lifecycle signal: transitions call
-`gs_video_in_state`, which the browser turns into attaching or stopping the
+`platform_video_in_state`, which the browser turns into attaching or stopping the
 `MediaStreamTrack`, so the camera light is on only while the guest captures.
 
 ## Host video sources — `machine.videoin`
@@ -123,8 +123,8 @@ The default is `none`, so a machine that nobody plugs a camera into behaves
 exactly as it did before this landed: the vdig still opens, and reports no
 signal lock.
 
-`host` reaches the browser through the `gs_video_in_*` seam in
-[src/core/system.h](../../../../src/core/system.h) — weak defaults model "no
+`host` reaches the browser through the `platform_video_in_*` seam in
+[src/core/platform_hooks.h](../../../../src/core/platform_hooks.h) — weak defaults model "no
 camera", and [src/platform/wasm/em_camera.c](../../../../src/platform/wasm/em_camera.c)
 overrides them with a double-buffered frame slot pair in the shared wasm heap
 (the audio-ring pattern inverted; see [../../guide/web.md](../../../guide/web.md)).

@@ -10,51 +10,52 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("mailbox");
 
-__attribute__((weak)) void gs_mailbox_notify(volatile uint32_t *word) {
+__attribute__((weak)) void mailbox_notify(volatile uint32_t *word) {
     (void)word;
 }
 
 // The I/O worker's completions wake the emulator thread the way a request
 // does: on REQ_HEAD, where the idle wait parks.
 static volatile uint32_t *g_wake_word;
-// The mailbox serving a leaf right now (gs_result_defer looks here), and
+// The mailbox serving a leaf right now (mailbox_result_defer looks here), and
 // the one completions go to (there is one mailbox per process).
-static gs_mailbox_t *g_serving_mailbox;
-static gs_mailbox_t *g_mailbox_for_completion;
+static mailbox_t *g_serving_mailbox;
+static mailbox_t *g_mailbox_for_completion;
 static void wake_on_req_head(void) {
     if (g_wake_word)
-        gs_mailbox_notify(g_wake_word);
+        mailbox_notify(g_wake_word);
 }
 
-// A quarter of the event ring (gs_mailbox_set_record_max); the default holds
+// A quarter of the event ring (mailbox_set_record_max); the default holds
 // before any mailbox exists.
 static size_t g_record_max = 16u << 10;
 
-void gs_mailbox_set_record_max(size_t bytes) {
+void mailbox_set_record_max(size_t bytes) {
     __atomic_store_n(&g_record_max, bytes, __ATOMIC_RELEASE);
 }
 
-size_t gs_mailbox_record_max(void) {
+size_t mailbox_record_max(void) {
     return __atomic_load_n(&g_record_max, __ATOMIC_ACQUIRE);
 }
 
-size_t gs_mailbox_region_bytes(uint32_t req_bytes, uint32_t evt_bytes) {
+size_t mailbox_region_bytes(uint32_t req_bytes, uint32_t evt_bytes) {
     return GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + req_bytes + evt_bytes;
 }
 
-volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_bytes, uint32_t evt_bytes,
-                                   gs_mailbox_eval_fn eval) {
+volatile uint32_t *mailbox_init(mailbox_t *m, void *region, uint32_t req_bytes, uint32_t evt_bytes,
+                                mailbox_eval_fn eval) {
     memset(m, 0, sizeof(*m));
     m->out = (char *)malloc(GS_MBX_RESULT_OUT);
     m->args = (char *)malloc(GS_MBX_ARGS_MAX + 1u);
     m->outbuf = (char *)malloc(GS_MBX_OUTPUT_MAX + 4u);
     if (!m->out || !m->args || !m->outbuf) {
-        gs_mailbox_free(m);
+        mailbox_free(m);
         return NULL;
     }
     uint32_t ctrl_bytes = GS_MBX_CTRL_WORDS * 4u;
@@ -64,7 +65,7 @@ volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_b
     mbx_ring_init(&m->req, m->ctrl, GS_MBX_C_REQ_HEAD, GS_MBX_C_REQ_TAIL, req, req_bytes);
     mbx_ring_init(&m->evt, m->ctrl, GS_MBX_C_EVT_HEAD, GS_MBX_C_EVT_TAIL, req + req_bytes, evt_bytes);
     m->eval = eval;
-    gs_mailbox_set_record_max(evt_bytes / 4u);
+    mailbox_set_record_max(evt_bytes / 4u);
     for (int i = 0; i < GS_MBX_CTRL_WORDS; i++)
         m->ctrl[i] = 0;
     m->ctrl[GS_MBX_C_MAGIC] = GS_MAILBOX_MAGIC;
@@ -82,7 +83,7 @@ volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_b
     return m->ctrl;
 }
 
-void gs_mailbox_free(gs_mailbox_t *m) {
+void mailbox_free(mailbox_t *m) {
     free(m->out);
     free(m->args);
     free(m->outbuf);
@@ -93,17 +94,17 @@ void gs_mailbox_free(gs_mailbox_t *m) {
         g_mailbox_for_completion = NULL;
 }
 
-void gs_mailbox_set_capture_output(gs_mailbox_t *m, bool on) {
+void mailbox_set_capture_output(mailbox_t *m, bool on) {
     m->capture_output = on;
 }
 
-uint32_t gs_mailbox_serving_client(void) {
-    gs_mailbox_t *m = g_mailbox_for_completion;
+uint32_t mailbox_serving_client(void) {
+    mailbox_t *m = g_mailbox_for_completion;
     return m ? m->client : 0;
 }
 
-bool gs_mailbox_output_append(const char *text, size_t len) {
-    gs_mailbox_t *m = g_serving_mailbox;
+bool mailbox_output_append(const char *text, size_t len) {
+    mailbox_t *m = g_serving_mailbox;
     if (!m || !m->serving || !m->capture_output)
         return false;
     if (m->outbuf_cut)
@@ -132,7 +133,7 @@ typedef struct {
 static transfer_t g_transfer[GS_MBX_TRANSFER_MAX];
 static uint32_t g_transfer_seq;
 
-uint32_t gs_transfer_publish(uint32_t io_job) {
+uint32_t mailbox_transfer_publish(uint32_t io_job) {
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
         if (g_transfer[i].handle)
             continue;
@@ -158,7 +159,7 @@ static bool transfer_ack(uint32_t handle) {
     return false;
 }
 
-void gs_transfer_release(uint32_t handle) {
+void mailbox_transfer_release(uint32_t handle) {
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
         if (g_transfer[i].handle != handle || !handle)
             continue;
@@ -167,26 +168,26 @@ void gs_transfer_release(uint32_t handle) {
     }
 }
 
-void gs_mailbox_set_ready(gs_mailbox_t *m) {
+void mailbox_set_ready(mailbox_t *m) {
     mbx_store(m->ctrl, GS_MBX_C_READY, 1u);
-    gs_mailbox_notify(&m->ctrl[GS_MBX_C_READY]);
+    mailbox_notify(&m->ctrl[GS_MBX_C_READY]);
 }
 
-void gs_mailbox_heartbeat(gs_mailbox_t *m) {
+void mailbox_heartbeat(mailbox_t *m) {
     m->heartbeat++;
     __atomic_store_n(&m->ctrl[GS_MBX_C_HEARTBEAT], m->heartbeat, __ATOMIC_RELAXED);
 }
 
-bool gs_mailbox_has_requests(const gs_mailbox_t *m) {
+bool mailbox_has_requests(const mailbox_t *m) {
     return mbx_load(m->ctrl, GS_MBX_C_REQ_HEAD) != m->req.rd || job_layer_has_work() || io_worker_has_work();
 }
 
-static void stat_add(gs_mailbox_t *m, int word, uint32_t n) {
+static void stat_add(mailbox_t *m, int word, uint32_t n) {
     __atomic_store_n(&m->ctrl[word], m->ctrl[word] + n, __ATOMIC_RELAXED);
 }
 
-bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t json_len,
-                             const char *output, uint32_t out_len) {
+bool mailbox_write_result(mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t json_len, const char *output,
+                          uint32_t out_len) {
     if (!output)
         out_len = 0;
     uint32_t json_pad = (json_len + 3u) & ~3u;
@@ -206,17 +207,17 @@ bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *
     return true;
 }
 
-bool gs_mailbox_write_progress(gs_mailbox_t *m, uint32_t id, uint64_t done, uint64_t total) {
+bool mailbox_write_progress(mailbox_t *m, uint32_t id, uint64_t done, uint64_t total) {
     char json[96];
     snprintf(json, sizeof json, "{\"id\":%u,\"done\":%llu,\"total\":%llu}", (unsigned)id, (unsigned long long)done,
              (unsigned long long)total);
-    return gs_mailbox_emit(m, GS_MBX_EVT_PROGRESS, json);
+    return mailbox_emit(m, GS_MBX_EVT_PROGRESS, json);
 }
 
 // Writes the held/built answer as an EVT_RESULT (with the output captured
 // for it).  False when the event ring has no room: the answer stays held.
-static bool write_result(gs_mailbox_t *m) {
-    if (!gs_mailbox_write_result(m, m->out_id, m->out_ok != 0, m->out, m->out_len, m->outbuf, m->held_out_len))
+static bool write_result(mailbox_t *m) {
+    if (!mailbox_write_result(m, m->out_id, m->out_ok != 0, m->out, m->out_len, m->outbuf, m->held_out_len))
         return false;
     m->held = false;
     m->held_out_len = 0;
@@ -225,7 +226,7 @@ static bool write_result(gs_mailbox_t *m) {
 
 // The words every control request starts with; false (and an error
 // answer) when the record is too short.
-static bool ctl_words(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len, uint32_t *client, uint32_t *arg) {
+static bool ctl_words(mailbox_t *m, const uint8_t *p, uint32_t payload_len, uint32_t *client, uint32_t *arg) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_CTL_ID) : 0;
     m->out_ok = 0;
     if (payload_len < 4u * GS_MBX_CTL_WORDS) {
@@ -238,7 +239,7 @@ static bool ctl_words(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len, u
     return true;
 }
 
-static void answer_bool(gs_mailbox_t *m, bool b) {
+static void answer_bool(mailbox_t *m, bool b) {
     m->out_ok = 1;
     m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, b ? "true" : "false");
 }
@@ -246,7 +247,7 @@ static void answer_bool(gs_mailbox_t *m, bool b) {
 // REQ_SCRIPT: queued for the job thread (its result comes from
 // job_layer_service when the job ends), or run inline when there is no
 // job thread.  Returns whether an answer was built now.
-static bool serve_script(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
+static bool serve_script(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_SCRIPT_ID) : 0;
     m->out_ok = 0;
     if (payload_len < 4u * GS_MBX_SCRIPT_WORDS) {
@@ -290,7 +291,7 @@ static bool serve_script(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len
 // Serves one REQ_EVAL: fills m->out / out_id / out_ok.  A malformed request
 // answers with an error result rather than being dropped, so the client's
 // promise settles.  Returns whether an answer exists now (false: deferred).
-static bool serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
+static bool serve_eval(mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_EVAL_ID) : 0;
     m->out_ok = 0;
     if (payload_len < 4u * GS_MBX_EVAL_WORDS) {
@@ -328,17 +329,17 @@ static bool serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) 
     m->held_out_len = m->outbuf_len;
     stat_add(m, GS_MBX_C_STAT_REQUESTS, 1);
     // A deferred leaf has no answer yet: the request is consumed, the
-    // answer comes with gs_result_complete (what it printed before
+    // answer comes with mailbox_result_complete (what it printed before
     // deferring goes with the answer then).
     if (m->deferred)
         m->held_out_len = 0;
     return !m->deferred;
 }
 
-// The mailbox serving a leaf right now (gs_result_defer looks here).
+// The mailbox serving a leaf right now (mailbox_result_defer looks here).
 
-uint32_t gs_result_defer(void) {
-    gs_mailbox_t *m = g_serving_mailbox;
+uint32_t mailbox_result_defer(void) {
+    mailbox_t *m = g_serving_mailbox;
     if (m && m->serving && !m->deferred) {
         if (m->n_defers >= GS_MBX_DEFER_MAX)
             return 0; // too many in flight: the leaf works now
@@ -356,12 +357,12 @@ uint32_t gs_result_defer(void) {
     return job_call_defer();
 }
 
-void gs_result_complete(uint32_t token, bool ok, const char *json) {
+void mailbox_result_complete(uint32_t token, bool ok, const char *json) {
     if (token & 0x80000000u) {
         job_call_complete(token, ok, json);
         return;
     }
-    gs_mailbox_t *m = g_mailbox_for_completion;
+    mailbox_t *m = g_mailbox_for_completion;
     if (!m)
         return;
     for (int i = 0; i < m->n_defers; i++) {
@@ -383,7 +384,7 @@ void gs_result_complete(uint32_t token, bool ok, const char *json) {
         }
         // No room on the event ring is the one thing that can go wrong
         // here; the answer is then held like a drain's result.
-        if (!gs_mailbox_write_result(m, req_id, ok, json, (uint32_t)len, NULL, 0)) {
+        if (!mailbox_write_result(m, req_id, ok, json, (uint32_t)len, NULL, 0)) {
             m->out_id = req_id;
             m->out_ok = ok ? 1 : 0;
             memcpy(m->out, json, len + 1);
@@ -394,21 +395,21 @@ void gs_result_complete(uint32_t token, bool ok, const char *json) {
             return;
         }
         mbx_publish(&m->evt);
-        gs_mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         return;
     }
 }
 
-void gs_result_complete_ok(uint32_t token) {
-    gs_result_complete(token, true, "true");
+void mailbox_result_complete_ok(uint32_t token) {
+    mailbox_result_complete(token, true, "true");
 }
 
-void gs_result_bind_io(uint32_t token, uint32_t io_job) {
+void mailbox_result_bind_io(uint32_t token, uint32_t io_job) {
     if (token & 0x80000000u) {
         job_call_bind_io(token, io_job);
         return;
     }
-    gs_mailbox_t *m = g_mailbox_for_completion;
+    mailbox_t *m = g_mailbox_for_completion;
     if (!m)
         return;
     for (int i = 0; i < m->n_defers; i++)
@@ -416,10 +417,10 @@ void gs_result_bind_io(uint32_t token, uint32_t io_job) {
             m->defers[i].io_job = io_job;
 }
 
-uint32_t gs_result_request_id(uint32_t token) {
+uint32_t mailbox_result_request_id(uint32_t token) {
     if (token & 0x80000000u)
         return job_call_request_id(token);
-    gs_mailbox_t *m = g_mailbox_for_completion;
+    mailbox_t *m = g_mailbox_for_completion;
     if (!m)
         return 0;
     for (int i = 0; i < m->n_defers; i++)
@@ -428,11 +429,11 @@ uint32_t gs_result_request_id(uint32_t token) {
     return 0;
 }
 
-void gs_result_progress(uint32_t token, uint64_t done, uint64_t total) {
-    gs_mailbox_t *m = g_mailbox_for_completion;
-    uint32_t id = gs_result_request_id(token);
+void mailbox_result_progress(uint32_t token, uint64_t done, uint64_t total) {
+    mailbox_t *m = g_mailbox_for_completion;
+    uint32_t id = mailbox_result_request_id(token);
     if (m && id)
-        gs_mailbox_write_progress(m, id, done, total);
+        mailbox_write_progress(m, id, done, total);
 }
 
 // REQ_CANCEL names a request: a script job of the client, or a request a
@@ -440,7 +441,7 @@ void gs_result_progress(uint32_t token, uint64_t done, uint64_t total) {
 static bool cancel_request(uint32_t client, uint32_t target) {
     if (job_cancel(client, target) > 0)
         return true;
-    gs_mailbox_t *m = g_mailbox_for_completion;
+    mailbox_t *m = g_mailbox_for_completion;
     if (!m)
         return false;
     for (int i = 0; i < m->n_defers; i++)
@@ -449,7 +450,7 @@ static bool cancel_request(uint32_t client, uint32_t target) {
     return false;
 }
 
-void gs_result_complete_error(uint32_t token, const char *message) {
+void mailbox_result_complete_error(uint32_t token, const char *message) {
     char buf[512];
     size_t o = (size_t)snprintf(buf, sizeof buf, "{\"error\":\"");
     for (const char *c = message ? message : "failed"; *c && o + 8 < sizeof buf; c++) {
@@ -463,14 +464,14 @@ void gs_result_complete_error(uint32_t token, const char *message) {
         }
     }
     snprintf(buf + o, sizeof buf - o, "\"}");
-    gs_result_complete(token, false, buf);
+    mailbox_result_complete(token, false, buf);
 }
 
-uint32_t gs_mailbox_current_client(const gs_mailbox_t *m) {
+uint32_t mailbox_current_client(const mailbox_t *m) {
     return m->client;
 }
 
-bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json) {
+bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json) {
     if (mbx_load(m->ctrl, GS_MBX_C_STATUS) == GS_MBX_STATUS_LOST)
         return false;
     uint32_t n = (uint32_t)strlen(json);
@@ -485,11 +486,11 @@ bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json) {
     memcpy(p + 4 * GS_MBX_EVENT_WORDS, json, n);
     stat_add(m, GS_MBX_C_STAT_EVENTS, 1);
     mbx_publish(&m->evt);
-    gs_mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+    mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
     return true;
 }
 
-bool gs_mailbox_emit_output(gs_mailbox_t *m, const char *json) {
+bool mailbox_emit_output(mailbox_t *m, const char *json) {
     if (mbx_load(m->ctrl, GS_MBX_C_STATUS) == GS_MBX_STATUS_LOST)
         return true; // nobody to deliver to: let the job drop it
     uint32_t n = (uint32_t)strlen(json);
@@ -504,7 +505,7 @@ bool gs_mailbox_emit_output(gs_mailbox_t *m, const char *json) {
     return true;
 }
 
-int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) {
+int mailbox_drain(mailbox_t *m, double budget_us, double (*now_us)(void)) {
     if (mbx_load(m->ctrl, GS_MBX_C_STATUS) == GS_MBX_STATUS_LOST)
         return 0;
     double t0 = now_us ? now_us() : 0.0;
@@ -525,7 +526,7 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
             LOG(0, "mailbox: request ring corrupt at %u; mailbox lost", (unsigned)m->req.rd);
             mbx_store(m->ctrl, GS_MBX_C_STATUS, GS_MBX_STATUS_LOST);
             mbx_abandon(&m->req, head);
-            gs_mailbox_notify(&m->ctrl[GS_MBX_C_STATUS]);
+            mailbox_notify(&m->ctrl[GS_MBX_C_STATUS]);
             break;
         }
         if (rec.kind == MBX_R_PAD) {
@@ -581,7 +582,7 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
     io_worker_service();
     if (written || mbx_unpublished(&m->evt)) {
         mbx_publish(&m->evt);
-        gs_mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
         if (now_us) {
             double us = now_us() - t0;
             if (us > (double)m->ctrl[GS_MBX_C_STAT_DRAIN_US])
@@ -593,7 +594,7 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
 
 // === An in-process client =====================================================
 
-void gs_mailbox_client_init(gs_mailbox_client_t *c, gs_mailbox_t *m) {
+void mailbox_client_init(mailbox_client_t *c, mailbox_t *m) {
     memset(c, 0, sizeof(*c));
     c->m = m;
     uint8_t *base = (uint8_t *)m->ctrl;
@@ -604,14 +605,14 @@ void gs_mailbox_client_init(gs_mailbox_client_t *c, gs_mailbox_t *m) {
     c->next_id = 1;
 }
 
-static uint32_t client_next_id(gs_mailbox_client_t *c) {
+static uint32_t client_next_id(mailbox_client_t *c) {
     uint32_t id = c->next_id++;
     if (c->next_id > 0x7fffffffu)
         c->next_id = 1;
     return id;
 }
 
-uint32_t gs_mailbox_client_script(gs_mailbox_client_t *c, uint32_t client, const char *src, size_t len) {
+uint32_t mailbox_client_script(mailbox_client_t *c, uint32_t client, const char *src, size_t len) {
     if (len > GS_MBX_SCRIPT_MAX)
         return 0;
     uint32_t n = (uint32_t)len;
@@ -629,7 +630,7 @@ uint32_t gs_mailbox_client_script(gs_mailbox_client_t *c, uint32_t client, const
     return id;
 }
 
-static uint32_t client_ctl(gs_mailbox_client_t *c, uint32_t kind, uint32_t client, uint32_t arg) {
+static uint32_t client_ctl(mailbox_client_t *c, uint32_t kind, uint32_t client, uint32_t arg) {
     uint32_t at = mbx_reserve(&c->req, kind, MBX_HDR_BYTES + 4u * GS_MBX_CTL_WORDS);
     if (at == UINT32_MAX)
         return 0;
@@ -642,15 +643,15 @@ static uint32_t client_ctl(gs_mailbox_client_t *c, uint32_t kind, uint32_t clien
     return id;
 }
 
-uint32_t gs_mailbox_client_cancel(gs_mailbox_client_t *c, uint32_t client, uint32_t target_id) {
+uint32_t mailbox_client_cancel(mailbox_client_t *c, uint32_t client, uint32_t target_id) {
     return client_ctl(c, GS_MBX_REQ_CANCEL, client, target_id);
 }
 
-uint32_t gs_mailbox_client_mode_stop(gs_mailbox_client_t *c, uint32_t client, uint32_t owner) {
+uint32_t mailbox_client_mode_stop(mailbox_client_t *c, uint32_t client, uint32_t owner) {
     return client_ctl(c, GS_MBX_REQ_MODE_STOP, client, owner);
 }
 
-uint32_t gs_mailbox_client_take(gs_mailbox_client_t *c, uint8_t *buf, size_t cap, uint32_t *len) {
+uint32_t mailbox_client_take(mailbox_client_t *c, uint8_t *buf, size_t cap, uint32_t *len) {
     for (;;) {
         uint32_t head = mbx_load(c->m->ctrl, GS_MBX_C_EVT_HEAD);
         mbx_rec_t rec;

@@ -1,9 +1,8 @@
 #!/bin/bash
 # Integration test: Debug tooling — `find` family. Runs the headless
 # emulator with test.script, captures stdout, and greps for expected
-# markers. Each `find.<sub>` method dispatches into the legacy
-# cmd_find_handler via shell_dispatch, so the parser's match-format
-# and diagnostic output is unchanged.
+# markers. Each `debug.find.<sub>` method returns a typed list of hits
+# (src/core/debug/cmd_find.c); the script echoes markers derived from it.
 
 # Note: no `set -e` — the test.script deliberately exercises error paths
 # (bad pattern, bad range, non-hex tokens, out-of-range values), which
@@ -49,7 +48,7 @@ expect "word" "methods(\"find\") should list 'word'"
 expect "long" "methods(\"find\") should list 'long'"
 
 # Typed find results: the script echoes stable markers derived from
-# the returned V_LIST values ($0040A714 is where "Apple" lives in the
+# the returned VK_LIST values ($0040A714 is where "Apple" lives in the
 # Plus ROM mirror).
 expect 'str-first=0040a714' "debug.find.str first hit should be the known ROM offset"
 expect 'word-first=0040a714' "debug.find.word should hit at the 'Apple' offset"
@@ -65,6 +64,9 @@ expect_not "ASSERT FAILED" "all in-script assertions must pass"
 expect "bp-contract-ok" "breakpoint entry contract section must run to its end"
 expect "irq-entry-probe-ok" "probes on an interrupt handler's first instruction fire on every entry"
 expect "step-matches-run-ok" "debug.step N must match scheduler.run N across VBLs"
+expect "log-file-probe-done" "the log-file probe must not end the script"
+expect "cannot set log file '/nonexistent-gs-dir/cpu.log': No such file or directory" \
+    "log.set file= must report fopen's errno"
 
 # Format specs in ${expr:fmt}. The literal $ is doubled here so the
 # shell that runs run.sh doesn't expand the value before grep sees it.

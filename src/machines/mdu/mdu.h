@@ -16,7 +16,7 @@
 
 #include "checkpoint.h"
 #include "machine_profile.h" // machine_substrate_t
-#include "system_config.h"
+#include "system_internal.h"
 
 struct mac030_board_desc;
 

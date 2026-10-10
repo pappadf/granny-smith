@@ -58,18 +58,18 @@ void em_print_host_callstack(void);
 // Every JS<->C request travels through the mailbox: a control block and
 // two record rings in the wasm heap (src/core/mailbox/mailbox.h; the page's
 // mirror is app/web2/src/bus/mailbox.ts).  JS resolves the control block's
-// address once via `_get_gs_mailbox()`, checks MAGIC and VERSION, and from
+// address once via `_get_mailbox()`, checks MAGIC and VERSION, and from
 // then on writes requests and reads results through shared memory and
 // Atomics.  The emulator thread drains the request ring at every tick
 // (shell_poll) and, on a stopped machine, in a bounded idle wait between
 // ticks.  The protocol and the result contract are described in
 // docs/guide/web.md.
 
-#include "event/gs_event.h"
+#include "event/event.h"
 #include "mailbox/mailbox.h"
 
 // The control block (32 uint32 words, 64-byte aligned, fixed address).
-uint32_t *get_gs_mailbox(void);
+uint32_t *get_mailbox(void);
 
 // Drains the mailbox: serves every pending request under the drain budget
 // and wakes the page when results were written.  Returns the number of

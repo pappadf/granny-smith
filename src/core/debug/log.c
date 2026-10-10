@@ -2,25 +2,24 @@
 // Copyright (c) pappadf
 
 // log.c
-// Implements the logging framework: category registry, runtime levels, sinks, and shell command.
+// Implements the logging framework: category registry, runtime levels, sinks and line formatting.
+
+// A leaf module: it knows nothing of the CPU, the scheduler or the debugger.
+// What a line is decorated with (instruction count, PC) and who else sees
+// each line (the debug trace) comes in through log_set_context_hooks
+// (installed by log_context.c).
 
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "debug.h" // debug_trace_capture_log()
 #include "log.h"
 
+#include "gs_assert.h"
 #include "log_categories.h"
-
-#include "ppc.h" // PowerPC pc / r24 for the PC decoration
-#include "scheduler.h" // scheduler_instr_count()
-#include "shell.h"
-#include "system.h" // system_running()
-#include "system_config.h" // config_t::ppc
-#include "value.h"
 
 static bool name_in_manifest(const char *name);
 
@@ -36,8 +35,22 @@ struct log_category {
     struct log_category *next; // Next in registry list
 };
 
-// Global registry head (singly-linked list)
+// Global registry head (singly-linked list, newest first), for enumeration
 static struct log_category *s_registry_head = NULL;
+
+// Number of categories the manifest declares (each X() adds one)
+#define LOG_COUNT_ONE(n, lvl, desc) +1
+enum { LOG_MANIFEST_COUNT = 0 GS_LOG_CATEGORIES(LOG_COUNT_ONE) };
+#undef LOG_COUNT_ONE
+
+// Name -> category index: open addressing with linear probing, sized to at
+// least twice the manifest so probes stay short and a free slot always exists
+#define LOG_TABLE_SLOTS 256
+_Static_assert(LOG_MANIFEST_COUNT * 2 <= LOG_TABLE_SLOTS, "grow LOG_TABLE_SLOTS with the category manifest");
+static struct log_category *s_table[LOG_TABLE_SLOTS];
+
+// Context hooks (decorations, line observer); NULL until installed
+static const log_context_hooks_t *s_hooks = NULL;
 
 // Optional global sink (in addition to per-category stdout/file). Not set by default.
 static log_sink_fn s_sink_fn = NULL;
@@ -55,13 +68,27 @@ static int clamp_indent(int spaces) {
     return spaces;
 }
 
-// Finds a category by name; returns pointer or NULL
-static struct log_category *find_category(const char *name) {
-    for (struct log_category *c = s_registry_head; c; c = c->next) {
-        if (strcmp(c->name, name) == 0)
-            return c;
-    }
-    return NULL;
+// FNV-1a hash of a category name, for the lookup table
+static uint32_t name_hash(const char *name) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
+        h = (h ^ *p) * 16777619u;
+    return h;
+}
+
+// Returns the table slot holding `name`, or the empty slot where it would go
+static struct log_category **registry_slot(const char *name) {
+    uint32_t i = name_hash(name) & (LOG_TABLE_SLOTS - 1);
+    // The table is never full (static assert above), so the probe ends
+    while (s_table[i] && strcmp(s_table[i]->name, name) != 0)
+        i = (i + 1) & (LOG_TABLE_SLOTS - 1);
+    return &s_table[i];
+}
+
+// Registry lookup: the mutable node for `name`, or NULL when not registered.
+// (log_get_category is the public, NULL-tolerant face of this.)
+static struct log_category *registry_lookup(const char *name) {
+    return *registry_slot(name);
 }
 
 // Creates a new category node; NULL on failure
@@ -97,8 +124,10 @@ static void close_category_file(struct log_category *c) {
 
 // Set file sink path ("off" or NULL disables). Returns 0 on success, -1 on error (keeps previous).
 static int set_category_file(struct log_category *c, const char *path) {
-    if (!c)
+    if (!c) {
+        errno = EINVAL; // no category: not a file problem, but say why
         return -1;
+    }
     if (!path || strcmp(path, "off") == 0 || *path == '\0') {
         // disable file sink
         close_category_file(c);
@@ -107,12 +136,11 @@ static int set_category_file(struct log_category *c, const char *path) {
         return 0;
     }
 
-    // Try opening new file in append mode first, to ensure it works
+    // Try opening new file in append mode first, to ensure it works; on
+    // failure errno is left as fopen set it, for the caller to report
     FILE *fp = fopen(path, "a");
-    if (!fp) {
-        fprintf(stderr, "log: cannot open '%s': %s\n", path, strerror(errno));
+    if (!fp)
         return -1;
-    }
 
     // Swap in new handle
     close_category_file(c);
@@ -120,18 +148,11 @@ static int set_category_file(struct log_category *c, const char *path) {
     c->file_path = strdup(path);
     if (!c->file_path) {
         fclose(fp);
+        errno = ENOMEM; // fclose may have overwritten strdup's errno
         return -1;
     }
     c->file_fp = fp;
     return 0;
-}
-
-// Prints one category's level/sink/timestamp/PC configuration.
-static void print_category_config(const struct log_category *c) {
-    if (!c)
-        return;
-    printf("%s level=%d stdout=%s file=%s ts=%s pc=%s\n", c->name, c->level, c->to_stdout ? "on" : "off",
-           c->file_path ? c->file_path : "off", c->timestamp ? "on" : "off", c->show_pc ? "on" : "off");
 }
 
 // === Typed configuration ====================================================
@@ -140,7 +161,7 @@ static void print_category_config(const struct log_category *c) {
 // was a flag grammar inside a string parsed with strtok_r -- the exact shape
 // docs/internals/core/object/object-model.md ("Library conventions") says named
 // arguments exist to retire.
-// The framework could not validate it (the slot was declared V_NONE, so it
+// The framework could not validate it (the slot was declared VK_NONE, so it
 // was told nothing to validate), completion could not offer the keys or their
 // values, and it carried its own boolean vocabulary and its own error wording.
 //
@@ -185,8 +206,11 @@ int log_set_category_show_pc(const char *category, bool on) {
 // `path` NULL or "off" closes any open file for this category.
 int log_set_category_file(const char *category, const char *path) {
     struct log_category *c = (struct log_category *)log_register_category(category);
-    if (!c)
+    if (!c) {
+        // Not a file error either: an unknown name, or no memory to create it.
+        errno = (category && name_in_manifest(category)) ? ENOMEM : EINVAL;
         return -1;
+    }
     return set_category_file(c, path ? path : "off");
 }
 
@@ -206,24 +230,11 @@ const char *log_get_category_file(const log_category_t *cat) {
     return cat ? cat->file_path : NULL;
 }
 
-// Print one category's current settings, as `log.set <cat>` does.
-void log_print_category(const char *category) {
-    struct log_category *c = (struct log_category *)log_get_category(category);
-    if (!c) {
-        printf("unknown category \"%s\" (see log.levels for the full list)\n", category);
-        return;
-    }
-    print_category_config(c);
-}
-
 // Public API ----------------------------------------------------------------
 
-// Initializes the logging system. The legacy `log` shell command
-// registration is retired; the typed `log_set` root method calls cmd_log
-// directly.
-void log_init(void) {
-    if (!s_sink_fn)
-        s_sink_fn = NULL;
+// Installs the context hooks (NULL removes them).
+void log_set_context_hooks(const log_context_hooks_t *hooks) {
+    s_hooks = hooks;
 }
 
 // === The manifest =========================================================
@@ -267,21 +278,24 @@ void log_register_manifest(void) {
 log_category_t *log_register_category(const char *name) {
     if (!name || !*name)
         return NULL;
+    struct log_category **slot = registry_slot(name);
+    if (*slot)
+        return *slot; // return existing; level unchanged (only manifest names get in)
+
     // A category that is not in the manifest is a typo, in code or in a
     // `log.set` argument.  It used to be created on the spot, which is how
     // `log.set cpuu 10` reported success and produced nothing.
-    GS_ASSERTF(name_in_manifest(name), "log category '%s' is not in GS_LOG_CATEGORIES", name);
-    if (!name_in_manifest(name))
+    bool known = name_in_manifest(name);
+    GS_ASSERTF(known, "log category '%s' is not in GS_LOG_CATEGORIES", name);
+    if (!known)
         return NULL;
-    struct log_category *c = find_category(name);
-    if (c)
-        return c; // return existing; level unchanged
 
-    c = create_category(name);
+    struct log_category *c = create_category(name);
     if (!c)
         return NULL;
 
-    // Insert at head
+    // Index it, and insert at the enumeration list's head
+    *slot = c;
     c->next = s_registry_head;
     s_registry_head = c;
     return c;
@@ -291,7 +305,7 @@ log_category_t *log_register_category(const char *name) {
 log_category_t *log_get_category(const char *name) {
     if (!name)
         return NULL;
-    return find_category(name);
+    return registry_lookup(name);
 }
 
 // Returns a category's name, or NULL if 'cat' is NULL.
@@ -313,7 +327,7 @@ int log_set_level(log_category_t *cat, int level) {
     return prev;
 }
 
-// Visit every registered category in registration order.
+// Visit every registered category, most recently registered first.
 void log_foreach_category(void (*fn)(const log_category_t *cat, void *ud), void *ud) {
     if (!fn)
         return;
@@ -344,77 +358,132 @@ void log_indent_adjust(int delta) {
     log_indent_set(s_indent_spaces + delta);
 }
 
-// Emits a log line using a va_list. Final form: "[name] level message\n"
+// A line being composed: it starts in the caller's stack buffer and moves to
+// the heap only when a line outgrows it, so no line is clipped
+typedef struct {
+    char *p; // text, always NUL-terminated
+    size_t len; // characters in p, excluding the NUL
+    size_t cap; // bytes available at p
+    bool heap; // p was malloc'd (and must be freed)
+    bool truncated; // an allocation failed and text was dropped
+} line_buf_t;
+
+// Makes room for `need` more characters plus the NUL; false on OOM
+static bool lb_reserve(line_buf_t *b, size_t need) {
+    if (b->len + need + 1 <= b->cap)
+        return true;
+    size_t cap = b->cap * 2;
+    while (cap < b->len + need + 1)
+        cap *= 2;
+    char *np = b->heap ? (char *)realloc(b->p, cap) : (char *)malloc(cap);
+    if (!np)
+        return false;
+    // Leaving the stack buffer: carry over what was composed so far
+    if (!b->heap)
+        memcpy(np, b->p, b->len + 1);
+    b->p = np;
+    b->cap = cap;
+    b->heap = true;
+    return true;
+}
+
+// Appends n characters of s (clipped, and flagged, if memory runs out)
+static void lb_append(line_buf_t *b, const char *s, size_t n) {
+    if (!lb_reserve(b, n)) {
+        n = b->cap - b->len - 1;
+        b->truncated = true;
+    }
+    memcpy(b->p + b->len, s, n);
+    b->len += n;
+    b->p[b->len] = '\0';
+}
+
+// Appends printf-formatted text; false on a formatting error
+static bool lb_vappendf(line_buf_t *b, const char *fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    size_t room = b->cap - b->len;
+    int n = vsnprintf(b->p + b->len, room, fmt, ap);
+    bool ok = n >= 0;
+    if (!ok) {
+        b->p[b->len] = '\0'; // drop whatever a failed vsnprintf left
+    } else if ((size_t)n < room) {
+        b->len += (size_t)n; // fitted first time (the common case)
+    } else if (lb_reserve(b, (size_t)n)) {
+        // Too long for the buffer: grow to the exact size and format again
+        vsnprintf(b->p + b->len, b->cap - b->len, fmt, ap2);
+        b->len += (size_t)n;
+    } else {
+        b->len = b->cap - 1; // OOM: keep the clipped text vsnprintf wrote
+        b->truncated = true;
+    }
+    va_end(ap2);
+    return ok;
+}
+
+// Appends printf-formatted text (prefix pieces; cannot fail to format)
+static void lb_appendf(line_buf_t *b, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    lb_vappendf(b, fmt, ap);
+    va_end(ap);
+}
+
+// Sixty-four spaces, sliced for the indent (no per-line memset)
+#define LOG_SPACES8 "        "
+static const char k_indent_spaces[] =
+    LOG_SPACES8 LOG_SPACES8 LOG_SPACES8 LOG_SPACES8 LOG_SPACES8 LOG_SPACES8 LOG_SPACES8 LOG_SPACES8;
+#undef LOG_SPACES8
+_Static_assert(sizeof(k_indent_spaces) == LOG_MAX_INDENT_SPACES + 1, "indent source must cover the clamp");
+
+// Emits a log line using a va_list.
+// Final form: "[name] level [@count] [PC=...] <indent>message\n"
 void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap) {
-    if (!cat)
-        return; // Treat missing category as disabled
+    // Same gate as the LOG macros, so a direct call honours the level too
+    // (a missing category is treated as disabled)
+    if (!log_would_log(cat, level))
+        return;
 
     const struct log_category *c = (const struct log_category *)cat;
 
-    // Format the message body first to avoid computing prefix twice.
-    char body[512];
-    int n = vsnprintf(body, sizeof(body), fmt ? fmt : "", ap);
-    if (n < 0)
-        return; // formatting error; ignore
-    body[sizeof(body) - 1] = '\0';
+    // Compose prefix and body straight into one buffer (no second copy)
+    char stack[768];
+    line_buf_t b = {.p = stack, .len = 0, .cap = sizeof(stack), .heap = false, .truncated = false};
+    stack[0] = '\0';
 
-    // Compose the final line with optional timestamp and/or PC
-    char line[768];
-    const char *name = c->name ? c->name : "";
-    const int indent_spaces = s_indent_spaces;
-    char indent_buf[LOG_MAX_INDENT_SPACES + 1];
-    if (indent_spaces > 0) {
-        memset(indent_buf, ' ', (size_t)indent_spaces);
-        indent_buf[indent_spaces] = '\0';
+    lb_appendf(&b, "[%s] %d", c->name ? c->name : "", level);
+
+    // Optional decorations, supplied by the context hooks: the instruction
+    // count, then the PC
+    if (c->timestamp) {
+        unsigned long long t = (s_hooks && s_hooks->instr_count) ? s_hooks->instr_count() : 0;
+        lb_appendf(&b, " @%llu", t);
     }
-
-    // Determine the PC decoration if needed.  On a PowerPC machine the
-    // main CPU is the 601/604 and the interesting "PC" for driver-level
-    // logs is usually the emulated 68k one, which the ROM's emulator keeps
-    // in r24 while 68k code runs — show both.
-    //
-    // The decorations describe the running machine, which a build -- a log
-    // line from a constructor -- leaves as it is (system_running).
-    config_t *running = system_running();
-    char pcstr[40] = "";
     if (c->show_pc) {
-        if (running && running->ppc) {
-            snprintf(pcstr, sizeof(pcstr), "PC=%08x r24=%08x", (unsigned)ppc_get_pc(running->ppc),
-                     (unsigned)ppc_get_gpr(running->ppc, 24));
-        } else {
-            uint32_t pc_value = 0;
-            if (running && running->cpu) {
-                extern uint32_t cpu_get_pc(cpu_t *restrict cpu);
-                pc_value = cpu_get_pc(running->cpu);
-            }
-            snprintf(pcstr, sizeof(pcstr), "PC=%08x", (unsigned)pc_value);
-        }
+        char pcstr[48] = "PC=00000000";
+        if (s_hooks && s_hooks->format_pc)
+            s_hooks->format_pc(pcstr, sizeof(pcstr));
+        lb_appendf(&b, " %s", pcstr);
     }
+    lb_append(&b, " ", 1);
 
-    // Format line with timestamp and/or PC as needed
-    if (c->timestamp && c->show_pc) {
-        unsigned long long t = (unsigned long long)scheduler_instr_count(running ? running->scheduler : NULL);
-        if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d @%llu %s %s%s\n", name, level, t, pcstr, indent_buf, body);
-        else
-            snprintf(line, sizeof(line), "[%s] %d @%llu %s %s\n", name, level, t, pcstr, body);
-    } else if (c->timestamp) {
-        unsigned long long t = (unsigned long long)scheduler_instr_count(running ? running->scheduler : NULL);
-        if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d @%llu %s%s\n", name, level, t, indent_buf, body);
-        else
-            snprintf(line, sizeof(line), "[%s] %d @%llu %s\n", name, level, t, body);
-    } else if (c->show_pc) {
-        if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d %s %s%s\n", name, level, pcstr, indent_buf, body);
-        else
-            snprintf(line, sizeof(line), "[%s] %d %s %s\n", name, level, pcstr, body);
-    } else {
-        if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d %s%s\n", name, level, indent_buf, body);
-        else
-            snprintf(line, sizeof(line), "[%s] %d %s\n", name, level, body);
+    // Indentation, then the message body
+    if (s_indent_spaces > 0)
+        lb_append(&b, k_indent_spaces, (size_t)s_indent_spaces);
+    if (!lb_vappendf(&b, fmt ? fmt : "", ap)) {
+        // Formatting error: emit nothing
+        if (b.heap)
+            free(b.p);
+        return;
     }
+    lb_append(&b, "\n", 1);
+
+    // Out of memory part-way: mark the clipped line so it is not mistaken
+    // for the whole message
+    if (b.truncated && b.cap >= 5)
+        memcpy(b.p + b.cap - 5, "...\n", 5);
+
+    const char *line = b.p;
 
     // Emit to configured sinks
     if (c->to_stdout) {
@@ -430,10 +499,12 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     if (s_sink_fn)
         s_sink_fn(line, s_sink_user);
 
-    // Capture to trace buffer if tracing is active
-    if (debug_trace_is_active()) {
-        debug_trace_capture_log(line);
-    }
+    // And to the context's observer (the debug trace capture)
+    if (s_hooks && s_hooks->observe_line)
+        s_hooks->observe_line(line);
+
+    if (b.heap)
+        free(b.p);
 }
 
 // Convenience wrapper for variadic emission.

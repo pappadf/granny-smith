@@ -9,7 +9,7 @@
 // here is each finished PDF, named <job id>-<title>.pdf, which opens in the
 // viewer dialog (the browser's own PDF viewer, state/printer.svelte.ts) --
 // or, where the browser has no inline viewer, downloads at once (the blob
-// + anchor path gs_download uses).
+// + anchor path platform_download uses).
 
 import { getModule } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';

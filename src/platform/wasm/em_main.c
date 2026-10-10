@@ -23,7 +23,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +41,7 @@
 #include "appletalk.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
+#include "core_init.h"
 #include "cpu.h"
 #include "host_keys.h"
 #include "keyboard.h"
@@ -51,10 +51,12 @@
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
+#include "platform_hooks.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "status.h"
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
@@ -239,6 +241,11 @@ static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
 }
 
 // Setup pointer lock callbacks
+//
+// Called on the emulator pthread: Emscripten registers each DOM listener on
+// the browser main thread and proxies every event back to this thread as a
+// queued call (drained by the main loop and mailbox_idle_wait), so the
+// callbacks run here, beside the machine they drive.
 static void setup_pointer_lock(void) {
     emscripten_set_mousedown_callback("#screen", NULL, EM_TRUE, mouse_down_cb);
     emscripten_set_mouseup_callback("#screen", NULL, EM_TRUE, mouse_up_cb);
@@ -263,6 +270,9 @@ static void setup_pointer_lock(void) {
 // Global state variables
 static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
+// checkpoint.auto.  Plain, not atomic: its only writer (platform_checkpoint_auto_set,
+// an object_eval served by the drain) and its readers (the tick, the visibility
+// callback) all run on this, the emulator thread.
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 // The page's pacing (the toolbar, ?speed=, scheduler.mode / speed /
@@ -290,7 +300,7 @@ static double ticks_per_second = 0;
 // them and a spec can assert on them.
 static double tick_wall_ms[PERF_UPDATE_INTERVAL];
 static double tick_poll_ms[PERF_UPDATE_INTERVAL];
-static double tick_poll_ms_current; // set by em_main_tick, read by tick()
+static double tick_poll_ms_current; // set by em_main_tick, read by em_timed_tick()
 
 // max and median of `n` samples, without disturbing the ring
 static void perf_window_stats(const double *samples, int n, double *max_out, double *p50_out) {
@@ -314,75 +324,46 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // The mailbox (every JS -> C request)
 // ============================================================================
 //
-// THREADING MODEL — read this before changing anything in this section.
+// THREADING MODEL -- read docs/guide/web.md ("Threading model" and "The
+// rule: no direct calls into the core") before changing anything here.
 //
-// We build with -sPROXY_TO_PTHREAD, which spawns a worker pthread and runs
-// `main()` (and therefore `shell_init()`, `system_create()`,
-// `emscripten_set_main_loop(em_main_tick, ...)`) on that worker. The worker
-// owns every piece of emulator state: scheduler, machine, devices, RAM,
-// OPFS file handles. The JS main thread keeps its own Module instance for
-// canvas + DOM + xterm, but it does NOT own emulator state.
-//
-// IMPORTANT: with PROXY_TO_PTHREAD, exported Wasm functions are ALSO
-// callable directly from the main JS thread via `Module.ccall(...)`. Such
-// a call does NOT proxy to the worker — it executes the Wasm code on the
-// main thread, with the main thread's pthread context, while the worker
-// is concurrently running `em_main_tick`. Only functions that Emscripten
-// emits into `proxiedFunctionTable` (a small set of built-in callbacks
-// like pointerlock / mouse / visibility) get auto-proxied. None of our
-// `_em_*` exports are in that table.
-//
-// Calling shell-touching code from the main thread is therefore unsafe:
-//   - It races the worker for scheduler / machine / device state
-//   - WASMFS / OPFS handles opened on the worker pthread are not
-//     guaranteed to behave correctly from another thread
-//   - Mutexes inside the runtime can deadlock or stall for many seconds
-//
-// Real-world fallout from violating this rule (a regression, 2026-05-02):
-// `Module.ccall('em_gs_eval', ...)` was used for the typed object-model
-// bridge (`gsEval` / `gsInspect`) and ran shell_dispatch() on the main
-// thread.  E2E tests using checkpoint --save / --load via gsEval saw
-// 60–90 s per call, post-load `run` not advancing the emulator, and
-// "browser closed" crashes. Probes (pthread_self() inside shell_poll vs.
-// inside em_gs_eval) confirmed two distinct thread IDs.
-//
-// THE RULE
-// --------
-// JS -> C must always go through the mailbox below: the page writes a
-// request record into the request ring and wakes the worker; the worker's
-// `shell_poll()` (called from `em_main_tick`, and from the idle wait on a
-// stopped machine) drains the ring and writes each result into the event
-// ring.  ccall on `_em_*` exports is forbidden -- and no longer possible:
-// the Makefile stopped exporting ccall/cwrap, so only the mailbox remains.
+// With -sPROXY_TO_PTHREAD, main() and the main loop run on a worker pthread
+// that owns every piece of emulator state.  An exported function called from
+// the page would run on the browser main thread, racing that pthread (this
+// went wrong once: a regression, 2026-05-02, told in web.md).  So JS -> C
+// goes only through the mailbox below: the page writes a request record and
+// wakes the worker, whose shell_poll() (from em_main_tick, and the idle wait
+// on a stopped machine) drains the ring and writes each result into the
+// event ring.  The Makefile exports no ccall/cwrap.
 //
 // The region is static so its address is fixed for the process lifetime
 // (shared memory grows in place, em_audio.c).  It is laid out by a
 // constructor, before main() and before the page can see it, so the MAGIC
 // and VERSION words are valid from the first read.  READY stays 0 until
-// main() has run shell_init/setup_init.
-static gs_mailbox_t g_mailbox;
+// main() has run core_init/system_init.
+static mailbox_t g_mailbox;
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
 __attribute__((constructor)) static void mailbox_construct(void) {
-    if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
+    if (!mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, object_eval))
         abort();
-    // Answers to the page carry what the leaf printed (gs_out.h); the
+    // Answers to the page carry what the leaf printed (out.h); the
     // terminal shows it with the result.
-    gs_mailbox_set_capture_output(&g_mailbox, true);
+    mailbox_set_capture_output(&g_mailbox, true);
 }
 
-EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
+EMSCRIPTEN_KEEPALIVE uint32_t *get_mailbox(void) {
     return (uint32_t *)g_mailbox.ctrl;
 }
 
-// Core events (gs_event.h) go out as records on the event ring.
-void gs_event_emit(gs_event_kind_t kind, const char *json) {
+// Core events (event.h) go out as records on the event ring.
+void event_emit(event_kind_t kind, const char *json) {
     uint32_t k = kind == GS_EVENT_STATE ? GS_MBX_EVT_STATE : kind == GS_EVENT_LOG ? GS_MBX_EVT_LOG : GS_MBX_EVT_NOTIFY;
-    gs_mailbox_emit(&g_mailbox, k, json);
+    mailbox_emit(&g_mailbox, k, json);
 }
 
-uint32_t gs_current_client(void) {
-    return gs_mailbox_current_client(&g_mailbox);
+uint32_t platform_current_client(void) {
+    return mailbox_current_client(&g_mailbox);
 }
 
 // A bare `scheduler.run` typed in the browser's terminal returns at once
@@ -394,7 +375,7 @@ bool job_glue_unbounded_waits(uint32_t client) {
 }
 
 // The page parks in Atomics.waitAsync on READY and EVT_HEAD.
-void gs_mailbox_notify(volatile uint32_t *word) {
+void mailbox_notify(volatile uint32_t *word) {
     emscripten_atomic_notify((void *)word, INT_MAX);
 }
 
@@ -422,13 +403,13 @@ static double mailbox_now_us(void) {
 // take that for a dead core (#238).  Every block it reads or writes bumps
 // the heartbeat, so a slow but healthy request keeps proving it is alive.
 void checkpoint_busy_heartbeat(void) {
-    gs_mailbox_heartbeat(&g_mailbox);
+    mailbox_heartbeat(&g_mailbox);
 }
 
 int shell_poll(void) {
-    int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
+    int n = mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)
-        gs_mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+        mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
     return n;
 }
 
@@ -439,14 +420,14 @@ static int mailbox_idle_wait(void) {
     double t0 = emscripten_get_now();
     int served = 0;
     while (emscripten_get_now() - t0 < GS_MAILBOX_IDLE_MS) {
-        if (gs_mailbox_has_requests(&g_mailbox)) {
+        if (mailbox_has_requests(&g_mailbox)) {
             served += shell_poll();
             continue;
         }
         uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
         emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
         emscripten_current_thread_process_queued_calls();
-        gs_mailbox_heartbeat(&g_mailbox);
+        mailbox_heartbeat(&g_mailbox);
     }
     return served;
 }
@@ -469,10 +450,10 @@ void em_main_tick(void) {
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
-            gs_event_emitf(GS_EVENT_STATE,
-                           "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
-                           "\"poll_max_ms\":%.3f}",
-                           mips, ticks_per_second, tick_max, tick_p50, poll_max);
+            event_emitf(GS_EVENT_STATE,
+                        "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
+                        "\"poll_max_ms\":%.3f}",
+                        mips, ticks_per_second, tick_max, tick_p50, poll_max);
         }
 
         last_time = current_time;
@@ -493,7 +474,9 @@ void em_main_tick(void) {
             }
         }
 
-        scheduler_main_loop(global_emulator, now, &s_pacing); // Pass milliseconds
+        // The active machine is read plainly: every writer (machine.boot,
+        // checkpoint.load) is a request served on this thread.
+        scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
 
         // Update video if framebuffer changed
         em_video_update();
@@ -511,7 +494,7 @@ void em_main_tick(void) {
     // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
-    gs_mailbox_heartbeat(&g_mailbox);
+    mailbox_heartbeat(&g_mailbox);
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
@@ -529,7 +512,7 @@ void em_main_tick(void) {
     // screen held the pointer: hand the pointer and the keys back to the page.
     if (pointer_locked && !pointer_lock_releasing && !machine_running()) {
         pointer_lock_releasing = true;
-        emscripten_exit_pointerlock();
+        emscripten_exit_pointerlock(); // proxied to the main thread by Emscripten (sync: a short wait)
     }
 
     // The run state and the floppy drives are the core's to announce now
@@ -546,8 +529,8 @@ void em_main_tick(void) {
         for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
             if (!(changed & (1u << k)))
                 continue;
-            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
-                           (int)lights.light[k]);
+            event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                        (int)lights.light[k]);
         }
     }
 }
@@ -561,17 +544,17 @@ void platform_machine_attached(void) {
     last_instr = cpu_instr_count();
     for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
         if (lights.light[k] != DRIVE_LIGHT_IDLE)
-            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
-                           (int)DRIVE_LIGHT_IDLE);
+            event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                        (int)DRIVE_LIGHT_IDLE);
     }
     memset(&lights, 0, sizeof(lights));
     em_video_machine_attached();
 }
 
-// Exposed tick wrapper for Emscripten main loop.  Times the whole tick and
-// records it, with the shell_poll share em_main_tick measured, into the
+// The Emscripten main loop's callback: em_main_tick, timed.  Records the
+// whole tick, with the shell_poll share em_main_tick measured, into the
 // perf window (see tick_wall_ms).
-void tick(void) {
+static void em_timed_tick(void) {
     double t0 = emscripten_get_now();
     tick_poll_ms_current = 0;
     em_main_tick();
@@ -588,18 +571,7 @@ static void js_log_sink(const char *line, void *user) {
     (void)user;
     if (!line)
         return;
-    gs_event_emit_text(GS_EVENT_LOG, "log", "line", line);
-}
-
-// SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
-// driver, or any other process-level signal, halts emulation cleanly.
-// JS pauses the emulator via gsEval('scheduler.stop'), which routes
-// through the object-model channel like every other JS→C call.
-void sigint_handler(int sig) {
-    (void)sig;
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_stop(sched);
+    event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
 // ============================================================================
@@ -737,27 +709,27 @@ static void download_note(const char *json, void *ud) {
     int last = 0;
     sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
     if (!d->handle)
-        d->handle = gs_transfer_publish(d->io_id);
+        d->handle = mailbox_transfer_publish(d->io_id);
     if (!d->handle) {
         // No room in the transfer table: the job times out on its ack.
         printf("download: no transfer buffer for '%s'\n", d->name);
         return;
     }
-    gs_event_emitf(GS_EVENT_NOTIFY,
-                   "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
-                   "\"name\":\"%s\"%s}",
-                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name, d->meta);
+    event_emitf(GS_EVENT_NOTIFY,
+                "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
+                "\"name\":\"%s\"%s}",
+                (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name, d->meta);
 }
 
 static void download_progress(uint64_t done, uint64_t total, void *ud) {
     download_job_t *d = (download_job_t *)ud;
     if (d->token)
-        gs_result_progress(d->token, done, total);
+        mailbox_result_progress(d->token, done, total);
 }
 
 static void download_free(download_job_t *d) {
     if (d->handle)
-        gs_transfer_release(d->handle);
+        mailbox_transfer_release(d->handle);
     free(d->buf);
     free(d->bytes);
     free(d->path);
@@ -770,11 +742,11 @@ static void download_done(bool ok, double ms, const char *error, void *ud) {
     if (ok) {
         printf("download: requested '%s'\n", d->name);
         if (d->token)
-            gs_result_complete_ok(d->token);
+            mailbox_result_complete_ok(d->token);
     } else {
         printf("download: %s\n", error ? error : "failed");
         if (d->token)
-            gs_result_complete_error(d->token, error ? error : "download failed");
+            mailbox_result_complete_error(d->token, error ? error : "download failed");
     }
     download_free(d);
 }
@@ -789,8 +761,8 @@ static int download_start(download_job_t *d) {
         download_free(d);
         return -1;
     }
-    d->token = gs_result_defer();
-    d->req_id = gs_result_request_id(d->token);
+    d->token = mailbox_result_defer();
+    d->req_id = mailbox_result_request_id(d->token);
     io_job_desc_t desc = {
         .work = download_work,
         .work_ud = d,
@@ -803,12 +775,12 @@ static int download_start(download_job_t *d) {
     d->io_id = io_submit_job(&desc);
     if (d->io_id) {
         if (d->token)
-            gs_result_bind_io(d->token, d->io_id);
+            mailbox_result_bind_io(d->token, d->io_id);
         return 0;
     }
     printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     if (d->token)
-        gs_result_complete_error(d->token, "the I/O worker is not running");
+        mailbox_result_complete_error(d->token, "the I/O worker is not running");
     download_free(d);
     return -1;
 }
@@ -895,13 +867,13 @@ void printer_sink_status(const char *printer, const char *status) {
     char p[64], st[128];
     sanitize(p, sizeof p, printer, false);
     sanitize(st, sizeof st, status, false);
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 
-// Platform impl of gs_download (weak default in system.c stubs out).
+// Platform impl of platform_download (weak default in system.c stubs out).
 // Returns 0 when the download was started (the answer is deferred: it
 // completes when the page has taken the last chunk), non-zero otherwise.
-int gs_download(const char *path) {
+int platform_download(const char *path) {
     download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
     if (!d)
         return -1;
@@ -910,6 +882,9 @@ int gs_download(const char *path) {
         free(d);
         return -1;
     }
+    // The download's name is the last path component.  A path ending in '/'
+    // leaves it empty, and the page names such a download "download.bin"
+    // (bus/download.ts).
     const char *name = strrchr(path, '/');
     snprintf(d->name, sizeof d->name, "%s", name ? name + 1 : path);
     return download_start(d);
@@ -931,8 +906,8 @@ static bool g_background_handlers_installed = false;
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
     if (!checkpoint_auto_enabled)
         return;
-    int rc = system_quick_checkpoint(reason, false, rate_limit);
-    if (rc != GS_SUCCESS) {
+    status_t rc = system_quick_checkpoint(reason, false, rate_limit);
+    if (rc != STATUS_OK) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
     }
 }
@@ -941,9 +916,10 @@ static void maybe_request_background_checkpoint(const char *reason, bool rate_li
 static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVisibilityChangeEvent *event,
                                               void *userData) {
     (void)eventType;
+    (void)userData;
     if (!event || !event->hidden)
         return EM_FALSE;
-    maybe_request_background_checkpoint((const char *)userData, true);
+    maybe_request_background_checkpoint("visibilitychange", true);
     return EM_FALSE;
 }
 
@@ -960,7 +936,10 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
 static void install_background_checkpoint_handlers(void) {
     if (g_background_handlers_installed)
         return;
-    emscripten_set_visibilitychange_callback((void *)"visibilitychange", EM_FALSE, background_visibility_callback);
+    // Registered from this pthread: Emscripten installs the DOM listener on
+    // the main thread and proxies each event back here (as with the input
+    // callbacks in setup_pointer_lock).
+    emscripten_set_visibilitychange_callback(NULL, EM_FALSE, background_visibility_callback);
     g_background_handlers_installed = true;
 }
 
@@ -983,7 +962,8 @@ static void install_background_checkpoint_handlers(void) {
 // ============================================================================
 
 int main(void) {
-    signal(SIGINT, sigint_handler);
+    // No signal handlers: the browser delivers none (the page stops the
+    // machine with gsEval('scheduler.stop'), like every other JS->C call).
     debug_set_failure_hook(em_assertion_callback);
 
     // Single OPFS mount at /opfs — everything under it persists.
@@ -992,7 +972,14 @@ int main(void) {
     // The web app creates its directory structure under /opfs; users can also
     // create arbitrary paths under /opfs for their own persistent storage.
     backend_t opfs = wasmfs_create_opfs_backend();
-    wasmfs_create_directory("/opfs", 0777, opfs);
+    if (!opfs || wasmfs_create_directory("/opfs", 0777, opfs) != 0) {
+        // No OPFS (a private window, storage blocked): /opfs on memory, so
+        // the page still works, but nothing it writes survives a reload.
+        fprintf(stderr, "OPFS unavailable: /opfs is memory-backed, nothing will persist\n");
+        backend_t fallback = wasmfs_create_memory_backend();
+        if (!fallback || wasmfs_create_directory("/opfs", 0777, fallback) != 0)
+            fprintf(stderr, "cannot create /opfs\n");
+    }
 
     // Web app directory structure (regular mkdir inside the OPFS mount).
     mkdir("/opfs/images", 0777);
@@ -1021,8 +1008,12 @@ int main(void) {
     prom_offer_dir("/opfs/images/prom", NULL);
 
     // Volatile scratch space on memory backend (visible from all threads).
+    // WasmFS already provides a /tmp in its (memory-backed) root, so the
+    // mount reports -EEXIST there; only another failure is worth a word.
     backend_t membk = wasmfs_create_memory_backend();
-    wasmfs_create_directory("/tmp", 0777, membk);
+    int tmp_rc = membk ? wasmfs_create_directory("/tmp", 0777, membk) : -ENOMEM;
+    if (tmp_rc != 0 && tmp_rc != -EEXIST)
+        fprintf(stderr, "cannot create the memory-backed /tmp (%d)\n", tmp_rc);
     mkdir("/tmp/upload", 0777);
     mkdir("/tmp/extract", 0777);
 
@@ -1030,21 +1021,26 @@ int main(void) {
     // the pacing is scheduler.mode, both over the bridge like everything
     // else.  (--model and --speed used to be parsed here; nothing passed
     // them, and ?speed= documented as reaching --speed never did.)
-    shell_init();
-    setup_init();
+    // A core that did not come up must not open the mailbox: abort, which
+    // the page reports as a dead core (Module.onAbort).
+    if (core_init() != 0) {
+        fprintf(stderr, "core initialisation failed\n");
+        abort();
+    }
+    system_init();
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
     // Route every log_emit onto the event ring so the new-UI Logs
-    // view gets a structured stream parallel to stdout. shell_init has
-    // already called log_init; setting the sink here also forwards any
-    // categories registered later (setup_init, machine boot, …).
+    // view gets a structured stream parallel to stdout. The sink is
+    // process-wide, so it also forwards any categories registered later
+    // (system_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on
     // READY so requests issued during the boot window don't dispatch
     // against the empty default root class. The notify wakes any JS
     // thread parked in Atomics.waitAsync on that word.
-    gs_mailbox_set_ready(&g_mailbox);
+    mailbox_set_ready(&g_mailbox);
 
     // The job thread: scripts run there, not here (job/job.h).  Created
     // now, not at the first script -- pthread_create from this pthread is
@@ -1067,8 +1063,9 @@ int main(void) {
 
     install_background_checkpoint_handlers();
 
-    emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
-    return 0;
+    // RAF-driven; simulate_infinite_loop=1 unwinds main() here, so nothing
+    // after this call runs (and main never returns).
+    emscripten_set_main_loop(em_timed_tick, 0, 1);
 }
 
 // ============================================================================
@@ -1083,20 +1080,21 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
         expr = kind;
     char where[512];
     snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
-    gs_event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
-    gs_event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
+    event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
+    event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in
 // system.c so the `auto_checkpoint` attribute reads/writes the live flag.
-bool gs_checkpoint_auto_get(void) {
+bool platform_checkpoint_auto_get(void) {
     return checkpoint_auto_enabled;
 }
 
-int gs_checkpoint_auto_set(bool enabled) {
+// Either way the interval restarts: turning saving on waits a full
+// CHECKPOINT_INTERVAL for its first save, whatever was counted before.
+int platform_checkpoint_auto_set(bool enabled) {
     checkpoint_auto_enabled = enabled;
-    if (!enabled)
-        checkpoint_tick_counter = 0;
+    checkpoint_tick_counter = 0;
     return 0;
 }
 

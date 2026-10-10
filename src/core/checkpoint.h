@@ -13,6 +13,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Opaque checkpoint stream; modules receive a pointer to it when saving and
+// restoring state.  A header that only passes the pointer through can
+// forward-declare `struct checkpoint` instead of including this file.
+struct checkpoint;
+typedef struct checkpoint checkpoint_t;
+
 // Checkpoint kind: quick (auto-save) vs consolidated (full export)
 typedef enum {
     CHECKPOINT_KIND_QUICK = 0,
@@ -27,13 +33,19 @@ checkpoint_t *checkpoint_open_read(const char *filename);
 // Opens a checkpoint file for writing with the specified kind
 checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind);
 
-// Closes a checkpoint file and frees resources
-void checkpoint_close(checkpoint_t *checkpoint);
+// Closes a checkpoint file and frees resources.  A consolidated checkpoint
+// is written to "<filename>.tmp" and renamed over `filename` here, when no
+// error occurred (else the partial file is removed and `filename` is left
+// as it was).  True when the checkpoint closed without error.
+bool checkpoint_close(checkpoint_t *checkpoint);
 
-// Returns true if the checkpoint has encountered an error
+// Returns true if the checkpoint has encountered an error.  A NULL handle
+// counts as one already in error: it is true here, and
+// checkpoint_set_error(NULL) has nothing left to mark.
 bool checkpoint_has_error(checkpoint_t *checkpoint);
 
-// Flag the checkpoint as having encountered an error
+// Flag the checkpoint as having encountered an error (no-op on NULL; see
+// checkpoint_has_error)
 void checkpoint_set_error(checkpoint_t *checkpoint);
 
 // Returns the kind of an open checkpoint
@@ -89,7 +101,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 // A source location cannot serve as the tag, which is why the stored
 // __FILE__/__LINE__ is a diagnostic and not a check: the writer and the
 // reader sit at different lines by construction.
-#define CP_SELECT_4(_1, _2, _3, _4, NAME, ...) NAME
+#define CP_SELECT_4(p1, p2, p3, p4, NAME, ...) NAME
 #define CP_READ_TAGGED(cp, data, size, tag)                                                                            \
     system_read_checkpoint_data_loc((cp), (data), (size), (tag), __FILE__, __LINE__)
 #define CP_READ_PLAIN(cp, data, size) system_read_checkpoint_data_loc((cp), (data), (size), NULL, __FILE__, __LINE__)
@@ -139,14 +151,23 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
 #define checkpoint_read_file(cp, dest, cap, out_path)                                                                  \
     checkpoint_read_file_loc((cp), (dest), (cap), (out_path), __FILE__, __LINE__)
 
-// Validate that a checkpoint file's build ID matches the current build.
-// Opens the file, reads magic + build ID, compares with current build.
-// Returns true if the build IDs match, false on mismatch or error.
+// Whether a checkpoint file was written by this build: it reads the
+// signature and build ID only.  A file that cannot be opened or read, is
+// too short or has no checkpoint signature is UNREADABLE -- not to be
+// confused with a good checkpoint from another build (MISMATCH).
+typedef enum {
+    CHECKPOINT_BUILD_MATCH,
+    CHECKPOINT_BUILD_MISMATCH,
+    CHECKPOINT_BUILD_UNREADABLE,
+} checkpoint_build_t;
+checkpoint_build_t checkpoint_check_build_id(const char *filename);
+
+// checkpoint_check_build_id(filename) == CHECKPOINT_BUILD_MATCH.
 bool checkpoint_validate_build_id(const char *filename);
 
 // === Object-model class descriptor =========================================
 //
-// `checkpoint` is a process-singleton namespace registered at shell_init
+// `checkpoint` is a process-singleton namespace registered by core_init
 // (alongside rom / vrom / machine). It exposes save / load / clear /
 // probe / snapshot methods plus the auto_checkpoint attribute so
 // callers can drive the checkpoint subsystem without going through the

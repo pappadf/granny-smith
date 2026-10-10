@@ -9,7 +9,7 @@
 // backend; this unit decides whether the GPU (engaged) or the normative
 // walker (bring-up, fallbacks, device loss) draws it.  The wire
 // protocol to the browser's GPU worker is voodoo2_gpu_protocol.h; the
-// host transport is the gs_v2gpu_* seam in system.h.
+// host transport is the platform_v2gpu_* seam in platform_hooks.h.
 
 #ifndef VOODOO2_GPU_H
 #define VOODOO2_GPU_H

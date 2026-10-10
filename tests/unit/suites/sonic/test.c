@@ -9,6 +9,7 @@
 // through the RRA/RDA/TDA linked-list buffer management — all against a
 // mock flat guest memory installed through sonic_set_memory_hooks.
 
+#include "checkpoint.h"
 #include "sonic.h"
 #include "test_assert.h"
 

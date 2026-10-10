@@ -8,6 +8,7 @@
 #define SCSI_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "image.h"
 #include "memory.h"
@@ -42,7 +43,7 @@ typedef enum scsi_phase {
 // Mount a pre-machine `scsi` singleton at root carrying just the static
 // helpers — hd_models, identify_hd, identify_cdrom — so file-shape
 // validation works before any machine has been booted. Called from
-// shell_init alongside rom_init. Idempotent.
+// core_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
 // The CD-ROM drive a machine takes: the identity it answers INQUIRY with and
@@ -337,7 +338,7 @@ int scsi_eject_device(scsi_t *scsi, int id);
 // Read-only views over the SCSI controller and its 8 device slots used
 // by the `scsi` / `scsi.bus` / `scsi.devices` object classes. Phase is
 // exposed as an integer with the canonical name table living in the
-// object class so the V_ENUM display works without leaking
+// object class so the VK_ENUM display works without leaking
 // the internal phase enum across the public header.
 //
 // Slot index is 0..7 (the SCSI ID). Reads on an unpopulated slot

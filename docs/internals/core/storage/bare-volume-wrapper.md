@@ -83,7 +83,7 @@ it sizes the storage (`image_open_source` in `image.c`):
   A driverless partition is not extended past its map entry. Nothing is
   extended by more than `IMAGE_WRAP_MAX_EXTEND_BLOCKS` (1 GiB): a header
   claiming more is garbage, not a trimmed tail.
-- The storage's base becomes `gs_source_pad` over the file. Past the file's
+- The storage's base becomes `source_pad` over the file. Past the file's
   end it reads zeros, and the second-last block reads as a copy of the
   volume's header, which is where the alternate MDB or volume header
   belongs. Disk First Aid checks the alternate.
@@ -248,7 +248,7 @@ fallback when the assembler is missing. The sniffs and sizing live in
   on the wrapper's own prefix), and the trimmed-volume sizing (HFS and HFS+
   claims; a bare and a driverless volume extended, clipped to the map entry,
   and left alone when whole, oversized or not a volume).
-- `tests/unit/suites/source` — `gs_source_pad`: the parent's bytes, the zero
+- `tests/unit/suites/source` — `source_pad`: the parent's bytes, the zero
   tail with its patch, and refused shapes.
 - `tests/integration/scsi-bare-volume` — one machine of every family that
   boots Mac OS from SCSI, each to the Finder off a wrapped volume: the

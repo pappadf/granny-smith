@@ -16,6 +16,7 @@
 #include "checkpoint_machine.h"
 #include "format_registry.h"
 #include "image.h"
+#include "image_internal.h" // the tag fields under test
 #include "image_wrap.h"
 #include "test_assert.h"
 
