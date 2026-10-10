@@ -174,17 +174,18 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         return;
 
     case VK_INT:
-        // VFLAG_HEX is honoured in every mode, as for VK_UINT: format_value_print
-        // used to ignore it for VK_INT while format_scalar_inline honoured it,
-        // so the same attribute rendered two ways.  Hex shows the two's-
-        // complement bit pattern at the value's width (-1 at width 4 is
-        // 0xffffffff), and in JSON it is a string like VK_UINT's, because
-        // "0x…" is not a JSON number.
-        if (v->flags & VFLAG_HEX) {
+        // VFLAG_HEX is honoured in every text mode: format_value_print used to
+        // ignore it for VK_INT while format_scalar_inline honoured it, so the
+        // same attribute rendered two ways.  Hex shows the two's-complement
+        // bit pattern at the value's width (-1 at width 4 is 0xffffffff).
+        // JSON keeps VK_INT a bare number whatever its presentation, so web
+        // consumers of a signed attribute (a NuBus slot number) read a number.
+        if (!mode_is_json(mode) && (v->flags & VFLAG_HEX)) {
             uint64_t bits = (uint64_t)v->i;
+            // mask to the value's width so a negative shows its own bit pattern
             if (v->width > 0 && v->width < 8)
                 bits &= ((uint64_t)1 << (8 * v->width)) - 1;
-            vbuf_appendf(out, mode_is_json(mode) ? "\"0x%" PRIx64 "\"" : "0x%" PRIx64, bits);
+            vbuf_appendf(out, "0x%" PRIx64, bits);
         } else {
             vbuf_appendf(out, "%" PRId64, v->i);
         }

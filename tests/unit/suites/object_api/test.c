@@ -254,8 +254,9 @@ TEST(test_out_of_range_args_are_refused) {
     fixture_down(a, b);
 }
 
-// A hex-flagged VK_INT renders its bit pattern at its width, and as a JSON
-// string like VK_UINT; strings escape control characters.
+// A hex-flagged VK_INT renders its bit pattern at its width in text, but stays
+// a bare JSON number (a hex VK_UINT is a "0x…" string); strings escape
+// control characters.
 TEST(test_value_format_hex_int_and_escapes) {
     char buf[64];
     value_t v = val_int(-1);
@@ -264,7 +265,19 @@ TEST(test_value_format_hex_int_and_escapes) {
     value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
     ASSERT_TRUE(strcmp(buf, "0xffffffff") == 0);
     value_format_into(&v, VFMT_JSON_TAGGED, buf, sizeof(buf));
-    ASSERT_TRUE(strcmp(buf, "\"0xffffffff\"") == 0);
+    ASSERT_TRUE(strcmp(buf, "-1") == 0);
+    value_format_into(&v, VFMT_JSON, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "-1") == 0);
+    value_t slot = val_int(0xe); // a NuBus slot number reaches JSON as 14
+    slot.flags |= VFLAG_HEX;
+    value_format_into(&slot, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "14") == 0);
+    value_format_into(&slot, VFMT_TEXT, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "0xe") == 0);
+    value_t u = val_uint(4, 0x1f); // a hex VK_UINT is still a JSON string
+    u.flags |= VFLAG_HEX;
+    value_format_into(&u, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "\"0x1f\"") == 0);
     value_t s = val_str("a\"b\\c\n\x01"
                         "d");
     value_format_into(&s, VFMT_JSON, buf, sizeof(buf));
