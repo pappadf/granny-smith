@@ -18,7 +18,7 @@ This document describes the implemented, lightweight logging framework for Grann
 - Non‑goals (for now)
   - Persistent configuration (e.g., storing levels in localStorage). See “future extensions”.
   - Rich sinks (JSON, structured fields). Current implementation writes formatted text lines to per‑category sinks.
-  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`gs_out.h`) like any other printed text; the per-line `log` event (`gs_event_emit`) is the structured stream the browser's Logs view reads.
+  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`out.h`) like any other printed text; the per-line `log` event (`gs_event_emit`) is the structured stream the browser's Logs view reads.
 
 
 ## Terminology

@@ -579,8 +579,8 @@ configure, and what the JS frontend operates on:
   `job_tables_lock`). A leaf whose cost is the size of a file — flagged
   `io` (above) — hands its work to the I/O worker through `io_leaf.h` and
   answers later (`gs_result_defer` / `gs_result_complete`); the worker
-  touches host files only. What a leaf prints goes through `gs_out.h`
-  (`gs_outf`, never `printf`) to the client whose request it is.
+  touches host files only. What a leaf prints goes through `out.h`
+  (`out_printf`, never `printf`) to the client whose request it is.
 
   **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
   resolves to): a value is the result; `null` is **only** a successful

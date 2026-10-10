@@ -13,7 +13,7 @@
 // source of truth.
 
 #include "rom.h"
-#include "gs_out.h"
+#include "out.h"
 #include "source.h"
 
 #include "machine_profile.h"
@@ -240,7 +240,7 @@ uint8_t *rom_read_file(const char *filename, size_t *out_size, bool quiet) {
     if (rc != 0 || file_size == 0) {
         free(rom_data);
         if (!quiet)
-            gs_outf("Failed to read ROM file: %s\n", filename);
+            out_printf("Failed to read ROM file: %s\n", filename);
         return NULL;
     }
     *out_size = file_size;
@@ -318,7 +318,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
             }
         }
     } else {
-        gs_outf("Lisa ROM: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
+        out_printf("Lisa ROM: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
     }
 
     free(a);
@@ -328,7 +328,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
     rom_identity_t id;
     rom_identity_compute(combined, LISA_ROM_SIZE, &id);
     if (id.kind != ROM_KIND_LISA || !id.intact)
-        gs_outf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
+        out_printf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
     *out_size = LISA_ROM_SIZE;
     return combined;
 }

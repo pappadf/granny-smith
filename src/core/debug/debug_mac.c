@@ -5,7 +5,7 @@
 // Mac-specific debugging utilities: trap names, global variable lookup, and process inspection.
 
 #include "debug_mac.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "cpu.h"
 #include "debug.h"
@@ -104,17 +104,17 @@ static uint32_t read_global32(const char *name, bool *found) {
 // low-memory globals (CurApName, ApplZone, ApplLimit, CurrentA5,
 // CurStackBase).
 void debug_mac_print_process_info(void) {
-    gs_outf("--- Current Application Info ---\n");
+    out_printf("--- Current Application Info ---\n");
 
     // 1. The application name: CurApName is a Pascal string (Str31)
     char app_name[64] = "";
     uint32_t addr_name = debug_mac_lookup_global_address("CurApName");
     if (addr_name)
         read_pstring(addr_name, app_name, sizeof(app_name));
-    gs_outf("Name: %s\n", app_name);
+    out_printf("Name: %s\n", app_name);
 
     // 2. The application's memory map
-    gs_outf("\n--- Memory Map ---\n");
+    out_printf("\n--- Memory Map ---\n");
 
     bool have_zone, have_limit, have_a5, have_stack;
     uint32_t heap_start_ptr = read_global32("ApplZone", &have_zone);
@@ -122,22 +122,22 @@ void debug_mac_print_process_info(void) {
     uint32_t a5_world_ptr = read_global32("CurrentA5", &have_a5);
     uint32_t stack_base_ptr = read_global32("CurStackBase", &have_stack);
     if (!have_zone || !have_limit || !have_a5 || !have_stack) {
-        gs_outf("(ApplZone/ApplLimit/CurrentA5/CurStackBase missing from the globals table)\n");
+        out_printf("(ApplZone/ApplLimit/CurrentA5/CurStackBase missing from the globals table)\n");
         return;
     }
 
-    gs_outf("Application Partition Start: $%08X\n", heap_start_ptr);
-    gs_outf("Application Partition Limit: $%08X\n", heap_limit_ptr);
-    gs_outf("  Heap Start:                $%08X\n", heap_start_ptr);
-    gs_outf("  A5 World (CurrentA5):      $%08X\n", a5_world_ptr);
-    gs_outf("  Stack Base:                $%08X (grows downwards)\n", stack_base_ptr);
+    out_printf("Application Partition Start: $%08X\n", heap_start_ptr);
+    out_printf("Application Partition Limit: $%08X\n", heap_limit_ptr);
+    out_printf("  Heap Start:                $%08X\n", heap_start_ptr);
+    out_printf("  A5 World (CurrentA5):      $%08X\n", a5_world_ptr);
+    out_printf("  Stack Base:                $%08X (grows downwards)\n", stack_base_ptr);
     if (heap_limit_ptr >= heap_start_ptr) {
         uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
-        gs_outf("Total Partition Size:        %u bytes (%u.%u KB)\n", partition_size_bytes, partition_size_bytes / 1024,
-                (partition_size_bytes % 1024) * 10 / 1024);
+        out_printf("Total Partition Size:        %u bytes (%u.%u KB)\n", partition_size_bytes,
+                   partition_size_bytes / 1024, (partition_size_bytes % 1024) * 10 / 1024);
     } else {
-        gs_outf("Total Partition Size:        <invalid: heap limit $%08X < start $%08X>\n", heap_limit_ptr,
-                heap_start_ptr);
+        out_printf("Total Partition Size:        <invalid: heap limit $%08X < start $%08X>\n", heap_limit_ptr,
+                   heap_start_ptr);
     }
 }
 
@@ -152,10 +152,10 @@ void debug_mac_print_process_info(void) {
 // as addresses only (a return address points mid-routine, so disassembling
 // there tells nothing about the frame).
 void debug_mac_print_target_backtrace(void) {
-    gs_outf("\n=== Target 68K backtrace ===\n");
+    out_printf("\n=== Target 68K backtrace ===\n");
     cpu_t *cpu = system_cpu();
     if (!cpu) {
-        gs_outf("(CPU not initialized)\n");
+        out_printf("(CPU not initialized)\n");
         return;
     }
 
@@ -163,7 +163,7 @@ void debug_mac_print_target_backtrace(void) {
     uint32_t pc = cpu_get_pc(cpu);
     char linebuf[160];
     debugger_disasm(linebuf, sizeof(linebuf), pc);
-    gs_outf("#0  %s\n", linebuf);
+    out_printf("#0  %s\n", linebuf);
 
     // Frame pointers already walked: a chain that comes back to any of them
     // (A -> B -> A, not just A -> A) is a cycle, and the walk stops.
@@ -187,14 +187,14 @@ void debug_mac_print_target_backtrace(void) {
         uint32_t ret = read32(a6 + 4);
         if (ret == 0 || ret > g_address_mask)
             break;
-        gs_outf("#%d  $%08X  (frame $%08X)\n", depth, ret, a6);
+        out_printf("#%d  $%08X  (frame $%08X)\n", depth, ret, a6);
         a6 = prev_a6;
     }
 }
 
 // Print current Mac application process info (wrapper for diagnostic output)
 void debug_mac_print_process_info_header(void) {
-    gs_outf("\n=== Current Mac application ===\n");
+    out_printf("\n=== Current Mac application ===\n");
     debug_mac_print_process_info();
 }
 
@@ -225,7 +225,7 @@ static int set_mouse_global(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        gs_outf("Error: could not resolve mouse-related globals.\n");
+        out_printf("Error: could not resolve mouse-related globals.\n");
         return -1;
     }
 
@@ -259,7 +259,7 @@ static int set_mouse_global(long x, long y) {
 static int set_mouse_hw(long dx, long dy) {
     bool injected = system_mouse_move((int)dx, (int)dy);
     if (!injected) {
-        gs_outf("Error: no mouse device available for hardware injection.\n");
+        out_printf("Error: no mouse device available for hardware injection.\n");
         return -1;
     }
     return 0;
@@ -347,17 +347,17 @@ static int set_mouse_aux(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        gs_outf("Error: could not resolve mouse-related globals.\n");
+        out_printf("Error: could not resolve mouse-related globals.\n");
         return -1;
     }
     if (!g_mmu || !g_mmu->enabled) {
-        gs_outf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
+        out_printf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
         return set_mouse_global(x, y);
     }
     if (g_mmu->last_user_crp == 0) {
         // Reported, not failed: the guest has not entered user mode yet,
         // which is a state of the guest rather than a fault in the request.
-        gs_outf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
+        out_printf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
         return 0;
     }
 
@@ -383,8 +383,8 @@ static int set_mouse_aux(long x, long y) {
         (void)aux_read_uint8(addr_CrsrCouple, &couple);
     aux_tally(&tally, aux_write_uint8(addr_CrsrNew, couple));
 
-    gs_outf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
-            (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), tally.ok, tally.total);
+    out_printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n",
+               (int)x, (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), tally.ok, tally.total);
     // Best-effort: a partial mapping (a process without MAE's globals mapped,
     // e.g. under X11) is reported above, not failed.
     return 0;
@@ -396,7 +396,7 @@ static int set_mouse_aux(long x, long y) {
 static int set_mouse_default(long x, long y) {
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
     if (!addr_MTemp) {
-        gs_outf("Error: could not resolve MTemp.\n");
+        out_printf("Error: could not resolve MTemp.\n");
         return -1;
     }
 
@@ -475,14 +475,14 @@ void debug_mac_mouse_trace_tick(void *source, uint64_t data) {
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
     if (!addr_Mouse) {
         // Not rescheduling ends the trace (its event IS its state).
-        gs_outf("[trace-mouse] the Mouse global is unknown; trace stopped\n");
+        out_printf("[trace-mouse] the Mouse global is unknown; trace stopped\n");
         return;
     }
     int16_t v = (int16_t)memory_debug_read_uint16(addr_Mouse);
     int16_t h = (int16_t)memory_debug_read_uint16(addr_Mouse + 2);
     uint64_t sample = mouse_point_pack(h, v) | TRACE_MOUSE_HAVE_LAST;
     if (sample != data)
-        gs_outf("[trace-mouse] h=%d v=%d\n", h, v);
+        out_printf("[trace-mouse] h=%d v=%d\n", h, v);
     scheduler_new_cpu_event(system_scheduler(), &debug_mac_mouse_trace_tick, source, sample, 0,
                             TRACE_MOUSE_INTERVAL_NS);
 }
@@ -517,7 +517,7 @@ static void mouse_button_global(bool button_down) {
     uint32_t addr_Ticks = debug_mac_lookup_global_address("Ticks");
 
     if (!addr_MBState) {
-        gs_outf("Error: could not resolve MBState.\n");
+        out_printf("Error: could not resolve MBState.\n");
         return;
     }
 

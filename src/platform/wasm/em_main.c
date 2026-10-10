@@ -347,7 +347,7 @@ static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_R
 __attribute__((constructor)) static void mailbox_construct(void) {
     if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
         abort();
-    // Answers to the page carry what the leaf printed (gs_out.h); the
+    // Answers to the page carry what the leaf printed (out.h); the
     // terminal shows it with the result.
     gs_mailbox_set_capture_output(&g_mailbox, true);
 }

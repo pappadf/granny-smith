@@ -9,7 +9,7 @@
 // overrides the sizes) so wraps and a held-back result are cheap to force.
 
 #include "common.h"
-#include "gs_out.h"
+#include "out.h"
 #include "test_assert.h"
 #include "io/io_worker.h"
 #include "job/job.h"
@@ -198,11 +198,11 @@ static int g_stops;
 int job_glue_run_source_threaded(const char *src);
 static void print_on_emulator(void *ud) {
     (void)ud;
-    gs_outs("two\n"); // the emulator thread, serving the job's call
+    out_puts("two\n"); // the emulator thread, serving the job's call
 }
 int job_glue_run_source_printing(const char *src) {
     (void)src;
-    gs_outf("one %s\n", "\"quoted\""); // the job thread itself
+    out_printf("one %s\n", "\"quoted\""); // the job thread itself
     job_on_emulator(print_on_emulator, NULL);
     return 0;
 }
@@ -764,11 +764,11 @@ TEST(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error) {
     free(big);
 }
 
-// A leaf that prints while it runs (gs_out.h): the text travels with its
+// A leaf that prints while it runs (out.h): the text travels with its
 // answer when the platform captures output, else to stdout.
 static int printing_eval(const char *path, const char *args, char *out, size_t out_size) {
-    gs_outf("hello %s\n", path);
-    gs_outs("second line\n");
+    out_printf("hello %s\n", path);
+    out_puts("second line\n");
     return stub_eval(path, args, out, out_size);
 }
 

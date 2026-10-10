@@ -10,12 +10,12 @@
 #include "adb.h"
 #include "checkpoint.h"
 #include "cpu.h"
-#include "gs_out.h"
 #include "image.h"
 #include "json_value.h"
 #include "log.h"
 #include "nubus.h"
 #include "object.h"
+#include "out.h"
 #include "platform.h"
 #include "prom.h"
 #include "rom.h"
@@ -504,11 +504,11 @@ static value_t boot_rom_read(const boot_config_t *doc, const hw_profile_t *profi
         free(data);
         return err;
     }
-    gs_outf("ROM: %s (id %s)\n", info->family_name, id->id);
+    out_printf("ROM: %s (id %s)\n", info->family_name, id->id);
     // A damaged dump still boots -- research on damaged or hand-edited images
     // is a legitimate use -- but says which part does not verify.
     if (!id->intact)
-        gs_outf("Warning: ROM %s — the dump is probably damaged\n", id->reason);
+        out_printf("Warning: ROM %s — the dump is probably damaged\n", id->reason);
     *bytes = data;
     *rom = (rom_image_t){.data = data, .size = size, .path = doc->rom};
     return val_none();

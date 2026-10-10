@@ -10,7 +10,7 @@
 // the install hooks it registers (root_register_install).
 
 #include "root.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -189,32 +189,32 @@ static DEF_METHOD(method_root_quit) {
 static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
-            gs_outc(' ');
+            out_putc(' ');
         switch (argv[i].kind) {
         case VK_STRING:
-            gs_outs(argv[i].s ? argv[i].s : "");
+            out_puts(argv[i].s ? argv[i].s : "");
             break;
         case VK_BOOL:
-            gs_outs(argv[i].b ? "true" : "false");
+            out_puts(argv[i].b ? "true" : "false");
             break;
         case VK_INT:
-            gs_outf("%lld", (long long)argv[i].i);
+            out_printf("%lld", (long long)argv[i].i);
             break;
         case VK_UINT:
-            gs_outf("%llu", (unsigned long long)argv[i].u);
+            out_printf("%llu", (unsigned long long)argv[i].u);
             break;
         case VK_FLOAT:
-            gs_outf("%g", argv[i].f);
+            out_printf("%g", argv[i].f);
             break;
         default:
             // Fall back to a path-form-style label for the kinds we
             // don't usually echo (VK_OBJECT, VK_LIST). Keeps output
             // deterministic for diff-based regression tests.
-            gs_outs("<?>");
+            out_puts("<?>");
             break;
         }
     }
-    gs_outc('\n');
+    out_putc('\n');
     return val_bool(true);
 }
 

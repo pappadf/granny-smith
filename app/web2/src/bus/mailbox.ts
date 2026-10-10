@@ -96,7 +96,7 @@ export const SCRIPT_MAX = 256 << 10;
 export interface MailboxResult {
   ok: boolean;
   json: string;
-  // What the leaf printed while it ran (gs_out.h), when the core captures
+  // What the leaf printed while it ran (out.h), when the core captures
   // it; empty otherwise.
   output: string;
 }

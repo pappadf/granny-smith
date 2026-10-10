@@ -17,8 +17,8 @@
 
 #include "prom.h"
 #include "common.h"
-#include "gs_out.h"
 #include "offer_registry.h"
+#include "out.h"
 
 #include "log.h"
 #include "machine_profile.h"

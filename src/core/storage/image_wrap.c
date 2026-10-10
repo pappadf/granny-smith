@@ -9,10 +9,10 @@
 
 #include "build_id.h"
 #include "common.h"
-#include "gs_out.h"
 #include "gsdisk_driver.h" // generated: gsdisk_drvr[] (src/core/storage/gsdisk/)
 #include "image_internal.h"
 #include "log.h"
+#include "out.h"
 
 #include <stdlib.h>
 #include <string.h>

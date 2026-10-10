@@ -5,7 +5,7 @@
 // Interactive command shell for emulator debugging and control.
 
 #include "shell.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "shell_internal.h"
 #include "value_format.h"
@@ -57,7 +57,7 @@ static void format_scalar_inline(const value_t *v) {
     vbuf_t b = {0};
     value_format(v, VFMT_INLINE, &b);
     if (b.p)
-        gs_outs(b.p);
+        out_puts(b.p);
     vbuf_free(&b);
 }
 
@@ -70,9 +70,9 @@ static void format_scalar_inline(const value_t *v) {
 static void print_name_cell(const char *name, int width) {
     int len = (int)strlen(name);
     if (len <= width)
-        gs_outf("%-*s", width, name);
+        out_printf("%-*s", width, name);
     else
-        gs_outf("%.*s\u2026", width - 1, name); // one ellipsis cell keeps the column
+        out_printf("%.*s\u2026", width - 1, name); // one ellipsis cell keeps the column
 }
 
 // Print an object as a multi-line `name = value` table. Walks the
@@ -86,7 +86,7 @@ static void format_object_table(struct object *o) {
     if (!cls || !cls->members || cls->n_members == 0) {
         const char *cls_name = (cls && cls->name) ? cls->name : "object";
         const char *o_name = object_name(o);
-        gs_outf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        out_printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
         return;
     }
     // Pass 1: compute the longest member name so we can right-pad.
@@ -114,9 +114,9 @@ static void format_object_table(struct object *o) {
             continue;
         value_t v = mb->attr.get(o, mb);
         print_name_cell(mb->name, width);
-        gs_outs(" = ");
+        out_puts(" = ");
         format_scalar_inline(&v);
-        gs_outf("\n");
+        out_printf("\n");
         value_free(&v);
     }
     for (size_t i = 0; i < cls->n_members; i++) {
@@ -126,7 +126,7 @@ static void format_object_table(struct object *o) {
         const class_desc_t *ccls = mb->child.collection ? mb->child.collection->entry : mb->child.cls;
         const char *child_cls = (ccls && ccls->name) ? ccls->name : "object";
         print_name_cell(mb->name, width);
-        gs_outf(" : <%s%s>\n", child_cls, mb->child.collection ? "[]" : "");
+        out_printf(" : <%s%s>\n", child_cls, mb->child.collection ? "[]" : "");
     }
 }
 
@@ -187,14 +187,14 @@ static bool try_print_object_table(const value_t *v) {
     }
     // Header + rows.
     for (int c = 0; c < n_cols; c++)
-        gs_outf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
+        out_printf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
             value_t cv = mb->attr.get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
-            gs_outf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
+            out_printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
         }
     }
     return true;
@@ -222,15 +222,15 @@ static void format_value_print(const value_t *v) {
         // A list of same-class objects renders as an attribute table.
         if (try_print_object_table(v))
             break;
-        gs_outc('[');
+        out_putc('[');
         for (size_t i = 0; i < v->list.len; i++) {
             if (i)
-                gs_outs(", ");
+                out_puts(", ");
             // Elements compose into one line, so they render quoted and
             // capped -- VFMT_INLINE, not the mode the container used.
             format_scalar_inline(&v->list.items[i]);
         }
-        gs_outs("]\n");
+        out_puts("]\n");
         break;
     }
 
@@ -248,9 +248,9 @@ static void format_value_print(const value_t *v) {
             width = NAME_COL_MAX; // cap so very long keys don't blow the layout
         for (size_t i = 0; i < v->map.len; i++) {
             print_name_cell(v->map.entries[i].key ? v->map.entries[i].key : "", width);
-            gs_outs(" : ");
+            out_puts(" : ");
             format_scalar_inline(&v->map.entries[i].val);
-            gs_outc('\n');
+            out_putc('\n');
         }
         break;
     }
@@ -271,8 +271,8 @@ static void format_value_print(const value_t *v) {
         vbuf_t b = {0};
         value_format(v, VFMT_REPL, &b);
         if (b.p)
-            gs_outs(b.p);
-        gs_outc('\n');
+            out_puts(b.p);
+        out_putc('\n');
         vbuf_free(&b);
         break;
     }

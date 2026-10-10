@@ -13,11 +13,11 @@
 #include "addr_format.h"
 #include "cpu.h"
 #include "debug.h"
-#include "gs_out.h"
 #include "lisa_mmu.h"
 #include "memory.h"
 #include "mmu.h"
 #include "object.h"
+#include "out.h"
 #include "system.h"
 #include "value.h"
 
@@ -126,21 +126,21 @@ static DEF_METHOD(method_mem_dump) {
     // side-effect-free debug read so a dump across unmapped pages can't
     // latch a spurious guest bus error.
     for (uint32_t i = 0; i < nbytes; i += 16) {
-        gs_outf("$%08X  ", addr + i);
+        out_printf("$%08X  ", addr + i);
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes)
-                gs_outf("%02x ", memory_debug_read_uint8(addr + i + j));
+                out_printf("%02x ", memory_debug_read_uint8(addr + i + j));
             else
-                gs_outf("   ");
+                out_printf("   ");
         }
-        gs_outf(" ");
+        out_printf(" ");
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes) {
                 uint8_t byte = memory_debug_read_uint8(addr + i + j);
-                gs_outf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
+                out_printf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
             }
         }
-        gs_outf("\n");
+        out_printf("\n");
     }
     return val_none();
 }

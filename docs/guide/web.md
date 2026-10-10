@@ -245,7 +245,7 @@ no room for is held back and delivered once the page has read; the core
 never blocks on the page.
 
 **Output.** What a leaf prints while it runs (every stdout site in the core
-goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
+goes through the sink `out.h`) travels with its answer: `EVT_RESULT`'s
 `output` text, which the page hands to the terminal, so a page leaf's
 printout reads as it did when stdout reached the terminal directly. A
 job's output (below) arrives as `EVT_LOG {"event":"output","id":request,

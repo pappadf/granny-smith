@@ -19,7 +19,6 @@
 #include "drive_catalog.h"
 #include "floppy.h"
 #include "gs_assert.h"
-#include "gs_out.h"
 #include "host_input.h"
 #include "image.h"
 #include "image_wrap.h"
@@ -30,6 +29,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
+#include "out.h"
 #include "pci.h"
 #include "platform_hooks.h"
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
@@ -564,12 +564,12 @@ static int sys_fd_count(config_t *cfg) {
 static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
     int n = sys_fd_count(cfg);
     if (preferred < -1 || preferred >= n) {
-        gs_outf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        out_printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
         return -1;
     }
     if (preferred != -1) {
         if (sys_fd_is_inserted(cfg, preferred)) {
-            gs_outf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            out_printf("%s: floppy drive %d is already occupied.\n", who, preferred);
             return -1;
         }
         return preferred;
@@ -578,9 +578,9 @@ static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
         if (!sys_fd_is_inserted(cfg, d))
             return d;
     if (n == 0)
-        gs_outf("%s: this machine has no floppy drive.\n", who);
+        out_printf("%s: this machine has no floppy drive.\n", who);
     else
-        gs_outf("%s: no free floppy drive.\n", who);
+        out_printf("%s: no free floppy drive.\n", who);
     return -1;
 }
 
@@ -589,7 +589,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("fd insert: emulator config not initialized.\n");
+        out_printf("fd insert: emulator config not initialized.\n");
         return -1;
     }
     int target = sys_fd_pick(config, preferred, "fd insert");
@@ -598,7 +598,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
     image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
-        gs_outf("fd insert: failed to open disk image: %s\n", path);
+        out_printf("fd insert: failed to open disk image: %s\n", path);
         return -1;
     }
 
@@ -606,12 +606,12 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // insert's result and printed "inserted" whatever the drive said, so a
     // drive that refused left an orphan on the image list and a success claim.
     if (sys_fd_insert(config, target, disk) != 0) {
-        gs_outf("fd insert: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd insert: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    gs_outf("fd insert: inserted %s into floppy drive %d.\n", path, target);
+    out_printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }
 
@@ -620,12 +620,12 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 int system_probe_floppy(const char *path) {
     image_t *disk = image_open_readonly(path);
     if (!disk) {
-        gs_outf("%s: NOT a supported format\n", path);
+        out_printf("%s: NOT a supported format\n", path);
         return 1;
     }
 
     if (!image_is_floppy(image_get_type(disk))) {
-        gs_outf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, image_get_raw_size(disk));
+        out_printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, image_get_raw_size(disk));
         image_close(disk);
         return 1;
     }
@@ -640,7 +640,7 @@ int system_probe_floppy(const char *path) {
     else if (image_get_type(disk) == image_fd_hd)
         type_str = "high-density 1440KB";
 
-    gs_outf("%s: Valid floppy image (%s)\n", path, type_str);
+    out_printf("%s: Valid floppy image (%s)\n", path, type_str);
     image_close(disk);
     return 0;
 }
@@ -650,7 +650,7 @@ int system_probe_floppy(const char *path) {
 int system_create_floppy(const char *path, bool high_density, int preferred) {
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("fd create: emulator config not initialized.\n");
+        out_printf("fd create: emulator config not initialized.\n");
         return -1;
     }
 
@@ -664,25 +664,26 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
         if (rc == IMAGE_CREATE_EXISTS)
-            gs_outf("fd create: file already exists: %s (won't overwrite)\n", path);
+            out_printf("fd create: file already exists: %s (won't overwrite)\n", path);
         else
-            gs_outf("fd create: failed to create blank floppy file: %s\n", path);
+            out_printf("fd create: failed to create blank floppy file: %s\n", path);
         return -1;
     }
 
     image_t *disk = image_create(path, pick_delta_dir(path));
     if (!disk) {
-        gs_outf("fd create: failed to open newly created image: %s\n", path);
+        out_printf("fd create: failed to open newly created image: %s\n", path);
         return -1;
     }
 
     if (sys_fd_insert(config, target, disk) != 0) {
-        gs_outf("fd create: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd create: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    gs_outf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
+    out_printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K",
+               target);
     return 0;
 }
 
@@ -703,26 +704,26 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 static int do_create_hd(const char *path, const char *size_str) {
     size_t size = drive_catalog_parse_size(size_str);
     if (size == 0) {
-        gs_outf("hd create: invalid size: %s\n", size_str);
-        gs_outf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
-        gs_outf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
-        gs_outf("  Run 'hd models' to see available drive sizes.\n");
+        out_printf("hd create: invalid size: %s\n", size_str);
+        out_printf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
+        out_printf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
+        out_printf("  Run 'hd models' to see available drive sizes.\n");
         return -1;
     }
     if (size > HD_CREATE_MAX_SIZE) {
-        gs_outf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
+        out_printf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
         return -1;
     }
     // reject floppy-sized images
     if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
-        gs_outf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
+        out_printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
         return -1;
     }
     // refuse to overwrite existing files
     FILE *exist = fopen(path, "rb");
     if (exist) {
         fclose(exist);
-        gs_outf("hd create: file already exists: %s (won't overwrite)\n", path);
+        out_printf("hd create: file already exists: %s (won't overwrite)\n", path);
         return -1;
     }
     // A .dmg is a UDIF of one zero run -- a couple of KB however large the
@@ -732,10 +733,10 @@ static int do_create_hd(const char *path, const char *size_str) {
     bool udif = plen >= 4 && strcasecmp(path + plen - 4, ".dmg") == 0;
     int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
     if (rc != 0) {
-        gs_outf("hd create: failed to create image: %s\n", path);
+        out_printf("hd create: failed to create image: %s\n", path);
         return -1;
     }
-    gs_outf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
+    out_printf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
     return 0;
 }
 
@@ -743,12 +744,12 @@ static int do_create_hd(const char *path, const char *size_str) {
 // Returns 0 on success, -1 on error.
 static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     if (scsi_id < 0 || scsi_id > 7) {
-        gs_outf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
+        out_printf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
         return -1;
     }
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("hd attach: emulator not initialized.\n");
+        out_printf("hd attach: emulator not initialized.\n");
         return -1;
     }
     // Report what actually happened.  This returned 0 unconditionally, so
@@ -765,7 +766,7 @@ static int do_attach_hd(const char *path, int scsi_id) {
 // One-time, machine-independent process setup: log categories, the image
 // system, the AppleTalk network.
 void system_init(void) {
-    gs_outf("Granny Smith build %s\n", build_id_get());
+    out_printf("Granny Smith build %s\n", build_id_get());
 
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
@@ -851,7 +852,7 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     scheduler_t *sched = system_scheduler();
     if (!sched) {
         if (verbose)
-            gs_outf("[checkpoint] no machine, nothing to save\n");
+            out_printf("[checkpoint] no machine, nothing to save\n");
         return STATUS_OK;
     }
 
@@ -862,7 +863,7 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     // No machine identity yet → nothing to save under.
     if (!checkpoint_machine_dir()) {
         if (verbose)
-            gs_outf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
+            out_printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
         return STATUS_OK;
     }
 
@@ -908,7 +909,7 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
         checkpoint_publish_next(NULL);
         unlink(tmp_path);
         if (verbose)
-            gs_outf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+            out_printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
         return rc;
     }
     g_last_quick_checkpoint_ms = now;
@@ -919,9 +920,9 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
     if (ok) {
         gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
         if (g_quick_verbose)
-            gs_outf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
+            out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
-        gs_outf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
+        out_printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
     }
 }
 
@@ -997,7 +998,7 @@ static int clear_checkpoint_files(void) {
 
 int gs_checkpoint_clear(void) {
     int removed = clear_checkpoint_files();
-    gs_outf("Cleared %d checkpoint file(s)\n", removed);
+    out_printf("Cleared %d checkpoint file(s)\n", removed);
     return 0;
 }
 
@@ -1006,7 +1007,7 @@ int gs_register_machine(const char *machine_id, const char *created) {
         return -1;
     int rc = checkpoint_machine_set(machine_id, created);
     if (rc != 0)
-        gs_outf("register_machine: failed to set %s-%s\n", machine_id, created);
+        out_printf("register_machine: failed to set %s-%s\n", machine_id, created);
     return rc == 0 ? 0 : -1;
 }
 
@@ -1019,7 +1020,7 @@ int gs_register_machine(const char *machine_id, const char *created) {
 int gs_find_media(const char *dir_path, const char *dest) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
-        gs_outf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
+        out_printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
         return 1;
     }
 
@@ -1072,7 +1073,7 @@ int gs_find_media(const char *dir_path, const char *dest) {
         fclose(fout);
     }
 
-    gs_outf("%s\n", found_path);
+    out_printf("%s\n", found_path);
     return 0;
 }
 
@@ -1411,27 +1412,27 @@ void system_destroy(config_t *config) {
 static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot_t *slot) {
     *slot = (media_slot_t){.bus = bus};
     if (!path || !*path) {
-        gs_outf("Cannot attach: no image path\n");
+        out_printf("Cannot attach: no image path\n");
         return false;
     }
     if (bus == MEDIA_BUS_PROFILE) {
         const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
         slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
         if (!slot->img)
-            gs_outf("Failed to open ProFile image: %s\n", path);
+            out_printf("Failed to open ProFile image: %s\n", path);
         return slot->img != NULL;
     }
     if (cdrom) {
         // The drive is the one the machine's profile declares for its CD bay.
         const struct scsi_cd_drive *drive = global_emulator ? global_emulator->machine->cdrom_drive : NULL;
         if (!drive) {
-            gs_outf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
+            out_printf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
             return false;
         }
         // CD-ROM images are always opened read-only
         slot->img = image_open_readonly(path);
         if (!slot->img) {
-            gs_outf("Failed to open CD-ROM image: %s\n", path);
+            out_printf("Failed to open CD-ROM image: %s\n", path);
             return false;
         }
         // The attach names the medium a CD-ROM, and that wins over the size
@@ -1464,13 +1465,13 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
         snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
         snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
-        gs_outf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
-                drive->product, disk_size(slot->img), slot->block_size);
+        out_printf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
+                   drive->product, disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));
     if (!slot->img) {
-        gs_outf("Failed to open image: %s\n", path);
+        out_printf("Failed to open image: %s\n", path);
         return false;
     }
     // An HFS volume with no driver in front of it (a bare volume, or a
@@ -1479,17 +1480,17 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
     // driver instead.  The file itself is untouched.
     int wrapped = image_wrap_volume(slot->img);
     if (wrapped < 0) {
-        gs_outf("Failed to wrap volume: %s\n", path);
+        out_printf("Failed to wrap volume: %s\n", path);
         image_close(slot->img);
         slot->img = NULL;
         return false;
     }
     if (wrapped == IMAGE_WRAP_BARE)
-        gs_outf("%s: bare HFS volume — wrapped with a partition map and the GSDisk driver\n", path);
+        out_printf("%s: bare HFS volume — wrapped with a partition map and the GSDisk driver\n", path);
     else if (wrapped == IMAGE_WRAP_DRIVERLESS)
-        gs_outf("%s: partitioned disk without a driver — its HFS partition wrapped with a partition map and the "
-                "GSDisk driver\n",
-                path);
+        out_printf("%s: partitioned disk without a driver — its HFS partition wrapped with a partition map and the "
+                   "GSDisk driver\n",
+                   path);
     size_t sz = disk_size(slot->img);
     // Find the closest drive model from the catalog
     const struct drive_model *best = drive_catalog_find_closest(sz);
@@ -1521,7 +1522,7 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
 // used to hand NULL to scsi_add_device and crash the harness.
 bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
-        gs_outf("Cannot attach %s: this machine has no SCSI bus\n", filename);
+        out_printf("Cannot attach %s: this machine has no SCSI bus\n", filename);
         return false;
     }
     media_slot_t slot;
@@ -1539,7 +1540,7 @@ bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, con
 // see system_attach_scsi_hd.
 bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
-        gs_outf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
+        out_printf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
         return false;
     }
     media_slot_t slot;
@@ -1586,8 +1587,8 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     // A CD-ROM drive is construction: a hard disk cannot replace one, or the
     // next checkpoint would hold a bus no restore of this machine can rebuild.
     if (slot->scsi_type != scsi_dev_cdrom && slot->unit >= 0 && scsi_device_is_cd_drive(bus, (unsigned)slot->unit)) {
-        gs_outf("Cannot attach %s at SCSI id %d: that is a CD-ROM drive (insert a CD there instead)\n",
-                slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
+        out_printf("Cannot attach %s at SCSI id %d: that is a CD-ROM drive (insert a CD there instead)\n",
+                   slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
         return -1;
     }
     config_add_image(cfg, slot->img);

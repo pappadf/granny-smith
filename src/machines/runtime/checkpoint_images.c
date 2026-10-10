@@ -5,7 +5,7 @@
 // Image-list checkpoint serialisation — see checkpoint_images.h.
 
 #include "checkpoint_images.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
@@ -54,7 +54,7 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
     // Bounded and terminated by the reader rather than by the writer's
     // promise: `name` goes on to access(), image_open_with_geometry() and
-    // gs_outf("%s"), so a file that omits the NUL used to read off the end of
+    // out_printf("%s"), so a file that omits the NUL used to read off the end of
     // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
     uint8_t flags = 0;
@@ -94,7 +94,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
                                                                          : image_create_empty(name, (size_t)raw_size);
             // The open below then fails and flags the checkpoint; this says why.
             if (rc != 0)
-                gs_outf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);
+                out_printf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);
         }
         if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
@@ -106,15 +106,15 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             img = image_open_readonly_with_geometry(name, geom);
         }
         if (!img) {
-            gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            out_printf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
         } else if (!consolidated && saved_key && saved_key[0] && image_get_source_key(img) &&
                    !gs_key_same_source(saved_key, image_get_source_key(img))) {
             // A quick checkpoint's disk is the base plus the saved delta: on
             // other base bytes the delta would apply to the wrong disk.  (A
             // consolidated one carries every block, so its base is not read.)
-            gs_outf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
-                    saved_key, image_get_source_key(img));
+            out_printf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
+                       saved_key, image_get_source_key(img));
             checkpoint_set_error(cp);
         }
     }
@@ -123,7 +123,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // restore is over -- the caller stops at the first damaged entry -- and
     // reading on would only repeat the failure under another name.
     if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(image_get_storage(img), cp) != STATUS_OK) {
-        gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        out_printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
     // A volume that was attached through the wrapper is re-wrapped, so the
@@ -136,7 +136,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // damaged").  A volume that was wrapped and cannot be again fails the
     // restore rather than coming back at the wrong offsets.
     if (img && (flags & IMAGE_CKPT_WRAPPED) && !checkpoint_has_error(cp) && image_wrap_volume(img) <= IMAGE_WRAP_NONE) {
-        gs_outf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
+        out_printf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
         checkpoint_set_error(cp);
     }
     free(name);

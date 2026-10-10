@@ -8,7 +8,7 @@
 // core path-resolver don't pull in object-model dependencies.
 
 #include "vfs_class.h"
-#include "gs_out.h"
+#include "out.h"
 #include "vfs.h"
 
 #include "image_vfs.h"
@@ -30,17 +30,17 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0) {
-        gs_outf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
+        out_printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
-        gs_outf("%s\n", entry.name);
+        out_printf("%s\n", entry.name);
     bool ok = (r == 0);
     if (r < 0) {
         // Surface readdir errors instead of silently truncating the listing.
-        gs_outf("ls: readdir error in '%s': %s\n", path, strerror(-r));
+        out_printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
     }
     be->closedir(dir);
     return val_bool(ok);
@@ -134,10 +134,10 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
         return val_err("files.mkdir: expected a non-empty path");
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
-        gs_outf("Directory '%s' created\n", dir);
+        out_printf("Directory '%s' created\n", dir);
         return val_bool(true);
     }
-    gs_outf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
+    out_printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     return val_bool(false);
 }
 
@@ -152,7 +152,7 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
     if (rc < 0) {
-        gs_outf("cat: cannot open '%s': %s\n", path, strerror(-rc));
+        out_printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     // A heap chunk: this runs at the bottom of a deep shell call chain, and
@@ -169,14 +169,14 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
         size_t got = 0;
         int rr = be->read(f, off, buf, CAT_CHUNK, &got);
         if (rr < 0) {
-            gs_outf("cat: read error on '%s': %s\n", path, strerror(-rr));
+            out_printf("cat: read error on '%s': %s\n", path, strerror(-rr));
             ok = false;
             break;
         }
         if (got == 0)
             break;
-        // The sink (gs_out.h): the job's output, or stdout.
-        gs_out((const char *)buf, got);
+        // The sink (out.h): the job's output, or stdout.
+        out_write((const char *)buf, got);
         off += got;
     }
     free(buf);

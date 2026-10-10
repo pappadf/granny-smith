@@ -9,7 +9,7 @@
 // so the object surface is `files.archive` and no message names peeler.
 
 #include "archive.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "io_leaf.h"
 #include "io/io_worker.h"
@@ -84,7 +84,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
         fprintf(stderr, "archive: no files extracted from '%s'\n", path);
         return -1;
     }
-    gs_outf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
+    out_printf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
     return 0;
 }
 

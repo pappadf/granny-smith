@@ -295,7 +295,7 @@ Headless's own loop is the browser's tick minus the frame pacing: one
 frame-unit while the machine runs, then the mailbox drain that serves the
 job's calls and the daemon's or stdin's statements. What a statement
 prints reaches the client through the same drain: every stdout site in the
-core goes through the output sink (`gs_out.h`), a job's text is delivered
+core goes through the output sink (`out.h`), a job's text is delivered
 as output records in order before the statement's result, and the driver
 writes it to stdout (or the daemon's socket) as it arrives. `--framed`
 adds `@event <kind> <json>` lines for every core event (`mode_started`,

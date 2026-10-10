@@ -9,10 +9,10 @@
 // ============================================================================
 
 #include "memory.h"
-#include "gs_out.h"
 #include "lisa_mmu.h"
 #include "memory_class.h"
 #include "mmu.h"
+#include "out.h"
 
 #include "addr_format.h"
 #include "checkpoint.h"
@@ -1867,7 +1867,7 @@ void memory_map_print(memory_map_t *restrict mem) {
 
     while (map != NULL) {
 
-        gs_outf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
+        out_printf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
         map = map->next;
     }
 }

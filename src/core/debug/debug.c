@@ -9,7 +9,7 @@
 // ============================================================================
 
 #include "debug.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "addr_format.h"
 #include "alias.h"
@@ -682,10 +682,10 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
 void debug_exc_trace_dump(int filter) {
     uint32_t total = (uint32_t)s_exc_trace_count;
     uint32_t count = total < EXC_TRACE_RING_SIZE ? total : EXC_TRACE_RING_SIZE;
-    gs_outf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
-            filter ? ", routine traps/IRQs filtered" : "");
+    out_printf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
+               filter ? ", routine traps/IRQs filtered" : "");
     if (count == 0) {
-        gs_outf("(empty)\n");
+        out_printf("(empty)\n");
         return;
     }
     // Walk from oldest to newest. With s_exc_trace_count <= ring size, oldest is at idx 0.
@@ -705,13 +705,13 @@ void debug_exc_trace_dump(int filter) {
         // entry carries MSR in the vbr slot, the vector offset in
         // format_frame, and DAR in fault_addr.
         if (e->arch == EXC_ARCH_PPC) {
-            gs_outf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
-                    e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
-                    e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            out_printf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
+                       e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
+                       e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         } else {
-            gs_outf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
-                    (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
-                    e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            out_printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+                       (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
+                       e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         }
     }
 }
@@ -795,8 +795,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             if (!debug->watch_hit) {
                 const cpu_debug_if_t *dif = system_cpu_debug_if();
                 uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
-                gs_outf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
-                        addr, access_width_letter(size), (int)(size * 2), value, pc);
+                out_printf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id,
+                           is_write ? "WRITE" : "READ", addr, access_width_letter(size), (int)(size * 2), value, pc);
                 debug->watch_hit = true;
             }
             continue;
@@ -948,9 +948,9 @@ int debug_break_and_trace(void) {
                 }
                 bp->hit_count++;
                 if (bp->space == ADDR_SPACE_PHYSICAL) {
-                    gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+                    out_printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
-                    gs_outf("breakpoint hit at $%08X\n", bp->addr);
+                    out_printf("breakpoint hit at $%08X\n", bp->addr);
                 }
                 gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
                                bp->addr);
@@ -1304,7 +1304,7 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
 static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        gs_outf("Error: Cannot open '%s' for reading.\n", filename);
+        out_printf("Error: Cannot open '%s' for reading.\n", filename);
         return -1;
     }
     fseek(fp, 0, SEEK_END);
@@ -1313,13 +1313,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     uint8_t *file_data = malloc(file_size);
     if (!file_data) {
         fclose(fp);
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         return -1;
     }
     if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
         free(file_data);
         fclose(fp);
-        gs_outf("Error: Failed to read file.\n");
+        out_printf("Error: Failed to read file.\n");
         return -1;
     }
     fclose(fp);
@@ -1327,7 +1327,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
         free(file_data);
-        gs_outf("Error: Not a valid PNG file.\n");
+        out_printf("Error: Not a valid PNG file.\n");
         return -1;
     }
 
@@ -1353,7 +1353,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
                 if (!new_idat) {
                     free(idat_data);
                     free(file_data);
-                    gs_outf("Error: Out of memory.\n");
+                    out_printf("Error: Out of memory.\n");
                     return -1;
                 }
                 idat_data = new_idat;
@@ -1369,18 +1369,18 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
 
     if (width != expected_width || height != expected_height) {
         free(idat_data);
-        gs_outf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
-                expected_height);
+        out_printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+                   expected_height);
         return -1;
     }
     if (!idat_data || idat_len == 0) {
         free(idat_data);
-        gs_outf("Error: No image data in PNG.\n");
+        out_printf("Error: No image data in PNG.\n");
         return -1;
     }
     if (bit_depth != 8) {
         free(idat_data);
-        gs_outf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
+        out_printf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
         return -1;
     }
 
@@ -1391,7 +1391,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
     if (!raw_data) {
-        gs_outf("Error: Failed to decompress PNG..\n");
+        out_printf("Error: Failed to decompress PNG..\n");
         return -1;
     }
 
@@ -1404,13 +1404,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
         bpp_in = 1; // Grayscale
     else {
         free(raw_data);
-        gs_outf("Error: Unsupported PNG color type %d.\n", color_type);
+        out_printf("Error: Unsupported PNG color type %d.\n", color_type);
         return -1;
     }
     size_t row_size = 1 + (size_t)width * bpp_in;
     if (raw_size != row_size * (size_t)height) {
         free(raw_data);
-        gs_outf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
+        out_printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
         return -1;
     }
 
@@ -1475,7 +1475,7 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // row exists to make -- sitting between the two.
 int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
     if (!d || !d->bits) {
-        gs_outf("Error: No active display.\n");
+        out_printf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1488,12 +1488,12 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        gs_outf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
+        out_printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        gs_outf("Error: PNG match: indexed format with no CLUT.\n");
+        out_printf("Error: PNG match: indexed format with no CLUT.\n");
         return -1;
     }
 
@@ -1503,7 +1503,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     if (!fb_rgba || !ref_rgba) {
         free(fb_rgba);
         free(ref_rgba);
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         return -1;
     }
     for (uint32_t y = 0; y < d->height; y++)
@@ -1544,7 +1544,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 // indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
     if (!d || !d->bits) {
-        gs_outf("Error: No active display.\n");
+        out_printf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1557,12 +1557,12 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        gs_outf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
+        out_printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        gs_outf("Error: PNG save: indexed format with no CLUT.\n");
+        out_printf("Error: PNG save: indexed format with no CLUT.\n");
         return -1;
     }
     const int width = (int)d->width;
@@ -1571,7 +1571,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     // Open output file
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        gs_outf("Error: Cannot open file '%s' for writing.\n", filename);
+        out_printf("Error: Cannot open file '%s' for writing.\n", filename);
         return -1;
     }
 
@@ -1599,7 +1599,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     size_t raw_size = row_size * (size_t)height;
     uint8_t *raw_data = malloc(raw_size);
     if (!raw_data) {
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
@@ -1621,7 +1621,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     uint8_t *zlib_data = zlib_compress(raw_data, raw_size, &zpos);
     free(raw_data);
     if (!zlib_data) {
-        gs_outf("Error: Out of memory.\n");
+        out_printf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
@@ -1638,11 +1638,11 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         goto write_error;
 
     fclose(fp);
-    gs_outf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
+    out_printf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
     return 0;
 
 write_error:
-    gs_outf("Error: Failed to write to file '%s'.\n", filename);
+    out_printf("Error: Failed to write to file '%s'.\n", filename);
     fclose(fp);
     return -1;
 }
@@ -2097,10 +2097,10 @@ void debug_print_target_trace(void) {
         return;
     }
 
-    gs_outf("\n=== Target 68K instruction trace (most recent last) ===\n");
+    out_printf("\n=== Target 68K instruction trace (most recent last) ===\n");
 
     if (dbg->trace_head == dbg->trace_tail) {
-        gs_outf("(empty)\n");
+        out_printf("(empty)\n");
         return;
     }
 
@@ -2108,7 +2108,7 @@ void debug_print_target_trace(void) {
     for (i = dbg->trace_tail; i != dbg->trace_head; i = (i + 1) % dbg->trace_buffer_size) {
         char buf[160];
         debugger_disasm(buf, sizeof(buf), dbg->trace_buffer[i]);
-        gs_outf("%s\n", buf);
+        out_printf("%s\n", buf);
     }
 }
 
@@ -2133,7 +2133,7 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     debug_mac_print_process_info_header();
     debug_print_target_trace();
 
-    gs_outf("================================================\n\n");
+    out_printf("================================================\n\n");
 
     bool paused = false;
     scheduler_t *sched = system_scheduler();
@@ -2143,9 +2143,9 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     }
 
     if (paused)
-        gs_outf("Emulation paused (%s); returning control to shell.\n", kind);
+        out_printf("Emulation paused (%s); returning control to shell.\n", kind);
     else
-        gs_outf("Handled %s while scheduler idle; shell remains available.\n", kind);
+        out_printf("Handled %s while scheduler idle; shell remains available.\n", kind);
     fflush(stdout);
 
     // Notify the platform layer (the browser tells its test harness; headless
@@ -2154,7 +2154,7 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     // recurse through gs_assert_fail without bound.
     static bool in_failure_hook = false;
     if (g_failure_hook && in_failure_hook) {
-        gs_outf("(%s raised inside the failure hook; not re-entering it)\n", kind);
+        out_printf("(%s raised inside the failure hook; not re-entering it)\n", kind);
     } else if (g_failure_hook) {
         in_failure_hook = true;
         g_failure_hook(kind, expr, file, line, func);
@@ -2164,12 +2164,12 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
 
 // Prints the ASSERT banner: the failed expression and where it sits
 static void print_assert_header(const char *expr, const char *file, int line, const char *func) {
-    gs_outf("\n\n==================== ASSERT ====================\n");
+    out_printf("\n\n==================== ASSERT ====================\n");
     if (expr && *expr)
-        gs_outf("Assertion failed: (%s)\n", expr);
+        out_printf("Assertion failed: (%s)\n", expr);
     else
-        gs_outf("Assertion failed\n");
-    gs_outf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+        out_printf("Assertion failed\n");
+    out_printf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
 }
 
 // Main assertion failure handler (GS_ASSERT) - prints diagnostics and pauses execution
@@ -2184,12 +2184,12 @@ void gs_assert_failf(const char *expr, const char *file, int line, const char *f
 
     // Optional message
     if (fmt) {
-        gs_outf("Message: ");
+        out_printf("Message: ");
         va_list ap;
         va_start(ap, fmt);
-        gs_voutf(fmt, ap);
+        out_vprintf(fmt, ap);
         va_end(ap);
-        gs_outf("\n");
+        out_printf("\n");
     }
 
     diagnose_and_halt("assertion", expr, file, line, func);
@@ -3097,7 +3097,7 @@ static DEF_METHOD(debug_method_disasm) {
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
-        gs_outf("%s\n", buf);
+        out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
     return val_bool(true);
@@ -3658,14 +3658,14 @@ static DEF_METHOD(screen_method_match) {
         return err;
     int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0) {
-        gs_outf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
+        out_printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
     }
     if (result == 0) {
-        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
+        out_printf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
-    gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    out_printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
@@ -3700,20 +3700,20 @@ static DEF_METHOD(screen_method_match_or_save) {
         return val_err("screen.match_or_save: framebuffer not available");
     int result = match_framebuffer_with_png(d, ref, NULL, 0);
     if (result < 0) {
-        gs_outf("MATCH FAILED: Error loading reference image.\n");
+        out_printf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
             save_framebuffer_as_png(d, actual);
         return val_bool(false);
     }
     if (result == 0) {
-        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
+        out_printf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
     if (actual) {
         save_framebuffer_as_png(d, actual);
-        gs_outf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
+        out_printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
     } else {
-        gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+        out_printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     }
     return val_bool(false);
 }

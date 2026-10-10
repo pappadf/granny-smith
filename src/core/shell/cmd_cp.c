@@ -17,7 +17,7 @@
 // single clean streams.
 
 #include "appledouble.h"
-#include "gs_out.h"
+#include "out.h"
 #include "shell.h"
 #include "vfs.h"
 #include "io/io_worker.h"
@@ -480,10 +480,10 @@ int shell_cp_to_host(const char *src, const char *dst, bool recursive, char *err
         return rc;
     }
     if (s.dirs_created > 0)
-        gs_outf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
-                (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
+        out_printf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
+                   (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
     else
-        gs_outf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
-                (unsigned long long)s.bytes_copied);
+        out_printf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
+                   (unsigned long long)s.bytes_copied);
     return 0;
 }

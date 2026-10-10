@@ -197,7 +197,7 @@ to not break this rule in the first place.
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
-- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
+- Core code prints through the output sink (`out_printf` / `out_puts` / `out_write`, `src/core/out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
 - Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 

@@ -13,10 +13,10 @@
 // numeric: 0 is silent, higher is more verbose.  A process singleton, created
 // at shell init.
 
-#include "gs_out.h"
 #include "log.h"
 #include "log_categories.h"
 #include "object.h"
+#include "out.h"
 #include "value.h"
 
 #include <errno.h>
@@ -29,13 +29,13 @@
 static void print_category(const char *category) {
     const log_category_t *c = log_get_category(category);
     if (!c) {
-        gs_outf("unknown category \"%s\" (see log.levels for the full list)\n", category);
+        out_printf("unknown category \"%s\" (see log.levels for the full list)\n", category);
         return;
     }
     const char *file = log_get_category_file(c);
-    gs_outf("%s level=%d stdout=%s file=%s ts=%s pc=%s\n", log_category_name(c), log_get_level(c),
-            log_get_category_stdout(c) ? "on" : "off", file ? file : "off",
-            log_get_category_timestamp(c) ? "on" : "off", log_get_category_show_pc(c) ? "on" : "off");
+    out_printf("%s level=%d stdout=%s file=%s ts=%s pc=%s\n", log_category_name(c), log_get_level(c),
+               log_get_category_stdout(c) ? "on" : "off", file ? file : "off",
+               log_get_category_timestamp(c) ? "on" : "off", log_get_category_show_pc(c) ? "on" : "off");
 }
 
 // `log.set(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem

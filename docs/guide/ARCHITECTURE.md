@@ -79,7 +79,7 @@ what is the rule that keeps the machine deterministic:
 | **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
 
 Output follows the same ownership: what a leaf or the interpreter prints goes
-through the sink (`src/core/gs_out.h`) to the client that asked — a job's text
+through the sink (`src/core/out.h`) to the client that asked — a job's text
 as output records before its result, a page leaf's text with its answer —
 and only text printed outside any request (boot messages, a breakpoint hit)
 reaches stdout directly. Headless can fold the job thread and the I/O worker
@@ -198,7 +198,7 @@ Four caller surfaces walk that tree:
   export, an archive's extraction, a download or a checkpoint's write is
   an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
   later, reporting progress and cancellable between chunks. What any of
-  them prints goes through the output sink (`src/core/gs_out.h`) to the
+  them prints goes through the output sink (`src/core/out.h`) to the
   client that asked. Headless runs the same three threads (`--io=sync`
   and `--jobs=inline` fold a thread back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /

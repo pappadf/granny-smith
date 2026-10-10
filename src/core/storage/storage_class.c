@@ -12,8 +12,8 @@
 #include "checkpoint.h"
 #include "chunk_cache.h"
 #include "format_registry.h"
-#include "gs_out.h"
 #include "io_leaf.h"
+#include "out.h"
 #include "storage.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
@@ -543,7 +543,7 @@ static DEF_METHOD(files_method_partmap) {
         return val_err("files.partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
     }
     // disk_size is whole 512-byte blocks: image_apm_parse refuses any other geometry.
-    gs_outf("format: APM (%uB blocks, %zu total)\n", (unsigned)APM_BLOCK_SIZE, disk_size(img) / APM_BLOCK_SIZE);
+    out_printf("format: APM (%uB blocks, %zu total)\n", (unsigned)APM_BLOCK_SIZE, disk_size(img) / APM_BLOCK_SIZE);
     // The index column is as wide as the largest index (at least 2), so a
     // map with 100+ entries keeps its columns.
     int iw = 2;
@@ -552,12 +552,13 @@ static DEF_METHOD(files_method_partmap) {
         if (w > iw)
             iw = w;
     }
-    gs_outf("  %-*s Name                             Type                        Start        Size  FS\n", iw, "#");
+    out_printf("  %-*s Name                             Type                        Start        Size  FS\n", iw, "#");
     for (uint32_t i = 0; i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
-        gs_outf("  %-*u %-32s %-24s %10llu  %10llu  %s\n", iw, (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-                p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
-                (unsigned long long)p->size_blocks, image_apm_fs_kind_label(p->fs_kind));
+        out_printf("  %-*u %-32s %-24s %10llu  %10llu  %s\n", iw, (unsigned)p->index,
+                   p->name[0] ? p->name : "(unnamed)", p->type[0] ? p->type : "(unknown)",
+                   (unsigned long long)p->start_block, (unsigned long long)p->size_blocks,
+                   image_apm_fs_kind_label(p->fs_kind));
     }
     image_apm_free(table);
     image_close(img);
@@ -595,8 +596,8 @@ static void probe_report_partitions(image_t *img, size_t size) {
         const char *vol = partition_volume_kind(img, size, p);
         if (!vol && p->fs_kind == APM_FS_UNKNOWN)
             continue; // an unrecognised partition with no volume we know
-        gs_outf("partition %u: %s (%s)%s%s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-                p->type[0] ? p->type : "(unknown)", vol ? ", volume " : "", vol ? vol : "");
+        out_printf("partition %u: %s (%s)%s%s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
+                   p->type[0] ? p->type : "(unknown)", vol ? ", volume " : "", vol ? vol : "");
     }
     image_apm_free(table);
 }
@@ -606,7 +607,7 @@ static DEF_METHOD(files_method_probe) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        gs_outf("cannot open image '%s'\n", path);
+        out_printf("cannot open image '%s'\n", path);
         return val_bool(false);
     }
     size_t size = disk_size(img);
@@ -629,17 +630,17 @@ static DEF_METHOD(files_method_probe) {
             hfs = "HFS+";
     }
     if (apm && iso)
-        gs_outf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
+        out_printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
     else if (apm)
-        gs_outf("format: APM (%zu bytes)\n", size);
+        out_printf("format: APM (%zu bytes)\n", size);
     else if (hfs && iso)
-        gs_outf("format: %s + ISO 9660 hybrid (bare, %zu bytes)\n", hfs, size);
+        out_printf("format: %s + ISO 9660 hybrid (bare, %zu bytes)\n", hfs, size);
     else if (iso)
-        gs_outf("format: ISO 9660 (%zu bytes)\n", size);
+        out_printf("format: ISO 9660 (%zu bytes)\n", size);
     else if (hfs)
-        gs_outf("format: %s (bare, %zu bytes)\n", hfs, size);
+        out_printf("format: %s (bare, %zu bytes)\n", hfs, size);
     else
-        gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
+        out_printf("format: unrecognised / raw (%zu bytes)\n", size);
     // A partitioned disk's volumes: each partition the map names as a
     // filesystem, and what its own header says it is (an HFS volume's
     // MDB sits 1024 bytes into its partition, as on a bare disk).
@@ -648,12 +649,12 @@ static DEF_METHOD(files_method_probe) {
     // What the format registry peeled to reach the disk, and what it finds
     // the disk to be.
     if (img->format && strcmp(img->format, "raw") != 0)
-        gs_outf("encoding: %s\n", img->format);
+        out_printf("encoding: %s\n", img->format);
     gs_source_t *src = image_source(img);
     const gs_format_t *contents = gs_format_contents(src, NULL);
     gs_source_release(src);
     if (contents)
-        gs_outf("contents: %s\n", contents->doc);
+        out_printf("contents: %s\n", contents->doc);
     image_close(img);
     return val_bool(true);
 }
@@ -670,7 +671,7 @@ static DEF_METHOD(files_method_path_size) {
     vfs_stat_t st = {0};
     int rc = vfs_stat(path, &st);
     if (rc < 0) {
-        gs_outf("size: cannot stat '%s': %s\n", path, strerror(-rc));
+        out_printf("size: cannot stat '%s': %s\n", path, strerror(-rc));
         return val_uint(8, 0);
     }
     return val_uint(8, st.size);
@@ -1819,13 +1820,13 @@ static DEF_METHOD(mount_method_unmount) {
         return val_err("unmount: mount %d is gone", mount_entry_serial(self));
     int rc = image_vfs_unmount(info.path);
     if (rc == 0) {
-        gs_outf("unmounted %s\n", info.path);
+        out_printf("unmounted %s\n", info.path);
         return val_bool(true);
     }
     if (rc == -EBUSY)
-        gs_outf("image unmount: %s has live handles; refusing new access until they close\n", info.path);
+        out_printf("image unmount: %s has live handles; refusing new access until they close\n", info.path);
     else
-        gs_outf("image unmount: %s: %s\n", info.path, strerror(-rc));
+        out_printf("image unmount: %s: %s\n", info.path, strerror(-rc));
     return val_bool(false);
 }
 

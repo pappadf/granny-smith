@@ -8,9 +8,9 @@
 
 #include "scsi.h"
 #include "format_registry.h"
-#include "gs_out.h"
 #include "image_iso9660.h"
 #include "image_part.h"
+#include "out.h"
 
 #include "io_leaf.h"
 
@@ -1769,9 +1769,9 @@ static DEF_METHOD(scsi_dev_method_eject) {
     if (rc == -2)
         return val_err("scsi.devices[%u].eject: the guest has locked the drive (PREVENT MEDIUM REMOVAL)", slot);
     if (rc == 0)
-        gs_outf("scsi.devices[%u].eject: no medium present\n", slot);
+        out_printf("scsi.devices[%u].eject: no medium present\n", slot);
     else
-        gs_outf("scsi.devices[%u].eject: ejected\n", slot);
+        out_printf("scsi.devices[%u].eject: ejected\n", slot);
     return val_bool(rc != 0);
 }
 
@@ -1815,18 +1815,18 @@ static DEF_METHOD(scsi_dev_method_info) {
     if (!scsi)
         return val_err("scsi.devices.N.info: scsi controller not available");
     if (!scsi_device_present(scsi, slot)) {
-        gs_outf("scsi.devices[%u]: no device present\n", slot);
+        out_printf("scsi.devices[%u]: no device present\n", slot);
         return val_bool(false);
     }
     image_t *img = scsi_device_image(scsi, slot);
     if (!img) {
-        gs_outf("scsi.devices[%u]: device present, no medium\n", slot);
+        out_printf("scsi.devices[%u]: device present, no medium\n", slot);
         return val_bool(true);
     }
     const char *fname = image_get_filename(img);
     size_t sz = disk_size(img);
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    gs_outf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
+    out_printf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
     return val_bool(true);
 }
 
@@ -2117,20 +2117,20 @@ static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        gs_outf("invalid SCSI HD image: cannot open %s\n", path);
+        out_printf("invalid SCSI HD image: cannot open %s\n", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        gs_outf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
+        out_printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
     size_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (sz == best->size)
-        gs_outf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
+        out_printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
     else
-        gs_outf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+        out_printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
     image_close(img);
     return val_bool(true);
 }
@@ -2142,11 +2142,11 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        gs_outf("invalid CD-ROM image: cannot open %s\n", path);
+        out_printf("invalid CD-ROM image: cannot open %s\n", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        gs_outf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
+        out_printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2164,12 +2164,12 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *fmt = image_get_format(img);
     const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
     if (!is_iso && !is_disk) {
-        gs_outf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        out_printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
         image_close(img);
         return val_bool(false);
     }
-    gs_outf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
-            is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
+    out_printf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
+               is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
 }

@@ -9,7 +9,7 @@
 // A .journal file provides crash recovery.
 
 #include "image.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "checkpoint.h"
 #include "format_registry.h"
@@ -301,11 +301,11 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     // peeler's wrappers detect from content that a raw disk can also carry,
     // so their failure leaves the bytes as they are.)
     if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0)) {
-        gs_outf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
-                strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
-                u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
-                : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
-                                          : strerror(-u.failed_rc));
+        out_printf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
+                   strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
+                   u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                   : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
+                                             : strerror(-u.failed_rc));
         int frc = u.failed_rc;
         gs_unwrapped_free(&u);
         errno = frc == -ENOTSUP ? ENOTSUP : EINVAL;
@@ -401,7 +401,7 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
         image_load_diskcopy_tags(image, u.dc42);
     gs_unwrapped_free(&u);
     if (rc != STATUS_OK) {
-        gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
+        out_printf("image: storage engine failed for %s (error %d)\n", name, rc);
         image_close(image);
         errno = EIO;
         return NULL;
@@ -470,7 +470,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     if (!delta_dir || !*delta_dir)
         delta_dir = image_scratch_dir();
     if (gs_mkdir_p(delta_dir) != 0) {
-        gs_outf("image_create: cannot create delta directory: %s\n", delta_dir);
+        out_printf("image_create: cannot create delta directory: %s\n", delta_dir);
         return NULL;
     }
     return image_open_path(base_path, geom, OPEN_CREATE, delta_dir);
@@ -524,8 +524,8 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     config.block_size = block_size;
     status_t err = storage_new(&config, &image->storage);
     if (err != STATUS_OK) {
-        gs_outf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
-                block_size, err);
+        out_printf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
+                   block_size, err);
         image->writable = false;
         image_close(image);
         return NULL;

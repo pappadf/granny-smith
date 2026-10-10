@@ -11,7 +11,7 @@
 //   v3 (GSCHKPT3) — one raw (uncompressed) payload, no per-block metadata; used for quick checkpoints
 
 #include "checkpoint.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "build_id.h"
 #include "system.h"
@@ -376,7 +376,7 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
         return NULL;
     // One byte more than claimed, and terminate unconditionally: the writer
     // includes its own NUL in `len`, but a hostile file need not, and the
-    // result is handed to access(), fopen() and gs_outf("%s").
+    // result is handed to access(), fopen() and out_printf("%s").
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) {
         LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", len, what ? what : "string");

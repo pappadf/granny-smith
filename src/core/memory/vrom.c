@@ -15,8 +15,8 @@
 #include "vrom.h"
 #include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
-#include "gs_out.h"
 #include "offer_registry.h"
+#include "out.h"
 
 #include "log.h"
 #include "machine_profile.h"

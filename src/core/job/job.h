@@ -103,7 +103,7 @@ void job_call_bind_io(uint32_t token, uint32_t io_job);
 uint32_t job_call_request_id(uint32_t token);
 
 // --- Output ------------------------------------------------------------------
-// gs_out.c: appends text to the job that owns the calling context -- the
+// out.c: appends text to the job that owns the calling context -- the
 // job running on this thread, or the job whose call the emulator thread is
 // serving.  False when there is none (the text goes elsewhere).  The
 // buffered text is delivered by job_layer_service as EVT_LOG

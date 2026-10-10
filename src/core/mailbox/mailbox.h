@@ -47,7 +47,7 @@
 //   EVT_RESULT {id, ok, json_len, out_len} + json + output
 //              The answer: ok = 1 when the leaf or job succeeded, else 0
 //              (the JSON then carries {"error": ...}); `output` is the text
-//              the leaf printed while it ran (gs_out.h), when the platform
+//              the leaf printed while it ran (out.h), when the platform
 //              captures it.  The JSON is at most GS_MBX_RESULT_MAX bytes: a
 //              larger result is an error naming its size and the limit.
 //   EVT_PROGRESS {json_len} + {"id": request, "done": n, "total": n}
@@ -219,7 +219,7 @@ typedef struct gs_mailbox {
     } defers[GS_MBX_DEFER_MAX];
     int n_defers;
     uint32_t defer_seq;
-    // Output the leaf being served printed (gs_out.h), when captured.
+    // Output the leaf being served printed (out.h), when captured.
     bool capture_output;
     char *outbuf;
     uint32_t outbuf_len;
@@ -298,11 +298,11 @@ bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *
 // counted when the ring has no room, like an event).
 bool gs_mailbox_write_progress(gs_mailbox_t *m, uint32_t id, uint64_t done, uint64_t total);
 
-// Whether answers carry the output the leaf printed (gs_out.h routes a
+// Whether answers carry the output the leaf printed (out.h routes a
 // served leaf's stdout into the answer when this is set; the page wants
 // that, the headless driver prints as it goes).
 void gs_mailbox_set_capture_output(gs_mailbox_t *m, bool on);
-// gs_out.c: appends to the output of the request being served; false when
+// out.c: appends to the output of the request being served; false when
 // nothing is being served that captures.
 bool gs_mailbox_output_append(const char *text, size_t len);
 // The client whose request the process's mailbox is serving (0: none).
