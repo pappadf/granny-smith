@@ -64,12 +64,12 @@ check("desktop-mounted.png")
 machine.adb.mouse.move 468 108
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 # The window's info bar carries the volume's free space, which the server
 # now reports honestly from the host filesystem — so it is excluded from the

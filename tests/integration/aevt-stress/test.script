@@ -26,6 +26,8 @@
 #     A map attribute read off a `let` binding does not descend, and after a
 #     bracket index a dotted key does not resolve.
 
+include "../lib/mac.script"
+
 machine.rtc.time = "2026-04-26T21:30:36"
 
 # Send one event and run the guest until it settles.  The guard bounds the
@@ -52,9 +54,9 @@ assert appletalk.nbp["gs-host"].type == "PPCToolBox" "the host port is not adver
 # --- 2. Turn program linking on --------------------------------------------
 
 machine.adb.mouse.move 300 300 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.move 15 8 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 8000000
 machine.adb.mouse.move 90 132 "global"
@@ -67,10 +69,10 @@ machine.adb.mouse.click false
 scheduler.run 90000000
 
 machine.adb.mouse.move 370 96 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -78,10 +80,10 @@ machine.adb.keyboard.press 0x01
 scheduler.run 3000000
 
 machine.adb.mouse.move 370 135 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -93,20 +95,20 @@ machine.adb.keyboard.press 0x17
 scheduler.run 5000000
 
 machine.adb.mouse.move 211 288 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 machine.adb.mouse.move 148 42 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 30000000
 
 machine.adb.mouse.move 15 8 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 8000000
 machine.adb.mouse.move 90 132 "global"
@@ -119,33 +121,33 @@ machine.adb.mouse.click false
 scheduler.run 90000000
 
 machine.adb.mouse.move 105 105 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 70000000
 
 machine.adb.mouse.move 253 190 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 machine.adb.mouse.move 213 70 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 machine.adb.mouse.move 463 175 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 50000000
 
 # --- 3. Repeated discovery -------------------------------------------------
@@ -165,7 +167,7 @@ assert appletalk.adsp.stats.opens >= 3 "the browses did not each open a connecti
 
 # Apple menu -> Find File.  Its port only exists once it is running.
 machine.adb.mouse.move 15 8 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 8000000
 machine.adb.mouse.move 70 150 "global"

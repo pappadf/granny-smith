@@ -365,7 +365,7 @@ def row_q950_71_hd() {
     wait_stable(400000000)
     # Double-click the Monitors control panel icon.
     double_click(124, 137)
-    wait_stable(500000000)
+    settle(500000000)
     # Click "Thousands": the driver writes PCBR1=$C0, scanout goes x555.
     machine.adb.mouse.move 189 130 "global"
     run_ticks(8)

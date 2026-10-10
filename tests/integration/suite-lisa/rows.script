@@ -53,7 +53,7 @@ def row_lisa_los31_profile() {
     # COPS clock powers up at 1 January 1984 now, so there is no note and nothing to
     # dismiss; the golden is the same desktop, differing only in where the cursor is
     # parked.
-    scheduler.run 112000000
+    run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
     check("goldens/lisa-los3.1-720x364x1-office.png")
     report_row("LOS 3.1", "builtin", "profile-boot own-pram")
     report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
@@ -86,7 +86,7 @@ def row_lisa_xenix_hdinit() {
     assert machine.hd.present == true "ProFile should be attached"
 
     # (§1.5.1) Boot the floppy to the loader's "boot :" prompt (a COPS poll loop).
-    scheduler.run 60000000
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png", 60000000, 5000000)
     check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png")
 
     # The ROM's pre-handoff COPS re-init leaves the loader's protocol decoder in its
@@ -238,7 +238,7 @@ def row_lisa_xenix_nofloppy() {
     assert machine.hd.present == true "ProFile should be attached"
 
     # === No floppy: the ROM "insert diskette / STARTUP FROM…" screen =============
-    scheduler.run 200000000
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-nofloppy.png", 200000000, 5000000)
     check("goldens/lisa-xenix3.0-720x364x1-nofloppy.png")
 
     # === Apple-3 → the ROM STARTUP FROM device picker ===========================
@@ -278,7 +278,7 @@ def row_lisa_xenix_nofloppy() {
 
     # Xenix boots to its multi-user startup prompt ("Type CONTROL-d to proceed with
     # normal startup, / or give root password for system maintenance").
-    scheduler.run 120000000
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-startup.png", 120000000, 5000000)
     check("goldens/lisa-xenix3.0-720x364x1-startup.png")
     report_perf("suite-lisa/lisa-xenix-nofloppy", scheduler.instr_count)
 }
@@ -414,7 +414,7 @@ def row_lisa_checkpoint() {
     # match is the oracle: reaching the same raster the un-checkpointed boot
     # reaches proves the translation state survived, which neither the load
     # itself nor a size check can show.
-    scheduler.run 40000000
+    run_until_match("goldens/lisa-checkpoint-720x364x1-restored.png", 40000000, 5000000)
     check("goldens/lisa-checkpoint-720x364x1-restored.png")
     report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 }

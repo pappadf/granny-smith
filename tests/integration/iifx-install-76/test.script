@@ -53,6 +53,8 @@
 
 # Reference images: run with `--var REGEN=1` to (re)capture every .png in this
 # directory instead of comparing against it.
+include "../lib/mac.script"
+
 let regen = try($REGEN, "0")
 let src = "../../data/systems/SSW-7.6-1.4M"
 
@@ -67,7 +69,7 @@ def check(ref) {
 
 # Run until the screen stops changing, so a reference is matched against a
 # settled frame rather than a mid-repaint one.
-def settle(limit) {
+def settle_frames(limit) {
     let previous = 0
     let stable = 0
     let j = 0
@@ -121,14 +123,14 @@ check("desktop.png")
 # Double-click the "Apple HD SC Setup" label to launch it.  (The clickable
 # hit region is the text label, not the gap above it.)
 machine.adb.mouse.move 52 110 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 120000000
 # HD SC Setup recognises the uninitialised drive at SCSI Device 0:
 # "The disk is uninitialized, or its partition map has become invalid."
@@ -136,30 +138,30 @@ check("ready.png")
 
 # Click "Initialize".
 machine.adb.mouse.move 245 113 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
-scheduler.run 30000000
+wait_mouse_taken(100000000)
+run_until_match("confirm.png", 30000000, 5000000)
 check("confirm.png")
 
 # Click "Init" in the "erase all data" confirmation alert.  This writes the
 # partition map, the Apple_Driver43 partition and the HFS volume structures
 # over the IIfx's SCSI DMA engine.
 machine.adb.mouse.move 430 195 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
-scheduler.run 100000000
+wait_mouse_taken(100000000)
+run_until_match("name.png", 100000000, 5000000)
 check("name.png")
 
 # Click "OK" to accept the default volume name ("Untitled").
 machine.adb.mouse.move 263 170 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 150000000
 # The guest OS reports the format completed and mounted the volume:
 # "Disk initialization successfully completed."
@@ -183,33 +185,33 @@ machine.floppy.drive[0].insert "$src/Install 1.img" true
 
 # The Installer auto-launches from the floppy's System Folder; its welcome
 # window ("Welcome to Mac OS 7.6") is painted by ~790M instructions.
-scheduler.run 800000000
+run_until_match("installer.png", 800000000, 20000000)
 check("installer.png")
 
 # Click "Continue" to reach the software licence.
 machine.adb.mouse.move 470 366 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
-scheduler.run 60000000
+wait_mouse_taken(100000000)
+run_until_match("licence.png", 60000000, 5000000)
 check("licence.png")
 
 # Click "Agree" to reach the "Install System Software" window (Easy Install,
 # destination disk "Untitled" — the volume Part 1 just created).
 machine.adb.mouse.move 510 390 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
-scheduler.run 80000000
+wait_mouse_taken(100000000)
+run_until_match("easy-install.png", 80000000, 5000000)
 check("easy-install.png")
 
 # Switch the mode popup from "Easy Install" to "Custom Install".  It is a
 # press-drag-release menu — Easy Install / Custom Install / Custom Remove at
 # 16-pixel spacing — so Custom Install sits one item below the button.
 machine.adb.mouse.move 170 133 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 20000000
 machine.adb.mouse.move 170 147 "global"
@@ -224,20 +226,20 @@ check("custom-install.png")
 # only system variant whose contents exclude the corrupt "English Dialect"
 # (see the header).  "Selected size" changes from "zero K" to "6,528K".
 machine.adb.mouse.move 114 199 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 30000000
+wait_mouse_taken(100000000)
+run_until_match("minimum-checked.png", 30000000, 5000000)
 check("minimum-checked.png")
 
 # Click "Install".  The Installer reads its script off Install 1, ejects the
 # disk and asks for the first source floppy.
 machine.adb.mouse.move 471 359 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # --- Part 3: feed every floppy the Installer asks for ------------------------
 
@@ -254,7 +256,7 @@ def await_request(ref) {
     }
     # The disk-request screen is completely static — no progress bar movement,
     # no cursor blink — so three identical checksums means it has settled.
-    settle(80)
+    settle_frames(80)
     check("${$ref}")
 }
 
@@ -300,7 +302,7 @@ hand_over(1)
 
 # "Installation was successful.  If you are finished, click Quit to leave the
 # Installer."  This is the Installer's own verdict, not our inference.
-settle(160)
+settle_frames(160)
 check("success.png")
 
 # The destination carries a real System Folder.
@@ -318,7 +320,7 @@ machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/installed.img" 0
 scheduler.run 900000000
-settle(120)
+settle_frames(120)
 check("installed-desktop.png")
 
 quit

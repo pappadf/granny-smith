@@ -50,12 +50,12 @@ afp_mount_and_close()
 machine.adb.mouse.move 468 108
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 
 # Opening the volume listed both files, adopting them into the catalog.

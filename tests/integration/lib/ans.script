@@ -141,10 +141,8 @@ def ans_boot_serial(model, ram_kb) {
     # the machine's own keyboard; the ADB enumeration has to have finished
     # before a keystroke lands, which the settle above has covered.
     assert contains($out, "install-console>") "Open Firmware never installed its console"
-    machine.adb.keyboard.type("setenv output-device ttya\n")
-    scheduler.run 400000000
-    machine.adb.keyboard.type("setenv input-device ttya\n")
-    scheduler.run 400000000
+    type_settle("setenv output-device ttya\n", 5000000, 400000000)
+    type_settle("setenv input-device ttya\n", 5000000, 400000000)
     let ignored = machine.scc.a.sent()
     # Cold-boot the SAME machine so the new console setting takes effect:
     # machine.restart is the power switch, and the soldered NVRAM part (with

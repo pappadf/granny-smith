@@ -265,8 +265,7 @@ def row_iifx_8m() {
 def row_iifx_checkpoint() {
     machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
-    scheduler.run 200000000
-    wait_stable(900000000)
+    reach("goldens/iifx-7.0.1-640x480x1-finder.png", 200000000, 900000000, 20000000)
     check("goldens/iifx-7.0.1-640x480x1-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-iifx.gsc") "iifx-checkpoint: save failed"
     # A different RAM size, so a restore that quietly kept the old machine fails

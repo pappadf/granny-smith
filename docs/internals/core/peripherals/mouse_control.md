@@ -606,7 +606,8 @@ drive the bus, and the host's poll times out.  `adb.c` models exactly that:
 
 True while host mouse input waits for the guest: on ADB, motion or a button
 change no report has carried yet, or events queued behind one (§10); on the
-quadrature mouse, motion counts still being played out.  A script that clicks
+quadrature mouse, motion counts still being played out, or a button level
+still inside its hold (§13).  A script that clicks
 can run until it reads false (`wait_mouse_taken` in
 `tests/integration/lib/mac.script`) instead of guessing a tick count.
 
@@ -797,6 +798,18 @@ PostEvent(mouseUp, 0L);
 ```
 
 On ADB-era Macs, this hack is technically unnecessary but harmless.
+
+### The button hold (`mouse.c`)
+
+The same debounce means a level on PB3 that lasts under 3 ticks is never
+committed, so a host press and release quicker than that would be no click
+at all.  The quadrature mouse therefore holds every button level at least 4
+VBL periods and a millisecond (`MOUSE_BUTTON_HOLD_NS`): a change that comes
+sooner waits in a 16-entry queue and applies when the hold ends, so a quick
+click reaches the ROM as a press and then a release, as the ADB queue (§10)
+does with reports.  A change after the hold applies at once, so input
+slower than that behaves exactly as before.  `tests/unit/suites/mouse_button`
+covers it.
 
 ### Mac Plus Mouse Positioning
 

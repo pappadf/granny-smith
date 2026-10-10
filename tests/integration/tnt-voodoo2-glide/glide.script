@@ -35,6 +35,8 @@ def glide_to_launch(raster) {
     # Dismiss the image's dirty-shutdown notice and the Energy Saver
     # first-boot message (both close on Return), then navigate by
     # type-select + Cmd-O: volume -> Quake folder -> the app.
+    # (Fixed budgets, not settle(): the Finder is still starting up behind
+    # a desktop that holds still, and the notices come up inside them.)
     machine.adb.keyboard.press 0x24
     scheduler.run 300000000
     machine.adb.keyboard.press 0x24
@@ -46,23 +48,28 @@ def glide_to_launch(raster) {
     machine.adb.mouse.click false
     scheduler.run 20000000
     machine.adb.keyboard.type "Macintosh HD"
-    scheduler.run 50000000
+    wait_keys_taken(100000000)
+    settle(50000000)
     machine.adb.keyboard.down 0x37
     scheduler.run 2000000
     machine.adb.keyboard.press 0x1F
     scheduler.run 2000000
     machine.adb.keyboard.up 0x37
-    scheduler.run 200000000
+    wait_keys_taken(100000000)
+    settle(200000000)
     machine.adb.keyboard.type "Quake"
-    scheduler.run 50000000
+    wait_keys_taken(100000000)
+    settle(50000000)
     machine.adb.keyboard.down 0x37
     scheduler.run 2000000
     machine.adb.keyboard.press 0x1F
     scheduler.run 2000000
     machine.adb.keyboard.up 0x37
-    scheduler.run 200000000
+    wait_keys_taken(100000000)
+    settle(200000000)
     machine.adb.keyboard.type "Quake 3Dfx"
-    scheduler.run 50000000
+    wait_keys_taken(100000000)
+    settle(50000000)
     machine.adb.keyboard.down 0x37
     scheduler.run 2000000
     machine.adb.keyboard.press 0x1F

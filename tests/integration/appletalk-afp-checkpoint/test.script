@@ -57,12 +57,12 @@ check("desktop-mounted.png")
 machine.adb.mouse.move 468 108
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 let n = 0
 let hit = 0
 while $n < 20000 {
@@ -93,7 +93,7 @@ assert contains("${scheduler.events}", "\"atp\"") "the restored queue lost the A
 # request on its old session is refused: the volume leaves the desktop, and
 # nothing hangs.  (An assert anywhere in this run fails it: headless exits
 # non-zero on one.)
-scheduler.run 60000000
+run_until_match("volume-dropped.png", 60000000, 5000000)
 check("volume-dropped.png")
 
 # ...and the volume mounts again, the way a user would: Chooser → AppleShare
@@ -109,27 +109,27 @@ scheduler.run 60000000
 machine.adb.mouse.move 95 90
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 machine.adb.mouse.move 280 88
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 6000000
 machine.adb.mouse.move 333 178
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 machine.adb.mouse.move 392 259
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 40000000
+wait_mouse_taken(100000000)
+run_until_match("volume-list-again.png", 40000000, 5000000)
 check("volume-list-again.png")
 
 # A new session, under a new reference: the old one is not reissued.
@@ -140,21 +140,21 @@ assert $new_ref != $old_ref "the restored server reissued the old session's refe
 machine.adb.mouse.move 150 113
 scheduler.run 4000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 8000000
 machine.adb.mouse.move 333 259
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 machine.adb.mouse.move 72 47
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 40000000
+wait_mouse_taken(100000000)
+run_until_match("desktop-mounted.png", 40000000, 5000000)
 check("desktop-mounted.png")
 
 quit

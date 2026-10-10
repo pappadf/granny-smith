@@ -1650,6 +1650,11 @@ void adb_mouse_pending(const adb_t *adb, int *dx, int *dy) {
         *dy = sy;
 }
 
+// True while key transitions wait in the keyboard's queue for a Talk R0.
+bool adb_keyboard_input_pending(const adb_t *adb) {
+    return adb && !kbd_queue_empty(adb);
+}
+
 // True while host mouse input waits for the guest: motion or a button
 // change not yet carried by a Talk R0, or events queued behind one.
 bool adb_mouse_input_pending(const adb_t *adb) {

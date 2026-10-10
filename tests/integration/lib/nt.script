@@ -180,10 +180,8 @@ def nt_power_on(rom) {
     # ROM, comes up on the screen; Apple's documented terminal setup on the
     # ADB keyboard and a power cycle move it, as ans_boot_serial does.
     if !contains($fw, "0 > ") {
-        machine.adb.keyboard.type("setenv output-device ttya\n")
-        scheduler.run 400000000
-        machine.adb.keyboard.type("setenv input-device ttya\n")
-        scheduler.run 400000000
+        type_settle("setenv output-device ttya\n", 5000000, 400000000)
+        type_settle("setenv input-device ttya\n", 5000000, 400000000)
         let ignored = machine.scc.a.sent()
         machine.restart
         $fw = "${$fw}${nt_prompt(3000000000)}"

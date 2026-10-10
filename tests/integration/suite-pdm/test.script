@@ -342,7 +342,7 @@ def row_pdm_floppy_mount() {
     # because the application animates, and a stability wait would either
     # time out or land on an arbitrary frame.
     double_click(264, 100)
-    scheduler.run 1500000000
+    run_until_match_ex("goldens/pm7100-floppy-sysinfo.png", 0, 440, 20, 640, 1500000000, 37000000)
     check_ex("goldens/pm7100-floppy-sysinfo.png", 0, 440, 20, 640)
     report_row("7.5", "swim3", "fd-mount ppc-launch")
     report_perf("suite-pdm/pdm-floppy-mount", scheduler.instr_count)
@@ -449,9 +449,9 @@ def row_pdm_floppy_format() {
     # "This disk is unreadable... initialize?" -> Initialize -> Continue.
     check_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640)
     click(452, 232)
-    wait_stable(300000000)
+    settle(300000000)
     click(416, 168)
-    wait_stable(12000000000)
+    settle(12000000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy"
     assert machine.floppy.drive[0].present "the disk left the drive during the format"
     check_ex("goldens/pm7100-floppy-format.png", 0, 440, 20, 640)

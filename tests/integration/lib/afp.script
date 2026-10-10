@@ -8,13 +8,17 @@
 # instructions and identical in every caller, so the screens each caller
 # checks are the same screens.
 
-# Click at (x, y) and let the guest run `settle` instructions.
+# Click at (x, y) and let the guest run `settle` instructions.  The press and
+# release go in back to back (the mouse holds each level until the ROM has
+# seen it); the settle stays a fixed budget, because what follows a click in
+# the Chooser is an NBP lookup or an AFP exchange paced by guest timers
+# behind a screen that does not move.
 def afp_click(x, y, settle) {
     machine.adb.mouse.move $x $y
     scheduler.run 2000000
     machine.adb.mouse.click true
-    scheduler.run 2000000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
     scheduler.run $settle
 }
 
@@ -59,8 +63,8 @@ def afp_mount_and_close() {
     machine.adb.mouse.move 150 113
     scheduler.run 4000000
     machine.adb.mouse.click true
-    scheduler.run 2000000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
     scheduler.run 8000000
     afp_click(333, 259, 60000000)
     afp_click(72, 47, 40000000)

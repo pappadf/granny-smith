@@ -1,12 +1,14 @@
 # The AppleTalk ImageWriter: Chooser, Print Directory over PAP, paper out.
 # See config.mk.  Screen coordinates are the Plus's 512x342 desktop.
 
+include "../lib/mac.script"
+
 def click(x, y) {
     machine.adb.mouse.move($x, $y)
     scheduler.run 2000000
     machine.adb.mouse.click true
-    scheduler.run 2000000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
 }
 
 # File -> Print Directory..., then OK (Faster, the dialog's default)
@@ -54,12 +56,12 @@ scheduler.run 40000000
 machine.adb.mouse.move 470 52
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 
 print_directory()

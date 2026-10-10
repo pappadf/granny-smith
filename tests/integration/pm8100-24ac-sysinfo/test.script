@@ -152,7 +152,7 @@ check_ex("goldens/pm8100-utilities-disk.png", 0, 440, 20, 640)
 # A FIXED budget, not a settle: the launched window is deterministic (the
 # RTC is pinned) but never quiescent, because the application animates.
 double_click(264, 100)
-scheduler.run 1500000000
+run_until_match_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640, 1500000000, 37000000)
 check_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640)
 
 # --- De-select every suite except "Test Display" ---------------------------
@@ -175,7 +175,7 @@ check_ex("goldens/pm8100-system-info-display-only.png", 0, 440, 20, 640)
 # which is a read-out of the booted System's real settings.  Its "Test"
 # button proceeds to the benchmark anyway.
 click(456, 255)
-scheduler.run 200000000
+run_until_match_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640, 200000000, 5000000)
 check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
 
 # --- Test: the Display benchmark ------------------------------------------

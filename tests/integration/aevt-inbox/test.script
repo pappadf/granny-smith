@@ -13,6 +13,8 @@
 # guest ends up reporting that it cannot get the dictionary; that dialog is
 # the visible proof our reply arrived.
 
+include "../lib/mac.script"
+
 machine.rtc.time = "2026-04-26T21:30:36"
 
 # --- 1. Boot ---------------------------------------------------------------
@@ -29,9 +31,9 @@ assert appletalk.ppc.ports.count == 0 "ports were discovered before any browse"
 # on its scroll arrow until it bottoms out, which makes the item positions
 # below deterministic (they are measured from the fully-scrolled list).
 machine.adb.mouse.move 300 300 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.move 15 8 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 8000000
 machine.adb.mouse.move 90 132 "global"
@@ -47,10 +49,10 @@ scheduler.run 90000000
 
 # Owner Name "gs" — program linking refuses to start without one.
 machine.adb.mouse.move 370 96 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -59,10 +61,10 @@ scheduler.run 3000000
 
 # Macintosh Name "gs75" — this becomes the guest's NBP object name.
 machine.adb.mouse.move 370 135 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -75,21 +77,21 @@ scheduler.run 5000000
 
 # Program Linking -> Start, then close the panel.
 machine.adb.mouse.move 211 288 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 machine.adb.mouse.move 148 42 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 30000000
 
 # Users & Groups -> <Guest> -> allow guests to link.
 machine.adb.mouse.move 15 8 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 8000000
 machine.adb.mouse.move 90 132 "global"
@@ -102,33 +104,33 @@ machine.adb.mouse.click false
 scheduler.run 90000000
 
 machine.adb.mouse.move 105 105 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 70000000
 
 machine.adb.mouse.move 253 190 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 machine.adb.mouse.move 213 70 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 machine.adb.mouse.move 463 175 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 50000000
 
 # --- 3. Launch Script Editor -----------------------------------------------
@@ -137,44 +139,44 @@ scheduler.run 50000000
 # Editor is the only thing on this image that can *originate* an Apple
 # event aimed at another machine, which is what this test needs.
 machine.adb.mouse.move 604 60 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 90000000
 machine.adb.mouse.move 63 225 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 90000000
 machine.adb.mouse.move 40 90 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 90000000
 machine.adb.mouse.move 293 95 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 200000000
 
 # Our own reply template, so what goes back is ours and not a default.
@@ -188,10 +190,10 @@ assert appletalk.aevt.stats.received == 0 "we have already received an event"
 # AppleScript link to our port and ask it for its terminology, which is
 # the guest-initiated event this test is about.
 machine.adb.mouse.move 150 200 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 machine.adb.keyboard.press 0x11
 scheduler.run 400000
@@ -313,25 +315,25 @@ scheduler.run 8000000
 
 # Run: the guest opens a session to us and puts up its link dialog.
 machine.adb.mouse.move 110 133 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 200000000
 
 # "Link to gs-host as:" — choose Guest, since guest links are all we
 # accept (ppc_appleevents.md §4.5), then confirm.
 machine.adb.mouse.move 207 152 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 machine.adb.mouse.move 452 282 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 200000000
 
 # --- 5. What arrived -------------------------------------------------------
