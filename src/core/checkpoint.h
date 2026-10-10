@@ -101,7 +101,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 // A source location cannot serve as the tag, which is why the stored
 // __FILE__/__LINE__ is a diagnostic and not a check: the writer and the
 // reader sit at different lines by construction.
-#define CP_SELECT_4(_1, _2, _3, _4, NAME, ...) NAME
+#define CP_SELECT_4(p1, p2, p3, p4, NAME, ...) NAME
 #define CP_READ_TAGGED(cp, data, size, tag)                                                                            \
     system_read_checkpoint_data_loc((cp), (data), (size), (tag), __FILE__, __LINE__)
 #define CP_READ_PLAIN(cp, data, size) system_read_checkpoint_data_loc((cp), (data), (size), NULL, __FILE__, __LINE__)

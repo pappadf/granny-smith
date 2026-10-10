@@ -168,10 +168,10 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 
 #define LOG_WITH(cat, level, fmt, ...)                                                                                 \
     do {                                                                                                               \
-        const log_category_t *_lg_cat = (cat);                                                                         \
-        const int _lg_lvl = (level);                                                                                   \
-        if (__builtin_expect(log_would_log(_lg_cat, _lg_lvl), 0))                                                      \
-            log_emit(_lg_cat, _lg_lvl, (fmt), ##__VA_ARGS__);                                                          \
+        const log_category_t *lg_cat_ = (cat);                                                                         \
+        const int lg_lvl_ = (level);                                                                                   \
+        if (__builtin_expect(log_would_log(lg_cat_, lg_lvl_), 0))                                                      \
+            log_emit(lg_cat_, lg_lvl_, (fmt), ##__VA_ARGS__);                                                          \
     } while (0)
 
 #define LOG(level, fmt, ...) LOG_WITH(log_local_category(), (level), (fmt), ##__VA_ARGS__)

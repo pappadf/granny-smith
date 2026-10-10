@@ -36,8 +36,9 @@ other compilers.
   flag on the same struct never read alike.
 - Global variables: `g_` for an object shared across translation units
   (declared `extern` in a header), `s_` for a file-scope `static`.
-- Identifiers starting with an underscore are reserved for the implementation
-  (C11 7.1.3); do not define them, macro-generated helpers included.
+- No identifier starts with an underscore.  A macro-local temporary that
+  must not capture a caller's name takes a trailing underscore instead
+  (`ea_`, `lg_cat_`).
 
 ### Comments
 

@@ -233,28 +233,28 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
 #undef OP_MOVE16_AN_P_XXX_L
 #define OP_MOVE16_AN_P_XXX_L                                                                                           \
     OP({                                                                                                               \
-        uint32_t _abs = FETCH32();                                                                                     \
-        if (cpu_move16_copy(A(EA_REG), _abs))                                                                          \
+        uint32_t abs_ = FETCH32();                                                                                     \
+        if (cpu_move16_copy(A(EA_REG), abs_))                                                                          \
             A(EA_REG) += 16;                                                                                           \
     })
 #undef OP_MOVE16_XXX_L_AN_P
 #define OP_MOVE16_XXX_L_AN_P                                                                                           \
     OP({                                                                                                               \
-        uint32_t _abs = FETCH32();                                                                                     \
-        if (cpu_move16_copy(_abs, A(EA_REG)))                                                                          \
+        uint32_t abs_ = FETCH32();                                                                                     \
+        if (cpu_move16_copy(abs_, A(EA_REG)))                                                                          \
             A(EA_REG) += 16;                                                                                           \
     })
 #undef OP_MOVE16_AN_XXX_L
 #define OP_MOVE16_AN_XXX_L                                                                                             \
     OP({                                                                                                               \
-        uint32_t _abs = FETCH32();                                                                                     \
-        (void)cpu_move16_copy(A(EA_REG), _abs);                                                                        \
+        uint32_t abs_ = FETCH32();                                                                                     \
+        (void)cpu_move16_copy(A(EA_REG), abs_);                                                                        \
     })
 #undef OP_MOVE16_XXX_L_AN
 #define OP_MOVE16_XXX_L_AN                                                                                             \
     OP({                                                                                                               \
-        uint32_t _abs = FETCH32();                                                                                     \
-        (void)cpu_move16_copy(_abs, A(EA_REG));                                                                        \
+        uint32_t abs_ = FETCH32();                                                                                     \
+        (void)cpu_move16_copy(abs_, A(EA_REG));                                                                        \
     })
 // (Ax)+,(Ay)+: destination register in bits 14:12 of the extension word.
 // When Ax == Ay the register takes both increments (net +32), matching the
@@ -262,11 +262,11 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
 #undef OP_MOVE16_AN_P_AN_P
 #define OP_MOVE16_AN_P_AN_P                                                                                            \
     OP({                                                                                                               \
-        uint16_t _ext = FETCH16();                                                                                     \
-        uint32_t _ay = (_ext >> 12) & 7u;                                                                              \
-        if (cpu_move16_copy(A(EA_REG), A(_ay))) {                                                                      \
+        uint16_t ext_ = FETCH16();                                                                                     \
+        uint32_t ay_ = (ext_ >> 12) & 7u;                                                                              \
+        if (cpu_move16_copy(A(EA_REG), A(ay_))) {                                                                      \
             A(EA_REG) += 16;                                                                                           \
-            A(_ay) += 16;                                                                                              \
+            A(ay_) += 16;                                                                                              \
         }                                                                                                              \
     })
 
@@ -326,13 +326,13 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
             EXC_FTRAP();                                                                                               \
         } else                                                                                                         \
             SUPER({                                                                                                    \
-                fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
+                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
                     AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
-                    fpu_fsave040(_fpu, AY);                                                                            \
+                    fpu_fsave040(fpu_, AY);                                                                            \
                 } else {                                                                                               \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    fpu_fsave040(_fpu, _ea);                                                                           \
+                    uint32_t ea_ = GET_EA;                                                                             \
+                    fpu_fsave040(fpu_, ea_);                                                                           \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -343,13 +343,13 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
             EXC_FTRAP();                                                                                               \
         } else                                                                                                         \
             SUPER({                                                                                                    \
-                fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
+                fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 3) {                                                                                    \
-                    int _sz = fpu_frestore040(_fpu, AY);                                                               \
-                    AY += (uint32_t)_sz;                                                                               \
+                    int sz_ = fpu_frestore040(fpu_, AY);                                                               \
+                    AY += (uint32_t)sz_;                                                                               \
                 } else {                                                                                               \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    fpu_frestore040(_fpu, _ea);                                                                        \
+                    uint32_t ea_ = GET_EA;                                                                             \
+                    fpu_frestore040(fpu_, ea_);                                                                        \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -412,8 +412,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t _saved_trace = cpu->trace;                                                                                \
-    if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
+    uint32_t saved_trace_ = cpu->trace;                                                                                \
+    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
         if (*instructions > 1) {                                                                                       \
             g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
             *instructions = 1;                                                                                         \
@@ -443,7 +443,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
         else                                                                                                           \
             exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
         cpu_select_soa(cpu->supervisor);                                                                               \
-    } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {                                          \
+    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \

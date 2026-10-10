@@ -133,7 +133,7 @@ static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int 
     if (track > NUM_TRACKS - 1)
         track = NUM_TRACKS - 1;
 
-    drive->_dirtn = outward;
+    drive->dirtn = outward;
     drive->track = track;
     drive->offset = 0;
     drive->write_hdr_start = -1; // a seek abandons any sector mid-write
@@ -172,8 +172,8 @@ static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool mod
     if (!floppy || drv >= NUM_DRIVES)
         return;
     floppy_drive_t *drive = &floppy->drives[drv];
-    bool was_off = drive->_motoron;
-    drive->_motoron = !on; // the signal is active low: false = running
+    bool was_off = drive->motoron;
+    drive->motoron = !on; // the signal is active low: false = running
 
     if (!model_spinup) {
         if (was_off == on) // i.e. the latch actually changed
@@ -199,7 +199,7 @@ static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool mod
         remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
         LOG(2, "Drive %u: Motor OFF", drv);
     } else {
-        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
+        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->motoron ? "off" : "on");
     }
 }
 
@@ -233,7 +233,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
     switch (key) {
     case 0x00: // /DIRTN: active-low — returns 0 when stepping inward
         desc = "/DIRTN";
-        ret = drive->_dirtn; // _dirtn: false=inward → 0, true=outward → 1
+        ret = drive->dirtn; // dirtn: false=inward → 0, true=outward → 1
         break;
     case 0x01: // /STEP: zero during step settle period
         desc = "/STEP";
@@ -242,7 +242,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         break;
     case 0x02: // /MOTORON: active-low — returns 0 when motor is ON
         desc = "/MOTORON";
-        ret = drive->_motoron; // _motoron: false=on → 0, true=off → 1
+        ret = drive->motoron; // motoron: false=on → 0, true=off → 1
         break;
     case 0x03: // EJECT
         desc = "EJECT";
@@ -359,7 +359,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
 
     LOG(6, "Drive %d: Reading %s = %d", drv, desc, ret);
     LOG(8, "  detail: key=0x%02X ca0=%d ca1=%d ca2=%d sel=%d dirtn=%d motoron=%d track=%d", key, ca0, ca1, ca2,
-        floppy->sel, drive->_dirtn ? 1 : 0, drive->_motoron ? 1 : 0, drive->track);
+        floppy->sel, drive->dirtn ? 1 : 0, drive->motoron ? 1 : 0, drive->track);
 
     return ret;
 }
@@ -399,7 +399,7 @@ void floppy_disk_control(floppy_t *floppy) {
         } else {
             // STEP (CA0=1, CA1=0, CA2=0)
             if (!IWM_CA2(floppy)) {
-                floppy_drive_seek(floppy, (unsigned)drv, drive->_dirtn, 1, true);
+                floppy_drive_seek(floppy, (unsigned)drv, drive->dirtn, 1, true);
             }
         }
     } else {
@@ -408,8 +408,8 @@ void floppy_disk_control(floppy_t *floppy) {
             floppy_drive_motor(floppy, (unsigned)drv, !IWM_CA2(floppy), true);
         } else {
             // DIRTN (CA0=0, CA1=0): CA2 sets direction
-            drive->_dirtn = IWM_CA2(floppy);
-            LOG(4, "Drive %d: Direction = %s", drv, drive->_dirtn ? "outward" : "inward");
+            drive->dirtn = IWM_CA2(floppy);
+            LOG(4, "Drive %d: Direction = %s", drv, drive->dirtn ? "outward" : "inward");
         }
     }
 }
@@ -792,8 +792,8 @@ void floppy_media_set_format(floppy_t *floppy, unsigned drive, floppy_format_t f
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES)
         return false;
-    // _motoron is active-low: false = motor running.
-    return !floppy->drives[drive]._motoron;
+    // motoron is active-low: false = motor running.
+    return !floppy->drives[drive].motoron;
 }
 const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])

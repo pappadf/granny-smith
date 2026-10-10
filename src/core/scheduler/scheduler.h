@@ -179,7 +179,7 @@ double scheduler_last_event_ns(struct scheduler *restrict s, event_callback_t ca
 event_t *scheduler_new_cpu_event_ex(struct scheduler *s, event_callback_t callback, void *source, uint64_t data,
                                     uint64_t cycles, uint64_t ns, bool periodic);
 
-#define SCHED_EV_SELECT_7(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
+#define SCHED_EV_SELECT_7(p1, p2, p3, p4, p5, p6, p7, NAME, ...) NAME
 #define SCHED_EV_PERIODIC(s, cb, src, d, cyc, ns, per)                                                                 \
     scheduler_new_cpu_event_ex((s), (cb), (src), (d), (cyc), (ns), (per))
 #define SCHED_EV_ONESHOT(s, cb, src, d, cyc, ns) scheduler_new_cpu_event_ex((s), (cb), (src), (d), (cyc), (ns), false)

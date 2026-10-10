@@ -190,8 +190,8 @@ typedef struct floppy_track {
 
 // Represents a physical floppy drive with head position and motor state
 typedef struct floppy_drive {
-    bool _dirtn; // step direction: 0=inward (higher tracks), 1=outward
-    bool _motoron; // motor signal (active low: true=off, false=on)
+    bool dirtn; // step direction: 0=inward (higher tracks), 1=outward
+    bool motoron; // motor signal (active low: true=off, false=on)
     bool motor_spinning_up; // true during motor spin-up period
     bool speed_settling; // true while motor adjusts RPM after zone change
     int step_settle_count; // >0 while step is settling; cleared by scheduler event

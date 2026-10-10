@@ -572,8 +572,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t _saved_trace = cpu->trace;                                                                                \
-    if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
+    uint32_t saved_trace_ = cpu->trace;                                                                                \
+    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
         if (*instructions > 1) {                                                                                       \
             g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
             *instructions = 1;                                                                                         \
@@ -617,7 +617,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         else                                                                                                           \
             exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
         cpu_select_soa(cpu->supervisor);                                                                               \
-    } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {                                          \
+    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \

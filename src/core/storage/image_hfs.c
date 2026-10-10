@@ -1286,9 +1286,9 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork, uint64_t off, void 
                     take = n - done;                                                                                   \
                 uint64_t ext_start_byte = vol->alloc_block0_byte_off + (uint64_t)(START) * vol->alloc_block_size;      \
                 if (image_range_fits(ext_start_byte + rel, take, vol->partition_size)) {                               \
-                    int _rc = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);                     \
-                    if (_rc < 0)                                                                                       \
-                        return _rc;                                                                                    \
+                    int rc_ = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);                     \
+                    if (rc_ < 0)                                                                                       \
+                        return rc_;                                                                                    \
                 } else {                                                                                               \
                     /* An extent outside the partition is a hole, zero-filled like any range no extent */              \
                     /* covers -- not a reason to fail the whole fork. */                                               \

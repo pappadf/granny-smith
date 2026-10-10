@@ -11,7 +11,7 @@ extern "C" {
 
 /* Opaque category handle placeholder */
 typedef struct log_category {
-    int _dummy;
+    int dummy;
 } log_category_t;
 
 /* Sink type placeholder */

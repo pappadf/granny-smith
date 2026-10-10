@@ -220,8 +220,8 @@ int iwm_image_num_sides(image_t *img) {
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
 int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason) {
     // TACH produces 60 pulses per revolution; motor not spinning = no pulses
-    // _motoron is active-low: true = motor OFF, false = motor ON
-    if (drive->_motoron) {
+    // motoron is active-low: true = motor OFF, false = motor ON
+    if (drive->motoron) {
         if (reason)
             *reason = "motor off";
         return 1;
