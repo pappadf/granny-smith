@@ -175,17 +175,29 @@ condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
 `wait_global`, `wait_desktop` — a wait states its condition; ceilings are
 hang detectors), budgets that end early on their golden
 (`run_until_match`, `run_until_match_ex`: for the screens a stability
-wait cannot find, they poll the golden when verifying and run the whole
-budget under `REGEN=1`, so a recapture lands where the old fixed budget
-did), input waits that run until the guest has taken the input or
+wait cannot find, they poll the golden; under `REGEN=1` they poll an
+existing golden the same way, so the goldens after it are captured on the
+timeline verify mode runs, and run the whole budget only for a golden not
+captured yet), input waits that run until the guest has taken the input or
 answered it (`serial_type`: a line typed on a serial port, which the
 emulated line delivers one character time apart, run until the guest has
 read it; `run_until_sent`: run until a serial port has transmitted a
 marker such as a prompt, in slices that start small and double;
 `wait_mouse_taken`: run until `machine.adb.mouse.pending` clears, which
-on ADB includes a press and release queued behind each other), `skip_test` for a test whose media is absent (the runner then prints
+on ADB includes a press and release queued behind each other;
+`wait_keys_taken`: the same for `machine.adb.keyboard.pending`;
+`wait_cursor`: run until the guest's cursor task has taken a `"global"`
+move), budgets that end once the guest has reacted (`settle`: a fixed
+budget that ends early once the screen has held still for a third of a
+second, sampled in guest ticks, never failing at its ceiling;
+`settle_steps` and `type_settle`, the same sampled in instructions for a
+guest without Mac OS `Ticks`, such as an Open Firmware or Linux console;
+`reach`: a head start and a stability wait that end on a golden in
+verify mode, while REGEN still runs the head start and settles as the golden
+was captured), `skip_test` for a test whose media is absent (the runner then prints
 `=== SKIP: <test> (<why>) ===` instead of PASS and records `SKIP` in
-`durations.jsonl`), guest-tick choreography (`run_ticks`, `double_click`,
+`durations.jsonl`), guest-tick choreography (`run_ticks`, `click` and `double_click`, which
+press and release back to back and run until the guest has taken the click,
 `about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
 milestone rows), addressing-mode asserts (`assert_addr`), and
 machine-read coverage records (`@@COV` lines).

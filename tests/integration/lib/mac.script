@@ -222,11 +222,13 @@ def wait_match(golden, ceiling, step) {
 # stretches, a benchmark's blank phases, "Formatting disk..." held for the
 # whole format): verify mode polls every `step` and returns at the first
 # frame that matches `golden` (or after `ceiling`, leaving the caller's
-# check() to fail with the usual diff); REGEN runs the whole `ceiling`, so a
-# recapture lands exactly where the old fixed budget did.  The caller still
+# check() to fail with the usual diff).  REGEN polls the same way while the
+# golden exists, so both modes run the same timeline and the goldens after
+# this one are captured where verify will look for them; only a golden that
+# does not exist yet gets the whole `ceiling`.  The caller still
 # check()s afterwards.  Returns the instructions spent.
 def run_until_match(golden, ceiling, step) {
-    if $REGEN_MODE == "1" {
+    if $REGEN_MODE == "1" && !have_media($golden) {
         scheduler.run $ceiling
         return $ceiling
     }
@@ -239,9 +241,22 @@ def run_until_match(golden, ceiling, step) {
     return $spent
 }
 
+# A head start and a stability wait that end on `golden`: verify mode polls
+# for the golden every `step`, up to head + ceiling, and the caller's check()
+# fails as usual if it never came.  REGEN does the same while the golden
+# exists (one timeline in both modes); a golden not captured yet gets the
+# `head` budget and a wait for the screen to hold still (up to `ceiling`).  Returns the instructions spent.
+def reach(golden, head, ceiling, step) {
+    if $REGEN_MODE == "1" && !have_media($golden) {
+        scheduler.run $head
+        return $head + wait_stable($ceiling)
+    }
+    return run_until_match($golden, $head + $ceiling, $step)
+}
+
 # run_until_match, comparing outside the rectangle check_ex() excludes.
 def run_until_match_ex(golden, top, left, bottom, right, ceiling, step) {
-    if $REGEN_MODE == "1" {
+    if $REGEN_MODE == "1" && !have_media($golden) {
         scheduler.run $ceiling
         return $ceiling
     }
@@ -339,6 +354,81 @@ def wait_mouse_taken(ceiling) {
     return $spent
 }
 
+# Run until the guest has taken every key keyboard.type queued (scheduled
+# transitions and the keyboard's own queue), up to `ceiling`.  Returns the
+# instructions spent.
+def wait_keys_taken(ceiling) {
+    let spent = 0
+    while machine.adb.keyboard.pending {
+        assert $spent < $ceiling "wait_keys_taken: the guest did not take the typed keys within ${$ceiling}"
+        scheduler.run 250000
+        $spent = $spent + 250000
+    }
+    return $spent
+}
+
+# A budget that ends early once the screen holds still: the guest's reaction
+# to an input (a menu closing, a dialog drawn, a window opened) has finished
+# when the screen has not changed for a third of a second (sampled every 5
+# ticks, 4 equal samples).  Never longer than `ceiling`, the fixed budget it
+# replaces, and never a failure at it: a screen that keeps moving (a
+# blinking caret, an animation) simply runs the old budget.  Not for waits
+# whose end the screen does not show (disk or network work behind a static
+# window) -- those need their own condition.  Returns the instructions spent.
+def settle(ceiling) {
+    let spent = 0
+    let still = 0
+    let previous = machine.screen.checksum()
+    let t = debug.mac.globals.read("Ticks")
+    while $still < 4 && $spent < $ceiling {
+        scheduler.run 200000
+        $spent = $spent + 200000
+        if debug.mac.globals.read("Ticks") >= $t + 5 {
+            $t = debug.mac.globals.read("Ticks")
+            let now = machine.screen.checksum()
+            if $now == $previous {
+                $still = $still + 1
+            } else {
+                $still = 0
+            }
+            $previous = $now
+        }
+    }
+    return $spent
+}
+
+# settle() for a guest that keeps no Mac OS Ticks (Open Firmware, a
+# diagnostic): the screen is sampled every `step` instructions and has held
+# still once 4 samples agree.  Bounded at `ceiling`, the fixed budget it
+# replaces, without failing there.  Returns the instructions spent.
+def settle_steps(step, ceiling) {
+    let spent = 0
+    let still = 0
+    let previous = machine.screen.checksum()
+    while $still < 4 && $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        let now = machine.screen.checksum()
+        if $now == $previous {
+            $still = $still + 1
+        } else {
+            $still = 0
+        }
+        $previous = $now
+    }
+    return $spent
+}
+
+# Type `text` on the ADB keyboard and run until the guest has taken the keys
+# and the screen has held still (settle_steps), up to `ceiling` -- for a
+# command typed on a console that is the screen.  Returns the instructions
+# spent.
+def type_settle(text, step, ceiling) {
+    machine.adb.keyboard.type("${$text}")
+    let spent = wait_keys_taken($ceiling)
+    return $spent + settle_steps($step, $ceiling)
+}
+
 # Drain and return what serial channel `ch` ("a" or "b") has transmitted.
 def serial_sent(ch) {
     if $ch == "a" {
@@ -426,12 +516,63 @@ def run_ticks(n) {
     }
 }
 
+# Run until the guest's cursor task has taken a "global" move: the move
+# sets CrsrNew and the cursor VBL task clears it once it has drawn the
+# cursor at the new spot, within a tick on every machine measured.  Bounded
+# at `ticks` guest ticks, after which it simply goes on: a guest whose
+# cursor task does not use CrsrNew loses nothing against the old fixed wait.
+def wait_cursor(ticks) {
+    let t0 = debug.mac.globals.read("Ticks")
+    let spent = 0
+    while debug.mac.globals.read("CrsrNew") != 0 && debug.mac.globals.read("Ticks") < $t0 + $ticks {
+        assert $spent < ($ticks + 30) * $RUN_TICKS_BUDGET "wait_cursor: Ticks did not advance - has the guest left Mac OS?"
+        scheduler.run 50000
+        $spent = $spent + 50000
+    }
+    return $spent
+}
+
 # Move-press-release SINGLE click at screen coordinates. The move is a real
 # move to somewhere the cursor is not already parked: a same-spot warp emits no
 # ADB motion, so under E-clock-synced ADB the click that follows has no fresh
 # position event to bind to and is dropped. Callers that must click the same
 # button twice therefore step away in between rather than repeating click().
+#
+# The press and release go in back to back: the mouse model holds each
+# button level until the guest has seen it (ADB: one report per transition;
+# quadrature: at least one VBL), so the click arrives whole, and the row
+# runs on as soon as the guest has taken it rather than after a fixed
+# 30 ticks.
 def click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    run_ticks(2)
+}
+
+# Press-release-press-release DOUBLE click at screen coordinates, well inside
+# DoubleTime on every machine.  The two clicks are two ticks apart: with the
+# second press in the same tick as the first release, the Finder (7.5 on the
+# IIci, measured) takes them as two single clicks.
+def double_click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    run_ticks(2)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+}
+
+# The fixed-tick click and double click click() and double_click() used to
+# be (20 ticks after the move, 4 held, 6 after), for rows whose capture is
+# pinned to the boot's exact timeline -- the speech-recognition rows, where
+# which take the recognizer lands moves with any change to it.
+def click_fixed(x, y) {
     machine.adb.mouse.move $x $y "global"
     run_ticks(20)
     machine.adb.mouse.click true
@@ -440,9 +581,7 @@ def click(x, y) {
     run_ticks(6)
 }
 
-# Press-move-release double-click at screen coordinates, inside
-# DoubleTime on every machine.
-def double_click(x, y) {
+def double_click_fixed(x, y) {
     machine.adb.mouse.move $x $y "global"
     run_ticks(20)
     machine.adb.mouse.click true
