@@ -1051,6 +1051,52 @@ static void forget_cb_b(void *src, uint64_t data) {
     (void)data;
 }
 
+// A delay in nanoseconds becomes cycles, floored -- except that a delay
+// shorter than one cycle rounds UP to one, so it never fires at "now", ahead
+// of the next instruction.  At 1 MHz one cycle is 1000 ns, and
+// scheduler_last_event_ns reports the event's deadline back in ns.
+TEST(test_ns_delay_rounds_sub_cycle_up_to_one_cycle) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    ASSERT_TRUE(scheduler_cpu_cycles(s) == 0);
+
+    const uint64_t delays[] = {1, 999, 1000, 1999, 2000};
+    const double want_ns[] = {1000.0, 1000.0, 1000.0, 1000.0, 2000.0}; // 1, 1, 1, 1 (floored), 2 cycles
+    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, delays[i]);
+        ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == want_ns[i]);
+        scheduler_forget_source(s, &src);
+        scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    }
+    teardown(s);
+}
+
+// The conversion does not overflow: ns * frequency would pass 2^64 for a
+// delay this long (1e18 ns at 1 MHz is 1e24), so it is split into whole
+// seconds and the sub-second rest.  The deadline is 1e15 cycles, 1e18 ns.
+TEST(test_ns_delay_conversion_does_not_overflow) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, 1000000000000000000ULL + 1999);
+    double got = scheduler_last_event_ns(s, forget_cb_a);
+    // 1e15 + 1 cycles; a wrapped product would land many orders away.
+    ASSERT_TRUE(got > 1e18 - 1e4 && got < 1e18 + 1e4);
+    scheduler_forget_source(s, &src);
+
+    // A frequency that is not a divisor of 1e9: 15.6672 MHz (the Plus clock),
+    // one second and a half -- 15667200 + 7833600 cycles exactly.
+    scheduler_set_frequency(s, 15667200);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, 1500000000ULL);
+    double cycles = scheduler_last_event_ns(s, forget_cb_a) * 15667200.0 / 1e9;
+    ASSERT_TRUE(cycles > 23500800.0 - 0.01 && cycles < 23500800.0 + 0.01);
+    teardown(s);
+}
+
 // One call drops every queued event for an object whatever its callback, plus
 // the event-type rows.  remove_event() matches on callback AND source, so a
 // device with N callbacks needs N calls and 27 of 38 destructors got that
@@ -1624,6 +1670,8 @@ TEST(test_a_stall_past_an_event_is_carried_not_dropped) {
 
 int main(void) {
     RUN(test_a_mode_reports_its_owner_and_its_reason);
+    RUN(test_ns_delay_rounds_sub_cycle_up_to_one_cycle);
+    RUN(test_ns_delay_conversion_does_not_overflow);
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
     RUN(test_paced_rate_120hz);

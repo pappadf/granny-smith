@@ -8,6 +8,6 @@
 TEST_NAME    := asc
 TEST_SRCS    := test.c
 TEST_HARNESS := none
-STUBS        := checkpoint
+# test.c supplies a recording checkpoint stream (the restore regression test)
 EXTRA_SRCS   := ../../../../src/core/peripherals/asc.c
 include ../../common.mk
