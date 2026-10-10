@@ -100,11 +100,11 @@ extern const pci_card_kind_t sym53c825_ch0_kind;
 extern const pci_card_kind_t sym53c825_ch1_kind;
 extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
+extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,    &mach64_gx_kind,     &cirrus_54m30_kind,
-    &sym53c825_ch0_kind,  &sym53c825_ch1_kind, &voodoo2_kind,
-    &voodoo2_webgpu_kind, &ati_rage_pro_kind,  NULL,
+    &tnt_control_kind, &mach64_gx_kind,      &cirrus_54m30_kind, &sym53c825_ch0_kind, &sym53c825_ch1_kind,
+    &voodoo2_kind,     &voodoo2_webgpu_kind, &ati_rage_pro_kind, &rage128_kind,       NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -1063,4 +1063,71 @@ void pci_deassert_irq(pci_device_t *dev) {
     if (!dev || !dev->bus || dev->slot_index <= 0 || dev->slot_index >= PCI_MAX_SLOTS)
         return;
     pci_route_slot_irq(dev->bus->cfg, dev->slot_index, /*active*/ false);
+}
+
+// === Bus mastering ==========================================================
+
+// May `dev` master the bus right now?  Seated, on a bus with a machine
+// behind it, and its driver has set BUS_MASTER_EN.
+static bool dma_permitted(const pci_device_t *dev, const char *dir, uint32_t phys, uint32_t len) {
+    if (!dev || !dev->bus || !dev->bus->cfg)
+        return false;
+    if (!(dev->cfg.command & PCI_CMD_MASTER)) {
+        // Logged rather than silent: a driver that forgets the bit hangs
+        // waiting on a transfer that never happens, and this line says why.
+        LOG(1, "%s: DMA %s of %u bytes at $%08X refused: BUS_MASTER_EN is clear",
+            dev->ops && dev->ops->name ? dev->ops->name(dev) : "device", dir, (unsigned)len, (unsigned)phys);
+        return false;
+    }
+    return true;
+}
+
+// Does [phys, phys+len) lie wholly inside the machine's RAM?
+static bool dma_in_ram(const config_t *cfg, uint32_t phys, uint32_t len) {
+    return cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys;
+}
+
+uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len) {
+    uint8_t *out = (uint8_t *)buf;
+    if (!dma_permitted(dev, "read", phys, len)) {
+        memset(out, 0xFF, len); // nothing drove the bus: all-ones
+        return 0;
+    }
+    config_t *cfg = dev->bus->cfg;
+    bool rev = dev->bus->lane_reverse;
+    if (dma_in_ram(cfg, phys, len)) {
+        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(out, ram + phys, len);
+        else
+            // The XOR never leaves the aligned 8-byte group, so a block
+            // inside RAM stays inside RAM.
+            for (uint32_t i = 0; i < len; i++)
+                out[i] = ram[(phys + i) ^ 7u];
+        return len;
+    }
+    // Device space or a range straddling the end of RAM: the slow path.
+    for (uint32_t i = 0; i < len; i++)
+        out[i] = memory_read_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i));
+    return len;
+}
+
+uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32_t len) {
+    const uint8_t *in = (const uint8_t *)buf;
+    if (!dma_permitted(dev, "write", phys, len))
+        return 0;
+    config_t *cfg = dev->bus->cfg;
+    bool rev = dev->bus->lane_reverse;
+    if (dma_in_ram(cfg, phys, len)) {
+        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(ram + phys, in, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                ram[(phys + i) ^ 7u] = in[i];
+        return len;
+    }
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), in[i]);
+    return len;
 }

@@ -119,6 +119,9 @@ uint32_t pci_cfg_read(pci_device_t *dev, uint32_t reg) {
         if (!d->rom_size)
             return 0;
         return (dev->cfg.rom_bar & ~(d->rom_size - 1u)) | (dev->cfg.rom_bar & PCI_ROM_BAR_ENABLE);
+    case PCI_CFG_CAP_POINTER:
+        // Read-only; the low two bits are reserved and read zero.
+        return d->cap_ptr & 0xFCu;
     case PCI_CFG_INTERRUPT:
         return ((uint32_t)d->interrupt_pin << 8) | dev->cfg.interrupt_line;
     default:

@@ -740,6 +740,10 @@
       "instr": 4000000000,
       "tolerance": 0.2
     },
+    "suite-tnt/pm9500-76-rage128": {
+      "instr": 4504500000,
+      "tolerance": 0.2
+    },
     "suite-tnt/tnt-voodoo2-display": {
       "instr": 2540000000,
       "tolerance": 0.2

@@ -1,0 +1,112 @@
+# OpenGL on an ATI Rage 128 GL under Mac OS 9.2.1.
+#
+# The boot of g3-rage128-macos921, then the OpenGL SDK CD: the Finder
+# opens Sample Apps:GLUT:book and runs two samples, whose sources are on
+# the same CD (Source:Sample Code:GLUT:book).
+#   * checker: a 64 x 64 checkerboard on a flat quad and on a quad seen in
+#     perspective.  ATI's driver sends S and T pre-multiplied by W
+#     (SETUP_CNTL TEXTURE_ST_FORMAT); read as affine, the board came out
+#     scaled by 1/w.
+#   * mipmap: a plane receding to the horizon with six hand-made mip
+#     levels, each its own colour — the bands show the level selection.
+#   * fog: five lit spheres at increasing depth in exponential fog, Z
+#     buffered.
+# Each frame matches a golden; the counts show the 3D engine drew it.
+# The samples are static: an animated one (texbind) lands on a different
+# frame from run to run, so it is not pinned.
+#
+# The mouse is the ADB mouse in its default (delta) mode, stepped to its
+# target: under 9.2.1 the "global" warp of lib/mac.script's click() is
+# not reliable.
+
+include "../lib/mac.script"
+
+let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
+let cd = "../../data/apps/OpenGL_SDK_1.2.img_.bin"
+
+if !have_media($cd) {
+    echo "skip: ${$cd} not present"
+    quit
+}
+
+def gl_goto(x, y) {
+    let k = 0
+    while $k < 8 {
+        machine.adb.mouse.move $x $y
+        scheduler.run 60000000
+        let k = $k + 1
+    }
+}
+def gl_click(x, y) {
+    gl_goto($x, $y)
+    machine.adb.mouse.click true
+    scheduler.run 50000000
+    machine.adb.mouse.click false
+    scheduler.run 300000000
+}
+def gl_cmdkey(k) {
+    machine.adb.keyboard.down "Command"
+    scheduler.run 30000000
+    machine.adb.keyboard.down $k
+    scheduler.run 30000000
+    machine.adb.keyboard.up $k
+    machine.adb.keyboard.up "Command"
+    scheduler.run 1000000000
+}
+# Select a Finder item by typing its name, then File > Open.
+def gl_open(name, run) {
+    machine.adb.keyboard.type "${$name}"
+    scheduler.run 500000000
+    gl_cmdkey("o")
+    scheduler.run $run
+}
+
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
+machine.rtc.time = "2026-10-01T12:00:00"
+machine.scsi.attach_hd "${$hd}" 0
+scheduler.run 12000000000
+assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+
+machine.scsi.attach_cdrom("${$cd}", 3)
+scheduler.run 4000000000
+# Quit the Setup Assistant (first boot) and confirm.
+gl_cmdkey("q")
+scheduler.run 1000000000
+gl_click(461, 173)
+scheduler.run 2000000000
+# The CD's icon on the desktop, then Sample Apps (the window's first
+# folder), GLUT, book.
+gl_click(592, 105)
+gl_cmdkey("o")
+scheduler.run 4000000000
+gl_click(85, 97)
+gl_cmdkey("o")
+scheduler.run 3000000000
+gl_open("GLUT", 3000000000)
+gl_open("book", 4000000000)
+
+let p0 = machine.pci.slot[1].card.regs.prims3d
+gl_open("checker", 8000000000)
+let p1 = machine.pci.slot[1].card.regs.prims3d
+echo "g3-rage128-opengl: checker drew ${$p1 - $p0} primitives"
+assert $p1 > $p0 "checker draws through the 3D engine"
+try(machine.screen.save("${$RESULTS_DIR}/checker.png"), none)
+check_ex("goldens/checker.png", 0, 440, 20, 640)
+
+# Each sample is quit before the next opens from the book window.
+def gl_sample(name) {
+    gl_cmdkey("q")
+    scheduler.run 2000000000
+    let a = machine.pci.slot[1].card.regs.prims3d
+    gl_open($name, 8000000000)
+    let b = machine.pci.slot[1].card.regs.prims3d
+    echo "g3-rage128-opengl: ${$name} drew ${$b - $a} primitives"
+    assert $b > $a "${$name} draws through the 3D engine"
+    try(machine.screen.save("${$RESULTS_DIR}/${$name}.png"), none)
+    check_ex("goldens/${$name}.png", 0, 440, 20, 640)
+}
+gl_sample("mipmap")
+gl_sample("fog")
+
+echo "g3-rage128-opengl: ATI's OpenGL renderer draws through the Rage 128's 3D engine"
+quit

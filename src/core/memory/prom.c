@@ -86,9 +86,38 @@ static const struct prom_known PROM_CATALOG[] = {
     // "000-00000-000"; kept because it is a distinct dump, not preferred.
     {0x1002, 0x4758, 0xC6E8, "mach64_gx", true }, // -104 (chip CRC-32 $437584E0)
     {0x1002, 0x4758, 0xD71A, "mach64_gx", false}, // -101 (chip CRC-32 $8C68216E)
+
+    // ATI Rage 128 GL, PCI device $5245 ("RE"), retail Mac cards.  Both are
+    // 128 KB flash images holding one Open Firmware image (FCode + a
+    // `.Display_Rage128` ndrv).  The Xclaim VR 128's card number,
+    // 109-57400-00, is the Rage Orion's own board family, and it is the later
+    // and larger programming, so it is the default; the Nexus 128 is the
+    // 32 MB board of the same design and publishes its own `ATY,Rage128n`
+    // node.
+    {0x1002, 0x5245, 0xBBB8, "rage128",   true }, // Xclaim VR 128, 113-57406-108, FCode 1.69 (chip CRC-32 $D0C84D42)
+    {0x1002, 0x5245, 0x7935, "rage128",   false}, // Nexus 128, 113-57502-103 (chip CRC-32 $35B433AA)
 };
 
 #define PROM_CATALOG_COUNT (sizeof(PROM_CATALOG) / sizeof(PROM_CATALOG[0]))
+
+// Known expansion ROMs we RECOGNISE and REFUSE: genuine Mac Open Firmware
+// ROMs for a card close enough to a modelled one to be mistaken for it, but
+// whose silicon no card kind emulates.  A wrong ROM must fail loudly and say
+// what it is, never be guessed at -- seating a Rage 128 Pro's FCode on the
+// GL model would boot far enough to mislead.  Never offered, never loaded.
+struct prom_refused {
+    uint16_t vendor_id, device_id, fcode_checksum;
+    const char *what;
+};
+
+static const struct prom_refused PROM_REFUSED[] = {
+    // ATI Rage 128 Pro, AGP device $5046 ("PF").  Same FCode/ndrv structure
+    // as the GL ROMs, different chip: AGP 4x, a different register superset.
+    {0x1002, 0x5046, 0x8B43, "an ATI Rage 128 Pro AGP ROM (113-63001-110, FCode 1.70) — not the Rage 128 GL card kind"},
+    {0x1002, 0x5046, 0x4F8A, "an ATI Rage 128 Pro AGP ROM (113-72701-136) — not the Rage 128 GL card kind"            },
+};
+
+#define PROM_REFUSED_COUNT (sizeof(PROM_REFUSED) / sizeof(PROM_REFUSED[0]))
 
 static uint64_t prom_key(uint16_t vendor, uint16_t device, uint16_t checksum) {
     return ((uint64_t)vendor << 32) | ((uint64_t)device << 16) | checksum;
@@ -195,6 +224,7 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
         out->key = prom_key(out->vendor_id, out->device_id, out->fcode_checksum);
         snprintf(out->id, sizeof(out->id), "%04x-%04x-%04x", out->vendor_id, out->device_id, out->fcode_checksum);
         out->card_id = NULL;
+        out->refused = NULL;
     }
     return PROM_ID_UNKNOWN; // structurally valid; the catalog decides
 }
@@ -240,6 +270,15 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
         out->card_id = PROM_CATALOG[i].card_id;
         return out->intact ? PROM_ID_KNOWN : PROM_ID_DAMAGED;
     }
+    // Only an intact program is named, refused or not: a damaged dump of a
+    // refused ROM is just an unknown one.
+    for (size_t i = 0; i < PROM_REFUSED_COUNT && out->intact; i++) {
+        const struct prom_refused *rr = &PROM_REFUSED[i];
+        if (prom_key(rr->vendor_id, rr->device_id, rr->fcode_checksum) != out->key)
+            continue;
+        out->refused = rr->what;
+        return PROM_ID_REFUSED;
+    }
     return PROM_ID_UNKNOWN;
 }
 
@@ -281,6 +320,9 @@ static bool prom_offer_identify(const char *path, uint64_t *out_key, size_t *out
                 "prom_offer: '%s' looks like the %s expansion ROM (id %s), but its FCode checksum does not verify; "
                 "ignored",
                 path, id.card_id, id.id);
+            break;
+        case PROM_ID_REFUSED:
+            LOG(0, "prom_offer: '%s' is %s (id %s); ignored", path, id.refused, id.id);
             break;
         default:
             LOG(2, "prom_offer: '%s' is not a recognised PCI expansion ROM — ignored", path);
@@ -427,6 +469,9 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
             break;
         case PROM_ID_DAMAGED:
             why = "a known expansion ROM, but its FCode checksum does not verify (the dump is probably damaged)";
+            break;
+        case PROM_ID_REFUSED:
+            why = id.refused;
             break;
         default:
             break;

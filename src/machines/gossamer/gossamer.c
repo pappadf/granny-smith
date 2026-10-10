@@ -678,19 +678,40 @@ const storage_device_decl_t gossamer_default_storage[] = {
     {0},
 };
 
-// The ATI Rage Pro on the board, the machine's built-in video.  Its monitor
-// is strapped at the 13" today; the rest of its list waits on a monitor
-// option for the chip.
+// The ATI Rage Pro on the board, the machine's built-in video.  Its port
+// offers the 13" RGB (Apple sense 6) or nothing at all: with no cable every
+// sense line floats high (MACHINE_SENSE_NONE, 7), which the chip's FCode
+// reads as "nothing attached" — how a G3 runs with its display on a PCI
+// card instead.  The chip's other monitors wait on a monitor option for it.
+static const struct {
+    const char *id, *monitor;
+    uint8_t sense;
+} gossamer_monitors[] = {
+    {"13in_rgb", "13in_rgb", 6u                },
+    {"none",     "none",     MACHINE_SENSE_NONE},
+};
+
 static bool gossamer_monitor_at(size_t i, const char **id, const char **monitor) {
-    if (i != 0)
+    if (i >= sizeof(gossamer_monitors) / sizeof(gossamer_monitors[0]))
         return false;
-    *id = *monitor = "13in_rgb";
+    *id = gossamer_monitors[i].id;
+    *monitor = gossamer_monitors[i].monitor;
     return true;
+}
+
+static bool gossamer_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (size_t i = 0; i < sizeof(gossamer_monitors) / sizeof(gossamer_monitors[0]); i++)
+        if (strcmp(gossamer_monitors[i].id, id) == 0) {
+            *out_sense = gossamer_monitors[i].sense;
+            return true;
+        }
+    return false;
 }
 
 const builtin_video_desc_t gossamer_builtin_video = {
     .detail = "ATI Rage Pro",
     .monitor_at = gossamer_monitor_at,
+    .monitor_sense = gossamer_monitor_sense,
     .default_monitor = "13in_rgb",
 };
 

@@ -250,6 +250,28 @@ void pci_tick_vbl(pci_root_t *root);
 void pci_assert_irq(pci_device_t *dev);
 void pci_deassert_irq(pci_device_t *dev);
 
+// === Bus mastering ==========================================================
+//
+// A device moving data to or from HOST memory on its own: a command
+// processor fetching its ring, writing a read pointer back, streaming a
+// texture.  Three rules, all from the PCI architecture:
+//   * gated on the device's command-register BUS_MASTER_EN (PCI_CMD_MASTER):
+//     a device whose driver has not enabled mastering moves nothing — a
+//     transfer that works with the bit clear is a fidelity bug;
+//   * no IOMMU: a PCI address IS a guest-physical address on these machines,
+//     and the CPU MMU is not in the path (the DBDMA rule);
+//   * the bridge's lane reversal applies (pci_bus_lane_reverse): PCI byte n
+//     of the transfer is host byte n^7 while the bridge is reversing.
+// RAM moves through the backing store directly; anything else (a device
+// register, unmapped space) takes the bus's slow path byte by byte.
+//
+// Both return the number of bytes moved: `len`, or 0 when the device may
+// not master (not seated, or BUS_MASTER_EN clear) — a refused read leaves
+// `buf` all-ones, what a master abort floats to.  Synchronous: PACING is
+// the card's business (it schedules when it fetches), not the bus's.
+uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len);
+uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32_t len);
+
 // === Object model ===========================================================
 
 // The `machine.pci` node and its slot collection live in pci_class.c, which

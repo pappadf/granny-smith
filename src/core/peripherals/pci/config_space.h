@@ -48,6 +48,9 @@ struct pci_device;
 #define PCI_CMD_MEM_SPACE 0x0002u
 #define PCI_CMD_MASTER    0x0004u
 
+// Status-register bit 4: the device implements a capabilities list ($34).
+#define PCI_STATUS_CAP_LIST 0x0010u
+
 #define PCI_NUM_BARS       6
 #define PCI_ROM_BAR_INDEX  6 // index of the expansion-ROM BAR in backing[]
 #define PCI_BAR_SLOTS      7 // BARs 0..5 plus the expansion-ROM BAR
@@ -89,6 +92,12 @@ typedef struct pci_config_decl {
     // 9500 reports `devsel-speed 00000001` — medium, i.e. $0200 (Apple
     // TN1062).
     uint16_t status_reset;
+    // Offset of the first capability ($34), or 0 for none.  The block itself
+    // lives beyond the header and is the device's own (ops->cfg_read); a
+    // device that sets this also sets CAP_LIST (bit 4) in status_reset, as
+    // the silicon does.  The ATI Rage 128's FCode reads the pointer with
+    // config-b@ before anything else, so it must exist and terminate.
+    uint8_t cap_ptr;
     pci_bar_decl_t bar[PCI_NUM_BARS];
     uint32_t rom_size; // expansion-ROM BAR ($30); 0 = absent
 } pci_config_decl_t;

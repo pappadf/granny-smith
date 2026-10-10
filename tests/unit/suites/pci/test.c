@@ -85,6 +85,14 @@ const pci_card_kind_t voodoo2_webgpu_kind = {.id = "voodoo2_webgpu",
                                              .requires_prom = false,
                                              .card_class = "3d"};
 
+// ...and the ATI Rage 128 GL (cards/rage128.c), a second socket card with a
+// real ROM requirement.
+const pci_card_kind_t rage128_kind = {.id = "rage128",
+                                      .display_name = "ATI Rage 128 GL",
+                                      .attach = PCI_ATTACH_PCI,
+                                      .requires_prom = true,
+                                      .card_class = "display"};
+
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
 static int g_slot_irqs;
@@ -105,6 +113,31 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     (void)name;
     (void)iface;
     (void)device;
+}
+
+// Host memory for the bus-master rows: a small "RAM" behind the backing-store
+// fast path, and a slow path that records what reached it.  The slow path
+// answers (addr & $FF) ^ $A5 so a byte that took it is told apart from one
+// that came out of RAM.
+#define DMA_RAM_SIZE 0x1000u
+static uint8_t g_dma_ram[DMA_RAM_SIZE];
+static int g_slow_reads, g_slow_writes;
+static uint32_t g_slow_last_addr;
+static uint8_t g_slow_last_value;
+
+uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr) {
+    (void)ram;
+    return g_dma_ram + addr;
+}
+uint8_t memory_read_uint8_slow(uint32_t addr) {
+    g_slow_reads++;
+    g_slow_last_addr = addr;
+    return (uint8_t)((addr & 0xFFu) ^ 0xA5u);
+}
+void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    g_slow_writes++;
+    g_slow_last_addr = addr;
+    g_slow_last_value = value;
 }
 
 // The object model is exercised by the integration suites, not here.
@@ -812,6 +845,172 @@ TEST(test_bus_population) {
     pci_root_delete(root);
 }
 
+// The capabilities pointer ($34) answers from the declaration; a device with
+// none reads zero there.  The ATI Rage 128 is the first card to declare one:
+// its FCode reads the pointer with config-b@ before anything else, and its
+// status register powers up with CAP_LIST set ($02B0).
+TEST(test_capability_pointer) {
+    device_reset();
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_CAP_POINTER) == 0u);
+
+    static const pci_config_decl_t with_caps = {
+        .vendor_id = 0x1002u,
+        .device_id = 0x5245u,
+        .class_code = 0x030000u,
+        .status_reset = 0x02B0u, // CAP_LIST | 66 MHz | fast back-to-back | DEVSEL medium
+        .cap_ptr = 0x50u,
+        .bar = {[0] = {.size = 0x1000u, .kind = PCI_BAR_MEM}},
+    };
+    pci_device_t d = {.decl = &with_caps};
+    pci_cfg_reset(&d);
+    ASSERT_TRUE(pci_cfg_read(&d, PCI_CFG_CAP_POINTER) == 0x50u);
+    ASSERT_TRUE((pci_cfg_read(&d, PCI_CFG_COMMAND) >> 16) & PCI_STATUS_CAP_LIST);
+    // Read-only: a write to $34 changes nothing.
+    cfg_write_dword(&d, PCI_CFG_CAP_POINTER, 0xFFFFFFFFu);
+    ASSERT_TRUE(pci_cfg_read(&d, PCI_CFG_CAP_POINTER) == 0x50u);
+}
+
+// The ATI Rage 128 GL's geometry, the largest BAR the core has sized: a 64 MB
+// prefetchable BAR0 (two 32 MB linear apertures), a 256-byte I/O BAR1 the
+// FCode never publishes, a 16 KB BAR2 (two 8 KB register apertures) and a
+// 128 KB expansion ROM.  The sizing probe, the forced alignment of an
+// assignment, and the decode at the far end of the 64 MB are what is new.
+TEST(test_large_prefetchable_bar) {
+    static const pci_config_decl_t rage128_geometry = {
+        .vendor_id = 0x1002u,
+        .device_id = 0x5245u,
+        .class_code = 0x030000u,
+        .interrupt_pin = 1,
+        .command_writable = PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER,
+        .bar =
+            {
+                  [0] = {.size = 0x4000000u, .kind = PCI_BAR_MEM_PREFETCH},
+                  [1] = {.size = 0x100u, .kind = PCI_BAR_IO},
+                  [2] = {.size = 0x4000u, .kind = PCI_BAR_MEM},
+                  },
+        .rom_size = 0x20000u,
+    };
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    g_dev.decl = &rage128_geometry;
+    pci_cfg_reset(&g_dev);
+    pci_bus_add_device(bus, &g_dev, 13);
+    // Bandit 1's memory window: 256 MB at $80000000.
+    pci_bus_add_window(bus, PCI_SPACE_MEM, 0x80000000u, 0x10000000u, 0x80000000u, 0xFFFFFFFFu, "mem");
+
+    // The probe Open Firmware runs: all-ones in, the size mask out.
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0, 0xFFFFFFFFu);
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_BAR0) == 0xFC000008u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 4, 0xFFFFFFFFu);
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_BAR0 + 4) == 0xFFFFFF01u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 8, 0xFFFFFFFFu);
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_BAR0 + 8) == 0xFFFFC000u);
+    cfg_write_dword(&g_dev, PCI_CFG_ROM_BAR, 0xFFFFFFFFu);
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_ROM_BAR) == (0xFFFE0000u | PCI_ROM_BAR_ENABLE));
+
+    // An assignment is forced onto a 64 MB boundary; the prefetchable bit
+    // stays in the read-back.
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0, 0x86000000u);
+    ASSERT_TRUE(pci_cfg_read(&g_dev, PCI_CFG_BAR0) == 0x84000008u);
+    ASSERT_EQ_INT((int)pci_cfg_bar_base(&g_dev, 0), (int)0x84000000u);
+
+    // Place it where OF would (64 MB-aligned, clear of BAR2 and the ROM),
+    // enable memory decode, and reach both ends of the aperture.
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0, 0x84000000u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 8, 0x80800000u);
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE);
+    const memory_interface_t *mem_if = pci_bus_window_iface(bus, 0);
+    void *mem_ctx = pci_bus_window_ctx(bus, 0);
+    mem_if->read_uint32(mem_ctx, 0x04000000u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0);
+    mem_if->read_uint32(mem_ctx, 0x07FFFFFCu);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x3FFFFFC);
+    // One past the end is nobody's.
+    g_bus_errors = 0;
+    mem_if->read_uint32(mem_ctx, 0x08000000u);
+    ASSERT_EQ_INT(g_bus_errors, 1);
+    // BAR2 decodes independently, into its own backing.
+    mem_if->read_uint32(mem_ctx, 0x00803FFCu);
+    ASSERT_EQ_INT((int)g_io.last_offset, 0x3FFC);
+
+    pci_root_delete(root);
+}
+
+// Bus mastering (pci_dma_read/write): the gate, the RAM fast path, the slow
+// path for everything else, and the bridge's lane reversal on the way to
+// host memory.
+TEST(test_bus_master_dma) {
+    config_t *cfg = test_cfg();
+    cfg->ram_size = DMA_RAM_SIZE;
+    cfg->mem_map = (memory_map_t *)g_dma_ram; // only ever handed back to the stub
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    for (uint32_t i = 0; i < DMA_RAM_SIZE; i++)
+        g_dma_ram[i] = (uint8_t)i;
+    g_slow_reads = g_slow_writes = 0;
+    uint8_t buf[16];
+
+    // Not seated: nothing moves, and the read floats to all-ones.
+    memset(buf, 0, sizeof(buf));
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x100u, buf, 4), 0);
+    ASSERT_TRUE(buf[0] == 0xFFu && buf[3] == 0xFFu);
+
+    // Seated, but BUS_MASTER_EN clear: still refused, in both directions.
+    pci_bus_add_device(bus, &g_dev, 13);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x100u, buf, 4), 0);
+    ASSERT_TRUE(buf[0] == 0xFFu);
+    buf[0] = 0x5A;
+    ASSERT_EQ_INT((int)pci_dma_write(&g_dev, 0x100u, buf, 1), 0);
+    ASSERT_TRUE(g_dma_ram[0x100] == 0x00u);
+    ASSERT_EQ_INT(g_slow_reads + g_slow_writes, 0);
+
+    // Enabled: RAM moves through the backing store, untouched by the slow path.
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_MASTER);
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x123u, buf, 5), 5);
+    ASSERT_TRUE(buf[0] == 0x23u && buf[4] == 0x27u);
+    const uint8_t pattern[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    ASSERT_EQ_INT((int)pci_dma_write(&g_dev, 0x200u, pattern, 4), 4);
+    ASSERT_TRUE(g_dma_ram[0x200] == 0xDEu && g_dma_ram[0x203] == 0xEFu);
+    ASSERT_EQ_INT(g_slow_reads + g_slow_writes, 0);
+
+    // Outside RAM (a device, unmapped space): the slow path, byte by byte.
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0xF3000010u, buf, 4), 4);
+    ASSERT_EQ_INT(g_slow_reads, 4);
+    ASSERT_TRUE(buf[0] == (0x10u ^ 0xA5u) && buf[3] == (0x13u ^ 0xA5u));
+    ASSERT_EQ_INT((int)pci_dma_write(&g_dev, 0xF3000020u, pattern, 2), 2);
+    ASSERT_EQ_INT(g_slow_writes, 2);
+    ASSERT_TRUE(g_slow_last_addr == 0xF3000021u && g_slow_last_value == 0xADu);
+
+    // A range that straddles the end of RAM is not RAM: the slow path takes
+    // all of it rather than splitting.
+    g_slow_reads = 0;
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, DMA_RAM_SIZE - 2u, buf, 4), 4);
+    ASSERT_EQ_INT(g_slow_reads, 4);
+
+    // Lane reversal: PCI byte n of the transfer is host byte n^7.
+    pci_bus_set_lane_reverse(bus, true);
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x300u, buf, 8), 8);
+    ASSERT_TRUE(buf[0] == 0x07u && buf[7] == 0x00u);
+    ASSERT_EQ_INT((int)pci_dma_write(&g_dev, 0x400u, pattern, 4), 4);
+    ASSERT_TRUE(g_dma_ram[0x407] == 0xDEu && g_dma_ram[0x404] == 0xEFu);
+    g_slow_writes = 0;
+    ASSERT_EQ_INT((int)pci_dma_write(&g_dev, 0xF3000000u, pattern, 1), 1);
+    ASSERT_TRUE(g_slow_last_addr == 0xF3000007u);
+    pci_bus_set_lane_reverse(bus, false);
+
+    // Clearing BUS_MASTER_EN again stops it.
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, 0);
+    ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x123u, buf, 1), 0);
+
+    cfg->mem_map = NULL;
+    cfg->ram_size = 0;
+    pci_root_delete(root);
+}
+
 int main(void) {
     RUN(test_header_assembly);
     RUN(test_command_masking);
@@ -828,6 +1027,9 @@ int main(void) {
     RUN(test_slot_walk);
     RUN(test_slot_walk_seats_the_documents_entries);
     RUN(test_bus_population);
+    RUN(test_capability_pointer);
+    RUN(test_large_prefetchable_bar);
+    RUN(test_bus_master_dma);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;
 }
