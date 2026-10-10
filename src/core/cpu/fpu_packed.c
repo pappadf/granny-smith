@@ -31,9 +31,15 @@ static inline unsigned bcd_nibble(uint32_t word, int pos) {
     return (word >> (28 - pos * 4)) & 0xF;
 }
 
+// 10^4096 to 128 bits (truncated).  The FMOVECR table holds only the 64
+// bits the 68882 ROM returns, a value just below 10^4096 that the
+// floor(log10) comparison would otherwise count as reaching it.
+static const fpu_unpacked_t pow10_4096_wide = {false, 13606, 0xC46052028A20979AULL, 0xC94C153F804A4A92ULL};
+
 // Compute 10^|n| as fpu_unpacked_t using the FMOVECR power-of-10 table.
-// Decomposes n into sum of powers of 2, multiplying corresponding table entries.
-static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
+// Decomposes n into sum of powers of 2, multiplying corresponding table
+// entries; `wide` swaps in the 128-bit 10^4096.
+static fpu_unpacked_t fpu_power_of_10_wide(fpu_state_t *fpu, int32_t n, bool wide) {
     if (n == 0) {
         fpu_unpacked_t one = {false, 0, 0x8000000000000000ULL, 0};
         return one;
@@ -47,7 +53,7 @@ static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
     for (int bit = 0; bit < 13; bit++) {
         if (!(n & (1 << bit)))
             continue;
-        fpu_unpacked_t pw = fpu_rom_constant(0x33 + bit);
+        fpu_unpacked_t pw = (wide && bit == 12) ? pow10_4096_wide : fpu_rom_constant(0x33 + bit);
         if (first) {
             result = pw;
             first = false;
@@ -58,21 +64,29 @@ static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
     return result;
 }
 
+static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
+    return fpu_power_of_10_wide(fpu, n, false);
+}
+
 // floor(log10(x)) for a finite, normalized, non-zero x (sign ignored).
 // With x in [2^e, 2^(e+1)), log10(x) lies in [e*log10(2), (e+1)*log10(2)),
 // so the answer is floor(e*log10(2)) or one more; a comparison against the
-// FMOVECR powers of ten picks between them.  log10(2) is taken as the 32-bit
+// powers of ten picks between them.  log10(2) is taken as the 32-bit
 // fixed-point 0x4D104D42 / 2^32, whose error is far below the closest
 // approach of e*log10(2) to an integer over the extended exponent range.
+// The powers are the 128-bit table products (10^4096 at full width): their
+// truncation error is far below the gap between any 64-bit value and the
+// nearest power of ten, so the comparison is exact (checked against exact
+// arithmetic at both 64-bit neighbours of every 10^m in range).
 // Leaves FPSR untouched.
-static int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x) {
+int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x) {
     int32_t ilog = (int32_t)(((int64_t)x.exponent * 0x4D104D42LL) >> 32); // floor(e*log10(2))
     int32_t m = ilog + 1;
     uint32_t saved_fpsr = fpu->fpsr;
     bool ge; // |x| >= 10^m ?
     x.sign = false;
     if (m >= 0) {
-        fpu_unpacked_t p = fpu_power_of_10(fpu, m);
+        fpu_unpacked_t p = fpu_power_of_10_wide(fpu, m, true);
         if (x.exponent != p.exponent)
             ge = x.exponent > p.exponent;
         else if (x.mantissa_hi != p.mantissa_hi)
@@ -81,7 +95,7 @@ static int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x) {
             ge = x.mantissa_lo >= p.mantissa_lo;
     } else {
         // |x| >= 10^m  <=>  |x| * 10^-m >= 1
-        fpu_unpacked_t y = fpu_op_mul(fpu, x, fpu_power_of_10(fpu, -m));
+        fpu_unpacked_t y = fpu_op_mul(fpu, x, fpu_power_of_10_wide(fpu, -m, true));
         ge = y.exponent >= 0;
     }
     fpu->fpsr = saved_fpsr;

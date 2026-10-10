@@ -159,8 +159,38 @@ fpu_unpacked_t fpu_unpack(float80_reg_t reg) {
         // Normal number: unbiased exponent
         r.exponent = (int32_t)exp - FPU_EXP_BIAS;
         r.mantissa_hi = reg.mantissa;
+        if (!(reg.mantissa & 0x8000000000000000ULL)) {
+            // Unnormal (J-bit clear): the FPU normalizes it before use, and
+            // an unnormal zero is a zero (MC68881/MC68882 UM §3.5.1).
+            if (reg.mantissa == 0) {
+                r.exponent = FPU_EXP_ZERO;
+            } else {
+                int shift = clz64(reg.mantissa);
+                r.mantissa_hi <<= shift;
+                r.exponent -= shift;
+            }
+        }
     }
     return r;
+}
+
+// Extended-register form of an operand with any unnormal (non-zero biased
+// exponent, J-bit clear) normalized: shifted left until the J-bit is set or
+// the biased exponent reaches 0 (a denormal), an all-zero mantissa becoming
+// a signed zero.  The value is unchanged.  The FPU does this to every
+// operand before an operation (MC68881/MC68882 UM §3.5.1; on the 68040 the
+// FPSP's mk_norm), so operations that look at the raw register bits see
+// what the hardware's arithmetic sees.
+static float80_reg_t fp80_normalize_unnormal(float80_reg_t v) {
+    uint16_t exp = fp80_exp(v);
+    if (exp == 0 || exp == 0x7FFF || (v.mantissa & 0x8000000000000000ULL))
+        return v;
+    if (v.mantissa == 0)
+        return fp80_make(fp80_sign(v), 0, 0);
+    int shift = clz64(v.mantissa);
+    if (shift > exp)
+        shift = exp;
+    return fp80_make(fp80_sign(v), (uint16_t)(exp - shift), v.mantissa << shift);
 }
 
 // Normalize: shift mantissa left until bit 63 of mantissa_hi is set
@@ -183,6 +213,14 @@ void fpu_normalize(fpu_unpacked_t *v) {
             v->exponent -= shift;
         }
     }
+}
+
+// Normalize `v` if it is an unnormal: finite, non-zero class, J-bit clear.
+// An all-zero mantissa becomes FPU_EXP_ZERO.  Values from fpu_unpack() are
+// already normalized; this covers unpacked operands built elsewhere.
+static void fpu_normalize_unnormal(fpu_unpacked_t *v) {
+    if (v->exponent != FPU_EXP_INF && v->exponent != FPU_EXP_ZERO && !(v->mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(v);
 }
 
 // Round mantissa to a specific number of significant bits
@@ -756,6 +794,12 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
     unsigned ea_mode = (opcode >> 3) & 7;
     unsigned ea_reg = opcode & 7;
 
+    // A register can hold an unnormal (FMOVEM, FRESTORE, single/double range
+    // control); the store converts it as the value it is, never writing an
+    // unnormal (MC68881/MC68882 UM §3.5.2) nor reading its biased exponent
+    // as the magnitude (an unnormal 1.0 is not an integer overflow).
+    val = fp80_normalize_unnormal(val);
+
     switch (format) {
     case 0: { // Long integer
         int32_t v = fpu_to_int32(fpu, val);
@@ -768,21 +812,13 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
         break;
     }
     case 2: { // Extended (12 bytes)
-        // For FMOVE.X to memory, the 68882 normalizes abnormal representations
-        // (pseudo-denormals, unnormals) through the internal pipeline, applying
-        // FPCR precision/rounding. Normal values are written directly.
+        // For FMOVE.X to memory, the 68882 normalizes a pseudo-denormal
+        // through the internal pipeline, applying FPCR precision/rounding
+        // (unnormals were normalized above).  Other values are written
+        // directly.
         float80_reg_t store_val = val;
-        uint16_t bexp = fp80_exp(val);
-        bool j_bit = (val.mantissa >> 63) & 1;
-        bool is_abnormal = false;
-        if (bexp == 0 && j_bit) {
-            is_abnormal = true; // pseudo-denormal
-        } else if (bexp != 0 && bexp != 0x7FFF && !j_bit && val.mantissa != 0) {
-            is_abnormal = true; // unnormal
-        }
-        if (is_abnormal) {
+        if (fp80_exp(val) == 0 && (val.mantissa >> 63))
             store_val = fpu_pack(fpu, fpu_unpack(val));
-        }
         uint32_t w0, w1, w2;
         fpu_to_extended(store_val, &w0, &w1, &w2);
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
@@ -1305,6 +1341,13 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     if (a_nan || b_nan)
         return fpu_propagate_nan(fpu, a, b);
 
+    // Normalize unnormal operands first, so an unnormal zero is classified
+    // as a zero below (0/0 is an operand error, not a quotient of 0), and
+    // the long division sees J-bit-set mantissas (an unnormal divisor would
+    // overflow the 64-bit quotient).  MC68881/MC68882 UM §3.5.1.
+    fpu_normalize_unnormal(&a);
+    fpu_normalize_unnormal(&b);
+
     bool result_sign = a.sign ^ b.sign;
     bool a_inf = (a.exponent == FPU_EXP_INF);
     bool b_inf = (b.exponent == FPU_EXP_INF);
@@ -1335,22 +1378,6 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     if (a_zero || b_inf) {
         fpu_unpacked_t r = {result_sign, FPU_EXP_ZERO, 0, 0};
         return r;
-    }
-
-    // The long division below needs both mantissas normalized (J-bit set):
-    // an unnormal divisor would overflow the 64-bit quotient.  Normalizing
-    // keeps the value, so do it for unnormal operands as the 68882 does.
-    if (!(a.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&a);
-        if (a.exponent == FPU_EXP_ZERO)
-            return (fpu_unpacked_t){result_sign, FPU_EXP_ZERO, 0, 0};
-    }
-    if (!(b.mantissa_hi & 0x8000000000000000ULL)) {
-        fpu_normalize(&b);
-        if (b.exponent == FPU_EXP_ZERO) {
-            fpu->fpsr |= FPEXC_DZ;
-            return (fpu_unpacked_t){result_sign, FPU_EXP_INF, 0, 0};
-        }
     }
 
     // Shift-and-subtract division for 64+64 quotient bits
@@ -1415,6 +1442,9 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
         a.mantissa_hi |= 0x4000000000000000ULL;
         return a;
     }
+    // Unnormal: normalize before classifying, so an unnormal zero (of either
+    // sign) is a zero, not a negative operand (MC68881/MC68882 UM §3.5.1)
+    fpu_normalize_unnormal(&a);
     if (a.exponent == FPU_EXP_ZERO)
         return a; // sqrt(+-0) = +-0
     if (a.sign) {
@@ -1425,12 +1455,6 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     }
     if (a.exponent == FPU_EXP_INF)
         return a; // sqrt(+inf) = +inf
-    if (!(a.mantissa_hi & 0x8000000000000000ULL)) {
-        // Unnormal (J-bit clear): normalize first, as the 68882 does
-        fpu_normalize(&a);
-        if (a.exponent == FPU_EXP_ZERO)
-            return a; // unnormal zero: sqrt(+-0) = +-0
-    }
 
     // Compute sqrt using exact integer arithmetic for IEEE 754 correct rounding.
     // For even exp: sqrt(M * 2^exp) = sqrt(M) * 2^(exp/2), where q²=S/2
@@ -1630,6 +1654,12 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             }
         }
     }
+
+    // An unnormal source is normalized (an unnormal zero becomes a zero)
+    // before any operation sees it, including the ones that read its raw
+    // bits (FTST, FGETMAN, the transcendentals' compact form).  Destination
+    // register operands are normalized by fpu_unpack().
+    src = fp80_normalize_unnormal(src);
 
     switch (op) {
     case 0x00: // FMOVE
@@ -1866,9 +1896,10 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             // Zero: result is zero (preserve sign)
             fpu->fp[dst] = fp80_sign(src) ? FP80_NEG_ZERO : FP80_ZERO;
         } else {
-            // Normal: set biased exponent to 3FFF, keep raw mantissa+sign
-            // Preserves unnormalized mantissa bits (no normalization shift)
-            fpu->fp[dst] = fp80_make(fp80_sign(src), 0x3FFF, src.mantissa);
+            // Finite: the normalized mantissa with biased exponent 3FFF, so
+            // the result lies in [1, 2); a denormal source is normalized
+            // first, as the FPSP's sgetmand does.
+            fpu->fp[dst] = fp80_make(fp80_sign(src), 0x3FFF, uv.mantissa_hi);
         }
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
@@ -2113,31 +2144,18 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
-        if (a.exponent == FPU_EXP_ZERO) {
-            // 0 * 2^n = 0
-            fpu->fp[dst] = fpu_pack(fpu, a);
-            fpu_update_cc(fpu, fpu->fp[dst]);
-            return;
-        }
-        if (a.exponent == FPU_EXP_INF) {
-            // inf * 2^n = inf (but inf * 2^inf_neg = OPERR)
-            if (b.exponent == FPU_EXP_INF && b.sign) {
-                fpu->fpsr |= FPEXC_OPERR;
-                fpu->fp[dst] = FP80_QNAN;
-            } else {
-                fpu->fp[dst] = fpu_pack(fpu, a);
-            }
-            fpu_update_cc(fpu, fpu->fp[dst]);
-            return;
-        }
         if (b.exponent == FPU_EXP_INF) {
-            // finite * 2^(+/-inf)
-            if (b.sign) {
-                fpu->fp[dst] = a.sign ? FP80_NEG_ZERO : FP80_ZERO;
-            } else {
-                fpu_unpacked_t inf = {a.sign, FPU_EXP_INF, 0, 0};
-                fpu->fp[dst] = fpu_pack(fpu, inf);
-            }
+            // An infinite scale factor is an operand error whatever the
+            // (non-NaN) destination: MC68881/MC68882 UM FSCALE operation
+            // table; the FPSP's pscalet sends every <x>,inf pair to t_operr.
+            fpu->fpsr |= FPEXC_OPERR;
+            fpu->fp[dst] = FP80_QNAN;
+            fpu_update_cc(fpu, fpu->fp[dst]);
+            return;
+        }
+        if (a.exponent == FPU_EXP_ZERO || a.exponent == FPU_EXP_INF) {
+            // 0 * 2^n = 0, inf * 2^n = inf
+            fpu->fp[dst] = fpu_pack(fpu, a);
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
@@ -2147,30 +2165,30 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
-        // Extract integer from source (truncate toward zero)
-        int32_t scale;
-        if (b.exponent >= 31) {
-            scale = b.sign ? INT32_MIN : INT32_MAX;
-        } else if (b.exponent < 0) {
-            scale = 0;
+        // |src| >= 2^14 always overflows (positive) or underflows (negative),
+        // whatever the destination (MC68881/MC68882 UM FSCALE; the FPSP's
+        // sscale src_out), so the exponent is forced past that end of the
+        // range.  Below 2^14 the source is chopped to an integer and added.
+        // Either way the exponent is clamped to +-20000: beyond that fpu_pack
+        // over/underflows all the same, and the clamp keeps the sum clear of
+        // the FPU_EXP_ZERO/FPU_EXP_INF sentinels (a denormal destination
+        // scaled by -(2^14-1) would otherwise reach -32768).
+        int32_t new_exp;
+        if (b.exponent >= 14) {
+            new_exp = b.sign ? -20000 : 20000;
         } else {
-            int shift = 63 - b.exponent;
-            // Build the magnitude as uint32_t so the sign flip can't trip
-            // signed-overflow UB (`-INT32_MIN` is UB; `-(uint32_t)magnitude`
-            // produces the two's-complement bit pattern).
-            uint32_t magnitude = (uint32_t)(b.mantissa_hi >> shift);
-            scale = b.sign ? (int32_t)(-magnitude) : (int32_t)magnitude;
+            int32_t scale = 0;
+            if (b.exponent >= 0) {
+                int32_t magnitude = (int32_t)(b.mantissa_hi >> (63 - b.exponent));
+                scale = b.sign ? -magnitude : magnitude;
+            }
+            new_exp = a.exponent + scale;
+            if (new_exp > 20000)
+                new_exp = 20000;
+            else if (new_exp < -20000)
+                new_exp = -20000;
         }
-        // Add scale to exponent in 64 bits, then clamp the sum: anything
-        // beyond +-20000 already over/underflows in fpu_pack (even for an
-        // unnormal mantissa), and clamping keeps clear of int32 overflow and
-        // of the FPU_EXP_ZERO/FPU_EXP_INF sentinel values.
-        int64_t new_exp = (int64_t)a.exponent + scale;
-        if (new_exp > 20000)
-            new_exp = 20000;
-        else if (new_exp < -20000)
-            new_exp = -20000;
-        a.exponent = (int32_t)new_exp;
+        a.exponent = new_exp;
         fpu->fp[dst] = fpu_pack(fpu, a);
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;

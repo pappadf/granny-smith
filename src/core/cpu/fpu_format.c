@@ -136,9 +136,12 @@ static uint64_t fpu_to_ieee(fpu_state_t *fpu, float80_reg_t val, int mant_bits, 
     }
 
     if (denormal) {
-        // A carry out of the denormal range lands in the exponent field's
-        // LSB, which is exactly the minimum normal encoding.
-        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        // Underflow is "tiny before rounding" (MC68881/MC68882 UM §6.1.5;
+        // MC68040 UM §9.7.5); INEX2 was set above only if bits were lost,
+        // so an exactly representable denormal is UNFL alone.  A carry out
+        // of the denormal range lands in the exponent field's LSB, which is
+        // exactly the minimum normal encoding.
+        fpu->fpsr |= FPEXC_UNFL;
         return sign_bit | q;
     }
     if (q >> mant_bits) {

@@ -147,6 +147,19 @@ TEST(walk_invalid_descriptor_faults_with_retry_semantics) {
     ctx_close(&c);
 }
 
+// With translation off the fault hook has no MMU to blame: it must leave
+// g_bus_error_is_pmmu false (skip semantics), not a stale true from an
+// earlier descriptor fault, as the 68030 path does.
+TEST(mmu_off_fault_clears_stale_pmmu_flag) {
+    ctx_t c;
+    ctx_open(&c);
+    ASSERT_TRUE(!c.mmu->enabled);
+    g_bus_error_is_pmmu = true; // left over from an earlier PMMU fault
+    ASSERT_TRUE(!mmu_handle_fault(c.bus, TEST_LA, false, true));
+    ASSERT_TRUE(!g_bus_error_is_pmmu);
+    ctx_close(&c);
+}
+
 // ============================================================================
 // Modified-bit protocol
 // ============================================================================
@@ -470,6 +483,7 @@ TEST(translate_checked_is_side_effect_free) {
 int main(void) {
     RUN(walk_4k_translates_and_sets_used_bits);
     RUN(walk_invalid_descriptor_faults_with_retry_semantics);
+    RUN(mmu_off_fault_clears_stale_pmmu_flag);
     RUN(modified_bit_set_on_first_write_only);
     RUN(write_protect_accumulates_from_pointer_level);
     RUN(supervisor_only_page_rejects_user_access);

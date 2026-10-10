@@ -141,10 +141,14 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
     // Two independent transitions: PB2 driven high arms the detector (the
     // OS has taken the line), and PB2 low while armed is the power-off
     // request.  One write can only do one of them -- the output is a level.
+    // Firing disarms it: the request is the high-to-low edge, so a later
+    // callback with PB2 still low (another port-B bit, such as the timer's
+    // PB7, changing) must not stop a resumed machine again.
     bool new_pb2 = (output & 0x04) != 0;
     if (new_pb2)
         st->soft_power_armed = true;
     if (st->soft_power_armed && !new_pb2) {
+        st->soft_power_armed = false;
         LOG(1, "IIcx soft power-off (VIA2 PB2 = 0)");
         if (cfg->scheduler)
             scheduler_stop(cfg->scheduler);
