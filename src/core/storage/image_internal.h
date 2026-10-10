@@ -38,6 +38,10 @@ struct image {
     // lights (drive_activity.h) and files.images[i].reads / .writes.
     uint64_t reads;
     uint64_t writes;
+    // Reads the backing store failed (a corrupt compressed chunk, a bad
+    // archive member, a host I/O error): the guest gets a device-level read
+    // error for each; only the first is logged at level 0.
+    uint64_t read_errors;
 
     // DiskCopy 4.2 per-sector tags (read-only metadata).  The Lisa boot ROM and
     // OS read these (e.g. the boot block's FILEID = $AAAA); loaded from the

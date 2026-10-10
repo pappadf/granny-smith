@@ -1065,6 +1065,94 @@ TEST(storage_read_blocks_one_base_read_per_run) {
     teardown_sandbox();
 }
 
+// A base that fails every read touching blocks [g_bad_lo, g_bad_hi) with
+// -EIO, as a corrupt compressed chunk or a host I/O error fails it, and
+// serves the parent's bytes everywhere else.
+static uint64_t g_bad_lo, g_bad_hi;
+static int64_t failing_base_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    uint64_t lo = g_bad_lo * STORAGE_BLOCK_SIZE, hi = g_bad_hi * STORAGE_BLOCK_SIZE;
+    if (len && off < hi && off + len > lo)
+        return -EIO;
+    return gs_source_read(s->ctx, off, buf, len);
+}
+static const gs_source_ops_t failing_base_ops = {failing_base_read, counting_base_size, counting_base_key,
+                                                 counting_base_tier, counting_base_close};
+
+static storage_t *open_failing_base(uint64_t blocks, uint64_t bad_lo, uint64_t bad_hi) {
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x29);
+    gs_source_t *host = gs_source_host(BASE_FILE, NULL);
+    ASSERT_TRUE(host != NULL);
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.base = peel_source_new(&failing_base_ops, host, host);
+    gs_source_release(host);
+    g_bad_lo = bad_lo;
+    g_bad_hi = bad_hi;
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    gs_source_release(config.base); // storage holds its own reference
+    return storage;
+}
+
+static int null_write_cb(void *ctx, const void *data, size_t size) {
+    (void)data;
+    *(size_t *)ctx += size;
+    return 0;
+}
+
+// A block the base holds and cannot read is an error on every read path --
+// never zeros -- and its neighbours still read.
+TEST(storage_unreadable_base_block_is_an_error) {
+    setup_sandbox();
+    const uint64_t blocks = 64;
+    storage_t *storage = open_failing_base(blocks, 20, 22);
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    ASSERT_OK(storage_read_block(storage, 19 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(19, 0x29, buf);
+    ASSERT_ERR(storage_read_block(storage, 20 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    ASSERT_ERR(storage_read_block(storage, 21 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    ASSERT_OK(storage_read_block(storage, 22 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(22, 0x29, buf);
+
+    // A run read across the bad blocks fails; one beside them does not.
+    uint8_t *run = malloc(blocks * STORAGE_BLOCK_SIZE);
+    ASSERT_TRUE(run != NULL);
+    ASSERT_ERR(storage_read_blocks(storage, 0, run, (size_t)blocks), STATUS_E_IO);
+    ASSERT_OK(storage_read_blocks(storage, 0, run, 20));
+    ASSERT_OK(storage_read_blocks(storage, 22 * STORAGE_BLOCK_SIZE, run, (size_t)blocks - 22));
+    expect_block(30, 0x29, run + 8 * STORAGE_BLOCK_SIZE);
+
+    // A block the guest rewrote reads from the delta, base or no base.
+    fill_block(20, 0x77, buf);
+    ASSERT_OK(storage_write_block(storage, 20 * STORAGE_BLOCK_SIZE, buf));
+    ASSERT_OK(storage_read_block(storage, 20 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(20, 0x77, buf);
+    ASSERT_ERR(storage_read_block(storage, 21 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    free(run);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// The export / consolidated-checkpoint stream fails on an unreadable base
+// block rather than embedding zeros for it, and stops there.  Once every bad
+// block is covered by the delta, the stream completes.
+TEST(storage_save_state_unreadable_base_fails) {
+    setup_sandbox();
+    const uint64_t blocks = 64;
+    storage_t *storage = open_failing_base(blocks, 40, 41);
+    size_t streamed = 0;
+    ASSERT_ERR(storage_save_state(storage, &streamed, null_write_cb), STATUS_E_IO);
+    ASSERT_TRUE(streamed <= 40 * STORAGE_BLOCK_SIZE);
+
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    fill_block(40, 0x66, buf);
+    ASSERT_OK(storage_write_block(storage, 40 * STORAGE_BLOCK_SIZE, buf));
+    streamed = 0;
+    ASSERT_OK(storage_save_state(storage, &streamed, null_write_cb));
+    ASSERT_EQ_INT((long long)(blocks * STORAGE_BLOCK_SIZE), (long long)streamed);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
@@ -1089,5 +1177,7 @@ int main(void) {
     RUN(storage_v1_delta_still_opens);
     RUN(storage_read_blocks_matches_per_block);
     RUN(storage_read_blocks_one_base_read_per_run);
+    RUN(storage_unreadable_base_block_is_an_error);
+    RUN(storage_save_state_unreadable_base_fails);
     return 0;
 }

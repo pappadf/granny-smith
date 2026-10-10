@@ -433,6 +433,23 @@ static uint8_t scsi_no_medium_asc(const scsi_t *scsi, int target) {
     return scsi->devices[target].type == scsi_dev_cdrom ? ASC_SONY_CADDY_NOT_INSERTED : ASC_MEDIUM_NOT_PRESENT;
 }
 
+// Can every block of [off, off + cnt) be read back from `img`?  Read in
+// staging pieces of whole blocks, so a verify of hundreds of blocks holds
+// no copy of them all.
+static bool scsi_medium_readable(image_t *img, size_t off, size_t cnt, uint16_t blk_sz) {
+    enum { PIECE_BLOCKS = 64 };
+    uint8_t *piece = malloc((size_t)PIECE_BLOCKS * blk_sz);
+    GS_ASSERTF(piece != NULL, "VERIFY: failed to allocate a %u-byte staging piece", PIECE_BLOCKS * blk_sz);
+    bool ok = true;
+    for (size_t done = 0; ok && done < cnt;) {
+        size_t n = cnt - done < (size_t)PIECE_BLOCKS * blk_sz ? cnt - done : (size_t)PIECE_BLOCKS * blk_sz;
+        ok = disk_read_data(img, off + done, piece, n) == n;
+        done += n;
+    }
+    free(piece);
+    return ok;
+}
+
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
@@ -1271,9 +1288,15 @@ void run_cmd(scsi_t *scsi) {
 
         if (!bytchk) {
             // "A BytChk bit of zero causes the verification to be simply a
-            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  A
-            // disk image has no medium to be wrong about, so an in-range
-            // verify succeeds.
+            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  The
+            // image's medium can be wrong in one way -- a block its backing
+            // file cannot give back -- and that is the unrecovered read error
+            // a READ of it reports.
+            if (!scsi_medium_readable(scsi->device_images[target], byte_off, byte_cnt, blk_sz)) {
+                LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+                break;
+            }
             phase_status(scsi, STATUS_GOOD);
             break;
         }
@@ -1407,13 +1430,21 @@ void command_complete(scsi_t *scsi) {
         // answer is known as soon as one byte differs.
         uint8_t *from_medium = malloc(blk_sz);
         GS_ASSERTF(from_medium != NULL, "VERIFY: failed to allocate a %u-byte compare block", blk_sz);
-        bool same = true;
-        for (size_t done = 0; same && done < byte_cnt; done += blk_sz) {
-            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz ||
-                memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
+        bool same = true, readable = true;
+        for (size_t done = 0; same && readable && done < byte_cnt; done += blk_sz) {
+            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz)
+                readable = false;
+            else if (memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
                 same = false;
         }
         free(from_medium);
+        if (!readable) {
+            // A block the medium cannot give back is a read error, as it is
+            // to READ -- not a miscompare against data never read.
+            LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            return;
+        }
         if (!same) {
             LOG(1, "SCSI VERIFY miscompare: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
             scsi_check_condition(scsi, SENSE_MISCOMPARE, ASC_MISCOMPARE_VERIFY, 0x00);

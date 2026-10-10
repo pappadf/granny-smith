@@ -31,8 +31,16 @@ EXTRA_SRCS := $(S)/vfs/image_vfs.c \
               ../../support/hfsplus_builder.c
 USE_SOURCE_LAYER := 1
 
+# Natively, realpath() is wrapped (test.c) so a test can make it fail the way
+# a filesystem backend that cannot answer it does.  The wasm build runs
+# without the wrap, and without that test.
+ifeq ($(filter emcc%,$(notdir $(firstword $(CC)))),)
+EXTRA_LDFLAGS += -Wl,--wrap=realpath
+WRAP_CFLAGS := -DTEST_WRAP_REALPATH
+endif
+
 SANITIZE := $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
-EXTRA_CFLAGS := $(SANITIZE)
+EXTRA_CFLAGS := $(SANITIZE) $(WRAP_CFLAGS)
 LDFLAGS += $(SANITIZE)
 export ASAN_OPTIONS := max_allocation_size_mb=256:detect_leaks=1
 

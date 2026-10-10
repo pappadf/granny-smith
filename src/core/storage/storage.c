@@ -970,6 +970,16 @@ static status_t read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count
 
 // Helper: skip/discard snapshot data from a checkpoint stream
 static status_t storage_skip_snapshot(checkpoint_t *checkpoint, const storage_snapshot_header_t *header) {
+    // The header is the checkpoint's word, and nothing else bounds it here: a
+    // block size past the discard buffer below would read past it on the
+    // stack, and a block count past what storage_new accepts sizes the
+    // bitmap allocation.  storage_new refuses either geometry, so no
+    // checkpoint this emulator wrote carries one.
+    if (header->block_size < STORAGE_BLOCK_SIZE || header->block_size > STORAGE_MAX_BLOCK_SIZE ||
+        header->block_count > UINT32_MAX) {
+        LOG(0, "storage: snapshot geometry %" PRIu64 "x%u is out of range", header->block_count, header->block_size);
+        return STATUS_E_INVAL;
+    }
     if (header->has_data) {
         // Skip all block data
         uint8_t discard[STORAGE_MAX_BLOCK_SIZE];
@@ -1149,37 +1159,37 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
 
         if (src == BLOCK_SRC_ZERO) {
             memset(buffer, 0, run_bytes);
-        } else {
+        } else if (src == BLOCK_SRC_DELTA) {
+            // The delta is written a block at a time and every bit-set
+            // block therefore lies within EOF, so a short read there is
+            // real corruption.
             size_t got = 0;
-            if (src == BLOCK_SRC_DELTA) {
-                if (pos >= 0 && fseeko(storage->delta_fp, pos, SEEK_SET) == 0)
-                    got = fread(buffer, 1, run_bytes, storage->delta_fp);
-            } else {
-                // The base: as much of the run as it holds.
-                uint64_t at = block_pos(0, block, storage->block_size);
-                while (got < run_bytes) {
-                    int64_t n = gs_source_read(storage->base, at + got, buffer + got, run_bytes - got);
-                    if (n <= 0)
-                        break;
-                    got += (size_t)n;
-                }
-            }
+            if (pos >= 0 && fseeko(storage->delta_fp, pos, SEEK_SET) == 0)
+                got = fread(buffer, 1, run_bytes, storage->delta_fp);
             if (got < run_bytes) {
-                // A short read on the base means the base file is shorter than
-                // the declared geometry; storage_read_block zero-fills a block
-                // past the base's end and carries on, so match that.  The delta is written a block at a
-                // time and every bit-set block therefore lies within EOF, so a
-                // short read there is real corruption and stays an error.
-                if (src == BLOCK_SRC_DELTA) {
-                    rc = STATUS_E_IO;
-                    break;
-                }
-                // storage_read_block zeroes a block it could not read *in
-                // full*, so a base whose length is not a whole multiple of
-                // block_size must not leak its trailing partial block.
-                got -= got % storage->block_size;
-                memset(buffer + got, 0, run_bytes - got);
+                rc = STATUS_E_IO;
+                break;
             }
+        } else {
+            // The base: the whole blocks of the run it holds must read,
+            // exactly as storage_read_block reads them.  A block past the
+            // base's end (a base shorter than the geometry, or its
+            // trailing partial block) is blank media and streams as
+            // zeros; a block the base holds and cannot read (a corrupt
+            // compressed chunk, a host I/O error) fails the stream -- an
+            // export or checkpoint never embeds zeros in its place.
+            uint64_t at = block_pos(0, block, storage->block_size);
+            uint64_t size = gs_source_size(storage->base);
+            uint64_t held64 = at < size ? size - at : 0;
+            size_t held = held64 < run_bytes ? (size_t)held64 : run_bytes;
+            held -= held % storage->block_size;
+            if (held && gs_source_read_exact(storage->base, at, buffer, held) != 0) {
+                LOG(0, "storage: base unreadable within blocks %" PRIu64 "..%" PRIu64 "; stream abandoned", block,
+                    block + held / storage->block_size - 1);
+                rc = STATUS_E_IO;
+                break;
+            }
+            memset(buffer + held, 0, run_bytes - held);
         }
 
         // One callback per block, not per run: the checkpoint stream is a

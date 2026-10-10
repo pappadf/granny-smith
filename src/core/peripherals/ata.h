@@ -48,6 +48,7 @@ enum {
 // Error register bits.
 #define ATA_ER_ABRT 0x04u
 #define ATA_ER_IDNF 0x10u
+#define ATA_ER_UNC  0x40u // uncorrectable data error
 
 // Device control register bits.
 #define ATA_DC_NIEN 0x02u
