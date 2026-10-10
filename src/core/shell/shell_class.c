@@ -28,8 +28,10 @@
 #include "script.h"
 #include "shell.h"
 #include "usage.h"
+#include "value_format.h"
 #include "event/gs_event.h"
 #include "job/job.h"
+#include "mailbox/mailbox.h" // GS_MBX_RESULT_MAX
 
 #include "commands.h"
 #include "root.h"
@@ -141,11 +143,17 @@ static DEF_METHOD(shell_method_run) {
     return val_str(prompt);
 }
 
+// The JSON the candidate list of one shell.complete result may take: the
+// mailbox result limit less room for the span, context and truncated keys
+// (the context method path is under 256 characters, 6x when escaped).
+#define SHELL_COMPLETE_JSON_BUDGET (GS_MBX_RESULT_MAX - (4u << 10))
+
 // `shell.complete(line, cursor)` — line-level tab completion. Returns
 // {candidates: VK_LIST<VK_STRING>, span: {start, end}, truncated} where span
 // is the half-open range of line text each candidate replaces (object-path
 // candidates cover the whole word; filesystem candidates only the
-// basename) and truncated says candidates were dropped.  With detail,
+// basename) and truncated says candidates were dropped (the bound, or a
+// list too big for one mailbox result, which keeps its leading candidates).  With detail,
 // candidates are {text, kind, doc} and the map adds `context`. The `meta.complete` method on the synthetic Meta overlay
 // delegates here through the provider hook in shell.c and keeps the
 // bare-list shape.
@@ -163,31 +171,48 @@ static DEF_METHOD(shell_method_complete) {
     memset(&comp, 0, sizeof(comp));
     shell_complete(line, cursor, &comp);
     value_t *items = NULL;
+    int n_items = 0; // candidates that fit the result budget
     if (comp.count > 0) {
         items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
         if (!items) {
             completion_free(&comp);
             return val_err("shell.complete: out of memory");
         }
+        size_t json_used = 0; // JSON bytes the kept candidates render to
+        vbuf_t probe = {0};
         for (int i = 0; i < comp.count; i++) {
             const char *text = comp.items[i] ? comp.items[i] : "";
+            value_t item;
             if (!detail) {
-                items[i] = val_str(text);
-                continue;
+                item = val_str(text);
+            } else {
+                // Detail: {text, kind, doc} per candidate.
+                value_map_builder_t *c = val_map_new();
+                val_map_put(c, "text", val_str(text));
+                val_map_put(c, "kind", val_str(comp_kind_name((comp_kind_t)comp.kinds[i])));
+                val_map_put(c, "doc", val_str(comp.docs[i] ? comp.docs[i] : ""));
+                item = val_map_finish(c);
             }
-            // Detail: {text, kind, doc} per candidate.
-            value_map_builder_t *c = val_map_new();
-            val_map_put(c, "text", val_str(text));
-            val_map_put(c, "kind", val_str(comp_kind_name((comp_kind_t)comp.kinds[i])));
-            val_map_put(c, "doc", val_str(comp.docs[i] ? comp.docs[i] : ""));
-            items[i] = val_map_finish(c);
+            // A list too big for the mailbox would come back as an error
+            // document instead of candidates: stop at the budget and say
+            // `truncated`, so the caller still gets the leading candidates.
+            probe.len = 0;
+            value_format(&item, VFMT_JSON_TAGGED, &probe);
+            json_used += probe.len + 1; // the item plus its separating comma
+            if (json_used > SHELL_COMPLETE_JSON_BUDGET) {
+                value_free(&item);
+                comp.truncated = true;
+                break;
+            }
+            items[n_items++] = item;
         }
+        vbuf_free(&probe);
     }
     value_map_builder_t *span = val_map_new();
     val_map_put(span, "start", val_int(comp.start));
     val_map_put(span, "end", val_int(comp.end));
     value_map_builder_t *b = val_map_new();
-    val_map_put(b, "candidates", val_list(items, comp.count > 0 ? (size_t)comp.count : 0));
+    val_map_put(b, "candidates", val_list(items, (size_t)n_items));
     val_map_put(b, "span", val_map_finish(span));
     if (detail) {
         // Where the cursor sits: the method and the declared argument slot
