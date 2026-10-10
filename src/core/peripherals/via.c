@@ -219,10 +219,19 @@ static uint16_t read_timer(const via_t *restrict via, int timer) {
     return (uint16_t)(via->timers[timer].start_value - delta);
 }
 
-// Timer 1 drove PB7 (ACR modes 2/3): publish the new port B pin levels to
-// the board, as an ORB/DDRB write does, so the timer output is visible.
-static void t1_pb7_changed(via_t *restrict via) {
-    via->output_cb(via->cb_context, PORT_B, via->ports[PORT_B].output & via->ports[PORT_B].direction);
+// Timer 1 drives PB7 (ACR modes 2/3) to `level`: publish the new port B pin
+// levels to the board, as an ORB/DDRB write does, so the timer output is
+// visible.  Only a real change is published -- the pin is a level with no
+// write strobe, so re-asserting the level it already has (a one-shot
+// restarted while PB7 is still low) is not an event the board can see.
+// Callers have checked DDRB bit 7.
+static void t1_set_pb7(via_t *restrict via, bool level) {
+    uint8_t old = via->ports[PORT_B].output;
+    uint8_t now = level ? (uint8_t)(old | 0x80) : (uint8_t)(old & 0x7F);
+    if (now == old)
+        return;
+    via->ports[PORT_B].output = now;
+    via->output_cb(via->cb_context, PORT_B, now & via->ports[PORT_B].direction);
 }
 
 // Arm a VIA timer with the specified counter value and callback.
@@ -309,16 +318,14 @@ static void t1_callback(void *source, uint64_t data) {
     case 2: // One-shot w/ PB7 output
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80) {
-            via->ports[PORT_B].output |= 0x80; // PB7 is set high when the timer expires
-            t1_pb7_changed(via);
+            t1_set_pb7(via, true); // PB7 is set high when the timer expires
         }
         break;
     case 3: // Free‑run w/ PB7 output
         arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback, true);
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80) {
-            via->ports[PORT_B].output ^= 0x80; // PB7 toggles on each timeout
-            t1_pb7_changed(via);
+            t1_set_pb7(via, !(via->ports[PORT_B].output & 0x80)); // PB7 toggles on each timeout
         }
         break;
     default:
@@ -361,8 +368,7 @@ static void set_t1c_high(via_t *restrict via, uint8_t value) {
     case 2: // One-shot w/ PB7 output
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80) {
-            via->ports[PORT_B].output &= 0x7F; // PB7 is set low when the timer starts
-            t1_pb7_changed(via);
+            t1_set_pb7(via, false); // PB7 is set low when the timer starts
         }
         __attribute__((fallthrough));
     case 0: // One-shot mode - PB7 disabled
