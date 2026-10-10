@@ -45,7 +45,7 @@
 #include "status.h"
 #include "via.h"
 #include "vrom.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 #include <assert.h>
 #include <dirent.h>
@@ -160,7 +160,7 @@ static bool s_constructing;
 static void construction_misuse(const char *accessor) {
     (void)accessor; // unused when asserts compile out
     s_constructing = false;
-    gs_event_hold(0);
+    event_hold(0);
     GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }
 
@@ -918,7 +918,7 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
 
 void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
     if (ok) {
-        gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
+        event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
         if (g_quick_verbose)
             out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
@@ -1199,10 +1199,10 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // teardown tolerates a partially-constructed machine -- each guards its
     // machine_context -- which is what makes this safe to call here.
     s_constructing = true;
-    gs_event_hold(1);
+    event_hold(1);
     if (profile->substrate->init(cfg, checkpoint) != 0) {
         s_constructing = false;
-        gs_event_hold(0);
+        event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
@@ -1257,7 +1257,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         scheduler_restore_events(cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
     s_constructing = false;
-    gs_event_hold(0);
+    event_hold(0);
 
     // The fast-path aliases go back to the active machine's until the swap
     // step.
@@ -1321,8 +1321,8 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // built at the default pacing and given the host's here.
     scheduler_apply_pacing(cfg->scheduler, pacing);
     scheduler_announce_speed(cfg->scheduler);
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
-                   cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
+                cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
     platform_machine_attached();
 }
 

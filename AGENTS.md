@@ -244,7 +244,7 @@ after the instruction that makes the access, instead of logging:
 - Do not change or remove existing comments unnecessarily
 - Refer to `docs/guide/STYLE_GUIDE.md` for conventions when unsure
 
-## Object model (`gs_eval`)
+## Object model (`object_eval`)
 
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never

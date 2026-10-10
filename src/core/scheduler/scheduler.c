@@ -21,7 +21,7 @@
 #include "shell.h"
 #include "system.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 LOG_USE_CATEGORY_NAME("scheduler");
 
@@ -196,7 +196,7 @@ void scheduler_announce_speed(struct scheduler *s) {
     if (!s)
         return;
     s->speed_reported_x256 = scheduler_effective_speed_x256(s);
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)s->speed_reported_x256);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)s->speed_reported_x256);
 }
 
 // Reset the adaptive governor to the authentic floor with fresh estimators.
@@ -596,14 +596,14 @@ static void run_stop_event(void *source, uint64_t data) {
 
 // Opens a mode: the run belongs to whoever is being served right now.
 static void open_mode(struct scheduler *s, uint64_t instructions) {
-    s->run_owner = gs_current_client();
+    s->run_owner = platform_current_client();
     s->stop_reason = SCHED_STOP_NONE;
     s->mode_seq++;
     s->mode_open = true;
     s->mode_bounded = instructions != 0;
     s->saved.running = true;
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"mode_started\",\"mode\":%u,\"owner\":%u,\"budget\":%llu}",
-                   (unsigned)s->mode_seq, (unsigned)s->run_owner, (unsigned long long)instructions);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"mode_started\",\"mode\":%u,\"owner\":%u,\"budget\":%llu}",
+                (unsigned)s->mode_seq, (unsigned)s->run_owner, (unsigned long long)instructions);
 }
 
 // The main CPU's pc for the mode_ended event, 0 when no debug seam exists.
@@ -617,11 +617,11 @@ static void close_mode_if_stopped(struct scheduler *s) {
     if (!s->mode_open || s->saved.running)
         return;
     s->mode_open = false;
-    gs_event_emitf(GS_EVENT_STATE,
-                   "{\"event\":\"mode_ended\",\"mode\":%u,\"owner\":%u,\"reason\":\"%s\",\"pc\":%u,"
-                   "\"instr_count\":%llu}",
-                   (unsigned)s->mode_seq, (unsigned)s->run_owner, sched_stop_reason_name(s->stop_reason),
-                   (unsigned)mode_pc(), (unsigned long long)cpu_instr_count());
+    event_emitf(GS_EVENT_STATE,
+                "{\"event\":\"mode_ended\",\"mode\":%u,\"owner\":%u,\"reason\":\"%s\",\"pc\":%u,"
+                "\"instr_count\":%llu}",
+                (unsigned)s->mode_seq, (unsigned)s->run_owner, sched_stop_reason_name(s->stop_reason),
+                (unsigned)mode_pc(), (unsigned long long)cpu_instr_count());
 }
 
 // Schedule a stop after `instructions` more instructions of execution.

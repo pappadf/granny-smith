@@ -34,7 +34,7 @@
 #include "shell_var.h"
 #include "system.h"
 #include "vrom.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 #include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
@@ -410,35 +410,35 @@ int gs_quit(void) {
 
 #define HL_MBX_RING (64u << 10)
 
-static gs_mailbox_t g_mbx;
+static mailbox_t g_mbx;
 static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_RING];
-static gs_mailbox_client_t g_cli;
+static mailbox_client_t g_cli;
 static int g_framed = 0; // --framed: @event / @end lines on stdout
 static int g_io_sync = 0; // --io=sync: no I/O worker
 static int g_jobs_inline = 0; // --jobs=inline: no job thread; scripts run on the emulator thread
 static uint32_t g_foreground_job = 0; // the statement in flight (its request id)
 static uint32_t g_foreground_client = 0;
 
-// Core events (gs_event.h): with --framed each one is a line a client can
+// Core events (event.h): with --framed each one is a line a client can
 // parse; otherwise they are silent here (the REPL prints its own state).
-void gs_event_emit(gs_event_kind_t kind, const char *json) {
+void event_emit(event_kind_t kind, const char *json) {
     if (!g_framed)
         return;
     printf("@event %u %s\n", (unsigned)kind, json);
     fflush(stdout);
 }
 
-uint32_t gs_current_client(void) {
-    return gs_mailbox_current_client(&g_mbx);
+uint32_t platform_current_client(void) {
+    return mailbox_current_client(&g_mbx);
 }
 
 static void hl_mailbox_init(void) {
-    if (!gs_mailbox_init(&g_mbx, g_mbx_region, HL_MBX_RING, HL_MBX_RING, gs_eval)) {
+    if (!mailbox_init(&g_mbx, g_mbx_region, HL_MBX_RING, HL_MBX_RING, object_eval)) {
         fprintf(stderr, "headless: mailbox init failed\n");
         exit(1);
     }
-    gs_mailbox_client_init(&g_cli, &g_mbx);
-    gs_mailbox_set_ready(&g_mbx);
+    mailbox_client_init(&g_cli, &g_mbx);
+    mailbox_set_ready(&g_mbx);
 }
 
 // The daemon's pacing (--speed=, scheduler.mode / speed / max_speed): host
@@ -481,7 +481,7 @@ static void hl_inline_frame(void) {
 
 bool hl_pump_once(void) {
     bool did = hl_run_frame();
-    if (gs_mailbox_drain(&g_mbx, 0, NULL) > 0)
+    if (mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
     if (job_layer_has_work())
         did = true;
@@ -580,7 +580,7 @@ static bool hl_take_events(uint32_t id, int *rc) {
     static uint8_t buf[128u << 10];
     uint32_t len, kind;
     bool got = false;
-    while ((kind = gs_mailbox_client_take(&g_cli, buf, sizeof buf, &len)) != 0) {
+    while ((kind = mailbox_client_take(&g_cli, buf, sizeof buf, &len)) != 0) {
         if (kind == GS_MBX_EVT_RESULT) {
             if (id && RD_LE32(buf + 4 * GS_MBX_RESULT_ID) == id) {
                 *rc = RD_LE32(buf + 4 * GS_MBX_RESULT_OK) ? 0 : -1;
@@ -639,7 +639,7 @@ static void hl_honour_sigterm(void) {
 
 // Runs one statement as a job and waits for its result (headless.h).
 int hl_run_statement(uint32_t client, const char *src) {
-    uint32_t id = gs_mailbox_client_script(&g_cli, client, src, strlen(src));
+    uint32_t id = mailbox_client_script(&g_cli, client, src, strlen(src));
     if (!id) {
         printf("error: statement too long for the mailbox\n");
         return -1;

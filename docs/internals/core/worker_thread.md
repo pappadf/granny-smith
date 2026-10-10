@@ -20,7 +20,7 @@ violates this invariant.
 
 The guard turns that invariant into a one-line check: the worker latches
 its `pthread_self()` at startup, and the gateway functions call
-`worker_thread_check()` to verify they are running on it: `gs_eval` (the
+`worker_thread_check()` to verify they are running on it: `object_eval` (the
 object model), `shell_complete` (tab completion), and the AppleTalk entry
 points that touch emulator state, `llap_receive` (an inbound LLAP frame) and
 `afp_handle_command` (an AFP request). A ccall-from-main regression trips a `GS_ASSERTF`
@@ -62,7 +62,7 @@ stubs are macros, so the gateway-name argument is not even evaluated.
 ## 4. Object-model / shell surface
 
 None of its own; it guards the entry points of the object model
-(`gs_eval`), of the shell's completer (`shell_complete`) and of the
+(`object_eval`), of the shell's completer (`shell_complete`) and of the
 AppleTalk stack (`llap_receive`, `afp_handle_command`).
 
 ## 5. Checkpointing
@@ -81,5 +81,5 @@ None known.
 
 ## 8. See also
 
-- `docs/internals/core/object/object-model.md` — `gs_eval`, the main gateway.
+- `docs/internals/core/object/object-model.md` — `object_eval`, the main gateway.
 - `docs/guide/web.md` — the mailbox and the threads of the browser build.

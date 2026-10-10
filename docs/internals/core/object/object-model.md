@@ -44,7 +44,7 @@ the same errors. There is no shadow API.
 | [expr.h](../../../../src/core/object/expr.h) | `${...}` expression parser and evaluator |
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
 | [alias_class.c](../../../../src/core/object/alias_class.c) | The `shell.alias` class (`add`/`remove`/`list`) over that table |
-| [api.h](../../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
+| [api.h](../../../../src/core/object/api.h) | Public C entry point (`object_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../../../../src/core/object/meta.h) | The synthetic `meta` class (`<path>.meta.*` introspection + `meta.complete`) |
 | [usage.h](../../../../src/core/object/usage.h) | Usage text for any path (`help`, `shell.usage`) |
 | [lint.h](../../../../src/core/object/lint.h) | The member-doc lint behind `shell.lint_members` |
@@ -555,7 +555,7 @@ configure, and what the JS frontend operates on:
   `machine.floppy.drive[0].insert(...)`, `machine.scsi.attach_hd(...)`) is the same
   call sequence whether it runs from a script, from the user's
   terminal, or from the URL-media auto-boot path on the web.
-- **JS / WASM bridge.** `gs_eval(path, args_json, out_buf, size)`
+- **JS / WASM bridge.** `object_eval(path, args_json, out_buf, size)`
   resolves the path, parses arguments from JSON, invokes the right
   read / write / call, and serialises the result back to JSON. JS
   reaches it through the mailbox (`src/core/mailbox/mailbox.h`, exposed
@@ -564,7 +564,7 @@ configure, and what the JS frontend operates on:
   the answers come back on, each carrying its request's id.
   `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —
   no polling. The worker-thread guard
-  in `worker_thread.h` enforces that `gs_eval` only runs on the worker
+  in `worker_thread.h` enforces that `object_eval` only runs on the worker
   pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](../../../guide/web.md) for the wire layout
@@ -578,7 +578,7 @@ configure, and what the JS frontend operates on:
   alias and function tables the only shared ones (behind
   `job_tables_lock`). A leaf whose cost is the size of a file — flagged
   `io` (above) — hands its work to the I/O worker through `io_leaf.h` and
-  answers later (`gs_result_defer` / `gs_result_complete`); the worker
+  answers later (`mailbox_result_defer` / `mailbox_result_complete`); the worker
   touches host files only. What a leaf prints goes through `out.h`
   (`out_printf`, never `printf`) to the client whose request it is.
 
@@ -593,7 +593,7 @@ configure, and what the JS frontend operates on:
   test (an `{error}` satisfies it): use `gsOk(r)` for "did it work", `r === true`
   for a VK_BOOL method, and a shape check for a read. `gsErrorText(r)`
   gives the reason. A shell statement such as `machine.cpu.d0 = 1` is
-  **not** a `gs_eval` path — write an attribute by passing the value as
+  **not** an `object_eval` path — write an attribute by passing the value as
   the single argument: `gsEval('machine.cpu.d0', [1])`.
 - **Inspector UI.** The browser inspector panel reads the tree by
   walking `objects()` / `attributes()` / `methods()` and rendering the

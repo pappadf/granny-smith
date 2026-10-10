@@ -59,7 +59,7 @@
 #include "scheduler.h"
 #include "test_assert.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -116,18 +116,18 @@ const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
 }
 
-// The core's events (gs_event.h), captured: the last STATE payload and how
+// The core's events (event.h), captured: the last STATE payload and how
 // many were emitted.  Overrides the weak default.
 static char g_last_event[GS_EVENT_MAX];
 static int g_events;
-static uint32_t g_client = 7; // what gs_current_client answers
-void gs_event_emit(gs_event_kind_t kind, const char *json) {
+static uint32_t g_client = 7; // what platform_current_client answers
+void event_emit(event_kind_t kind, const char *json) {
     if (kind != GS_EVENT_STATE)
         return;
     snprintf(g_last_event, sizeof g_last_event, "%s", json);
     g_events++;
 }
-uint32_t gs_current_client(void) {
+uint32_t platform_current_client(void) {
     return g_client;
 }
 

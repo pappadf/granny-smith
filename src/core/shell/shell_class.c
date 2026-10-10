@@ -4,7 +4,7 @@
 // shell_class.c
 // The `Shell` class on the object root — the last subsystem to enter
 // the object model. After this lands, the JS bridge's free-form-line
-// kind (pending=4) retires; every JS→C call rides on `gs_eval` (kind=1),
+// kind (pending=4) retires; every JS→C call rides on `object_eval` (kind=1),
 // either against typed paths (`cpu.pc`) or against the shell's own
 // methods (`shell.run`, `shell.complete`, `shell.expand`, …).
 //
@@ -29,7 +29,7 @@
 #include "shell.h"
 #include "usage.h"
 #include "value_format.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h" // GS_MBX_RESULT_MAX
 
@@ -110,7 +110,7 @@ static DEF_GETTER(shell_get_vars) {
 // through `Module.print` (or stdout on the headless platform) exactly
 // as before; the return value is the new prompt text, or a VK_ERROR on
 // dispatch failure. Programmatic callers should prefer typed
-// `gs_eval(path, args)` — this method is for the line-input front-end.
+// `object_eval(path, args)` — this method is for the line-input front-end.
 static DEF_METHOD(shell_method_run) {
     if (argc < 1 || argv[0].kind != VK_STRING || !argv[0].s)
         return val_err("shell.run: expected (line)");
@@ -271,7 +271,7 @@ static DEF_METHOD(shell_method_eval) {
 // `shell.interrupt()` — stop the running scheduler and cancel any
 // running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
-// route through `gs_eval` like every other interaction.
+// route through `object_eval` like every other interaction.
 //
 // Scope: what it stops is the scheduler and script loops (the caller's
 // job and modes when a client asks).  A single long-running native method
@@ -282,7 +282,7 @@ static DEF_METHOD(shell_method_interrupt) {
     // "Cancel my job, or stop my mode": the client being served owns what
     // it interrupts and nothing else.  Outside a request (client 0: the
     // headless REPL's own line) it is the old unconditional stop.
-    uint32_t client = gs_current_client();
+    uint32_t client = platform_current_client();
     if (client == 0) {
         scheduler_t *s = system_scheduler();
         if (s)

@@ -85,7 +85,7 @@ call, a post-load `run` that did not advance the emulator, and "browser
 closed" crashes; `pthread_self()` probed inside `shell_poll` and inside
 `em_gs_eval` showed two different threads.
 
-Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
+Every JS→C request is a `REQ_EVAL` record (`object_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
 completion ride on the `Shell` class's `run` / `complete` methods. The
 worker's `shell_poll()` (called every tick, and from the idle wait on a
@@ -198,7 +198,7 @@ These callbacks are for one thing only: a platform transport handing the
 page a handle or a buffer (screen geometry, a ring's control block, a
 worklet URL). Anything the core has to *say* — run state, a media change,
 a log line, progress, a download's chunk — is an event on the mailbox's
-event ring (`gs_event_emit`, "Events from the core" below), not a new
+event ring (`event_emit`, "Events from the core" below), not a new
 `Module.on*` callback: an event never blocks the emulator thread, is
 ordered with the results, and reaches headless clients the same way.
 
@@ -266,7 +266,7 @@ fills, whose `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
 
-The core also speaks first. `gs_event_emit` (`src/core/event/gs_event.h`)
+The core also speaks first. `event_emit` (`src/core/event/event.h`)
 takes a kind and a small JSON object and, in the browser, writes it as an
 `EVT_STATE` / `EVT_NOTIFY` / `EVT_LOG` record on the event ring at once,
 waking the page — from a leaf, from the tick, from anywhere on the emulator
@@ -357,11 +357,11 @@ machine — `files.cp`, `files.import`, `files.export_raw`,
 the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
 at boot. `meta.method_info` reports such a method with `io: true`
 (`MM_IO`). The leaf takes its request off the drain's answer path
-(`gs_result_defer`) and returns at once; the worker does the work in
+(`mailbox_result_defer`) and returns at once; the worker does the work in
 1 MB chunks (`GS_IO_CHUNK_KB`), yielding between them and reporting
 progress (`io_progress` → `EVT_PROGRESS {id, done, total}`; `gsEvalWithProgress`
 on the page); the completion, reported at a later drain, writes the
-request's `EVT_RESULT` (`gs_result_complete`), so the page's promise
+request's `EVT_RESULT` (`mailbox_result_complete`), so the page's promise
 settles when the file is done and the emulator thread served frames
 throughout. A script's call is held the same way and a failure is the
 call's error. `REQ_CANCEL` of the request — or of the script whose call it

@@ -21,7 +21,7 @@ Both go through the same statement parser and interpreter
 (`script.c`). Every client reaches it the same way: a free-form line or a
 whole source is posted to the mailbox as a **script job** (`REQ_SCRIPT`,
 see "Scripts" below) and runs on the job thread; typed
-object-model calls (`gs_eval('machine.cpu.pc')`) stay on their typed
+object-model calls (`object_eval('machine.cpu.pc')`) stay on their typed
 paths. The `Shell` class on the object root keeps `shell.run` and
 `shell.eval(text)` as leaves for a caller that wants a line run inline on
 the emulator thread (the unit suites, a script running another script),
@@ -272,7 +272,7 @@ output cut, or as the full text of a record shortened to fit (which says
 `"truncated":true`).  Headless without `--framed` prints an error record's
 lines to stderr, so its streams read as before; a consumer that wants only
 text ignores the other annotations.  Every record, text included, is bounded by a quarter of the
-event ring (`gs_mailbox_record_max`), measured on the escaped text.
+event ring (`mailbox_record_max`), measured on the escaped text.
 
 ## Scripts
 

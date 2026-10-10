@@ -18,7 +18,7 @@
 // === Dispatch ===
 //
 // There is no C entry point for a free-form line: every caller goes
-// through the object model -- `gs_eval("shell.run", [line])`, a script
+// through the object model -- `object_eval("shell.run", [line])`, a script
 // job, or the typed path form -- and the Shell class hands the line to
 // the v2 script interpreter (script.h).
 

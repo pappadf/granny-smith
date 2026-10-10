@@ -9,7 +9,7 @@
 #include "floppy.h"
 #include "floppy_internal.h"
 #include "log.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 static void floppy_notify_present(int drive, bool present);
 #include "checkpoint.h"
@@ -693,8 +693,8 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
 // A drive's disk came or went: the page clears or sets its badge on this
 // (it used to poll the drives every tick).
 static void floppy_notify_present(int drive, bool present) {
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"floppy\",\"drive\":%d,\"present\":%s}", drive,
-                   present ? "true" : "false");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"floppy\",\"drive\":%d,\"present\":%s}", drive,
+                present ? "true" : "false");
 }
 
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {

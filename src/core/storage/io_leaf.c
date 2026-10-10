@@ -45,18 +45,18 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
 
 // The success value as the JSON the answer carries: a string, a number, a
 // boolean, a map or a list; anything else is `true`.  A map or a list is
-// formatted as gs_eval formats one, and is held to the same result limit.
+// formatted as object_eval formats one, and is held to the same result limit.
 static void complete_with(uint32_t token, value_t *v) {
     if (v->kind == VK_MAP || v->kind == VK_LIST) {
         vbuf_t b = {0};
         value_format(v, VFMT_JSON_TAGGED, &b);
         if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
-            gs_result_complete(token, true, b.p);
+            mailbox_result_complete(token, true, b.p);
         else {
             char err[128];
             snprintf(err, sizeof err, "result is %zu bytes, over the %u-byte result limit", b.len,
                      (unsigned)GS_MBX_RESULT_MAX);
-            gs_result_complete_error(token, err);
+            mailbox_result_complete_error(token, err);
         }
         vbuf_free(&b);
         return;
@@ -79,7 +79,7 @@ static void complete_with(uint32_t token, value_t *v) {
     } else {
         snprintf(json, sizeof json, "true");
     }
-    gs_result_complete(token, true, json);
+    mailbox_result_complete(token, true, json);
 }
 
 static void io_leaf_done(bool ok, double ms, const char *error, void *ud) {
@@ -90,7 +90,7 @@ static void io_leaf_done(bool ok, double ms, const char *error, void *ud) {
         complete_with(j->token, &v);
         value_free(&v);
     } else {
-        gs_result_complete_error(j->token, error ? error : j->err);
+        mailbox_result_complete_error(j->token, error ? error : j->err);
     }
     io_leaf_free(j);
 }
@@ -98,11 +98,11 @@ static void io_leaf_done(bool ok, double ms, const char *error, void *ud) {
 static void io_leaf_progress(uint64_t done, uint64_t total, void *ud) {
     io_leaf_t *j = (io_leaf_t *)ud;
     if (j->token)
-        gs_result_progress(j->token, done, total);
+        mailbox_result_progress(j->token, done, total);
 }
 
 value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
-    j->token = gs_result_defer();
+    j->token = mailbox_result_defer();
     io_job_desc_t d = {
         .work = io_leaf_run,
         .work_ud = j,
@@ -117,7 +117,7 @@ value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
         value_t provisional = j->answer ? j->answer(j) : val_bool(true);
         j->io_id = io_submit_job(&d);
         if (j->io_id) {
-            gs_result_bind_io(j->token, j->io_id);
+            mailbox_result_bind_io(j->token, j->io_id);
             return provisional;
         }
         // Deferred but no worker: work now and answer the deferral at once.

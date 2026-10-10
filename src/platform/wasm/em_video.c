@@ -32,7 +32,7 @@
 #include "display.h"
 #include "log.h"
 #include "system.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 // The renderer is part of the display path, so it shares its category:
 // `log.set("video", N)` turns on the producers AND the consumer.
@@ -519,8 +519,8 @@ static void resize_canvas(uint32_t width, uint32_t height) {
 // raster is 2:3).  Sent where a shape change is consumed and once when a
 // machine is attached; the page holds the only copy.
 static void announce_geometry(const display_t *d) {
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"screen\",\"width\":%u,\"height\":%u,\"par_w\":%u,\"par_h\":%u}",
-                   d->width, d->height, d->par_w ? d->par_w : 1u, d->par_h ? d->par_h : 1u);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"screen\",\"width\":%u,\"height\":%u,\"par_w\":%u,\"par_h\":%u}", d->width,
+                d->height, d->par_w ? d->par_w : 1u, d->par_h ? d->par_h : 1u);
 }
 
 // ============================================================================

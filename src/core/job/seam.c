@@ -18,7 +18,7 @@ static pthread_once_t g_tables_once = PTHREAD_ONCE_INIT;
 static job_post_fn g_post; // set by job.c when the job thread exists
 
 // Per thread: the job it runs (job.c sets these on the job thread).
-static _Thread_local gs_job_t *t_job;
+static _Thread_local job_t *t_job;
 static _Thread_local uint32_t t_client;
 static _Thread_local const bool *t_cancel;
 
@@ -35,13 +35,13 @@ void job_seam_set_poster(job_post_fn post) {
     g_post = post;
 }
 
-void job_seam_set_current(gs_job_t *job, uint32_t client, const bool *cancel) {
+void job_seam_set_current(job_t *job, uint32_t client, const bool *cancel) {
     t_job = job;
     t_client = client;
     t_cancel = cancel;
 }
 
-gs_job_t *job_current(void) {
+job_t *job_current(void) {
     return t_job;
 }
 

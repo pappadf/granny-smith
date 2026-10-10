@@ -247,7 +247,7 @@ export class Mailbox {
     this.onLost?.(reason);
   }
 
-  // Posts one gs_eval request and resolves with its answer.  `deadlineMs`
+  // Posts one object_eval request and resolves with its answer.  `deadlineMs`
   // 0 means none; otherwise the promise rejects with 'deadline' after that
   // much wall time and the late answer, if it ever comes, is dropped.
   // Rejects with 'lost' / 'detached' when the mailbox is gone.  `client`

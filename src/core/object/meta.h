@@ -4,7 +4,7 @@
 // meta.h
 // The `meta` class. Every node carries an implicit `meta` attribute
 // whose value is a synthetic introspection node — itself an ordinary
-// object-model node. Schema queries become regular `gs_eval` calls:
+// object-model node. Schema queries become regular `object_eval` calls:
 //
 //     machine.cpu.meta.class       -> "cpu"
 //     machine.cpu.meta.path        -> "machine.cpu"

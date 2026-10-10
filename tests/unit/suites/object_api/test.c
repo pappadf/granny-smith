@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for gs_eval — the one JS → C entry point the browser frontend
+// Unit tests for object_eval — the one JS → C entry point the browser frontend
 // reaches the object model through.  Nothing else exercises the path strings
 // and argument documents the frontend actually sends, so a frontend that
 // sends a path the core never resolves (a shell statement, a count on the
@@ -127,14 +127,14 @@ static char out[4096];
 
 // === Tests ================================================================
 
-// A shell assignment is not a gs_eval path: `object_resolve` stops at the
+// A shell assignment is not an object_eval path: `object_resolve` stops at the
 // space, so the whole string is refused.  web2's register editor sent exactly
 // this and, not checking for `{error}`, reported every edit as a success.
 TEST(test_shell_assignment_is_not_a_path) {
     struct object *a, *b;
     fixture_up(&a, &b);
     g_pc = 0x1111;
-    ASSERT_EQ_INT(-1, gs_eval("a.pc = 0x2222", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(-1, object_eval("a.pc = 0x2222", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "\"error\"") != NULL);
     ASSERT_TRUE(strstr(out, "did not resolve") != NULL);
     ASSERT_EQ_INT(0x1111, (int)g_pc); // nothing was written
@@ -146,9 +146,9 @@ TEST(test_typed_setter_writes) {
     struct object *a, *b;
     fixture_up(&a, &b);
     g_pc = 0;
-    ASSERT_EQ_INT(0, gs_eval("a.pc", "[8738]", out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", "[8738]", out, sizeof(out)));
     ASSERT_EQ_INT(0x2222, (int)g_pc);
-    ASSERT_EQ_INT(0, gs_eval("a.pc", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "8738") != NULL);
     fixture_down(a, b);
 }
@@ -161,13 +161,13 @@ TEST(test_result_limit_is_exact_and_explicit) {
     fixture_up(&a, &b);
     g_pc = 0x2222; // "8738": four bytes
     char small[5];
-    ASSERT_EQ_INT(0, gs_eval("a.pc", NULL, small, sizeof(small)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", NULL, small, sizeof(small)));
     ASSERT_TRUE(strcmp(small, "8738") == 0);
-    ASSERT_EQ_INT(-1, gs_eval("a.pc", NULL, small, sizeof(small) - 1));
+    ASSERT_EQ_INT(-1, object_eval("a.pc", NULL, small, sizeof(small) - 1));
     g_pc = 100000; // "100000": six bytes
-    ASSERT_EQ_INT(-1, gs_eval("a.pc", NULL, out, 6));
+    ASSERT_EQ_INT(-1, object_eval("a.pc", NULL, out, 6));
     char big[256];
-    ASSERT_EQ_INT(0, gs_eval("a.pc", NULL, big, sizeof(big)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", NULL, big, sizeof(big)));
     ASSERT_TRUE(strcmp(big, "100000") == 0);
     fixture_down(a, b);
 }
@@ -178,9 +178,9 @@ TEST(test_result_limit_is_exact_and_explicit) {
 TEST(test_count_is_on_the_owner) {
     struct object *a, *b;
     fixture_up(&a, &b);
-    ASSERT_EQ_INT(-1, gs_eval("bucket.devices.count", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(-1, object_eval("bucket.devices.count", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "did not resolve") != NULL);
-    ASSERT_EQ_INT(0, gs_eval("bucket.count", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("bucket.count", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "2") != NULL);
     fixture_down(a, b);
 }
@@ -193,12 +193,12 @@ TEST(test_enumerate_with_meta_indices) {
     fixture_up(&a, &b);
     object_delete(g_bucket.slot[0]);
     g_bucket.slot[0] = NULL;
-    ASSERT_EQ_INT(0, gs_eval("bucket.count", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("bucket.count", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "1") != NULL);
-    ASSERT_EQ_INT(-1, gs_eval("bucket.devices[0].id", NULL, out, sizeof(out)));
-    ASSERT_EQ_INT(0, gs_eval("bucket.meta.indices", "[\"devices\"]", out, sizeof(out)));
+    ASSERT_EQ_INT(-1, object_eval("bucket.devices[0].id", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("bucket.meta.indices", "[\"devices\"]", out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "[1]") != NULL);
-    ASSERT_EQ_INT(0, gs_eval("bucket.devices[1].id", NULL, out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("bucket.devices[1].id", NULL, out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "11") != NULL);
     fixture_down(a, b);
 }
@@ -222,7 +222,7 @@ TEST(test_truncated_args_are_refused) {
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         g_pc = 0;
-        ASSERT_EQ_INT(-1, gs_eval("a.pc", bad[i], out, sizeof(out)));
+        ASSERT_EQ_INT(-1, object_eval("a.pc", bad[i], out, sizeof(out)));
         ASSERT_TRUE(strstr(out, "args_json") != NULL);
         ASSERT_EQ_INT(0, (int)g_pc); // nothing was written
     }
@@ -233,10 +233,10 @@ TEST(test_truncated_args_are_refused) {
 TEST(test_wellformed_args_still_parse) {
     struct object *a, *b;
     fixture_up(&a, &b);
-    ASSERT_EQ_INT(0, gs_eval("a.pc", " [ 8738 ] ", out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", " [ 8738 ] ", out, sizeof(out)));
     ASSERT_EQ_INT(0x2222, (int)g_pc);
-    ASSERT_EQ_INT(0, gs_eval("bucket.meta.indices", "[\"devices\"]\n", out, sizeof(out)));
-    ASSERT_EQ_INT(0, gs_eval("a.pc", "[]", out, sizeof(out))); // no args: a read
+    ASSERT_EQ_INT(0, object_eval("bucket.meta.indices", "[\"devices\"]\n", out, sizeof(out)));
+    ASSERT_EQ_INT(0, object_eval("a.pc", "[]", out, sizeof(out))); // no args: a read
     fixture_down(a, b);
 }
 
@@ -248,7 +248,7 @@ TEST(test_out_of_range_args_are_refused) {
     const char *bad[] = {"[99999999999999999999]", "[1e999]", "[\"abc\\"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         g_pc = 0;
-        ASSERT_EQ_INT(-1, gs_eval("a.pc", bad[i], out, sizeof(out)));
+        ASSERT_EQ_INT(-1, object_eval("a.pc", bad[i], out, sizeof(out)));
         ASSERT_EQ_INT(0, (int)g_pc);
     }
     fixture_down(a, b);

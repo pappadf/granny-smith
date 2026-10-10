@@ -25,7 +25,7 @@ export interface BridgeCall {
 // A canned reply: a fixed value, or a function of the request.
 type Reply = unknown | ((args: unknown[] | undefined) => unknown);
 
-// The core's answer to a path nobody taught the mock: what gs_eval really says.
+// The core's answer to a path nobody taught the mock: what object_eval really says.
 function unresolved(path: string): { error: string } {
   return { error: `path '${path}' did not resolve` };
 }

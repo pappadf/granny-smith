@@ -363,7 +363,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
     case VK_RANGE: {
         // api.c's encoder handled neither VK_REF nor VK_RANGE and had no
         // default, so either emitted NOTHING -- a malformed document rather
-        // than a wrong one.  Latent today (gs_eval takes a path, and ranges
+        // than a wrong one.  Latent today (object_eval takes a path, and ranges
         // come only from expression evaluation), but it is the shape that
         // makes an eighth kind break the bridge silently.
         vbuf_t inner = {0};

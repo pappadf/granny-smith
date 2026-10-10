@@ -3,9 +3,9 @@
 
 // Unit tests for the mailbox (mailbox.c): a client writes REQ_EVAL records
 // into the request ring and reads EVT_RESULT records from the event ring,
-// in the same process, while gs_mailbox_drain serves them through a stub
+// in the same process, while mailbox_drain serves them through a stub
 // evaluator that echoes what it was asked (or, for the result limit,
-// through gs_eval itself).  The rings are 4 KB (the suite Makefile
+// through object_eval itself).  The rings are 4 KB (the suite Makefile
 // overrides the sizes) so wraps and a held-back result are cheap to force.
 
 #include "common.h"
@@ -28,7 +28,7 @@
 #include <unistd.h>
 
 static uint8_t *g_region;
-static gs_mailbox_t g_m;
+static mailbox_t g_m;
 static volatile uint32_t *g_ctrl;
 static mbx_ring_t g_req, g_evt; // the client's views
 static int g_notified;
@@ -36,7 +36,7 @@ static int g_evals;
 static char g_last_path[256];
 static char g_last_args[256];
 
-void gs_mailbox_notify(volatile uint32_t *word) {
+void mailbox_notify(volatile uint32_t *word) {
     (void)word;
     g_notified++;
 }
@@ -67,10 +67,10 @@ static int stub_eval(const char *path, const char *args, char *out, size_t out_s
 static void fresh(void) {
     job_layer_init(); // this thread plays the emulator thread
     free(g_region);
-    size_t bytes = gs_mailbox_region_bytes(GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES);
+    size_t bytes = mailbox_region_bytes(GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES);
     g_region = (uint8_t *)malloc(bytes);
-    gs_mailbox_free(&g_m);
-    g_ctrl = gs_mailbox_init(&g_m, g_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, stub_eval);
+    mailbox_free(&g_m);
+    g_ctrl = mailbox_init(&g_m, g_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, stub_eval);
     ASSERT_TRUE(g_ctrl != NULL);
     uint8_t *base = (uint8_t *)g_ctrl;
     mbx_ring_init(&g_req, g_ctrl, GS_MBX_C_REQ_HEAD, GS_MBX_C_REQ_TAIL, base + g_ctrl[GS_MBX_C_REQ_OFF],
@@ -183,8 +183,8 @@ static uint32_t take_any(uint8_t *buf, size_t cap, uint32_t *len) {
 // mode_ended before its own result is written.
 static uint32_t g_client_seen;
 static int emitting_eval(const char *path, const char *args, char *out, size_t out_size) {
-    g_client_seen = gs_mailbox_current_client(&g_m);
-    gs_mailbox_emit(&g_m, GS_MBX_EVT_STATE, "{\"event\":\"mode_ended\"}");
+    g_client_seen = mailbox_current_client(&g_m);
+    mailbox_emit(&g_m, GS_MBX_EVT_STATE, "{\"event\":\"mode_ended\"}");
     return stub_eval(path, args, out, out_size);
 }
 
@@ -270,7 +270,7 @@ static uint32_t g_defer_token;
 static int deferring_eval(const char *path, const char *args, char *out, size_t out_size) {
     (void)args;
     if (strncmp(path, "defer", 5) == 0) {
-        g_defer_token = gs_result_defer();
+        g_defer_token = mailbox_result_defer();
         snprintf(out, out_size, "true");
         return 0;
     }
@@ -293,20 +293,20 @@ TEST(the_control_block_is_laid_out_and_versioned) {
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STATUS], GS_MBX_STATUS_ATTACHED);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_READY], 0);
     ASSERT_TRUE(((uintptr_t)g_ctrl & 63u) == 0);
-    gs_mailbox_set_ready(&g_m);
+    mailbox_set_ready(&g_m);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_READY], 1);
     ASSERT_EQ_INT(g_notified, 1);
-    gs_mailbox_heartbeat(&g_m);
-    gs_mailbox_heartbeat(&g_m);
+    mailbox_heartbeat(&g_m);
+    mailbox_heartbeat(&g_m);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_HEARTBEAT], 2);
 }
 
 TEST(a_request_is_served_and_its_id_comes_back) {
     fresh();
-    ASSERT_TRUE(!gs_mailbox_has_requests(&g_m));
+    ASSERT_TRUE(!mailbox_has_requests(&g_m));
     ASSERT_TRUE(post(17, "machine.cpu.pc", NULL));
-    ASSERT_TRUE(gs_mailbox_has_requests(&g_m));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_TRUE(mailbox_has_requests(&g_m));
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(g_evals, 1);
     ASSERT_TRUE(strcmp(g_last_path, "machine.cpu.pc") == 0);
     ASSERT_TRUE(strcmp(g_last_args, "(none)") == 0);
@@ -326,7 +326,7 @@ TEST(arguments_travel_and_failure_is_ok_zero) {
     fresh();
     ASSERT_TRUE(post(1, "files.list_dir", "[\"/opfs\"]"));
     ASSERT_TRUE(post(2, "fail.this", "{\"k\":1}"));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     uint32_t id, ok;
     char json[512];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
@@ -358,7 +358,7 @@ TEST(many_requests_are_served_in_one_drain_in_order) {
     int served = 0;
     int drains = 0;
     while (served < posted) {
-        int n = gs_mailbox_drain(&g_m, 0, NULL);
+        int n = mailbox_drain(&g_m, 0, NULL);
         ASSERT_TRUE(n > 0);
         drains++;
         for (int k = 0; k < n; k++) {
@@ -382,10 +382,10 @@ TEST(the_budget_ends_a_drain_between_leaves_not_inside_one) {
         ASSERT_TRUE(post(i, "p", NULL));
     // fake_now_us advances 100 us per call; the drain calls it once at the
     // start and once after each leaf: a 250 us budget serves three.
-    int n = gs_mailbox_drain(&g_m, 250.0, fake_now_us);
+    int n = mailbox_drain(&g_m, 250.0, fake_now_us);
     ASSERT_EQ_INT(n, 3);
-    ASSERT_TRUE(gs_mailbox_has_requests(&g_m));
-    n = gs_mailbox_drain(&g_m, 0, NULL); // no budget: the rest
+    ASSERT_TRUE(mailbox_has_requests(&g_m));
+    n = mailbox_drain(&g_m, 0, NULL); // no budget: the rest
     ASSERT_EQ_INT(n, 7);
     ASSERT_TRUE(g_ctrl[GS_MBX_C_STAT_DRAIN_US] > 0);
 }
@@ -397,12 +397,12 @@ TEST(a_result_with_no_room_is_held_and_delivered_when_the_client_reads) {
     ASSERT_TRUE(post(2, "big:1800", NULL));
     ASSERT_TRUE(post(3, "big:1800", NULL));
     ASSERT_TRUE(post(4, "small", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     ASSERT_TRUE(g_m.held);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_STALLS], 1);
     ASSERT_EQ_INT(g_evals, 3); // the third leaf ran; only its delivery waits
     // Nothing more is served until the held answer goes out.
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     ASSERT_EQ_INT(g_evals, 3);
     // The client reads one answer (1,824 bytes freed).  The held answer
     // needs a 448-byte PAD to the ring's end plus 1,824 at the start: it
@@ -412,13 +412,13 @@ TEST(a_result_with_no_room_is_held_and_delivered_when_the_client_reads) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 1);
     ASSERT_EQ_INT((int)strlen(json), 1800);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_TRUE(g_m.held);
     ASSERT_EQ_INT(g_evals, 4);
     // Reading the second frees room for the fourth.
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 2);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_TRUE(!g_m.held);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 3);
@@ -444,7 +444,7 @@ TEST(a_malformed_request_is_answered_not_dropped) {
     at = mbx_reserve(&g_req, 9u, MBX_HDR_BYTES + 4);
     WR_LE32(mbx_payload(&g_req, at), 10);
     mbx_publish(&g_req);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     ASSERT_EQ_INT(g_evals, 0);
     uint32_t id, ok;
     char json[512];
@@ -463,12 +463,12 @@ TEST(corrupt_framing_marks_the_mailbox_lost) {
     ASSERT_TRUE(post(1, "p", NULL));
     // Break the record's len.
     WR_LE32(g_req.buf + 4, 12);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STATUS], GS_MBX_STATUS_LOST);
     ASSERT_TRUE(g_notified >= 1);
     // Lost is for good: a later good request is not served.
     ASSERT_TRUE(post(2, "p", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     ASSERT_EQ_INT(g_evals, 0);
 }
 
@@ -483,7 +483,7 @@ TEST(both_rings_wrap_across_thousands_of_round_trips) {
         char args[48];
         snprintf(args, sizeof args, "[%u,\"%s\"]", next, (next & 1) ? "odd" : "even");
         ASSERT_TRUE(post(next, path, args));
-        ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+        ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
         ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
         ASSERT_EQ_INT(id, next);
         char want[160];
@@ -497,9 +497,9 @@ TEST(both_rings_wrap_across_thousands_of_round_trips) {
 
 TEST(an_event_is_published_at_once_and_ordered_before_the_result) {
     fresh();
-    ASSERT_EQ_INT(gs_mailbox_current_client(&g_m), 0);
+    ASSERT_EQ_INT(mailbox_current_client(&g_m), 0);
     // Emitted from the tick (no request in flight): visible without a drain.
-    ASSERT_TRUE(gs_mailbox_emit(&g_m, GS_MBX_EVT_NOTIFY, "{\"event\":\"floppy\"}"));
+    ASSERT_TRUE(mailbox_emit(&g_m, GS_MBX_EVT_NOTIFY, "{\"event\":\"floppy\"}"));
     ASSERT_EQ_INT(g_notified, 1);
     uint8_t buf[256];
     uint32_t len;
@@ -510,9 +510,9 @@ TEST(an_event_is_published_at_once_and_ordered_before_the_result) {
     // leaf saw the requesting client.
     g_m.eval = emitting_eval;
     ASSERT_TRUE(post(5, "debug.step", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(g_client_seen, 1);
-    ASSERT_EQ_INT(gs_mailbox_current_client(&g_m), 0);
+    ASSERT_EQ_INT(mailbox_current_client(&g_m), 0);
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_STATE);
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), 5);
@@ -526,7 +526,7 @@ TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
     memset(big, 'e', sizeof big - 1);
     big[sizeof big - 1] = '\0';
     int written = 0;
-    while (gs_mailbox_emit(&g_m, GS_MBX_EVT_LOG, big))
+    while (mailbox_emit(&g_m, GS_MBX_EVT_LOG, big))
         written++;
     ASSERT_TRUE(written >= 1);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_DROPPED], 1);
@@ -535,7 +535,7 @@ TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
     uint8_t buf[8];
     uint32_t len;
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_LOG);
-    ASSERT_TRUE(gs_mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
+    ASSERT_TRUE(mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
 }
 
 TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
@@ -544,7 +544,7 @@ TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
     g_scripts = 0;
     ASSERT_TRUE(post_script(21, "echo hi"));
     ASSERT_TRUE(post_script(22, "fail me"));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     ASSERT_EQ_INT(g_scripts, 2);
     ASSERT_TRUE(strcmp(g_last_script, "fail me") == 0);
     uint32_t id, ok;
@@ -569,7 +569,7 @@ TEST(cancel_and_mode_stop_are_answered_and_stop_only_the_owner) {
     post_ctl(GS_MBX_REQ_MODE_STOP, 32, 1, 2);
     // Cancelling a job that does not exist answers false.
     post_ctl(GS_MBX_REQ_CANCEL, 33, 2, 99);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 3);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 3);
     uint32_t id, ok;
     char json[64];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
@@ -590,10 +590,10 @@ TEST(cancel_and_mode_stop_are_answered_and_stop_only_the_owner) {
 static int g_calls_served;
 static void seam_probe(void *ud) {
     g_calls_served++;
-    *(uint32_t *)ud = gs_mailbox_current_client(&g_m);
+    *(uint32_t *)ud = mailbox_current_client(&g_m);
     // "scheduler.run": the leaf opens a mode owned by the caller.
     g_mode_id++;
-    g_mode_owner = gs_mailbox_current_client(&g_m);
+    g_mode_owner = mailbox_current_client(&g_m);
 }
 static volatile int g_job_phase;
 int job_glue_run_source_threaded(const char *src) {
@@ -616,24 +616,24 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     // The glue runs scripts inline in the other tests; here the job thread
     // runs one that posts a call.  Swap the runner by script text.
     ASSERT_TRUE(post_script(41, "threaded"));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0); // queued, no answer yet
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // queued, no answer yet
     // Wait for the job thread to post its call, then serve it.
     for (int i = 0; i < 20000 && !job_layer_has_work(); i++)
         usleep(100);
     ASSERT_TRUE(job_layer_has_work());
-    gs_mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
     ASSERT_EQ_INT(g_calls_served, 1);
     ASSERT_EQ_INT(g_mode_owner, 2);
     // The mode runs: the job stays held, no result.
     usleep(2000);
-    gs_mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
     ASSERT_EQ_INT(g_job_phase, 1);
     // The mode ends: the next drain releases the job, which finishes.
     g_mode_owner = 0;
     uint32_t id = 0, ok = 0;
     char json[256];
     for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
-        gs_mailbox_drain(&g_m, 0, NULL);
+        mailbox_drain(&g_m, 0, NULL);
         usleep(100);
     }
     ASSERT_EQ_INT(id, 41);
@@ -644,9 +644,9 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     g_stops = 0;
     ASSERT_TRUE(post_script(42, "threaded"));
     post_ctl(GS_MBX_REQ_CANCEL, 43, 2, 42);
-    gs_mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
     for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
-        gs_mailbox_drain(&g_m, 0, NULL);
+        mailbox_drain(&g_m, 0, NULL);
         usleep(100);
     }
     // The cancel's own answer and the job's come back; order depends on
@@ -654,7 +654,7 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     uint32_t id2 = 0, ok2 = 0;
     char json2[256];
     for (int i = 0; i < 20000 && take(&id2, &ok2, json2, sizeof json2) == 0; i++) {
-        gs_mailbox_drain(&g_m, 0, NULL);
+        mailbox_drain(&g_m, 0, NULL);
         usleep(100);
     }
     const char *job_json = id == 42 ? json : json2;
@@ -668,25 +668,25 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
 
 TEST(the_in_process_client_posts_and_reads_like_the_page) {
     fresh();
-    gs_mailbox_client_t c;
-    gs_mailbox_client_init(&c, &g_m);
-    uint32_t id1 = gs_mailbox_client_script(&c, 3, "echo one", 8);
-    uint32_t id2 = gs_mailbox_client_mode_stop(&c, 3, 0);
-    uint32_t id3 = gs_mailbox_client_cancel(&c, 3, id1);
+    mailbox_client_t c;
+    mailbox_client_init(&c, &g_m);
+    uint32_t id1 = mailbox_client_script(&c, 3, "echo one", 8);
+    uint32_t id2 = mailbox_client_mode_stop(&c, 3, 0);
+    uint32_t id3 = mailbox_client_cancel(&c, 3, id1);
     ASSERT_TRUE(id1 && id2 && id3 && id1 != id2 && id2 != id3);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 3); // inline: all answered now
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 3); // inline: all answered now
     uint8_t buf[256];
     uint32_t len;
-    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id1);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_OK), 1);
-    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id2);
-    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
     ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id3);
-    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), 0);
+    ASSERT_EQ_INT(mailbox_client_take(&c, buf, sizeof buf, &len), 0);
     // Too large a source is refused before the ring.
-    ASSERT_EQ_INT(gs_mailbox_client_script(&c, 3, "x", GS_MBX_SCRIPT_MAX + 1), 0);
+    ASSERT_EQ_INT(mailbox_client_script(&c, 3, "x", GS_MBX_SCRIPT_MAX + 1), 0);
 }
 
 TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
@@ -697,7 +697,7 @@ TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
     ASSERT_TRUE(post(52, "plain", NULL));
     // The drain served both; only the plain one has an answer now, and the
     // request ring is consumed for both.
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_TRUE(g_defer_token != 0);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_REQ_TAIL], g_ctrl[GS_MBX_C_REQ_HEAD]);
     uint32_t id, ok;
@@ -707,16 +707,16 @@ TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
     // Completion writes the deferred answer, published at once.
     g_notified = 0;
-    gs_result_complete_error(g_defer_token, "disk \"full\"");
+    mailbox_result_complete_error(g_defer_token, "disk \"full\"");
     ASSERT_EQ_INT(g_notified, 1);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 51);
     ASSERT_EQ_INT(ok, 0);
     ASSERT_TRUE(strcmp(json, "{\"error\":\"disk \\\"full\\\"\"}") == 0);
     // Outside any request there is nothing to defer.
-    ASSERT_EQ_INT(gs_result_defer(), 0);
+    ASSERT_EQ_INT(mailbox_result_defer(), 0);
     // An unknown token is ignored.
-    gs_result_complete_ok(12345);
+    mailbox_result_complete_ok(12345);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
 }
 
@@ -735,10 +735,10 @@ TEST(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error) {
     // of it.
     g_defer_token = 0;
     ASSERT_TRUE(post(61, "defer", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     memset(big, 'x', GS_MBX_RESULT_MAX - 1);
     big[GS_MBX_RESULT_MAX - 1] = '\0';
-    gs_result_complete(g_defer_token, true, big);
+    mailbox_result_complete(g_defer_token, true, big);
     ASSERT_TRUE(g_m.held);
     ASSERT_EQ_INT(g_m.out_len, GS_MBX_RESULT_MAX - 1);
     ASSERT_EQ_INT(g_m.out_ok, 1);
@@ -749,10 +749,10 @@ TEST(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error) {
     g_m.eval = deferring_eval;
     g_defer_token = 0;
     ASSERT_TRUE(post(62, "defer", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     memset(big, 'x', GS_MBX_RESULT_MAX);
     big[GS_MBX_RESULT_MAX] = '\0';
-    gs_result_complete(g_defer_token, true, big);
+    mailbox_result_complete(g_defer_token, true, big);
     ASSERT_TRUE(!g_m.held);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 62);
@@ -775,9 +775,9 @@ static int printing_eval(const char *path, const char *args, char *out, size_t o
 TEST(what_a_leaf_prints_travels_with_its_answer_when_captured) {
     fresh();
     g_m.eval = printing_eval;
-    gs_mailbox_set_capture_output(&g_m, true);
+    mailbox_set_capture_output(&g_m, true);
     ASSERT_TRUE(post(61, "p", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     uint32_t id, ok;
     char json[128], out[128];
     ASSERT_EQ_INT(take_out(&id, &ok, json, sizeof json, out, sizeof out), 1);
@@ -785,9 +785,9 @@ TEST(what_a_leaf_prints_travels_with_its_answer_when_captured) {
     ASSERT_TRUE(strcmp(out, "hello p\nsecond line\n") == 0);
     ASSERT_TRUE(strstr(json, "\"path\":\"p\"") != NULL);
     // Not captured: the answer carries no output (the text went to fd 1).
-    gs_mailbox_set_capture_output(&g_m, false);
+    mailbox_set_capture_output(&g_m, false);
     ASSERT_TRUE(post(62, "q", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(take_out(&id, &ok, json, sizeof json, out, sizeof out), 1);
     ASSERT_EQ_INT(id, 62);
     ASSERT_TRUE(out[0] == '\0');
@@ -798,37 +798,37 @@ TEST(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress) {
     g_m.eval = deferring_eval;
     g_defer_token = 0;
     ASSERT_TRUE(post(71, "defer", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0);
     ASSERT_TRUE(g_defer_token != 0);
-    ASSERT_EQ_INT(gs_result_request_id(g_defer_token), 71);
-    gs_result_progress(g_defer_token, 5, 10);
+    ASSERT_EQ_INT(mailbox_result_request_id(g_defer_token), 71);
+    mailbox_result_progress(g_defer_token, 5, 10);
     uint8_t buf[256];
     uint32_t len;
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_PROGRESS);
     uint32_t n = RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN);
     buf[4 * GS_MBX_EVENT_WORDS + n] = '\0';
     ASSERT_TRUE(strcmp((char *)buf + 4 * GS_MBX_EVENT_WORDS, "{\"id\":71,\"done\":5,\"total\":10}") == 0);
-    gs_result_complete_ok(g_defer_token);
+    mailbox_result_complete_ok(g_defer_token);
     uint32_t id, ok;
     char json[64];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 71);
     // A token nobody holds names no request and reports nowhere.
-    ASSERT_EQ_INT(gs_result_request_id(g_defer_token), 0);
-    gs_result_progress(g_defer_token, 1, 1);
+    ASSERT_EQ_INT(mailbox_result_request_id(g_defer_token), 0);
+    mailbox_result_progress(g_defer_token, 1, 1);
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), 0);
 }
 
 TEST(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it) {
     fresh();
-    uint32_t h = gs_transfer_publish(42);
+    uint32_t h = mailbox_transfer_publish(42);
     ASSERT_TRUE(h != 0);
     // Every ack of a published buffer is the job's (answered true: the job
     // refills and publishes again under the same handle); once the job
     // releases it, the handle names nothing.
     post_ctl(GS_MBX_REQ_ACK_BUF, 81, 1, h);
     post_ctl(GS_MBX_REQ_ACK_BUF, 82, 1, h);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 2);
     uint32_t id, ok;
     char json[64];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
@@ -837,24 +837,24 @@ TEST(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 82);
     ASSERT_TRUE(strcmp(json, "true") == 0);
-    gs_transfer_release(h);
+    mailbox_transfer_release(h);
     post_ctl(GS_MBX_REQ_ACK_BUF, 83, 1, h);
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 83);
     ASSERT_TRUE(strcmp(json, "false") == 0);
     // The table is bounded; publishing past it fails, releasing makes room.
     uint32_t hs[GS_MBX_TRANSFER_MAX];
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
-        hs[i] = gs_transfer_publish(42);
+        hs[i] = mailbox_transfer_publish(42);
         ASSERT_TRUE(hs[i] != 0);
     }
-    ASSERT_EQ_INT(gs_transfer_publish(42), 0);
+    ASSERT_EQ_INT(mailbox_transfer_publish(42), 0);
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++)
-        gs_transfer_release(hs[i]);
+        mailbox_transfer_release(hs[i]);
 }
 
-// A toy object for gs_eval: `blob.text` is a string of g_blob_len 'x's,
+// A toy object for object_eval: `blob.text` is a string of g_blob_len 'x's,
 // so a result can be made as large as a test wants.
 static size_t g_blob_len;
 
@@ -877,7 +877,7 @@ static const class_desc_t blob_class = {.name = "blob", .members = blob_members,
 
 TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
     fresh();
-    g_m.eval = gs_eval;
+    g_m.eval = object_eval;
     object_root_reset();
     struct object *blob = object_new(&blob_class, NULL, "blob");
     object_attach(object_root(), blob);
@@ -886,7 +886,7 @@ TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
     // Within the limit: the result itself.
     g_blob_len = 8;
     ASSERT_TRUE(post(91, "blob.text", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 91);
     ASSERT_EQ_INT(ok, 1);
@@ -895,7 +895,7 @@ TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
     // rerouted document.
     g_blob_len = GS_MBX_RESULT_MAX - 1;
     ASSERT_TRUE(post(92, "blob.text", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 92);
     ASSERT_EQ_INT(ok, 0);
@@ -908,18 +908,18 @@ TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
     g_blob_len = 4u * GS_MBX_RESULT_MAX;
     for (uint32_t i = 0; i < 4u * GS_MBX_TRANSFER_MAX; i++) {
         ASSERT_TRUE(post(100 + i, "blob.text", NULL));
-        ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+        ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 1);
         ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
         ASSERT_EQ_INT(id, 100 + i);
         ASSERT_EQ_INT(ok, 0);
     }
     uint32_t hs[GS_MBX_TRANSFER_MAX];
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
-        hs[i] = gs_transfer_publish(42);
+        hs[i] = mailbox_transfer_publish(42);
         ASSERT_TRUE(hs[i] != 0);
     }
     for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++)
-        gs_transfer_release(hs[i]);
+        mailbox_transfer_release(hs[i]);
     object_detach(blob);
     object_delete(blob);
     object_root_reset();
@@ -942,18 +942,18 @@ static void waiting_done(bool ok, double ms, const char *error, void *ud) {
     (void)ms;
     uint32_t token = *(uint32_t *)ud;
     if (ok)
-        gs_result_complete_ok(token);
+        mailbox_result_complete_ok(token);
     else
-        gs_result_complete_error(token, error);
+        mailbox_result_complete_error(token, error);
 }
 static uint32_t g_io_token;
 static int io_eval(const char *path, const char *args, char *out, size_t out_size) {
     (void)args;
     if (strcmp(path, "io") == 0) {
-        g_io_token = gs_result_defer();
+        g_io_token = mailbox_result_defer();
         uint32_t id = io_submit_work(waiting_work, NULL, waiting_done, &g_io_token);
         ASSERT_TRUE(id != 0);
-        gs_result_bind_io(g_io_token, id);
+        mailbox_result_bind_io(g_io_token, id);
         snprintf(out, out_size, "true");
         return 0;
     }
@@ -961,7 +961,7 @@ static int io_eval(const char *path, const char *args, char *out, size_t out_siz
 }
 
 // An I/O leaf whose answer is a map (files.udif_finish's stats, an import's
-// outcome): the deferred result carries the map, formatted as gs_eval
+// outcome): the deferred result carries the map, formatted as object_eval
 // formats one -- never `true` in its place.
 static int leaf_work(io_leaf_t *j) {
     (void)j;
@@ -991,7 +991,7 @@ TEST(an_io_leaf_answering_a_map_delivers_the_map) {
     fresh();
     g_m.eval = leaf_eval;
     ASSERT_TRUE(post(81, "leaf", NULL));
-    gs_mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
     uint32_t id = 0, ok = 0;
     char json[512];
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
@@ -1025,12 +1025,12 @@ TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
     ASSERT_TRUE(io_worker_start(0));
     g_m.eval = io_eval;
     ASSERT_TRUE(post(91, "io", NULL));
-    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0); // deferred
+    ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // deferred
     usleep(5000);
     // The client gives up on it: the cancel is answered true and the job
     // ends as cancelled, which is the request's answer.
     post_ctl(GS_MBX_REQ_CANCEL, 92, 1, 91);
-    gs_mailbox_drain(&g_m, 0, NULL);
+    mailbox_drain(&g_m, 0, NULL);
     uint32_t id = 0, ok = 1;
     char json[128];
     bool saw_cancel_answer = false, saw_job_answer = false;
@@ -1054,7 +1054,7 @@ TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
                 ASSERT_TRUE(strstr(json, "cancelled") != NULL);
             }
         }
-        gs_mailbox_drain(&g_m, 0, NULL);
+        mailbox_drain(&g_m, 0, NULL);
         usleep(100);
     }
     ASSERT_TRUE(saw_cancel_answer && saw_job_answer);
@@ -1072,7 +1072,7 @@ TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
     char outputs[512] = "";
     int results = 0;
     for (int i = 0; i < 20000 && !results; i++) {
-        gs_mailbox_drain(&g_m, 0, NULL);
+        mailbox_drain(&g_m, 0, NULL);
         uint8_t buf[512];
         uint32_t len, kind;
         while ((kind = take_any(buf, sizeof buf, &len)) != 0) {

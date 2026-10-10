@@ -672,7 +672,7 @@ async function executeMailboxRequest(
 
 // --- Events from the core ------------------------------------------------
 
-// What the core emits on its own (src/core/event/gs_event.h), decoded off
+// What the core emits on its own (src/core/event/event.h), decoded off
 // the mailbox's event ring: `kind` is the ring's family, `data` the JSON
 // object the emitter wrote, whose `event` names it.  Today: 'state' with
 // `mode_started {mode, owner, budget}` and `mode_ended {mode, owner,

@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // api.c
-// Public entry point: gs_eval. The former gs_inspect and gs_complete
+// Public entry point: object_eval. The former gs_inspect and gs_complete
 // entry points were folded into the object model itself — schema is now
 // reached via `<path>.meta.*` and tab-completion via
-// `gs_eval("meta.complete", [...])`.
+// `object_eval("meta.complete", [...])`.
 
 #include "api.h"
 
@@ -33,7 +33,7 @@
 //   error               → {"error": "<message>"}
 //   none                → null
 // Every result, failures included, is a value_t rendered through that one
-// encoder into a growable buffer; gs_eval then copies it out whole or, when
+// encoder into a growable buffer; object_eval then copies it out whole or, when
 // it does not fit, replaces it with an explicit {"error": ...} so no
 // consumer parses a truncated document.
 
@@ -419,9 +419,9 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 
 // === Public entry points ====================================================
 
-int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
+int object_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_check("gs_eval");
+    worker_thread_check("object_eval");
 
     if (!out_buf || out_size == 0)
         return -1;

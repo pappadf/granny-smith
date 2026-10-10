@@ -16,7 +16,7 @@ void out_route(const char *text, size_t len) {
         return;
     if (job_output_append(text, len))
         return;
-    if (gs_mailbox_output_append(text, len))
+    if (mailbox_output_append(text, len))
         return;
     fwrite(text, 1, len, stdout);
 }

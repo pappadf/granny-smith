@@ -41,7 +41,7 @@
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 LOG_USE_CATEGORY_NAME("scsi");
 
@@ -1670,8 +1670,8 @@ int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int
 // A device's medium came or went: the page refreshes the SCSI subtree on
 // this, as it does on notify:floppy for the floppy drives.
 static void scsi_notify_media(int id, bool present) {
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
-                   present ? "true" : "false");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
+                present ? "true" : "false");
 }
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,

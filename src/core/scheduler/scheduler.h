@@ -256,7 +256,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 
 // Why a run ended.  A mode (a run started by scheduler_run_with_budget)
 // carries the reason it stopped and whose it was; scheduler_run_frame
-// reports both in a mode_ended event (gs_event.h) at the point where
+// reports both in a mode_ended event (event.h) at the point where
 // `running` drops.
 typedef enum sched_stop_reason {
     SCHED_STOP_NONE = 0, // still running, or never ran
@@ -310,7 +310,7 @@ uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
 
 // Emit the speed event for the current effective speed, whether or not it
 // changed.  The swap step calls it: the speed a machine settled on while it
-// was built was not announced (gs_event_hold).
+// was built was not announced (event_hold).
 void scheduler_announce_speed(struct scheduler *s);
 
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)

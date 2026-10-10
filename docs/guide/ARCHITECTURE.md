@@ -179,7 +179,7 @@ Four caller surfaces walk that tree:
 - **Headless scripts**: same dispatcher, reading from a script file
   instead of the terminal. Integration tests in `tests/integration/`
   are scripts.
-- **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
+- **JavaScript / WASM bridge**: `object_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
   The web frontend reaches it through the mailbox — a control block and
   two record rings in shared memory (`src/core/mailbox/mailbox.h`,
@@ -189,7 +189,7 @@ Four caller surfaces walk that tree:
   pending request each frame and answers each with an `EVT_RESULT` the
   page's reader loop matches by id. What the core says on its own —
   run state, speed, floppies, checkpoint saves, log lines — flows the
-  other way as events on the same ring (`src/core/event/gs_event.h`).
+  other way as events on the same ring (`src/core/event/event.h`).
   See [`web.md`](web.md) for the wire layout and protocol.
 - **Threads**: the emulator thread owns all guest state and runs nothing
   of unbounded length: it ticks frames and drains the mailbox. A script

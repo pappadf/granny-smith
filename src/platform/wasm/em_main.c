@@ -271,7 +271,7 @@ static void setup_pointer_lock(void) {
 static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
 // checkpoint.auto.  Plain, not atomic: its only writer (gs_checkpoint_auto_set,
-// a gs_eval served by the drain) and its readers (the tick, the visibility
+// an object_eval served by the drain) and its readers (the tick, the visibility
 // callback) all run on this, the emulator thread.
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
@@ -341,29 +341,29 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // constructor, before main() and before the page can see it, so the MAGIC
 // and VERSION words are valid from the first read.  READY stays 0 until
 // main() has run core_init/system_init.
-static gs_mailbox_t g_mailbox;
+static mailbox_t g_mailbox;
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
 __attribute__((constructor)) static void mailbox_construct(void) {
-    if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
+    if (!mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, object_eval))
         abort();
     // Answers to the page carry what the leaf printed (out.h); the
     // terminal shows it with the result.
-    gs_mailbox_set_capture_output(&g_mailbox, true);
+    mailbox_set_capture_output(&g_mailbox, true);
 }
 
 EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
     return (uint32_t *)g_mailbox.ctrl;
 }
 
-// Core events (gs_event.h) go out as records on the event ring.
-void gs_event_emit(gs_event_kind_t kind, const char *json) {
+// Core events (event.h) go out as records on the event ring.
+void event_emit(event_kind_t kind, const char *json) {
     uint32_t k = kind == GS_EVENT_STATE ? GS_MBX_EVT_STATE : kind == GS_EVENT_LOG ? GS_MBX_EVT_LOG : GS_MBX_EVT_NOTIFY;
-    gs_mailbox_emit(&g_mailbox, k, json);
+    mailbox_emit(&g_mailbox, k, json);
 }
 
-uint32_t gs_current_client(void) {
-    return gs_mailbox_current_client(&g_mailbox);
+uint32_t platform_current_client(void) {
+    return mailbox_current_client(&g_mailbox);
 }
 
 // A bare `scheduler.run` typed in the browser's terminal returns at once
@@ -375,7 +375,7 @@ bool job_glue_unbounded_waits(uint32_t client) {
 }
 
 // The page parks in Atomics.waitAsync on READY and EVT_HEAD.
-void gs_mailbox_notify(volatile uint32_t *word) {
+void mailbox_notify(volatile uint32_t *word) {
     emscripten_atomic_notify((void *)word, INT_MAX);
 }
 
@@ -403,13 +403,13 @@ static double mailbox_now_us(void) {
 // take that for a dead core (#238).  Every block it reads or writes bumps
 // the heartbeat, so a slow but healthy request keeps proving it is alive.
 void checkpoint_busy_heartbeat(void) {
-    gs_mailbox_heartbeat(&g_mailbox);
+    mailbox_heartbeat(&g_mailbox);
 }
 
 int shell_poll(void) {
-    int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
+    int n = mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)
-        gs_mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+        mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
     return n;
 }
 
@@ -420,14 +420,14 @@ static int mailbox_idle_wait(void) {
     double t0 = emscripten_get_now();
     int served = 0;
     while (emscripten_get_now() - t0 < GS_MAILBOX_IDLE_MS) {
-        if (gs_mailbox_has_requests(&g_mailbox)) {
+        if (mailbox_has_requests(&g_mailbox)) {
             served += shell_poll();
             continue;
         }
         uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
         emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
         emscripten_current_thread_process_queued_calls();
-        gs_mailbox_heartbeat(&g_mailbox);
+        mailbox_heartbeat(&g_mailbox);
     }
     return served;
 }
@@ -450,10 +450,10 @@ void em_main_tick(void) {
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
-            gs_event_emitf(GS_EVENT_STATE,
-                           "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
-                           "\"poll_max_ms\":%.3f}",
-                           mips, ticks_per_second, tick_max, tick_p50, poll_max);
+            event_emitf(GS_EVENT_STATE,
+                        "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
+                        "\"poll_max_ms\":%.3f}",
+                        mips, ticks_per_second, tick_max, tick_p50, poll_max);
         }
 
         last_time = current_time;
@@ -494,7 +494,7 @@ void em_main_tick(void) {
     // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
-    gs_mailbox_heartbeat(&g_mailbox);
+    mailbox_heartbeat(&g_mailbox);
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
@@ -529,8 +529,8 @@ void em_main_tick(void) {
         for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
             if (!(changed & (1u << k)))
                 continue;
-            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
-                           (int)lights.light[k]);
+            event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                        (int)lights.light[k]);
         }
     }
 }
@@ -544,8 +544,8 @@ void platform_machine_attached(void) {
     last_instr = cpu_instr_count();
     for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
         if (lights.light[k] != DRIVE_LIGHT_IDLE)
-            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
-                           (int)DRIVE_LIGHT_IDLE);
+            event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                        (int)DRIVE_LIGHT_IDLE);
     }
     memset(&lights, 0, sizeof(lights));
     em_video_machine_attached();
@@ -571,7 +571,7 @@ static void js_log_sink(const char *line, void *user) {
     (void)user;
     if (!line)
         return;
-    gs_event_emit_text(GS_EVENT_LOG, "log", "line", line);
+    event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
 // ============================================================================
@@ -709,27 +709,27 @@ static void download_note(const char *json, void *ud) {
     int last = 0;
     sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
     if (!d->handle)
-        d->handle = gs_transfer_publish(d->io_id);
+        d->handle = mailbox_transfer_publish(d->io_id);
     if (!d->handle) {
         // No room in the transfer table: the job times out on its ack.
         printf("download: no transfer buffer for '%s'\n", d->name);
         return;
     }
-    gs_event_emitf(GS_EVENT_NOTIFY,
-                   "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
-                   "\"name\":\"%s\"%s}",
-                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name, d->meta);
+    event_emitf(GS_EVENT_NOTIFY,
+                "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
+                "\"name\":\"%s\"%s}",
+                (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name, d->meta);
 }
 
 static void download_progress(uint64_t done, uint64_t total, void *ud) {
     download_job_t *d = (download_job_t *)ud;
     if (d->token)
-        gs_result_progress(d->token, done, total);
+        mailbox_result_progress(d->token, done, total);
 }
 
 static void download_free(download_job_t *d) {
     if (d->handle)
-        gs_transfer_release(d->handle);
+        mailbox_transfer_release(d->handle);
     free(d->buf);
     free(d->bytes);
     free(d->path);
@@ -742,11 +742,11 @@ static void download_done(bool ok, double ms, const char *error, void *ud) {
     if (ok) {
         printf("download: requested '%s'\n", d->name);
         if (d->token)
-            gs_result_complete_ok(d->token);
+            mailbox_result_complete_ok(d->token);
     } else {
         printf("download: %s\n", error ? error : "failed");
         if (d->token)
-            gs_result_complete_error(d->token, error ? error : "download failed");
+            mailbox_result_complete_error(d->token, error ? error : "download failed");
     }
     download_free(d);
 }
@@ -761,8 +761,8 @@ static int download_start(download_job_t *d) {
         download_free(d);
         return -1;
     }
-    d->token = gs_result_defer();
-    d->req_id = gs_result_request_id(d->token);
+    d->token = mailbox_result_defer();
+    d->req_id = mailbox_result_request_id(d->token);
     io_job_desc_t desc = {
         .work = download_work,
         .work_ud = d,
@@ -775,12 +775,12 @@ static int download_start(download_job_t *d) {
     d->io_id = io_submit_job(&desc);
     if (d->io_id) {
         if (d->token)
-            gs_result_bind_io(d->token, d->io_id);
+            mailbox_result_bind_io(d->token, d->io_id);
         return 0;
     }
     printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     if (d->token)
-        gs_result_complete_error(d->token, "the I/O worker is not running");
+        mailbox_result_complete_error(d->token, "the I/O worker is not running");
     download_free(d);
     return -1;
 }
@@ -867,7 +867,7 @@ void printer_sink_status(const char *printer, const char *status) {
     char p[64], st[128];
     sanitize(p, sizeof p, printer, false);
     sanitize(st, sizeof st, status, false);
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 
 // Platform impl of gs_download (weak default in system.c stubs out).
@@ -1040,7 +1040,7 @@ int main(void) {
     // READY so requests issued during the boot window don't dispatch
     // against the empty default root class. The notify wakes any JS
     // thread parked in Atomics.waitAsync on that word.
-    gs_mailbox_set_ready(&g_mailbox);
+    mailbox_set_ready(&g_mailbox);
 
     // The job thread: scripts run there, not here (job/job.h).  Created
     // now, not at the first script -- pthread_create from this pthread is
@@ -1080,8 +1080,8 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
         expr = kind;
     char where[512];
     snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
-    gs_event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
-    gs_event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
+    event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
+    event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in

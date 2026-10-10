@@ -23,7 +23,7 @@ int core_init(void) {
     // Ordering invariants, top to bottom:
     //
     // 1. worker_thread_latch first: it latches this pthread for the
-    //    thread-affinity guard (MODE=debug/sanitize: any gs_eval or shell
+    //    thread-affinity guard (MODE=debug/sanitize: any object_eval or shell
     //    entry from another thread then aborts).  Everything below runs on
     //    this thread, so a registration that hands work to the emulator
     //    thread already finds the latch set.
@@ -32,7 +32,7 @@ int core_init(void) {
     // 3. job_layer_init (records this as the emulator thread) before any
     //    module that prints or runs work through the job layer.
     // 4. shell_init (binding store, completion provider) before the root is
-    //    populated, so a gs_eval landing during init sees a live provider
+    //    populated, so an object_eval landing during init sees a live provider
     //    and the `shell` node never exists without its interpreter state.
     // 5. root_install_class before the singletons, so the root has its real
     //    class (the top-level methods) before anything is attached to it.
