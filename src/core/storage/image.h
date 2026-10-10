@@ -79,6 +79,10 @@ storage_t *image_get_storage(const image_t *image);
 // disk_read_data / disk_write_data calls since open (drive_activity.h)
 uint64_t image_get_reads(const image_t *image);
 uint64_t image_get_writes(const image_t *image);
+// Replace the per-sector tags (a checkpoint restore): the image takes
+// ownership of `tags` (tag_count * tag_bytes bytes, malloc'd) and frees the
+// old ones.  A NULL image frees `tags`.
+void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t tag_count);
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 //
@@ -153,7 +157,7 @@ bool image_key_is_open_writable(const char *key);
 #define IMAGE_CKPT_WRITABLE 0x01
 #define IMAGE_CKPT_WRAPPED  0x02 // re-wrap on restore (image_wrap.h)
 
-// Write image metadata to checkpoint
+// Write image metadata to checkpoint (ends with the sector tags)
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
 // === Operations ===
@@ -167,6 +171,12 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 // boot-block header the ROM validates (FILEID = $AAAA).
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
 size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
+
+// Label the disk for a DiskCopy 4.2 export: the name and format byte its
+// header gets.  A machine whose disks differ from the Mac's defaults (the
+// Lisa: "-not a Macintosh disk-", $02) sets them on insert; a DiskCopy
+// source already carries its own, which this leaves alone.
+void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t format_byte);
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 
@@ -227,8 +237,13 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
 int image_create_blank_profile(const char *filename, uint32_t block_count);
 
 // Export the full disk content (base + delta) of an open image to a new file.
-// The destination is created exclusively: an existing file is never
-// overwritten.  Returns 0 on success, -1 on failure.
+// The destination's name picks the format: .dmg is UDIF; .dc42 and
+// .diskcopy are DiskCopy 4.2 with the sector tags (floppies only), as is
+// .image for a floppy -- the classic Mac name for a DiskCopy file; any
+// other name is the flat raw image.  Whatever the format, the destination
+// is created exclusively (an existing file is never overwritten) and an
+// unreadable base block fails the export.  Returns 0 on success, -1 on
+// failure.
 int image_export_to(image_t *image, const char *dest_path);
 
 // The same export in three steps, so the write can run off the emulator

@@ -60,6 +60,8 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
 void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image);
 void lisa_fdc_eject(lisa_fdc_t *fdc);
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc);
+// The inserted image (NULL if the drive is empty).
+image_t *lisa_fdc_image(const lisa_fdc_t *fdc);
 
 // Parameter memory (battery-backed NVRAM, 64 bytes at $FCC181): persist/restore
 // the OS's boot-volume + device-configuration table across launches.  Returns

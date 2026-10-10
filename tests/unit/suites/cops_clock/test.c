@@ -112,6 +112,12 @@ void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) 
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
 }
+// Emulated time, which the clock advances by.  Tests move it by hand.
+static double s_now_ns;
+double scheduler_time_ns(struct scheduler *restrict s) {
+    (void)s;
+    return s_now_ns;
+}
 void scheduler_forget_source(struct scheduler *s, void *source) {
     (void)s;
     for (int i = 0; i < MAX_EVENTS; i++)
@@ -171,6 +177,7 @@ bool lisa_mmu_get_cursor(int ctx, int *x, int *y) {
 
 static cops_t *setup(void) {
     memset(s_events, 0, sizeof s_events);
+    s_now_ns = 0;
     s_delivered_len = 0;
     s_pending_byte = 0;
     cops_t *c = cops_init((via_t *)1, (struct scheduler *)1, NULL);
@@ -311,6 +318,88 @@ TEST(test_stray_nibbles_are_ignored) {
     cops_delete(c);
 }
 
+// The clock ticks with emulated time: a read brings it up to date, carrying
+// through seconds, minutes, hours and the day.  1 day 01:01:01.5 after the
+// 1984 power-on is day 2, 01:01:01.5.
+TEST(test_the_clock_advances_with_emulated_time) {
+    cops_t *c = setup();
+    s_now_ns = 90061.5e9;
+
+    uint8_t r[6];
+    read_clock(c, r);
+    ASSERT_EQ_INT(0xE4, r[0]); // 1984
+    ASSERT_EQ_INT(0x00, r[1]); // day 0 0 _
+    ASSERT_EQ_INT(0x20, r[2]); // day _ _ 2, hour 0 _
+    ASSERT_EQ_INT(0x10, r[3]); // hour _ 1, minute 0 _
+    ASSERT_EQ_INT(0x10, r[4]); // minute _ 1, second 0 _
+    ASSERT_EQ_INT(0x15, r[5]); // second _ 1, tenths 5
+
+    cops_delete(c);
+}
+
+// The part of a tenth not yet counted is kept, not dropped: reads at 0.05 s
+// and 0.15 s see .0 and .1, not .0 and .0.
+TEST(test_partial_tenths_carry_between_reads) {
+    cops_t *c = setup();
+    uint8_t r[6];
+
+    s_now_ns = 0.05e9;
+    read_clock(c, r);
+    ASSERT_EQ_INT(0x00, r[5]);
+    s_now_ns = 0.15e9;
+    read_clock(c, r);
+    ASSERT_EQ_INT(0x01, r[5]);
+
+    cops_delete(c);
+}
+
+// Set the clock to the last tenth of a day, step 0.1 s, read it back.
+static void step_past_midnight(int year, int day, uint8_t r[6]) {
+    cops_t *c = setup();
+    const uint8_t digits[16] = {
+        0, 0, 0, 0, 0, (uint8_t)year, (uint8_t)(day / 100), (uint8_t)(day / 10 % 10), (uint8_t)(day % 10), 2, 3,
+        5, 9, 5, 9, 9};
+    set_clock(c, digits);
+    s_now_ns += 1e8;
+    read_clock(c, r);
+    cops_delete(c);
+}
+
+// 1984 is a leap year: day 365 rolls to 366, and 366 to 1985 day 1.
+TEST(test_a_leap_year_has_366_days) {
+    uint8_t r[6];
+    step_past_midnight(4, 365, r);
+    ASSERT_EQ_INT(0xE4, r[0]);
+    ASSERT_EQ_INT(0x36, r[1]);
+    ASSERT_EQ_INT(0x60, r[2]);
+
+    step_past_midnight(4, 366, r);
+    ASSERT_EQ_INT(0xE5, r[0]); // 1985
+    ASSERT_EQ_INT(0x00, r[1]);
+    ASSERT_EQ_INT(0x10, r[2]); // day 001, hour 0 _
+    ASSERT_EQ_INT(0x00, r[3]);
+    ASSERT_EQ_INT(0x00, r[4]);
+    ASSERT_EQ_INT(0x00, r[5]);
+}
+
+// 1985 is not: day 365 rolls to 1986 day 1.
+TEST(test_a_common_year_has_365_days) {
+    uint8_t r[6];
+    step_past_midnight(5, 365, r);
+    ASSERT_EQ_INT(0xE6, r[0]); // 1986
+    ASSERT_EQ_INT(0x00, r[1]);
+    ASSERT_EQ_INT(0x10, r[2]);
+}
+
+// Four bits of year: the end of 1995 wraps to 1980, as the hardware does.
+TEST(test_the_year_nibble_wraps_after_1995) {
+    uint8_t r[6];
+    step_past_midnight(15, 365, r);
+    ASSERT_EQ_INT(0xE0, r[0]); // 1980
+    ASSERT_EQ_INT(0x00, r[1]);
+    ASSERT_EQ_INT(0x10, r[2]);
+}
+
 int main(void) {
     RUN(test_the_reply_has_the_shape_readclk_expects);
     RUN(test_the_clock_powers_up_at_new_year_1984);
@@ -318,6 +407,11 @@ int main(void) {
     RUN(test_the_alarm_digits_are_not_the_clock);
     RUN(test_an_abandoned_set_changes_nothing);
     RUN(test_stray_nibbles_are_ignored);
+    RUN(test_the_clock_advances_with_emulated_time);
+    RUN(test_partial_tenths_carry_between_reads);
+    RUN(test_a_leap_year_has_366_days);
+    RUN(test_a_common_year_has_365_days);
+    RUN(test_the_year_nibble_wraps_after_1995);
     printf("[PASS] All COPS clock tests passed\n");
     return 0;
 }

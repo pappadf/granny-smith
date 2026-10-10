@@ -39,6 +39,10 @@ static const class_desc_t floppy_controller_class;
 
 #include "image.h"
 
+// The I/O-job export (io_leaf.h).  Weak: a unit suite of the controller
+// alone links no I/O leaves and exports here and now.
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
+
 LOG_USE_CATEGORY_NAME("floppy");
 
 // ============================================================================
@@ -1650,6 +1654,29 @@ static DEF_METHOD(floppy_disk_method_eject) {
     return val_none();
 }
 
+// `export(path)` — write this disk as it is now (source + delta, and the
+// sector tags for a DiskCopy destination) to a NEW file; the name picks the
+// format (image_export_to).  Never overwrites, never touches the source.
+static DEF_METHOD(floppy_disk_method_export) {
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    if (!img)
+        return val_err("disk.export: no disk inserted");
+    if (io_leaf_export_image)
+        return io_leaf_export_image(img, argv[0].s, "disk.export");
+    if (image_export_to(img, argv[0].s) != 0)
+        return val_err("disk.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
+    return val_bool(true);
+}
+
+static const arg_decl_t floppy_disk_export_args[] = {
+    {.name = "path",
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
+     .doc = "New file: .dc42/.diskcopy/.image = DiskCopy 4.2 with tags, .dmg = UDIF, else raw"},
+};
+
 static const member_t floppy_disk_members[] = {
     {.kind = MK_ATTR,
      .name = "present",
@@ -1679,6 +1706,14 @@ static const member_t floppy_disk_members[] = {
                 .result = VK_NONE,
                 .fn = floppy_disk_method_eject,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                        },
+    {.kind = MK_METHOD,
+     .name = "export",
+     .doc = "Save the disk as it is now to a new image file (Save As)",
+     .method = {.ui_flags = MM_MUTATE | MM_IO,
+                .args = floppy_disk_export_args,
+                .nargs = 1,
+                .result = VK_BOOL,
+                .fn = floppy_disk_method_export}                               },
 };
 
 static const class_desc_t floppy_disk_class = {

@@ -32,6 +32,8 @@
 //     uint32_t instance_len, instance_bytes...
 //     uint32_t key_len, key_bytes... (the base's source key, source.h)
 //     <storage-specific blob via image_checkpoint>
+//     uint32_t tag_bytes, uint32_t tag_count, tag_bytes * tag_count bytes
+//       (the sector tags, image_checkpoint's last field)
 // A NULL slot is skipped -- and left out of the count, so the count always
 // says how many entries follow (image_checkpoint writes nothing for NULL).
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
@@ -45,6 +47,38 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
         if (img)
             image_checkpoint(img, cp);
     }
+}
+
+// Largest tag a sector carries (a ProFile's is 20 bytes; a floppy's 12).
+#define TAG_BYTES_MAX 64u
+
+// Read the sector tags image_checkpoint writes last, into `img` (NULL: read
+// past them).  They live only in memory, so without them a restored disk
+// would pair the delta's data with the base file's page labels.
+static void restore_image_tags(image_t *img, checkpoint_t *cp) {
+    uint32_t tag_bytes = 0, tag_count = 0;
+    system_read_checkpoint_data(cp, &tag_bytes, sizeof(tag_bytes));
+    system_read_checkpoint_data(cp, &tag_count, sizeof(tag_count));
+    if (!tag_bytes || !tag_count)
+        return;
+    // Bounded by what a disk can carry, not by the stream's word: one tag
+    // per 512-byte sector of a 4 GB disk at most.
+    if (tag_bytes > TAG_BYTES_MAX || tag_count > UINT32_MAX / 512u) {
+        checkpoint_set_error(cp);
+        return;
+    }
+    size_t n = (size_t)tag_bytes * tag_count;
+    uint8_t *tags = (uint8_t *)malloc(n);
+    if (!tags) {
+        checkpoint_set_error(cp);
+        return;
+    }
+    system_read_checkpoint_data(cp, tags, n);
+    if (!img || checkpoint_has_error(cp)) {
+        free(tags);
+        return;
+    }
+    image_set_tags(img, tags, tag_bytes, tag_count); // the image owns them now
 }
 
 // Restore the image list from a checkpoint stream and attach each image
@@ -126,6 +160,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         out_printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
+    restore_image_tags(img, cp);
     // A volume that was attached through the wrapper is re-wrapped, so the
     // SCSI device that re-binds to it by name sees the same disk.  After the
     // blocks are restored, not before: the wrapper is built from what the

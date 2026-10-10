@@ -380,7 +380,7 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
 
 // Paths that are legitimately long: the notice waits longer for them.
 const LONG_REQUEST =
-  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|hd\.save)|files\.(cp|mv|import|export_raw|hd_create|xfer_|udif_|convert|verify|archive\.|download$|ls|list|mkdir|cat))/;
+  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|floppy\.drive\[\d+\](\.disk)?\.export|hd\.save)|files\.(cp|mv|import|export_raw|hd_create|xfer_|udif_|convert|verify|archive\.|download$|ls|list|mkdir|cat))/;
 const BUSY_AFTER_MS = 5_000;
 const BUSY_AFTER_LONG_MS = 30_000;
 // An ordinary request still in flight after this long is not slow, it is

@@ -45,6 +45,37 @@ bool dc42_parse_header(const uint8_t *hdr, size_t len, uint64_t file_size, uint3
     return true;
 }
 
+uint32_t dc42_checksum(uint32_t sum, const uint8_t *p, size_t n) {
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        sum += RD_BE16(p + i); // add the big-endian word
+        sum = (sum >> 1) | (sum << 31); // rotate right by one
+    }
+    return sum;
+}
+
+void dc42_name_field(uint8_t field[DC42_NAME_FIELD], const char *name) {
+    memset(field, 0, DC42_NAME_FIELD);
+    size_t n = name ? strlen(name) : 0;
+    if (n > DC42_NAME_MAX)
+        n = DC42_NAME_MAX;
+    field[0] = (uint8_t)n; // Pascal length byte
+    if (n)
+        memcpy(field + 1, name, n);
+}
+
+void dc42_build_header(uint8_t hdr[DISKCOPY_HEADER_SIZE], const uint8_t name_field[DC42_NAME_FIELD], uint32_t data_size,
+                       uint32_t tag_size, uint32_t data_sum, uint32_t tag_sum, uint8_t disk_format,
+                       uint8_t format_byte) {
+    memcpy(hdr, name_field, DC42_NAME_FIELD);
+    WR_BE32(hdr + 0x40, data_size);
+    WR_BE32(hdr + 0x44, tag_size);
+    WR_BE32(hdr + DC42_OFF_DATA_SUM, data_sum);
+    WR_BE32(hdr + DC42_OFF_TAG_SUM, tag_sum);
+    hdr[DC42_OFF_DISK_FORMAT] = disk_format;
+    hdr[DC42_OFF_FORMAT_BYTE] = format_byte;
+    WR_BE16(hdr + 0x52, 0x0100); // the "private" word every DiskCopy 4.2 file carries
+}
+
 static bool dc42_detect(const format_probe_t *p) {
     return dc42_parse_header(p->p.head, p->p.head_len, p->p.size, NULL, NULL);
 }
