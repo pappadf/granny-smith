@@ -222,6 +222,15 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
 int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_t *request_atp, const uint8_t user[4],
                               const uint8_t *payload, int payload_len, bool sts);
 
+// A socket handler that declines an exactly-once request -- leaves it
+// unanswered for the requester's retry -- says so here.  The XO entry the
+// dispatcher opened for it is dropped, so the retry reaches the handler as a
+// new request, as a request is that no GetRequest was waiting for (Inside
+// AppleTalk 9-17); otherwise the retry would be taken for a duplicate of a
+// response still being prepared and dropped until the release timer.  An
+// entry whose response was already sent is kept.  No-op for an ALO request.
+void atp_xo_forget(const ddp_header_t *request_ddp, const atp_packet_t *request_atp);
+
 // Send one datagram to a remote AppleTalk socket.  The DDP/LLAP headers are
 // built here; `data` is the protocol payload (for ADSP, its 13-byte header
 // plus body).  Returns 0 on success, -1 if the stack is detached or the

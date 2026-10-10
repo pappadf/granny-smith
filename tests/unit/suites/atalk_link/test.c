@@ -12,6 +12,7 @@
 // out can be staged exactly.
 
 #include "appletalk.h"
+#include "appletalk_internal.h"
 #include "link_harness.h"
 #include "stub_upper.h"
 #include "test_assert.h"
@@ -676,6 +677,58 @@ TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
     link_delete();
 }
 
+// --- ATP exactly-once requests a handler declines -------------------------------
+
+#define DECLINE_SOCKET 60
+static int g_decline_calls;
+static bool g_decline;
+static void decline_or_answer(const ddp_header_t *ddp, atp_packet_t *req, void *ctx) {
+    (void)ctx;
+    g_decline_calls++;
+    if (g_decline)
+        atp_xo_forget(ddp, req);
+    else
+        atp_responder_send_simple(ddp, req, NULL, (const uint8_t *)"ok", 2, false);
+}
+
+// A handler that leaves an XO request for its retry (PAP's SendData past the
+// flow quantum) forgets it, and the retry reaches it as a new request.  The
+// dispatcher's XO entry took the retry for a duplicate of a response being
+// prepared, and dropped it -- and every later one -- until the release timer.
+// Once answered, a retransmit is the duplicate again: the cached response
+// goes back and the handler is not run twice.
+TEST(a_declined_xo_request_is_seen_again_on_its_retry) {
+    link_boot();
+    static const atp_socket_handler_t handler = {.handle_request = decline_or_answer};
+    ASSERT_EQ_INT(0, atp_register_socket_handler(DECLINE_SOCKET, &handler, NULL));
+    g_decline_calls = 0;
+    g_decline = true;
+    uint8_t treq[8] = {ATP_TREQ | ATP_XO, 0x01, 0x30, 0x01, 0, 0, 0, 0};
+    wire_clear();
+    guest_ddp(GUEST_NODE, DECLINE_SOCKET, 200, 3, treq, sizeof treq);
+    guest_advance_to(link_now_ns() + 5e6);
+    ASSERT_EQ_INT(1, g_decline_calls);
+    ASSERT_EQ_INT(0, wire_count_atp(GUEST_NODE, ATP_TRESP, 0xFF));
+
+    guest_ddp(GUEST_NODE, DECLINE_SOCKET, 200, 3, treq, sizeof treq); // the retry
+    guest_advance_to(link_now_ns() + 5e6);
+    ASSERT_EQ_INT(2, g_decline_calls);
+    ASSERT_EQ_INT(0, wire_count_atp(GUEST_NODE, ATP_TRESP, 0xFF));
+
+    g_decline = false;
+    guest_ddp(GUEST_NODE, DECLINE_SOCKET, 200, 3, treq, sizeof treq);
+    guest_advance_to(link_now_ns() + 5e6);
+    ASSERT_EQ_INT(3, g_decline_calls);
+    ASSERT_EQ_INT(1, wire_count_atp(GUEST_NODE, ATP_TRESP, 0xFF));
+
+    guest_ddp(GUEST_NODE, DECLINE_SOCKET, 200, 3, treq, sizeof treq); // a true duplicate
+    guest_advance_to(link_now_ns() + 5e6);
+    ASSERT_EQ_INT(3, g_decline_calls);
+    ASSERT_EQ_INT(2, wire_count_atp(GUEST_NODE, ATP_TRESP, 0xFF)); // from the cache
+    atp_unregister_socket_handler(DECLINE_SOCKET);
+    link_delete();
+}
+
 // --- ASP sessions ----------------------------------------------------------------
 
 #define ASP_CLOSE_SESS 1
@@ -930,6 +983,7 @@ int main(void) {
     RUN(a_lookup_goes_out_in_macroman_and_its_replies_come_back_in_utf8);
     RUN(a_name_macroman_cannot_hold_is_refused);
     RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
+    RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);
     RUN(session_ids_stay_unique_across_many_opens);

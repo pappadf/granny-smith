@@ -1330,7 +1330,10 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
             // More reads outstanding than a flow quantum allows.  It is left
             // unanswered: the workstation's ATP retransmits it, by when a
             // credit may have drained.  An empty non-EOF reply made it ask
-            // again at once, and hit the same overflow, without end.
+            // again at once, and hit the same overflow, without end.  Its XO
+            // entry goes too, or the retry would be taken for a duplicate and
+            // dropped until the entry's release timer (30 s or more).
+            atp_xo_forget(ddp, atp);
             LOG(1, "pap: status credit overflow conn=%u seq=%u: left for its retry", (unsigned)conn_id, (unsigned)seq);
         } else {
             LOG(3, "pap: queued SendData credit conn=%u seq=%u depth=%u", (unsigned)conn_id, (unsigned)seq,

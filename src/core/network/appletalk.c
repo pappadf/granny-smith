@@ -2539,6 +2539,17 @@ static void atp_dispatch_registered_request(atalk_conn_t *c, const ddp_header_t 
     slot->handler.handle_request(ddp, atp, slot->ctx);
 }
 
+void atp_xo_forget(const ddp_header_t *request_ddp, const atp_packet_t *request_atp) {
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !request_ddp || !request_atp || !(request_atp->ctl & ATP_CONTROL_XO))
+        return;
+    int idx = atp_xo_find(c, request_atp->tid, request_ddp->llap.src, request_ddp->src_socket, request_ddp->dst_socket);
+    if (idx < 0 || c->xo_entries[idx].response_ready)
+        return;
+    LOG_ATP(6, "ATP: XO forget tid=0x%04X (declined by its handler)", request_atp->tid);
+    atp_xo_free(c, &c->xo_entries[idx]);
+}
+
 static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len) {
     atp_packet_t atp;
     if (parse_atp(buf, len, &atp) != 0) {
