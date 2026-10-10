@@ -39,10 +39,10 @@ The user-visible path grammar is unchanged:
 
 | Type / function | File | Purpose |
 |---|---|---|
-| `gs_namespace_ops_t` | `namespace.h` | `list`, `stat`, `open(path, fork)`, `close` |
-| `gs_dirent_t` | `namespace.h` | name, kind, fork sizes, mtime (Unix seconds), Mac type/creator/flags, tier |
-| `gs_ns_open_disk` | `ns_disk.c` | APM or bare volume → `partitionN` → HFS/HFS+/UFS/MFS/ISO 9660 |
-| `gs_ns_open_archive` | `ns_archive.c` | any peeler format → its member tree |
+| `ns_ops_t` | `namespace.h` | `list`, `stat`, `open(path, fork)`, `close` |
+| `ns_dirent_t` | `namespace.h` | name, kind, fork sizes, mtime (Unix seconds), Mac type/creator/flags, tier |
+| `ns_open_disk` | `ns_disk.c` | APM or bare volume → `partitionN` → HFS/HFS+/UFS/MFS/ISO 9660 |
+| `ns_open_archive` | `ns_archive.c` | any peeler format → its member tree |
 | `image_mount_t` | `image_vfs.c` | a mounted namespace, keyed by its source's key |
 
 ## 3. Behaviour/algorithms
@@ -76,7 +76,7 @@ entries, LRU, pinned while a handle borrows them), keyed by mount and path.
 `vfs_open_source(path, fork)` resolves a path and returns the fork as a
 source: a host file, a namespace member, its resource fork, or its Finder
 info. It is installed as the storage engine's path opener
-(`gs_source_set_path_opener`), which is how a floppy, a SCSI disk or a CD
+(`source_set_path_opener`), which is how a floppy, a SCSI disk or a CD
 image can be a file inside another image or an archive.
 
 ## 4. Object-model / shell surface

@@ -56,7 +56,7 @@ typedef struct cc_spill_file {
     struct cc_spill_file *next;
 } cc_spill_file_t;
 
-struct gs_chunk_cache {
+struct chunk_cache {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     size_t mem_budget;
@@ -66,7 +66,7 @@ struct gs_chunk_cache {
     cc_spilled_t *spill_buckets[CC_BUCKETS];
     cc_spill_file_t *files;
     cc_entry_t *lru_head, *lru_tail; // most recent at head
-    gs_chunk_cache_stats_t st;
+    chunk_cache_stats_t st;
 };
 
 // ============================================================================
@@ -83,14 +83,14 @@ static uint64_t cc_hash(const char *key, uint64_t idx) {
     return h;
 }
 
-static cc_entry_t *find_entry(gs_chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx) {
+static cc_entry_t *find_entry(chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx) {
     for (cc_entry_t *e = c->buckets[h % CC_BUCKETS]; e; e = e->next_hash)
         if (e->hash == h && e->idx == idx && strcmp(e->key, key) == 0)
             return e;
     return NULL;
 }
 
-static cc_spilled_t *find_spilled(gs_chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx) {
+static cc_spilled_t *find_spilled(chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx) {
     for (cc_spilled_t *s = c->spill_buckets[h % CC_BUCKETS]; s; s = s->next_hash)
         if (s->hash == h && s->idx == idx && strcmp(s->file->key, key) == 0)
             return s;
@@ -101,7 +101,7 @@ static cc_spilled_t *find_spilled(gs_chunk_cache_t *c, uint64_t h, const char *k
 // LRU
 // ============================================================================
 
-static void lru_unlink(gs_chunk_cache_t *c, cc_entry_t *e) {
+static void lru_unlink(chunk_cache_t *c, cc_entry_t *e) {
     if (e->lru_prev)
         e->lru_prev->lru_next = e->lru_next;
     else if (c->lru_head == e)
@@ -113,7 +113,7 @@ static void lru_unlink(gs_chunk_cache_t *c, cc_entry_t *e) {
     e->lru_prev = e->lru_next = NULL;
 }
 
-static void lru_push_head(gs_chunk_cache_t *c, cc_entry_t *e) {
+static void lru_push_head(chunk_cache_t *c, cc_entry_t *e) {
     e->lru_prev = NULL;
     e->lru_next = c->lru_head;
     if (c->lru_head)
@@ -124,7 +124,7 @@ static void lru_push_head(gs_chunk_cache_t *c, cc_entry_t *e) {
 }
 
 // Remove `e` from the hash table (not the LRU) and free it.
-static void entry_remove(gs_chunk_cache_t *c, cc_entry_t *e) {
+static void entry_remove(chunk_cache_t *c, cc_entry_t *e) {
     for (cc_entry_t **pp = &c->buckets[e->hash % CC_BUCKETS]; *pp; pp = &(*pp)->next_hash) {
         if (*pp == e) {
             *pp = e->next_hash;
@@ -142,17 +142,17 @@ static void entry_remove(gs_chunk_cache_t *c, cc_entry_t *e) {
 // Spill
 // ============================================================================
 
-static cc_spill_file_t *spill_file_for(gs_chunk_cache_t *c, const char *key) {
+static cc_spill_file_t *spill_file_for(chunk_cache_t *c, const char *key) {
     for (cc_spill_file_t *f = c->files; f; f = f->next)
         if (strcmp(f->key, key) == 0)
             return f;
-    if (gs_mkdir_p(c->spill_dir) != 0)
+    if (mkdir_p(c->spill_dir) != 0)
         return NULL;
     cc_spill_file_t *f = calloc(1, sizeof(*f));
     if (!f)
         return NULL;
     f->key = gs_strdup(key);
-    f->path = gs_str_printf("%s/%016llx.spill", c->spill_dir, (unsigned long long)cc_hash(key, 0));
+    f->path = str_printf("%s/%016llx.spill", c->spill_dir, (unsigned long long)cc_hash(key, 0));
     f->fd = f->path ? open(f->path, O_RDWR | O_CREAT | O_TRUNC, 0600) : -1;
     if (!f->key || f->fd < 0) {
         free(f->key);
@@ -166,7 +166,7 @@ static cc_spill_file_t *spill_file_for(gs_chunk_cache_t *c, const char *key) {
 }
 
 // Write an evicted chunk to its key's spill file.  True on success.
-static bool spill(gs_chunk_cache_t *c, const cc_entry_t *e) {
+static bool spill(chunk_cache_t *c, const cc_entry_t *e) {
     if (!c->spill_dir)
         return false;
     if (c->spill_budget && c->st.spill_bytes + e->len > c->spill_budget)
@@ -196,7 +196,7 @@ static bool spill(gs_chunk_cache_t *c, const cc_entry_t *e) {
 }
 
 // Evict from the LRU tail until the budget holds.  `keep` is never evicted.
-static void evict(gs_chunk_cache_t *c, const cc_entry_t *keep) {
+static void evict(chunk_cache_t *c, const cc_entry_t *keep) {
     cc_entry_t *e = c->lru_tail;
     while (c->st.mem_bytes > c->mem_budget && e) {
         cc_entry_t *prev = e->lru_prev;
@@ -214,8 +214,8 @@ static void evict(gs_chunk_cache_t *c, const cc_entry_t *keep) {
 // Lifecycle
 // ============================================================================
 
-gs_chunk_cache_t *gs_chunk_cache_new(size_t mem_budget, const char *spill_dir, uint64_t spill_budget) {
-    gs_chunk_cache_t *c = calloc(1, sizeof(*c));
+chunk_cache_t *chunk_cache_new(size_t mem_budget, const char *spill_dir, uint64_t spill_budget) {
+    chunk_cache_t *c = calloc(1, sizeof(*c));
     if (!c)
         return NULL;
     pthread_mutex_init(&c->mu, NULL);
@@ -227,7 +227,7 @@ gs_chunk_cache_t *gs_chunk_cache_new(size_t mem_budget, const char *spill_dir, u
 }
 
 // Drop spill files of `key` (NULL: all).  Caller holds the lock.
-static void drop_spill(gs_chunk_cache_t *c, const char *key) {
+static void drop_spill(chunk_cache_t *c, const char *key) {
     for (int b = 0; b < CC_BUCKETS; b++) {
         for (cc_spilled_t **pp = &c->spill_buckets[b]; *pp;) {
             cc_spilled_t *s = *pp;
@@ -255,7 +255,7 @@ static void drop_spill(gs_chunk_cache_t *c, const char *key) {
     }
 }
 
-void gs_chunk_cache_free(gs_chunk_cache_t *c) {
+void chunk_cache_free(chunk_cache_t *c) {
     if (!c)
         return;
     for (int b = 0; b < CC_BUCKETS; b++) {
@@ -275,7 +275,7 @@ void gs_chunk_cache_free(gs_chunk_cache_t *c) {
     free(c);
 }
 
-void gs_chunk_cache_set_budgets(gs_chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget) {
+void chunk_cache_set_budgets(chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget) {
     if (!c)
         return;
     pthread_mutex_lock(&c->mu);
@@ -287,7 +287,7 @@ void gs_chunk_cache_set_budgets(gs_chunk_cache_t *c, size_t mem_budget, uint64_t
     pthread_mutex_unlock(&c->mu);
 }
 
-void gs_chunk_cache_budgets(gs_chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget) {
+void chunk_cache_budgets(chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget) {
     if (!c)
         return;
     pthread_mutex_lock(&c->mu);
@@ -308,7 +308,7 @@ static uint64_t env_mib(const char *name, uint64_t dflt) {
     return (end && *end == '\0') ? (uint64_t)n << 20 : dflt;
 }
 
-static gs_chunk_cache_t *g_default;
+static chunk_cache_t *g_default;
 static pthread_once_t g_default_once = PTHREAD_ONCE_INIT;
 
 static void default_init(void) {
@@ -317,25 +317,25 @@ static void default_init(void) {
 #else
     uint64_t spill_default = 0; // unbounded
 #endif
-    char *dir = gs_str_printf("%s/chunks", image_scratch_dir());
-    g_default = gs_chunk_cache_new((size_t)env_mib("GS_CHUNK_CACHE_MB", 64ull << 20), dir,
-                                   env_mib("GS_CHUNK_SPILL_MB", spill_default));
+    char *dir = str_printf("%s/chunks", image_scratch_dir());
+    g_default = chunk_cache_new((size_t)env_mib("GS_CHUNK_CACHE_MB", 64ull << 20), dir,
+                                env_mib("GS_CHUNK_SPILL_MB", spill_default));
     free(dir);
 }
 
-gs_chunk_cache_t *gs_chunk_cache_default(void) {
+chunk_cache_t *chunk_cache_default(void) {
     pthread_once(&g_default_once, default_init);
     return g_default;
 }
 
-static gs_chunk_cache_t *g_images;
+static chunk_cache_t *g_images;
 static pthread_once_t g_images_once = PTHREAD_ONCE_INIT;
 
 static void images_init(void) {
-    g_images = gs_chunk_cache_new((size_t)env_mib("GS_IMAGE_CACHE_MB", 16ull << 20), NULL, 0);
+    g_images = chunk_cache_new((size_t)env_mib("GS_IMAGE_CACHE_MB", 16ull << 20), NULL, 0);
 }
 
-gs_chunk_cache_t *gs_chunk_cache_images(void) {
+chunk_cache_t *chunk_cache_images(void) {
     pthread_once(&g_images_once, images_init);
     return g_images;
 }
@@ -345,7 +345,7 @@ gs_chunk_cache_t *gs_chunk_cache_images(void) {
 // ============================================================================
 
 // Insert READY data for (key, idx).  Caller holds the lock; takes `data`.
-static cc_entry_t *insert_ready(gs_chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx, uint8_t *data,
+static cc_entry_t *insert_ready(chunk_cache_t *c, uint64_t h, const char *key, uint64_t idx, uint8_t *data,
                                 size_t len) {
     cc_entry_t *e = calloc(1, sizeof(*e));
     char *k = gs_strdup(key);
@@ -370,7 +370,7 @@ static cc_entry_t *insert_ready(gs_chunk_cache_t *c, uint64_t h, const char *key
 }
 
 // Bring a spilled chunk back into memory.  Caller holds the lock.
-static cc_entry_t *unspill(gs_chunk_cache_t *c, cc_spilled_t *s, const char *key) {
+static cc_entry_t *unspill(chunk_cache_t *c, cc_spilled_t *s, const char *key) {
     uint8_t *buf = malloc(s->len ? s->len : 1);
     if (!buf)
         return NULL;
@@ -391,8 +391,8 @@ static int64_t copy_range(const uint8_t *data, size_t len, uint64_t in_off, void
     return (int64_t)k;
 }
 
-int64_t gs_chunk_cache_get(gs_chunk_cache_t *c, const char *key, uint64_t idx, size_t chunk_cap, uint64_t in_off,
-                           void *out, size_t n, gs_chunk_fetch_fn fetch, void *ctx) {
+int64_t chunk_cache_get(chunk_cache_t *c, const char *key, uint64_t idx, size_t chunk_cap, uint64_t in_off, void *out,
+                        size_t n, chunk_fetch_fn fetch, void *ctx) {
     size_t cap = chunk_cap;
     uint64_t h = cc_hash(key, idx);
     pthread_mutex_lock(&c->mu);
@@ -466,7 +466,7 @@ int64_t gs_chunk_cache_get(gs_chunk_cache_t *c, const char *key, uint64_t idx, s
     return result;
 }
 
-int gs_chunk_cache_put(gs_chunk_cache_t *c, const char *key, uint64_t idx, const void *data, size_t len) {
+int chunk_cache_put(chunk_cache_t *c, const char *key, uint64_t idx, const void *data, size_t len) {
     uint64_t h = cc_hash(key, idx);
     uint8_t *copy = malloc(len ? len : 1);
     if (!copy)
@@ -484,7 +484,7 @@ int gs_chunk_cache_put(gs_chunk_cache_t *c, const char *key, uint64_t idx, const
     return e ? 0 : -ENOMEM;
 }
 
-bool gs_chunk_cache_peek(gs_chunk_cache_t *c, const char *key, uint64_t idx, void *out, size_t cap, size_t *len) {
+bool chunk_cache_peek(chunk_cache_t *c, const char *key, uint64_t idx, void *out, size_t cap, size_t *len) {
     uint64_t h = cc_hash(key, idx);
     bool found = false;
     pthread_mutex_lock(&c->mu);
@@ -509,7 +509,7 @@ bool gs_chunk_cache_peek(gs_chunk_cache_t *c, const char *key, uint64_t idx, voi
     return found;
 }
 
-void gs_chunk_cache_drop_key(gs_chunk_cache_t *c, const char *key) {
+void chunk_cache_drop_key(chunk_cache_t *c, const char *key) {
     pthread_mutex_lock(&c->mu);
     for (int b = 0; b < CC_BUCKETS; b++) {
         for (cc_entry_t *e = c->buckets[b]; e;) {
@@ -525,7 +525,7 @@ void gs_chunk_cache_drop_key(gs_chunk_cache_t *c, const char *key) {
     pthread_mutex_unlock(&c->mu);
 }
 
-void gs_chunk_cache_stats(gs_chunk_cache_t *c, gs_chunk_cache_stats_t *out) {
+void chunk_cache_stats(chunk_cache_t *c, chunk_cache_stats_t *out) {
     pthread_mutex_lock(&c->mu);
     *out = c->st;
     pthread_mutex_unlock(&c->mu);

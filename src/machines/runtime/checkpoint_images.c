@@ -109,7 +109,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             out_printf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
         } else if (!consolidated && saved_key && saved_key[0] && image_get_source_key(img) &&
-                   !gs_key_same_source(saved_key, image_get_source_key(img))) {
+                   !source_key_same_source(saved_key, image_get_source_key(img))) {
             // A quick checkpoint's disk is the base plus the saved delta: on
             // other base bytes the delta would apply to the wrong disk.  (A
             // consolidated one carries every block, so its base is not read.)

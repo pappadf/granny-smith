@@ -667,7 +667,7 @@ int udif_create_empty(const char *path, uint64_t size) {
 // order in its data fork, so a pass over them reads the file in large
 // pieces rather than once per chunk.  `end` is where the data fork ends.
 typedef struct {
-    gs_source_t *src;
+    source_t *src;
     uint64_t end;
     uint8_t *buf;
     uint64_t at;
@@ -680,12 +680,12 @@ static int window_read(read_window_t *w, uint64_t off, void *dst, size_t n) {
         return 0;
     }
     if (n > UDIF_VERIFY_WINDOW || off >= w->end)
-        return gs_source_read_exact(w->src, off, dst, n);
+        return source_read_exact(w->src, off, dst, n);
     size_t fill = w->end - off < UDIF_VERIFY_WINDOW ? (size_t)(w->end - off) : UDIF_VERIFY_WINDOW;
     if (fill < n)
         fill = n;
     w->len = 0;
-    int rc = gs_source_read_exact(w->src, off, w->buf, fill);
+    int rc = source_read_exact(w->src, off, w->buf, fill);
     if (rc)
         return rc;
     w->at = off;
@@ -694,7 +694,7 @@ static int window_read(read_window_t *w, uint64_t off, void *dst, size_t n) {
     return 0;
 }
 
-int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap) {
+int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap) {
 #define FAIL(rc_, ...)                                                                                                 \
     do {                                                                                                               \
         if (err && errcap)                                                                                             \
@@ -708,10 +708,10 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
     udif_map_t *map = NULL;
     udif_writer_stats_t st = {0};
     size_t in_cap = 0, out_cap = 0;
-    uint64_t size = data ? gs_source_size(data) : 0;
+    uint64_t size = data ? source_size(data) : 0;
     uint8_t tb[UDIF_TRAILER_SIZE];
     udif_trailer_t tr;
-    if (size < UDIF_TRAILER_SIZE || gs_source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0 ||
+    if (size < UDIF_TRAILER_SIZE || source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0 ||
         udif_parse_trailer(tb, sizeof(tb), &tr) != 0)
         FAIL(-EINVAL, "not a UDIF image (no usable 'koly' trailer)");
     if (tr.xml_offset > size || tr.xml_length > size - tr.xml_offset)
@@ -719,7 +719,7 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
     xml = malloc((size_t)tr.xml_length);
     if (!xml)
         FAIL(-ENOMEM, "out of memory");
-    if (gs_source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length) != 0)
+    if (source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length) != 0)
         FAIL(-EIO, "cannot read the block map");
     if (udif_parse_blkx(xml, (size_t)tr.xml_length, &map) != 0)
         FAIL(-EINVAL, "the block map does not parse");
@@ -736,7 +736,7 @@ int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t
         for (uint64_t at = 0; at < tr.data_fork_length;) {
             size_t n =
                 tr.data_fork_length - at < UDIF_VERIFY_WINDOW ? (size_t)(tr.data_fork_length - at) : UDIF_VERIFY_WINDOW;
-            if (gs_source_read_exact(data, tr.data_fork_offset + at, win.buf, n) != 0)
+            if (source_read_exact(data, tr.data_fork_offset + at, win.buf, n) != 0)
                 FAIL(-EIO, "cannot read the data fork at %llu", (unsigned long long)at);
             crc = gs_crc32(crc, win.buf, n);
             at += n;
@@ -842,14 +842,14 @@ static bool plist_value(const char *xml, size_t len, const char *key, char *dst,
     return false;
 }
 
-int udif_info(gs_source_t *data, udif_info_t *out) {
+int udif_info(source_t *data, udif_info_t *out) {
     if (!data || !out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
-    uint64_t size = gs_source_size(data);
+    uint64_t size = source_size(data);
     uint8_t tb[UDIF_TRAILER_SIZE];
     udif_trailer_t tr;
-    if (size < UDIF_TRAILER_SIZE || gs_source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0)
+    if (size < UDIF_TRAILER_SIZE || source_read_exact(data, size - UDIF_TRAILER_SIZE, tb, sizeof(tb)) != 0)
         return -EINVAL;
     int rc = udif_parse_trailer(tb, sizeof(tb), &tr);
     if (rc)
@@ -860,7 +860,7 @@ int udif_info(gs_source_t *data, udif_info_t *out) {
     if (!xml)
         return -ENOMEM;
     udif_map_t *map = NULL;
-    rc = gs_source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
+    rc = source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
     if (!rc)
         rc = udif_parse_blkx((const uint8_t *)xml, (size_t)tr.xml_length, &map);
     if (!rc) {

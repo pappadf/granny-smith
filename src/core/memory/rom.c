@@ -236,7 +236,7 @@ int rom_info_compatible_count(const rom_info_t *info) {
 uint8_t *rom_read_file(const char *filename, size_t *out_size, bool quiet) {
     uint8_t *rom_data = NULL;
     size_t file_size = 0;
-    int rc = gs_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
+    int rc = source_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
     if (rc != 0 || file_size == 0) {
         free(rom_data);
         if (!quiet)

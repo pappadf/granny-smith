@@ -236,15 +236,15 @@ static bool find_nested_split(image_mount_t *m, const char *tail, size_t *split,
 static int mount_member(image_mount_t *outer, const char *sub, const char *resolved, size_t path_len,
                         image_mount_t **out) {
     int err = 0;
-    gs_source_t *data = image_vfs_open_source(outer, sub, GS_FORK_DATA, &err);
+    source_t *data = image_vfs_open_source(outer, sub, GS_FORK_DATA, &err);
     if (!data)
         return err ? err : -ENOENT;
-    gs_source_t *rsrc = image_vfs_open_source(outer, sub, GS_FORK_RSRC, NULL);
+    source_t *rsrc = image_vfs_open_source(outer, sub, GS_FORK_RSRC, NULL);
     char path[VFS_PATH_MAX];
     snprintf(path, sizeof(path), "%.*s", (int)path_len, resolved);
     int rc = image_vfs_acquire_mount_source(path, data, rsrc, out);
-    gs_source_release(data);
-    gs_source_release(rsrc);
+    source_release(data);
+    source_release(rsrc);
     return rc;
 }
 
@@ -488,21 +488,21 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
     // the same opener every image uses, so every format and every nesting
     // flattens alike.
     int oerr = 0;
-    gs_source_t *data = NULL, *rsrc = NULL;
+    source_t *data = NULL, *rsrc = NULL;
     if (be == vfs_image_backend() && ctx) {
         data = image_vfs_open_source((image_mount_t *)ctx, tail, GS_FORK_DATA, &oerr);
         rsrc = data ? image_vfs_open_source((image_mount_t *)ctx, tail, GS_FORK_RSRC, NULL) : NULL;
     } else {
-        data = gs_source_open_host_path(resolved, GS_FORK_DATA, &oerr);
-        rsrc = data ? gs_source_open_host_path(resolved, GS_FORK_RSRC, NULL) : NULL;
+        data = source_open_host_path(resolved, GS_FORK_DATA, &oerr);
+        rsrc = data ? source_open_host_path(resolved, GS_FORK_RSRC, NULL) : NULL;
     }
     if (!data) {
         set_err(err, err_cap, "export_raw: source is not a file");
         return oerr ? oerr : -ENOENT;
     }
     image_t *img = image_open_readonly_source(resolved, data, rsrc);
-    gs_source_release(data);
-    gs_source_release(rsrc);
+    source_release(data);
+    source_release(rsrc);
     if (!img) {
         set_err(err, err_cap, "export_raw: source is not a recognised disk image");
         return -EIO;
@@ -518,7 +518,7 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
     return 0;
 }
 
-gs_source_t *vfs_open_source(const char *path, gs_fork_t fork, int *err) {
+source_t *vfs_open_source(const char *path, source_fork_t fork, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -532,34 +532,34 @@ gs_source_t *vfs_open_source(const char *path, gs_fork_t fork, int *err) {
         return NULL;
     if (be == vfs_image_backend())
         return image_vfs_open_source((image_mount_t *)ctx, tail, fork, err);
-    return gs_source_open_host_path(resolved, fork, err);
+    return source_open_host_path(resolved, fork, err);
 }
 
 // The storage engine's path opener: whatever vfs_open_source resolves.
-static gs_source_t *vfs_path_opener(const char *path, gs_fork_t fork, int *err) {
+static source_t *vfs_path_opener(const char *path, source_fork_t fork, int *err) {
     return vfs_open_source(path, fork, err);
 }
 
 void vfs_init(void) {
-    gs_ns_register_formats();
-    gs_source_set_path_opener(vfs_path_opener);
+    ns_register_formats();
+    source_set_path_opener(vfs_path_opener);
 }
 
 bool vfs_is_expandable(const char *path) {
     int err = 0;
-    gs_source_t *data = vfs_open_source(path, GS_FORK_DATA, &err);
+    source_t *data = vfs_open_source(path, GS_FORK_DATA, &err);
     if (!data)
         return false;
     // Only a file whose head and tail are cheap to read now is probed:
     // deciding for a compressed archive member not yet decoded would mean
     // decoding all of it.
     bool yes = false;
-    if (gs_source_tier(data) <= GS_TIER_INDEXED) {
-        gs_source_t *rsrc = vfs_open_source(path, GS_FORK_RSRC, NULL);
-        yes = gs_format_is_namespace(data, rsrc);
-        gs_source_release(rsrc);
+    if (source_tier(data) <= GS_TIER_INDEXED) {
+        source_t *rsrc = vfs_open_source(path, GS_FORK_RSRC, NULL);
+        yes = format_is_namespace(data, rsrc);
+        source_release(rsrc);
     }
-    gs_source_release(data);
+    source_release(data);
     return yes;
 }
 

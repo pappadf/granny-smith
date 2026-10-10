@@ -54,7 +54,7 @@ peel_source_release(src);
   `read`, `size`, `key` and `tier`. The tier says how reads cost:
   `RANDOM` (a view or a memory buffer), `INDEXED` (BGZF), `EARNED`
   (decoded once, then random), `STREAM` or `WHOLE`. The emulator's
-  core uses the same type as `gs_source_t`
+  core uses the same type as `source_t`
   (see [`source.md`](../internals/core/storage/source.md)).
 - **Probe** — `peel_probe_init` reads a bounded head and tail of a
   source; `peel_identify` and `peel_formats` run the detectors over it

@@ -141,7 +141,7 @@ void vol_record_store(const vol_t *v) {
     uint8_t rec[8];
     WR_BE32(rec, AFP_VOLREC_MAGIC);
     WR_BE32(rec + 4, v->backup_date);
-    if (gs_write_atomic(path, rec, sizeof(rec)) != 0) // it was rewritten in place
+    if (file_write_atomic(path, rec, sizeof(rec)) != 0) // it was rewritten in place
         LOG(1, "AFP: cannot record the backup date of '%s'", v->name);
 }
 

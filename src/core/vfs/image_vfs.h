@@ -33,7 +33,7 @@
 
 // Opaque mount handle.
 typedef struct image_mount image_mount_t;
-struct gs_namespace;
+struct ns;
 
 // The backend vtable.  ctx passed to its methods is an image_mount_t *.
 const vfs_backend_t *vfs_image_backend(void);
@@ -48,12 +48,12 @@ int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount);
 
 // Mount forks already open (a file inside another mount).  `path` is the
 // VFS path that reached them, shown in listings.  Same results as above.
-int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_source_t *rsrc, image_mount_t **out_mount);
+int image_vfs_acquire_mount_source(const char *path, source_t *data, source_t *rsrc, image_mount_t **out_mount);
 
 // Open fork `fork` of the in-mount path `tail` as a source.  The synthetic
 // leaves work too: "<file>/finf" is the Finder info, "<file>/rsrc/_raw" the
 // resource fork.  NULL with *err.
-gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err);
+source_t *image_vfs_open_source(image_mount_t *m, const char *tail, source_fork_t fork, int *err);
 
 // Explicit unmount, by the path it was mounted under (or the host file's
 // canonical path).  0; -ENOENT if there is none; -EBUSY with handles still

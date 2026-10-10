@@ -26,19 +26,19 @@
 // The decoded image of an NDIF file: `data` is its data fork, `rsrc` its
 // resource fork (holding the 'bcem' map).  NULL with *err set when `rsrc` is
 // not an NDIF map or the map is unusable.
-gs_source_t *ndif_source_open(gs_source_t *data, gs_source_t *rsrc, int *err);
+source_t *ndif_source_open(source_t *data, source_t *rsrc, int *err);
 
 // True when `rsrc` carries an NDIF 'bcem' map (reads at most the fork).
-bool ndif_source_detect(gs_source_t *rsrc);
+bool ndif_source_detect(source_t *rsrc);
 
 // The decoded image of a UDIF file (trailer, XML block map and payload all in
 // `data`).  NULL with *err when it is not UDIF or cannot be read.
-gs_source_t *udif_source_open(gs_source_t *data, int *err);
+source_t *udif_source_open(source_t *data, int *err);
 
 // Like udif_source_open, with an explicit bound on a decoded chunk (0: the
 // in-place bound below for a foreign image, none for one this emulator
 // wrote).  A converter that streams every chunk once passes a large bound.
-gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *err);
+source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err);
 
 // The bound on a decoded chunk a foreign UDIF is opened in place with:
 // every cache miss decodes a whole chunk, so a 64 MB chunk would cost 64 MB

@@ -88,7 +88,7 @@ int udif_create_empty(const char *path, uint64_t size);
 // otherwise, with a message in `err`.  `stats` (may be NULL) gets what was
 // seen: sectors, extents, stored and zero bytes, the decoded CRC when there
 // is one table.
-int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap);
+int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap);
 
 // What a UDIF's trailer and block map say, read without decoding a chunk.
 typedef struct {
@@ -107,6 +107,6 @@ typedef struct {
 
 // Read a UDIF's trailer and property list.  0, or a negative errno when it
 // is not a UDIF this reader understands.
-int udif_info(gs_source_t *data, udif_info_t *out);
+int udif_info(source_t *data, udif_info_t *out);
 
 #endif // GS_UDIF_WRITER_H

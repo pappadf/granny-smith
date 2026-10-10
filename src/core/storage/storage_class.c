@@ -434,7 +434,7 @@ static DEF_METHOD(files_method_rm) {
     if (files_path_is_protected(path))
         return val_err("files.rm: refusing to remove '%s'", path ? path : "(null)");
     release_cached_mounts(path);
-    int rc = gs_rm_tree(path);
+    int rc = rm_tree(path);
     if (rc < 0)
         return val_err("files.rm: cannot remove '%s': %s", path, strerror(-rc));
     return val_bool(true);
@@ -475,7 +475,7 @@ static DEF_METHOD(files_method_mv) {
         return val_err("files.mv: %s", err[0] ? err : "move failed");
     // The copy succeeded; if the source can't be fully removed the operation
     // is a copy, not a move — report that instead of pretending success.
-    int rc = gs_rm_tree(src);
+    int rc = rm_tree(src);
     if (rc < 0)
         return val_err("files.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_bool(true);
@@ -617,9 +617,9 @@ static DEF_METHOD(files_method_probe) {
         apm = image_apm_probe_magic(block);
     // ISO 9660 by the same probe the VFS mounts with, so a disc reported as
     // a hybrid here is one the VFS shows both sides of.
-    gs_source_t *isrc = image_source(img);
+    source_t *isrc = image_source(img);
     bool iso = iso_probe_source(isrc, 0, size);
-    gs_source_release(isrc);
+    source_release(isrc);
     // The volume header at 1024: 'BD' is HFS, 'H+' HFS Plus and 'HX' HFSX.
     const char *hfs = NULL;
     if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0) {
@@ -650,9 +650,9 @@ static DEF_METHOD(files_method_probe) {
     // the disk to be.
     if (img->format && strcmp(img->format, "raw") != 0)
         out_printf("encoding: %s\n", img->format);
-    gs_source_t *src = image_source(img);
-    const gs_format_t *contents = gs_format_contents(src, NULL);
-    gs_source_release(src);
+    source_t *src = image_source(img);
+    const format_t *contents = format_contents(src, NULL);
+    source_release(src);
     if (contents)
         out_printf("contents: %s\n", contents->doc);
     image_close(img);
@@ -935,7 +935,7 @@ static int work_udif_open(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "too many images being written (at most %d)", FILES_UDIF_HANDLES);
         return -EBUSY;
     }
-    gs_mkdir_parents(j->a);
+    mkdir_parents(j->a);
     udif_writer_opts_t o = {
         .chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = u->source_name, .origin = u->origin};
     g_udif[h] = udif_writer_open(j->a, &o, j->err, sizeof j->err);
@@ -1003,26 +1003,26 @@ static int work_udif_abort(io_leaf_t *j) {
 // UDIF is opened with no in-place chunk bound -- a conversion passes every
 // chunk once, which is how an image with chunks too large to read in place
 // gets re-chunked; anything else through the image layer.
-static gs_source_t *open_decoded(const char *path, image_t **img, char *err, size_t cap) {
+static source_t *open_decoded(const char *path, image_t **img, char *err, size_t cap) {
     *img = NULL;
     int e = 0;
-    gs_source_t *data = gs_source_open_path(path, GS_FORK_DATA, &e);
+    source_t *data = source_open_path(path, GS_FORK_DATA, &e);
     if (!data) {
         snprintf(err, cap, "cannot open '%s': %s", path, strerror(e ? -e : ENOENT));
         return NULL;
     }
-    uint64_t size = gs_source_size(data);
+    uint64_t size = source_size(data);
     uint8_t tail[UDIF_TRAILER_SIZE];
-    if (size >= sizeof(tail) && gs_source_read_exact(data, size - sizeof(tail), tail, sizeof(tail)) == 0 &&
+    if (size >= sizeof(tail) && source_read_exact(data, size - sizeof(tail), tail, sizeof(tail)) == 0 &&
         udif_source_detect(tail, sizeof(tail))) {
-        gs_source_t *s = udif_source_open_bounded(data, NDIF_MAX_CHUNK_BYTES, &e);
-        gs_source_release(data);
+        source_t *s = udif_source_open_bounded(data, NDIF_MAX_CHUNK_BYTES, &e);
+        source_release(data);
         if (!s)
             snprintf(err, cap, "'%s' is a UDIF image this emulator cannot decode (%s)", path,
                      e == -ENOTSUP ? "unsupported compression" : strerror(e ? -e : EINVAL));
         return s;
     }
-    gs_source_release(data);
+    source_release(data);
     *img = image_open_readonly(path);
     if (!*img) {
         snprintf(err, cap, "cannot open '%s' as a disk image", path);
@@ -1041,17 +1041,17 @@ static int work_convert(io_leaf_t *j) {
         return -EEXIST;
     }
     image_t *img = NULL;
-    gs_source_t *src = open_decoded(j->a, &img, j->err, sizeof j->err);
+    source_t *src = open_decoded(j->a, &img, j->err, sizeof j->err);
     if (!src) {
         image_close(img);
         return -EINVAL;
     }
-    uint64_t total = gs_source_size(src);
+    uint64_t total = source_size(src);
     uint8_t *buf = malloc(CONVERT_STEP);
     udif_writer_t *w = NULL;
     FILE *raw = NULL;
     int rc = buf ? 0 : -ENOMEM;
-    gs_mkdir_parents(j->b);
+    mkdir_parents(j->b);
     if (!rc && u->raw) {
         raw = fopen(j->b, "wb");
         if (!raw) {
@@ -1078,7 +1078,7 @@ static int work_convert(io_leaf_t *j) {
             break;
         }
         size_t n = total - at < CONVERT_STEP ? (size_t)(total - at) : CONVERT_STEP;
-        rc = gs_source_read_exact(src, at, buf, n);
+        rc = source_read_exact(src, at, buf, n);
         if (rc) {
             snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)at);
             break;
@@ -1096,7 +1096,7 @@ static int work_convert(io_leaf_t *j) {
         io_report_progress(at, total);
     }
     free(buf);
-    gs_source_release(src);
+    source_release(src);
     image_close(img);
     if (raw) {
         if (fclose(raw) != 0 && !rc)
@@ -1119,11 +1119,11 @@ static int work_convert(io_leaf_t *j) {
     }
     // Read what was written back through the verifier: the decoded bytes
     // must be the ones read (whole sectors: a tail is zero-padded).
-    gs_source_t *out = gs_source_host(j->b, NULL);
+    source_t *out = source_host(j->b, NULL);
     udif_writer_stats_t vs;
     char msg[200] = {0};
     rc = out ? udif_verify(out, &vs, msg, sizeof msg) : -EIO;
-    gs_source_release(out);
+    source_release(out);
     uint32_t want = gs_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
     if (rc == 0 && (vs.crc != u->st.crc || vs.crc != want))
         rc = -EILSEQ, snprintf(msg, sizeof msg, "decoded checksum %08x, the source's is %08x", vs.crc, want);
@@ -1137,14 +1137,14 @@ static int work_convert(io_leaf_t *j) {
 static int work_verify(io_leaf_t *j) {
     udif_job_t *u = (udif_job_t *)j->ud;
     int e = 0;
-    gs_source_t *s = gs_source_open_path(j->a, GS_FORK_DATA, &e);
+    source_t *s = source_open_path(j->a, GS_FORK_DATA, &e);
     if (!s) {
         snprintf(j->err, sizeof j->err, "cannot open '%s': %s", j->a, strerror(e ? -e : ENOENT));
         return -ENOENT;
     }
     char msg[200] = {0};
     int rc = udif_verify(s, &u->st, msg, sizeof msg);
-    gs_source_release(s);
+    source_release(s);
     if (rc)
         snprintf(j->err, sizeof j->err, "%s: %s", j->a, msg);
     return rc;
@@ -1189,12 +1189,12 @@ static bool chunk_kb_ok(int64_t kb) {
 // the page downloads a stored .dmg as a raw image without the raw image
 // ever existing.  The decoded source stays open between calls for the same
 // path (on the I/O worker, which serialises these jobs).
-static gs_source_t *g_rd_src;
+static source_t *g_rd_src;
 static image_t *g_rd_img;
 static char *g_rd_path;
 
 static void read_disk_close(void) {
-    gs_source_release(g_rd_src);
+    source_release(g_rd_src);
     image_close(g_rd_img);
     free(g_rd_path);
     g_rd_src = NULL;
@@ -1213,14 +1213,14 @@ static int work_xfer_read_disk(io_leaf_t *j) {
         }
         g_rd_path = gs_strdup(j->a);
     }
-    uint64_t size = gs_source_size(g_rd_src);
+    uint64_t size = source_size(g_rd_src);
     x->got = 0;
     if (x->offset >= size) {
         read_disk_close(); // done with it
         return 0;
     }
     size_t n = size - x->offset < x->len ? (size_t)(size - x->offset) : (size_t)x->len;
-    if (gs_source_read_exact(g_rd_src, x->offset, g_xfer, n) != 0) {
+    if (source_read_exact(g_rd_src, x->offset, g_xfer, n) != 0) {
         snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)x->offset);
         read_disk_close();
         return -EIO;
@@ -1345,13 +1345,13 @@ static DEF_METHOD(files_method_verify) {
 // without decoding: cheap enough to answer at once.
 static DEF_METHOD(files_method_udif_info) {
     int e = 0;
-    gs_source_t *s = gs_source_open_path(argv[0].s, GS_FORK_DATA, &e);
+    source_t *s = source_open_path(argv[0].s, GS_FORK_DATA, &e);
     if (!s)
         return val_err("files.udif_info: cannot open '%s': %s", argv[0].s, strerror(e ? -e : ENOENT));
     udif_info_t in;
     int rc = udif_info(s, &in);
-    uint64_t file_bytes = gs_source_size(s);
-    gs_source_release(s);
+    uint64_t file_bytes = source_size(s);
+    source_release(s);
     if (rc)
         return val_err("files.udif_info: '%s' is not a UDIF image this emulator reads", argv[0].s);
     value_map_builder_t *b = val_map_new();
@@ -1970,7 +1970,7 @@ static uint64_t cache_mib(uint64_t bytes) {
 
 static DEF_GETTER(cache_attr_memory_mb) {
     size_t mem = 0;
-    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
+    chunk_cache_budgets(chunk_cache_default(), &mem, NULL);
     return val_uint(8, cache_mib(mem));
 }
 
@@ -1978,14 +1978,14 @@ static DEF_SETTER(cache_attr_memory_mb_set) {
     if (in.u < 1 || in.u > 1u << 20)
         return val_err("files.cache.memory_mb: %llu out of range (1..1048576)", (unsigned long long)in.u);
     uint64_t spill = 0;
-    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
-    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), (size_t)(in.u << 20), spill);
+    chunk_cache_budgets(chunk_cache_default(), NULL, &spill);
+    chunk_cache_set_budgets(chunk_cache_default(), (size_t)(in.u << 20), spill);
     return val_none();
 }
 
 static DEF_GETTER(cache_attr_spill_mb) {
     uint64_t spill = 0;
-    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
+    chunk_cache_budgets(chunk_cache_default(), NULL, &spill);
     return val_uint(8, cache_mib(spill));
 }
 
@@ -1993,30 +1993,30 @@ static DEF_SETTER(cache_attr_spill_mb_set) {
     if (in.u > 1u << 24)
         return val_err("files.cache.spill_mb: %llu out of range (0..16777216)", (unsigned long long)in.u);
     size_t mem = 0;
-    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
-    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), mem, in.u << 20);
+    chunk_cache_budgets(chunk_cache_default(), &mem, NULL);
+    chunk_cache_set_budgets(chunk_cache_default(), mem, in.u << 20);
     return val_none();
 }
 
 static DEF_GETTER(cache_attr_image_mb) {
     size_t mem = 0;
-    gs_chunk_cache_budgets(gs_chunk_cache_images(), &mem, NULL);
+    chunk_cache_budgets(chunk_cache_images(), &mem, NULL);
     return val_uint(8, cache_mib(mem));
 }
 
 static DEF_SETTER(cache_attr_image_mb_set) {
     if (in.u < 1 || in.u > 1u << 16)
         return val_err("files.cache.image_mb: %llu out of range (1..65536)", (unsigned long long)in.u);
-    gs_chunk_cache_set_budgets(gs_chunk_cache_images(), (size_t)(in.u << 20), 0);
+    chunk_cache_set_budgets(chunk_cache_images(), (size_t)(in.u << 20), 0);
     return val_none();
 }
 
-// One counter of gs_chunk_cache_stats, picked by the member's name.
+// One counter of chunk_cache_stats, picked by the member's name.
 static DEF_GETTER(cache_attr_stat) {
-    gs_chunk_cache_stats_t st;
+    chunk_cache_stats_t st;
     const char *n = m->name;
     bool image = strncmp(n, "image_", 6) == 0;
-    gs_chunk_cache_stats(image ? gs_chunk_cache_images() : gs_chunk_cache_default(), &st);
+    chunk_cache_stats(image ? chunk_cache_images() : chunk_cache_default(), &st);
     if (image)
         n += 6;
     uint64_t v = strcmp(n, "memory_bytes") == 0  ? st.mem_bytes

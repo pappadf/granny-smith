@@ -156,7 +156,7 @@ static void cp_free(checkpoint_t *cp) {
 
 static uint8_t g_medium[BLOCKS * BLK];
 
-static int64_t failing_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t failing_read(source_t *s, uint64_t off, void *buf, size_t len) {
     (void)s;
     if (off >= sizeof g_medium)
         return 0;
@@ -167,30 +167,30 @@ static int64_t failing_read(gs_source_t *s, uint64_t off, void *buf, size_t len)
     memcpy(buf, g_medium + off, len);
     return (int64_t)len;
 }
-static uint64_t failing_size(gs_source_t *s) {
+static uint64_t failing_size(source_t *s) {
     (void)s;
     return sizeof g_medium;
 }
-static const char *failing_key(gs_source_t *s) {
+static const char *failing_key(source_t *s) {
     (void)s;
     return "test:failing-medium";
 }
-static gs_tier_t failing_tier(gs_source_t *s) {
+static source_tier_t failing_tier(source_t *s) {
     (void)s;
     return GS_TIER_RANDOM;
 }
-static void failing_close(gs_source_t *s) {
+static void failing_close(source_t *s) {
     (void)s;
 }
-static const gs_source_ops_t failing_ops = {failing_read, failing_size, failing_key, failing_tier, failing_close};
+static const source_ops_t failing_ops = {failing_read, failing_size, failing_key, failing_tier, failing_close};
 
 static image_t *open_failing_image(void) {
     for (size_t i = 0; i < sizeof g_medium; i++)
         g_medium[i] = (uint8_t)(i / BLK + i);
-    gs_source_t *src = peel_source_new(&failing_ops, NULL, NULL);
+    source_t *src = peel_source_new(&failing_ops, NULL, NULL);
     ASSERT_TRUE(src != NULL);
     image_t *img = image_open_readonly_source("failing.img", src, NULL);
-    gs_source_release(src);
+    source_release(src);
     ASSERT_TRUE(img != NULL);
     ASSERT_EQ_INT((int)disk_size(img), (int)sizeof g_medium);
     return img;

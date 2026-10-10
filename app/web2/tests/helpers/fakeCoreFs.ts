@@ -54,7 +54,7 @@ export function installFakeCoreFs(
     heap.u8.set(part, WINDOW_PTR);
     return part.length;
   });
-  // Recursive, and true when the path never existed (gs_rm_tree).
+  // Recursive, and true when the path never existed (rm_tree).
   bridge.reply('files.rm', (args: unknown) => {
     const [path] = args as [string];
     for (const p of [...files.keys()]) if (under(p, path)) files.delete(p);

@@ -45,7 +45,7 @@ static char g_writable[PATH_MAX + 64];
 
 // With image.c's own rule: the key itself, or anything inside it.
 bool image_key_is_open_writable(const char *key) {
-    return g_writable[0] && gs_key_within(key, g_writable);
+    return g_writable[0] && source_key_within(key, g_writable);
 }
 
 // The volume lives in a real host file, mounted like any other.
@@ -61,16 +61,16 @@ static void write_volume_file(const uint8_t *img, size_t len) {
     ASSERT_TRUE(write(fd, img, len) == (ssize_t)len);
     close(fd);
     ASSERT_TRUE(realpath(g_host, g_host_canon) != NULL);
-    gs_source_t *s = gs_source_host(g_host, NULL);
+    source_t *s = source_host(g_host, NULL);
     ASSERT_TRUE(s != NULL);
-    snprintf(g_host_key, sizeof(g_host_key), "%s", gs_source_key(s));
-    gs_source_release(s);
+    snprintf(g_host_key, sizeof(g_host_key), "%s", source_key(s));
+    source_release(s);
 }
 
 // Build the volume and its file, without mounting it.
 static void make_volume(const hfsb_file_t *files, int n) {
     g_writable[0] = 0;
-    gs_ns_register_formats();
+    ns_register_formats();
     g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
     ASSERT_TRUE(g_img_size > 0);
     write_volume_file(g_img, g_img_size);
@@ -358,7 +358,7 @@ TEST(test_overlong_path_is_refused_not_truncated) {
 
 // A file that is no disk and no archive is refused as not an image.
 TEST(test_non_image_is_refused_cleanly) {
-    gs_ns_register_formats();
+    ns_register_formats();
     static uint8_t junk[4096];
     memset(junk, 0x5A, sizeof(junk));
     write_volume_file(junk, sizeof(junk));
@@ -413,16 +413,16 @@ TEST(test_nested_volume_mounts_from_its_source) {
     image_mount_t *m = mount_volume(outer_files, 1);
 
     int err = 0;
-    gs_source_t *data = image_vfs_open_source(m, "/partition1/Inner.img", GS_FORK_DATA, &err);
+    source_t *data = image_vfs_open_source(m, "/partition1/Inner.img", GS_FORK_DATA, &err);
     ASSERT_TRUE(data != NULL);
-    ASSERT_EQ_INT((int)inner_len, (int)gs_source_size(data));
+    ASSERT_EQ_INT((int)inner_len, (int)source_size(data));
     char want_key[PATH_MAX + 128];
     snprintf(want_key, sizeof(want_key), "%s/partition1/Inner.img", g_host_key);
-    ASSERT_TRUE(strcmp(gs_source_key(data), want_key) == 0);
+    ASSERT_TRUE(strcmp(source_key(data), want_key) == 0);
 
     image_mount_t *nm = NULL;
     ASSERT_EQ_INT(0, image_vfs_acquire_mount_source("/x/Inner.img", data, NULL, &nm));
-    gs_source_release(data);
+    source_release(data);
     char buf[16] = {0};
     size_t got = 0;
     ASSERT_EQ_INT(0, read_all(vfs_image_backend(), nm, "/partition1/Deep", buf, sizeof(buf), &got));

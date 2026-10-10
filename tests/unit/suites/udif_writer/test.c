@@ -212,17 +212,17 @@ static void write_image(const char *path, const uint8_t *content, size_t len, si
 // a sector; the verifier agrees; the table CRC is the padded content's.
 static void check_image(const char *path, const uint8_t *content, size_t len, const udif_writer_stats_t *st) {
     size_t padded = (len + 511) / 512 * 512;
-    gs_source_t *host = gs_source_host(path, NULL);
+    source_t *host = source_host(path, NULL);
     ASSERT_TRUE(host != NULL);
     int err = 0;
-    gs_source_t *s = udif_source_open(host, &err);
+    source_t *s = udif_source_open(host, &err);
     ASSERT_TRUE(s != NULL);
-    ASSERT_EQ_INT((int)padded, (int)gs_source_size(s));
+    ASSERT_EQ_INT((int)padded, (int)source_size(s));
     uint8_t *got = malloc(padded);
     // Read in odd-sized pieces so reads straddle chunks.
     for (size_t at = 0; at < padded;) {
         size_t n = padded - at < 70001 ? padded - at : 70001;
-        ASSERT_EQ_INT(0, gs_source_read_exact(s, at, got + at, n));
+        ASSERT_EQ_INT(0, source_read_exact(s, at, got + at, n));
         at += n;
     }
     ASSERT_TRUE(memcmp(got, content, len) == 0);
@@ -235,8 +235,8 @@ static void check_image(const char *path, const uint8_t *content, size_t len, co
     ASSERT_EQ_INT(0, udif_verify(host, &vs, msg, sizeof(msg)));
     ASSERT_EQ_INT((int)st->crc, (int)vs.crc);
     ASSERT_EQ_INT((int)st->stored_bytes, (int)file_size(path));
-    gs_source_release(s);
-    gs_source_release(host);
+    source_release(s);
+    source_release(host);
 }
 
 TEST(writer_round_trips_sizes_and_chunks) {
@@ -311,21 +311,21 @@ TEST(empty_2gib_is_a_few_kb) {
     ASSERT_EQ_INT(0, udif_create_empty(p, size));
     ASSERT_TRUE(file_size(p) < 4096);
     ASSERT_EQ_INT(-EEXIST, udif_create_empty(p, size));
-    gs_source_t *host = gs_source_host(p, NULL);
-    gs_source_t *s = udif_source_open(host, NULL);
+    source_t *host = source_host(p, NULL);
+    source_t *s = udif_source_open(host, NULL);
     ASSERT_TRUE(s != NULL);
-    ASSERT_TRUE(gs_source_size(s) == size);
+    ASSERT_TRUE(source_size(s) == size);
     uint8_t blk[512];
     memset(blk, 0xAA, sizeof(blk));
-    ASSERT_EQ_INT(0, gs_source_read_exact(s, size - 1024, blk, sizeof(blk)));
+    ASSERT_EQ_INT(0, source_read_exact(s, size - 1024, blk, sizeof(blk)));
     for (size_t i = 0; i < sizeof(blk); i++)
         ASSERT_TRUE(blk[i] == 0);
     udif_writer_stats_t vs;
     ASSERT_EQ_INT(0, udif_verify(host, &vs, NULL, 0));
     ASSERT_EQ_INT(1, (int)vs.extents);
     ASSERT_EQ_INT((int)gs_crc32_zeros(0, size), (int)vs.crc);
-    gs_source_release(s);
-    gs_source_release(host);
+    source_release(s);
+    source_release(host);
 }
 
 // The caller's origin goes into the property list as is (gs-origin) and
@@ -347,14 +347,14 @@ TEST(origin_round_trips_through_udif_info) {
         ASSERT_TRUE(w != NULL);
         ASSERT_EQ_INT(0, udif_writer_append(w, content, sizeof(content)));
         ASSERT_EQ_INT(0, udif_writer_finish(w, NULL));
-        gs_source_t *host = gs_source_host(p, NULL);
+        source_t *host = source_host(p, NULL);
         ASSERT_TRUE(host != NULL);
         udif_info_t in;
         ASSERT_EQ_INT(0, udif_info(host, &in));
         ASSERT_TRUE(in.gs_profile);
         ASSERT_TRUE(strcmp(in.source_name, "disk.img") == 0);
         ASSERT_TRUE(strcmp(in.origin, with ? url : "") == 0);
-        gs_source_release(host);
+        source_release(host);
     }
 }
 
@@ -370,10 +370,10 @@ TEST(corrupt_chunk_fails_only_its_range) {
     const char *p = sb_path("bad.dmg");
     write_image(p, in, len, 65536, 128, 1, &st);
     FILE *f = fopen(p, "r+b");
-    gs_source_t *probe = gs_source_host(p, NULL);
+    source_t *probe = source_host(p, NULL);
     udif_writer_stats_t ok;
     ASSERT_EQ_INT(0, udif_verify(probe, &ok, NULL, 0));
-    gs_source_release(probe);
+    source_release(probe);
     // The six stored chunks are near enough the same size here: a byte at
     // 5/12 of the data fork is inside the third.
     uint8_t k[512];
@@ -392,18 +392,18 @@ TEST(corrupt_chunk_fails_only_its_range) {
     const char *q = sb_path("bad2.dmg");
     unlink(q);
     ASSERT_EQ_INT(0, rename(sb_path("bad.dmg"), q));
-    gs_source_t *host = gs_source_host(q, NULL);
-    gs_source_t *s = udif_source_open(host, NULL);
+    source_t *host = source_host(q, NULL);
+    source_t *s = udif_source_open(host, NULL);
     ASSERT_TRUE(s != NULL);
     uint8_t blk[512];
-    ASSERT_EQ_INT(0, gs_source_read_exact(s, 0, blk, sizeof(blk)));
+    ASSERT_EQ_INT(0, source_read_exact(s, 0, blk, sizeof(blk)));
     ASSERT_TRUE(memcmp(blk, in, sizeof(blk)) == 0);
-    ASSERT_TRUE(gs_source_read_exact(s, 2 * 65536 + 512, blk, sizeof(blk)) != 0);
-    ASSERT_EQ_INT(0, gs_source_read_exact(s, 5 * 65536, blk, sizeof(blk)));
+    ASSERT_TRUE(source_read_exact(s, 2 * 65536 + 512, blk, sizeof(blk)) != 0);
+    ASSERT_EQ_INT(0, source_read_exact(s, 5 * 65536, blk, sizeof(blk)));
     ASSERT_TRUE(memcmp(blk, in + 5 * 65536, sizeof(blk)) == 0);
     ASSERT_TRUE(udif_verify(host, NULL, NULL, 0) != 0);
-    gs_source_release(s);
-    gs_source_release(host);
+    source_release(s);
+    source_release(host);
     free(in);
 }
 
@@ -422,12 +422,12 @@ TEST(chunk_bound_applies_to_foreign_images) {
     size_t saved = udif_inplace_max_chunk();
     udif_set_inplace_max_chunk(512 * 1024);
 
-    gs_source_t *host = gs_source_host(p, NULL);
+    source_t *host = source_host(p, NULL);
     int err = 0;
-    gs_source_t *s = udif_source_open(host, &err);
+    source_t *s = udif_source_open(host, &err);
     ASSERT_TRUE(s != NULL); // ours: bounded by construction
-    gs_source_release(s);
-    gs_source_release(host);
+    source_release(s);
+    source_release(host);
 
     // Unmark it (the property list is not checksummed).
     long n = file_size(p);
@@ -446,15 +446,15 @@ TEST(chunk_bound_applies_to_foreign_images) {
     ASSERT_TRUE(fwrite(b, 1, (size_t)n, f) == (size_t)n);
     fclose(f);
     free(b);
-    host = gs_source_host(q, NULL);
+    host = source_host(q, NULL);
     s = udif_source_open(host, &err);
     ASSERT_TRUE(s == NULL);
     ASSERT_EQ_INT(-EFBIG, err);
     // A converter's explicit bound opens it.
     s = udif_source_open_bounded(host, 64u << 20, &err);
     ASSERT_TRUE(s != NULL);
-    gs_source_release(s);
-    gs_source_release(host);
+    source_release(s);
+    source_release(host);
     udif_set_inplace_max_chunk(saved);
     free(in);
 }

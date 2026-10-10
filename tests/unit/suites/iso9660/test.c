@@ -139,8 +139,8 @@ static void build(bool joliet, bool rock_ridge) {
     }
 }
 
-static gs_source_t *src(void) {
-    return gs_source_memory(disc, sizeof(disc), false, "iso-test");
+static source_t *src(void) {
+    return source_memory(disc, sizeof(disc), false, "iso-test");
 }
 
 // Collect a directory's names (", "-joined).
@@ -160,7 +160,7 @@ static void names(iso_volume_t *v, uint32_t extent, uint64_t size, char *out, si
 // into its file as a resource fork, a subdirectory, case-insensitive lookup.
 TEST(test_iso_plain_tree) {
     build(false, false);
-    gs_source_t *s = src();
+    source_t *s = src();
     ASSERT_TRUE(iso_probe_source(s, 0, sizeof(disc)));
     iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
     ASSERT_TRUE(v != NULL);
@@ -191,13 +191,13 @@ TEST(test_iso_plain_tree) {
     const char *through_file[] = {"README.TXT", "x"};
     ASSERT_EQ_INT(-ENOTDIR, iso_lookup(v, through_file, 2, &e));
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // Joliet's UCS-2 names are preferred over the 8.3 ISO ones.
 TEST(test_iso_joliet_names_win) {
     build(true, false);
-    gs_source_t *s = src();
+    source_t *s = src();
     iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
     ASSERT_TRUE(v != NULL);
     char list[256];
@@ -210,20 +210,20 @@ TEST(test_iso_joliet_names_win) {
     ASSERT_EQ_INT(0, iso_lookup(v, root, 1, &e));
     ASSERT_EQ_INT(3000, (int)e.size);
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // Rock Ridge NM entries name files when the root's "." says SUSP is in use.
 TEST(test_iso_rock_ridge_names) {
     build(false, true);
-    gs_source_t *s = src();
+    source_t *s = src();
     iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
     ASSERT_TRUE(v != NULL);
     char list[256];
     names(v, 20, SEC, list, sizeof(list));
     ASSERT_TRUE(strcmp(list, "ReadMe.txt, DIR") == 0);
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // Apple's extensions: Finder info as "AA" (length-prefixed, may follow
@@ -255,7 +255,7 @@ TEST(test_iso_apple_finder_info) {
     static const uint8_t prodos[] = {'A', 'A', 7, 1, 0x04, 0, 0};
     p += record(root + p, (const uint8_t *)"E;1", 3, 25, 10, 0, prodos, sizeof(prodos));
 
-    gs_source_t *s = src();
+    source_t *s = src();
     iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
     ASSERT_TRUE(v != NULL);
     iso_dir_iter_t *it = iso_opendir(v, 20, SEC);
@@ -277,7 +277,7 @@ TEST(test_iso_apple_finder_info) {
     ASSERT_TRUE(e[3].has_finder_info && e[3].creator == 0x52534544u); // 'RSED'
     ASSERT_TRUE(!e[4].has_finder_info);
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 
     // The plain tree has no Apple entries at all.
     build(false, false);
@@ -287,7 +287,7 @@ TEST(test_iso_apple_finder_info) {
     ASSERT_EQ_INT(0, iso_lookup(v, path, 1, &e[0]));
     ASSERT_TRUE(!e[0].has_finder_info);
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // Corrupt records are refused: an identifier running past its record, a
@@ -295,7 +295,7 @@ TEST(test_iso_apple_finder_info) {
 TEST(test_iso_corrupt_records_are_refused) {
     build(false, false);
     disc[20 * SEC + 34 + 34 + 32] = 200; // the third record's identifier runs past the record
-    gs_source_t *s = src();
+    source_t *s = src();
     iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
     ASSERT_TRUE(v != NULL);
     iso_dir_iter_t *it = iso_opendir(v, 20, SEC);
@@ -310,14 +310,14 @@ TEST(test_iso_corrupt_records_are_refused) {
     ASSERT_EQ_INT(-EIO, iso_read(v, SECTORS + 5, 100, 0, buf, sizeof(buf), &got));
     ASSERT_TRUE(iso_opendir(v, 20, (uint64_t)SECTORS * SEC * 2) == NULL);
     iso_close(v);
-    gs_source_release(s);
+    source_release(s);
 
     build(false, false);
     disc[16 * SEC + 1] = 'X'; // no "CD001"
     s = src();
     ASSERT_TRUE(!iso_probe_source(s, 0, sizeof(disc)));
     ASSERT_TRUE(iso_open_source(s, 0, sizeof(disc)) == NULL);
-    gs_source_release(s);
+    source_release(s);
 }
 
 int main(void) {

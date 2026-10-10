@@ -19,7 +19,7 @@ int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount) {
     return -ENOTDIR;
 }
 
-int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_source_t *rsrc, image_mount_t **out_mount) {
+int image_vfs_acquire_mount_source(const char *path, source_t *data, source_t *rsrc, image_mount_t **out_mount) {
     (void)path;
     (void)data;
     (void)rsrc;
@@ -28,7 +28,7 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
     return -ENOTDIR; // no nested descent in the stubbed VFS unit test
 }
 
-gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err) {
+source_t *image_vfs_open_source(image_mount_t *m, const char *tail, source_fork_t fork, int *err) {
     (void)m;
     (void)tail;
     (void)fork;
@@ -38,7 +38,7 @@ gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t
 }
 
 // The namespace formats are not linked: nothing is a namespace here.
-void gs_ns_register_formats(void) {}
+void ns_register_formats(void) {}
 
 // Image-layer symbols referenced by vfs_export_raw_image().  The stubbed VFS
 // unit test never exercises the export path, so these just satisfy the linker.

@@ -25,8 +25,8 @@
 // ============================================================================
 
 typedef struct {
-    gs_source_t *src; // retained
-    gs_chunk_cache_t *cache;
+    source_t *src; // retained
+    chunk_cache_t *cache;
     char *key; // the cache key: the source's key
     uint64_t size;
     pthread_mutex_t mu; // serialises reads of src and the cursor
@@ -40,7 +40,7 @@ static int64_t dt_read_chunk(dt_src_t *d, uint64_t idx, uint8_t *buf, size_t cap
     if (off >= d->size)
         return 0;
     size_t n = d->size - off < cap ? (size_t)(d->size - off) : cap;
-    int rc = gs_source_read_exact(d->src, off, buf, n);
+    int rc = source_read_exact(d->src, off, buf, n);
     if (rc != 0)
         return rc;
     d->cursor = off + n;
@@ -54,14 +54,14 @@ static int64_t dt_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     dt_src_t *d = ctx;
     pthread_mutex_lock(&d->mu);
     uint64_t want = idx * GS_DECODE_CHUNK;
-    if (gs_source_tier(d->src) >= GS_TIER_STREAM && d->cursor < want && d->cursor % GS_DECODE_CHUNK == 0) {
+    if (source_tier(d->src) >= GS_TIER_STREAM && d->cursor < want && d->cursor % GS_DECODE_CHUNK == 0) {
         for (uint64_t k = d->cursor / GS_DECODE_CHUNK; k < idx; k++) {
             int64_t n = dt_read_chunk(d, k, d->scratch, GS_DECODE_CHUNK);
             if (n < 0) {
                 pthread_mutex_unlock(&d->mu);
                 return n;
             }
-            gs_chunk_cache_put(d->cache, d->key, k, d->scratch, (size_t)n);
+            chunk_cache_put(d->cache, d->key, k, d->scratch, (size_t)n);
         }
     }
     int64_t n = dt_read_chunk(d, idx, buf, cap);
@@ -69,7 +69,7 @@ static int64_t dt_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     return n;
 }
 
-static int64_t dt_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t dt_read(source_t *s, uint64_t off, void *buf, size_t len) {
     dt_src_t *d = s->ctx;
     if (off >= d->size)
         return 0;
@@ -82,7 +82,7 @@ static int64_t dt_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
         uint64_t in = at - idx * GS_DECODE_CHUNK;
         size_t want = GS_DECODE_CHUNK - (size_t)in < len - done ? GS_DECODE_CHUNK - (size_t)in : len - done;
         int64_t n =
-            gs_chunk_cache_get(d->cache, d->key, idx, GS_DECODE_CHUNK, in, (uint8_t *)buf + done, want, dt_fetch, d);
+            chunk_cache_get(d->cache, d->key, idx, GS_DECODE_CHUNK, in, (uint8_t *)buf + done, want, dt_fetch, d);
         if (n < 0)
             return done ? (int64_t)done : n;
         if (n == 0)
@@ -92,46 +92,46 @@ static int64_t dt_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return (int64_t)done;
 }
 
-static uint64_t dt_size(gs_source_t *s) {
+static uint64_t dt_size(source_t *s) {
     return ((dt_src_t *)s->ctx)->size;
 }
 
-static const char *dt_key(gs_source_t *s) {
+static const char *dt_key(source_t *s) {
     return ((dt_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t dt_tier(gs_source_t *s) {
+static source_tier_t dt_tier(source_t *s) {
     (void)s;
     return GS_TIER_EARNED; // O(1) for every chunk one pass has produced
 }
 
-static void dt_close(gs_source_t *s) {
+static void dt_close(source_t *s) {
     dt_src_t *d = s->ctx;
     if (!d)
         return;
-    gs_source_release(d->src);
+    source_release(d->src);
     pthread_mutex_destroy(&d->mu);
     free(d->scratch);
     free(d->key);
     free(d);
 }
 
-static const gs_source_ops_t dt_ops = {dt_read, dt_size, dt_key, dt_tier, dt_close};
+static const source_ops_t dt_ops = {dt_read, dt_size, dt_key, dt_tier, dt_close};
 
-gs_source_t *gs_source_decode_through(gs_source_t *src, gs_chunk_cache_t *cache) {
+source_t *source_decode_through(source_t *src, chunk_cache_t *cache) {
     if (!src)
         return NULL;
     dt_src_t *d = calloc(1, sizeof(*d));
     if (!d)
         return NULL;
-    d->src = gs_source_retain(src);
-    d->cache = cache ? cache : gs_chunk_cache_default();
-    d->key = gs_strdup(gs_source_key(src));
-    d->size = gs_source_size(src);
+    d->src = source_retain(src);
+    d->cache = cache ? cache : chunk_cache_default();
+    d->key = gs_strdup(source_key(src));
+    d->size = source_size(src);
     d->scratch = malloc(GS_DECODE_CHUNK);
     pthread_mutex_init(&d->mu, NULL);
     if (!d->cache || !d->key || !d->scratch) {
-        gs_source_t tmp = {.ctx = d};
+        source_t tmp = {.ctx = d};
         dt_close(&tmp);
         return NULL;
     }
@@ -143,58 +143,58 @@ gs_source_t *gs_source_decode_through(gs_source_t *src, gs_chunk_cache_t *cache)
 // ============================================================================
 
 typedef struct {
-    gs_source_t *src;
+    source_t *src;
     pthread_mutex_t mu;
 } lock_src_t;
 
-static int64_t lock_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t lock_read(source_t *s, uint64_t off, void *buf, size_t len) {
     lock_src_t *l = s->ctx;
     pthread_mutex_lock(&l->mu);
-    int64_t n = gs_source_read(l->src, off, buf, len);
+    int64_t n = source_read(l->src, off, buf, len);
     pthread_mutex_unlock(&l->mu);
     return n;
 }
 
-static uint64_t lock_size(gs_source_t *s) {
-    return gs_source_size(((lock_src_t *)s->ctx)->src);
+static uint64_t lock_size(source_t *s) {
+    return source_size(((lock_src_t *)s->ctx)->src);
 }
 
-static const char *lock_key(gs_source_t *s) {
-    return gs_source_key(((lock_src_t *)s->ctx)->src);
+static const char *lock_key(source_t *s) {
+    return source_key(((lock_src_t *)s->ctx)->src);
 }
 
-static gs_tier_t lock_tier(gs_source_t *s) {
+static source_tier_t lock_tier(source_t *s) {
     lock_src_t *l = s->ctx;
     pthread_mutex_lock(&l->mu);
-    gs_tier_t t = gs_source_tier(l->src);
+    source_tier_t t = source_tier(l->src);
     pthread_mutex_unlock(&l->mu);
     return t;
 }
 
 // A "not yet" from the wrapped source passes through the read; so does the
 // wait for it (outside the lock: the wait must not hold other readers up).
-static int lock_poll(gs_source_t *s, int timeout_ms) {
-    return gs_source_poll(((lock_src_t *)s->ctx)->src, timeout_ms);
+static int lock_poll(source_t *s, int timeout_ms) {
+    return source_poll(((lock_src_t *)s->ctx)->src, timeout_ms);
 }
 
-static void lock_close(gs_source_t *s) {
+static void lock_close(source_t *s) {
     lock_src_t *l = s->ctx;
     if (!l)
         return;
-    gs_source_release(l->src);
+    source_release(l->src);
     pthread_mutex_destroy(&l->mu);
     free(l);
 }
 
-static const gs_source_ops_t lock_ops = {lock_read, lock_size, lock_key, lock_tier, lock_close, lock_poll};
+static const source_ops_t lock_ops = {lock_read, lock_size, lock_key, lock_tier, lock_close, lock_poll};
 
-gs_source_t *gs_source_locked(gs_source_t *src) {
+source_t *source_locked(source_t *src) {
     if (!src)
         return NULL;
     lock_src_t *l = calloc(1, sizeof(*l));
     if (!l)
         return NULL;
-    l->src = gs_source_retain(src);
+    l->src = source_retain(src);
     pthread_mutex_init(&l->mu, NULL);
     return peel_source_new(&lock_ops, l, NULL);
 }
@@ -213,7 +213,7 @@ typedef struct {
     uint64_t expected, written;
 } file_sink_t;
 
-static int64_t fsink_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t fsink_read(source_t *s, uint64_t off, void *buf, size_t len) {
     file_sink_t *f = s->ctx;
     if (off >= f->written)
         return 0;
@@ -223,23 +223,23 @@ static int64_t fsink_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return n < 0 ? -errno : (int64_t)n;
 }
 
-static uint64_t fsink_size(gs_source_t *s) {
+static uint64_t fsink_size(source_t *s) {
     file_sink_t *f = s->ctx;
     if (f->expected == PEEL_SIZE_UNKNOWN)
         return f->written;
     return f->expected > f->written ? f->expected : f->written;
 }
 
-static const char *fsink_key(gs_source_t *s) {
+static const char *fsink_key(source_t *s) {
     return ((file_sink_t *)s->ctx)->key;
 }
 
-static gs_tier_t fsink_tier(gs_source_t *s) {
+static source_tier_t fsink_tier(source_t *s) {
     (void)s;
     return GS_TIER_RANDOM;
 }
 
-static void fsink_close(gs_source_t *s) {
+static void fsink_close(source_t *s) {
     file_sink_t *f = s->ctx;
     if (!f)
         return;
@@ -252,9 +252,9 @@ static void fsink_close(gs_source_t *s) {
     free(f);
 }
 
-static const gs_source_ops_t fsink_ops = {fsink_read, fsink_size, fsink_key, fsink_tier, fsink_close};
+static const source_ops_t fsink_ops = {fsink_read, fsink_size, fsink_key, fsink_tier, fsink_close};
 
-static gs_source_t *sink_create(void *ctx, const char *key, uint64_t expected_len) {
+static source_t *sink_create(void *ctx, const char *key, uint64_t expected_len) {
     (void)ctx;
     if (expected_len <= SINK_MEMORY_MAX)
         return peel_heap_sink()->create(NULL, key, expected_len);
@@ -263,14 +263,14 @@ static gs_source_t *sink_create(void *ctx, const char *key, uint64_t expected_le
         return NULL;
     f->fd = -1;
     f->key = gs_strdup(key);
-    gs_mkdir_p(image_scratch_dir());
+    mkdir_p(image_scratch_dir());
     // A fresh name each time: two opens of one fork decode independently.
     static unsigned counter;
-    f->path = gs_str_printf("%s/sink-%ld-%u.bin", image_scratch_dir(), (long)getpid(), ++counter);
+    f->path = str_printf("%s/sink-%ld-%u.bin", image_scratch_dir(), (long)getpid(), ++counter);
     if (f->key && f->path)
         f->fd = open(f->path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (f->fd < 0) {
-        gs_source_t tmp = {.ctx = f};
+        source_t tmp = {.ctx = f};
         fsink_close(&tmp);
         return NULL;
     }
@@ -278,7 +278,7 @@ static gs_source_t *sink_create(void *ctx, const char *key, uint64_t expected_le
     return peel_source_new(&fsink_ops, f, NULL);
 }
 
-static int64_t sink_write(gs_source_t *sink, uint64_t off, const void *buf, size_t len) {
+static int64_t sink_write(source_t *sink, uint64_t off, const void *buf, size_t len) {
     if (sink->ops != &fsink_ops)
         return peel_heap_sink()->write(sink, off, buf, len);
     file_sink_t *f = sink->ctx;
@@ -297,13 +297,13 @@ static int64_t sink_write(gs_source_t *sink, uint64_t off, const void *buf, size
     return (int64_t)len;
 }
 
-static void sink_commit(gs_source_t *sink) {
+static void sink_commit(source_t *sink) {
     if (sink->ops != &fsink_ops)
         peel_heap_sink()->commit(sink);
 }
 
 static const peel_sink_ops_t g_scratch_sink = {sink_create, sink_write, sink_commit};
 
-const peel_sink_ops_t *gs_scratch_sink(void) {
+const peel_sink_ops_t *source_scratch_sink(void) {
     return &g_scratch_sink;
 }

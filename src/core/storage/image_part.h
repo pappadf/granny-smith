@@ -36,11 +36,11 @@ int image_read_partition(image_t *img, uint64_t part_off, uint64_t part_size, ui
 // see the delta and any wrapper prefix).  Does not own `img`: the caller
 // keeps it open for as long as the source lives.  The filesystem walkers'
 // image_t entry points use this; everything else hands them a source.
-gs_source_t *image_source(image_t *img);
+source_t *image_source(image_t *img);
 
 // Read n bytes at `off` within the partition of `part_size` bytes at
 // `part_off` of `src`.  -EIO if the range leaves the partition or the read
 // fails.
-int source_read_partition(gs_source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n);
+int source_read_partition(source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n);
 
 #endif // IMAGE_PART_H

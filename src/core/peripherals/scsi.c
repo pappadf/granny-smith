@@ -2155,10 +2155,10 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     // image was opened through the registry already, so a .dmg or a Toast
     // image inside an archive is judged by the disk it holds.
     size_t sz = disk_size(img);
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
-    const gs_format_t *f = gs_format_contents(src, NULL);
-    gs_source_release(src);
+    const format_t *f = format_contents(src, NULL);
+    source_release(src);
     bool is_disk = f && strcmp(f->name, "disk") == 0;
     double size_mb = (double)sz / (1024.0 * 1024.0);
     const char *fmt = image_get_format(img);

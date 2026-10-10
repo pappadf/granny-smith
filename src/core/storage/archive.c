@@ -44,7 +44,7 @@ const char *archive_identify_file(const char *path) {
     // Through the VFS, so an archive inside an image or another archive is
     // identified too; detection reads a bounded probe, never the whole file.
     int err = 0;
-    gs_source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
+    source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
     if (!src)
         return NULL;
     peel_probe_t p;
@@ -54,7 +54,7 @@ const char *archive_identify_file(const char *path) {
         format = d ? d->name : NULL;
         peel_probe_free(&p);
     }
-    gs_source_release(src);
+    source_release(src);
     return format;
 }
 
@@ -62,7 +62,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
     if (!path)
         return -1;
     const char *dir = (out_dir && *out_dir) ? out_dir : ".";
-    if (gs_mkdir_p(dir) != 0) {
+    if (mkdir_p(dir) != 0) {
         fprintf(stderr, "archive: cannot create output directory '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -274,13 +274,13 @@ static int work_archive_import(io_leaf_t *j) {
         snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
         return -EEXIST;
     }
-    gs_source_t *src = vfs_open_source(j->a, GS_FORK_DATA, &e);
+    source_t *src = vfs_open_source(j->a, GS_FORK_DATA, &e);
     if (!src) {
         snprintf(j->err, sizeof j->err, "cannot open '%s'", j->a);
         return -ENOENT;
     }
     peel_source_t *arc = innermost_archive(src, j->err, sizeof j->err);
-    gs_source_release(src);
+    source_release(src);
     if (!arc)
         return -EINVAL;
 
@@ -331,7 +331,7 @@ static int work_archive_import(io_leaf_t *j) {
     import_sink_t *k = calloc(1, sizeof(*k));
     const char *base = strrchr(u->member, '/');
     udif_writer_opts_t o = {.level = 1, .source_name = base ? base + 1 : u->member, .origin = u->origin};
-    gs_mkdir_parents(j->b);
+    mkdir_parents(j->b);
     if (k)
         k->w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
     if (!k || !k->w) {

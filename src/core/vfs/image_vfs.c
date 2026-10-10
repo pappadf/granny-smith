@@ -45,7 +45,7 @@ struct image_mount {
     bool in_use;
     char *key; // the source's key: the table's identity
     char *path; // the VFS path it was mounted under
-    gs_namespace_t *ns;
+    ns_t *ns;
     const char *format; // "APM", "HFS", "UFS", "zip", ... (static)
     uint32_t n_root; // entries at the root (partitions of a disk)
     uint32_t refcount; // open handles
@@ -164,7 +164,7 @@ static void rsrc_cache_unpin(rsrc_cache_entry_t *e) {
 // Read and parse the resource fork of the file at `path` (whose dirent is
 // `d`) and return the cache entry.  NULL on any failure (read error, OOM,
 // corrupt fork, a fork too large to be one).
-static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, const char *path, const gs_dirent_t *d) {
+static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, const char *path, const ns_dirent_t *d) {
     if (!d || d->rsrc_size == 0)
         return NULL;
     rsrc_cache_entry_t *e = rsrc_cache_find(m, path);
@@ -175,13 +175,13 @@ static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, const char *path
     if (d->rsrc_size > RFORK_MAX_FORK_LEN)
         return NULL;
     int err = 0;
-    gs_source_t *src = gs_ns_open(m->ns, path, GS_FORK_RSRC, &err);
+    source_t *src = ns_open(m->ns, path, GS_FORK_RSRC, &err);
     if (!src)
         return NULL;
     uint8_t *buf = NULL;
     size_t flen = 0;
-    int rc = gs_source_read_all(src, RFORK_MAX_FORK_LEN, &buf, &flen);
-    gs_source_release(src);
+    int rc = source_read_all(src, RFORK_MAX_FORK_LEN, &buf, &flen);
+    source_release(src);
     if (rc != 0 || flen != d->rsrc_size) {
         free(buf);
         return NULL;
@@ -252,7 +252,7 @@ static image_mount_t *find_mount_by_path(const char *path) {
 // Tear down a mount without regard for refcount (callers must guard).
 static void mount_destroy(image_mount_t *m) {
     rsrc_cache_drop_for_mount(m);
-    gs_namespace_close(m->ns);
+    ns_close(m->ns);
     pthread_mutex_lock(&s_mounts_mu);
     free(m->key);
     free(m->path);
@@ -277,10 +277,10 @@ static image_mount_t *find_free_slot(void) {
 
 // ---- Mounting -------------------------------------------------------------
 
-int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_source_t *rsrc, image_mount_t **out_mount) {
+int image_vfs_acquire_mount_source(const char *path, source_t *data, source_t *rsrc, image_mount_t **out_mount) {
     if (!path || !data || !out_mount)
         return -EINVAL;
-    const char *key = gs_source_key(data);
+    const char *key = source_key(data);
     image_mount_t *m = find_mount_by_key(key);
     if (m) {
         if (mount_busy(m))
@@ -305,27 +305,27 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
 
     int err = 0;
     const char *fmt = NULL;
-    gs_namespace_t *ns = gs_format_open_namespace(data, rsrc, &fmt, &err);
+    ns_t *ns = format_open_namespace(data, rsrc, &fmt, &err);
     if (!ns)
         return err ? err : -ENOTDIR;
     m = find_free_slot();
     if (!m) {
-        gs_namespace_close(ns);
+        ns_close(ns);
         return -ENOSPC;
     }
     char *k = gs_strdup(key), *p = gs_strdup(path);
     if (!k || !p) {
         free(k);
         free(p);
-        gs_namespace_close(ns);
+        ns_close(ns);
         return -ENOMEM;
     }
     // What listings call it: a disk's partitioning, else the format.
-    const char *kind = gs_ns_disk_kind(ns);
+    const char *kind = ns_disk_kind(ns);
     uint32_t n_root = 0;
-    gs_dirent_t *root = NULL;
+    ns_dirent_t *root = NULL;
     int count = 0;
-    if (gs_ns_list(ns, "", &root, &count) == 0)
+    if (ns_list(ns, "", &root, &count) == 0)
         n_root = (uint32_t)count;
     free(root);
     pthread_mutex_lock(&s_mounts_mu);
@@ -334,7 +334,7 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
     m->key = k;
     m->path = p;
     m->ns = ns;
-    m->format = kind ? kind : (gs_ns_archive_format(ns) ? gs_ns_archive_format(ns) : fmt);
+    m->format = kind ? kind : (ns_archive_format(ns) ? ns_archive_format(ns) : fmt);
     m->n_root = n_root;
     m->serial = s_next_serial++;
     m->used = ++s_use_clock;
@@ -362,15 +362,15 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
             return -ENOMEM;
     }
     int err = 0;
-    gs_source_t *data = gs_source_host(host_path, &err);
+    source_t *data = source_host(host_path, &err);
     if (!data) {
         free(host_path);
         return err ? err : -ENOENT;
     }
-    gs_source_t *rsrc = gs_source_open_host_path(host_path, GS_FORK_RSRC, NULL);
+    source_t *rsrc = source_open_host_path(host_path, GS_FORK_RSRC, NULL);
     int rc = image_vfs_acquire_mount_source(host_path, data, rsrc, out_mount);
-    gs_source_release(data);
-    gs_source_release(rsrc);
+    source_release(data);
+    source_release(rsrc);
     free(host_path);
     return rc;
 }
@@ -485,7 +485,7 @@ static int parse_image_path(const char *path, image_path_t **out) {
     image_path_t *ip = calloc(1, sizeof(*ip));
     if (!ip)
         return -ENOMEM;
-    int n = gs_ns_split(path, ip->path_storage, sizeof(ip->path_storage), ip->components, IMAGE_VFS_MAX_COMPONENTS);
+    int n = ns_split(path, ip->path_storage, sizeof(ip->path_storage), ip->components, IMAGE_VFS_MAX_COMPONENTS);
     if (n < 0) {
         free(ip);
         return n;
@@ -590,7 +590,7 @@ typedef struct image_vfs_dir {
     image_dir_kind_t kind;
     image_mount_t *mount;
     // DIR_NS
-    gs_dirent_t *entries;
+    ns_dirent_t *entries;
     int n_entries, next_entry;
     // Synthetic resource tree (DIR_RSRC_ROOT / DIR_RSRC_TYPE)
     rfork_t *rfork; // borrowed from rsrc_entry, which this handle pins
@@ -621,7 +621,7 @@ typedef enum image_file_kind {
 typedef struct image_vfs_file {
     image_mount_t *mount;
     image_file_kind_t kind;
-    gs_source_t *src; // FILE_SOURCE
+    source_t *src; // FILE_SOURCE
     // FILE_RSRC_DATA: pointer into the cached fork buffer of rsrc_entry,
     // which this handle pins until it closes.
     const uint8_t *rsrc_bytes;
@@ -642,7 +642,7 @@ static image_vfs_file_t *as_file(vfs_file_t *f) {
 }
 
 // A dirent as a VFS stat.
-static void to_stat(const gs_dirent_t *d, vfs_stat_t *out) {
+static void to_stat(const ns_dirent_t *d, vfs_stat_t *out) {
     memset(out, 0, sizeof(*out));
     out->mode = d->is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
     out->size = d->is_dir ? 0 : d->data_size;
@@ -655,7 +655,7 @@ static void to_stat(const gs_dirent_t *d, vfs_stat_t *out) {
 typedef struct {
     synth_kind_t kind;
     char core[VFS_PATH_MAX];
-    gs_dirent_t file;
+    ns_dirent_t file;
     uint8_t type[4];
     int16_t id;
 } synth_t;
@@ -677,7 +677,7 @@ static int resolve_synthetic(image_mount_t *m, const image_path_t *ip, synth_t *
             continue;
         if (join_path(ip, a, sy->core, sizeof(sy->core)) != 0)
             return -ENAMETOOLONG;
-        if (gs_ns_stat(m->ns, sy->core, &sy->file) < 0 || sy->file.is_dir)
+        if (ns_stat(m->ns, sy->core, &sy->file) < 0 || sy->file.is_dir)
             continue; // forks live on files: this one is a plain name
         sy->kind = kind;
         return 0;
@@ -752,8 +752,8 @@ static int stat_path(image_mount_t *m, const image_path_t *ip, vfs_stat_t *out) 
     char p[VFS_PATH_MAX];
     if (join_path(ip, ip->n_components, p, sizeof(p)) != 0)
         return -ENAMETOOLONG;
-    gs_dirent_t d;
-    int rc = gs_ns_stat(m->ns, p, &d);
+    ns_dirent_t d;
+    int rc = ns_stat(m->ns, p, &d);
     if (rc < 0)
         return rc;
     to_stat(&d, out);
@@ -817,7 +817,7 @@ static int opendir_path(image_mount_t *m, const image_path_t *ip, image_vfs_dir_
     char p[VFS_PATH_MAX];
     int rc = join_path(ip, ip->n_components, p, sizeof(p));
     if (rc == 0)
-        rc = gs_ns_list(m->ns, p, &d->entries, &d->n_entries);
+        rc = ns_list(m->ns, p, &d->entries, &d->n_entries);
     if (rc < 0)
         return rc;
     d->kind = DIR_NS;
@@ -857,7 +857,7 @@ static int img_readdir(vfs_dir_t *vd, vfs_dirent_t *out) {
     if (d->kind == DIR_NS) {
         if (d->next_entry >= d->n_entries)
             return 0;
-        const gs_dirent_t *e = &d->entries[d->next_entry++];
+        const ns_dirent_t *e = &d->entries[d->next_entry++];
         snprintf(out->name, sizeof(out->name), "%s", e->name);
         to_stat(e, &out->st);
         out->has_stat = true;
@@ -958,9 +958,9 @@ static int open_synthetic(image_mount_t *m, const image_path_t *ip, image_vfs_fi
         return -EISDIR;
     if (sy.kind == SYNTH_FINF || sy.kind == SYNTH_RSRC_RAW) {
         f->kind = FILE_SOURCE;
-        f->src = gs_ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, &rc);
+        f->src = ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, &rc);
         if (!f->src && sy.kind == SYNTH_RSRC_RAW && sy.file.rsrc_size == 0)
-            f->src = gs_source_memory(NULL, 0, false, "empty"); // an empty fork reads as empty
+            f->src = source_memory(NULL, 0, false, "empty"); // an empty fork reads as empty
         return f->src ? 0 : (rc ? rc : -ENOENT);
     }
     if (sy.file.rsrc_size == 0)
@@ -1002,7 +1002,7 @@ static int open_path(image_mount_t *m, const image_path_t *ip, image_vfs_file_t 
     if (rc != 0)
         return rc;
     f->kind = FILE_SOURCE;
-    f->src = gs_ns_open(m->ns, p, GS_FORK_DATA, &rc);
+    f->src = ns_open(m->ns, p, GS_FORK_DATA, &rc);
     if (!f->src && rc == 0)
         rc = -ENOENT;
     return rc;
@@ -1056,7 +1056,7 @@ static int img_read(vfs_file_t *vf, uint64_t off, void *buf, size_t n, size_t *n
     } else {
         // As much as the source gives, up to n (short only at its end).
         while (got < n) {
-            int64_t k = gs_source_read(f->src, off + got, (uint8_t *)buf + got, n - got);
+            int64_t k = source_read(f->src, off + got, (uint8_t *)buf + got, n - got);
             if (k < 0)
                 return (int)k;
             if (k == 0)
@@ -1074,7 +1074,7 @@ static void img_close(vfs_file_t *vf) {
     if (!f)
         return;
     rsrc_cache_unpin(f->rsrc_entry);
-    gs_source_release(f->src);
+    source_release(f->src);
     mount_release(f->mount);
     free(f);
 }
@@ -1082,7 +1082,7 @@ static void img_close(vfs_file_t *vf) {
 // ---- Opening a file as a source --------------------------------------------
 
 // The body of image_vfs_open_source, on a parsed path.
-static gs_source_t *open_source_path(image_mount_t *m, const image_path_t *ip, gs_fork_t fork, int *err) {
+static source_t *open_source_path(image_mount_t *m, const image_path_t *ip, source_fork_t fork, int *err) {
     if (ip->n_components == 0) {
         *err = -EISDIR;
         return NULL;
@@ -1095,18 +1095,18 @@ static gs_source_t *open_source_path(image_mount_t *m, const image_path_t *ip, g
         return NULL;
     }
     if (rc == 0 && fork == GS_FORK_DATA && (sy.kind == SYNTH_FINF || sy.kind == SYNTH_RSRC_RAW))
-        return gs_ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, err);
+        return ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, err);
     char p[VFS_PATH_MAX];
     *err = join_path(ip, ip->n_components, p, sizeof(p));
     if (*err < 0)
         return NULL;
-    gs_source_t *s = gs_ns_open(m->ns, p, fork, err);
+    source_t *s = ns_open(m->ns, p, fork, err);
     if (!s && *err == 0)
         *err = -ENOENT;
     return s;
 }
 
-gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err) {
+source_t *image_vfs_open_source(image_mount_t *m, const char *tail, source_fork_t fork, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -1122,7 +1122,7 @@ gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t
     *err = parse_image_path(tail, &ip);
     if (*err < 0)
         return NULL;
-    gs_source_t *s = open_source_path(m, ip, fork, err);
+    source_t *s = open_source_path(m, ip, fork, err);
     free(ip);
     return s;
 }

@@ -80,7 +80,7 @@
 // ---- Volume state --------------------------------------------------------
 
 struct ufs_volume {
-    gs_source_t *src; // the whole disk (retained)
+    source_t *src; // the whole disk (retained)
     uint64_t partition_off;
     uint64_t partition_size;
 
@@ -263,35 +263,35 @@ static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t of
 // ---- Superblock probe + open --------------------------------------------
 
 bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     bool yes = ufs_probe_source(src, partition_byte_offset, partition_byte_size);
-    gs_source_release(src);
+    source_release(src);
     return yes;
 }
 
-bool ufs_probe_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+bool ufs_probe_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     // The size ufs_open needs, so a probe never passes what open refuses.
     if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return false;
     // Only the magic: big-endian, the order A/UX writes and ufs_open reads.
     uint8_t magic[4];
-    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF + SB_OFF_MAGIC, magic, sizeof(magic)) != 0)
+    if (source_read_exact(src, partition_byte_offset + UFS_SBOFF + SB_OFF_MAGIC, magic, sizeof(magic)) != 0)
         return false;
     return RD_BE32(magic) == UFS_FS_MAGIC;
 }
 
 ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     ufs_volume_t *vol = ufs_open_source(src, partition_byte_offset, partition_byte_size);
-    gs_source_release(src); // the volume holds its own reference
+    source_release(src); // the volume holds its own reference
     return vol;
 }
 
-ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+ufs_volume_t *ufs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return NULL;
     uint8_t sb[2048];
-    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
+    if (source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
         return NULL;
     // Big-endian only: A/UX writes BE, and a little-endian UFS (a PC BSD
     // volume) is out of scope -- ufs_probe refuses it too.
@@ -301,7 +301,7 @@ ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, 
     ufs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->src = gs_source_retain(src);
+    vol->src = source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
 
@@ -334,7 +334,7 @@ ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, 
 void ufs_close(ufs_volume_t *vol) {
     if (!vol)
         return;
-    gs_source_release(vol->src);
+    source_release(vol->src);
     free(vol);
 }
 

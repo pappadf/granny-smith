@@ -67,7 +67,7 @@ apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg
         return NULL;
     }
     // The same scan as image_apm_parse: up to 257 blocks, in whole blocks.
-    uint64_t size = gs_source_size(src);
+    uint64_t size = source_size(src);
     size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
     if (scan_bytes > size)
         scan_bytes = (size_t)(size - size % APM_BLOCK_SIZE);
@@ -82,7 +82,7 @@ apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg
             *errmsg = image_apm_err_alloc;
         return NULL;
     }
-    if (gs_source_read_exact(src, 0, buf, scan_bytes) != 0) {
+    if (source_read_exact(src, 0, buf, scan_bytes) != 0) {
         free(buf);
         if (errmsg)
             *errmsg = image_apm_err_read;

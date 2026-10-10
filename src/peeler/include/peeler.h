@@ -130,7 +130,7 @@ peel_file_list_t peel_path(const char *path, peel_err_t **err);
 // identity (key) and a cost tier.  Everything peeler takes as input and
 // everything it hands back as a fork is a source, so an archive can be
 // listed without extracting it and a member opened on its own.  The core
-// emulator adopts this type unchanged as its gs_source_t.
+// emulator adopts this type unchanged as its source_t.
 //
 // Sources are reference counted: peel_source_new returns one reference,
 // peel_source_retain adds one, peel_source_release drops one and closes the

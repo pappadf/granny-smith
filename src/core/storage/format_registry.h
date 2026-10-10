@@ -27,85 +27,85 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-struct gs_namespace;
+struct ns;
 
 // What detection sees.
 typedef struct {
     peel_probe_t p; // head and tail of the data fork, and its size
-    gs_source_t *data; // the data fork (for a detector that must read more)
-    gs_source_t *rsrc; // the resource fork, or NULL
-} gs_probe_t;
+    source_t *data; // the data fork (for a detector that must read more)
+    source_t *rsrc; // the resource fork, or NULL
+} format_probe_t;
 
-typedef enum { GS_FMT_WRAPPER, GS_FMT_NAMESPACE } gs_fmt_kind_t;
+typedef enum { GS_FMT_WRAPPER, GS_FMT_NAMESPACE } format_kind_t;
 
-typedef struct gs_format {
+typedef struct format {
     const char *name; // "udif", "ndif", "dc42", "hqx", "bin", "gz", "disk", "sit", ...
-    gs_fmt_kind_t kind;
+    format_kind_t kind;
     const char *doc; // one line, for listings
-    bool (*detect)(const gs_probe_t *p);
+    bool (*detect)(const format_probe_t *p);
     // Wrapper: the payload's forks (new references; *rsrc may be NULL).
-    int (*unwrap)(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc);
+    int (*unwrap)(const format_probe_t *p, source_t **data, source_t **rsrc);
     // Namespace: the tree.  NULL when the source is not usable after all.
-    struct gs_namespace *(*open_namespace)(gs_source_t *data, gs_source_t *rsrc);
-} gs_format_t;
+    struct ns *(*open_namespace)(source_t *data, source_t *rsrc);
+} format_t;
 
 // Register a namespace format (appended; detection order is registration
 // order).  Idempotent per name.
-void gs_format_register(const gs_format_t *f);
+void format_register(const format_t *f);
 
 // Every format, wrappers first.  *count set.
-const gs_format_t *const *gs_formats(int *count);
+const format_t *const *format_list(int *count);
 
 // Fill a probe of `data` (+ `rsrc`, not retained).  0 or a negative errno.
-int gs_probe_init(gs_probe_t *p, gs_source_t *data, gs_source_t *rsrc);
-void gs_probe_free(gs_probe_t *p);
+int format_probe_init(format_probe_t *p, source_t *data, source_t *rsrc);
+void format_probe_free(format_probe_t *p);
 
 // The first format of `kind` whose detector accepts the probe, or NULL.
-const gs_format_t *gs_format_detect(const gs_probe_t *p, gs_fmt_kind_t kind);
+const format_t *format_detect(const format_probe_t *p, format_kind_t kind);
 
 // The result of unwrapping every wrapper layer.
 typedef struct {
-    gs_source_t *data; // innermost data fork (a reference)
-    gs_source_t *rsrc; // its resource fork, or NULL (a reference)
+    source_t *data; // innermost data fork (a reference)
+    source_t *rsrc; // its resource fork, or NULL (a reference)
     char chain[96]; // the wrappers peeled, outermost first: "bin+ndif"; "" for none
     // A DiskCopy 4.2 layer's container (a reference), for its tag section,
     // or NULL when there was none.
-    gs_source_t *dc42;
+    source_t *dc42;
     // The last peeler wrapper's container and format (a reference), so a
     // payload that is no namespace can be shown as that one-file wrapper.
-    gs_source_t *peeler_outer;
+    source_t *peeler_outer;
     const char *peeler_format;
     // A wrapper that detected but would not open (a codec we lack, a UDIF
     // chunk too large to read in place), ending the loop: its name and
     // error, or NULL / 0.  The payload is then not the disk.
     const char *failed_format;
     int failed_rc;
-} gs_unwrapped_t;
+} format_unwrapped_t;
 
 // Peel wrapper layers off (`data`, `rsrc`) until none detects.  Always
 // succeeds for readable input (zero layers is a result); a wrapper that
 // detects but fails to open ends the loop there.  Release with
-// gs_unwrapped_free.
-int gs_format_unwrap(gs_source_t *data, gs_source_t *rsrc, gs_unwrapped_t *out);
-void gs_unwrapped_free(gs_unwrapped_t *u);
+// format_unwrapped_free.
+int format_unwrap(source_t *data, source_t *rsrc, format_unwrapped_t *out);
+void format_unwrapped_free(format_unwrapped_t *u);
 
 // Open (`data`, `rsrc`) as a namespace: unwrap, detect a namespace format,
 // open it; failing that, a peeler wrapper that was peeled is itself the
 // namespace (its one file).  NULL with *err (-ENOTDIR: not a tree).
 // *format (may be NULL) gets the namespace format's name.
-struct gs_namespace *gs_format_open_namespace(gs_source_t *data, gs_source_t *rsrc, const char **format, int *err);
+struct ns *format_open_namespace(source_t *data, source_t *rsrc, const char **format, int *err);
 
-// True when gs_format_open_namespace would succeed on the format test alone
+// True when format_open_namespace would succeed on the format test alone
 // (no namespace is opened): the VFS listing's "expandable" flag.
-bool gs_format_is_namespace(gs_source_t *data, gs_source_t *rsrc);
+bool format_is_namespace(source_t *data, source_t *rsrc);
 
 // The namespace format the registry recognises (`data` already unwrapped),
 // or NULL: what files.probe and scsi.identify_cdrom report.
-const gs_format_t *gs_format_contents(gs_source_t *data, gs_source_t *rsrc);
+const format_t *format_contents(source_t *data, source_t *rsrc);
 
 // Opener the registry uses to show a peeler wrapper as a one-file
 // namespace; installed by the VFS with its archive namespace.
-void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *src, const char *format));
+void format_set_wrapper_namespace(struct ns *(*open)(source_t *src, const char *format));
 
 // === DiskCopy 4.2 ===========================================================
 

@@ -105,7 +105,7 @@ typedef struct {
 
 // The storage instance
 struct storage_t {
-    gs_source_t *base; // Original image, read-only (a locked wrapper: any thread may read)
+    source_t *base; // Original image, read-only (a locked wrapper: any thread may read)
     FILE *delta_fp; // Delta file, read-write, kept open
     FILE *journal_fp; // Preimage journal, append+read, kept open
 
@@ -567,7 +567,7 @@ status_t storage_new(const storage_config_t *config, storage_t **out_storage) {
     // lock of its own: an export streams the base on the I/O worker while
     // the guest reads it here, and most sources are not thread-safe.
     if (config->base) {
-        s->base = gs_source_locked(config->base);
+        s->base = source_locked(config->base);
         if (!s->base)
             goto fail;
     }
@@ -633,7 +633,7 @@ status_t storage_delete(storage_t *storage) {
         return STATUS_OK;
     live_remove(storage);
     free(storage->delta_path);
-    gs_source_release(storage->base);
+    source_release(storage->base);
     if (storage->delta_fp)
         fclose(storage->delta_fp);
     if (storage->journal_fp)
@@ -677,9 +677,9 @@ status_t storage_read_block(storage_t *storage, size_t offset, void *buffer) {
         // the export stream serves it; a block it does hold and cannot read
         // is an error, as a failed delta read is, never silent zeros.
         uint64_t at = (uint64_t)block_pos(0, lba, storage->block_size);
-        if (at + storage->block_size > gs_source_size(storage->base)) {
+        if (at + storage->block_size > source_size(storage->base)) {
             memset(buffer, 0, storage->block_size);
-        } else if (gs_source_read_exact(storage->base, at, buffer, storage->block_size) != 0) {
+        } else if (source_read_exact(storage->base, at, buffer, storage->block_size) != 0) {
             memset(buffer, 0, storage->block_size);
             return STATUS_E_IO;
         }
@@ -719,7 +719,7 @@ status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, si
         size_t run = 1;
         while (i + run < count && !bitmap_test(storage->bitmap, lba + (uint32_t)run))
             run++;
-        if (gs_source_read_exact(storage->base, block_pos(0, lba, bs), out + i * bs, run * bs) != 0) {
+        if (source_read_exact(storage->base, block_pos(0, lba, bs), out + i * bs, run * bs) != 0) {
             for (size_t k = 0; k < run; k++)
                 if (storage_read_block(storage, (size_t)(lba + k) * bs, out + (i + k) * bs) != STATUS_OK)
                     return STATUS_E_IO;
@@ -1103,7 +1103,7 @@ typedef enum {
 // (the checkpoint, on the emulator thread) or a view's copies (an export on
 // the I/O worker).
 typedef struct {
-    gs_source_t *base;
+    source_t *base;
     FILE *delta_fp;
     const uint8_t *bitmap;
     uint64_t block_count;
@@ -1179,11 +1179,11 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
             // compressed chunk, a host I/O error) fails the stream -- an
             // export or checkpoint never embeds zeros in its place.
             uint64_t at = block_pos(0, block, storage->block_size);
-            uint64_t size = gs_source_size(storage->base);
+            uint64_t size = source_size(storage->base);
             uint64_t held64 = at < size ? size - at : 0;
             size_t held = held64 < run_bytes ? (size_t)held64 : run_bytes;
             held -= held % storage->block_size;
-            if (held && gs_source_read_exact(storage->base, at, buffer, held) != 0) {
+            if (held && source_read_exact(storage->base, at, buffer, held) != 0) {
                 LOG(0, "storage: base unreadable within blocks %" PRIu64 "..%" PRIu64 "; stream abandoned", block,
                     block + held / storage->block_size - 1);
                 rc = STATUS_E_IO;
@@ -1272,10 +1272,10 @@ storage_export_view_t *storage_export_view_begin(storage_t *storage) {
     }
     // The base source is shared (its reads are locked); the delta gets a
     // handle of its own.
-    v->src.base = gs_source_retain(storage->base);
+    v->src.base = source_retain(storage->base);
     v->src.delta_fp = storage->delta_path ? fopen(storage->delta_path, "rb") : NULL;
     if (!v->src.delta_fp) {
-        gs_source_release(v->src.base);
+        source_release(v->src.base);
         free(v->bitmap_copy);
         free(v->table_copy);
         free(v);
@@ -1295,7 +1295,7 @@ int storage_export_view_write(storage_export_view_t *v, void *context, storage_w
 void storage_export_view_end(storage_export_view_t *v) {
     if (!v)
         return;
-    gs_source_release(v->src.base);
+    source_release(v->src.base);
     if (v->src.delta_fp)
         fclose(v->src.delta_fp);
     free(v->bitmap_copy);

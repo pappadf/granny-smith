@@ -70,12 +70,12 @@ static void setup_sandbox(void) {
 
 // Base sources opened by make_config: storage takes its own reference, so
 // the test's are dropped when the sandbox goes.
-static gs_source_t *g_bases[128];
+static source_t *g_bases[128];
 static int g_n_bases;
 
 static void teardown_sandbox(void) {
     while (g_n_bases > 0)
-        gs_source_release(g_bases[--g_n_bases]);
+        source_release(g_bases[--g_n_bases]);
     cleanup_dir(SANDBOX_DIR);
 }
 
@@ -97,7 +97,7 @@ static storage_config_t make_config(const char *base, const char *delta, const c
     storage_config_t config = {0};
     // The base is a byte source; a path with no file (a brand-new image)
     // is no base, as a missing base file always was.
-    config.base = base ? gs_source_host(base, NULL) : NULL;
+    config.base = base ? source_host(base, NULL) : NULL;
     if (config.base && g_n_bases < (int)(sizeof(g_bases) / sizeof(g_bases[0])))
         g_bases[g_n_bases++] = config.base;
     config.delta_path = delta;
@@ -950,24 +950,24 @@ TEST(storage_v1_delta_still_opens) {
 
 // A source that passes reads through to its parent and counts them.
 static int g_base_reads;
-static int64_t counting_base_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t counting_base_read(source_t *s, uint64_t off, void *buf, size_t len) {
     g_base_reads++;
-    return gs_source_read(s->ctx, off, buf, len);
+    return source_read(s->ctx, off, buf, len);
 }
-static uint64_t counting_base_size(gs_source_t *s) {
-    return gs_source_size(s->ctx);
+static uint64_t counting_base_size(source_t *s) {
+    return source_size(s->ctx);
 }
-static const char *counting_base_key(gs_source_t *s) {
-    return gs_source_key(s->ctx);
+static const char *counting_base_key(source_t *s) {
+    return source_key(s->ctx);
 }
-static gs_tier_t counting_base_tier(gs_source_t *s) {
-    return gs_source_tier(s->ctx);
+static source_tier_t counting_base_tier(source_t *s) {
+    return source_tier(s->ctx);
 }
-static void counting_base_close(gs_source_t *s) {
+static void counting_base_close(source_t *s) {
     (void)s; // the parent reference is the source's own
 }
-static const gs_source_ops_t counting_base_ops = {counting_base_read, counting_base_size, counting_base_key,
-                                                  counting_base_tier, counting_base_close};
+static const source_ops_t counting_base_ops = {counting_base_read, counting_base_size, counting_base_key,
+                                               counting_base_tier, counting_base_close};
 
 // storage_read_blocks over the whole disk, and over windows that start and
 // end inside modified and unmodified runs, returns what storage_read_block
@@ -1038,14 +1038,14 @@ TEST(storage_read_blocks_one_base_read_per_run) {
     setup_sandbox();
     const uint64_t blocks = 2048;
     create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x21);
-    gs_source_t *host = gs_source_host(BASE_FILE, NULL);
+    source_t *host = source_host(BASE_FILE, NULL);
     ASSERT_TRUE(host != NULL);
     storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
     config.base = peel_source_new(&counting_base_ops, host, host);
-    gs_source_release(host);
+    source_release(host);
     storage_t *storage = NULL;
     ASSERT_OK(storage_new(&config, &storage));
-    gs_source_release(config.base); // storage holds its own reference
+    source_release(config.base); // storage holds its own reference
     uint8_t *buf = malloc(blocks * STORAGE_BLOCK_SIZE);
     ASSERT_TRUE(buf != NULL);
     g_base_reads = 0;
@@ -1069,27 +1069,27 @@ TEST(storage_read_blocks_one_base_read_per_run) {
 // -EIO, as a corrupt compressed chunk or a host I/O error fails it, and
 // serves the parent's bytes everywhere else.
 static uint64_t g_bad_lo, g_bad_hi;
-static int64_t failing_base_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t failing_base_read(source_t *s, uint64_t off, void *buf, size_t len) {
     uint64_t lo = g_bad_lo * STORAGE_BLOCK_SIZE, hi = g_bad_hi * STORAGE_BLOCK_SIZE;
     if (len && off < hi && off + len > lo)
         return -EIO;
-    return gs_source_read(s->ctx, off, buf, len);
+    return source_read(s->ctx, off, buf, len);
 }
-static const gs_source_ops_t failing_base_ops = {failing_base_read, counting_base_size, counting_base_key,
-                                                 counting_base_tier, counting_base_close};
+static const source_ops_t failing_base_ops = {failing_base_read, counting_base_size, counting_base_key,
+                                              counting_base_tier, counting_base_close};
 
 static storage_t *open_failing_base(uint64_t blocks, uint64_t bad_lo, uint64_t bad_hi) {
     create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x29);
-    gs_source_t *host = gs_source_host(BASE_FILE, NULL);
+    source_t *host = source_host(BASE_FILE, NULL);
     ASSERT_TRUE(host != NULL);
     storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
     config.base = peel_source_new(&failing_base_ops, host, host);
-    gs_source_release(host);
+    source_release(host);
     g_bad_lo = bad_lo;
     g_bad_hi = bad_hi;
     storage_t *storage = NULL;
     ASSERT_OK(storage_new(&config, &storage));
-    gs_source_release(config.base); // storage holds its own reference
+    source_release(config.base); // storage holds its own reference
     return storage;
 }
 

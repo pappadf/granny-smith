@@ -175,7 +175,7 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
 // companion, or a file inside an image or archive and its forks.  NULL with
 // *err (negated errno; may be NULL).
 #include "source.h"
-gs_source_t *vfs_open_source(const char *path, gs_fork_t fork, int *err);
+source_t *vfs_open_source(const char *path, source_fork_t fork, int *err);
 
 // True when the file at `path` is an image or archive the VFS can descend
 // into (the listing's "expandable" flag).  Files that are expensive to probe
