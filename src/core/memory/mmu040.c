@@ -344,8 +344,10 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
 
 bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool write, bool supervisor) {
     mmu040_state_t *mmu = bus ? bus->m040 : NULL;
-    if (!mmu || !mmu->enabled)
+    if (!mmu || !mmu->enabled) {
+        g_bus_error_is_pmmu = false; // no MMU to blame: never a retry frame from stale state
         return false;
+    }
 
     uint32_t emu_page = logical_addr & ~(uint32_t)MEM_PAGE_MASK;
 
