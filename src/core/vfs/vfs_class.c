@@ -137,6 +137,13 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
         gs_outf("Directory '%s' created\n", dir);
         return val_bool(true);
     }
+    // A directory that is already there is what the caller wanted: say
+    // nothing.  The web UI makes sure of its store directories before every
+    // import, and each one printed "mkdir: cannot create directory
+    // '/opfs/images/rom': File exists" into the terminal.
+    vfs_stat_t st;
+    if (rc == -EEXIST && vfs_stat(dir, &st) == 0 && st.mode == VFS_MODE_DIR)
+        return val_bool(true);
     gs_outf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     return val_bool(false);
 }

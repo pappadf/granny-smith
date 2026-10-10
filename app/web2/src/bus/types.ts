@@ -69,4 +69,7 @@ export interface CheckpointEntry {
   ramBytes: number;
   /** Sum of file sizes inside the dir; 0 if unreadable */
   sizeBytes: number;
+  /** A checkpoint the user created (self-contained, under saved/), not a
+   *  machine's own background checkpoint */
+  saved: boolean;
 }

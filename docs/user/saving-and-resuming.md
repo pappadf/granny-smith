@@ -43,14 +43,26 @@ marked *missing*. The **×** removes an entry.
 ![The Checkpoints panel](images/panel-checkpoints.png)
 
 The **Checkpoints** tab lists the saved machines in this browser, with
-name, machine, date and size (click a column heading to sort).
+name, machine, date and size (click a column heading to sort). It holds two
+kinds:
 
-- **Create Checkpoint** (top right) saves the running machine now.
-- **Double-click** a checkpoint, or right-click → **Load**, to restore it.
+- **Autosave** entries — each machine's automatic checkpoint (§1), always
+  its latest state. Resuming (§2) continues from it.
+- **Checkpoints you create** — click **Create Checkpoint** (top right) to
+  keep the running machine's state as it is now, under a name of its own.
+  Each is a complete, self-contained copy (memory and disks), so you can
+  return to it later however much the machine changes; it takes about as
+  much space as a saved-state file (§5).
+
+What you can do with them:
+
+- **Double-click** an entry, or right-click → **Load**, to restore it.
 - Right-click → **Rename** to give it a meaningful name, or **Delete** to
   remove it.
-- Right-click → **Save to computer…** is not available yet; use
-  **Save State** (below) to get a file.
+- Right-click → **Save to computer…** downloads it as a file you can open
+  again with **Open Checkpoint...** (§5). For an autosave this saves the
+  running machine (as **Save State** does); another machine's autosave has
+  to be loaded first.
 
 ## 5. Saving a machine to a file
 

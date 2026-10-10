@@ -14,6 +14,11 @@ export const FDHD_DIR = '/opfs/images/fdhd';
 export const HD_DIR = '/opfs/images/hd';
 export const CD_DIR = '/opfs/images/cd';
 export const CHECKPOINT_DIR = '/opfs/checkpoints';
+// Checkpoints the user created (Create Checkpoint): one self-contained
+// (consolidated) checkpoint per directory, `<id>-<created>/state.checkpoint`
+// plus its manifest.json.  A subdirectory, so the startup sweep of other
+// machines' directories in CHECKPOINT_DIR leaves them alone.
+export const SAVED_CHECKPOINT_DIR = `${CHECKPOINT_DIR}/saved`;
 export const UPLOAD_DIR = '/opfs/upload';
 // The scratch area: every file the page writes on its way somewhere else (an
 // upload being probed, a URL download, a streamed import's .dmg.part, a Save

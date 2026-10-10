@@ -39,7 +39,8 @@ async function bootFromUrl(page: Page, query: string): Promise<void> {
   await expect(
     page
       .locator(".toast .msg")
-      .filter({ hasText: "Booted plus from URL parameters" }),
+      // "… without <disk>: <why>" when a disk could not be had.
+      .filter({ hasText: /Booted plus (from URL parameters|without )/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
     "Running",

@@ -1,11 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { machine } from '@/state/machine.svelte';
+  import { machine, fitZoom } from '@/state/machine.svelte';
   import { bootstrap } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
   import { startVoodooGpu, gpuOverlay } from '@/gpu/voodoo2Gpu.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
+  // The scroll area the screen sits in, and its size, for fitting the zoom.
+  let view: HTMLDivElement | undefined = $state(undefined);
+  let viewW = $state(0);
+  let viewH = $state(0);
   // The Voodoo2 WebGPU takeover's overlay: transferred to the GPU worker
   // once at mount and shown exactly while the card drives the monitor in
   // GPU mode, so the pass-through switch is literally which canvas is on
@@ -29,6 +33,39 @@
       machine.screen.height * (machine.zoom / 100) * (machine.screen.parH / machine.screen.parW),
     ),
   );
+
+  // Fit the zoom to the display area until the user picks one (state/
+  // machine.svelte.ts fitZoom): on every new screen size and every resize of
+  // the area.  The frame's bezel (padding) is room the picture cannot use.
+  let wrap: HTMLDivElement | undefined = $state(undefined);
+  // The area's size, followed with a ResizeObserver where there is one
+  // (not under the unit tests' jsdom).
+  $effect(() => {
+    if (!view) return;
+    const el = view;
+    const measure = () => {
+      viewW = el.clientWidth;
+      viewH = el.clientHeight;
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    const w = machine.screen.width;
+    const h = machine.screen.height;
+    const aspect = machine.screen.parH / machine.screen.parW;
+    // Only a machine's screen is fitted: with none, the display is the
+    // Welcome view's and the zoom stays as it is.
+    const live = machine.status === 'running' || machine.status === 'paused';
+    if (!view || !wrap || !live) return;
+    const cs = getComputedStyle(wrap);
+    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    fitZoom(w, h, aspect, viewW - padX, viewH - padY);
+  });
 
   // Input handling lives entirely on the worker side via Emscripten's
   // built-in proxied callbacks (emscripten_set_mousemove_callback("#screen",
@@ -76,8 +113,8 @@
   });
 </script>
 
-<div class="screen-view">
-  <div class="screen-wrap">
+<div class="screen-view" bind:this={view}>
+  <div class="screen-wrap" bind:this={wrap}>
     <!--
       Intrinsic width/height attributes are static (Plus default). The
       worker owns canvas resolution via emscripten_set_canvas_element_size

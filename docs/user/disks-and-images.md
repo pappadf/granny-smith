@@ -10,7 +10,7 @@ them, and how to manage the ones you have stored.
 |---|---|---|
 | ROM | the ROM chip's contents, any name | Recognised by its checksum; see [Supported machines](machines.md) §1 |
 | Video ROM (VROM) | a NuBus display card's declaration ROM | Optional: cards work with a substitute without it |
-| PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card |
+| PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card. A PCI ROM for a card Granny Smith does not emulate is refused with a message |
 | Floppy disk | 400K, 800K and 1.4 MB images: raw `.dsk`/`.img`/`.image`, Disk Copy 4.2 | Recognised by size |
 | Hard disk | raw `.img`/`.hda`/`.dsk`, Disk Copy 6 (NDIF), `.dmg` (UDIF) | Partitioned disks, and single-volume (HFS) images without a partition map, both boot |
 | CD-ROM | `.iso`, `.toast`, `.cdr`, `.dmg` | ISO 9660, HFS or partitioned |
@@ -73,9 +73,11 @@ Setup, Drive Setup or the system installer.
 ![The Images panel, with the context menu of a mounted hard disk](images/panel-images.png)
 
 The **Images** tab lists what you have stored, in sections: **ROM**,
-**VROM**, **PCI ROM**, **Floppy Disk**, **Hard Disk** and **CD-ROM**. ROMs
-are listed by checksum. A disk the running machine is using is marked
-(**INSERTED · DRIVE 1**, **MOUNTED**).
+**VROM**, **PCI ROM**, **Floppy Disk**, **Hard Disk** and **CD-ROM**, each
+with its count. ROMs are listed by checksum, with the ROM's or card's name
+beside it. A disk the running machine is using is marked
+(**INSERTED · DRIVE 1**, **MOUNTED**); one being compacted shows its
+progress (**COMPACTING · 40 %**) and cannot be used until it is done.
 
 Right-click an image:
 
