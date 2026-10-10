@@ -222,3 +222,8 @@ __attribute__((weak)) struct image *config_get_image(const struct config *cfg, i
     (void)index;
     return NULL;
 }
+// The bound on a machine's image list (system.c's MAX_IMAGES), for suites
+// that link checkpoint_images.c.
+__attribute__((weak)) int config_max_images(void) {
+    return 10;
+}
