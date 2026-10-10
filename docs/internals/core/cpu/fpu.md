@@ -64,7 +64,7 @@ An earlier proposal used `double` as the internal register type. This was reject
 | `0x7FFF` | bit 63=1, bit 62=1 | Quiet NaN |
 | `0x7FFF` | bit 63=1, bit 62=0 | Signaling NaN |
 | `0x0001`–`0x7FFE` | bit 63=1 | Normal number |
-| `0x0001`–`0x7FFE` | bit 63=0 | Unnormalized number (68882 accepts these) |
+| `0x0001`–`0x7FFE` | bit 63=0 | Unnormalized number (accepted, normalized before use; mantissa 0 is a zero) |
 
 Predicate helpers (`fp80_is_zero`, `fp80_is_inf`, `fp80_is_nan`, `fp80_is_snan`, `fp80_is_denormal`, `fp80_is_negative`) classify values by inspecting the exponent and mantissa fields.
 
@@ -106,7 +106,7 @@ fpu_unpacked_t fpu_unpack(float80_reg_t reg);   // lossless: float80 → unpacke
 float80_reg_t  fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val); // with rounding
 ```
 
-`fpu_unpack()` widens a register value to the unpacked format without precision loss. `fpu_pack()` is where rounding mode (FPCR bits 5:4) and precision control (FPCR bits 7:6) are applied. It also detects overflow, underflow, and inexact results, setting the appropriate FPSR exception bits.
+`fpu_unpack()` widens a register value to the unpacked format without precision loss. It normalizes an unnormal (J-bit clear, non-zero exponent), an all-zero mantissa becoming a zero, as the FPU does to every operand before an operation (MC68881/MC68882 UM §3.5.1); `fpu_execute_op()` normalizes the source register image the same way first, so operations that read raw bits (FTST, FGETMAN, the transcendentals' compact form) agree. `fpu_pack()` is where rounding mode (FPCR bits 5:4) and precision control (FPCR bits 7:6) are applied. It also detects overflow, underflow, and inexact results, setting the appropriate FPSR exception bits.
 
 ## FPU State Structure
 

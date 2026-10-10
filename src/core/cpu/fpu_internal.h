@@ -78,5 +78,8 @@ int8_t fpu_to_int8(fpu_state_t *fpu, float80_reg_t val);
 float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1, uint32_t w2);
 // float80_reg_t -> 12-byte packed BCD with the given k-factor
 void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *w0, uint32_t *w1, uint32_t *w2);
+// floor(log10(|x|)) of a finite, normalized, non-zero x (the packed
+// conversion's ILOG); exact over the extended range, FPSR untouched
+int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x);
 
 #endif // FPU_INTERNAL_H

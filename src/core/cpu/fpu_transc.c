@@ -2430,6 +2430,12 @@ fpu_unpacked_t fpu_op_cos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
         fpu->fpsr |= FPEXC_OPERR;
         return (fpu_unpacked_t){0, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
     }
+    // Denormal: exactly 1.0, inexact, in every rounding mode (FPSP scosd);
+    // the 1 - 2^-126 of the tiny path below is for normalized |X| < 2^-40
+    if (fp80_is_denormal(raw)) {
+        fpu->fpsr |= FPEXC_INEX2;
+        return fpsp_sgl(0x3F800000);
+    }
 
     uint32_t saved_fpcr = fpu->fpcr;
     fpu->fpcr = 0;
@@ -2478,6 +2484,12 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         fpu_unpacked_t nan = {0, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
         fpu->fp[cos_reg] = fpu_pack(fpu, nan);
         return nan;
+    }
+    // Denormal: cos is exactly 1.0 and sin is X (FPSP ssincosd)
+    if (fp80_is_denormal(raw)) {
+        fpu->fp[cos_reg] = fpu_pack(fpu, fpsp_sgl(0x3F800000));
+        fpu->fpsr |= FPEXC_INEX2;
+        return src;
     }
 
     uint32_t saved_fpcr = fpu->fpcr;
