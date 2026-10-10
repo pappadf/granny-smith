@@ -8,6 +8,9 @@
 #   3. Copies build artifacts into a versioned folder AND /latest/.
 #   4. Regenerates the landing page (index.html) listing all versions.
 #   5. Pushes the changes to gs-pages, which publishes via GitHub Pages.
+#   6. Attaches the same build to the release as granny-smith-web-<tag>.zip
+#      (web/ + dev_server.py), for projects that serve a pinned emulator
+#      build themselves (scripts/package_web.py).
 #
 # Required secrets:
 #   DEPLOY_TOKEN  — a GitHub PAT (fine-grained) with Contents: Read & Write
@@ -19,9 +22,10 @@ on:
   release:
     types: [published]
 
-# The deploy pushes with DEPLOY_TOKEN; GITHUB_TOKEN only reads.
+# The deploy pushes with DEPLOY_TOKEN; GITHUB_TOKEN reads the source and
+# uploads the web build to the release (contents: write).
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 # Allow only one publish at a time to avoid push conflicts
@@ -53,6 +57,13 @@ jobs:
         working-directory: ./source
         run: |
           make clean && make && make ui2
+
+      # 2b. Package the same build as a release asset (web/ + dev_server.py).
+      - name: Package web distribution
+        working-directory: ./source
+        run: |
+          python3 scripts/package_web.py "${{ github.event.release.tag_name }}" \
+            app/web2/dist "granny-smith-web-${{ github.event.release.tag_name }}.zip"
 
       # 3. Checkout the deployment repository
       #    `ref` is pinned rather than left to default, deliberately:
@@ -189,3 +200,14 @@ jobs:
           git add --all
           git commit -m "Deploy ${{ github.event.release.tag_name }}"
           git push origin main
+
+      # 8. Attach the packaged build to the release (last, so a failed upload
+      #    never holds back the gs-pages deploy)
+      - name: Attach web distribution to the release
+        working-directory: ./source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "granny-smith-web-${{ github.event.release.tag_name }}.zip" \
+            --repo "${{ github.repository }}" --clobber

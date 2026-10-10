@@ -1424,6 +1424,22 @@ server [`scripts/dev_server.py`](../../scripts/dev_server.py) sends both
 unconditionally; serving `index.html` directly (no redirect) keeps the
 headers intact through Codespaces' port-forwarding proxy.
 
+### Self-hosting a release
+
+Each GitHub release carries the web build as `granny-smith-web-<tag>.zip`
+(packaged by [`scripts/package_web.py`](../../scripts/package_web.py) in
+`publish.yml`): `web/` (the same tree deployed to gs-pages), `dev_server.py`
+and a short `README.txt`. A project that wants a pinned emulator, say in a
+devcontainer, downloads it and serves it with the bundled server, adding its
+own disk images on the same origin with `--fallback-root`:
+
+```bash
+python3 dev_server.py --root web --fallback-root ../disks \
+    --default-params 'model=lisa&rom=/lisa.rom&hd=/profile.image'
+```
+
+Same-origin media need no CORS, and nothing has to be published to fetch it.
+
 ## Styling and skins
 
 Every visual value is a design token, a `--gs-*` CSS custom property, and
