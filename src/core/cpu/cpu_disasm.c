@@ -861,12 +861,19 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define AD(ad, reg) (ad ? an[reg] : dn[reg])
 #define RN          AD(ext_word >> 15 & 1, ext_word >> 12 & 7)
 
+// CHK2 and CMP2 share an opcode: extension bit 11 picks CHK2.  Both take a
+// control EA only (the bounds pair is in memory), as the executor's
+// VALID_EA(ea_control) enforces.
+#define CHK2_NAME (ext_word & 0x0800 ? "CHK2" : "CMP2")
+
 #define RC movec_cr_name(SRC_WORD & 0x0FFF)
 
 #define IMM ((((opcode >> 9 & 7) - 1) & 7) + 1)
 
+// A MOVE destination is data alterable (VALID_EA_MOVE in the executor): An as
+// a destination is MOVEA, decoded apart for .W/.L and illegal for .B.
 #define MOVE_DST(size)                                                                                                 \
-    disasm_ea(size, opcode >> 6 & 7, opcode >> 9 & 7, &fetch_pos_dst, SRC_EXT_WORDS(size), ea_alterable)
+    disasm_ea(size, opcode >> 6 & 7, opcode >> 9 & 7, &fetch_pos_dst, SRC_EXT_WORDS(size), (ea_data & ea_alterable))
 
 #define LIST asm_movem(opcode, ext_word)
 
@@ -1016,9 +1023,9 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_CAS2_W_DC_DU_RN    ASM("CAS2.W\t%s:%s,%s:%s,(%s):(%s)", DC1, DC2, DU1, DU2, RN1, RN2)
 #define OP_CHK_L_EA_DN        ASM("CHK.L\t%s,%s", SRC_EA(4, 0, ea_any), DN)
 #define OP_CHK_W_EA_DN        ASM("CHK.W\t%s,%s", SRC_EA(2, 0, ea_any), DN)
-#define OP_CHK2_B_EA_DN       ASM("CHK2.B\t%s,%s", SRC_EA(1, 1, ea_any), RN)
-#define OP_CHK2_L_EA_DN       ASM("CHK2.L\t%s,%s", SRC_EA(1, 1, ea_any), RN)
-#define OP_CHK2_W_EA_DN       ASM("CHK2.W\t%s,%s", SRC_EA(1, 1, ea_any), RN)
+#define OP_CHK2_B_EA_DN       ASM("%s.B\t%s,%s", CHK2_NAME, SRC_EA(1, 1, ea_control), RN)
+#define OP_CHK2_L_EA_DN       ASM("%s.L\t%s,%s", CHK2_NAME, SRC_EA(1, 1, ea_control), RN)
+#define OP_CHK2_W_EA_DN       ASM("%s.W\t%s,%s", CHK2_NAME, SRC_EA(1, 1, ea_control), RN)
 #define OP_CLR_B_EA           ASM("CLR.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
 #define OP_CLR_L_EA           ASM("CLR.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
 #define OP_CLR_W_EA           ASM("CLR.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
@@ -1080,7 +1087,7 @@ static void disasm_atrap(uint16_t opcode, char *buf) {
 #define OP_MOVE_AN_USP      ASM("MOVE\t%s,USP", AY)
 #define OP_MOVE_B_CCR_EA    ASM("MOVE\tCCR,%s", DST_EA(2, 0, (ea_data & ea_alterable)));
 #define OP_MOVE_B_EA_CCR    ASM("MOVE\t%s,CCR", SRC_EA(2, 0, ea_any));
-#define OP_MOVE_B_EA_EA     ASM("MOVE.B\t%s,%s", SRC_EA(1, 0, ea_any), MOVE_DST(1))
+#define OP_MOVE_B_EA_EA     ASM("MOVE.B\t%s,%s", SRC_EA(1, 0, ea_any - ea_an), MOVE_DST(1))
 #define OP_MOVE_EA_SR       ASM("MOVE\t%s,SR", SRC_EA(2, 0, ea_any))
 #define OP_MOVE_L_EA_EA     ASM("MOVE.L\t%s,%s", SRC_EA(4, 0, ea_any), MOVE_DST(4))
 #define OP_MOVE_USP_AN      ASM("MOVE\tUSP,%s", AY)
