@@ -249,6 +249,8 @@ Packed decimal is a 96-bit (12-byte) format used by `FMOVE.P`:
 - Bytes 0–1: 12-bit BCD exponent (3 digits)
 - Bytes 2–11: 17-digit BCD mantissa (most significant digit in byte 2, two digits per byte thereafter)
 
+Infinity and NaN are the strings with SE, both y bits and the exponent $FFF set (first longword $7FFF0000 plus the sign); infinity has an all-zero fraction, a NaN's fraction is its mantissa bit for bit, so a signaling NaN loads as one and is signalled and quieted by the operation. A store writes that encoding; a load treats only that encoding as special, any other string (whatever its y bits) being a number. Nondecimal digits $A–$F are not detected: they are weighted like decimal digits and signal nothing (MC68881/MC68882 UM Table 3-4; FPSP `get_op`, `res_func`).
+
 Both directions are computed exactly, with a small natural-number type in `fpu_packed.c` (10^n split as 5^n × 2^n), and rounded once in the FPCR rounding mode:
 
 - **Load** (decimal → binary): the string's value M × 10^E is rounded to extended precision whatever the rounding precision; an inexact conversion sets INEX1, never INEX2 (MC68881/MC68882 UM §6.1.8; FPSP `decbin`). The FMOVE or arithmetic that uses the operand then rounds to the rounding precision itself, setting INEX2.

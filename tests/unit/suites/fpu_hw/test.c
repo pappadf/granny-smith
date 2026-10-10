@@ -27,6 +27,10 @@
 //  - a packed load rounds once to extended in the FPCR rounding mode,
 //    signalling INEX1, and FMOVE then rounds to the rounding precision,
 //    signalling INEX2 (UM §6.1.8; FPSP decbin);
+//  - packed infinities and NaNs are SE, both y bits and exponent $FFF, on
+//    store and as the only special strings on load; a NaN's fraction moves
+//    bit for bit; digits $A-$F are not detected (UM Table 3-4; FPSP get_op,
+//    res_func);
 //  - FDIV is correctly rounded (UM §4.3.1), its sticky bit taking the whole
 //    final remainder, and so is fpu_op_div for 128-bit internal divisors.
 
@@ -425,6 +429,49 @@ TEST(packed_load_rounds_to_extended_then_precision) {
     ASSERT_EQ_INT(0, exc());
 }
 
+TEST(packed_store_infinity_and_nan_encoding) {
+    // First word: sign, SE, y y and exponent $FFF; infinity's fraction zero
+    check_store(RN, FP80_INF, 1, 0x7FFF0000, 0, 0, 0);
+    check_store(RN, FP80_NEG_INF, 17, 0xFFFF0000, 0, 0, 0);
+    // A NaN keeps its mantissa; a signaling one is quieted, with SNAN
+    check_store(RN, x80(0xFFFF, 0xC000000000001234ULL), 1, 0xFFFF0000, 0xC0000000, 0x00001234, 0);
+    check_store(RN, x80(0x7FFF, 0x8000000000001234ULL), 1, 0x7FFF0000, 0xC0000000, 0x00001234, FPEXC_SNAN);
+}
+
+TEST(packed_load_special_only_with_exponent_fff) {
+    assert_reg(load_packed(RN, 0x7FFF0000, 0, 0), 0x7FFF, 0);
+    assert_reg(load_packed(RN, 0xFFFF0000, 0, 0), 0xFFFF, 0);
+    ASSERT_EQ_INT(0, exc());
+    // The integer digit is a don't-care in a special string
+    assert_reg(load_packed(RN, 0x7FFF0005, 0, 0), 0x7FFF, 0);
+    // y bits without SE and exponent $FFF are ignored: these are 1.0
+    assert_reg(load_packed(RN, 0x10000001, 0, 0), 0x3FFF, 0x8000000000000000ULL);
+    assert_reg(load_packed(RN, 0x30000001, 0, 0), 0x3FFF, 0x8000000000000000ULL);
+    ASSERT_EQ_INT(0, exc());
+    // ... and SE with y y but exponent $FF0 is 1E-1650, a number
+    float80_reg_t r = load_packed(RN, 0x7FF00001, 0, 0);
+    ASSERT_TRUE(!fp80_is_nan(r) && !fp80_is_inf(r) && !fp80_is_zero(r));
+    ASSERT_EQ_INT(FPEXC_INEX1, exc());
+}
+
+TEST(packed_load_nan_fraction_moves_bit_for_bit) {
+    // Quiet bit set: a quiet NaN, payload intact, no exception
+    assert_reg(load_packed(RN, 0x7FFF0000, 0x40000000, 0x00000001), 0x7FFF, 0x4000000000000001ULL);
+    ASSERT_EQ_INT(0, exc());
+    // Quiet bit clear: a signaling NaN, which FMOVE signals and quiets
+    assert_reg(load_packed(RN, 0xFFFF0000, 0x00000000, 0x00000001), 0xFFFF, 0x4000000000000001ULL);
+    ASSERT_EQ_INT(FPEXC_SNAN, exc());
+}
+
+TEST(packed_load_nondecimal_digits_not_detected) {
+    // $A in the integer digit weighs ten: 10.0, exact, no OPERR
+    assert_reg(load_packed(RN, 0x0000000A, 0, 0), 0x4002, 0xA000000000000000ULL);
+    ASSERT_EQ_INT(0, exc());
+    // $F in a fraction digit: 1.F = 2.5
+    assert_reg(load_packed(RN, 0x00000001, 0xF0000000, 0), 0x4000, 0xA000000000000000ULL);
+    ASSERT_EQ_INT(0, exc());
+}
+
 // ---------------------------------------------------------------------------
 // Division
 // ---------------------------------------------------------------------------
@@ -490,6 +537,10 @@ int main(void) {
     RUN(packed_load_honours_rounding_mode);
     RUN(packed_load_is_correctly_rounded);
     RUN(packed_load_rounds_to_extended_then_precision);
+    RUN(packed_store_infinity_and_nan_encoding);
+    RUN(packed_load_special_only_with_exponent_fff);
+    RUN(packed_load_nan_fraction_moves_bit_for_bit);
+    RUN(packed_load_nondecimal_digits_not_detected);
     RUN(fdiv_final_remainder_bit_is_sticky);
     RUN(fdiv_wide_divisor_is_correctly_rounded);
 

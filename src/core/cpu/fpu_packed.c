@@ -26,7 +26,8 @@
 // a store overflowing them, which is an operand error).
 //
 // SM = mantissa sign, SE = exponent sign
-// YY: 0=normal; non-zero + all-zero mantissa → infinity; non-zero + non-zero mantissa → NaN
+// Infinity / NaN: SE=1, YY=11 and exponent $FFF (first word $7FFF0000 plus
+// sign), with an all-zero / non-zero fraction; any other string is a number
 //
 // Reference: Motorola, MC68881/MC68882 Floating-Point Coprocessor User's
 // Manual, 2nd ed. (1989), §3.3, §3.6 (Figure 3-11), §4.3.3, §6.1.8; Motorola
@@ -265,18 +266,18 @@ int32_t fpu_floor_log10(fpu_state_t *fpu, fpu_unpacked_t x) {
 float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1, uint32_t w2) {
     int sm = (w0 >> 31) & 1; // mantissa sign
     int se = (w0 >> 30) & 1; // exponent sign
-    int yy = (w0 >> 28) & 3; // special encoding
 
-    // Special values: YY != 0
-    if (yy != 0) {
+    // Infinity and NaN: SE, both y bits and the exponent $FFF all set
+    // (MC68881/MC68882 UM Table 3-4; FPSP get_op unpack tests exactly
+    // these).  Any other string, whatever its y bits, is a number.
+    if ((w0 & 0x7FFF0000u) == 0x7FFF0000u) {
         if (w1 == 0 && w2 == 0)
             return fp80_make(sm, 0x7FFF, 0); // infinity
-        // NaN: place mantissa bits as payload, set J-bit and quiet bit.
-        // The payload is non-zero here (the all-zero case is infinity above),
-        // so it never needs a substitute to stay a NaN.
-        uint64_t nan_mant = ((uint64_t)w1 << 32) | w2;
-        nan_mant |= 0xC000000000000000ULL;
-        return fp80_make(sm, 0x7FFF, nan_mant);
+        // NaN: the fraction moves bit for bit into the mantissa, its top bit
+        // a don't-care and the next the quiet bit (Table 3-4 note 1), so a
+        // signaling NaN stays one for the operation to signal and quiet.
+        // The payload is non-zero here (the all-zero case is infinity above).
+        return fp80_make(sm, 0x7FFF, ((uint64_t)w1 << 32) | w2);
     }
 
     // Extract 3 BCD exponent digits from w0 bits 27:16
@@ -291,24 +292,15 @@ float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1, uint32
     int32_t adj_exp = bcd_exp - 16;
 
     // Extract 17 BCD mantissa digits → uint64_t.
-    // d16 from w0[3:0], d15..d8 from w1, d7..d0 from w2.
-    // Per MC68882UM, any nibble > 9 is an invalid BCD operand and sets OPERR.
+    // d16 from w0[3:0], d15..d8 from w1, d7..d0 from w2.  A nibble $A-$F is
+    // not detected: it is weighted like a decimal digit, the result
+    // repeatable if useless, and no exception is signalled (MC68881/MC68882
+    // UM Table 3-4 note 2; FPSP decbin).  At most 15 * (10^17 - 1) / 9.
     uint64_t mant = w0 & 0xF; // d16 (MSD)
-    bool bcd_invalid = (mant > 9);
-    for (int i = 0; i < 8; i++) { // d15..d8 from w1
-        unsigned n = bcd_nibble(w1, i);
-        if (n > 9)
-            bcd_invalid = true;
-        mant = mant * 10 + n;
-    }
-    for (int i = 0; i < 8; i++) { // d7..d0 from w2
-        unsigned n = bcd_nibble(w2, i);
-        if (n > 9)
-            bcd_invalid = true;
-        mant = mant * 10 + n;
-    }
-    if (bcd_invalid)
-        fpu->fpsr |= FPEXC_OPERR;
+    for (int i = 0; i < 8; i++) // d15..d8 from w1
+        mant = mant * 10 + bcd_nibble(w1, i);
+    for (int i = 0; i < 8; i++) // d7..d0 from w2
+        mant = mant * 10 + bcd_nibble(w2, i);
 
     // Zero mantissa → signed zero
     if (mant == 0)
@@ -378,15 +370,17 @@ void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *
         return;
     }
 
-    // Infinity (YY=01)
+    // Infinity: SE, both y bits and exponent $FFF set, the rest zero
+    // (MC68881/MC68882 UM Table 3-4; FPSP res_func p_movei writes the
+    // register's sign and exponent word and clears the low word)
     if (fp80_is_inf(val)) {
-        *w0 = ((uint32_t)sm << 31) | (1u << 28);
+        *w0 = ((uint32_t)sm << 31) | 0x7FFF0000u;
         *w1 = 0;
         *w2 = 0;
         return;
     }
 
-    // NaN (YY=11, mantissa preserved). Per MC68882UM, FMOVE.P FPn,<ea> must
+    // NaN: the same first word, the mantissa preserved (p_moven). Per MC68882UM, FMOVE.P FPn,<ea> must
     // signal SNaN on a signaling NaN source and quiet the stored value, just
     // like other FMOVE forms. The packed-decimal store path bypasses
     // fpu_execute_op's SNAN check so handle it inline.
@@ -395,7 +389,7 @@ void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *
             fpu->fpsr |= FPEXC_SNAN;
             val.mantissa |= 0x4000000000000000ULL; // quiet the NaN
         }
-        *w0 = ((uint32_t)sm << 31) | (3u << 28);
+        *w0 = ((uint32_t)sm << 31) | 0x7FFF0000u;
         *w1 = (uint32_t)(val.mantissa >> 32);
         *w2 = (uint32_t)(val.mantissa & 0xFFFFFFFF);
         return;
