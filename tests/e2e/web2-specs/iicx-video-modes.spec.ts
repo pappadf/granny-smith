@@ -25,14 +25,12 @@
 // maxDiffPixelRatio 0.01 absorb the wasm VBL pacing drift the legacy spec
 // documents.
 //
-// One test() runs all modes so OPFS media (ROM/vROM/FD) persist across the
-// per-mode page reloads; each reload after the first answers the
-// checkpoint-resume prompt with "Start fresh" to keep the cold-boot flow.
+// Each mode is its own test, and the file runs them in parallel: each test
+// stages the media into its own context's OPFS and cold-boots.
 
 import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
-import { gsEvalInPage } from '../helpers/web2-eval';
 import { terminalRun as typeLine } from '../helpers/terminal';
 
 // Keep web2's default pacing: the splash capture relies on the paced boot
@@ -143,53 +141,28 @@ async function pickVideoMode(page: Page, mode: VideoMode): Promise<void> {
   await page.locator('#cfg-video-mode').selectOption(`${mode.width}x${mode.height}x${depth}`);
 }
 
-test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({ page }) => {
-  test.setTimeout(30 * 60 * 1000);
-  // The 15" portrait (640x870) and Kong (1152x870) canvases must fit the
-  // viewport at 100% zoom for a 1:1 element screenshot.
-  await page.setViewportSize({ width: 1500, height: 2000 });
+// One test per mode, run side by side: each test's browser context has its
+// own OPFS, so it stages the media and cold-boots its own machine (no reload
+// or resume prompt between modes, as there was when one test ran them all).
+test.describe.configure({ mode: 'parallel' });
 
-  let first = true;
-  for (const mode of MODES) {
-    if (first) {
-      await gotoWeb2(page);
-      await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
-      await stageOpfsFile(page, '/opfs/images/fd/System_7_0_1.image', FD_IMAGE);
-      const [chooser] = await Promise.all([
-        page.waitForEvent('filechooser'),
-        page.getByRole('button', { name: 'Load ROM...' }).click(),
-      ]);
-      await chooser.setFiles(IICX_ROM);
-      first = false;
-    } else {
-      // Reload for a cold boot.  Snapshot first so the reload always finds a
-      // checkpoint and shows the resume prompt, which we decline: the save on
-      // tab-hide is asynchronous and may or may not finish before the page
-      // goes (there is no main-thread beforeunload save), so without this the
-      // prompt would appear only sometimes.  checkpoint.snapshot writes
-      // state.checkpoint (tmp+rename) before it answers.
-      expect(await gsEvalInPage(page, 'checkpoint.snapshot', ['test'])).toBe(true);
-      await page.reload();
-      await page.waitForFunction(
-        () => (window as { __gsReady?: boolean }).__gsReady === true,
-        undefined,
-        { timeout: 60_000 },
-      );
-      // The snapshot above reliably triggers the resume prompt. Wait for the modal and
-      // decline it, mirroring checkpoint-resume.spec's robust pattern: __gsReady
-      // is set before checkpoint.probe resolves and the modal renders async, so
-      // a single-shot isVisible() check races the modal and, when it loses, the
-      // modal backdrop blocks the "New Machine..." click below until the test
-      // timeout.
-      const resumeModal = page
-        .locator('.modal, [role="dialog"]')
-        .filter({ hasText: 'Continue from saved checkpoint?' });
-      await expect(resumeModal).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'Start fresh' }).click();
-      await expect(resumeModal).toHaveCount(0);
-    }
+for (const mode of MODES) {
+  test(`IIcx video mode ${mode.id}: post-shader canvas matches its baseline`, async ({ page }) => {
+    test.setTimeout(10 * 60 * 1000);
+    // The 15" portrait (640x870) and Kong (1152x870) canvases must fit the
+    // viewport at 100% zoom for a 1:1 element screenshot.
+    await page.setViewportSize({ width: 1500, height: 2000 });
 
-    // New Machine: IIcx + this iteration's mode + the System 7.0.1 floppy.
+    await gotoWeb2(page);
+    await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
+    await stageOpfsFile(page, '/opfs/images/fd/System_7_0_1.image', FD_IMAGE);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.getByRole('button', { name: 'Load ROM...' }).click(),
+    ]);
+    await chooser.setFiles(IICX_ROM);
+
+    // New Machine: IIcx + this test's mode + the System 7.0.1 floppy.
     await page.getByRole('button', { name: 'New Machine...' }).click();
     const model = page.locator('#cfg-model');
     await expect(model.locator('option[value="iicx"]')).toHaveCount(1, { timeout: 30_000 });
@@ -234,5 +207,5 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
 
     const png = await page.locator('#screen').screenshot();
     expect(png).toMatchSnapshot(`welcome-${mode.id}.png`, { maxDiffPixelRatio: 0.01 });
-  }
-});
+  });
+}
