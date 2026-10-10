@@ -73,8 +73,8 @@ def row_iisi_701_fd() {
 # ---- iisi-608-hd -----------------------------------------------------------
 # NEW CELL IIsi x 6.0.8 on the 5 MB minimum (1+4 two-bank split).
 def row_iisi_608_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iisi" ram=5120 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_608}" 0
     let spent = wait_match("goldens/iisi-6.0.8-640x480x1-finder.png", 900000000, 20000000)
     assert machine.ram == 5120 "iisi-608-hd: machine.ram != 5120"
@@ -91,8 +91,8 @@ def row_iisi_608_hd() {
 # so typing into the Find dialog and matching the result pixel-exactly
 # is the assertion.
 def row_iisi_71_kbd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iisi" ram=9216 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     scheduler.run 60000000
     wait_stable(900000000)
@@ -142,8 +142,8 @@ def row_iisi_71_kbd() {
 # NEW CELL IIsi x 7.5 — the one cell pure redistribution could not close,
 # so it is a plain cheap boot row.
 def row_iisi_75_hd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iisi" ram=17408 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     wait_stable(1500000000)
