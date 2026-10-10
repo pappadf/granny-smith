@@ -63,7 +63,7 @@ typedef enum {
     VDC_SRC_NONE = 0, // nothing plugged in (default; DMSD reports no lock)
     VDC_SRC_PATTERN, // deterministic colour bars + frame counter strip
     VDC_SRC_FILE, // a PNG loaded via machine.videoin.load
-    VDC_SRC_HOST, // the platform webcam through the gs_video_in_* seam
+    VDC_SRC_HOST, // the platform webcam through the platform_video_in_* seam
 } vdc_src_t;
 
 struct av_vdc {
@@ -108,7 +108,7 @@ bool av_vdc_connected(av_vdc_t *vdc) {
     case VDC_SRC_FILE:
         return true;
     case VDC_SRC_HOST:
-        return gs_video_in_connected();
+        return platform_video_in_connected();
     default:
         return false;
     }
@@ -240,7 +240,7 @@ static void vdc_fill_frame(av_vdc_t *vdc) {
         memset(vdc->frame, 0, (size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
         break;
     case VDC_SRC_HOST:
-        if (gs_video_in_frame(vdc->frame) == 0)
+        if (platform_video_in_frame(vdc->frame) == 0)
             break;
         memset(vdc->frame, 0, (size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
         break;
@@ -381,7 +381,7 @@ void av_vdc_clock_gate(av_vdc_t *vdc, bool clock_off) {
     vdc->clock_on = on;
     LOG(2, "VDC clock %s", on ? "on (capture running)" : "off");
     // Camera lifecycle: the host attaches/stops its capture with the guest.
-    gs_video_in_state(on);
+    platform_video_in_state(on);
 }
 
 // ============================================================

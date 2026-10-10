@@ -382,9 +382,9 @@ static int headless_exit_code(int script_rc) {
     return script_rc;
 }
 
-// Platform impl of gs_quit (the weak default in system.c says "not
+// Platform impl of platform_quit (the weak default in system.c says "not
 // supported": the browser owns the page).
-int gs_quit(void) {
+int platform_quit(void) {
     g_quit_requested = 1;
     // Stop scheduler to break out of any running emulation
     scheduler_t *sched = system_scheduler();

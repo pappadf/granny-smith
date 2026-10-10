@@ -176,7 +176,7 @@ static DEF_METHOD(method_root_time) {
 // quit flag and stops the scheduler; in the browser, which owns the page's
 // lifecycle, it says so rather than doing nothing silently.
 static DEF_METHOD(method_root_quit) {
-    if (gs_quit() != 0)
+    if (platform_quit() != 0)
         return val_err("quit: not supported on this platform");
     return val_none();
 }

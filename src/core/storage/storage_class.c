@@ -1504,10 +1504,10 @@ static const arg_decl_t files_path_arg_optional[] = {
 };
 
 // `files.download(path)` — trigger a browser file download. Routes to the
-// platform-specific gs_download (WASM streams via Blob+anchor); a platform
+// platform-specific platform_download (WASM streams via Blob+anchor); a platform
 // with no browser says so.
 static DEF_METHOD(files_method_download) {
-    int rc = gs_download(argv[0].s);
+    int rc = platform_download(argv[0].s);
     if (rc == -2)
         return val_err("download: not supported on this platform");
     return val_bool(rc == 0);

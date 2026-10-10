@@ -3534,7 +3534,7 @@ static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_
 // before it reports ready, so no boot or catalog read precedes it);
 // registered everywhere so the id resolves regardless.
 static bool v2_webgpu_offered(void) {
-    return gs_v2gpu_available();
+    return platform_v2gpu_available();
 }
 
 // The rasteriser is the one option a user is offered: the emulator's own
@@ -3545,7 +3545,7 @@ static const char *const v2_raster_labels[] = {"Software", "WebGPU", NULL};
 
 // WebGPU is offered only where a WebGPU device exists.
 static bool v2_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || gs_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
 static const pci_card_option_t v2_options[] = {

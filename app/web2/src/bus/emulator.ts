@@ -85,7 +85,7 @@ interface EmscriptenModule {
     ): number;
     close(stream: unknown): void;
   };
-  _get_gs_mailbox(): number;
+  _get_mailbox(): number;
   // Returns the bytes written, excluding the terminating NUL.
   stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
@@ -258,7 +258,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
   mailbox = new Mailbox(
     Module.HEAP32.buffer,
-    Module._get_gs_mailbox(),
+    Module._get_mailbox(),
     CLIENT_PAGE,
     () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
   );

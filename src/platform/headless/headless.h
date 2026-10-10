@@ -18,7 +18,7 @@
 #define HL_CLIENT_DAEMON 4u // a daemon connection
 
 // The loop's flags.  Signal handlers only set g_running / g_interrupted; the
-// loops act on them.  g_quit_requested is set by `quit` (gs_quit) and by the
+// loops act on them.  g_quit_requested is set by `quit` (platform_quit) and by the
 // daemon's control connection.
 extern volatile sig_atomic_t g_running; // cleared by SIGTERM: shut down
 extern volatile sig_atomic_t g_interrupted; // set by SIGINT: Ctrl-C

@@ -3,7 +3,7 @@
 
 // em_audio_in.c
 // Browser microphone → AV Singer codec input: the WASM overrides of the
-// gs_audio_in_* seam (system.h), the shared-heap sample transport, and the
+// platform_audio_in_* seam (platform_hooks.h), the shared-heap sample transport, and the
 // conditioning that makes an arbitrary browser microphone behave like the
 // Apple PlainTalk microphone the guest software was written for.
 //
@@ -14,7 +14,7 @@
 // frame cadence while the browser produces on its own, so the two rates must
 // be decoupled by a queue rather than a latest-wins slot.  The MAIN THREAD
 // (an AudioWorklet callback) writes mono int16 and bumps `wr`; the
-// WORKER-side gs_audio_in_frames reads and bumps `rd`.  Single producer,
+// WORKER-side platform_audio_in_frames reads and bumps `rd`.  Single producer,
 // single consumer, no locks: each index is written by exactly one side and
 // read by the other -- including a reset, which the producer only REQUESTS
 // (reset_req) and the consumer carries out (rd = wr).  The index arithmetic
@@ -54,7 +54,7 @@
 #define GS_MIC_RATE      24000u // the rate JS is asked to deliver (Singer default)
 #define GS_MIC_LABEL_LEN 64
 
-typedef struct gs_mic_shm {
+typedef struct mic_shm {
     uint32_t magic, version;
     uint32_t ring_off, ring_len;
     uint32_t label_off, label_len;
@@ -86,26 +86,26 @@ typedef struct gs_mic_shm {
     // this file.  Naming the device is what tells those apart.
     char label[GS_MIC_LABEL_LEN];
     int16_t ring[GS_MIC_RING]; // mono samples; stereo is made at the seam
-} gs_mic_shm_t;
+} mic_shm_t;
 
 _Static_assert((GS_MIC_RING & (GS_MIC_RING - 1)) == 0, "the mic ring is a power of two");
-_Static_assert(offsetof(gs_mic_shm_t, ring_off) == GS_MIC_W_RING_OFF * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, label_off) == GS_MIC_W_LABEL_OFF * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, connected) == GS_MIC_W_CONNECTED * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, wr) == GS_MIC_W_WR * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, rd) == GS_MIC_W_RD * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, rate) == GS_MIC_W_RATE * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, underruns) == GS_MIC_W_UNDERRUNS * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, js_peak) == GS_MIC_W_JS_PEAK * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, reset_req) == GS_MIC_W_RESET_REQ * 4, "mic layout");
-_Static_assert(offsetof(gs_mic_shm_t, reset_ack) == GS_MIC_W_RESET_ACK * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, ring_off) == GS_MIC_W_RING_OFF * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, label_off) == GS_MIC_W_LABEL_OFF * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, connected) == GS_MIC_W_CONNECTED * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, wr) == GS_MIC_W_WR * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, rd) == GS_MIC_W_RD * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, rate) == GS_MIC_W_RATE * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, underruns) == GS_MIC_W_UNDERRUNS * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, js_peak) == GS_MIC_W_JS_PEAK * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, reset_req) == GS_MIC_W_RESET_REQ * 4, "mic layout");
+_Static_assert(offsetof(mic_shm_t, reset_ack) == GS_MIC_W_RESET_ACK * 4, "mic layout");
 
-static gs_mic_shm_t g_mic = {
+static mic_shm_t g_mic = {
     .magic = GS_MIC_MAGIC,
     .version = GS_MIC_VERSION,
-    .ring_off = offsetof(gs_mic_shm_t, ring),
+    .ring_off = offsetof(mic_shm_t, ring),
     .ring_len = GS_MIC_RING,
-    .label_off = offsetof(gs_mic_shm_t, label),
+    .label_off = offsetof(mic_shm_t, label),
     .label_len = GS_MIC_LABEL_LEN,
     .rate = GS_MIC_RATE,
 };
@@ -566,18 +566,18 @@ static void rs_run(const int16_t *in, uint32_t need, int16_t *lr, uint32_t frame
 }
 
 // ===========================================================================
-// gs_audio_in_* seam overrides (weak defaults in core/system.c)
+// platform_audio_in_* seam overrides (weak defaults in core/platform_hooks.c)
 // ===========================================================================
 
-bool gs_audio_in_connected(void) {
+bool platform_audio_in_connected(void) {
     return atomic_load_explicit(&g_mic.connected, memory_order_relaxed) != 0;
 }
 
 // Fill `frames` interleaved stereo pairs at `rate` Hz.  Returns false with
 // the buffer untouched when nothing is attached, so the caller keeps its
 // silence (and singer.c's converter noise floor) rather than a click.
-bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
-    if (!gs_audio_in_connected() || !frames)
+bool platform_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
+    if (!platform_audio_in_connected() || !frames)
         return false;
 
     uint32_t producer_rate = (uint32_t)atomic_load_explicit(&g_mic.rate, memory_order_relaxed);
@@ -651,7 +651,7 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
 // whether the browser is delivering at all, how the ring is tracking, and
 // where the conditioner's normaliser has settled.  The guest-side level says
 // only that audio is missing; this says which side lost it.
-bool gs_audio_in_debug(char *buf, size_t buflen) {
+bool platform_audio_in_debug(char *buf, size_t buflen) {
     uint32_t wr = atomic_load_explicit(&g_mic.wr, memory_order_relaxed);
     uint32_t rd = atomic_load_explicit(&g_mic.rd, memory_order_relaxed);
     snprintf(buf, buflen,
@@ -672,7 +672,7 @@ bool gs_audio_in_debug(char *buf, size_t buflen) {
 // audience hears what the guest was just fed).  The path is copied into a
 // static buffer because the async main-thread JS runs after this call
 // returns and the caller's string may be gone by then.
-void gs_audio_in_injected(const char *path) {
+void platform_audio_in_injected(const char *path) {
     static char keep[512];
     snprintf(keep, sizeof keep, "%s", path);
     // clang-format off
@@ -686,7 +686,7 @@ void gs_audio_in_injected(const char *path) {
 // microphone track, so the browser's recording indicator is lit only while
 // the guest is genuinely listening — the same privacy discipline the camera
 // path follows.
-void gs_audio_in_state(bool active) {
+void platform_audio_in_state(bool active) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(
         { if (typeof Module.onAudioInState === 'function') Module.onAudioInState(!!$0); },

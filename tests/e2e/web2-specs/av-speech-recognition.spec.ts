@@ -16,7 +16,7 @@
 // …and the CLOCK RELATIONSHIP, which nothing else exercises. The browser
 // produces on wall time and the guest consumes on emulated time, so when
 // the emulated 840AV — a 68040 and a DSP3210, in WASM — does not sustain
-// 1x, gs_audio_in_frames discards the backlog (`rd = wr - need`) to bound
+// 1x, platform_audio_in_frames discards the backlog (`rd = wr - need`) to bound
 // latency. That punches holes in the utterance while the level meter keeps
 // waving, because amplitude survives what sequence does not.
 //
@@ -409,7 +409,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   //
   // `overruns` is deliberately NOT a separate assertion. It is the number of
   // times the browser got half a ring ahead of the guest and
-  // gs_audio_in_frames discarded the backlog to bound latency — correct for
+  // platform_audio_in_frames discarded the backlog to bound latency — correct for
   // a monitor path, destructive for recognition, which needs the whole
   // utterance in order. Whether it is fatal depends on how much it ate, so
   // the honest test is: did the recognizer act? If it did not, this number

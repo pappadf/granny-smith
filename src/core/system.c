@@ -74,10 +74,10 @@ static config_t *global_emulator = NULL;
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
 // the manifest).  For a base on volatile scratch storage -- which paths those
-// are is the platform's knowledge (gs_path_is_volatile) -- fall back to NULL
+// are is the platform's knowledge (platform_path_is_volatile) -- fall back to NULL
 // so image_create places deltas in its scratch root.
 static const char *pick_delta_dir(const char *path) {
-    if (gs_path_is_volatile(path))
+    if (platform_path_is_volatile(path))
         return NULL;
     return checkpoint_machine_dir();
 }

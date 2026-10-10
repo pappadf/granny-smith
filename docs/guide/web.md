@@ -59,7 +59,7 @@ fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and `/opfs/upload/.scratch` at boot v
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
 the **mailbox** — a control block and two record rings in shared memory
-(`src/core/mailbox/mailbox.h`, exported via the lone `_get_gs_mailbox()`
+(`src/core/mailbox/mailbox.h`, exported via the lone `_get_mailbox()`
 accessor; see "The Mailbox" below). JS binds to it once at init, checks
 its MAGIC and VERSION so layout drift fails loudly, and from then on
 writes request records and reads result records through `Module.HEAPU8`
@@ -216,7 +216,7 @@ whose id it carries. Any number of requests may be in flight; a late answer
 can never be mistaken for another call's.
 
 ```
-control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
+control block, 32 × uint32, 64-byte aligned (`_get_mailbox()`)
   [0]  MAGIC 'GSMB'   [1] VERSION 9
   [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
   [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
@@ -473,7 +473,7 @@ works under any deploy path.
 The canvas reference is passed once; Emscripten transfers it to the
 worker via `transferControlToOffscreen` and resolves the `#screen` DOM
 id from `OFFSCREENCANVASES_TO_PTHREAD`. After `createModule` returns,
-JS calls `Module._get_gs_mailbox()` to resolve the mailbox's control
+JS calls `Module._get_mailbox()` to resolve the mailbox's control
 block, verifies its MAGIC and VERSION, waits for `READY`, then
 `await gsEval('machine.register', …)` to activate the per-machine
 checkpoint directory.
@@ -1422,7 +1422,7 @@ via `Module.onVideoInReady`. The **main thread** decodes each camera
 frame onto a 640×480 canvas, writes it into the *non-active* slot
 through `Module.HEAPU8`, flips the active index and bumps `seq`; the
 **worker** copies out of the active slot at field cadence through the
-`gs_video_in_frame` seam. Writing only the non-active slot does not by
+`platform_video_in_frame` seam. Writing only the non-active slot does not by
 itself rule out a tear — a reader still copying slot A can see the
 writer finish B, flip, and start on A — so the reader checks `seq`
 after its copy and retries. Staleness is at most one frame and no locks

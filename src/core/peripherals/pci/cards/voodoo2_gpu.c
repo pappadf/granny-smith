@@ -202,7 +202,7 @@ static void v2gpu_publish(v2_gpu_t *g) {
     if (!mbx_unpublished(&g->ring))
         return;
     mbx_publish(&g->ring);
-    gs_v2gpu_notify(&g->ctrl[V2GPU_C_HEAD]);
+    platform_v2gpu_notify(&g->ctrl[V2GPU_C_HEAD]);
 }
 
 // Reserve a record of `len` bytes (header included; the ring rounds it
@@ -219,7 +219,7 @@ static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
         if (v2gpu_worker_lost(g))
             return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
-        gs_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
+        platform_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
             return UINT32_MAX;
@@ -251,7 +251,7 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
             return true;
         if (v2gpu_worker_lost(g))
             return false;
-        gs_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
+        platform_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
             return false;
@@ -1628,7 +1628,7 @@ const char *v2_gpu_stats(v2_gpu_t *g, char *buf, size_t n) {
 // ============================================================
 
 v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
-    if (!gs_v2gpu_available()) {
+    if (!platform_v2gpu_available()) {
         LOG(1, "raster=webgpu: no WebGPU transport on this host — using the thread backend");
         return NULL;
     }
@@ -1662,7 +1662,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
     g->ctrl[V2GPU_C_RB_OFF] = ctrl_bytes + ring_size;
     g->ctrl[V2GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (!gs_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
+    if (!platform_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
         LOG(0, "raster=webgpu: the host refused to attach a GPU worker — using the thread backend");
         v2_gpu_destroy(g);
         return NULL;
@@ -1672,11 +1672,11 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
         if (v2gpu_now_ms() - t0 >= (double)V2GPU_ATTACH_MS) {
             LOG(0, "raster=webgpu: the GPU worker did not attach within %u ms — using the thread backend",
                 V2GPU_ATTACH_MS);
-            gs_v2gpu_detach((void *)g->ctrl);
+            platform_v2gpu_detach((void *)g->ctrl);
             v2_gpu_destroy(g);
             return NULL;
         }
-        gs_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
+        platform_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
     }
     g->attached = true;
     LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);
@@ -1694,7 +1694,7 @@ void v2_gpu_destroy(v2_gpu_t *g) {
         v2gpu_wait_ack(g, seq);
     }
     if (g->attached)
-        gs_v2gpu_detach((void *)g->ctrl);
+        platform_v2gpu_detach((void *)g->ctrl);
     free(g->region);
     free(g->tex);
     for (int t = 0; t < V2_RASTER_TMUS; t++)

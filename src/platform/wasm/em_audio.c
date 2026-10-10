@@ -65,7 +65,7 @@
 // worklet carries it out.  read_idx used to have five writers: the worklet's
 // publish, its start-gate re-arm and depth trim, a rate-change message, and
 // the producer's overflow CAS and stream reset.
-typedef struct gs_audio_ring {
+typedef struct audio_ring {
     uint32_t magic, version;
     uint32_t data_off, frames;
     _Atomic uint32_t write_idx;
@@ -78,21 +78,21 @@ typedef struct gs_audio_ring {
     _Atomic uint32_t owner; // written by the page: the worklet allowed to consume
     uint32_t reserved[4]; // pad the block to GS_ARING_HDR_BYTES
     int16_t data[GS_ARING_FRAMES * GS_ARING_MAX_CH];
-} gs_audio_ring_t;
+} audio_ring_t;
 
-_Static_assert(offsetof(gs_audio_ring_t, data) == GS_ARING_HDR_BYTES, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, data_off) == GS_ARING_W_DATA_OFF * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, write_idx) == GS_ARING_W_WRITE * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, read_idx) == GS_ARING_W_READ * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, fill_pm) == GS_ARING_W_FILL_PM * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, push_seq) == GS_ARING_W_PUSH_SEQ * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, reset_gen) == GS_ARING_W_RESET_GEN * 4, "audio ring layout");
-_Static_assert(offsetof(gs_audio_ring_t, owner) == GS_ARING_W_OWNER * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, data) == GS_ARING_HDR_BYTES, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, data_off) == GS_ARING_W_DATA_OFF * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, write_idx) == GS_ARING_W_WRITE * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, read_idx) == GS_ARING_W_READ * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, fill_pm) == GS_ARING_W_FILL_PM * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, push_seq) == GS_ARING_W_PUSH_SEQ * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, reset_gen) == GS_ARING_W_RESET_GEN * 4, "audio ring layout");
+_Static_assert(offsetof(audio_ring_t, owner) == GS_ARING_W_OWNER * 4, "audio ring layout");
 
-static gs_audio_ring_t g_aring = {
+static audio_ring_t g_aring = {
     .magic = GS_ARING_MAGIC,
     .version = GS_ARING_VERSION,
-    .data_off = offsetof(gs_audio_ring_t, data),
+    .data_off = offsetof(audio_ring_t, data),
     .frames = GS_ARING_FRAMES,
     .fill_pm = -1,
 }; // the one shared ring
@@ -104,13 +104,13 @@ static double g_last_push_time = -1.0; // producer-side freshness for ring_fill 
 // ============================================================================
 
 // Initialize the WebAudio subsystem: create the context and register the
-// worklet processor. The worklet *node* is created lazily by gs_audio_open_js
+// worklet processor. The worklet *node* is created lazily by audio_open_js
 // once the machine's sound frontend declares its stream parameters.
 //
 // `fresh` (the C side's own init, em_audio_init) sets the subsystem up again
 // even if Module.gsAudio survives from an earlier run of the C side in this
 // Module (a hot reload): the old node is stopped, the context, the owner
-// counter and the gesture hooks are kept.  Without it (gs_audio_open_js) an
+// counter and the gesture hooks are kept.  Without it (audio_open_js) an
 // initialised subsystem is left alone.
 //
 // The latency target -- the ring depth the worklet's start gate waits for and
@@ -118,7 +118,7 @@ static double g_last_push_time = -1.0; // producer-side freshness for ring_fill 
 // Module.gsAudioTargetLatency (seconds, 0.02-0.25): web2 takes it from the
 // ?audio_latency=<ms> URL parameter.
 // clang-format off
-EM_JS(void, gs_audio_init_js, (int fresh), {
+EM_JS(void, audio_init_js, (int fresh), {
     // Check if already initialized
     if (Module.gsAudio && Module.gsAudio.initialized && !fresh)
         return;
@@ -136,7 +136,7 @@ EM_JS(void, gs_audio_init_js, (int fresh), {
     ga.initialized = true;
     var tl = Number(Module.gsAudioTargetLatency);
     ga.targetLatency = (tl >= 0.02 && tl <= 0.25) ? tl : 0.083; // seconds
-    ga.srcRate = 0;           // set by gs_audio_open_js
+    ga.srcRate = 0;           // set by audio_open_js
     ga.channels = 0;
     ga.node = null;
     ga.pend = null;           // stream params requested before the module loaded
@@ -246,7 +246,7 @@ EM_JS(void, gs_audio_init_js, (int fresh), {
 });
 
 // Resume audio context if suspended
-EM_JS(void, gs_audio_resume_js, (), {
+EM_JS(void, audio_resume_js, (), {
     try {
         const ga = Module.gsAudio;
         if (ga && ga.ctx && ga.ctx.state === 'suspended')
@@ -258,8 +258,8 @@ EM_JS(void, gs_audio_resume_js, (), {
 // Open (or re-parameterize) the stream: same channel count = in-place rate
 // change (worklet restart), different channel count = node re-creation.
 // ring_ptr / ring_frames locate the shared ring inside the wasm heap.
-EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr), {
-    gs_audio_init_js(0);
+EM_JS(void, audio_open_js, (int rate, int channels, uint32_t ring_ptr), {
+    audio_init_js(0);
     var ga = Module.gsAudio;
     if (ga.node && ga.channels === channels) {
         if (ga.srcRate !== rate) {
@@ -274,7 +274,7 @@ EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr), {
 });
 
 // Change the source sample rate mid-stream (stream restart in the worklet)
-EM_JS(void, gs_audio_set_rate_js, (int rate), {
+EM_JS(void, audio_set_rate_js, (int rate), {
     var ga = Module.gsAudio;
     if (!ga)
         return;
@@ -300,12 +300,12 @@ EM_JS(void, gs_audio_set_rate_js, (int rate), {
 // caller here, runs on a worker pthread (PROXY_TO_PTHREAD).  The build is
 // always -pthread, so there is no "already on the main thread" branch.
 
-static void gs_audio_init(void) {
-    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, gs_audio_init_js, 1);
+static void audio_init_on_main(void) {
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, audio_init_js, 1);
 }
 
-static void gs_audio_resume(void) {
-    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, gs_audio_resume_js);
+static void audio_resume_on_main(void) {
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, audio_resume_js);
 }
 
 // The ring's address travels as the third int of an EM_FUNC_SIG_VIII call:
@@ -313,13 +313,13 @@ static void gs_audio_resume(void) {
 // offset.  That holds for wasm32 only -- under wasm64 (MEMORY64) the pointer
 // would need a pointer-sized slot (EM_FUNC_SIG_PARAM_P, an i64 there) and a
 // BigInt on the JS side.
-static void gs_audio_open(int rate, int channels) {
+static void audio_open_on_main(int rate, int channels) {
     uint32_t ring_ptr = (uint32_t)(uintptr_t)&g_aring;
-    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, gs_audio_open_js, rate, channels, ring_ptr);
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, audio_open_js, rate, channels, ring_ptr);
 }
 
-static void gs_audio_set_rate(int rate) {
-    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, gs_audio_set_rate_js, rate);
+static void audio_set_rate_on_main(int rate) {
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, audio_set_rate_js, rate);
 }
 
 // ============================================================================
@@ -328,12 +328,12 @@ static void gs_audio_set_rate(int rate) {
 
 // Initialize audio subsystem (context + worklet module; node comes with open)
 void em_audio_init(void) {
-    gs_audio_init();
+    audio_init_on_main();
 }
 
 // Resume audio context
 void em_audio_resume(void) {
-    gs_audio_resume();
+    audio_resume_on_main();
 }
 
 // ============================================================================
@@ -353,7 +353,7 @@ void platform_audio_open(uint32_t src_rate_hz, int channels) {
     atomic_fetch_add_explicit(&g_aring.reset_gen, 1, memory_order_release);
     atomic_store_explicit(&g_aring.silent_pushes, 0, memory_order_relaxed);
     atomic_store_explicit(&g_aring.fill_pm, -1, memory_order_relaxed);
-    gs_audio_open((int)src_rate_hz, channels);
+    audio_open_on_main((int)src_rate_hz, channels);
 }
 
 // Push interleaved int16 frames to the stream: a local copy into the shared
@@ -362,7 +362,7 @@ void platform_audio_open(uint32_t src_rate_hz, int channels) {
 void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
     if (!frames || nframes <= 0)
         return;
-    gs_audio_ring_t *ring = &g_aring;
+    audio_ring_t *ring = &g_aring;
     int ch = g_aring_channels;
     uint32_t n = (uint32_t)nframes;
     uint32_t mask = GS_ARING_FRAMES - 1;
@@ -408,7 +408,7 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
 
 // Change the source sample rate mid-stream
 void platform_audio_set_rate(uint32_t src_rate_hz) {
-    gs_audio_set_rate((int)src_rate_hz);
+    audio_set_rate_on_main((int)src_rate_hz);
 }
 
 // Ring fill fraction against target depth for the accelerated-mode governor:

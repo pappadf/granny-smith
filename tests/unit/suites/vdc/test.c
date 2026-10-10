@@ -286,16 +286,16 @@ void value_free(value_t *v) {
 
 // --- host seams (system.c is not linked; strong test definitions) ---
 static bool s_host_connected;
-bool gs_video_in_connected(void) {
+bool platform_video_in_connected(void) {
     return s_host_connected;
 }
-int gs_video_in_frame(uint8_t *rgba) {
+int platform_video_in_frame(uint8_t *rgba) {
     (void)rgba;
     return -1;
 }
 static int s_state_pushes;
 static bool s_state_last;
-void gs_video_in_state(bool active) {
+void platform_video_in_state(bool active) {
     s_state_pushes++;
     s_state_last = active;
 }
@@ -426,7 +426,7 @@ TEST(test_status_bytes) {
     // the open sequence's $00 := $70).
     ASSERT_EQ_INT(1, av_vdc_i2c_read(s_st.vdc, 0xB9, false, 0, &b, 1));
     ASSERT_EQ_INT(0x11, b & 0xFD); // ignore OEF; ID=1, SVP=1
-    // The "host" source follows the gs_video_in_connected seam.
+    // The "host" source follows the platform_video_in_connected seam.
     ASSERT_EQ_INT(0, av_vdc_set_source(s_st.vdc, "host"));
     s_host_connected = false;
     ASSERT_TRUE(!av_vdc_connected(s_st.vdc));

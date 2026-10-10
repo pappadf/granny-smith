@@ -559,7 +559,7 @@ configure, and what the JS frontend operates on:
   resolves the path, parses arguments from JSON, invokes the right
   read / write / call, and serialises the result back to JSON. JS
   reaches it through the mailbox (`src/core/mailbox/mailbox.h`, exposed
-  via the lone `_get_gs_mailbox` export): a request ring the page writes
+  via the lone `_get_mailbox` export): a request ring the page writes
   and the worker's `shell_poll()` drains every tick, and an event ring
   the answers come back on, each carrying its request's id.
   `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —

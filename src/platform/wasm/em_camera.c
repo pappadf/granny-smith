@@ -3,13 +3,13 @@
 
 // em_camera.c
 // Browser webcam → AV video-in frame path: the WASM overrides of the
-// gs_video_in_* seam (system.h) plus the shared-heap frame transport.
+// platform_video_in_* seam (platform_hooks.h) plus the shared-heap frame transport.
 //
 // Transport — a static double-buffered frame slot pair behind a control
 // block (em_shm_layout.h) in the shared wasm heap.  Static storage keeps the
 // address stable under ALLOW_MEMORY_GROWTH.  The MAIN THREAD writes each
 // decoded camera frame into the non-active slot through Module.HEAPU8, flips
-// `active`, then bumps `seq`; the WORKER-side gs_video_in_frame copies out of
+// `active`, then bumps `seq`; the WORKER-side platform_video_in_frame copies out of
 // the active slot under a seqlock on `seq`.  The writer never touches the
 // active slot, but that alone does not rule out a tear: a reader that
 // latched slot A can still be copying when the writer completes B, flips,
@@ -18,7 +18,7 @@
 // boundary.
 //
 // Lifecycle — the camera runs only while the guest captures: VDCClk
-// transitions surface through gs_video_in_state → Module.onVideoInState,
+// transitions surface through platform_video_in_state → Module.onVideoInState,
 // and JS attaches/stops the MediaStreamTrack on those events under the
 // user's master camera toggle (app/web2 DisplayToolbar).
 
@@ -41,7 +41,7 @@
 
 // The shared frame transport: the control block (em_shm_layout.h), then the
 // two slots.
-typedef struct gs_camera_shm {
+typedef struct camera_shm {
     uint32_t magic, version;
     uint32_t slot_off, slot_bytes;
     uint32_t width, height;
@@ -50,18 +50,18 @@ typedef struct gs_camera_shm {
     _Atomic uint32_t seq; // bumped after each completed frame write
     uint32_t reserved[7]; // pad the block to 64 bytes
     uint8_t slot[2][GS_CAM_BYTES];
-} gs_camera_shm_t;
+} camera_shm_t;
 
-_Static_assert(offsetof(gs_camera_shm_t, slot_off) == GS_CAM_W_SLOT_OFF * 4, "camera layout");
-_Static_assert(offsetof(gs_camera_shm_t, width) == GS_CAM_W_WIDTH * 4, "camera layout");
-_Static_assert(offsetof(gs_camera_shm_t, connected) == GS_CAM_W_CONNECTED * 4, "camera layout");
-_Static_assert(offsetof(gs_camera_shm_t, active) == GS_CAM_W_ACTIVE * 4, "camera layout");
-_Static_assert(offsetof(gs_camera_shm_t, seq) == GS_CAM_W_SEQ * 4, "camera layout");
+_Static_assert(offsetof(camera_shm_t, slot_off) == GS_CAM_W_SLOT_OFF * 4, "camera layout");
+_Static_assert(offsetof(camera_shm_t, width) == GS_CAM_W_WIDTH * 4, "camera layout");
+_Static_assert(offsetof(camera_shm_t, connected) == GS_CAM_W_CONNECTED * 4, "camera layout");
+_Static_assert(offsetof(camera_shm_t, active) == GS_CAM_W_ACTIVE * 4, "camera layout");
+_Static_assert(offsetof(camera_shm_t, seq) == GS_CAM_W_SEQ * 4, "camera layout");
 
-static gs_camera_shm_t g_camera = {
+static camera_shm_t g_camera = {
     .magic = GS_CAM_MAGIC,
     .version = GS_CAM_VERSION,
-    .slot_off = offsetof(gs_camera_shm_t, slot),
+    .slot_off = offsetof(camera_shm_t, slot),
     .slot_bytes = GS_CAM_BYTES,
     .width = GS_CAM_W,
     .height = GS_CAM_H,
@@ -78,11 +78,11 @@ void em_camera_init(void) {
     // clang-format on
 }
 
-// === gs_video_in_* seam overrides (weak defaults in core/system.c) ==========
+// === platform_video_in_* seam overrides (weak defaults in core/platform_hooks.c) ===
 
 // True while the browser camera is attached and delivering frames — the
 // guest-visible "signal present" (DMSD HLCK) answer.
-bool gs_video_in_connected(void) {
+bool platform_video_in_connected(void) {
     return atomic_load_explicit(&g_camera.connected, memory_order_relaxed) != 0;
 }
 
@@ -94,8 +94,8 @@ bool gs_video_in_connected(void) {
 // three the copy stands -- the caller would otherwise show black, which is
 // worse than the tear it avoids, and only a writer finishing frames faster
 // than a memcpy could get there.
-int gs_video_in_frame(uint8_t *rgba) {
-    if (!gs_video_in_connected())
+int platform_video_in_frame(uint8_t *rgba) {
+    if (!platform_video_in_connected())
         return -1;
     for (int attempt = 0; attempt < 3; attempt++) {
         uint32_t seq = atomic_load_explicit(&g_camera.seq, memory_order_acquire);
@@ -112,7 +112,7 @@ int gs_video_in_frame(uint8_t *rgba) {
 
 // The guest gated the capture clock: let JS attach/stop the camera track
 // (the MAIN_THREAD_ASYNC_EM_ASM push pattern).
-void gs_video_in_state(bool active) {
+void platform_video_in_state(bool active) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(
         { if (typeof Module.onVideoInState === 'function') Module.onVideoInState(!!$0); },

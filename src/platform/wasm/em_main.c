@@ -270,7 +270,7 @@ static void setup_pointer_lock(void) {
 // Global state variables
 static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
-// checkpoint.auto.  Plain, not atomic: its only writer (gs_checkpoint_auto_set,
+// checkpoint.auto.  Plain, not atomic: its only writer (platform_checkpoint_auto_set,
 // an object_eval served by the drain) and its readers (the tick, the visibility
 // callback) all run on this, the emulator thread.
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
@@ -352,7 +352,7 @@ __attribute__((constructor)) static void mailbox_construct(void) {
     mailbox_set_capture_output(&g_mailbox, true);
 }
 
-EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
+EMSCRIPTEN_KEEPALIVE uint32_t *get_mailbox(void) {
     return (uint32_t *)g_mailbox.ctrl;
 }
 
@@ -870,10 +870,10 @@ void printer_sink_status(const char *printer, const char *status) {
     event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 
-// Platform impl of gs_download (weak default in system.c stubs out).
+// Platform impl of platform_download (weak default in system.c stubs out).
 // Returns 0 when the download was started (the answer is deferred: it
 // completes when the page has taken the last chunk), non-zero otherwise.
-int gs_download(const char *path) {
+int platform_download(const char *path) {
     download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
     if (!d)
         return -1;
@@ -1086,13 +1086,13 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
 
 // Background auto-checkpoint accessors — override the weak defaults in
 // system.c so the `auto_checkpoint` attribute reads/writes the live flag.
-bool gs_checkpoint_auto_get(void) {
+bool platform_checkpoint_auto_get(void) {
     return checkpoint_auto_enabled;
 }
 
 // Either way the interval restarts: turning saving on waits a full
 // CHECKPOINT_INTERVAL for its first save, whatever was counted before.
-int gs_checkpoint_auto_set(bool enabled) {
+int platform_checkpoint_auto_set(bool enabled) {
     checkpoint_auto_enabled = enabled;
     checkpoint_tick_counter = 0;
     return 0;

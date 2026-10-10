@@ -5,7 +5,7 @@
 // Singer codec + PSC sound frame engine — see singer.h.  The structural
 // twin of the VDC field engine: a cadenced scheduler event, guest-
 // programmed geometry (sndSize/pSndRate/bases), a host seam (audio out
-// via audio_out.h, audio in via the gs_audio_in seam), and interrupt
+// via audio_out.h, audio in via the platform_audio_in seam), and interrupt
 // lines (PSC-VIA2 bit 6 + DSP EXT1, both gated by pFrmIntEn).
 //
 // The engine is phase-locked to the same absolute time formula as the
@@ -56,7 +56,7 @@ typedef enum {
     AIN_SRC_NONE = 0, // no microphone (default; input records silence)
     AIN_SRC_TONE, // deterministic sawtooth, pure function of the sample counter
     AIN_SRC_WAV, // a WAV loaded via machine.audioin.load (position checkpointed)
-    AIN_SRC_HOST, // the platform microphone through the gs_audio_in seam
+    AIN_SRC_HOST, // the platform microphone through the platform_audio_in seam
 } ain_src_t;
 
 struct av_singer {
@@ -227,7 +227,7 @@ static bool singer_ain_connected(av_singer_t *s) {
     case AIN_SRC_WAV:
         return s->wav_frames != 0;
     case AIN_SRC_HOST:
-        return gs_audio_in_connected();
+        return platform_audio_in_connected();
     default:
         return false;
     }
@@ -288,7 +288,7 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         break;
     }
     case AIN_SRC_HOST:
-        gs_audio_in_frames(s->stage, nframes, rate);
+        platform_audio_in_frames(s->stage, nframes, rate);
         break;
     default:
         break;
@@ -553,7 +553,7 @@ static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         // The platform's own view of the capture, when it has one: the
         // guest-side level says audio is missing, never which side lost it.
         char host[192];
-        if (!gs_audio_in_debug(host, sizeof host))
+        if (!platform_audio_in_debug(host, sizeof host))
             host[0] = 0;
         LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS) adgain %.2fx %s %s", ain_src_name(s->ain_src),
             s->ain_peak, pk, s->ain_level, rm, (double)s->ain_adgain / 65536.0, host,
@@ -648,14 +648,14 @@ static void singer_frame_event(void *source, uint64_t data) {
         LOG(2, "sndComCtl now $%04X at frame %llu (int %d out %d in %d)", com, (unsigned long long)frame,
             !!(com & SND_FRM_INT_EN), !!(com & SND_OUT_EN), !!(com & SND_IN_EN));
     // Host capture lifecycle, on the GUEST's own gate — the mirror of the
-    // VDC clock driving gs_video_in_state.  A browser platform attaches its
+    // VDC clock driving platform_video_in_state.  A browser platform attaches its
     // microphone track here, so the recording indicator is lit only while
     // the guest is genuinely recording.  This must NOT be driven from the
     // machine.audioin source setter: that merely echoes back the selection
     // the caller just made, which re-enters the frontend's own stream
     // reconciliation and races it.
     if ((com ^ s->last_com) & SND_IN_EN)
-        gs_audio_in_state((com & SND_IN_EN) != 0);
+        platform_audio_in_state((com & SND_IN_EN) != 0);
     s->last_com = com;
 
     if (com & SND_FRM_INT_EN) {
@@ -871,7 +871,7 @@ static DEF_METHOD(ain_method_inject) {
     if (singer_load_wav(s, argv[0].s) < 0)
         return val_err("audioin.inject: cannot load '%s' as a PCM16 WAV", argv[0].s);
     s->ain_src = AIN_SRC_WAV;
-    gs_audio_in_injected(argv[0].s);
+    platform_audio_in_injected(argv[0].s);
     return val_uint(4, s->wav_frames);
 }
 

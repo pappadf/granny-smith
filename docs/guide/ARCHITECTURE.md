@@ -183,7 +183,7 @@ Four caller surfaces walk that tree:
   resolves the same path, JSON-encodes the result, and returns to JS.
   The web frontend reaches it through the mailbox — a control block and
   two record rings in shared memory (`src/core/mailbox/mailbox.h`,
-  exposed via one `_get_gs_mailbox` WASM export). JS calls
+  exposed via one `_get_mailbox` WASM export). JS calls
   `gsEval(path, args)`; that writes a `REQ_EVAL` record carrying an id
   into the request ring, and the emulator thread's drain serves every
   pending request each frame and answers each with an `EVT_RESULT` the

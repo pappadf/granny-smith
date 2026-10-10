@@ -75,11 +75,11 @@ static DEF_METHOD(checkpoint_method_snapshot) {
 // loop's enabled flag.  A platform with no such loop (headless) reads false
 // and refuses the set.
 static DEF_GETTER(checkpoint_attr_auto_get) {
-    return val_bool(gs_checkpoint_auto_get());
+    return val_bool(platform_checkpoint_auto_get());
 }
 
 static DEF_SETTER(checkpoint_attr_auto_set) {
-    if (gs_checkpoint_auto_set(in.b) != 0)
+    if (platform_checkpoint_auto_set(in.b) != 0)
         return val_err("checkpoint.auto: not supported on this platform");
     return val_none();
 }

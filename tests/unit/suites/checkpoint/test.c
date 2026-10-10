@@ -89,10 +89,10 @@ int gs_background_checkpoint(const char *label) {
     (void)label;
     return -1;
 }
-bool gs_checkpoint_auto_get(void) {
+bool platform_checkpoint_auto_get(void) {
     return false;
 }
-int gs_checkpoint_auto_set(bool on) {
+int platform_checkpoint_auto_set(bool on) {
     (void)on;
     return -2;
 }
