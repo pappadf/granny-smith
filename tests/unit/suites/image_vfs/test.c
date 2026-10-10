@@ -19,6 +19,21 @@
 #include <string.h>
 #include <unistd.h>
 
+// ---- realpath(), failing on demand (native builds; see Makefile) ----------
+
+#ifdef TEST_WRAP_REALPATH
+// 0, or the errno every realpath() call fails with.
+static int g_realpath_errno;
+char *__real_realpath(const char *path, char *resolved);
+char *__wrap_realpath(const char *path, char *resolved) {
+    if (g_realpath_errno) {
+        errno = g_realpath_errno;
+        return NULL;
+    }
+    return __real_realpath(path, resolved);
+}
+#endif
+
 // ---- The volume on disk, and the image.c entry point image_vfs uses ------
 
 #define IMG_CAP (64u * HFSB_BLOCK)
@@ -352,6 +367,33 @@ TEST(test_non_image_is_refused_cleanly) {
     unlink(g_host);
 }
 
+#ifdef TEST_WRAP_REALPATH
+// A realpath() that fails for a reason other than a missing file (a backend,
+// such as one under WasmFS, that cannot answer it) does not stop the mount:
+// the path is used as given, as image.c and source.c use it, and the mount
+// is found under that spelling.  A missing file is still refused.
+TEST(test_realpath_failure_falls_back_to_the_raw_path) {
+    make_volume(one_file, 1);
+    image_mount_t *m = NULL;
+    g_realpath_errno = EINVAL;
+    int rc = image_vfs_acquire_mount(g_host, &m);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_TRUE(m != NULL);
+    vfs_stat_t st;
+    rc = vfs_image_backend()->stat(m, "/partition1/A", &st);
+    ASSERT_EQ_INT(0, rc);
+    rc = image_vfs_unmount(g_host);
+    ASSERT_EQ_INT(0, rc);
+
+    g_realpath_errno = ENOENT;
+    m = NULL;
+    rc = image_vfs_acquire_mount(g_host, &m);
+    ASSERT_EQ_INT(-ENOENT, rc);
+    g_realpath_errno = 0;
+    unlink(g_host);
+}
+#endif
+
 // ---- Nesting ------------------------------------------------------------------
 
 // A volume inside a file of another volume mounts straight from the outer
@@ -513,6 +555,9 @@ int main(void) {
     RUN(test_pending_unmount_completes_on_last_close);
     RUN(test_overlong_path_is_refused_not_truncated);
     RUN(test_non_image_is_refused_cleanly);
+#ifdef TEST_WRAP_REALPATH
+    RUN(test_realpath_failure_falls_back_to_the_raw_path);
+#endif
     RUN(test_nested_volume_mounts_from_its_source);
     RUN(test_fork_names_resolve_literally_where_no_file_precedes);
     RUN(test_changed_file_supersedes_a_held_mount);

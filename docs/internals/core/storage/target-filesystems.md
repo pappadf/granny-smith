@@ -423,7 +423,9 @@ it for a disk image:
   a new mount fails with `-ENOSPC`.
 - Mounts are keyed by their source's key (`source.h`), which carries the
   file's size and mtime. A host file's mount is recorded under its canonical
-  path (`realpath`; a path that does not resolve is not mounted). When the
+  path (`realpath`; a path realpath reports missing is not mounted, and one
+  it cannot resolve for another reason — a filesystem backend that cannot
+  answer it — is mounted under the path as given). When the
   file changes, the next descent makes a new mount; the old one is dropped at
   once if idle, else marked **stale** (`files.mounts[n].stale`): its open
   handles keep working, nothing new reaches it, and the last handle to close

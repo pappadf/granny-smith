@@ -346,12 +346,21 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
 int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount) {
     if (!host_path_in || !out_mount)
         return -EINVAL;
-    // Mounts are recorded under the canonical path only: a path realpath()
-    // cannot resolve names no file we could open, and storing it raw would
-    // let the same file be found under one spelling and missed under another.
+    // Mounts are recorded under the canonical path, so every spelling of a
+    // file finds the one mount.  A path realpath() reports missing names no
+    // file we could open.  Any other failure (a filesystem backend, such as
+    // one under WasmFS, that cannot answer every step of realpath's walk)
+    // is realpath's limit, not the file's: the raw path is kept, as image.c
+    // and source.c keep it, and the open below decides.  find_mount_by_path
+    // matches the raw spelling first.
     char *host_path = canonicalise(host_path_in);
-    if (!host_path)
-        return errno ? -errno : -ENOENT;
+    if (!host_path) {
+        if (errno == ENOENT)
+            return -ENOENT;
+        host_path = strdup(host_path_in);
+        if (!host_path)
+            return -ENOMEM;
+    }
     int err = 0;
     gs_source_t *data = gs_source_host(host_path, &err);
     if (!data) {
