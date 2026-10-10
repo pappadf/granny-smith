@@ -17,9 +17,12 @@
 //  3. The sample-rate producer — int16 frame conversion, per-board speaker
 //     mix (SE/30 sum vs IIx/IIcx channel A), wavetable free-run voice sum,
 //     push batching, flush on mode-off, and ascClockRate rate switching.
+//  4. Checkpoint restore — a running chip restored from a checkpoint does not
+//     schedule a producer event of its own (F-719).
 
 #include "asc.h"
 #include "audio_out.h"
+#include "checkpoint.h"
 #include "object.h"
 #include "sound_surface.h"
 #include "test_assert.h"
@@ -230,6 +233,26 @@ void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
     (void)addr;
     (void)device;
 }
+// --- checkpoint: one recording stream; a save appends, a restore replays ---
+static uint8_t s_cp_buf[65536];
+static size_t s_cp_w, s_cp_r;
+
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)cp, (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_w + size <= sizeof(s_cp_buf));
+    memcpy(s_cp_buf + s_cp_w, data, size);
+    s_cp_w += size;
+}
+
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)cp, (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_r + size <= s_cp_w);
+    memcpy(data, s_cp_buf + s_cp_r, size);
+    s_cp_r += size;
+}
+
 // ============================================================================
 // Harness helpers
 // ============================================================================
@@ -587,6 +610,42 @@ TEST(test_producer_stops_when_off) {
 }
 
 // ============================================================================
+// 4. Checkpoint restore
+// ============================================================================
+
+// F-719: a running chip's pending fifo_drain event is saved in the
+// scheduler's event queue and re-inserted by scheduler_restore_events.
+// asc_init used to schedule another one when it restored a running chip, so
+// two drain chains ran and the producer went at twice the sample rate.
+TEST(test_restore_running_chip_schedules_no_drain) {
+    fresh();
+    wr(R_MODE, 1); // FIFO mode: the producer runs
+    ASSERT_TRUE(s_cb != NULL);
+    tick(5);
+    event_callback_t_local drain = s_cb; // asc's fifo_drain callback
+    s_cp_w = s_cp_r = 0;
+    asc_checkpoint(g_asc, (checkpoint_t *)0x1);
+    ASSERT_TRUE(s_cp_w > 0);
+
+    // Restore into a second instance: it is running, yet arms nothing.
+    s_period_n = 0;
+    asc_t *restored = asc_init(NULL, (scheduler_t *)0x1, (checkpoint_t *)0x1);
+    ASSERT_TRUE(restored != NULL);
+    ASSERT_EQ_INT((int)s_cp_r, (int)s_cp_w); // the whole saved block was read
+    ASSERT_EQ_INT((int)s_period_n, 0);
+    const memory_interface_t *rif = asc_get_memory_interface(restored);
+    ASSERT_EQ_INT(rif->read_uint8(restored, R_MODE), 1); // and it is running
+
+    // The re-inserted event firing keeps a single chain: it re-arms exactly
+    // one event, on the restored chip.
+    s_cb_src = NULL;
+    drain(restored, 0);
+    ASSERT_EQ_INT((int)s_period_n, 1);
+    ASSERT_TRUE(s_cb_src == restored);
+    asc_delete(restored);
+}
+
+// ============================================================================
 
 int main(void) {
     RUN(test_post_register_vectors);
@@ -600,6 +659,7 @@ int main(void) {
     RUN(test_producer_rate_switch);
     RUN(test_producer_period_no_drift);
     RUN(test_producer_stops_when_off);
+    RUN(test_restore_running_chip_schedules_no_drain);
     fprintf(stderr, "asc: all tests passed\n");
     return 0;
 }

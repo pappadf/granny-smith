@@ -10,8 +10,9 @@ This document describes the coding, formatting, and documentation conventions fo
 
 ### Compiler Extensions
 
-The project builds with GCC and Clang only (Emscripten and the headless
-build are both Clang), and relies on GNU C extensions where they buy
+The project builds with GCC and Clang only (the WASM build is Clang, via
+Emscripten's `emcc`; the headless build defaults to GCC — `CC := gcc` in
+`Makefile.headless` — and builds with Clang too), and relies on GNU C extensions where they buy
 something real: the `, ##__VA_ARGS__` comma swallow in variadic macros
 (`GS_ASSERTF`, `LOG`), `__attribute__((cleanup))` (`VALUE_AUTO`),
 `__builtin_*` intrinsics, and `-std=gnu11`.  No portability shim is kept for

@@ -69,6 +69,23 @@ assert shell.complete("echo $" + "(cpu.", 11).candidates == "[]" "no candidates 
 assert shell.complete("echo \"machine.cpu.", 18).candidates == "[]" "no candidates inside quotes"
 assert shell.complete("echo $" + "{cpu.", 11).candidates == "[]" "no candidates inside dollar-brace"
 
+# A result too big for the mailbox (GS_MBX_RESULT_MAX, 256 KiB) is cut at
+# a candidate boundary and says `truncated`, in both shapes, instead of
+# coming back as an error document.  1500 directories with ~200-character
+# names render to well over that.
+files.mkdir "${$WORK_DIR}/cmpl_big"
+let pad = "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+let pad = $pad + $pad
+for i in range(1500) { files.mkdir "${$WORK_DIR}/cmpl_big/${$pad}${$i}" }
+let big_line = "files.ls ${$WORK_DIR}/cmpl_big/"
+let big = shell.complete($big_line, len($big_line), true)
+assert $big.truncated "an oversized detail result is truncated"
+assert len($big.candidates) > 500 "the leading candidates are kept"
+assert len($big.candidates) < 1500 "the detail list was cut"
+let big = shell.complete($big_line, len($big_line))
+assert $big.truncated "an oversized bare result is truncated"
+assert len($big.candidates) < 1500 "the bare list was cut"
+
 # alias add / remove round-trip. Adding "foo" -> "machine.cpu.pc" should
 # make it show up in shell.alias.list, and remove should drop it.
 shell.alias.add "foo" "machine.cpu.pc"

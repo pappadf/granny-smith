@@ -50,6 +50,10 @@ struct completion {
     char **owned;
     int n_owned;
     int cap_owned;
+    // Dedup index: an open-addressed table of item indices (-1 empty), kept
+    // at least twice `cap` so push_match finds a duplicate in O(1).
+    int *seen;
+    int seen_cap;
     int start;
     int end;
     // The detail the next pushed candidates get (set by the completer).

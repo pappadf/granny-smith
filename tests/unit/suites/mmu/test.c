@@ -387,6 +387,80 @@ TEST(test_two_level_translation) {
 }
 
 // ============================================================================
+// Test: mmu_translate_with_crp walks the supplied root, leaving mmu->crp alone
+// ============================================================================
+// It used to swap the supplied root into mmu->crp for the walk and back out;
+// now it walks from the root directly.  Two address spaces map logical
+// $1000 to different frames; asking through the second must answer from it
+// and leave the MMU's own CRP exactly as it was.
+
+TEST(test_translate_with_crp_leaves_crp_untouched) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    memory_populate_pages(mem, 0x40000000, 0x40080000);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, ram + 0x400000, 0x040000, 0x40000000, 0x50000000);
+
+    // TC as in test_two_level_translation: 4 KB pages, TIA=8, TIB=12
+    mmu->tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
+    // Space 1: level A at $10000, level B at $11000, logical $1000 -> $2000
+    store_be32(ram + 0x10000, 0x11000 | DESC_DT_TABLE4);
+    store_be32(ram + 0x11000 + 4, 0x00002000 | DESC_DT_PAGE);
+    // Space 2: level A at $20000, level B at $21000, logical $1000 -> $5000
+    store_be32(ram + 0x20000, 0x21000 | DESC_DT_TABLE4);
+    store_be32(ram + 0x21000 + 4, 0x00005000 | DESC_DT_PAGE);
+    uint64_t crp1 = ((uint64_t)DESC_DT_TABLE4 << 32) | 0x10000;
+    uint64_t crp2 = ((uint64_t)DESC_DT_TABLE4 << 32) | 0x20000;
+    mmu->crp = crp1;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    uint32_t pa = 0;
+    ASSERT_TRUE(mmu_translate_with_crp(mmu, 0x00001042, crp2, &pa));
+    ASSERT_EQ_INT(0x00005042, (int)pa); // answered from the supplied root
+    ASSERT_TRUE(mmu->crp == crp1); // the MMU's own root is untouched
+    ASSERT_TRUE(mmu_translate_with_crp(mmu, 0x00001042, crp1, &pa));
+    ASSERT_EQ_INT(0x00002042, (int)pa);
+    ASSERT_TRUE(mmu->crp == crp1);
+    // No root: no answer, and still no change.
+    ASSERT_TRUE(!mmu_translate_with_crp(mmu, 0x00001042, 0, &pa));
+    ASSERT_TRUE(mmu->crp == crp1);
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
+// Test: multi-byte physical writes are all-or-nothing
+// ============================================================================
+// A 16/32-bit physical write that runs off the end of RAM into unmapped space
+// must write nothing: it used to store the leading bytes and then fail,
+// leaving a half-written value behind a `false` return.
+
+TEST(test_write_physical_is_all_or_nothing) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, ram + 0x400000, 0x040000, 0x40000000, 0x50000000);
+
+    // The last four bytes of RAM, with a known pattern
+    store_be32(ram + 0x3FFFFC, 0xA1B2C3D4);
+
+    // Straddling the end of RAM ($400000 is unmapped): refused, nothing written
+    ASSERT_TRUE(!mmu_write_physical_uint32(mmu, 0x3FFFFE, 0x11223344));
+    ASSERT_EQ_INT((int)0xA1B2C3D4, (int)load_be32(ram + 0x3FFFFC));
+    ASSERT_TRUE(!mmu_write_physical_uint16(mmu, 0x3FFFFF, 0x5566));
+    ASSERT_EQ_INT((int)0xA1B2C3D4, (int)load_be32(ram + 0x3FFFFC));
+    // Into ROM (read-only): refused too
+    ASSERT_TRUE(!mmu_write_physical_uint32(mmu, 0x40000000, 0x11223344));
+
+    // Wholly inside RAM: written, big-endian
+    ASSERT_TRUE(mmu_write_physical_uint32(mmu, 0x3FFFFC, 0x11223344));
+    ASSERT_EQ_INT(0x11223344, (int)load_be32(ram + 0x3FFFFC));
+    ASSERT_TRUE(mmu_write_physical_uint16(mmu, 0x3FFFFE, 0x5566));
+    ASSERT_EQ_INT(0x11225566, (int)load_be32(ram + 0x3FFFFC));
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
 // Test: Short-format table descriptor with WP bit set
 // ============================================================================
 // Regression test for a mask-off-by-one bug: short-format table descriptors
@@ -842,6 +916,8 @@ int main(void) {
     RUN(test_24bit_soa_compatibility);
     RUN(test_debug_walk_trace);
     RUN(test_debug_map_sweep);
+    RUN(test_translate_with_crp_leaves_crp_untouched);
+    RUN(test_write_physical_is_all_or_nothing);
     printf("[PASS] All MMU tests passed\n");
     return 0;
 }

@@ -195,6 +195,12 @@ static const struct full_ext_case full_ext_cases[] = {
      {0x23B0, 0x7130, 0x1100, 0x4DA6, 0x2010},
      5,                                                                                   5,
      "MOVE.L\t$11004DA6(A0,D7.W*1),$10(A1,D2.W*1)"                                                                            },
+
+    // CHK2 and CMP2 share an opcode; extension bit 11 tells them apart (the
+    // corpus fills extension words with $4E71, so it only ever shows CHK2).
+    // ext = 0x4071 : D4, bit 11 clear -> CMP2; 0xC800 : A4, bit 11 set -> CHK2
+    {"CMP2.B (ext bit 11 clear)",                    {0x00D0, 0x4071},                 2, 2, "CMP2.B\t(A0),D4"                },
+    {"CHK2.L with an address register",              {0x04D0, 0xC800},                 2, 2, "CHK2.L\t(A0),A4"                },
 };
 
 TEST(disasm_full_ext_words) {

@@ -89,9 +89,11 @@ ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
 it between chunks (see [`../../guide/web.md`](../../../guide/web.md), "I/O
 jobs").
 
-Display flags follow the value: an attribute declared with `VFLAG_HEX`
-emits values that the JSON encoder serialises as `"0x12345678"`; the
-shell formatter prints them in hex; the inspector panel renders them
+Display flags follow the value: an unsigned attribute declared with
+`VFLAG_HEX` emits values that the JSON encoder serialises as
+`"0x12345678"` (a signed `VK_INT` stays a bare JSON number, so a NuBus
+slot number reaches the page as `14`); the shell formatter prints both
+in hex (a signed value as its two's-complement pattern at its width); the inspector panel renders them
 the same way. Each layer reads the intent off the value, not off the
 attribute, so passing a `machine.cpu.pc` reading through a function still
 formats correctly.

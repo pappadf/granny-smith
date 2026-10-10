@@ -24,7 +24,7 @@
 // === JSON formatting ========================================================
 //
 // The document is value_format's VFMT_JSON_TAGGED rendering (value_format.h):
-//   numeric / bool      → bare number / true / false (VFLAG_HEX → "0x…" string)
+//   numeric / bool      → bare number / true / false (a VFLAG_HEX VK_UINT → "0x…" string)
 //   strings             → quoted string with the standard escapes
 //   bytes               → "0x..." hex string
 //   enum                → {"enum": "<name>", "index": <idx>}

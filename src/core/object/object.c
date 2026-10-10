@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1859,6 +1860,22 @@ static void format_member_path(char *buf, size_t buf_size, struct object *obj, c
         snprintf(buf, buf_size, "%s", head);
 }
 
+// Build a method/setter error: the "<path>.<member>" prefix followed by the
+// formatted tail. The path walk happens here, on the error path only, so a
+// validated call that succeeds never pays for it.
+static value_t member_err(struct object *obj, const member_t *m, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+static value_t member_err(struct object *obj, const member_t *m, const char *fmt, ...) {
+    char prefix[256];
+    format_member_path(prefix, sizeof(prefix), obj, m);
+    char tail[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tail, sizeof(tail), fmt, ap); // the caller's message after the prefix
+    va_end(ap);
+    return val_err("%s%s", prefix, tail);
+}
+
 // Validate argv against a method's declared args[]. On success the body is
 // invoked with `*out_argv` (which may alias the caller's argv if no rewrite
 // was needed, or point at scratch[] otherwise). Caller owns `scratch` (a
@@ -1868,9 +1885,6 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
                                   value_t *scratch, int *out_argc, const value_t **out_argv) {
     const arg_decl_t *args = m->method.args;
     int nargs = m->method.nargs;
-
-    char prefix[256];
-    format_member_path(prefix, sizeof(prefix), obj, m);
 
     // No declared args[] table → opt out of framework validation entirely
     // (the body owns argc / kind checking). object_validate_class only
@@ -1883,18 +1897,18 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     }
     if (nargs <= 0) {
         if (in_argc != 0)
-            return val_err("%s: too many arguments (got %d, want 0)", prefix, in_argc);
+            return member_err(obj, m, ": too many arguments (got %d, want 0)", in_argc);
         *out_argc = 0;
         *out_argv = NULL;
         return val_none();
     }
 
     if (nargs > OBJ_VALIDATE_MAX_ARGS)
-        return val_err("%s: declared arg count %d exceeds limit %d", prefix, nargs, OBJ_VALIDATE_MAX_ARGS);
+        return member_err(obj, m, ": declared arg count %d exceeds limit %d", nargs, OBJ_VALIDATE_MAX_ARGS);
     // Every given argument lands in scratch[] (a rest tail included), so the
     // count is bounded by its capacity -- refused, never clamped or overrun.
     if (in_argc > OBJ_VALIDATE_MAX_ARGS)
-        return val_err("%s: too many arguments (got %d, limit %d)", prefix, in_argc, OBJ_VALIDATE_MAX_ARGS);
+        return member_err(obj, m, ": too many arguments (got %d, limit %d)", in_argc, OBJ_VALIDATE_MAX_ARGS);
 
     // Locate the rest slot, if any (must be last per registration check).
     bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
@@ -1913,11 +1927,11 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     for (int i = 0; i < fixed_n; i++) {
         bool missing = (i >= in_argc) || (in_argv[i].kind == VK_NONE);
         if (missing && !(args[i].validation_flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
-            return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
+            return member_err(obj, m, ": missing argument '%s'", args[i].name ? args[i].name : "?");
         }
     }
     if (!has_rest && in_argc > nargs) {
-        return val_err("%s: too many arguments (got %d, want %d)", prefix, in_argc, nargs);
+        return member_err(obj, m, ": too many arguments (got %d, want %d)", in_argc, nargs);
     }
 
     bool any_rewrite = false;
@@ -1940,7 +1954,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
                 eff_n = i + 1;
             } else if ((args[i].validation_flags & OBJ_ARG_GROUPED) && i < last_given) {
                 // A grouped slot cannot be skipped alone.
-                return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
+                return member_err(obj, m, ": missing argument '%s'", args[i].name ? args[i].name : "?");
             } else {
                 scratch[i] = val_none();
             }
@@ -1952,7 +1966,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         value_t out_v;
         validate_status_t st = validate_slot(&s, &in_argv[i], &out_v, err, sizeof(err));
         if (st == VALIDATE_ERR) {
-            return val_err("%s: '%s' %s", prefix, s.name, err);
+            return member_err(obj, m, ": '%s' %s", s.name, err);
         }
         scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
         if (st == VALIDATE_REWRITE)
@@ -1976,8 +1990,8 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
             } else {
                 validate_status_t st = validate_slot(&s, &in_argv[i], &out_v, err, sizeof(err));
                 if (st == VALIDATE_ERR) {
-                    return val_err("%s: rest item %d ('%s') %s", prefix, i - fixed_n, rest->name ? rest->name : "?",
-                                   err);
+                    return member_err(obj, m, ": rest item %d ('%s') %s", i - fixed_n, rest->name ? rest->name : "?",
+                                      err);
                 }
                 scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
                 if (st == VALIDATE_REWRITE)
@@ -2001,14 +2015,11 @@ static value_t node_validate_set(struct object *obj, const member_t *m, value_t 
     typed_slot_t s;
     slot_from_attr(&s, m);
 
-    char prefix[256];
-    format_member_path(prefix, sizeof(prefix), obj, m);
-
     char err[160];
     value_t out_v;
     validate_status_t st = validate_slot(&s, v, &out_v, err, sizeof(err));
     if (st == VALIDATE_ERR) {
-        return val_err("%s %s", prefix, err);
+        return member_err(obj, m, " %s", err);
     }
     if (st == VALIDATE_REWRITE) {
         // Free any heap owned by the original before swapping in the
@@ -2285,16 +2296,13 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
     const arg_decl_t *args = n.member->method.args;
     int nargs = n.member->method.nargs;
 
-    char prefix[256];
-    format_member_path(prefix, sizeof(prefix), n.obj, n.member);
-
     // Methods without a declared args[] table don't participate in named
     // binding — positional-only.
     if (!args || nargs <= 0) {
         if (named_n > 0)
-            return val_err("%s: method does not declare named arguments", prefix);
+            return member_err(n.obj, n.member, ": method does not declare named arguments");
         if (pos_argc > OBJ_BIND_MAX_ARGS)
-            return val_err("%s: too many arguments (got %d, limit %d)", prefix, pos_argc, OBJ_BIND_MAX_ARGS);
+            return member_err(n.obj, n.member, ": too many arguments (got %d, limit %d)", pos_argc, OBJ_BIND_MAX_ARGS);
         for (int i = 0; i < pos_argc; i++)
             out_argv[i] = pos_argv[i];
         *out_argc = pos_argc;
@@ -2305,7 +2313,7 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
     int fixed_n = has_rest ? (nargs - 1) : nargs;
 
     if (pos_argc > OBJ_BIND_MAX_ARGS || nargs > OBJ_BIND_MAX_ARGS)
-        return val_err("%s: too many arguments (limit %d)", prefix, OBJ_BIND_MAX_ARGS);
+        return member_err(n.obj, n.member, ": too many arguments (limit %d)", OBJ_BIND_MAX_ARGS);
 
     // Positionals fill slots left to right (a positional tail beyond
     // fixed_n feeds the rest slot exactly as before).
@@ -2326,15 +2334,15 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
         if (idx < 0) {
             // The rest slot is positional-tail only — name it explicitly.
             if (has_rest && args[fixed_n].name && strcmp(args[fixed_n].name, name) == 0)
-                return val_err("%s: argument '%s' is a rest slot and cannot be passed by name", prefix, name);
+                return member_err(n.obj, n.member, ": argument '%s' is a rest slot and cannot be passed by name", name);
             char names[160];
             format_declared_names(names, sizeof(names), args, fixed_n);
-            return val_err("%s: unknown argument '%s' (declared: %s)", prefix, name, names);
+            return member_err(n.obj, n.member, ": unknown argument '%s' (declared: %s)", name, names);
         }
         if (idx < pos_argc)
-            return val_err("%s: duplicate argument '%s' (already given positionally)", prefix, name);
+            return member_err(n.obj, n.member, ": duplicate argument '%s' (already given positionally)", name);
         if (named_filled[idx])
-            return val_err("%s: duplicate argument '%s'", prefix, name);
+            return member_err(n.obj, n.member, ": duplicate argument '%s'", name);
         named_filled[idx] = true;
         out_argv[idx] = named[k].value;
         if (idx + 1 > out_n)

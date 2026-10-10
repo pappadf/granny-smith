@@ -364,7 +364,9 @@ cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
 not count as positionals; a rest argument absorbs every slot past it — the
 same `script_arg_slot` the interpreter and the highlighter use), all `none`
 outside an argument position.  `truncated` is true when candidates were
-dropped (the item table or the per-call string pool filled).
+dropped: past the 4096-candidate bound, when a composed candidate could not
+be stored, or when the list would render past the mailbox result limit
+(the leading candidates that fit are returned).
 `cursor` and the returned span are UTF-8 byte offsets.
 
 ## Highlighting

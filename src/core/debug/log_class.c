@@ -74,8 +74,10 @@ static DEF_METHOD(log_method_set) {
         touched = true;
     }
     if (argv[3].kind == VK_STRING && argv[3].s) {
-        if (log_set_category_file(category, argv[3].s) != 0)
-            return val_err("log.set: cannot open log file '%s': %s", argv[3].s, strerror(errno));
+        if (log_set_category_file(category, argv[3].s) != 0) {
+            int err = errno; // set on every failure, file or not (log.h)
+            return val_err("log.set: cannot set log file '%s': %s", argv[3].s, strerror(err));
+        }
         touched = true;
     }
     if (argv[4].kind == VK_BOOL) {
@@ -184,7 +186,8 @@ static DEF_GETTER(cat_attr_file_get) {
 static DEF_SETTER(cat_attr_file_set) {
     const char *path = in.s ? in.s : "off";
     int rc = log_set_category_file(log_category_name(entry_cat(self)), path);
-    value_t out = rc == 0 ? val_none() : val_err("cannot open log file '%s': %s", path, strerror(errno));
+    int err = errno; // set on every failure, file or not (log.h)
+    value_t out = rc == 0 ? val_none() : val_err("cannot set log file '%s': %s", path, strerror(err));
     value_free(&in);
     return out;
 }

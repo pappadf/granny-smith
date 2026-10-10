@@ -38,7 +38,8 @@ void log_register_manifest(void);
 //
 // All return 0 on success, -1 on an unknown category or a bad value
 // (log_set_category_file: also when the file cannot be opened, with errno
-// left as fopen set it).
+// left as fopen set it; every failure of it sets errno -- EINVAL for an
+// unknown category, ENOMEM when memory ran out).
 int log_set_category_level(const char *category, int level);
 int log_set_category_stdout(const char *category, bool on);
 int log_set_category_timestamp(const char *category, bool on);

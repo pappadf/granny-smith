@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // worker_thread.h
-// Debug-only thread-affinity guard for the JS -> C gateways (gs_eval,
-// shell_dispatch, shell_complete): every gateway must run on the emulator
-// (worker) thread.  Compiled out unless GS_DEBUG is defined.  Rationale and
+// Debug-only thread-affinity guard for the gateways into emulator state
+// (gs_eval, shell_complete, llap_receive, afp_handle_command): every gateway
+// must run on the emulator (worker) thread.  Compiled out unless GS_DEBUG is defined.  Rationale and
 // contract: docs/internals/core/worker_thread.md.
 
 #ifndef WORKER_THREAD_H

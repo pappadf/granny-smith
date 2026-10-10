@@ -58,6 +58,45 @@ static const char *comp_strdup(struct completion *out, const char *s) {
     return copy;
 }
 
+// FNV-1a hash of a candidate string, for the dedup index.
+static uint32_t comp_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        h = (h ^ *p) * 16777619u; // fold in one byte
+    return h;
+}
+
+// Slot of `cand` in the dedup index: the slot holding an equal item, or the
+// empty slot where it would go.  seen_cap is a power of two.
+static int comp_seen_slot(const struct completion *out, const char *cand) {
+    uint32_t mask = (uint32_t)out->seen_cap - 1;
+    uint32_t i = comp_hash(cand) & mask;
+    while (out->seen[i] >= 0 && strcmp(out->items[out->seen[i]], cand) != 0)
+        i = (i + 1) & mask; // linear probe
+    return (int)i;
+}
+
+// Size the dedup index for `cap` items (twice that, a power of two) and
+// re-index the items held so far.  False when memory runs out.
+static bool comp_seen_grow(struct completion *out, int cap) {
+    int want = 16;
+    while (want < 2 * cap)
+        want *= 2;
+    if (want <= out->seen_cap)
+        return true;
+    int *t = (int *)malloc((size_t)want * sizeof(*t));
+    if (!t)
+        return false;
+    free(out->seen);
+    out->seen = t;
+    out->seen_cap = want;
+    for (int i = 0; i < want; i++)
+        t[i] = -1;
+    for (int i = 0; i < out->count; i++)
+        t[comp_seen_slot(out, out->items[i])] = i; // re-insert every held item
+    return true;
+}
+
 // Make room for one more item; false (and `truncated`) when the sanity
 // bound is reached or memory runs out.
 static bool comp_reserve(struct completion *out) {
@@ -79,7 +118,7 @@ static bool comp_reserve(struct completion *out) {
     const char **docs = (const char **)realloc(out->docs, (size_t)cap * sizeof(*docs));
     if (docs)
         out->docs = docs;
-    if (!items || !kinds || !docs) {
+    if (!items || !kinds || !docs || !comp_seen_grow(out, cap)) {
         out->truncated = true;
         return false;
     }
@@ -96,6 +135,7 @@ void completion_free(struct completion *c) {
     free((void *)c->items);
     free(c->kinds);
     free((void *)c->docs);
+    free(c->seen);
     memset(c, 0, sizeof(*c));
 }
 
@@ -123,16 +163,17 @@ static void push_match(struct completion *out, const char *cand, const char *pre
     size_t plen = prefix ? strlen(prefix) : 0;
     if (plen && strncmp(cand, prefix, plen) != 0)
         return;
-    // Dedup against earlier matches in this completion set.
-    for (int i = 0; i < out->count; i++) {
-        if (out->items[i] && strcmp(out->items[i], cand) == 0)
-            return;
-    }
+    // Dedup against earlier matches in this completion set (hashed: a
+    // directory of thousands of entries must not cost a quadratic scan).
+    if (out->count > 0 && out->seen[comp_seen_slot(out, cand)] >= 0)
+        return;
     if (!comp_reserve(out))
         return;
     out->kinds[out->count] = (uint8_t)out->cur_kind;
     out->docs[out->count] = out->cur_doc;
-    out->items[out->count++] = cand;
+    out->items[out->count] = cand;
+    out->seen[comp_seen_slot(out, cand)] = out->count; // index the new item
+    out->count++;
 }
 
 const char *comp_kind_name(comp_kind_t k) {
