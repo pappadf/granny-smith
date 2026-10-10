@@ -22,30 +22,40 @@
 # THE CONSOLE.  Open Firmware's console is the Rage Pro's screen and the
 # ADB keyboard.  The firmware's banner says how to move it ("For Open
 # Firmware serial I/O type: TTYA IO"), and the rows do exactly that, on
-# the keyboard.  From then on commands go in over the serial port,
-# a few characters at a time: Open Firmware's console loses characters
-# from a long burst (the ANS rows' experience, and true here too).
+# the keyboard.  From then on commands go in over the serial port, a line
+# at a time, paced by the line itself (gos_send).
 
-# Feed a short chunk of command text to Open Firmware's console.
+# Type command text on Open Firmware's console (ttya), a whole line at a
+# time: the serial line delivers it one character time apart, which is what
+# the firmware's input loop needs (it drains every available byte before it
+# echoes, so a burst overflowed its buffer -- the reason the rows once sent
+# seven characters and ran 5 M after each).  Returns when the firmware has
+# read it all.
 def gos_send(s) {
-    machine.scc.a.receive("${$s}")
-    scheduler.run 5000000
+    serial_type("a", $s, 100000000)
 }
 
 # Run until the firmware prints its prompt; return everything it said.
 # Long listings page at the console's height with `More [<space>,<cr>,q] ?`,
-# which a space answers.
+# which a space answers.  The prompt is back within a few hundred thousand
+# instructions of a short command, so the slices start at 250 K and double
+# (to 16 M) while a long reply is still coming; `chunks` 20 M slices'
+# worth is the hang detector.
 def gos_wait_prompt(chunks) {
     let out = ""
-    let n = 0
-    while !contains($out, "0 > ") && $n < $chunks {
-        scheduler.run 20000000
+    let spent = 0
+    let slice = 250000
+    while !contains($out, "0 > ") && $spent < $chunks * 20000000 {
+        scheduler.run $slice
+        $spent = $spent + $slice
         let ch = machine.scc.a.sent()
         $out = "${$out}${$ch}"
         if contains($ch, "More [") {
             machine.scc.a.receive(" ")
+            $slice = 250000
+        } elif $slice < 16000000 {
+            $slice = $slice * 2
         }
-        $n = $n + 1
     }
     return $out
 }

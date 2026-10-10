@@ -27,9 +27,11 @@
 #     unconditionally, which is why the boot chatter is on the serial port
 #     even when the console is not.)
 #
-#  2. OPEN FIRMWARE'S CONSOLE DROPS CHARACTERS from a long burst delivered
-#     in one go, so command text is fed a few characters at a time with a
-#     bounded run between chunks.
+#  2. OPEN FIRMWARE'S CONSOLE DROPS CHARACTERS from a burst: its input
+#     loop drains every available byte before it echoes.  The serial line
+#     now delivers text one character time apart, as a real terminal does
+#     (scc.c, line_in), so a whole command goes in at once (`ans_send`);
+#     the rows used to feed seven characters at a time with 20 M between.
 
 # Configured (ttya-console) NVRAM per model, filled by ans_boot_serial.
 let ANS_NV_500 = none
@@ -37,28 +39,21 @@ let ANS_NV_700 = none
 
 # --- Console plumbing --------------------------------------------------------
 
-# Feed a short chunk of command text to Open Firmware's console.
+# Type command text on Open Firmware's console (ttya) and run until the
+# firmware has read all of it.
 def ans_send(s) {
-    machine.scc.a.receive("${$s}")
-    scheduler.run 20000000
+    serial_type("a", $s, 200000000)
 }
 
 # Complete the line and return everything the firmware printed in reply:
 # run until the reply ends in the next `0 > ` prompt (Open Firmware prints
-# it once the command has finished), in 10 M steps.  The 2 G ceiling is a
-# hang detector, not a budget -- a reply comes back in a few M to a few
-# hundred M -- and a reply that never ends in a prompt is returned as it
-# stands for the caller's asserts to judge.
+# it once the command has finished), in slices from 250 K doubling to 16 M.
+# The 2 G ceiling is a hang detector, not a budget -- a reply comes back in a
+# few M to a few hundred M -- and a reply that never ends in a prompt is
+# returned as it stands for the caller's asserts to judge.
 def ans_go() {
     machine.scc.a.receive("\r")
-    let out = ""
-    let spent = 0
-    while !contains($out, "0 > ") && $spent < 2000000000 {
-        scheduler.run 10000000
-        $spent = $spent + 10000000
-        $out = "${$out}${machine.scc.a.sent()}"
-    }
-    return $out
+    return run_until_sent("a", "0 > ", 250000, 2000000000)
 }
 
 # Run the machine in bounded chunks until Open Firmware settles at its

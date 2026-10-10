@@ -200,6 +200,11 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
     return mouse;
 }
 
+// True while motion counts are still being played out to the guest
+bool mouse_input_pending(const mouse_t *mouse) {
+    return mouse && (mouse->pending_x != 0 || mouse->pending_y != 0);
+}
+
 // Free resources associated with a mouse instance
 void mouse_delete(mouse_t *mouse) {
     if (!mouse)
@@ -282,6 +287,14 @@ static DEF_METHOD(mouse_method_click) {
     return val_bool(true);
 }
 
+// `pending`: host input the guest has not taken yet -- poll it to wait for a
+// click or a move to land instead of guessing a tick count.
+static DEF_GETTER(mouse_attr_pending) {
+    if (!global_emulator)
+        return val_err("mouse.pending: no machine");
+    return val_bool(system_mouse_input_pending());
+}
+
 static DEF_METHOD(mouse_method_trace) {
     if (!global_emulator)
         return val_err("mouse.trace: no machine");
@@ -323,6 +336,10 @@ static const arg_decl_t mouse_trace_args[] = {
 };
 
 static const member_t mouse_members[] = {
+    {.kind = M_ATTR,
+     .name = "pending",
+     .doc = "True while host mouse input waits for the guest: unreported motion, button changes, queued clicks",
+     .attr = {.type = V_BOOL, .get = mouse_attr_pending}                                         },
     {.kind = M_METHOD,
      .name = "move",
      .doc = "Set mouse position; optional mode chooses the routing path",

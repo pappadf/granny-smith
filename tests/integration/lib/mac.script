@@ -314,6 +314,89 @@ def wait_global(name, want, ceiling) {
     return $spent
 }
 
+# --- run until the guest has taken the input --------------------------------
+#
+# The input side of the waits above.  A script hands input to the machine
+# at once, but the guest takes it on its own schedule: a serial line
+# delivers one character per character time (scc.c, line_in) and the ADB
+# mouse one report per poll (adb.c, mouse_queue).  These run the machine in
+# small slices until the input is consumed, or until the guest has said
+# what the caller waits for, instead of a budget sized for the slowest
+# machine.  Each slice is a host round trip of about a millisecond on top
+# of the emulation, so the slices start small and double, which bounds the
+# overshoot at the time the wait itself took.
+
+# Run until the guest has taken every pending host mouse event (motion and
+# button changes, queued ones included), up to `ceiling`.  Returns the
+# instructions spent.
+def wait_mouse_taken(ceiling) {
+    let spent = 0
+    while machine.adb.mouse.pending {
+        assert $spent < $ceiling "wait_mouse_taken: the guest did not take the mouse input within ${$ceiling}"
+        scheduler.run 250000
+        $spent = $spent + 250000
+    }
+    return $spent
+}
+
+# Drain and return what serial channel `ch` ("a" or "b") has transmitted.
+def serial_sent(ch) {
+    if $ch == "a" {
+        return machine.scc.a.sent()
+    }
+    return machine.scc.b.sent()
+}
+
+# Characters `receive` sent on serial channel `ch` that the guest has not
+# read yet (still on the line, or in the receive FIFO).
+def serial_rx_pending(ch) {
+    if $ch == "a" {
+        return machine.scc.a.rx_pending
+    }
+    return machine.scc.b.rx_pending
+}
+
+# Type `text` on serial channel `ch` as a terminal on the cable would (one
+# character time apart at the channel's programmed rate) and run until the
+# guest has read all of it, up to `ceiling`.  What the guest transmits
+# meanwhile (its echo) stays in the capture for the caller.  Returns the
+# instructions spent.
+def serial_type(ch, text, ceiling) {
+    let queued = 0
+    if $ch == "a" {
+        $queued = machine.scc.a.receive("${$text}")
+    } else {
+        $queued = machine.scc.b.receive("${$text}")
+    }
+    assert $queued == len($text) "serial_type: the line took ${$queued} of ${len($text)} characters"
+    let spent = 0
+    while serial_rx_pending($ch) > 0 {
+        assert $spent < $ceiling "serial_type: the guest did not read the line within ${$ceiling}"
+        scheduler.run 100000
+        $spent = $spent + 100000
+    }
+    return $spent
+}
+
+# Run until serial channel `ch` has transmitted `needle`, up to `ceiling`,
+# and return everything it transmitted on the way (the caller asserts on
+# it; a reply that never contains `needle` comes back as it stands).
+# Slices start at `step` and double up to 64 times that.
+def run_until_sent(ch, needle, step, ceiling) {
+    let out = ""
+    let spent = 0
+    let slice = $step
+    while !contains($out, $needle) && $spent < $ceiling {
+        scheduler.run $slice
+        $spent = $spent + $slice
+        $out = "${$out}${serial_sent($ch)}"
+        if $slice < $step * 64 {
+            $slice = $slice * 2
+        }
+    }
+    return $out
+}
+
 # --- guest-time choreography -------------------------------------------------
 
 # Run for `n` guest ticks (1/60 s each): interaction delays are guest-

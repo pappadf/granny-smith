@@ -136,6 +136,8 @@ bool system_checkpoint_probe(void);
 // System-level input wrappers (route to appropriate device models)
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t
 void system_mouse_update(bool button, int dx, int dy);
+// True while host mouse input still waits for the guest to take it
+bool system_mouse_input_pending(void);
 bool system_mouse_move(int dx, int dy);
 bool system_mouse_move_adb(int dx, int dy);
 bool system_mouse_pending_adb(int *dx, int *dy);
