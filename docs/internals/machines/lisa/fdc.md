@@ -73,7 +73,7 @@ unaffected — `xl-boot` still pixel-matches.)
 
 FDIR follows the 6504's `UpdInt`: it is up exactly while `(IST AND IMsk) ≠ 0`,
 where IMsk bit 3 gates IST bits 0–3 and bit 7 gates bits 4–7
-(docs/reference/machines/lisa/fdc.md §3.4). `$86` ORs the mask byte (byte 1)
+([docs/reference/machines/lisa/fdc.md](../../../reference/machines/lisa/fdc.md) §3.4). `$86` ORs the mask byte (byte 1)
 into IMsk and `$87` clears those bits; both recompute FDIR, and so do the
 completion and disk-insert events. A disabled drive keeps its events latched
 without interrupting, and re-enabling it raises FDIR for what is still pending.
