@@ -249,7 +249,12 @@ Packed decimal is a 96-bit (12-byte) format used by `FMOVE.P`:
 - Bytes 0–1: 12-bit BCD exponent (3 digits)
 - Bytes 2–11: 17-digit BCD mantissa (most significant digit in byte 2, two digits per byte thereafter)
 
-Conversion uses the FMOVECR power-of-10 table (10^1 through 10^4096) for scaling. Static or dynamic k-factor (from extension word or data register) controls the number of significant output digits. The decimal exponent ILOG = floor(log10|X|) is computed in soft-float as well: floor(e×log10(2)) from the binary exponent, then one comparison against the power-of-10 table picks between that and the next integer.
+Both directions are computed exactly, with a small natural-number type in `fpu_packed.c` (10^n split as 5^n × 2^n), and rounded once in the FPCR rounding mode:
+
+- **Load** (decimal → binary): the string's value M × 10^E is rounded to extended precision whatever the rounding precision; an inexact conversion sets INEX1, never INEX2 (MC68881/MC68882 UM §6.1.8; FPSP `decbin`). The FMOVE or arithmetic that uses the operand then rounds to the rounding precision itself, setting INEX2.
+- **Store** (binary → decimal) follows the control flow of the FPSP's `bindec`: LEN = k for k > 0, else ILOG + 1 − k (F format, −k places right of the point), cut to 17 with OPERR only for k > 17; in F format a value below 10^k has ILOG set to k, its one digit 0 or 1; YINT = |X| / 10^(ILOG+1−LEN) is rounded to an integer in the FPCR mode for X's sign (precision plays no part), INEX2 if inexact; YINT = 10^LEN (rounding carried into a new digit) drops a digit and raises ILOG. A zero digit string gets exponent 1. A decimal exponent of 1000 or more writes its fourth digit in bits 15:12 of the first longword and sets OPERR (UM §4.3.3, Figure 3-11; FPSP `bindec` A15). ILOG = floor(log10|X|) is exact: floor(e×log10(2)) from the binary exponent, then one comparison against the power-of-10 table picks between that and the next integer, so the FPSP's retry for a misestimated ILOG never arises.
+
+The 68881/68882 itself documents only an error bound for these conversions (0.97 unit in the last digit in round-to-nearest, 1.47 otherwise; UM §4.3.3), not exact results; the emulator returns the correctly rounded result, which lies within that bound and which the FPSP's directed-rounding scheme also aims at. Denormal sources are converted by value like any other; the FPSP's listing instead fixes ILOG at −4933 for them and skips the too-few-digits check, so on a 68040 the digit string of a denormal below 10^−4933 starts with zeros. That difference is not modelled.
 
 ## FMOVEM
 

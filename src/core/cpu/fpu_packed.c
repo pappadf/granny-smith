@@ -2,8 +2,9 @@
 // Copyright (c) pappadf
 
 // fpu_packed.c
-// Motorola 68882 FPU packed decimal (FMOVE.P) conversions, built on the
-// soft-float core (fpu_op_mul/div, fpu_pack) and the FMOVECR powers of ten.
+// Motorola 68882 FPU packed decimal (FMOVE.P) conversions: exact
+// arithmetic rounded once by the soft-float core (fpu_pack), with ILOG from
+// the FMOVECR powers of ten.
 
 #include "fpu.h"
 #include "fpu_internal.h"
@@ -16,15 +17,20 @@
 //
 // 68882 packed decimal memory layout (3 longwords, 12 bytes):
 //   Word 0: [31]=SM [30]=SE [29:28]=YY [27:16]=3 BCD exponent digits
-//           [15:4]=zero [3:0]=d16 (integer digit, MSD)
+//           [15:12]=4th exponent digit (thousands; written by a store whose
+//           exponent needs it, ignored on load) [11:4]=zero
+//           [3:0]=d16 (integer digit, MSD)
 //   Word 1: [31:0]=digits d15..d8 (8 BCD digits, 4 bits each)
 //   Word 2: [31:0]=digits d7..d0 (8 BCD digits, 4 bits each)
-// Total: 17 significant mantissa digits (d16..d0), 3 exponent digits.
+// Total: 17 significant mantissa digits (d16..d0), 3 exponent digits (4 on
+// a store overflowing them, which is an operand error).
 //
 // SM = mantissa sign, SE = exponent sign
 // YY: 0=normal; non-zero + all-zero mantissa → infinity; non-zero + non-zero mantissa → NaN
 //
-// Reference: MC68882 User's Manual, Motorola FPSP
+// Reference: Motorola, MC68881/MC68882 Floating-Point Coprocessor User's
+// Manual, 2nd ed. (1989), §3.3, §3.6 (Figure 3-11), §4.3.3, §6.1.8; Motorola
+// M68040 Floating-Point Software Package (FPSP), bindec.sa and decbin.sa
 
 // Extract a 4-bit BCD digit from a 32-bit word at nibble position (0=MSN, 7=LSN)
 static inline unsigned bcd_nibble(uint32_t word, int pos) {
@@ -64,8 +70,161 @@ static fpu_unpacked_t fpu_power_of_10_wide(fpu_state_t *fpu, int32_t n, bool wid
     return result;
 }
 
-static fpu_unpacked_t fpu_power_of_10(fpu_state_t *fpu, int32_t n) {
-    return fpu_power_of_10_wide(fpu, n, false);
+// ============================================================================
+// Exact arithmetic for the conversions
+// ============================================================================
+//
+// Both directions are computed exactly and rounded once, in the user's
+// rounding mode: a decimal string M * 10^E and a binary value m * 2^e are
+// both ratios of integers, and the conversions only need the integer part
+// of such a ratio and where its remainder lies against one half.  The
+// numbers are held as natural numbers in 32-bit limbs; 10^n is split as
+// 5^n * 2^n so the power of two becomes a shift.
+//
+// Width: the largest operand is a store of the smallest denormal at LEN 17,
+// m * 5^4967 (64 + 11534 bits), or of the largest value, m * 2^11404; the
+// division shifts the divisor up to 63 bits past its own width, never past
+// the dividend's.  12288 bits cover both with room to spare.
+
+#define BIG_LIMBS 384
+
+// Natural number, little-endian 32-bit limbs; n limbs in use (0 = zero)
+typedef struct {
+    int n;
+    uint32_t w[BIG_LIMBS];
+} big_t;
+
+// x = v
+static void big_set_u64(big_t *x, uint64_t v) {
+    x->w[0] = (uint32_t)v;
+    x->w[1] = (uint32_t)(v >> 32);
+    x->n = x->w[1] ? 2 : (x->w[0] ? 1 : 0);
+}
+
+// Number of significant bits in x (0 for zero)
+static int big_bitlen(const big_t *x) {
+    if (x->n == 0)
+        return 0;
+    return (x->n - 1) * 32 + (64 - clz64(x->w[x->n - 1])); // clz64 of a limb counts 32 extra
+}
+
+// x *= f (f < 2^32)
+static void big_mul_small(big_t *x, uint32_t f) {
+    uint64_t carry = 0;
+    for (int i = 0; i < x->n; i++) {
+        uint64_t t = (uint64_t)x->w[i] * f + carry;
+        x->w[i] = (uint32_t)t;
+        carry = t >> 32;
+    }
+    if (carry && x->n < BIG_LIMBS)
+        x->w[x->n++] = (uint32_t)carry;
+}
+
+// x *= 5^n, in steps of 5^13 (the largest power of five below 2^32)
+static void big_mul_pow5(big_t *x, int n) {
+    static const uint32_t pow5[14] = {1,     5,      25,      125,     625,      3125,      15625,
+                                      78125, 390625, 1953125, 9765625, 48828125, 244140625, 1220703125};
+    for (; n >= 13; n -= 13)
+        big_mul_small(x, pow5[13]);
+    if (n > 0)
+        big_mul_small(x, pow5[n]);
+}
+
+// x <<= bits
+static void big_shl(big_t *x, int bits) {
+    if (x->n == 0 || bits <= 0)
+        return;
+    int limbs = bits / 32, sh = bits % 32;
+    int n = x->n + limbs + 1;
+    if (n > BIG_LIMBS)
+        n = BIG_LIMBS; // cannot happen within the conversions' ranges (see above)
+    for (int i = n - 1; i >= 0; i--) {
+        int src = i - limbs;
+        uint32_t hi = (src >= 0 && src < x->n) ? x->w[src] : 0;
+        uint32_t lo = (src - 1 >= 0 && src - 1 < x->n) ? x->w[src - 1] : 0;
+        x->w[i] = sh ? (hi << sh) | (lo >> (32 - sh)) : hi;
+    }
+    x->n = n;
+    while (x->n > 0 && x->w[x->n - 1] == 0)
+        x->n--;
+}
+
+// x >>= 1
+static void big_shr1(big_t *x) {
+    for (int i = 0; i < x->n; i++)
+        x->w[i] = (x->w[i] >> 1) | (i + 1 < x->n ? x->w[i + 1] << 31 : 0);
+    while (x->n > 0 && x->w[x->n - 1] == 0)
+        x->n--;
+}
+
+// Three-way compare: -1, 0 or +1 as a <, ==, > b
+static int big_cmp(const big_t *a, const big_t *b) {
+    if (a->n != b->n)
+        return a->n < b->n ? -1 : 1;
+    for (int i = a->n - 1; i >= 0; i--)
+        if (a->w[i] != b->w[i])
+            return a->w[i] < b->w[i] ? -1 : 1;
+    return 0;
+}
+
+// a -= b, for a >= b
+static void big_sub(big_t *a, const big_t *b) {
+    int64_t borrow = 0;
+    for (int i = 0; i < a->n; i++) {
+        int64_t t = (int64_t)a->w[i] - (i < b->n ? b->w[i] : 0) - borrow;
+        borrow = t < 0;
+        a->w[i] = (uint32_t)t;
+    }
+    while (a->n > 0 && a->w[a->n - 1] == 0)
+        a->n--;
+}
+
+// Where a division's remainder lies against half the divisor
+typedef enum { REM_ZERO, REM_BELOW_HALF, REM_HALF, REM_ABOVE_HALF } rem_class_t;
+
+// floor(num / den) for a quotient below 2^64, by restoring division; num
+// is consumed (it ends as the doubled remainder), den is left as it was.
+static uint64_t big_div(big_t *num, big_t *den, rem_class_t *rem) {
+    uint64_t q = 0;
+    int k = big_bitlen(num) - big_bitlen(den); // highest quotient bit that can be set
+    if (k >= 0) {
+        big_shl(den, k);
+        for (int i = k; i >= 0; i--) {
+            if (big_cmp(num, den) >= 0) {
+                big_sub(num, den);
+                if (i < 64) // every caller bounds the quotient below 2^64
+                    q |= 1ULL << i;
+            }
+            if (i > 0)
+                big_shr1(den);
+        }
+    }
+    if (num->n == 0) {
+        *rem = REM_ZERO;
+    } else {
+        big_shl(num, 1);
+        int c = big_cmp(num, den);
+        *rem = c < 0 ? REM_BELOW_HALF : (c == 0 ? REM_HALF : REM_ABOVE_HALF);
+    }
+    return q;
+}
+
+// Round an integer part q with remainder class `rem` to an integer in FPCR
+// rounding mode `rmode`, for a value of sign `neg` (MC68881/MC68882 UM
+// §6.1.7, Figure 6-3, with the remainder as guard and sticky)
+static uint64_t round_quotient(uint64_t q, rem_class_t rem, bool neg, unsigned rmode) {
+    if (rem == REM_ZERO)
+        return q;
+    switch (rmode) {
+    case 0: // nearest, ties to even
+        return (rem == REM_ABOVE_HALF || (rem == REM_HALF && (q & 1))) ? q + 1 : q;
+    case 2: // toward minus infinity: away from zero when negative
+        return neg ? q + 1 : q;
+    case 3: // toward plus infinity: away from zero when positive
+        return neg ? q : q + 1;
+    default: // toward zero
+        return q;
+    }
 }
 
 // floor(log10(x)) for a finite, normalized, non-zero x (sign ignored).
@@ -155,34 +314,52 @@ float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1, uint32
     if (mant == 0)
         return fp80_make(sm, 0, 0);
 
-    // Convert integer mantissa to fpu_unpacked_t
+    // The exact value mant * 10^adj_exp as num / den * 2^adj_exp
+    // (10^n = 5^n * 2^n), so a quotient in [2^63, 2^64) of num * 2^s / den
+    // is the significand with the remainder as guard and sticky.
+    big_t num, den;
+    big_set_u64(&num, mant);
+    big_set_u64(&den, 1);
+    if (adj_exp >= 0)
+        big_mul_pow5(&num, adj_exp);
+    else
+        big_mul_pow5(&den, -adj_exp);
+    int s = 63 - (big_bitlen(&num) - big_bitlen(&den)); // ratio * 2^s in (2^62, 2^64)
+    if (s >= 0)
+        big_shl(&num, s);
+    else
+        big_shl(&den, -s);
+    // One bit more when the ratio sits below 2^63: num < den * 2^63
+    big_t den63;
+    den63 = den;
+    big_shl(&den63, 63);
+    if (big_cmp(&num, &den63) < 0) {
+        big_shl(&num, 1);
+        s++;
+    }
+    rem_class_t rem;
+    uint64_t q = big_div(&num, &den, &rem);
+
+    // Significand with the remainder folded into guard (bit 63 of the low
+    // word) and sticky (bit 0)
     fpu_unpacked_t val;
     val.sign = (sm != 0);
-    val.mantissa_lo = 0;
-    int lz = clz64(mant);
-    val.mantissa_hi = mant << lz;
-    val.exponent = 63 - lz; // true binary exponent for integer value
+    val.exponent = 63 - s + adj_exp;
+    val.mantissa_hi = q;
+    val.mantissa_lo = (rem >= REM_HALF ? 0x8000000000000000ULL : 0) | (rem != REM_ZERO && rem != REM_HALF ? 1 : 0);
 
-    // Scale by 10^adj_exp
-    if (adj_exp != 0) {
-        // Use extended precision, round-to-nearest for intermediate computation
-        uint32_t saved_fpcr = fpu->fpcr;
-        fpu->fpcr = 0;
-
-        fpu_unpacked_t pw = fpu_power_of_10(fpu, adj_exp < 0 ? -adj_exp : adj_exp);
-        if (adj_exp > 0)
-            val = fpu_op_mul(fpu, val, pw);
-        else
-            val = fpu_op_div(fpu, val, pw);
-
-        fpu->fpcr = saved_fpcr;
-    }
-
-    // Decimal input conversion: convert any INEX2 from packing to INEX1
-    // The 68882 signals input conversion inexactness as INEX1, not INEX2
+    // Round once to extended precision in the user's rounding mode,
+    // whatever the rounding precision (MC68881/MC68882 UM §6.1.8; FPSP
+    // decbin rounds its final scaling in the user's mode, extended).  The
+    // FMOVE or arithmetic that consumes the operand then rounds to the
+    // selected precision itself, signalling INEX2.  An inexact conversion
+    // is reported as INEX1, never INEX2.
+    uint32_t saved_fpcr = fpu->fpcr;
     uint32_t pre_fpsr = fpu->fpsr;
+    fpu->fpcr &= 0x30u; // rounding mode only: extended precision
     float80_reg_t packed = fpu_pack(fpu, val);
     bool pack_inexact = (fpu->fpsr & FPEXC_INEX2) != 0;
+    fpu->fpcr = saved_fpcr;
     fpu->fpsr = pre_fpsr;
     if (pack_inexact)
         fpu->fpsr |= FPEXC_INEX1;
@@ -224,121 +401,78 @@ void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *
         return;
     }
 
-    // Compute ILOG = floor(log10(|val|)) in soft-float (no host libm)
-    fpu_unpacked_t uv = fpu_unpack(val);
-    fpu_normalize(&uv); // unnormal inputs: same value, J-bit set
-    int32_t ilog = (uv.exponent == FPU_EXP_ZERO) ? 0 : fpu_floor_log10(fpu, uv);
-
-    // Determine LEN (number of significant digits)
-    int32_t len;
-    if (k_factor > 0) {
-        len = k_factor;
-    } else if (k_factor == 0) {
-        len = ilog + 1;
-    } else {
-        len = ilog + 1 - k_factor;
+    // ILOG = floor(log10(|val|)), exact (FPSP bindec A3 estimates it and
+    // corrects the estimate in A13; the exact value needs no correction)
+    fpu_unpacked_t uv = fpu_unpack(val); // unnormals normalized, J-bit set
+    if (uv.exponent == FPU_EXP_ZERO) {
+        // An unnormal zero is a zero (MC68881/MC68882 UM §3.5.1)
+        *w0 = (uint32_t)sm << 31;
+        *w1 = 0;
+        *w2 = 0;
+        return;
     }
-    if (len < 1)
+    int32_t ilog = fpu_floor_log10(fpu, uv);
+    unsigned rmode = (fpu->fpcr >> 4) & 3;
+
+    // A6: LEN, the number of digits: k for k > 0 (E format), else the
+    // digits up to the k-th place right of the decimal point (F format).
+    // LEN above 17 is cut to 17, an operand error only when k asked for it
+    // (MC68881/MC68882 UM FMOVE: k > +17 sets OPERR).
+    int32_t len = (k_factor > 0) ? k_factor : ilog + 1 - k_factor;
+    if (len < 1) {
         len = 1;
-    if (len > 17) {
+    } else if (len > 17) {
         len = 17;
         if (k_factor > 0)
             fpu->fpsr |= FPEXC_OPERR;
     }
+    // A7: in F format a value below 10^k is rounded at the 10^k digit:
+    // ILOG becomes k, the one digit then being 0 or 1.  Below 10^(k-1) the
+    // value is under half that digit, which needs no arithmetic (and would
+    // otherwise need a divisor as wide as the whole exponent range).
+    bool below_half_digit = false;
+    if (k_factor <= 0 && ilog < k_factor) {
+        below_half_digit = (ilog < k_factor - 1);
+        ilog = k_factor;
+    }
 
-    // Scale: Y = |val| * 10^(LEN-1-ILOG) to produce LEN-digit integer
+    // A9-A12: YINT = |val| / 10^ISCALE rounded to an integer in the user's
+    // rounding mode for the value's sign, at extended precision whatever the
+    // rounding precision (FPSP bindec A11/A12, FINT of +-Y).  Computed
+    // exactly: |val| = m * 2^(e-63), 10^ISCALE = 5^ISCALE * 2^ISCALE.
     int32_t iscale = ilog + 1 - len;
-
-    // Save FPCR, use extended/RN for intermediate math
-    uint32_t saved_fpcr = fpu->fpcr;
-    fpu->fpcr = 0;
-
-    fpu_unpacked_t abs_val = uv;
-    abs_val.sign = false;
-
-    fpu_unpacked_t y;
-    if (iscale != 0) {
-        fpu_unpacked_t pw = fpu_power_of_10(fpu, iscale < 0 ? -iscale : iscale);
-        if (iscale > 0)
-            y = fpu_op_div(fpu, abs_val, pw);
+    rem_class_t rem = REM_BELOW_HALF;
+    uint64_t y_int = 0;
+    if (!below_half_digit) {
+        big_t num, den;
+        big_set_u64(&num, uv.mantissa_hi);
+        big_set_u64(&den, 1);
+        if (iscale >= 0)
+            big_mul_pow5(&den, iscale);
         else
-            y = fpu_op_mul(fpu, abs_val, pw);
-    } else {
-        y = abs_val;
+            big_mul_pow5(&num, -iscale);
+        int32_t p2 = uv.exponent - 63 - iscale;
+        if (p2 >= 0)
+            big_shl(&num, p2);
+        else
+            big_shl(&den, -p2);
+        y_int = big_div(&num, &den, &rem);
     }
+    y_int = round_quotient(y_int, rem, sm != 0, rmode);
+    if (rem != REM_ZERO)
+        fpu->fpsr |= FPEXC_INEX2; // digits beyond LEN were discarded
 
-// Extract integer part of y with rounding (round-to-nearest)
-#define EXTRACT_Y_INT(yval, out)                                                                                       \
-    do {                                                                                                               \
-        if ((yval).exponent == FPU_EXP_ZERO) {                                                                         \
-            (out) = 0;                                                                                                 \
-        } else if ((yval).exponent >= 63) {                                                                            \
-            (out) = (yval).mantissa_hi;                                                                                \
-        } else if ((yval).exponent < 0) {                                                                              \
-            (out) = 0;                                                                                                 \
-        } else {                                                                                                       \
-            int shift = 63 - (yval).exponent;                                                                          \
-            (out) = (yval).mantissa_hi >> shift;                                                                       \
-            if (shift > 0 && ((yval).mantissa_hi >> (shift - 1)) & 1)                                                  \
-                (out)++;                                                                                               \
-        }                                                                                                              \
-    } while (0)
-
-    uint64_t y_int;
-    EXTRACT_Y_INT(y, y_int);
-
-    // Validate and correct ILOG if digit count is wrong
-    uint64_t lo_bound = 1;
-    for (int i = 0; i < len - 1; i++)
-        lo_bound *= 10;
-    uint64_t hi_bound = lo_bound * 10;
-
-    if (y_int < lo_bound && ilog > -999) {
-        // ILOG too high — decrement and rescale
-        ilog--;
-        iscale = ilog + 1 - len;
-        if (iscale != 0) {
-            fpu_unpacked_t pw = fpu_power_of_10(fpu, iscale < 0 ? -iscale : iscale);
-            if (iscale > 0)
-                y = fpu_op_div(fpu, abs_val, pw);
-            else
-                y = fpu_op_mul(fpu, abs_val, pw);
-        } else {
-            y = abs_val;
-        }
-        EXTRACT_Y_INT(y, y_int);
-    } else if (y_int >= hi_bound && ilog < 999) {
-        // ILOG too low — increment and rescale
-        ilog++;
-        iscale = ilog + 1 - len;
-        if (iscale != 0) {
-            fpu_unpacked_t pw = fpu_power_of_10(fpu, iscale < 0 ? -iscale : iscale);
-            if (iscale > 0)
-                y = fpu_op_div(fpu, abs_val, pw);
-            else
-                y = fpu_op_mul(fpu, abs_val, pw);
-        } else {
-            y = abs_val;
-        }
-        EXTRACT_Y_INT(y, y_int);
-    }
-
-#undef EXTRACT_Y_INT
-
-    // If still at hi_bound, divide by 10 and increment ilog
-    if (y_int >= hi_bound) {
+    // A13: rounding carried into a new digit (YINT = 10^LEN): one digit
+    // fewer, one decade up.  With an exact ILOG, YINT never falls outside
+    // [10^(LEN-1), 10^LEN] otherwise, except as 0 under the A7 clamp, where
+    // the FPSP's retry with ILOG - 1 clamps back to the same result.
+    uint64_t hi_bound = 1;
+    for (int i = 0; i < len; i++)
+        hi_bound *= 10;
+    if (y_int == hi_bound) {
         y_int /= 10;
         ilog++;
     }
-
-    fpu->fpcr = saved_fpcr;
-
-    // Check for inexact result
-    if (y.exponent != FPU_EXP_ZERO && y.exponent >= 0 && y.exponent < 63 &&
-        (y.mantissa_hi & ((1ULL << (63 - y.exponent)) - 1)) != 0)
-        fpu->fpsr |= FPEXC_INEX2;
-    if (y.mantissa_lo != 0)
-        fpu->fpsr |= FPEXC_INEX2;
 
     // Convert y_int to 17 BCD digits, left-justified: digits[0]=d16 (MSD)
     // The 68882 always places significant digits starting at d16 (the MSD),
@@ -351,24 +485,23 @@ void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uint32_t *
         tmp /= 10;
     }
 
-    // Compute output exponent and sign
-    int32_t out_exp = ilog;
-    int se = 0;
-    if (out_exp < 0) {
-        se = 1;
-        out_exp = -out_exp;
-    }
-    if (out_exp > 999) {
-        out_exp = 999;
+    // A15: the decimal exponent, |ILOG| (1 when every digit is zero, the
+    // F-format result of a value below half of 10^k), in up to four digits.
+    // A fourth digit (exponent 1000 or more, values beyond the IEEE double
+    // range) is written in bits 15:12 and is an operand error
+    // (MC68881/MC68882 UM §4.3.3 and Figure 3-11; FPSP bindec A15).
+    int se = (ilog < 0); // A16: SE is the sign of ILOG
+    uint32_t out_exp = (y_int == 0) ? 1u : (uint32_t)(ilog < 0 ? -ilog : ilog);
+    if (out_exp > 999)
         fpu->fpsr |= FPEXC_OPERR;
-    }
-    unsigned exp_e1 = (unsigned)(out_exp / 100); // hundreds
+    unsigned exp_e4 = (unsigned)(out_exp / 1000); // thousands
+    unsigned exp_e1 = (unsigned)((out_exp / 100) % 10); // hundreds
     unsigned exp_e2 = (unsigned)((out_exp / 10) % 10); // tens
     unsigned exp_e3 = (unsigned)(out_exp % 10); // units
 
-    // Pack word 0: SM|SE|YY=00|exponent(3 digits)|zeros|d16
+    // Pack word 0: SM|SE|YY=00|exponent(3 digits)|4th exponent digit|zeros|d16
     *w0 = ((uint32_t)sm << 31) | ((uint32_t)se << 30) | (exp_e1 << 24) | (exp_e2 << 20) | (exp_e3 << 16) |
-          ((uint32_t)digits[0] & 0xF);
+          (exp_e4 << 12) | ((uint32_t)digits[0] & 0xF);
 
     // Pack word 1: d15..d8 (8 BCD digits)
     *w1 = ((uint32_t)digits[1] << 28) | ((uint32_t)digits[2] << 24) | ((uint32_t)digits[3] << 20) |
