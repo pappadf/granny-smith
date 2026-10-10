@@ -312,13 +312,6 @@ bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap) {
 }
 
 bool afp_name_visible(const char *host_name) {
-    // Host dotfiles (.git, .ssh, .DS_Store) are not listed: a Mac name never
-    // starts with a period (the Finder refuses one, a driver's name does),
-    // and a share that overlaps a home directory should not show them.  They
-    // are only hidden, not server state: a folder holding one is not empty,
-    // and deleting it is refused rather than taking them with it.
-    if (!host_name || host_name[0] == '.')
-        return false;
     uint8_t mac[255];
     return !afp_meta_is_hidden(host_name) && macroman_name_from_host(host_name, mac, sizeof(mac)) > 0;
 }
@@ -431,7 +424,7 @@ uint16_t afp_count_offspring(const char *full_path) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
         if (!afp_name_visible(ent->d_name))
-            continue; // sidecars, .gs-afp, dotfiles, and names no Mac name can hold
+            continue; // sidecars, .gs-afp, and names no Mac name can hold
         if (count == UINT16_MAX)
             break; // the OffspringCount field is 16 bits: it saturates
         count++;

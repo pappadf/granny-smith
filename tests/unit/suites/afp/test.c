@@ -814,18 +814,20 @@ TEST(enumerate_hides_sidecars_and_the_control_directory) {
     fixture_down();
 }
 
-// Host dotfiles are not listed, but they are not server state either: the
-// folder holding one is not empty, and deleting it is refused.
-TEST(enumerate_hides_host_dotfiles_without_deleting_them) {
+// Host dotfiles other than the server's own are ordinary files: listed,
+// and a folder holding one is not empty (deleting it is refused, the dotfile
+// kept).  Sidecars stay hidden.
+TEST(enumerate_lists_host_dotfiles_but_not_sidecars) {
     fixture_up("enumdot");
     write_file("Doc", "data");
+    write_file("._Doc", "sidecar");
     write_file(".DS_Store", "x");
     uint32_t dir_id = 0;
     ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Folder", &dir_id));
     write_file("Folder/.git", "x");
     uint16_t actual = 0;
     ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 100, 4096, &actual));
-    ASSERT_EQ_INT(2, (int)actual); // Doc and Folder
+    ASSERT_EQ_INT(3, (int)actual); // Doc, .DS_Store and Folder
     req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder");
     ASSERT_EQ_INT((int)ERR_DIR_NOT_EMPTY, (int)call(OP_DELETE));
     char kept[512];
@@ -3935,7 +3937,7 @@ int main(void) {
     RUN(enumerate_lists_every_entry_of_a_large_directory);
     RUN(enumerate_pages_are_served_from_a_snapshot);
     RUN(enumerate_hides_sidecars_and_the_control_directory);
-    RUN(enumerate_hides_host_dotfiles_without_deleting_them);
+    RUN(enumerate_lists_host_dotfiles_but_not_sidecars);
     RUN(enumerate_rejects_an_empty_bitmap);
 
     RUN(file_id_lifecycle);

@@ -2619,11 +2619,9 @@ state, two homes:
 
 `.gs-afp` and every `._*` sidecar are filtered out of FPEnumerate and of the
 offspring count, and a client pathname that names either is rejected with
-`ParamErr` before it can resolve. The host's other dotfiles (`.git`, `.ssh`,
-`.DS_Store`) are not listed either -- a Mac name never starts with a period,
-and a share overlapping a home directory should not show them -- but they are
-only hidden, not server state: a folder holding one is not empty, and
-FPDelete refuses it with `DirNotEmpty` rather than deleting them.
+`ParamErr` before it can resolve. The host's other dotfiles (`.git`,
+`.DS_Store`) are ordinary files to the server: they are listed, counted as
+offspring and found by FPCatSearch, and a folder holding one is not empty.
 
 **Names and paths.** A pathname from the client is CNode names separated by
 NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and

@@ -197,7 +197,7 @@ bool afp_name_fold_contains(const char *host_haystack, const char *host_needle);
 // moved, or NULL), which may change the case of its own name.
 bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const char *self_rel);
 // True if the server shows the host name `host_name` to clients: not one of
-// its own, not a host dotfile, and representable as a Mac name.
+// its own, and representable as a Mac name.
 bool afp_name_visible(const char *host_name);
 // A host name, or a host string, as the Mac bytes that go on the wire (at most
 // `cap`); the length.  Names go through the name codec; text only through
