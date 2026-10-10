@@ -57,6 +57,12 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define FDC_HDR            500 // 12-byte sector tag/header (DSKBUFF)
 #define FDC_DATA           512 // 512-byte data sector (DSKDATA)
 
+// How a Lisa diskette is labelled in a DiskCopy 4.2 file (every archived
+// Lisa .dc42 carries these): the name Lisa disks get, and the 400K format
+// byte, $02 where a Mac 400K disk has $12.
+#define LISA_DC42_NAME        "-not a Macintosh disk-"
+#define LISA_DC42_FORMAT_400K 0x02
+
 // Command-issue values (docs/reference/machines/lisa/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
 #define CMD_SEEK     0x83 // seek
@@ -404,6 +410,9 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
         }
     }
     fdc->image = image;
+    // A Lisa diskette exported as DiskCopy 4.2 is labelled the way Lisa
+    // disks are (a DiskCopy source keeps its own label).
+    image_set_diskcopy_identity(image, LISA_DC42_NAME, disk_size(image) <= 400 * 1024 ? LISA_DC42_FORMAT_400K : 0);
     fdc->num_sides = (image && disk_size(image) > 500000) ? 2 : 1; // 400 KB = 1 side
     fdc_update_disktype(fdc);
     if (image) {
