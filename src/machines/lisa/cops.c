@@ -224,7 +224,9 @@ static void cops_clock_advance(cops_t *c) {
     uint64_t days = of_day / 864000;
     of_day %= 864000;
     int year = k[0] & 0x0F;
-    int day = k[1] * 100 + k[2] * 10 + k[3] + (int)(days % (366 * 16));
+    // Sixteen years (the year nibble's whole range, four of them leap) is
+    // 5844 days; whole cycles leave the date unchanged.
+    int day = k[1] * 100 + k[2] * 10 + k[3] + (int)(days % (16 * 365 + 4));
     while (day > cops_clock_days_in_year(year)) {
         day -= cops_clock_days_in_year(year);
         year = (year + 1) & 0x0F;
