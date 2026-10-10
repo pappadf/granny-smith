@@ -239,6 +239,16 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
     return val_uint(8, typed);
 }
 
+// `pending`: typing the guest has not taken yet -- transitions keyboard.type
+// still has scheduled, or ones waiting in the keyboard's queue.  Poll it to
+// wait for typed text to land instead of guessing a budget.
+static DEF_GETTER(keyboard_attr_pending) {
+    host_input_t *hi = hi_from(self);
+    if (!hi || !hi->sched)
+        return val_err("keyboard.pending: the machine has no keyboard");
+    return val_bool(has_event(hi->sched, &host_typed_key) || system_keyboard_input_pending());
+}
+
 static const arg_decl_t keyboard_raw_args[] = {
     {.name = "byte", .kind = VK_UINT, .doc = "Raw keyboard byte in the machine's own encoding"},
 };
@@ -256,6 +266,10 @@ static const arg_decl_t keyboard_press_args[] = {
 };
 
 static const member_t keyboard_members[] = {
+    {.kind = MK_ATTR,
+     .name = "pending",
+     .doc = "True while typed keys wait for the guest: still scheduled by type, or in the keyboard's queue",
+     .attr = {.type = VK_BOOL, .get = keyboard_attr_pending}},
     {.kind = MK_METHOD,
      .name = "press",
      .doc = "Tap a key (down + up) on the emulated keyboard",

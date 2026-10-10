@@ -37,7 +37,7 @@
 // anything is asserted. A recognition failure with those numbers next to it
 // is a diagnosis; without them it is another round of guessing.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
@@ -73,6 +73,8 @@ try {
 }
 
 test.use({
+  // Real-time media feeds the guest: keep web2's default pacing.
+  gsSpeed: null,
   launchOptions: {
     args: [
       "--use-gl=angle",

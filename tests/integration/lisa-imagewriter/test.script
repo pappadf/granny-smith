@@ -1,6 +1,8 @@
-# Print from the Lisa Office System to the virtual ImageWriter on Serial A.
-# See config.mk.  Screen coordinates are the Office System's 720x364
-# desktop, as in lisa-serial-output.
+# Print from the Lisa Office System on Serial A: first into a host file
+# (machine.scc.a.output), then to the virtual ImageWriter.  See config.mk.
+# Screen coordinates are the Office System's 720x364 desktop; mouse.move
+# "global" steers the OS cursor there through the COPS warp
+# (docs/machines/lisa/cops.md).
 
 # Click at (x, y): place the cursor, press, release.
 def lclick(x, y) {
@@ -27,14 +29,14 @@ machine.hd.attach "$WORK_DIR/profile.image"
 assert machine.hd.present == true "ProFile should be attached"
 assert machine.hd.pram_init(2, false) "pram_init failed"
 
-# The printer: an ImageWriter II on Serial A
+# The first sink: a host file on the end of Serial A, a ready device on the
+# cable.  The printer starts unplugged.
 assert machine.imagewriter.connection == "none" "the printer starts unplugged"
 assert machine.scc.a.device == none "Serial A has a device before one is plugged in"
-machine.imagewriter.connection = "serial-a"
-assert machine.scc.a.device == "imagewriter2" "the printer is not on Serial A"
-assert machine.imagewriter.status == "status: idle" "the printer is not idle"
-# Keep each job's raw input beside its PDF
-machine.imagewriter.capture = true
+let out = "${$TEST_RESULTS_DIR}/serial-a.bin"
+assert machine.scc.a.output == none "Serial A has an output before one is set"
+machine.scc.a.output = $out
+assert machine.scc.a.output == $out "Serial A's output did not take"
 
 # Boot to the Office System desktop
 scheduler.run 112000000
@@ -66,8 +68,40 @@ scheduler.run 5000000
 # File/Print -> "Print Current Tape Selection"
 menu_pick(100, 170, 113)
 
-# The driver streams the page; the job ends once the line has been quiet for
-# the idle timeout
+# --- Serial A into the file ----------------------------------------------
+# The driver streams the page at once; give it time to finish and settle
+scheduler.run 100000000
+
+let size = files.path_size($out)
+echo "serial A: ${$size} bytes in serial-a.bin, capture pending ${machine.scc.a.sent_pending}"
+assert $size > 3000 "the file is too short to be a printed page"
+assert $size == machine.scc.a.sent_pending "the file and the channel's capture disagree"
+# The Office System driver resets the printer (CAN), selects its setup
+# (ESC E ...) and sends the page as bit-image bands (ESC F position,
+# ESC g graphics); the capture holds the same bytes as the file
+let sent = machine.scc.a.sent()
+assert contains($sent, '\x18\x18\x18\x18') "no CAN reset from the driver"
+assert contains($sent, '\x1BE') "no ESC E setup"
+assert contains($sent, '\x1BF') "no ESC F head positioning"
+assert contains($sent, '\x1Bg') "no ESC g graphics"
+
+# Detach the output: nothing on the cable now.  (No print is tried here:
+# the driver's "difficulty printing" state with nothing on the cable keeps
+# the next print from going out, and the deselected printer below covers a
+# print that cannot go out.)
+machine.scc.a.output = none
+assert machine.scc.a.output == none "Serial A's output did not close"
+
+# --- The ImageWriter II ----------------------------------------------------
+machine.imagewriter.connection = "serial-a"
+assert machine.scc.a.device == "imagewriter2" "the printer is not on Serial A"
+assert machine.imagewriter.status == "status: idle" "the printer is not idle"
+# Keep each job's raw input beside its PDF
+machine.imagewriter.capture = true
+
+# The same print again; the job ends once the line has been quiet for the
+# idle timeout
+menu_pick(100, 170, 113)
 scheduler.run 100000000
 echo "imagewriter: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, last ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, pdf crc ${machine.imagewriter.last_pdf_crc}"
 assert machine.imagewriter.bytes > 3000 "too few bytes reached the printer"
@@ -86,6 +120,7 @@ machine.imagewriter.selected = false
 menu_pick(100, 170, 113)
 scheduler.run 100000000
 assert machine.imagewriter.jobs == 1 "a deselected printer printed"
+assert files.path_size($out) == $size "the closed file grew"
 
 # The machine is still alive after printing
 assert machine.cpu.sr < 0x2700 "the CPU is stuck with interrupts masked"

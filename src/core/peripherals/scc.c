@@ -32,6 +32,9 @@
 // A guest that prints faster than the driving script drains loses the tail,
 // which `sent_dropped` reports rather than hiding.
 #define SENT_BUF_SIZE 65536
+// Host-side receive queue: text a script sends (`receive`) waits here and
+// goes onto the line one character time apart, as a terminal would send it.
+#define LINE_IN_SIZE 4096
 
 LOG_USE_CATEGORY_NAME("scc");
 
@@ -143,6 +146,14 @@ struct scc_channel {
     scc_t *scc;
 };
 
+// The far end's sender for `receive`: a ring of bytes still to go down the
+// line, and whether the next one's character time is already scheduled.
+typedef struct {
+    uint8_t buf[LINE_IN_SIZE];
+    uint32_t head, len;
+    bool armed;
+} line_in_t;
+
 struct scc {
 
     scc_channel_t ch[2];
@@ -189,6 +200,10 @@ struct scc {
         const scc_port_device_t *dev;
         void *dev_ctx;
         bool dev_ready;
+        // The far end's sender (`receive`).  Checkpointed with the chip
+        // (scc_checkpoint): a restore mid-line goes on sending where the save
+        // left off.
+        line_in_t line_in;
     } port[2];
 
     // Host-side transmit capture, one per channel: every byte the guest hands
@@ -319,6 +334,59 @@ static void tx_paced_callback(void *source, uint64_t data) {
         scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
         update_irqs(scc);
     }
+}
+
+// One character time has passed on a line the host is sending on: the next
+// queued byte arrives at the receiver, and the one after it is due one
+// character time later (source=scc, data=channel index).
+//
+// Pacing is the point.  A real terminal's characters reach the chip one
+// character time apart, and guest input loops are written for that: Open
+// Firmware drains every available byte before it echoes, so a whole command
+// handed over at once overflows its line buffer and loses all but the last
+// few characters.  The character time follows the channel's programmed rate
+// (async_char_ns), so a guest that has set 38,400 baud gets 38,400 baud.
+static void line_in_callback(void *source, uint64_t data) {
+    scc_t *scc = (scc_t *)source;
+    unsigned ch = (unsigned)(data & 1);
+    line_in_t *q = &scc->port[ch].line_in;
+    q->armed = false;
+    if (q->len == 0)
+        return;
+    // A full FIFO latches Rx Overrun and drops the byte, as on the wire
+    scc_port_rx_byte(scc, ch, q->buf[q->head]);
+    q->head = (q->head + 1) % LINE_IN_SIZE;
+    q->len--;
+    if (q->len) {
+        q->armed = true;
+        scheduler_new_cpu_event(scc->scheduler, line_in_callback, scc, (uint64_t)ch, 0,
+                                async_char_ns(scc, &scc->ch[ch]));
+    }
+}
+
+// Queue `len` bytes for the host side of channel `ch` to send, one character
+// time apart; the first arrives one character time from now.  Returns how
+// many fit in the queue.  Without a scheduler (nothing to pace against) the
+// bytes arrive at once.
+size_t scc_line_send(scc_t *scc, unsigned int ch, const uint8_t *bytes, size_t len) {
+    if (!scc || ch > 1 || !bytes)
+        return 0;
+    if (!scc->scheduler) {
+        size_t n = 0;
+        while (n < len && scc_port_rx_byte(scc, ch, bytes[n]))
+            n++;
+        return n;
+    }
+    line_in_t *q = &scc->port[ch].line_in;
+    size_t n = 0;
+    for (; n < len && q->len < LINE_IN_SIZE; n++)
+        q->buf[(q->head + q->len++) % LINE_IN_SIZE] = bytes[n];
+    if (q->len && !q->armed) {
+        q->armed = true;
+        scheduler_new_cpu_event(scc->scheduler, line_in_callback, scc, (uint64_t)ch, 0,
+                                async_char_ns(scc, &scc->ch[ch]));
+    }
+    return n;
 }
 
 // BRG zero-count callback (source=scc, data=channel index)
@@ -1703,6 +1771,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     if (scheduler) {
         scheduler_new_event_type(scheduler, "scc", scc, "brg", &brg_zero_count_callback);
         scheduler_new_event_type(scheduler, "scc", scc, "tx", &tx_paced_callback);
+        scheduler_new_event_type(scheduler, "scc", scc, "line_in", &line_in_callback);
     }
 
     // If a checkpoint is provided, restore channel plain-data (everything up to the
@@ -1717,6 +1786,16 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
         uint8_t loopback = 0;
         system_read_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
         scc->external_loopback = loopback != 0;
+
+        // What the host side was still sending (see scc_checkpoint).  The
+        // cursors come from a file the user supplies and index the ring, so a
+        // value out of range empties the queue rather than read past it.
+        for (int i = 0; i < 2; i++) {
+            line_in_t *q = &scc->port[i].line_in;
+            system_read_checkpoint_data(checkpoint, q, sizeof(*q));
+            if (q->head >= LINE_IN_SIZE || q->len > LINE_IN_SIZE)
+                q->head = q->len = 0;
+        }
 
         // Re-link channel back-pointers and ensure index is correct
         for (int i = 0; i < 2; i++) {
@@ -1806,6 +1885,14 @@ unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch) {
         return 0;
     const scc_channel_t *c = &scc->ch[ch];
     return (unsigned)(c->rx.head - c->rx.tail);
+}
+
+// Bytes the host side is still to send on channel `ch` (`receive`), not yet
+// in the receive FIFO.
+unsigned scc_channel_line_in_pending(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return 0;
+    return scc->port[ch].line_in.len;
 }
 
 // Bytes waiting in a channel's host-side transmit capture.
@@ -1901,6 +1988,13 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     // which is exactly why the guest cannot put it back.
     uint8_t loopback = scc->external_loopback ? 1 : 0;
     system_write_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
+
+    // Text the host side was still sending (`receive`), with its pending
+    // character-time event: the scheduler restores the event, and the event
+    // needs the bytes.  Cable state like `loopback`, so outside the channel
+    // blocks.
+    for (int i = 0; i < 2; i++)
+        system_write_checkpoint_data(checkpoint, &scc->port[i].line_in, sizeof(scc->port[i].line_in));
 
     // Note: we intentionally do not save the scc back-pointer, nor the memory_interface
     // function pointers or the mapping pointer. Those are runtime-specific and re-initialized
@@ -2018,7 +2112,10 @@ static DEF_GETTER(scc_ch_attr_rx_pending) {
     scc_channel_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
-    return val_uint(4, scc_channel_rx_pending(c->scc, (unsigned)c->index));
+    // Still on the line plus waiting in the FIFO: zero means the guest has
+    // read everything `receive` sent
+    unsigned ch = (unsigned)c->index;
+    return val_uint(4, scc_channel_line_in_pending(c->scc, ch) + scc_channel_rx_pending(c->scc, ch));
 }
 
 // `output`: the host file this channel's transmitted bytes go to, or none.
@@ -2057,10 +2154,13 @@ static DEF_GETTER(scc_ch_attr_device) {
     return dev ? val_str(dev->name) : val_none();
 }
 
-// Feed bytes into a channel's receive FIFO as though they had arrived on the
-// wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
-// RR0's Rx Character Available, and raise the receive interrupt when the
-// channel has one enabled.
+// Send bytes to a channel's receiver from the far end of the cable, the way
+// a terminal sends typed text: queued host-side and delivered one character
+// time apart at the channel's programmed rate (line_in_callback).  Each byte
+// arrives through the same path a device on the cable uses -- receive FIFO,
+// RR0's Rx Character Available, the receive interrupt when enabled.  Returns
+// at once with the count queued; `rx_pending` reaches zero once the guest has
+// read them all.
 //
 // Without this the emulated serial ports could only ever TRANSMIT, so a guest
 // that waits for serial input could never be answered — and some do.  Copland's
@@ -2090,17 +2190,10 @@ static DEF_METHOD(scc_ch_method_receive) {
         return val_err("receive: expected a string or a byte value");
     }
 
-    // Byte by byte through the same path a device on the cable uses; a full
-    // FIFO latches Rx Overrun and stops the delivery
-    uint64_t accepted = 0;
-    for (size_t i = 0; i < len; i++) {
-        if (!scc_port_rx_byte(scc, (unsigned)c->index, bytes[i]))
-            break;
-        accepted++;
-    }
-    if (!accepted)
-        return val_uint(4, 0);
-    LOG(3, "receive: ch=%d accepted %llu byte(s)", c->index, (unsigned long long)accepted);
+    // A full host-side queue takes what fits; the count says how much
+    size_t accepted = scc_line_send(scc, (unsigned)c->index, bytes, len);
+    if (accepted)
+        LOG(3, "receive: ch=%d queued %zu byte(s)", c->index, accepted);
     return val_uint(4, accepted);
 }
 
@@ -2175,7 +2268,7 @@ static const member_t scc_ch_members[] = {
      .attr = {.type = VK_BOOL, .get = scc_ch_attr_tx_empty}},
     {.kind = MK_ATTR,
      .name = "rx_pending",
-     .doc = "Bytes queued for the guest to read, delivered by `receive` and not yet consumed",
+     .doc = "Bytes `receive` sent that the guest has not read yet: still on the line, or in the receive FIFO",
      .attr = {.type = VK_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = MK_ATTR,
      .name = "sent_pending",
@@ -2200,8 +2293,8 @@ static const member_t scc_ch_members[] = {
      .attr = {.type = VK_STRING, .validation_flags = OBJ_ARG_NONE_OK, .get = scc_ch_attr_device}},
     {.kind = MK_METHOD,
      .name = "receive",
-     .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = VK_UINT, .fn = scc_ch_method_receive}},
+     .doc = "Send bytes to this channel's receiver as a terminal on the cable would: one character time apart "
+            "at the programmed rate.  Returns the count queued; `rx_pending` is zero once the guest read them", .method = {.args = scc_ch_receive_args, .nargs = 1, .result = VK_UINT, .fn = scc_ch_method_receive}},
     {.kind = MK_METHOD,
      .name = "sent",
      .doc = "Drain and return the text this channel has transmitted since the last call",

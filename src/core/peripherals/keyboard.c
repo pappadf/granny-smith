@@ -105,6 +105,11 @@ static bool queue_empty(keyboard_t *keyboard) {
     return keyboard->queue.head == keyboard->queue.tail;
 }
 
+// True while key transitions wait in the queue for the Mac to fetch
+bool keyboard_input_pending(keyboard_t *keyboard) {
+    return keyboard && !queue_empty(keyboard);
+}
+
 // Clears the transmit queue
 static void queue_reset(keyboard_t *keyboard) {
     keyboard->queue.tail = keyboard->queue.head = 0;

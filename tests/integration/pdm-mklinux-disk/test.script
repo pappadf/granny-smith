@@ -443,7 +443,7 @@ if have_media($dr3_iso) {
     phase6_publish()
     report_row("7.5", "ariel", "mklinux-disk drive-setup pdisk bless mac-files")
 } else {
-    echo "skip: pdm-mklinux-disk (the DR3 disc not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("pdm-mklinux-disk (the DR3 disc not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

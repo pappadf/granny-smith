@@ -56,10 +56,22 @@ void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
 }
+// The last event scheduled on a (fake) scheduler, so a test can fire it.
+static struct {
+    int count;
+    event_callback_t cb;
+    void *src;
+    uint64_t data, ns;
+} g_ev;
 event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
                                     uint64_t cycles, uint64_t ns, bool periodic) {
     (void)periodic;
-    (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
+    (void)s, (void)cycles;
+    g_ev.count++;
+    g_ev.cb = cb;
+    g_ev.src = src;
+    g_ev.data = data;
+    g_ev.ns = ns;
     return NULL;
 }
 void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) {
@@ -328,6 +340,47 @@ TEST(test_ready_line_follows_device) {
     scc_delete(scc);
 }
 
+// Host text (`receive`) goes onto the line one character time apart: it
+// waits host-side, and each character time moves one byte into the FIFO and
+// schedules the next.  Clocks unknown, so the character time is 9600 baud's.
+TEST(test_line_send_is_paced) {
+    static int fake_scheduler;
+    g_irq = false;
+    memset(&g_ev, 0, sizeof g_ev);
+    scc_t *scc = scc_init(NULL, (struct scheduler *)&fake_scheduler, irq_sink, NULL, NULL);
+    ASSERT_TRUE(scc != NULL);
+    wr(scc, CH_A_CTL, 9, 0x08); // MIE
+    wr(scc, CH_A_CTL, 4, 0x44);
+    int before = g_ev.count;
+
+    ASSERT_EQ_INT((int)scc_line_send(scc, 0, (const uint8_t *)"AB", 2), 2);
+    ASSERT_EQ_INT(scc_channel_rx_pending(scc, 0), 0); // nothing in the FIFO yet
+    ASSERT_EQ_INT(scc_channel_line_in_pending(scc, 0), 2);
+    ASSERT_EQ_INT(g_ev.count, before + 1); // one character time scheduled
+    ASSERT_TRUE(g_ev.ns == 1041667);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & 0x01));
+
+    g_ev.cb(g_ev.src, g_ev.data); // one character time later
+    ASSERT_EQ_INT(scc_channel_rx_pending(scc, 0), 1);
+    ASSERT_EQ_INT(scc_channel_line_in_pending(scc, 0), 1);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & 0x01);
+    ASSERT_EQ_INT(g_ev.count, before + 2); // and the next one is due
+
+    // Sending more while the line is busy does not restart the pacing
+    ASSERT_EQ_INT((int)scc_line_send(scc, 0, (const uint8_t *)"C", 1), 1);
+    ASSERT_EQ_INT(g_ev.count, before + 2);
+
+    g_ev.cb(g_ev.src, g_ev.data);
+    g_ev.cb(g_ev.src, g_ev.data);
+    ASSERT_EQ_INT(scc_channel_rx_pending(scc, 0), 3);
+    ASSERT_EQ_INT(scc_channel_line_in_pending(scc, 0), 0);
+    ASSERT_EQ_INT(g_ev.count, before + 3); // nothing left: no further event
+    ASSERT_EQ_INT(rd(scc, CH_A_CTL, 8), 'A');
+    ASSERT_EQ_INT(rd(scc, CH_A_CTL, 8), 'B');
+    ASSERT_EQ_INT(rd(scc, CH_A_CTL, 8), 'C');
+    scc_delete(scc);
+}
+
 // A device's reply arrives in the receive FIFO with Rx Character Available.
 TEST(test_device_rx_byte) {
     scc_t *scc = make_async();
@@ -351,6 +404,7 @@ int main(void) {
     RUN(test_device_hears_async_bytes);
     RUN(test_ready_line_follows_device);
     RUN(test_device_rx_byte);
+    RUN(test_line_send_is_paced);
     printf("[PASS] All scc_port tests passed\n");
     return 0;
 }

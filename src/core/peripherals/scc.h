@@ -148,6 +148,12 @@ void scc_port_device_ready(scc_t *scc, unsigned int ch, bool ready);
 // False when the FIFO is full (Rx Overrun latched, the byte dropped).
 bool scc_port_rx_byte(scc_t *scc, unsigned int ch, uint8_t byte);
 
+// Host -> guest as a terminal on the cable sends it (`receive`): the bytes
+// queue host-side and arrive at the receiver one character time apart, at the
+// channel's programmed rate.  Returns how many fit in the queue (4 KB per
+// channel); without a scheduler they arrive at once.
+size_t scc_line_send(scc_t *scc, unsigned int ch, const uint8_t *bytes, size_t len);
+
 // True once channel B is in SDLC mode — the guest's AppleTalk driver is up
 // and a frame we originate has somewhere to go.
 bool scc_sdlc_ready(const scc_t *restrict scc);
@@ -182,6 +188,9 @@ uint32_t scc_get_rtxc_hz(const scc_t *scc);
 bool scc_channel_dcd(const scc_t *scc, unsigned int ch);
 bool scc_channel_tx_empty(const scc_t *scc, unsigned int ch);
 unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch);
+// Bytes the host side is still sending on channel `ch` (`receive`), paced at
+// one per character time and not yet in the receive FIFO.
+unsigned scc_channel_line_in_pending(const scc_t *scc, unsigned int ch);
 
 // Host-side transmit capture (the mirror of `receive`): every byte the guest
 // transmits is held until a driving script drains it, so an emulated serial

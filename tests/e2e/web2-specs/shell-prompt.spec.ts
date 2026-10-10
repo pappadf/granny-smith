@@ -12,7 +12,7 @@
 // The machine is an SE/30 with no media, free-running at the ROM's
 // insert-disk prompt (same fixture as scheduler-accelerated.spec.ts).
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine, consoleLine, CONSOLE_INPUT } from '../helpers/terminal';

@@ -20,7 +20,7 @@
 //      slot-$9 default card (mdc_8_24) must content-match the offered file
 //      and expose its declaration ROM (machine.nubus.slot[9].card.declrom).
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";

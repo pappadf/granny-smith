@@ -71,7 +71,7 @@ void platform_print_host_callstack(void);
 // has nothing to do, its card ROMs live in OPFS and are offered on upload.
 void platform_offer_sibling_card_roms(const char *rom_path);
 
-// The target's clock: host_time() (seconds) and host_time_ms().
+// The target's clock: host_time_ms().
 #include "platform_clock.h"
 
 #endif // PLATFORM_H

@@ -275,7 +275,7 @@ if have_media($nt_rom) && have_media($nt_cd) && have_media($nt_floppy) && have_m
         echo "ans-nt-install: text-mode Setup complete and GUI Setup at Registration (rung N10; add product-id.txt for the rest)"
     }
 } else {
-    echo "skip: ans-nt-install (the 2.26NT ROM, the boot floppy, or the NT 4.0 PowerPC CD / blank disk under GS_EXTRA_MEDIA_DIR is not present -- see this row's header)"
+    skip_test("ans-nt-install (the 2.26NT ROM, the boot floppy, or the NT 4.0 PowerPC CD / blank disk under GS_EXTRA_MEDIA_DIR is not present -- see this row's header)")
 }
 
 quit

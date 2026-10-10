@@ -1,5 +1,161 @@
 {
   "rows": {
+    "ans-aix-installed-boot/root-shell": {
+      "instr": 46100000000,
+      "tolerance": 0.2
+    },
+    "ans-device-tree/ans500": {
+      "instr": 2745200000,
+      "tolerance": 0.2
+    },
+    "ans-device-tree/ans700": {
+      "instr": 2876250000,
+      "tolerance": 0.2
+    },
+    "ans-nt-installed-boot/desktop": {
+      "instr": 10422450000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-50348b3d0126096b": {
+      "instr": 1650000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-c60da96de537f08a": {
+      "instr": 1000000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-962f6c13-d540b3dd5bcf9caa": {
+      "instr": 2738250000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans500-9630c68b-a71fb907dd180b8a": {
+      "instr": 1650000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-962f6c13-50348b3d0126096b": {
+      "instr": 1825000000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-962f6c13-c60da96de537f08a": {
+      "instr": 2868500000,
+      "tolerance": 0.2
+    },
+    "ans-rom-catalog/ans700-9630c68b-a71fb907dd180b8a": {
+      "instr": 1825000000,
+      "tolerance": 0.2
+    },
+    "ans-scsi/ans500": {
+      "instr": 3250700000,
+      "tolerance": 0.2
+    },
+    "ans-scsi/ans700": {
+      "instr": 3460950000,
+      "tolerance": 0.2
+    },
+    "default-configs/ans500": {
+      "instr": 750000000,
+      "tolerance": 0.2
+    },
+    "default-configs/ans700": {
+      "instr": 750000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iici": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iicx": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iifx": {
+      "instr": 6000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iisi": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/iix": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "default-configs/lisa": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/macxl": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/plus": {
+      "instr": 2000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm6100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm7100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm7500": {
+      "instr": 240000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm8100": {
+      "instr": 40000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm8500": {
+      "instr": 240000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pm9500": {
+      "instr": 320000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pmg3dt": {
+      "instr": 720000000,
+      "tolerance": 0.2
+    },
+    "default-configs/pmg3mt": {
+      "instr": 810000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q660av": {
+      "instr": 20000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q700": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q840av": {
+      "instr": 20000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q900": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/q950": {
+      "instr": 12000000,
+      "tolerance": 0.2
+    },
+    "default-configs/se30": {
+      "instr": 4000000,
+      "tolerance": 0.2
+    },
+    "gossamer-checkpoint/restored-desktop": {
+      "instr": 2250000000,
+      "tolerance": 0.2
+    },
+    "gossamer-restore-fail/finder": {
+      "instr": 3147084947,
+      "tolerance": 0.2
+    },
     "iici-aux3-8bpp/login": {
       "instr": 302331169,
       "tolerance": 0.2
@@ -33,11 +189,11 @@
       "tolerance": 0.2
     },
     "mklinux-boot/pm7100": {
-      "instr": 4959983600,
+      "instr": 2306983600,
       "tolerance": 0.2
     },
     "mklinux-boot/pm7500": {
-      "instr": 4750000000,
+      "instr": 2261500000,
       "tolerance": 0.2
     },
     "mklinux-boot/pm8100": {
@@ -45,11 +201,19 @@
       "tolerance": 0.2
     },
     "pdm-afp-copy-motion/copy": {
-      "instr": 6389983600,
+      "instr": 6373983600,
+      "tolerance": 0.2
+    },
+    "pm7100-copland-boot/copland-desktop": {
+      "instr": 2759983600,
+      "tolerance": 0.2
+    },
+    "pm7100-copland-boot/copland-logo": {
+      "instr": 1699983600,
       "tolerance": 0.2
     },
     "pm8100-24ac-sysinfo/bench": {
-      "instr": 10302983600,
+      "instr": 9091033600,
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {
@@ -93,7 +257,7 @@
       "tolerance": 0.2
     },
     "suite-ans/ans500-diag-floppy": {
-      "instr": 13560000000,
+      "instr": 10215000000,
       "tolerance": 0.2
     },
     "suite-ans/ans500-of-console": {
@@ -109,11 +273,11 @@
       "tolerance": 0.2
     },
     "suite-av/av-beep": {
-      "instr": 999410175,
+      "instr": 989368962,
       "tolerance": 0.2
     },
     "suite-av/av-checkpoint": {
-      "instr": 758089740,
+      "instr": 278259186,
       "tolerance": 0.2
     },
     "suite-av/av-chime": {
@@ -129,23 +293,23 @@
       "tolerance": 0.2
     },
     "suite-av/av-floppy-800k": {
-      "instr": 1351839699,
+      "instr": 302134412,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-boot": {
-      "instr": 7930329616,
+      "instr": 682744563,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-format": {
-      "instr": 4775565956,
+      "instr": 1394449934,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-mount": {
-      "instr": 1350274155,
+      "instr": 320632958,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-write-eject": {
-      "instr": 1525581225,
+      "instr": 1075470215,
       "tolerance": 0.2
     },
     "suite-av/av-identity": {
@@ -157,7 +321,7 @@
       "tolerance": 0.2
     },
     "suite-av/av-sound-in": {
-      "instr": 1238350132,
+      "instr": 1209810670,
       "tolerance": 0.2
     },
     "suite-av/av-sr-command": {
@@ -169,7 +333,7 @@
       "tolerance": 0.2
     },
     "suite-av/av-tts": {
-      "instr": 1227328067,
+      "instr": 1201787205,
       "tolerance": 0.2
     },
     "suite-av/av-video": {
@@ -177,23 +341,35 @@
       "tolerance": 0.2
     },
     "suite-av/q660av-71-hd-desktop": {
-      "instr": 703831738,
+      "instr": 203989467,
       "tolerance": 0.2
     },
     "suite-av/q660av-71-video-in": {
-      "instr": 743114886,
+      "instr": 739666300,
       "tolerance": 0.2
     },
     "suite-av/q840av-71-hd-desktop": {
-      "instr": 720599412,
+      "instr": 240768440,
       "tolerance": 0.2
     },
     "suite-av/q840av-71-video-in": {
-      "instr": 784237992,
+      "instr": 778886969,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3dt-floppy": {
+      "instr": 4558994063,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3dt-hd": {
+      "instr": 4519729234,
+      "tolerance": 0.2
+    },
+    "suite-gossamer/g3mt-hd": {
+      "instr": 4689258957,
       "tolerance": 0.2
     },
     "suite-iici/iici-24ac-dual": {
-      "instr": 971549760,
+      "instr": 971549733,
       "tolerance": 0.2
     },
     "suite-iici/iici-701-depths": {
@@ -205,23 +381,23 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-71-hd": {
-      "instr": 371770971,
+      "instr": 371771273,
       "tolerance": 0.2
     },
     "suite-iici/iici-75-hd": {
-      "instr": 430688139,
+      "instr": 370705731,
       "tolerance": 0.2
     },
     "suite-iici/iici-76-hd": {
-      "instr": 464345844,
+      "instr": 464345987,
       "tolerance": 0.2
     },
     "suite-iici/iici-76-hd-addr32": {
-      "instr": 469035241,
+      "instr": 469035588,
       "tolerance": 0.2
     },
     "suite-iici/iici-checkpoint": {
-      "instr": 456674785,
+      "instr": 176755987,
       "tolerance": 0.2
     },
     "suite-iici/iici-chime": {
@@ -233,7 +409,7 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-mactest-diag": {
-      "instr": 592913528,
+      "instr": 595630707,
       "tolerance": 0.2
     },
     "suite-iici/iici-portrait": {
@@ -241,11 +417,11 @@
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac": {
-      "instr": 410516795,
+      "instr": 393936872,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac-restart": {
-      "instr": 454708701,
+      "instr": 449915402,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-chime": {
@@ -257,7 +433,7 @@
       "tolerance": 0.2
     },
     "suite-iicx/iicx-gc-beep": {
-      "instr": 379651264,
+      "instr": 366033353,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-gc-decline8": {
@@ -281,7 +457,7 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
-      "instr": 464555839,
+      "instr": 464555750,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-8m": {
@@ -289,11 +465,11 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {
-      "instr": 312820871,
+      "instr": 312819794,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-checkpoint": {
-      "instr": 354006178,
+      "instr": 154716913,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-chime": {
@@ -369,7 +545,7 @@
       "tolerance": 0.2
     },
     "suite-lisa/lisa-checkpoint": {
-      "instr": 102000000,
+      "instr": 67000000,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-los31-lisaem": {
@@ -377,7 +553,7 @@
       "tolerance": 0.2
     },
     "suite-lisa/lisa-los31-profile": {
-      "instr": 107973410,
+      "instr": 40976910,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-boot": {
@@ -385,11 +561,11 @@
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-hdinit": {
-      "instr": 387000000,
+      "instr": 367000000,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-nofloppy": {
-      "instr": 391800000,
+      "instr": 116800000,
       "tolerance": 0.2
     },
     "suite-lisa/xl-macworks-boot": {
@@ -401,19 +577,19 @@
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-800k": {
-      "instr": 2619983600,
+      "instr": 1379983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-boot": {
-      "instr": 7599983600,
+      "instr": 3499983600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-mount": {
-      "instr": 3856983600,
+      "instr": 2534533600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-floppy-write-eject": {
-      "instr": 2612983600,
+      "instr": 1765933600,
       "tolerance": 0.2
     },
     "suite-pdm/pdm-swim3-reset": {
@@ -421,19 +597,19 @@
       "tolerance": 0.2
     },
     "suite-pdm/pm6100-75-hd": {
-      "instr": 1919483600,
+      "instr": 1089483600,
       "tolerance": 0.2
     },
     "suite-pdm/pm7100-75-hd": {
-      "instr": 1946983600,
+      "instr": 1156983600,
       "tolerance": 0.2
     },
     "suite-pdm/pm8100-75-24ac": {
-      "instr": 1639983600,
+      "instr": 1229983600,
       "tolerance": 0.2
     },
     "suite-pdm/pm8100-75-hd": {
-      "instr": 2012483600,
+      "instr": 1601483600,
       "tolerance": 0.2
     },
     "suite-plus/plus-20-fd": {
@@ -465,7 +641,7 @@
       "tolerance": 0.2
     },
     "suite-plus/plus-checkpoint": {
-      "instr": 115000000,
+      "instr": 30000000,
       "tolerance": 0.2
     },
     "suite-quadra/q700-20m": {
@@ -477,11 +653,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 703998333,
+      "instr": 224303425,
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-monitors": {
-      "instr": 513110816,
+      "instr": 473138016,
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
@@ -501,7 +677,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 702417598,
+      "instr": 241879165,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
@@ -509,11 +685,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-71-hd": {
-      "instr": 1061141454,
+      "instr": 985867748,
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 800390185,
+      "instr": 760433673,
       "tolerance": 0.2
     },
     "suite-quadra/tower-256m": {
@@ -570,6 +746,14 @@
     },
     "tnt-pci-voodoo2": {
       "instr": 400200000,
+      "tolerance": 0.2
+    },
+    "tnt-voodoo2-glide-sw/sw": {
+      "instr": 8177800000,
+      "tolerance": 0.2
+    },
+    "tnt-voodoo2-glide/thread": {
+      "instr": 8177800000,
       "tolerance": 0.2
     }
   }

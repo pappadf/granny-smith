@@ -27,13 +27,12 @@ int image_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
         if (take > n - done)
             take = n - done;
         if (in_block == 0 && take == STORAGE_BLOCK_SIZE) {
-            // Fast path: every whole aligned block from here on goes straight
-            // into dst in one read; only a partial head or tail block goes
-            // through the bounce buffer.
-            size_t whole = (n - done) & ~(size_t)(STORAGE_BLOCK_SIZE - 1);
-            if (disk_read_data(img, (size_t)block_off, dst + done, whole) != whole)
+            // Fast path: every whole aligned block from here goes straight
+            // into dst in one read, so the storage reads its file in large
+            // pieces rather than a block at a time.
+            take = (n - done) & ~(size_t)(STORAGE_BLOCK_SIZE - 1);
+            if (disk_read_data(img, (size_t)block_off, dst + done, take) != take)
                 return -EIO;
-            take = whole;
         } else {
             if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
                 return -EIO;

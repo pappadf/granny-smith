@@ -115,4 +115,11 @@ echo "${machine.adb.mouse.click(false)}"
 echo "${machine.adb.mouse.trace(true)}"
 echo "${machine.adb.mouse.trace(false)}"
 
+# Input the guest has not taken yet.  Nothing is pending on a fresh machine;
+# typed keys are pending from the moment keyboard.type schedules them (this
+# early in the boot the ROM is not reading the keyboard, so they stay so).
+assert !machine.adb.keyboard.pending "keyboard input pending before any was typed"
+machine.adb.keyboard.type("a")
+assert machine.adb.keyboard.pending "typed keys are not pending"
+
 quit

@@ -5,98 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- **Floppy drive on the Quadra 840AV and Centris 660AV** — the New Age controller (an NEC µPD72070 in Apple mode) is modelled, so both AV machines have their internal SuperDrive: 1.44 MB, 800K and 400K disks mount through the ROM's own driver (720 KB MFM media are recognised too), 1.44 MB disks write, format and eject, and a floppy boots the machine (the Mac OS 7.6 install disk reaches its Installer). Both profiles offer the drive in the configuration dialog (#178).
-- **Virtual ImageWriter and ImageWriter II, printing to PDF** — every machine has a dot-matrix printer, `machine.imagewriter`, that the guest's own ImageWriter driver prints to:
-  - on a serial port (`connection = "serial-a"` / `"serial-b"`): the Lisa Office System and the Mac ImageWriter driver print unmodified, with the printer's ready line, `ESC ?` reply and XON/XOFF;
-  - over AppleTalk as an ImageWriter II with the LocalTalk Option card (`connection = "localtalk"`): the Chooser's AppleTalk ImageWriter lists "Virtual ImageWriter", beside the LaserWriter;
-  - text in the printers' own fonts — the ImageWriter II's draft, correspondence and near-letter-quality, the original ImageWriter's, fixed and proportional, with the original's vertical format unit (MouseText, the eight languages), graphics placed exactly for every pitch, Best-mode interleave, colour ribbons, custom characters;
-  - each job opens as a PDF in the print viewer (the browser) or lands in `--print-dir` (headless), titled after the Macintosh application that printed it; deselecting the printer or running it out of paper pauses the job, as on the real printer.
-  - the machine configuration has an "ImageWriter" menu (None, ImageWriter, ImageWriter II; `imagewriter=` in a URL) that plugs the printer into the serial port AppleTalk does not use — the modem port while AppleTalk is active, else the printer port; Serial A on a Lisa;
-  - `buffer_model = "2k"` / `"32k"` simulates the printer's real input buffer for testing a driver's flow control: it prints at about the printer's speed and goes busy when nearly full, at the manual's thresholds; a serial character to the printer now takes its time on the line, so the guest sees the busy line between characters.
-- **MMU inspection on every MMU kind** — `machine.cpu.mmu` answers the same `translate`, `walk`, `map` and `descriptor` on the 68030 PMMU, the 68040, the PowerPC 601/604 and the Lisa's segment MMU:
-  - `walk` shows every step the MMU took: TT/BAT/segment registers, the root pointer, each table level or page-table group, and where a failing walk stopped.
-  - `map` lists the mapped address ranges.
-  - `descriptor` decodes raw table entries; a PowerPC page-table entry also shows the address it maps.
-  - `translate` now also reports `access` (`rw` / `ro` / `none`).
-  - The Debug view's MMU section has its Map and Descriptors tabs back, on live data, and Translate shows the walk.
-- **Skins are simply light or dark** — there is no separate light/dark setting any more: the toolbar's toggle and the Dark / Light / System options are gone, and the Appearance button lists the skins (Midnight, Starlight, Platinum, Aqua, Workbench, Workbench Light). Midnight is the default.
-- **Panel tabs never scroll out of sight** — in a narrow panel the tabs that do not fit move into a "»" menu (the selected tab always stays visible), and a view's header buttons fold into a "⋯" menu when they would crowd it out. The display toolbar cuts off what does not fit instead of drawing over the panel, and Shut down is now a power symbol.
-- **Midnight, Starlight and Aqua skins** — Midnight floats the toolbar, display, panel and status bar as translucent glass cards over a blue-black page lit by indigo and teal glows; Starlight is the same layout in white cards on cool grey. Midnight draws its card edges, field outlines, drop-down arrows and secondary text bright enough to see at a glance. Aqua is Mac OS X 10.0: pinstripes, a brushed toolbar, blue and white gel capsules, capsule tabs, the blue gradient selection and gel scrollbars.
-- **Commands** — bare words that run a method: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `cd`, `pwd` (the `files` methods, with the new `files.cd` / `files.pwd`), `run`, `stop`, `reset`, `step`, `disasm`.  `command NAME = PATH` declares your own; `$` aliases stay for values and places.  Highlighting, completion and `help` follow the method a command runs, and the command browser lists them under Commands.
-- **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
-- **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
-- **Self-describing object model** — every node and member carries a doc, a domain and a type descriptor in `meta.members`; `help` / `shell.usage` render usage text from it, `shell.complete` reports per-candidate kinds and docs, and value/error annotation records ride the job stream.
-- **Structural command browser** — the Terminal's browser now walks the live model (expandable sections for the root commands, each domain, Aliases and Language; collections with their entries; basic and advanced members alike) and shows the core's usage text for the selected member.
-- **Terminal console replaces xterm.js** — DOM-rendered output entries (commands, text, values, errors) and a CodeMirror 6 input:
-  - a printed value is one entry (objects link to the command browser; lists and maps expand);
-  - a failing statement is one error entry;
-  - multi-line input, with Enter continuing an open block;
-  - a completion popup with each candidate's kind and doc;
-  - a pasted block runs as one job;
-  - the output follows new entries while it is at the bottom, and running a command always returns it there;
-  - Ctrl+C copies a selection, else interrupts;
-  - an output context menu (Copy as commands, Copy output, Copy value as JSON) and find (Ctrl/Cmd+F).
-  - History moves to `localStorage` (`gs.console.history`).
-- **SYSTEM tab edits the model** — values are shown as the REPL prints them.
-  - Editing: double-click, or Enter / F2. A bool toggles; an enum picks from a dropdown.
-  - A literal is written through the bridge and echoed to the console as its statement; an expression runs as a console statement.
-  - Node methods run from the context menu: destructive ones confirm, and methods with arguments get a generated form with a file browser for paths.
-  - Copy value / Copy path.
-  - Live refresh on state events, console jobs, and every 2 s while the machine runs.
-  - Ctrl/Cmd-click on a console object link reveals the node in SYSTEM.
-- **Command browser and console follow each other**:
-  - A click previews a row: its usage shows in a closable details pane under the tree, which also closes when the console's input empties (a command ran).
-  - A double-click, Enter or the pane's Insert button writes its path at the console's cursor (`path.`, `path[`, `path["`, `path ` for a method) and hands focus back.
-  - Typing opens the browser at the token, marks and selects the match, and dims the rest.
-  - In a method's arguments, a signature hint underlines the current argument, which is also marked in the method's usage.
-- **Syntax highlighting** — `shell.highlight(text)` classifies a line or block the way the parser reads it, resolving path segments against the live tree:
-  - Unknown segments are marked, as are enum values, bindings versus aliases, strings with `${…}` interpolation, and comments.
-  - The console colours its input and command entries with it, and the command browser colours usage signatures and examples.
-  - Round trip about 17 ms at p95 with the machine in turbo.
-
-### Changed
-- **Platinum skin redrawn after Mac OS 8** — bevelled push buttons and grooves, an inset well around the screen, folder tabs over white Finder lists with filled disclosure triangles and the lavender highlight, Platinum scrollbars, LED status fields, two-tone Finder icons, and Chivo in place of IBM Plex Sans.
-- **Command browser keys** — Home, End, PageUp and PageDown move the selection, as in the other lists.
-- **A job's error is written once** — as the job's `error` record; stderr carries it only when no record can hold it whole (outside a job, or the full text behind a shortened `truncated` record).  Headless without `--framed` prints error records to stderr, so its output reads as before; `--framed` clients get `@error` without a stderr copy.  The web console no longer matches stderr lines to errors, which also fixes long errors showing twice.
-- **The first word of a line means one thing everywhere** — `help`, completion and highlighting follow the interpreter's order (path, then `def` function, then command), so a `def ls` shadows the `ls` command for all of them.  `include` is now a reserved word; `shell.keywords` lists every keyword, the contextual `command` included.
-- **Highlighting and completion read statements through the parser's classifier** (`src/core/shell/syntax.c`), so they agree with what runs:
-  - `$x + 1` highlights as a command with argument-mode words (it is one); a wrong-shaped `alias` is a declaration error, not a path; `command X =` with no path is a path statement; `;` does not end a statement, and a comment starts at the first unquoted `#`.
-  - Completion works on later lines of a block and inside an inline `{ … }` body, and counts argument slots the way the parser binds them.
-  - `true`, `false` and `none` at the start of a statement are expressions (they failed as unknown paths); `in` and `do` there are a parse error.
-  - `shell.complete(…, true)` reports `truncated` when candidates were dropped.
-- **Annotation records are built from value maps** — `job_annotate` escapes the kind and attaches the record to the job it was resolved for; the records on the wire are unchanged.  An assert's message is no longer cut at 512 bytes.
-- **`files.cp` takes `recursive=true`** instead of a `-r` string argument; `files.partmap` drops its `--json` argument, which never changed the output.
-- **Member docs complete** — the doc lint's allow-list is empty on every model.
-  - Defaults are declared rather than written into docs; `help` prints them as `(default …)`, and computed ones read `omitted: …`.
-  - Every basic-tier run, storage and debug method has examples, and results that need it have a `Returns:` line; the lint checks that each example resolves against the live tree.
-  - `memory.dump` documents its real default count (64, not 16).
-  - `machine.boot`'s unset fields no longer show placeholder defaults (`""`, `0`, `255`) in `help` and argument forms.
-- **File-path completion follows `VAL_PATH`** — a string argument completes against the filesystem when it is declared `VAL_PATH`, no longer when its name contains `path`, `src`, `dst`, `file` or `dir`; object-path arguments such as `alias.add path` stop offering files.
-- **Object-model internals restructured** — paths, `meta.members` and shell behaviour are unchanged, except as listed.
-  - A collection is one `collection_desc_t` (entry class; by index and/or by key, with a `next_key` iterator) named by its container's `entries` member; meta, lint, completion and `count` read it, not member names.  `object_collection_new` builds a plain container from the descriptor, and `object_cache_t` is the one lazy entry cache (by index or key) in place of entry pools and hand-kept arrays.
-  - One tree walk (`object_walk`) with canonical paths drives the doc lint; the per-class lint rules live beside the class validator and are checked once per class.
-  - An optional argument with no default that a call skips reaches the method as `none`, also before a later named argument; `obj_arg_unset` is gone.  A computed default is declared as `default_doc`.  In `meta.members`, an empty-string default now reads `null`.
-  - `VAL_RO` is gone: an attribute is read-only when it has no setter.
-  - Every `space` argument (`machine.cpu.mmu.peek`, `machine.memory.peek.bytes`) is the enum `logical` / `physical`; `machine.boot`'s `rom`, `rom2`, `vrom` and `prom` are file paths (`VAL_PATH`).
-  - `files.images`, `machine.nubus` and `machine.pci` are installed by their own subsystems through root install hooks.
-- **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
-  - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).
-  - The image-VFS mount cache is the collection `files.mounts[n]`, indexed by a never-reused mount serial; `storage.mounts` / `storage.list_partitions` are gone and `storage.unmount(path)` is `files.mounts[files.mounts.find(path)].unmount()`.
-  - `find.*` → `debug.find.*`; `debug.log(…)` → `log.set(…)`; `debug.log_levels()` → `log.levels`; each category is also an object, `log.category["scsi"].level = 5`.
-  - `machine.models` / `machine.profile(m)` / `machine.nubus.cards()` / `machine.pci.cards()` / `machine.vrom` / `machine.prom` → `catalog.models` / `catalog.profile(m)` / `catalog.nubus_cards` / `catalog.pci_cards` / `catalog.vroms` / `catalog.proms`; `machine.nubus` and `machine.pci` exist only on a machine with that bus.
-  - `shell.aliases`, `shell.alias_set`, `shell.alias_unset` are removed (use `shell.alias.list/add/remove`).
-  - `scheduler.mode` is an enum of `paced`, `accelerated`, `turbo`; the aliases `real`, `realtime`, `hw`, `hardware`, `accel`, `max` are no longer accepted there, by `--speed=`, or by `?speed=`.
-  - Collection entries and lookup-backed children report their path (`machine.scsi.device[3].image`, `log.category["scsi"]`); new core events `state:machine_booted` and `notify:media`.
-- **The ADB mouse reports only what is new** — like a real mouse, it answers a poll only after motion or a button change: a held button is reported once, not on every poll, and an aborted register read (Talk R3) no longer makes it answer the next one.  The 1 kHz MTemp guard that re-pinned the cursor after `mouse.move … "global"` is removed; a global position now holds by itself.
+## [v0.9.1] — 2026-10-09
 
 ### Fixed
-- **The emulator starts in Safari** — on a static host (GitHub Pages) the page is cross-origin isolated by its service worker, which sent `Cross-Origin-Embedder-Policy: credentialless`; Safari does not support that policy, so the page was never isolated, had no `SharedArrayBuffer`, and every start ended in "the emulator worker did not start within 30 s". Browsers without `credentialless` now get `require-corp`, and a Safari that registered the old worker picks up the new one and reloads once.
-- **Grabbing the mouse works in Safari** — clicking the screen asked for pointer lock from the emulator's worker thread, where the request reached the page without the click's user gesture and Safari refused it. The page now asks for the lock itself, inside the click.
-- **Find File on an AppleShare volume (System 7.5)** — searching "on mounted servers" lists each match once, with its path. It found nothing in folders the Mac had never opened, dropped the last matches (they come back with the end-of-search code, which the server sent without its data — FPRead's last bytes were lost the same way), and then reported a found item "missing" because the server answered its ID check with the wrong error code (#169).
-- **Save State of a machine with a hard disk** — saving and re-opening it (Open Checkpoint, or a drop) takes seconds rather than many minutes: the checkpoint file is buffered, and the restored disk is written in large runs instead of a filesystem call per 512-byte block. A Save State of a disk that was a bare HFS volume (wrapped with a partition map and the GSDisk driver) now restores correctly where the disk image is no longer stored, such as another browser; it used to come back unwrapped, and the Mac reported "The System file on this startup disk may be damaged".
+- **Disk conversion on Windows hosts** — storing a downloaded or dropped disk as UDIF ("Compressing…") took minutes in Windows browsers: the image was read one 512-byte block at a time, and each file access is slow there. Images are now read, written and verified in large pieces (a 51 MB disk: from 2–3 minutes to about 10 s; a 20 MB disk: 41,886 file reads down to 87).
+- URL boot downloads a Mac archive once: when the disk inside a `.sit` has to be unpacked first (a Disk Copy 6 image), the archive already downloaded is used instead of being fetched again.
+
+## [v0.9.0] — 2026-10-08
+
+### Added
+- **PowerPC: the 601, 604 and 750 (G3) CPU cores** — with each model's MMU (BATs, segments, hashed page table), timebase, and little-endian mode on the 604.
+- **Power Macintosh 6100, 7100 and 8100** (PDM) — HMC, BART and NuBus slots, SWIM III floppy, CD bay. Boots System 7.5 – 7.6 and Mac OS 8.1 – 9.0.4. **Copland D11E4 boots to the Finder** on the 7100.
+- **Power Macintosh 7500, 8500 and 9500** (TNT) — Hammerhead, Bandit, Grand Central, DBDMA, Cuda. Boots System 7.6 and Mac OS 8.1.
+- **Power Macintosh G3 (beige)** (Gossamer, `pmg3dt` / `pmg3mt`) — Grackle, Heathrow, MESH, the on-board Rage Pro; Mac OS 9.2.1 installs from CD and boots.
+- **Apple Network Server 500 and 700** — Open Firmware and the 53C825 SCRIPTS engine; AIX 4.1.5 installs and boots, as does Windows NT 4.0 for PowerPC.
+- **MkLinux DR3** boots on the 6100/7100/8100 and the 7500.
+- **PCI** — a generic PCI bus and card architecture beside NuBus, with the Apple Accelerated PCI Graphics Card (ATI Mach64 GX, run from its own FCode ROM) and the **3dfx Voodoo2** (Glide and Quake render; optional WebGPU rasteriser as `voodoo2_webgpu`).
+- **LaserWriter printing to PDF** — a PostScript printer on AppleTalk per machine, interpreted by EfterScript's platen; LaserWriter 8 prints, with a PDF viewer and printer status in the web UI.
+- **ImageWriter printing to PDF** — ImageWriter and ImageWriter II on a Mac serial port, the ImageWriter II with LocalTalk Option on AppleTalk (in the Chooser beside the LaserWriter), and an ImageWriter on the Lisa's Serial A, so the Lisa Office System prints. The guest's unmodified drivers print with the printers' own fonts, graphics modes, colour ribbons and flow control; selectable in the New Machine dialog.
+- **AppleTalk PPC Toolbox and Apple events** (ADSP) for scripted guest control, and a complete **AppleShare (AFP) server**; IIfx and Quadra 900/950 get AppleTalk through the SCC IOP.
+- **Floppy on the Quadra 840AV and Centris 660AV** — the New Age controller, so the AV machines read, write, format and boot from floppies.
+- **Disk images** — UDIF (`.dmg`) read and write; **UDIF is now the stored format** (streamed import, compressed, compact deltas); bare HFS volumes and driverless partitioned disks (such as many archive.org images) boot as SCSI disks; LisaEm ProFile images attach as they are; one byte-source model for images, filesystems and archives (ISO 9660 and MFS in the image VFS).
+- **URL boot** — ROMs and disks fetched from any CORS-enabled URL, also from inside a `.zip` or `.sit` (`…/x.zip/<member>`); download progress, and a disk downloaded once is reused.
+- **Machine configuration** — one configuration tree per model drives `machine.boot`, URLs and one New Machine dialog; 24/32-bit addressing is an option.
+- **Object model, console and command browser** — a self-describing tree (docs, types, defaults); a new Terminal console (replacing xterm.js) with syntax highlighting, completion, signature hints and object links; a structural command browser; SYSTEM-tab editing; shell **commands** (`ls`, `cd`, `cp`, `run`, `step`, …).
+- **MMU inspection on every MMU kind** — `machine.cpu.mmu.translate` / `walk` / `map` / `descriptor` on the 68030, 68040, PowerPC and Lisa MMUs, also in the Debug view.
+- **Skins** — Midnight (the new default), Starlight and Aqua, and Platinum redrawn after Mac OS 8; skins are simply light or dark.
+- SCC serial output capture to a file (`machine.scc.<ch>.output`); factory NVRAM on new TNT and G3 machines; three-state screen mode (normal / full screen / no toolbars); complete end-user documentation in `docs/user/`.
+
+### Changed
+- **New threading architecture** — the emulated machine runs alone on its thread; the shell and host I/O (copies, exports, downloads, checkpoint writes) run on their own threads and talk to it through a mailbox, so the Mac keeps running during them (a 192 MB copy no longer freezes it for seconds).
+- **Object model reorganised** (no compatibility aliases) — root is `machine scheduler checkpoint files debug log shell catalog appletalk`; `storage`, `vfs`, `archive` merge into `files`; `machine.models`/`profile` move to `catalog`; `find` → `debug.find`; `debug.log` → `log`.
+- **Reset levels** — `machine.restart` power-cycles in place; new `machine.rebuild`. Machines build beside the running one and swap (no more staged state).
+- **ROM identity** is the ROM's own verified checksum, from one table of every known ROM.
+- Mouse and ADB reworked — the guest cursor follows the host pointer without lag; the ADB mouse reports only changes, as real hardware does.
+- Code-review sweep across machines, floppy, SCSI, video, chipsets, CPU/MMU, I/O, storage, network, frontend and build.
+
+### Fixed
+- Safari: the emulator starts on static hosts, and grabbing the mouse works.
+- Save State with a hard disk saves and opens in seconds, and a wrapped volume restores wrapped.
+- Mac OS 8.1 crash on mouse move on the PDM machines; the 6100 with one SIMM bank; the 7500's sound; System 7.5.3 on the 7500; AV memory banks.
+- CD-ROM drives present 2048-byte blocks; trimmed archive.org HFS volumes open at their claimed size; "Save image…" takes seconds instead of minutes.
+- System 7.5 Find File on AppleShare volumes; LaserWriter jobs kept past a clean close.
+- A long list of open bug tickets and web-UI fixes.
 
 ## [v0.8.0] — 2026-08-11
 
@@ -118,9 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell and terminal UX: state-aware prompt, working tab completion, quieter checkpoints, persistent history.
 
 ### Fixed
-- **Power Macintosh 6100 with one SIMM bank** — at 10, 16 (the default) and 40 MB the 6100 played its chime and then stayed black: with SIMM bank 2 empty the memory controller now also decodes bank 1 right after the soldered 8 MB, where the ROM records it. New test `pdm-6100-single-bank`.
-- **Web UI styling leftovers** — the drop-to-open overlay fades in and out (it appeared abruptly); log lines and the console take their colours from the `--gs-log-*` and `--gs-console-*` tokens, so a skin can set them; the rename, Create Image, SYSTEM argument and preview-notice dialogs use the shared form primitives (`Field`, `FormGrid`, `Hint`, `Link`); `code`, `kbd` and `strong` in empty states get base styles; the unused `port` and `empty` icons are gone. Sixteen design tokens nothing read are gone (the intent `-border` and most `-on-solid` tokens, two debugger colours, four unused scale steps, three unused component knobs), and the token lint now fails on an unread token or a literal opacity.
-- **Contrast** — the warning icon on a toast is readable in the light skins (Starlight, Platinum, Aqua, Workbench Light: a darker amber), and Workbench's danger red is a step darker so a danger button's white label meets 4.5:1.
 - The emulator defect ledger is closed: 11 of 11.
 - 68020+ bit-field conformance, inverted `FMOVEM.X` direction for control-mode EAs, `CHK` N-flag, `MOVES` same-register store, and aborted writes on extension-word fetch faults.
 - IIfx/SWIM IOP: 24-bit master-pointer flags no longer abort the Mac OS 7.6 Installer, which now installs end to end.

@@ -81,8 +81,8 @@ def row_iix_824gc_seat() {
 # JMFB at 13" RGB 640x480, 1 bpp — the sense code and slot-PRAM sister come
 # from the shared seeding idiom.
 def row_iix_701_fd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$sys_701}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
@@ -111,8 +111,8 @@ def row_iix_701_fd() {
 # portrait sense applies to the card it names, and without it the row would
 # run on the slot's default card.
 def row_iix_portrait_603() {
-    machine.rtc.time = 3000000000
     machine.boot model="iix" ram=4096 video_card="mdc_8_24" video_sense=1 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$sys_603}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
@@ -141,9 +141,9 @@ def row_iix_portrait_603() {
 # internal bay, then insert a second disk in the EXTERNAL bay and confirm
 # it mounts with no system error (SysErr $AF0 stays 0).
 def row_iix_71_extfd() {
-    machine.rtc.time = 3000000000
     # The second internal floppy bay ships empty: this row fits a drive.
     machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6 rom="${$ROM}" config="{\"floppies\":{\"fd1\":\"hd\"}}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
@@ -183,8 +183,8 @@ def row_iix_71_extfd() {
 # retyped.
 
 def gc_boot_1bpp(label) {
-    machine.rtc.time = 3000000000
     machine.boot model="iix" ram=8192 video_card="824gc" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     return $label
 }
 
@@ -306,10 +306,10 @@ def row_iix_jmfb_sweep() {
 # mechanism differs. Verified the image is host-portable first: IIx and IIcx
 # settle on the byte-identical frame from this image with no seeding.
 def row_iix_75_hd() {
-    machine.rtc.time = 3000000000
     # video_sense named too: the sweep above leaves sense $0 (21" RGB, 1152
     # wide) staged, and this row is a 640x480 cell.
     machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 400000000
     wait_stable(1500000000)

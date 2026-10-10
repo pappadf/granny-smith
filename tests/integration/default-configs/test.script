@@ -1,15 +1,29 @@
 # Default configurations boot (see config.mk).
 
-# Boot `model` from `rom` with its default configuration and run `n`
+include "../lib/mac.script"
+
+# Boot `model` from `rom` with its default configuration and run up to `n`
 # instructions: the storage the default document names, a screen, pixels.
+# `n` is a ceiling: the row polls in tenths of it and stops at the first
+# drawn frame.
 def default_boots(model, rom, n) {
     machine.boot model="${$model}" rom="../../data/roms/${$rom}"
     assert machine.id == $model "${$model}: not built"
     let want = len(catalog.default_config($model).storage)
     assert len(machine.storage) == $want "${$model}: ${len(machine.storage)} storage devices, the default document has ${$want}"
-    scheduler.run $n
+    let step = $n / 10
+    let spent = 0
+    while $spent < $n {
+        scheduler.run $step
+        $spent = $spent + $step
+        # (try(): a machine early in its bring-up may not have a screen yet.)
+        let w = try(machine.screen.width, 0)
+        let sum = try(machine.screen.checksum(), 0)
+        if $w > 0 && $sum != 0 { break }
+    }
     assert machine.screen.width > 0 "${$model}: no screen"
     assert machine.screen.checksum() != 0 "${$model}: nothing drawn after ${$n} instructions"
+    report_perf("default-configs/${$model}", $spent)
 }
 
 default_boots("plus", "plus-v3-4d1f8172.rom", 20000000)

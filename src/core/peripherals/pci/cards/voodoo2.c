@@ -3088,6 +3088,33 @@ static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
+// Swap the raster backend in place: fence and join the old one, then build
+// the new one on the same target.  The backends are equivalent by contract
+// (queue order is submission order, every observation point fences), so a
+// run can switch at any instruction boundary; tests use it to replay one
+// restored checkpoint under each backend.  The WebGPU takeover holds
+// pixels outside the shadow, so it neither gives up nor takes the card
+// here.
+static DEF_SETTER(regs_attr_raster_set) {
+    voodoo2_t *v = node_card(self);
+    char kind[8];
+    snprintf(kind, sizeof(kind), "%s", in.s ? in.s : "");
+    value_free(&in);
+    if (!v)
+        return val_err("regs.raster: no card");
+    if (strcmp(kind, "thread") != 0 && strcmp(kind, "sw") != 0 && strcmp(kind, "null") != 0)
+        return val_err("regs.raster: %s is not one of thread, sw, null", kind);
+    if (strcmp(v2_raster_name(v->raster), "webgpu") == 0)
+        return val_err("regs.raster: the webgpu backend cannot be swapped at run time");
+    v2_raster_sync(v->raster);
+    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
+    if (!next)
+        return val_err("regs.raster: could not create the %s backend", kind);
+    v2_raster_destroy(v->raster);
+    v->raster = next;
+    v2_raster_state_dirty(v->raster);
+    return val_none();
+}
 static DEF_GETTER(regs_attr_gpu_engaged) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_raster_presents(v->raster));
@@ -3215,8 +3242,8 @@ static const member_t regs_members[] = {
      .attr = {.type = VK_UINT, .get = regs_attr_tmu_size}                                                                                                                                                               },
     {.kind = MK_ATTR,
      .name = "raster",
-     .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\")",
-     .attr = {.type = VK_STRING, .get = regs_attr_raster}                                                                                                                                                               },
+     .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\"); "
+            "assigning thread, sw or null swaps the backend in place",                                             .attr = {.type = VK_STRING, .get = regs_attr_raster, .set = regs_attr_raster_set}                    },
     {.kind = MK_ATTR,
      .name = "gpu_engaged",
      .doc = "True while the WebGPU takeover draws and presents the card's frames (raster=webgpu, monitor driven)",

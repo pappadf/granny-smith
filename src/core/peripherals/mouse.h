@@ -38,6 +38,10 @@ void mouse_update(mouse_t *restrict mouse, bool button, int dx, int dy);
 // Injects movement deltas without changing the current button state
 void mouse_move(mouse_t *restrict mouse, int dx, int dy);
 
+// True while motion counts are still being played out to the guest, or a
+// button level is still inside its hold (or queued behind one)
+bool mouse_input_pending(const mouse_t *mouse);
+
 // === Routing mode ===========================================================
 //
 // The one parser for the mouse.move / mouse.click `mode` argument, shared

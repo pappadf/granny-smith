@@ -25,7 +25,7 @@
 // is where byte-exact goldens belong. This spec covers what only a real
 // browser can: getUserMedia, the heap transport, and the UI.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
@@ -37,6 +37,8 @@ const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 // Chromium's fake camera. Per-spec launchOptions REPLACE the config array,
 // so the swiftshader flags (web2 will not mount without WebGL2) are re-listed.
 test.use({
+  // Real-time media feeds the guest: keep web2's default pacing.
+  gsSpeed: null,
   launchOptions: {
     args: [
       '--use-gl=angle',

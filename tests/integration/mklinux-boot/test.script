@@ -110,12 +110,12 @@ def wait_for(golden, ceiling) {
 # any difference at all is MkLinux writing to /dev/sda6.
 def prove_root_is_mounted(model) {
     machine.scsi.device[0].image.export "${$WORK_DIR}/${$model}-at-login.img"
-    machine.adb.keyboard.type "root\n"
-    scheduler.run 250000000
-    machine.adb.keyboard.type "mklinux\n"
-    scheduler.run 800000000
-    machine.adb.keyboard.type "sync\n"
-    scheduler.run 700000000
+    # Each line runs until the keys are taken and the console holds still
+    # (the old fixed budgets are the ceilings): the password prompt, the
+    # shell's prompt after the login, and the prompt back after sync.
+    type_settle("root\n", 10000000, 250000000)
+    type_settle("mklinux\n", 10000000, 800000000)
+    type_settle("sync\n", 10000000, 700000000)
     machine.scsi.device[0].image.export "${$WORK_DIR}/${$model}-after-sync.img"
     let moved = files.path_compare("${$WORK_DIR}/${$model}-at-login.img", "${$WORK_DIR}/${$model}-after-sync.img")
     echo "${$model}: the disk moved at offset ${$moved} between the login prompt and sync"
@@ -148,7 +148,7 @@ def row_pm7100() {
     # the software that consumes it.  The countdown line is masked — it is a
     # live clock — which is why this one is a match-with-mask and not a
     # wait_match.
-    scheduler.run 450000000
+    run_until_match_ex("booter-splash.png", 300, 420, 340, 570, 450000000, 11000000)
     check_ex("booter-splash.png", 300, 420, 340, 570)
 
     # This row OWNS the login golden, and it captures it on a FIXED budget
@@ -164,7 +164,7 @@ def row_pm7100() {
     # now carries the drive from power-on, empty or not): Linux probes the
     # empty drive and waits out its NOT READY, which moved the prompt's
     # arrival from well inside the old budget to a measured 2.61 G total.
-    scheduler.run 2400000000
+    run_until_match("mklinux-login.png", 2400000000, 60000000)
     check("mklinux-login.png")
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7100: still in the 68k address space"
     assert machine.screen.depth == 8 "pm7100: ${machine.screen.depth} bpp, want 8"
@@ -193,8 +193,9 @@ def row_pm8100() { ride_to_login("pm8100", 40960) }
 # the login typing lands nowhere, nothing is written, and prove_root_is_mounted
 # fails loudly.  Measured on this image: the 68k address space is still
 # answering at 0.5 G and gone by 1.0 G, and the console reaches its final state
-# by 2.0 G (screen checksum identical at 2.0, 2.5 and 3.0 G).  3 G is the
-# margin on that.
+# by 2.0 G (screen checksum identical at 2.0, 2.5 and 3.0 G).  So the row runs
+# 2 G and then waits for the console to hold still (up to 1 G more, the old
+# 3 G total).
 #
 # Do NOT convert this back into a poll on the address-space check.  Written
 # that way it broke on the first iteration and reported a hand-off 20 M
@@ -204,7 +205,8 @@ def row_pm8100() { ride_to_login("pm8100", 40960) }
 # assertion AFTER the run it says exactly what it should.
 def row_pm7500() {
     power_on_tnt("pm7500", 32768)
-    scheduler.run 3000000000
+    scheduler.run 2000000000
+    wait_stable(1000000000)
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7500: still in the 68k address space — the Booter never handed off"
     assert machine.screen.depth == 32 "pm7500: ${machine.screen.depth} bpp, want 32"
     prove_root_is_mounted("pm7500")

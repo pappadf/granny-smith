@@ -92,7 +92,10 @@ typedef struct {
 
 // Read `len` bytes at `off` of the ProFile-order view: each 532-byte block is
 // its 20 tag bytes, then its 512 data bytes, both taken from the logical
-// block the interleave puts there.
+// block the interleave puts there.  The interleave only reorders blocks
+// within a group of LISAEM_INTERLEAVE, so a group is read whole -- its data
+// and its tags, two reads -- and assembled here: a host file is read in a
+// few large pieces rather than twice per block.
 static int64_t lisaem_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     lisaem_src_t *m = s->ctx;
     uint64_t size = (uint64_t)m->blocks * LISAEM_BLOCK;
@@ -101,29 +104,38 @@ static int64_t lisaem_read(gs_source_t *s, uint64_t off, void *buf, size_t len) 
     if (len > size - off)
         len = (size_t)(size - off);
     uint64_t tags_at = DISKCOPY_HEADER_SIZE + (uint64_t)m->blocks * 512;
+    uint8_t data[LISAEM_INTERLEAVE * 512];
+    uint8_t tags[LISAEM_INTERLEAVE * LISAEM_TAG_BYTES];
     size_t done = 0;
     while (done < len) {
         uint64_t pos = off + done;
-        uint32_t block = (uint32_t)(pos / LISAEM_BLOCK);
-        uint32_t within = (uint32_t)(pos % LISAEM_BLOCK);
-        uint64_t logical = lisaem_logical_block(block);
-        uint64_t from;
-        size_t n;
-        if (within < LISAEM_TAG_BYTES) {
-            from = tags_at + logical * LISAEM_TAG_BYTES + within;
-            n = LISAEM_TAG_BYTES - within;
-        } else {
-            from = DISKCOPY_HEADER_SIZE + logical * 512 + (within - LISAEM_TAG_BYTES);
-            n = LISAEM_BLOCK - within;
+        uint32_t group = (uint32_t)(pos / (LISAEM_BLOCK * LISAEM_INTERLEAVE)) * LISAEM_INTERLEAVE;
+        int rc = gs_source_read_exact(m->file, DISKCOPY_HEADER_SIZE + (uint64_t)group * 512, data, sizeof data);
+        if (!rc)
+            rc = gs_source_read_exact(m->file, tags_at + (uint64_t)group * LISAEM_TAG_BYTES, tags, sizeof tags);
+        if (rc)
+            return done ? (int64_t)done : rc;
+        // Copy what the request wants of this group, block by block.
+        uint64_t group_end = (uint64_t)(group + LISAEM_INTERLEAVE) * LISAEM_BLOCK;
+        while (done < len && off + done < group_end) {
+            pos = off + done;
+            uint32_t block = (uint32_t)(pos / LISAEM_BLOCK);
+            uint32_t within = (uint32_t)(pos % LISAEM_BLOCK);
+            uint32_t slot = lisaem_logical_block(block) - group;
+            const uint8_t *from;
+            size_t n;
+            if (within < LISAEM_TAG_BYTES) {
+                from = tags + slot * LISAEM_TAG_BYTES + within;
+                n = LISAEM_TAG_BYTES - within;
+            } else {
+                from = data + slot * 512 + (within - LISAEM_TAG_BYTES);
+                n = LISAEM_BLOCK - within;
+            }
+            if (n > len - done)
+                n = len - done;
+            memcpy((uint8_t *)buf + done, from, n);
+            done += n;
         }
-        if (n > len - done)
-            n = len - done;
-        int64_t got = gs_source_read(m->file, from, (uint8_t *)buf + done, n);
-        if (got < 0)
-            return done ? (int64_t)done : got;
-        if ((size_t)got != n)
-            return done ? (int64_t)done : -EIO;
-        done += n;
     }
     return (int64_t)done;
 }

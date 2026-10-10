@@ -948,6 +948,123 @@ TEST(storage_v1_delta_still_opens) {
     teardown_sandbox();
 }
 
+// A source that passes reads through to its parent and counts them.
+static int g_base_reads;
+static int64_t counting_base_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    g_base_reads++;
+    return gs_source_read(s->ctx, off, buf, len);
+}
+static uint64_t counting_base_size(gs_source_t *s) {
+    return gs_source_size(s->ctx);
+}
+static const char *counting_base_key(gs_source_t *s) {
+    return gs_source_key(s->ctx);
+}
+static gs_tier_t counting_base_tier(gs_source_t *s) {
+    return gs_source_tier(s->ctx);
+}
+static void counting_base_close(gs_source_t *s) {
+    (void)s; // the parent reference is the source's own
+}
+static const gs_source_ops_t counting_base_ops = {counting_base_read, counting_base_size, counting_base_key,
+                                                  counting_base_tier, counting_base_close};
+
+// storage_read_blocks over the whole disk, and over windows that start and
+// end inside modified and unmodified runs, returns what storage_read_block
+// returns block by block.
+static void assert_read_blocks_matches_per_block(storage_t *storage, uint64_t blocks) {
+    size_t size = (size_t)blocks * STORAGE_BLOCK_SIZE;
+    uint8_t *want = malloc(size), *got = malloc(size);
+    ASSERT_TRUE(want != NULL && got != NULL);
+    for (uint64_t lba = 0; lba < blocks; lba++)
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want + lba * STORAGE_BLOCK_SIZE));
+    ASSERT_OK(storage_read_blocks(storage, 0, got, (size_t)blocks));
+    ASSERT_TRUE(memcmp(want, got, size) == 0);
+    static const uint64_t starts[] = {0, 1, 6, 199, 250, 4095, 8190, 8999, 18999};
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        if (starts[i] >= blocks)
+            continue;
+        uint64_t n = blocks - starts[i] < 300 ? blocks - starts[i] : 300;
+        memset(got, 0xEE, size);
+        ASSERT_OK(storage_read_blocks(storage, (size_t)starts[i] * STORAGE_BLOCK_SIZE, got, (size_t)n));
+        ASSERT_TRUE(memcmp(want + starts[i] * STORAGE_BLOCK_SIZE, got, (size_t)n * STORAGE_BLOCK_SIZE) == 0);
+    }
+    // Past the end is refused, as storage_read_block refuses it.
+    ASSERT_ERR(storage_read_blocks(storage, (size_t)(blocks - 1) * STORAGE_BLOCK_SIZE, got, 2), STATUS_E_RANGE);
+    free(want);
+    free(got);
+}
+
+TEST(storage_read_blocks_matches_per_block) {
+    const uint64_t blocks = 20000;
+    // A full base, modified in runs, singles and alternating blocks.
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    assert_read_blocks_matches_per_block(storage, blocks);
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+
+    // A base that ends mid-block: the partial block and everything past it
+    // read as zeros.
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, 5000, STORAGE_BLOCK_SIZE, 0x33);
+    ASSERT_TRUE(truncate(BASE_FILE, (off_t)(4999 * STORAGE_BLOCK_SIZE + 200)) == 0);
+    config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    ASSERT_OK(storage_new(&config, &storage));
+    assert_read_blocks_matches_per_block(storage, blocks);
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+
+    // No base at all.
+    setup_sandbox();
+    config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    ASSERT_OK(storage_new(&config, &storage));
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// An unmodified run is one read of the base, however many blocks it spans
+// (a disk image converted or exported reads its file in large pieces).
+TEST(storage_read_blocks_one_base_read_per_run) {
+    setup_sandbox();
+    const uint64_t blocks = 2048;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x21);
+    gs_source_t *host = gs_source_host(BASE_FILE, NULL);
+    ASSERT_TRUE(host != NULL);
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.base = peel_source_new(&counting_base_ops, host, host);
+    gs_source_release(host);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    gs_source_release(config.base); // storage holds its own reference
+    uint8_t *buf = malloc(blocks * STORAGE_BLOCK_SIZE);
+    ASSERT_TRUE(buf != NULL);
+    g_base_reads = 0;
+    ASSERT_OK(storage_read_blocks(storage, 0, buf, (size_t)blocks));
+    ASSERT_EQ_INT(1, g_base_reads);
+    expect_block(1000, 0x21, buf + 1000 * STORAGE_BLOCK_SIZE);
+    // One modified block in the middle splits the run in two.
+    fill_block(1000, 0x55, buf);
+    ASSERT_OK(storage_write_block(storage, 1000 * STORAGE_BLOCK_SIZE, buf));
+    g_base_reads = 0;
+    ASSERT_OK(storage_read_blocks(storage, 0, buf, (size_t)blocks));
+    ASSERT_EQ_INT(2, g_base_reads);
+    expect_block(1000, 0x55, buf + 1000 * STORAGE_BLOCK_SIZE);
+    expect_block(1001, 0x21, buf + 1001 * STORAGE_BLOCK_SIZE);
+    free(buf);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
@@ -970,5 +1087,7 @@ int main(void) {
     RUN(storage_v2_rollback_truncates_new_slots);
     RUN(storage_v2_reopen_after_crash_is_committed_state);
     RUN(storage_v1_delta_still_opens);
+    RUN(storage_read_blocks_matches_per_block);
+    RUN(storage_read_blocks_one_base_read_per_run);
     return 0;
 }

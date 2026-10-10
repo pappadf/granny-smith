@@ -71,6 +71,8 @@ export async function emulatorModule(): Promise<Record<string, unknown>> {
   return {
     ...actual,
     gsEval: bridge.gsEval,
+    // Progress is the real core's; the answer is the canned one.
+    gsEvalWithProgress: (path: string, args?: unknown[]) => bridge.gsEval(path, args),
     isModuleReady: () => true,
   };
 }

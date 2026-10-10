@@ -882,7 +882,10 @@ the Granny Smith headline, "Downloading the machine's ROM and disks…", and one
 row per file with its name and a progress bar.  The bar fills from the
 response's `Content-Length`; without one (a streamed zip member, a compressed
 response) it is indeterminate, with the bytes received so far.  Rows go
-Waiting → downloading → Unpacking… (a container member) → ✓ size, then
+Waiting → downloading → Unpacking… (a container member) → Compressing ·
+N% (a hard disk or CD staged whole -- a small one, or a Mac archive's
+member -- being written into the store as a UDIF, from `files.convert`'s
+progress; "Storing…" while the result is checked and moved in) → ✓ size, then
 "Starting the machine…" until the core reports it running, when the view
 goes (a later Shut Down shows the ordinary Welcome).  The ROM is fetched
 first; if it cannot be had, or is not a ROM, the disks are not fetched ("Not

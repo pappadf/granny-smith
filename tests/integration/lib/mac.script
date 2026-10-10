@@ -7,6 +7,11 @@
 # TEST_VARS= :
 #
 #   ROW=<label>     run only the row whose label matches (suite row filter)
+#   ROW_SET=<a,b,…> run only the rows named in this comma list ("*" = all);
+#                   a suite split across directories sets it in each
+#                   wrapper's test.script (`let ROW_SET = "…"` before the
+#                   include). ROW= wins over it, so any row of a split
+#                   suite still runs alone from any of its directories.
 #   REGEN=1         capture goldens instead of matching them
 #   KEEP_GOING=1    a failing row records red + continues (nightly mode);
 #                   default is fail-fast (PR mode)
@@ -23,19 +28,23 @@
 
 # --- run-mode bindings (globals; suites read but don't write these) ----------
 let ROW_FILTER = try($ROW, "")
+let ROW_SET = try($ROW_SET, "")
 let REGEN_MODE = try($REGEN, "0")
 let KEEP_GOING_MODE = try($KEEP_GOING, "0")
 let RESULTS_DIR = try($TEST_RESULTS_DIR, ".")
+let FIXTURE_DIR = try($FIXTURES, "")
 let rows_run = 0
 let rows_failed = 0
 let failed_labels = ""
 
 # --- row harness -------------------------------------------------------------
 
-# True when the row filter is empty or names this row.
+# True when the row filter names this row; without one, when the row set
+# is empty or "*" or contains this row.
 def row_on(label) {
-    if $ROW_FILTER == "" { return true }
-    return $ROW_FILTER == $label
+    if $ROW_FILTER != "" { return $ROW_FILTER == $label }
+    if $ROW_SET == "" || $ROW_SET == "*" { return true }
+    return contains(",${$ROW_SET},", ",${$label},")
 }
 
 # Close a row: `r` is try(row_fn(), "FAILED") — none on success. On
@@ -208,6 +217,58 @@ def wait_match(golden, ceiling, step) {
     return $spent
 }
 
+# A fixed budget that ends early when the screen is already the golden.
+# For the screens a stability wait cannot find (a floppy boot's long quiet
+# stretches, a benchmark's blank phases, "Formatting disk..." held for the
+# whole format): verify mode polls every `step` and returns at the first
+# frame that matches `golden` (or after `ceiling`, leaving the caller's
+# check() to fail with the usual diff).  REGEN polls the same way while the
+# golden exists, so both modes run the same timeline and the goldens after
+# this one are captured where verify will look for them; only a golden that
+# does not exist yet gets the whole `ceiling`.  The caller still
+# check()s afterwards.  Returns the instructions spent.
+def run_until_match(golden, ceiling, step) {
+    if $REGEN_MODE == "1" && !have_media($golden) {
+        scheduler.run $ceiling
+        return $ceiling
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        if machine.screen.matches("${$golden}") { return $spent }
+    }
+    return $spent
+}
+
+# A head start and a stability wait that end on `golden`: verify mode polls
+# for the golden every `step`, up to head + ceiling, and the caller's check()
+# fails as usual if it never came.  REGEN does the same while the golden
+# exists (one timeline in both modes); a golden not captured yet gets the
+# `head` budget and a wait for the screen to hold still (up to `ceiling`).  Returns the instructions spent.
+def reach(golden, head, ceiling, step) {
+    if $REGEN_MODE == "1" && !have_media($golden) {
+        scheduler.run $head
+        return $head + wait_stable($ceiling)
+    }
+    return run_until_match($golden, $head + $ceiling, $step)
+}
+
+# run_until_match, comparing outside the rectangle check_ex() excludes.
+def run_until_match_ex(golden, top, left, bottom, right, ceiling, step) {
+    if $REGEN_MODE == "1" && !have_media($golden) {
+        scheduler.run $ceiling
+        return $ceiling
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        if machine.screen.matches("${$golden}", $top, $left, $bottom, $right) { return $spent }
+    }
+    return $spent
+}
+
 # Run until the screen checksum is unchanged for 3 consecutive polls
 # (the field-proven iifx-install-76 settle()), up to `ceiling`.
 def wait_stable(ceiling) {
@@ -227,6 +288,22 @@ def wait_stable(ceiling) {
         $previous = $now
     }
     return $spent
+}
+
+# Run until the Finder is the current application (low-memory CurApName,
+# $910, reads the Pascal string "Finder"), then until the screen holds
+# still: the boot-to-desktop wait.  It replaces a fixed head start before
+# wait_stable (a stability wait alone can settle on a quiet moment of the
+# extension parade), so it ends as soon as the desktop is up.  `ceiling`
+# bounds each half.
+def wait_desktop(ceiling) {
+    let spent = 0
+    while !(try(machine.cpu.mmu.peek(0x910, 4), 0) == 0x0646696E && try(machine.cpu.mmu.peek(0x914, 2), 0) == 0x6465) {
+        assert $spent < $ceiling "wait_desktop: the Finder never became the current application within ${$ceiling}"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+    }
+    return $spent + wait_stable($ceiling)
 }
 
 # Run until the screen checksum differs from `before` (menu opened,
@@ -250,6 +327,164 @@ def wait_global(name, want, ceiling) {
         $spent = $spent + 5000000
     }
     return $spent
+}
+
+# --- run until the guest has taken the input --------------------------------
+#
+# The input side of the waits above.  A script hands input to the machine
+# at once, but the guest takes it on its own schedule: a serial line
+# delivers one character per character time (scc.c, line_in) and the ADB
+# mouse one report per poll (adb.c, mouse_queue).  These run the machine in
+# small slices until the input is consumed, or until the guest has said
+# what the caller waits for, instead of a budget sized for the slowest
+# machine.  Each slice is a host round trip of about a millisecond on top
+# of the emulation, so the slices start small and double, which bounds the
+# overshoot at the time the wait itself took.
+
+# Run until the guest has taken every pending host mouse event (motion and
+# button changes, queued ones included), up to `ceiling`.  Returns the
+# instructions spent.
+def wait_mouse_taken(ceiling) {
+    let spent = 0
+    while machine.adb.mouse.pending {
+        assert $spent < $ceiling "wait_mouse_taken: the guest did not take the mouse input within ${$ceiling}"
+        scheduler.run 250000
+        $spent = $spent + 250000
+    }
+    return $spent
+}
+
+# Run until the guest has taken every key keyboard.type queued (scheduled
+# transitions and the keyboard's own queue), up to `ceiling`.  Returns the
+# instructions spent.
+def wait_keys_taken(ceiling) {
+    let spent = 0
+    while machine.adb.keyboard.pending {
+        assert $spent < $ceiling "wait_keys_taken: the guest did not take the typed keys within ${$ceiling}"
+        scheduler.run 250000
+        $spent = $spent + 250000
+    }
+    return $spent
+}
+
+# A budget that ends early once the screen holds still: the guest's reaction
+# to an input (a menu closing, a dialog drawn, a window opened) has finished
+# when the screen has not changed for a third of a second (sampled every 5
+# ticks, 4 equal samples).  Never longer than `ceiling`, the fixed budget it
+# replaces, and never a failure at it: a screen that keeps moving (a
+# blinking caret, an animation) simply runs the old budget.  Not for waits
+# whose end the screen does not show (disk or network work behind a static
+# window) -- those need their own condition.  Returns the instructions spent.
+def settle(ceiling) {
+    let spent = 0
+    let still = 0
+    let previous = machine.screen.checksum()
+    let t = debug.mac.globals.read("Ticks")
+    while $still < 4 && $spent < $ceiling {
+        scheduler.run 200000
+        $spent = $spent + 200000
+        if debug.mac.globals.read("Ticks") >= $t + 5 {
+            $t = debug.mac.globals.read("Ticks")
+            let now = machine.screen.checksum()
+            if $now == $previous {
+                $still = $still + 1
+            } else {
+                $still = 0
+            }
+            $previous = $now
+        }
+    }
+    return $spent
+}
+
+# settle() for a guest that keeps no Mac OS Ticks (Open Firmware, a
+# diagnostic): the screen is sampled every `step` instructions and has held
+# still once 4 samples agree.  Bounded at `ceiling`, the fixed budget it
+# replaces, without failing there.  Returns the instructions spent.
+def settle_steps(step, ceiling) {
+    let spent = 0
+    let still = 0
+    let previous = machine.screen.checksum()
+    while $still < 4 && $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        let now = machine.screen.checksum()
+        if $now == $previous {
+            $still = $still + 1
+        } else {
+            $still = 0
+        }
+        $previous = $now
+    }
+    return $spent
+}
+
+# Type `text` on the ADB keyboard and run until the guest has taken the keys
+# and the screen has held still (settle_steps), up to `ceiling` -- for a
+# command typed on a console that is the screen.  Returns the instructions
+# spent.
+def type_settle(text, step, ceiling) {
+    machine.adb.keyboard.type("${$text}")
+    let spent = wait_keys_taken($ceiling)
+    return $spent + settle_steps($step, $ceiling)
+}
+
+# Drain and return what serial channel `ch` ("a" or "b") has transmitted.
+def serial_sent(ch) {
+    if $ch == "a" {
+        return machine.scc.a.sent()
+    }
+    return machine.scc.b.sent()
+}
+
+# Characters `receive` sent on serial channel `ch` that the guest has not
+# read yet (still on the line, or in the receive FIFO).
+def serial_rx_pending(ch) {
+    if $ch == "a" {
+        return machine.scc.a.rx_pending
+    }
+    return machine.scc.b.rx_pending
+}
+
+# Type `text` on serial channel `ch` as a terminal on the cable would (one
+# character time apart at the channel's programmed rate) and run until the
+# guest has read all of it, up to `ceiling`.  What the guest transmits
+# meanwhile (its echo) stays in the capture for the caller.  Returns the
+# instructions spent.
+def serial_type(ch, text, ceiling) {
+    let queued = 0
+    if $ch == "a" {
+        $queued = machine.scc.a.receive("${$text}")
+    } else {
+        $queued = machine.scc.b.receive("${$text}")
+    }
+    assert $queued == len($text) "serial_type: the line took ${$queued} of ${len($text)} characters"
+    let spent = 0
+    while serial_rx_pending($ch) > 0 {
+        assert $spent < $ceiling "serial_type: the guest did not read the line within ${$ceiling}"
+        scheduler.run 100000
+        $spent = $spent + 100000
+    }
+    return $spent
+}
+
+# Run until serial channel `ch` has transmitted `needle`, up to `ceiling`,
+# and return everything it transmitted on the way (the caller asserts on
+# it; a reply that never contains `needle` comes back as it stands).
+# Slices start at `step` and double up to 64 times that.
+def run_until_sent(ch, needle, step, ceiling) {
+    let out = ""
+    let spent = 0
+    let slice = $step
+    while !contains($out, $needle) && $spent < $ceiling {
+        scheduler.run $slice
+        $spent = $spent + $slice
+        $out = "${$out}${serial_sent($ch)}"
+        if $slice < $step * 64 {
+            $slice = $slice * 2
+        }
+    }
+    return $out
 }
 
 # --- guest-time choreography -------------------------------------------------
@@ -281,12 +516,63 @@ def run_ticks(n) {
     }
 }
 
+# Run until the guest's cursor task has taken a "global" move: the move
+# sets CrsrNew and the cursor VBL task clears it once it has drawn the
+# cursor at the new spot, within a tick on every machine measured.  Bounded
+# at `ticks` guest ticks, after which it simply goes on: a guest whose
+# cursor task does not use CrsrNew loses nothing against the old fixed wait.
+def wait_cursor(ticks) {
+    let t0 = debug.mac.globals.read("Ticks")
+    let spent = 0
+    while debug.mac.globals.read("CrsrNew") != 0 && debug.mac.globals.read("Ticks") < $t0 + $ticks {
+        assert $spent < ($ticks + 30) * $RUN_TICKS_BUDGET "wait_cursor: Ticks did not advance - has the guest left Mac OS?"
+        scheduler.run 50000
+        $spent = $spent + 50000
+    }
+    return $spent
+}
+
 # Move-press-release SINGLE click at screen coordinates. The move is a real
 # move to somewhere the cursor is not already parked: a same-spot warp emits no
 # ADB motion, so under E-clock-synced ADB the click that follows has no fresh
 # position event to bind to and is dropped. Callers that must click the same
 # button twice therefore step away in between rather than repeating click().
+#
+# The press and release go in back to back: the mouse model holds each
+# button level until the guest has seen it (ADB: one report per transition;
+# quadrature: at least one VBL), so the click arrives whole, and the row
+# runs on as soon as the guest has taken it rather than after a fixed
+# 30 ticks.
 def click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    run_ticks(2)
+}
+
+# Press-release-press-release DOUBLE click at screen coordinates, well inside
+# DoubleTime on every machine.  The two clicks are two ticks apart: with the
+# second press in the same tick as the first release, the Finder (7.5 on the
+# IIci, measured) takes them as two single clicks.
+def double_click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    run_ticks(2)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+}
+
+# The fixed-tick click and double click click() and double_click() used to
+# be (20 ticks after the move, 4 held, 6 after), for rows whose capture is
+# pinned to the boot's exact timeline -- the speech-recognition rows, where
+# which take the recognizer lands moves with any change to it.
+def click_fixed(x, y) {
     machine.adb.mouse.move $x $y "global"
     run_ticks(20)
     machine.adb.mouse.click true
@@ -295,9 +581,7 @@ def click(x, y) {
     run_ticks(6)
 }
 
-# Press-move-release double-click at screen coordinates, inside
-# DoubleTime on every machine.
-def double_click(x, y) {
+def double_click_fixed(x, y) {
     machine.adb.mouse.move $x $y "global"
     run_ticks(20)
     machine.adb.mouse.click true
@@ -401,6 +685,51 @@ def have_media(path) {
 
 # Emit this row's deterministic instruction spend; nightly tooling
 # diffs these against perf-baselines.json.
+# --- checkpoint fixtures (docs/guide/TESTING.md, "Checkpoint fixtures") ------
+# A producer test (config.mk: TEST_PROVIDES := name) saves the machine at a
+# point other tests start from; a consumer (TEST_NEEDS := name) loads it
+# instead of booting there itself.  Only `make test` provides a fixture
+# directory; a test run on its own gets none, so a consumer always has its
+# own way to the same state:
+#
+#   if !fixture_load("ans500-of-prompt") { boot_to_prompt("ans500") }
+#
+# The fixture must be the state that way reaches, byte for byte (the boot is
+# deterministic), or the consumer's assertions would depend on how it ran.
+
+# Save the machine as fixture `name`, when the run has a fixture directory.
+# Written under a temporary name and renamed, so no reader sees part of it.
+def fixture_save(name) {
+    if $FIXTURE_DIR == "" { return false }
+    let f = "${$FIXTURE_DIR}/${$name}.gsc"
+    assert checkpoint.save("${$f}.part") "fixture ${$name}: checkpoint.save failed"
+    files.mv("${$f}.part", $f)
+    echo "fixture: saved ${$name}"
+    return true
+}
+
+# Load fixture `name`; false (and nothing changed) when the run has none.
+def fixture_load(name) {
+    if $FIXTURE_DIR == "" { return false }
+    let f = "${$FIXTURE_DIR}/${$name}.gsc"
+    if !files.path_exists($f) {
+        echo "fixture: ${$name} not available (its producer failed or did not run), booting instead"
+        return false
+    }
+    assert checkpoint.load($f) "fixture ${$name}: checkpoint.load failed"
+    echo "fixture: loaded ${$name}"
+    return true
+}
+
+# The whole test could not run (its media is not in the fetched test data):
+# the "skip:" line the coverage contract reads, and the @@SKIP record the
+# runner turns into `=== SKIP: <test> (<why>) ===` instead of PASS.  `why`
+# starts with the test's name, as the skip: lines always have.
+def skip_test(why) {
+    echo "skip: ${$why}"
+    echo "@@SKIP ${$why}"
+}
+
 def report_perf(row, instr) {
     echo "@@PERF {\"row\":\"${$row}\",\"instr\":${$instr}}"
 }

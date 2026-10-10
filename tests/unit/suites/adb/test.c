@@ -503,6 +503,75 @@ TEST(test_a_held_button_is_reported_once) {
     adb_delete(adb);
 }
 
+// A click quicker than the poll: press and release before any Talk.  The
+// release waits behind the unreported press, so the host reads a press
+// report and then a release report -- not one "up" report that loses the
+// click.
+TEST(test_a_click_between_polls_is_two_reports) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+
+    adb_mouse_event(adb, true, 0, 0);
+    adb_mouse_event(adb, false, 0, 0);
+    ASSERT_TRUE(adb_mouse_input_pending(adb));
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]); // button down
+    ASSERT_TRUE(adb_mouse_input_pending(adb));
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x80, r0[0]); // button up
+    ASSERT_TRUE(!adb_mouse_input_pending(adb));
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    adb_delete(adb);
+}
+
+// Motion that follows a queued release travels with the release, and a
+// double click between polls is four reports in order.
+TEST(test_queued_events_keep_their_order_and_motion) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+
+    adb_mouse_event(adb, true, 0, 0);
+    adb_mouse_event(adb, false, 0, 0);
+    adb_mouse_event(adb, false, 2, 0); // same level: merges into the release
+    adb_mouse_event(adb, true, 0, 0);
+    adb_mouse_event(adb, false, 0, 0);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]);
+    ASSERT_EQ_INT(0x80, r0[1]);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x80, r0[0]);
+    ASSERT_EQ_INT(0x82, r0[1]); // the release carries dx +2
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x80, r0[0]);
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    adb_delete(adb);
+}
+
+// A Flush drops the queued input but the switch ends where the last queued
+// event left it: the next report (on motion) says "up".
+TEST(test_a_flush_keeps_the_last_queued_level) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+    uint8_t out[8];
+    int n = 0;
+
+    adb_mouse_event(adb, true, 0, 0);
+    adb_mouse_event(adb, false, 0, 0);
+    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x01), NULL, 0, out, &n); // Flush, mouse
+    ASSERT_TRUE(!adb_mouse_input_pending(adb));
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+    adb_mouse_event(adb, false, 1, 0);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x80, r0[0]);
+    ASSERT_EQ_INT(0x81, r0[1]);
+
+    adb_delete(adb);
+}
+
 // Run one Talk on the VIA shift-register path and abort it the way the ROM's
 // SRQ scan does: CMD, then straight back to IDLE without fetching a byte.
 static void aborted_via_talk(adb_t *adb, uint8_t cmd) {
@@ -520,6 +589,24 @@ TEST(test_an_aborted_register_talk_does_not_make_the_mouse_answer) {
     aborted_via_talk(adb, (uint8_t)((3 << 4) | 0x0F)); // Talk R3, mouse
     ASSERT_TRUE(!talk_r0(adb, 3, r0));
     aborted_via_talk(adb, (uint8_t)((2 << 4) | 0x0F)); // Talk R3, keyboard
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    adb_delete(adb);
+}
+
+// An aborted Talk of a queued click's press puts the press back in front
+// of the release: the host still reads press, then release.
+TEST(test_an_aborted_talk_keeps_a_queued_click_in_order) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+
+    adb_mouse_event(adb, true, 0, 0);
+    adb_mouse_event(adb, false, 0, 0);
+    aborted_via_talk(adb, TALK_R0(3));
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x80, r0[0]);
     ASSERT_TRUE(!talk_r0(adb, 3, r0));
 
     adb_delete(adb);
@@ -683,8 +770,12 @@ int main(void) {
     RUN(test_a_device_with_srq_off_does_not_interrupt_the_poll);
     RUN(test_the_mouse_refuses_a_handler_it_does_not_implement);
     RUN(test_a_held_button_is_reported_once);
+    RUN(test_a_click_between_polls_is_two_reports);
+    RUN(test_queued_events_keep_their_order_and_motion);
+    RUN(test_a_flush_keeps_the_last_queued_level);
     RUN(test_an_aborted_register_talk_does_not_make_the_mouse_answer);
     RUN(test_an_aborted_mouse_talk_re_presents_its_report);
+    RUN(test_an_aborted_talk_keeps_a_queued_click_in_order);
     RUN(test_the_extended_mouse_sends_four_bytes);
     RUN(test_wide_deltas_wait_for_register_one);
     RUN(test_register_one_needs_the_extended_handler);

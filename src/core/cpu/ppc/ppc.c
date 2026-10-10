@@ -84,6 +84,7 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     // pair exists to prevent.  reserve_addr is deliberately left alone: the
     // reservation-granule compare needs it.
     p->reserve = 0;
+    p->dozing = 0; // an interrupt is what ends nap/doze (604UM §1.4, 750UM §10.2)
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
     // LE is replaced by a copy of ILE (PEM Table 6-x "MSR settings on
@@ -1050,11 +1051,41 @@ static void ppc_if_run_sprint(void *ctx, uint32_t *instructions) {
     ppc_run((ppc_t *)ctx, instructions);
 }
 
-// The 601 never parks: PowerPC has no STOP-equivalent the Mac uses — the
+// HID0 power-mode bits (750UM Table 2-4).  Exactly one is meant to be set
+// when software raises MSR[POW]; DOZE and NAP keep the time base and the
+// decrementer running and wake on an external or decrementer interrupt.
+#define PPC_HID0_DOZE 0x00800000u
+#define PPC_HID0_NAP  0x00400000u
+
+// After an mtmsr that raised MSR[POW]: a core that powers down stops
+// fetching until an asynchronous interrupt.  End the sprint at this boundary
+// -- the PC is already past the mtmsr, where the wake-up interrupt's SRR0
+// must point -- and let the scheduler's is_stopped path sleep emulated time
+// to the next event, as it does for the 68K's STOP.  Mac OS 9 idles this
+// way on the G3 thousands of times a boot; running its idle loop instead
+// burns the host for nothing.
+//
+//   604  POW alone enters nap: everything stops but the decrementer, the
+//        time base and the interrupt logic (604UM §1.4).
+//   750  POW enters the mode HID0 selects; DOZE and NAP keep the time base
+//        and decrementer running (750UM §10.2).  SLEEP also stops those,
+//        which the model derives from the scheduler clock and cannot
+//        freeze, so it stays a no-op rather than waking on a decrementer
+//        the hardware would not deliver -- as does POW with no mode set.
+//   601  no MSR[POW] (the mask clears it).
+void ppc_check_power_mode(ppc_t *p) {
+    if (!(p->msr & PPC_MSR_POW))
+        return;
+    if (ppc_is_750(p) ? !(p->hid0 & (PPC_HID0_DOZE | PPC_HID0_NAP)) : !ppc_is_604(p))
+        return;
+    p->dozing = 1;
+    memory_end_sprint(g_bus_error_instr_ptr);
+}
+
+// Stopped only while the core naps or dozes (ppc_check_power_mode).  Otherwise the
 // guest idles in loops, exactly as the real machine burns its CPU.
 static bool ppc_if_is_stopped(void *ctx) {
-    (void)ctx;
-    return false;
+    return ((ppc_t *)ctx)->dozing != 0;
 }
 
 static void ppc_if_poll_interrupt(void *ctx) {

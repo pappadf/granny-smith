@@ -3,12 +3,14 @@
 # 512x342 desktop.
 
 # Click at (x, y)
+include "../lib/mac.script"
+
 def click(x, y) {
     machine.adb.mouse.move($x, $y)
     scheduler.run 2000000
     machine.adb.mouse.click true
-    scheduler.run 2000000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
 }
 
 # File -> Print Directory..., then the quality radio button at x `q` and OK
@@ -52,12 +54,12 @@ scheduler.run 40000000
 machine.adb.mouse.move 470 52
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 
 # Faster

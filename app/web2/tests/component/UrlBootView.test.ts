@@ -105,6 +105,26 @@ describe('UrlBootView', () => {
     expect(container.querySelector('.amount')?.textContent).toContain('3.0 MB');
   });
 
+  it('shows a downloaded disk being compressed into the store, then stored', () => {
+    beginUrlBoot(null);
+    queueUrlFile('hd0');
+    updateUrlFile('hd0', {
+      status: 'storing',
+      received: 40 * 1024 * 1024,
+      total: 40 * 1024 * 1024,
+      stored: { done: 10 * 1024 * 1024, total: 40 * 1024 * 1024 },
+    });
+    const { container } = render(UrlBootView);
+    const bar = container.querySelector('[role="progressbar"]');
+    expect(bar?.getAttribute('aria-valuenow')).toBe('25');
+    expect(container.querySelector('.amount')?.textContent).toContain('Compressing · 25%');
+    // Past the last byte: checked and moved in, with nothing to report.
+    updateUrlFile('hd0', { stored: { done: 40 * 1024 * 1024, total: 40 * 1024 * 1024 } });
+    flushSync();
+    expect(bar?.hasAttribute('data-indeterminate')).toBe(true);
+    expect(container.querySelector('.amount')?.textContent).toContain('Storing…');
+  });
+
   it('says why a failed boot stopped and offers the start screen', async () => {
     beginUrlBoot(null);
     queueUrlFile('rom');

@@ -22,7 +22,7 @@
 // import cancelled midway, or one that runs out of quota, leaves nothing
 // behind -- no stored image, no .part.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as fs from "node:fs";
@@ -30,6 +30,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
 import { gsEvalInPage, scratchFiles } from "../helpers/web2-eval";
+
+// The imports are independent (each test has its own browser context, so its
+// own OPFS and quota, and each worker starts its own image server below), so
+// they run side by side.
+test.describe.configure({ mode: "parallel" });
 
 // GS_COMPACT_IMPORT_MB shrinks the disk for a quick local run.
 const DISK_BYTES =

@@ -110,6 +110,8 @@ static const uint8_t k_mouse_reg1[8] = {'g', 's', 'm', 's', 0x00, 72, 0x01, 0x01
 
 // Keyboard event queue size (ring buffer capacity)
 #define KBD_QUEUE_SIZE 128
+// Mouse events waiting behind an unreported button change (adb_mouse_event)
+#define MOUSE_QUEUE_SIZE 16
 
 // Keyboard idle response: no key event
 #define KBD_NO_KEY 0xFF
@@ -176,6 +178,19 @@ struct adb {
     int mouse_dy;
     bool mouse_button; // current button state (true = pressed)
     bool mouse_data_pending; // set by adb_mouse_event, cleared after auto-poll delivery
+    // The button's level changed and no Talk R0 has carried it yet
+    bool mouse_button_unreported;
+    // Host events that arrived while a button change was still unreported:
+    // each waits its turn, so a press and release quicker than the host's
+    // poll are two reports, not none.  Each entry is the button level and
+    // the motion that came with it (more motion at the same level merges
+    // into the tail).  Empty whenever the host polls faster than the input
+    // changes, which keeps the single-state behaviour exactly.
+    struct {
+        bool button;
+        int dx, dy;
+    } mouse_queue[MOUSE_QUEUE_SIZE];
+    int mouse_queue_head, mouse_queue_count;
     // The host has read Register 1 while the mouse is in handler $04: its
     // driver knows the extended format, so reports may use the wide deltas.
     // MkLinux DR3 selects handler $04 for its middle and right buttons but
@@ -208,6 +223,7 @@ struct adb {
     unsigned int kbd_reply_tail; // kbd_queue.tail snapshot taken before the dequeue
     bool reply_from_mouse; // reply_buf holds freshly-consumed mouse deltas
     int mouse_reply_dx, mouse_reply_dy; // the consumed deltas (for abort restore)
+    bool mouse_reply_unreported; // mouse_button_unreported before the reply (for abort restore)
 
     // The most recently used ADB address, in the IOP ADB Driver ERS's sense:
     // the one that answered the last autonomous auto-poll.  adb_autopoll_next
@@ -643,6 +659,8 @@ static void adb_reset(adb_t *adb) {
     adb->mouse_dy = 0;
     adb->mouse_button = false;
     adb->mouse_data_pending = false;
+    adb->mouse_button_unreported = false;
+    adb->mouse_queue_head = adb->mouse_queue_count = 0;
     adb->mouse_ext_identified = false;
     adb->last_poll_addr = MOUSE_DEFAULT_ADDR;
 
@@ -678,7 +696,14 @@ static void flush_device(adb_t *adb, uint8_t addr) {
         //
         // mouse_button is deliberately NOT cleared: a held button is the
         // switch's state, not buffered input, so the next report (on motion)
-        // still carries it.
+        // still carries it.  For the same reason the queued events' motion
+        // is dropped but the switch ends at the level the last one left.
+        if (adb->mouse_queue_count) {
+            int last = (adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE;
+            adb->mouse_button = adb->mouse_queue[last].button;
+            adb->mouse_queue_head = adb->mouse_queue_count = 0;
+        }
+        adb->mouse_button_unreported = false;
         adb->mouse_data_pending = false;
     } else {
         LOG(2, "flush_device: unknown device at addr %d, ignoring", addr);
@@ -709,6 +734,20 @@ static void prepare_kbd_reply(adb_t *adb) {
 // signed, or 13-bit once an extended-mouse driver has identified the device
 // -- and the remainder stays in the accumulator for subsequent polls.
 static void prepare_mouse_reply(adb_t *adb) {
+    // The last report carried the button's level: the next queued event, if
+    // any, is what this report says
+    if (!adb->mouse_button_unreported && adb->mouse_queue_count) {
+        int i = adb->mouse_queue_head;
+        adb->mouse_button_unreported = adb->mouse_queue[i].button != adb->mouse_button;
+        adb->mouse_button = adb->mouse_queue[i].button;
+        adb->mouse_dx += adb->mouse_queue[i].dx;
+        adb->mouse_dy += adb->mouse_queue[i].dy;
+        adb->mouse_queue_head = (i + 1) % MOUSE_QUEUE_SIZE;
+        adb->mouse_queue_count--;
+    }
+    adb->mouse_reply_unreported = adb->mouse_button_unreported;
+    adb->mouse_button_unreported = false;
+
     bool ext = adb->mouse.handler == MOUSE_HANDLER_ID_EXTENDED;
     int remain_dy, remain_dx, dy, dx;
     if (ext && adb->mouse_ext_identified) {
@@ -749,8 +788,9 @@ static void prepare_mouse_reply(adb_t *adb) {
     adb->mouse_reply_dx = dx;
     adb->mouse_reply_dy = dy;
 
-    // Clear the pending flag if all deltas have been consumed
-    if (remain_dy == 0 && remain_dx == 0)
+    // Clear the pending flag if all deltas have been consumed and no queued
+    // event waits for the next report
+    if (remain_dy == 0 && remain_dx == 0 && adb->mouse_queue_count == 0)
         adb->mouse_data_pending = false;
 }
 
@@ -1278,6 +1318,11 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
         // Restore plain-data state; pointers are re-filled above
         size_t data_size = offsetof(adb_t, via);
         system_read_checkpoint_data(checkpoint, adb, data_size, "adb");
+        // The mouse queue's cursors index its ring and come from a file the
+        // user supplies: out of range, the queued events are dropped
+        if (adb->mouse_queue_head < 0 || adb->mouse_queue_head >= MOUSE_QUEUE_SIZE || adb->mouse_queue_count < 0 ||
+            adb->mouse_queue_count > MOUSE_QUEUE_SIZE)
+            adb->mouse_queue_head = adb->mouse_queue_count = 0;
         // vADBInt was restored as part of the VIA checkpoint; no extra call needed
     } else {
         // Cold boot: no pending data, so deassert SRQ (vADBInt high)
@@ -1471,6 +1516,7 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
                     adb->mouse_reply_dy);
                 adb->mouse_dx += adb->mouse_reply_dx;
                 adb->mouse_dy += adb->mouse_reply_dy;
+                adb->mouse_button_unreported = adb->mouse_reply_unreported;
                 adb->reply_from_mouse = false;
                 adb->mouse_data_pending = true;
             } else {
@@ -1525,15 +1571,52 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key) {
     kbd_enqueue(adb, byte); // tells the transceiver (device_data_arrived)
 }
 
-// Records a host mouse event: updates accumulated deltas and current button state.
-// Deltas are reset to zero after each Talk R0 reply is delivered.
+// The button level the host last asked for: the newest queued event's, or the
+// current one when nothing is queued.
+static bool mouse_latest_button(const adb_t *adb) {
+    if (adb->mouse_queue_count == 0)
+        return adb->mouse_button;
+    return adb->mouse_queue[(adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE].button;
+}
+
+// Records a host mouse event: updates accumulated deltas and current button
+// state.  Deltas are reset to zero after each Talk R0 reply is delivered.
+//
+// A button change the host has not yet polled holds the line: what comes
+// after it waits in mouse_queue and is reported one event per Talk R0, so a
+// click shorter than the poll interval reaches the guest as a press report
+// and then a release report, as a real mouse's would -- its microcontroller
+// reports every transition.  With the single state alone, a release before
+// the next poll overwrote the press and the click never happened.
 void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
     LOG(3, "adb_mouse_event: button=%d dx=%d dy=%d", button, dx, dy);
 
-    bool button_changed = (button != adb->mouse_button);
+    bool button_changed = (button != mouse_latest_button(adb));
+    if (adb->mouse_queue_count || (button_changed && adb->mouse_button_unreported)) {
+        int tail;
+        if (adb->mouse_queue_count && (!button_changed || adb->mouse_queue_count == MOUSE_QUEUE_SIZE)) {
+            // Same level (or no room): more motion for the newest event
+            tail = (adb->mouse_queue_head + adb->mouse_queue_count - 1) % MOUSE_QUEUE_SIZE;
+            adb->mouse_queue[tail].button = button;
+            adb->mouse_queue[tail].dx += dx;
+            adb->mouse_queue[tail].dy += dy;
+        } else {
+            tail = (adb->mouse_queue_head + adb->mouse_queue_count++) % MOUSE_QUEUE_SIZE;
+            adb->mouse_queue[tail].button = button;
+            adb->mouse_queue[tail].dx = dx;
+            adb->mouse_queue[tail].dy = dy;
+        }
+        LOG(3, "adb_mouse_event: queued behind an unreported button change (%d waiting)", adb->mouse_queue_count);
+        adb->mouse_data_pending = true;
+        device_data_arrived(adb);
+        return;
+    }
+
     adb->mouse_button = button;
     adb->mouse_dx += dx;
     adb->mouse_dy += dy;
+    if (button_changed)
+        adb->mouse_button_unreported = true;
 
     // Motion or a button change is new data: the transceiver hears it
     if (dx != 0 || dy != 0 || button_changed) {
@@ -1556,7 +1639,7 @@ void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
 // Injects mouse movement deltas without changing the current button state.
 // Used by set-mouse to move the cursor through the ADB hardware path.
 void adb_mouse_move(adb_t *adb, int dx, int dy) {
-    adb_mouse_event(adb, adb->mouse_button, dx, dy);
+    adb_mouse_event(adb, mouse_latest_button(adb), dx, dy);
 }
 
 // Deltas queued but not yet consumed by a Talk R0 — closed-loop callers
@@ -1564,10 +1647,27 @@ void adb_mouse_move(adb_t *adb, int dx, int dy) {
 // guest's cursor globals) subtract these so corrections queued while the
 // guest is still catching up are not injected twice.
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy) {
+    int sx = adb ? adb->mouse_dx : 0, sy = adb ? adb->mouse_dy : 0;
+    // Motion still queued behind a button change counts too
+    for (int n = 0; adb && n < adb->mouse_queue_count; n++) {
+        sx += adb->mouse_queue[(adb->mouse_queue_head + n) % MOUSE_QUEUE_SIZE].dx;
+        sy += adb->mouse_queue[(adb->mouse_queue_head + n) % MOUSE_QUEUE_SIZE].dy;
+    }
     if (dx)
-        *dx = adb ? adb->mouse_dx : 0;
+        *dx = sx;
     if (dy)
-        *dy = adb ? adb->mouse_dy : 0;
+        *dy = sy;
+}
+
+// True while key transitions wait in the keyboard's queue for a Talk R0.
+bool adb_keyboard_input_pending(const adb_t *adb) {
+    return adb && !kbd_queue_empty(adb);
+}
+
+// True while host mouse input waits for the guest: motion or a button
+// change not yet carried by a Talk R0, or events queued behind one.
+bool adb_mouse_input_pending(const adb_t *adb) {
+    return adb && (adb->mouse_data_pending || adb->mouse_queue_count > 0);
 }
 
 // IOP-based ADB transaction (Macintosh IIfx).  See adb.h for the protocol

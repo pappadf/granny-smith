@@ -203,7 +203,7 @@ if have_media($target) && have_media("${$ssw75}/Install Disk 7.img") && have_med
     phase3_export()
     report_row("7.5", "ariel", "copland-install-phase3 ssw75-floppy-install")
 } else {
-    echo "skip: pm7100-copland-install (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("pm7100-copland-install (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

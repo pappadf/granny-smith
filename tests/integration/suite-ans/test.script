@@ -220,7 +220,7 @@ def row_ans500_diag_floppy() {
     # The utility takes its commands from the ADB keyboard: "2" is "Show the
     # Power-On Self Test results".
     machine.adb.keyboard.type("2\n")
-    scheduler.run 800000000
+    run_until_match("goldens/ans500-diags1.1-640x480x8-post-results.png", 800000000, 20000000)
     check("goldens/ans500-diags1.1-640x480x8-post-results.png")
 
     # "3" runs the complete system test -- the PCI bridges (Bandit and Grand
@@ -231,11 +231,17 @@ def row_ans500_diag_floppy() {
     # real chip delivers as $28 where the model delivers the data byte
     # (docs/internals/machines/tnt/tnt.md, "The diagnostic utility"); everything else
     # passes.
+    # The test takes ~6 G instructions and ends on its own result screen: a
+    # golden of that screen (captured after the full budget and a settle) is
+    # what the row waits for.
     machine.adb.keyboard.type("3\n")
-    scheduler.run 6000000000
-    let settled2 = wait_stable(2000000000)
+    run_until_match("goldens/ans500-diags1.1-640x480x8-system-test-done.png", 6000000000, 100000000)
+    if $REGEN_MODE == "1" {
+        let settled2 = wait_stable(2000000000)
+    }
+    check("goldens/ans500-diags1.1-640x480x8-system-test-done.png")
     machine.adb.keyboard.type("4\n")
-    scheduler.run 600000000
+    run_until_match("goldens/ans500-diags1.1-640x480x8-error-summary.png", 600000000, 15000000)
     check("goldens/ans500-diags1.1-640x480x8-error-summary.png")
 
     echo "ans500-diag-floppy: the Diagnostic Utility 1.1 boots from the internal floppy in Service position (${$spent} instructions to the Level One menu), answers the ADB keyboard, and its complete system test passes everything but the SDLC DMA loopback"

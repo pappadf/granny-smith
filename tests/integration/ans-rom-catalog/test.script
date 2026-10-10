@@ -7,6 +7,7 @@
 # Before content ids, three of these ROMs identified as 1.1.22 and 2.26B6 as
 # the 9500 v2 ROM, which machine.boot then refused on an ANS model.
 
+include "../lib/mac.script"
 include "../lib/ans.script"
 
 # Boot `rom` on `model` to the prompt and check what the firmware says it is.
@@ -18,6 +19,7 @@ def catalog_row(model, ram_kb, rom, id, of_banner) {
     assert machine.rom.intact "${$model} ${$rom}: the ROM's own checksum must verify"
     assert contains($banner, "${$of_banner}") "${$model} ${$rom}: Open Firmware did not announce ${$of_banner}"
     assert contains($banner, "0 > ") "${$model} ${$rom}: no Open Firmware prompt"
+    report_perf("ans-rom-catalog/${$model}-${$id}", scheduler.instr_count)
 }
 
 catalog_row("ans500", 32768, "ans500-ans700-962f6c13.rom", "962f6c13-d540b3dd5bcf9caa", "OpenFirmware1.1.22")

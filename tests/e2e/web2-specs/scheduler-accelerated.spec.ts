@@ -21,10 +21,13 @@
 // round-trips add ±hundreds of ms to the wall-clock windows, and CI hosts
 // pace RAF with their own jitter.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Keep web2's default pacing: it measures pacing itself.
+test.use({ gsSpeed: null });
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>

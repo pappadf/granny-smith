@@ -44,4 +44,7 @@ void keyboard_input(keyboard_t *keyboard, unsigned char val);
 // Processes a key event from the host system
 void keyboard_update(keyboard_t *keyboard, key_event_t event, int key);
 
+// True while key transitions wait in the queue for the Mac to fetch
+bool keyboard_input_pending(keyboard_t *keyboard);
+
 #endif // KEYBOARD_H

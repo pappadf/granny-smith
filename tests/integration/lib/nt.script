@@ -56,32 +56,22 @@ let K_DOWN = "0x3D"
 # Drain first: a stale "0 > " from the previous command would end the wait
 # before the command had even run.
 def nt_prompt(ceiling) {
-    let out = ""
-    let spent = 0
-    while !contains($out, "0 > ") {
-        assert $spent < $ceiling "Open Firmware never came back to its prompt: ${$out}"
-        scheduler.run 20000000
-        $spent = $spent + 20000000
-        $out = "${$out}${machine.scc.a.sent()}"
-    }
+    let out = run_until_sent("a", "0 > ", 250000, $ceiling)
+    assert contains($out, "0 > ") "Open Firmware never came back to its prompt: ${$out}"
     return $out
 }
 
-# Type `load fd:,\<file>` and then `load-base loadsize eval`, a few
-# characters at a time (the firmware's console drops a long burst).  Returns
-# what the eval printed within `run` instructions; the caller waits for
-# whatever the script starts.
+# Type `load fd:,\<file>` and then `load-base loadsize eval` (the file name
+# comes in two pieces, `chunk1` and `chunk2`, from when the console was fed
+# seven characters at a time).  Returns what the eval printed within `run`
+# instructions; the caller waits for whatever the script starts.
 def nt_load_eval(chunk1, chunk2, run) {
     let junk = machine.scc.a.sent()
-    ans_send("load fd:")
-    ans_send(",\\${$chunk1}")
-    ans_send("${$chunk2}")
+    ans_send("load fd:,\\${$chunk1}${$chunk2}")
     machine.scc.a.receive("\r")
     let loaded = nt_prompt(600000000)
     assert contains($loaded, " ok") "load fd:,\\${$chunk1}${$chunk2} failed: ${$loaded}"
-    ans_send("load-bas")
-    ans_send("e loadsi")
-    ans_send("ze eval")
+    ans_send("load-base loadsize eval")
     machine.scc.a.receive("\r")
     let out = ""
     let spent = 0
@@ -190,10 +180,8 @@ def nt_power_on(rom) {
     # ROM, comes up on the screen; Apple's documented terminal setup on the
     # ADB keyboard and a power cycle move it, as ans_boot_serial does.
     if !contains($fw, "0 > ") {
-        machine.adb.keyboard.type("setenv output-device ttya\n")
-        scheduler.run 400000000
-        machine.adb.keyboard.type("setenv input-device ttya\n")
-        scheduler.run 400000000
+        type_settle("setenv output-device ttya\n", 5000000, 400000000)
+        type_settle("setenv input-device ttya\n", 5000000, 400000000)
         let ignored = machine.scc.a.sent()
         machine.restart
         $fw = "${$fw}${nt_prompt(3000000000)}"

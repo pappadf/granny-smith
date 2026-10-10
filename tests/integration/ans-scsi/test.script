@@ -8,6 +8,7 @@
 # interrupts.  The text the firmware then prints is the INQUIRY data that
 # came back off the emulated bus.
 
+include "../lib/mac.script"
 include "../lib/ans.script"
 
 def probe(model, ram_kb) {
@@ -24,8 +25,7 @@ def probe(model, ram_kb) {
     machine.scsi2.attach_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso", 4)
 
     # --- S8: channel 0 --------------------------------------------------------
-    ans_send("probe-sc")
-    ans_send("si1")
+    ans_send("probe-scsi1")
     let p1 = ans_go()
     assert contains($p1, "Target 1") "S8: ${$model} probe-scsi1 found no target 1"
     assert contains($p1, "Unit 0") "S8: ${$model} probe-scsi1 reported no LUN 0"
@@ -38,8 +38,7 @@ def probe(model, ram_kb) {
     assert !contains($p1, "Unit 1") "S8: ${$model} a single-LUN target must not answer LUN 1"
 
     # --- S8: channel 1, which is a different bus entirely --------------------
-    ans_send("probe-sc")
-    ans_send("si2")
+    ans_send("probe-scsi2")
     let p2 = ans_go()
     assert contains($p2, "Target 4") "S8: ${$model} probe-scsi2 found no target 4"
     assert contains($p2, "Removable Read Only device") || contains($p2, "CD") "S8: ${$model} probe-scsi2 did not identify the CD-ROM"
@@ -51,12 +50,11 @@ def probe(model, ram_kb) {
     # `disk0` is `/bandit/53c825@11/sd@0,0` and `disk4` is
     # `/bandit/53c825@12/sd@4,0` — the backplane's own split, which is why
     # the bays are numbered across two controllers.
-    ans_send("dev dis")
-    ans_send("k0 devi")
-    ans_send("ce-end")
+    ans_send("dev disk0 device-end")
     let d0 = ans_go()
     assert !contains($d0, "not found") "S8: ${$model} the disk0 alias does not resolve"
 
+    report_perf("ans-scsi/${$model}", scheduler.instr_count)
     echo "ans-scsi ${$model}: SCRIPTS engine ran INQUIRY on both fast/wide channels"
 }
 

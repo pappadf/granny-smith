@@ -9,6 +9,8 @@
 #   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
 
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
+include "../lib/mac.script"
+
 files.hd_create "$WORK_DIR/blank80.img" HD20SC
 
 # Attach the blank image at SCSI ID 0
@@ -21,14 +23,14 @@ machine.screen.match desktop.png
 
 # Double click the "Disk Tools" icon to open the floppy
 machine.adb.mouse.move 480 55 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # Run a bit so that the floppy has time to open
 scheduler.run 50000000
@@ -37,14 +39,14 @@ machine.screen.match floppy.png
 
 # Double-click Apple HD SC Setup icon in the Disk Tools window
 machine.adb.mouse.move 167 83 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # Run a bit so that the Apple HD SC Setup app opens
 scheduler.run 50000000
@@ -54,39 +56,39 @@ machine.screen.match ready.png
 
 # Click "Initialize"
 machine.adb.mouse.move 167 115 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 
 machine.adb.mouse.move 360 190 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 scheduler.run 500000000
 
 # Click ok re. name
 machine.adb.mouse.move 200 180 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 50000000
 
 # quit app
 machine.adb.mouse.move 167 230 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 
 # Shutdown computer
 machine.adb.mouse.move 250 10 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 1000000
 machine.adb.mouse.move 250 140 "global"

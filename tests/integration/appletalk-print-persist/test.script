@@ -8,12 +8,14 @@
 
 # --- the steps ----------------------------------------------------------------
 
+include "../lib/mac.script"
+
 def click(x, y, settle) {
     machine.adb.mouse.move $x $y
     scheduler.run 2000000
     machine.adb.mouse.click true
-    scheduler.run 2000000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
     scheduler.run $settle
 }
 
@@ -39,12 +41,12 @@ def open_disk() {
     machine.adb.mouse.move 470 52
     scheduler.run 2000000
     machine.adb.mouse.click true
-    scheduler.run 80000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
     scheduler.run 80000
     machine.adb.mouse.click true
-    scheduler.run 80000
     machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
     scheduler.run 40000000
 }
 
