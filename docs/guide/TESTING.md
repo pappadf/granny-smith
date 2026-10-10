@@ -177,7 +177,13 @@ hang detectors), budgets that end early on their golden
 (`run_until_match`, `run_until_match_ex`: for the screens a stability
 wait cannot find, they poll the golden when verifying and run the whole
 budget under `REGEN=1`, so a recapture lands where the old fixed budget
-did), `skip_test` for a test whose media is absent (the runner then prints
+did), input waits that run until the guest has taken the input or
+answered it (`serial_type`: a line typed on a serial port, which the
+emulated line delivers one character time apart, run until the guest has
+read it; `run_until_sent`: run until a serial port has transmitted a
+marker such as a prompt, in slices that start small and double;
+`wait_mouse_taken`: run until `machine.adb.mouse.pending` clears, which
+on ADB includes a press and release queued behind each other), `skip_test` for a test whose media is absent (the runner then prints
 `=== SKIP: <test> (<why>) ===` instead of PASS and records `SKIP` in
 `durations.jsonl`), guest-tick choreography (`run_ticks`, `double_click`,
 `about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
@@ -191,7 +197,8 @@ screen, and two things about that machine are awkward exactly once and
 identical in every row — its console is the *monitor* until the firmware is
 told otherwise (`ans_boot_serial`, which types Apple's documented `setenv`
 pair on the machine's own ADB keyboard and cold-boots), and its console
-drops characters from a long input burst (`ans_send` feeds it in chunks).
+drops characters from an input burst, which the paced serial line avoids
+(`ans_send` types a whole command and runs until the firmware has read it).
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
 
