@@ -35,6 +35,8 @@ LOG_USE_CATEGORY_NAME("mouse");
 // hand a frame behind and never further, at any speed.  Each axis is one
 // pulse train: the counts still to go (signed: the direction) and the gap
 // between its edges.  A new batch joins what is left and re-spreads it.
+#define MOUSE_BUTTON_QUEUE 16
+
 struct mouse {
     bool x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
     int32_t pending_x; // counts still to play on each axis (signed)
@@ -45,6 +47,14 @@ struct mouse {
     double window_end_ns; // when the current batch is to be played out
     int8_t scale_rem_x; // Carried host-delta remainders from the 2:1 scaling,
     int8_t scale_rem_y; // so small deltas keep their X:Y ratio across events
+    // The button.  The ROM samples PB3 once per VBL and debounces it over 3
+    // ticks, so a short level is never seen: each level is held at least
+    // MOUSE_BUTTON_HOLD_NS, and host changes that come sooner wait in
+    // `button_queue` and apply one hold apart (mouse_button_event).
+    bool button; // the level on PB3 now (true = pressed)
+    double button_since_ns; // when that level was applied
+    bool button_queue[MOUSE_BUTTON_QUEUE];
+    int button_head, button_count;
 
     /* Pointers last */
     struct scheduler *scheduler; // Event scheduler (CPU-cycle aligned)
@@ -63,6 +73,12 @@ struct mouse {
 
 #define AXIS_X 0
 #define AXIS_Y 1
+
+// The shortest a button level lasts.  The ROM samples PB3 once per VBL and
+// commits a change only once it has held for 3 ticks (its debounce against
+// MBTicks, mouse_control.md §13), so a level is held 4 VBL periods and a
+// millisecond: the debounce completes inside it at any phase.
+#define MOUSE_BUTTON_HOLD_NS (4 * MAC_VBL_PERIOD_NS + 1000000ULL)
 
 // Emit one edge on an axis, in the direction `positive`, and set the
 // quadrature (X2/Y2) bit that tells the handler which way it went.
@@ -167,9 +183,46 @@ static void mouse_motion(mouse_t *restrict m, int dx, int dy) {
     }
 }
 
-// Host motion and the button (VIA PB3, active low: 0 = pressed).
-void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
+// Put a button level on PB3 (active low: 0 = pressed) and start its hold.
+static void mouse_button_apply(mouse_t *m, bool button) {
+    m->button = button;
+    m->button_since_ns = scheduler_time_ns(m->scheduler);
     via_input(m->via, 1, 3, !button);
+}
+
+// A held level has lasted its hold: the next queued level applies, and the
+// one after it is due one hold later.
+static void mouse_button_event(void *source, uint64_t data) {
+    (void)data;
+    mouse_t *m = source;
+    if (m->button_count == 0)
+        return;
+    mouse_button_apply(m, m->button_queue[m->button_head]);
+    m->button_head = (m->button_head + 1) % MOUSE_BUTTON_QUEUE;
+    m->button_count--;
+    if (m->button_count)
+        scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, MOUSE_BUTTON_HOLD_NS);
+}
+
+// Host motion and the button.  A change while the current level is still
+// inside its hold (or behind others already waiting) queues, so a press and
+// release quicker than a VBL reach the ROM as a press and then a release.
+void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
+    bool latest =
+        m->button_count ? m->button_queue[(m->button_head + m->button_count - 1) % MOUSE_BUTTON_QUEUE] : m->button;
+    if (button != latest) {
+        double held = scheduler_time_ns(m->scheduler) - m->button_since_ns;
+        if (m->button_count == 0 && held >= (double)MOUSE_BUTTON_HOLD_NS) {
+            mouse_button_apply(m, button);
+        } else if (m->button_count < MOUSE_BUTTON_QUEUE) {
+            if (m->button_count == 0) {
+                // The first in line waits out what is left of the current hold
+                uint64_t wait = (uint64_t)((double)MOUSE_BUTTON_HOLD_NS - held);
+                scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, wait ? wait : 1);
+            }
+            m->button_queue[(m->button_head + m->button_count++) % MOUSE_BUTTON_QUEUE] = button;
+        }
+    }
     mouse_motion(m, dx, dy);
 }
 
@@ -190,19 +243,30 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
 
     // Register event type for checkpointing
     scheduler_new_event_type(scheduler, "mouse", mouse, "train", &mouse_train_event);
+    scheduler_new_event_type(scheduler, "mouse", mouse, "button", &mouse_button_event);
 
     // Load from checkpoint if provided
     if (checkpoint) {
         size_t data_size = offsetof(mouse_t, scheduler);
         system_read_checkpoint_data(checkpoint, mouse, data_size);
+        // The button queue's cursors come from a file the user supplies and
+        // index the ring: out of range, the queued levels are dropped
+        if (mouse->button_head < 0 || mouse->button_head >= MOUSE_BUTTON_QUEUE || mouse->button_count < 0 ||
+            mouse->button_count > MOUSE_BUTTON_QUEUE)
+            mouse->button_head = mouse->button_count = 0;
     }
 
     return mouse;
 }
 
-// True while motion counts are still being played out to the guest
+// True while motion counts are still being played out to the guest, or a
+// button level is still inside its hold (or queued behind one)
 bool mouse_input_pending(const mouse_t *mouse) {
-    return mouse && (mouse->pending_x != 0 || mouse->pending_y != 0);
+    if (!mouse)
+        return false;
+    // A level still inside its hold has not been committed by the ROM yet
+    bool holding = scheduler_time_ns(mouse->scheduler) - mouse->button_since_ns < (double)MOUSE_BUTTON_HOLD_NS;
+    return mouse->pending_x != 0 || mouse->pending_y != 0 || mouse->button_count > 0 || holding;
 }
 
 // Free resources associated with a mouse instance
