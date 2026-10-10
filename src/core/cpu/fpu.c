@@ -1334,7 +1334,14 @@ fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     return r;
 }
 
-// Divide: a / b
+// Divide: a / b, correctly rounded from the full 128-bit mantissas.
+//
+// The wide-divisor path and fpu_op_sqrt use native `__uint128_t`; the
+// 128-bit divide is the load-bearing step we have no portable fallback for,
+// so pin the assumption at compile time.
+#ifndef __SIZEOF_INT128__
+#error "fpu_op_div and fpu_op_sqrt require a compiler with __uint128_t (gcc/clang/emcc)"
+#endif
 fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
     bool a_nan = (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0);
     bool b_nan = (b.exponent == FPU_EXP_INF && b.mantissa_hi != 0);
@@ -1385,38 +1392,63 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     r.sign = result_sign;
     r.exponent = a.exponent - b.exponent;
 
-    uint64_t dividend_hi = a.mantissa_hi;
-    uint64_t dividend_lo = a.mantissa_lo;
-    uint64_t divisor = b.mantissa_hi;
-
-    // Long division: produce 64 bits of quotient in q_hi
     uint64_t q_hi = 0;
-    bool carry = false;
-    for (int i = 63; i >= 0; i--) {
-        if (carry || dividend_hi >= divisor) {
-            q_hi |= (1ULL << i);
-            dividend_hi -= divisor;
-        }
-        carry = (dividend_hi >> 63) != 0;
-        dividend_hi = (dividend_hi << 1) | (dividend_lo >> 63);
-        dividend_lo <<= 1;
-    }
-
-    // Continue for 64 more bits (guard/round/sticky)
     uint64_t q_lo = 0;
-    for (int i = 63; i >= 0; i--) {
-        if (carry || dividend_hi >= divisor) {
-            q_lo |= (1ULL << i);
-            dividend_hi -= divisor;
-        }
-        carry = (dividend_hi >> 63) != 0;
-        dividend_hi = (dividend_hi << 1) | (dividend_lo >> 63);
-        dividend_lo <<= 1;
-    }
+    if (b.mantissa_lo == 0) {
+        // 64-bit divisor (every register operand): the partial remainder
+        // fits 64 bits plus a carry, with the dividend's low half shifted in
+        uint64_t dividend_hi = a.mantissa_hi;
+        uint64_t dividend_lo = a.mantissa_lo;
+        uint64_t divisor = b.mantissa_hi;
 
-    // Sticky bit for remainder
-    if (dividend_hi != 0 || dividend_lo != 0)
-        q_lo |= 1;
+        // Long division: produce 64 bits of quotient in q_hi
+        bool carry = false;
+        for (int i = 63; i >= 0; i--) {
+            if (carry || dividend_hi >= divisor) {
+                q_hi |= (1ULL << i);
+                dividend_hi -= divisor;
+            }
+            carry = (dividend_hi >> 63) != 0;
+            dividend_hi = (dividend_hi << 1) | (dividend_lo >> 63);
+            dividend_lo <<= 1;
+        }
+
+        // Continue for 64 more bits (guard/round/sticky)
+        for (int i = 63; i >= 0; i--) {
+            if (carry || dividend_hi >= divisor) {
+                q_lo |= (1ULL << i);
+                dividend_hi -= divisor;
+            }
+            carry = (dividend_hi >> 63) != 0;
+            dividend_hi = (dividend_hi << 1) | (dividend_lo >> 63);
+            dividend_lo <<= 1;
+        }
+
+        // Sticky bit for remainder
+        if (carry || dividend_hi != 0 || dividend_lo != 0)
+            q_lo |= 1;
+    } else {
+        // 128-bit divisor (internal callers' wide operands): the same
+        // restoring division on a 128-bit partial remainder plus a carry, so
+        // every divisor bit takes part and the sticky bit is exact
+        __uint128_t divisor = ((__uint128_t)b.mantissa_hi << 64) | b.mantissa_lo;
+        __uint128_t rem = ((__uint128_t)a.mantissa_hi << 64) | a.mantissa_lo;
+        bool carry = false;
+        for (int i = 127; i >= 0; i--) {
+            if (carry || rem >= divisor) {
+                if (i >= 64)
+                    q_hi |= 1ULL << (i - 64);
+                else
+                    q_lo |= 1ULL << i;
+                rem -= divisor;
+            }
+            carry = (rem >> 127) != 0;
+            rem <<= 1;
+        }
+        // Sticky bit for remainder
+        if (carry || rem != 0)
+            q_lo |= 1;
+    }
 
     r.mantissa_hi = q_hi;
     r.mantissa_lo = q_lo;
@@ -1428,11 +1460,7 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
 // Square root.
 //
 // Uses native `__uint128_t` arithmetic for the Newton-Raphson refinement
-// loops below. The 128-bit divide is the load-bearing step we have no
-// portable fallback for, so pin the assumption at compile time.
-#ifndef __SIZEOF_INT128__
-#error "fpu_op_sqrt requires a compiler with __uint128_t (gcc/clang/emcc)"
-#endif
+// loops below (the guard above fpu_op_div pins the compiler support).
 fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     // Handle specials
     if (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0) {

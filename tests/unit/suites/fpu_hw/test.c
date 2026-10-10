@@ -18,7 +18,9 @@
 //    but not INEX2 (UM §6.1.5/§6.1.7, FPSP round);
 //  - FCOS of a denormal is exactly 1.0 in every rounding mode (FPSP scosd)
 //    and FATAN of a denormal is X with UNFL and INEX2 (FPSP satand);
-//  - the packed-decimal ILOG is exact next to the large powers of ten.
+//  - the packed-decimal ILOG is exact next to the large powers of ten;
+//  - FDIV is correctly rounded (UM §4.3.1), its sticky bit taking the whole
+//    final remainder, and so is fpu_op_div for 128-bit internal divisors.
 
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -38,6 +40,7 @@
 #define RN  0x00u
 #define RZ  0x10u
 #define RM  0x20u
+#define RP  0x30u
 #define SGL 0x40u
 
 #define OP_FTST    0x3Au
@@ -284,6 +287,35 @@ TEST(floor_log10_exact_next_to_powers_of_ten) {
     ASSERT_EQ_INT(-1, flog(-1, 0xFFFFFFFFFFFFFFFFULL));
 }
 
+// ---------------------------------------------------------------------------
+// Division
+// ---------------------------------------------------------------------------
+
+TEST(fdiv_final_remainder_bit_is_sticky) {
+    // a / b with a < b whose last partial remainder is exactly 2^63: the
+    // bit shifted out of the 64-bit remainder register is still a nonzero
+    // remainder, so the quotient is inexact and rounds up toward +infinity
+    float80_reg_t a = x80(0x3FFF, 0x87530C327018A704ULL);
+    float80_reg_t b = x80(0x3FFF, 0x90B1B1B48B529B4BULL);
+    float80_reg_t r = run_op(OP_FDIV, RN, b, a);
+    assert_reg(r, 0x3FFE, 0xEF6C321E71CF699DULL);
+    ASSERT_EQ_INT(FPEXC_INEX2, exc());
+    r = run_op(OP_FDIV, RP, b, a);
+    assert_reg(r, 0x3FFE, 0xEF6C321E71CF699EULL);
+    ASSERT_EQ_INT(FPEXC_INEX2, exc());
+}
+
+TEST(fdiv_wide_divisor_is_correctly_rounded) {
+    // Every divisor bit counts: the low 64 bits move the quotient by an ulp
+    fpu_unpacked_t a = {true, -37, 0xFF33706A2787ABD4ULL, 0xC9D6178590AD5215ULL};
+    fpu_unpacked_t b = {false, -51, 0xFFFFFFFFFFFFFFFEULL, 0x5D9266F9916B3594ULL};
+    g_fpu->fpcr = RN;
+    g_fpu->fpsr = 0;
+    float80_reg_t r = fpu_pack(g_fpu, fpu_op_div(g_fpu, a, b));
+    assert_reg(r, 0xC00C, 0xFF33706A2787ABD6ULL);
+    ASSERT_EQ_INT(FPEXC_INEX2, exc());
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -313,6 +345,8 @@ int main(void) {
     RUN(fsincos_of_denormal_gives_x_and_one);
     RUN(fatan_of_denormal_is_x);
     RUN(floor_log10_exact_next_to_powers_of_ten);
+    RUN(fdiv_final_remainder_bit_is_sticky);
+    RUN(fdiv_wide_divisor_is_correctly_rounded);
 
     test_harness_destroy(ctx);
     printf("[fpu_hw] all tests passed\n");

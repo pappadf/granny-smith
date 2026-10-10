@@ -161,7 +161,7 @@ All arithmetic operates on `fpu_unpacked_t` values using pure integer algorithms
 | `fpu_op_add()` | Addition with sign/special-case handling (NaN propagation, ∞±∞) |
 | `fpu_op_sub()` | Subtraction (negate + add) |
 | `fpu_op_mul()` | Multiply: full 128×128→256-bit mantissa product (four 64×64 partial products); top 128 bits kept, the rest folded into sticky |
-| `fpu_op_div()` | Division via iterative shift-and-subtract; unnormal operands are normalized first |
+| `fpu_op_div()` | Division via iterative shift-and-subtract over the full mantissas (64-bit divisors, every register operand, on a 64-bit remainder; 128-bit internal divisors on a 128-bit one), correctly rounded with an exact sticky bit; unnormal operands are normalized first |
 | `fpu_op_sqrt()` | Square root: exact integer `floor(sqrt)` of the 128-bit mantissa by integer Newton-Raphson (no host `sqrt()`), remainder encoded for correct rounding |
 | `fpu_op_rem()` / `fpu_op_mod()` | IEEE remainder (FREM) / modulo (FMOD) with quotient in FPSR |
 | `fpu_normalize()` | Shift mantissa left until J-bit set, decrementing exponent |
