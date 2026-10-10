@@ -413,6 +413,7 @@ _The reply doesn't carry any payload_
 - Source and destination may be on the same or different volumes.
 - The caller must have Search access to all ancestors of the source file except the source parent, and Read access to the source parent directory.
 - The caller must have Search or Write access to all ancestors of the destination except the destination parent, and Write access to the destination parent directory.
+- **On the host:** the copy (data file, then sidecar) is synced before `NoErr`; a failed sidecar copy removes the data copy. A host filesystem that cannot sync at all (`fsync` answers `EINVAL` or `ENOTSUP`) does not fail the copy.
 
 ---
 

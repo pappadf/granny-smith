@@ -1367,7 +1367,9 @@ static uint32_t afp_copy_bytes(const char *src, const char *dst) {
         }
     }
     fclose(fin);
-    if (rc == AFPERR_NoErr && (fflush(fout) != 0 || fsync(fileno(fout)) != 0))
+    // A file that cannot be synced (fsync's EINVAL or ENOTSUP: a filesystem
+    // with no sync, as some FUSE and special mounts are) is not a failed copy.
+    if (rc == AFPERR_NoErr && (fflush(fout) != 0 || (fsync(fileno(fout)) != 0 && errno != EINVAL && errno != ENOTSUP)))
         rc = AFPERR_DiskFull;
     if (fclose(fout) != 0 && rc == AFPERR_NoErr)
         rc = AFPERR_DiskFull;
