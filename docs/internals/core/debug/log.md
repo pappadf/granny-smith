@@ -74,7 +74,7 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 
 - Output sinks
   - Per‑category sinks (implemented in `log.c`): each category can emit to stdout and/or an optional file path (append mode). See “Shell command” below for runtime control.
-  - A file that cannot be opened makes `log_set_category_file` return -1 with `errno` from `fopen`; the caller (`log.set`, `log.category[...].file`) puts the reason in its error value — nothing is printed to stderr.
+  - A file that cannot be opened makes `log_set_category_file` return -1 with `errno` from `fopen` (its other failures set `errno` too: `EINVAL` for an unknown category, `ENOMEM`); the caller (`log.set`, `log.category[...].file`) puts the reason in its error value (`cannot set log file '<path>': <reason>`) — nothing is printed to stderr.
   - Optional global sink: `typedef void (*log_sink_fn)(const char* line, void* user);` and `void log_set_sink(log_sink_fn fn, void* user);`
     - If a global sink is installed, every formatted line is also forwarded to it in addition to the per‑category sinks.
     - If no global sink is installed (default), only per‑category sinks are used.
@@ -281,7 +281,7 @@ The shell exposes the configuration as a typed method on the root `log` object: 
 - `src/core/debug/log.c` — implementation (registry, sinks, formatting) and the category manifest loader.
 - `src/core/debug/log_categories.h` — the category manifest (`GS_LOG_CATEGORIES`), the one place a new category is declared.
 - `src/core/debug/log.h` — public header used by modules and the shell.
-- `src/core/debug/log_context.c` — the context hooks (instruction count, PC decoration, debug-trace capture); `src/core/shell/shell.c` installs them (`log_context_install()`).
+- `src/core/debug/log_context.c` — the context hooks (instruction count, PC decoration, debug-trace capture); `src/core/core_init.c` installs them (`log_context_install()`).
 - `src/core/debug/log_class.c` — the root `log` object: the `log.set` method (which prints the category's settings through the output sink), `log.levels` and `log.category[...]`.
 
 ## Level guidelines and recommendations

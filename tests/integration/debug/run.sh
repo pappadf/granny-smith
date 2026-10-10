@@ -1,9 +1,8 @@
 #!/bin/bash
 # Integration test: Debug tooling — `find` family. Runs the headless
 # emulator with test.script, captures stdout, and greps for expected
-# markers. Each `find.<sub>` method dispatches into the legacy
-# cmd_find_handler via shell_dispatch, so the parser's match-format
-# and diagnostic output is unchanged.
+# markers. Each `debug.find.<sub>` method returns a typed list of hits
+# (src/core/debug/cmd_find.c); the script echoes markers derived from it.
 
 # Note: no `set -e` — the test.script deliberately exercises error paths
 # (bad pattern, bad range, non-hex tokens, out-of-range values), which

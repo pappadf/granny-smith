@@ -19,9 +19,11 @@ JS thread, or a leaf called straight from the job thread, silently
 violates this invariant.
 
 The guard turns that invariant into a one-line check: the worker latches
-its `pthread_self()` at startup, and the gateway functions (`gs_eval`,
-`shell_dispatch`, `shell_complete`) call `worker_thread_check()` to verify
-they are running on it. A ccall-from-main regression trips a `GS_ASSERTF`
+its `pthread_self()` at startup, and the gateway functions call
+`worker_thread_check()` to verify they are running on it: `gs_eval` (the
+object model), `shell_complete` (tab completion), and the AppleTalk entry
+points that touch emulator state, `llap_receive` (an inbound LLAP frame) and
+`afp_handle_command` (an AFP request). A ccall-from-main regression trips a `GS_ASSERTF`
 inside the gateway, the page logs a fatal, and the e2e harness fails fast.
 
 ## 2. Key types & files
@@ -60,7 +62,8 @@ stubs are macros, so the gateway-name argument is not even evaluated.
 ## 4. Object-model / shell surface
 
 None of its own; it guards the entry points of the object model
-(`gs_eval`) and of the shell (`shell_dispatch`, `shell_complete`).
+(`gs_eval`), of the shell's completer (`shell_complete`) and of the
+AppleTalk stack (`llap_receive`, `afp_handle_command`).
 
 ## 5. Checkpointing
 
