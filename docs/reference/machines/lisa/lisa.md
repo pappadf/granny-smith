@@ -499,7 +499,13 @@ All addresses are physical I/O space (reached at logical `$00FCxxxx`; §3.3).
 Both are standard MOS 6522 VIAs. Their internal register semantics (timers T1/T2,
 ACR/PCR handshake modes, IFR/IER, shift register, CA/CB lines) are described in
 [via.md](../../hardware/via.md); only the Lisa wiring and addressing are given here. The Lisa
-I/O-board 6522s are clocked at the 68000 cycle ÷ 4 (~785 ns on Lisa 2).
+I/O-board 6522s are clocked from the 68000 clock by a board-specific divider:
+÷ 10 (~509 kHz) on the old I/O board of the Lisa 2/5 (and of a Lisa 1, also one
+upgraded with a Sony drive), ÷ 4 (~1.27 MHz, ~785 ns) on the "Pepsi" board of
+the Lisa 2/10 and the Macintosh XL. Software tells them apart by the timer bits
+of the ROM id at `$FCC031` (§16.2), and Lisa OS sizes its 20 ms system tick from
+them: VIA T1 = `$27CA` on a slow-timer board, `$637B` on a fast one. Both give
+20.0 ms; with the wrong divider every tick is 8 ms (or 50 ms).
 
 > **⚠️ The Lisa OS source SWAPS the VIA1/VIA2 names** relative to the Hardware
 > Manual and this emulator. In `LIBHW/LIBHW-DRIVERS.TEXT`, OS `VIA1` is the
@@ -843,12 +849,13 @@ Lisa OS reads `$FCC031` as a **signed** byte to pick its I/O-board model
 | `$FCC031` | OS `iomodel` | machine | floppy driver |
 | --- | --- | --- | --- |
 | `$00`–`$7F` | `iob_lisa` | Lisa 1 (twin Twiggy) | Twiggy |
-| `$A0`–`$BF` | `iob_sony` | **Lisa 2/5** (old "Lisa Lite" board + Sony + external ProFile) | Sony |
-| `$C0`–`$DF` | `iob_lite` | Pepsi board, Sony, no built-in HD | Sony |
-| `$80`–`$9F` / `$E0`–`$FF`, with `$FCC015` ≠ 0 | `iob_pepsi` | **Macintosh XL** (Pepsi board + Sony + Widget) | Sony |
+| `$A0`–`$BF` | `iob_sony` | **Lisa 2/5** (old I/O board + Sony + external ProFile on the parallel port; slow timers) | Sony |
+| `$C0`–`$DF` | `iob_lite` | Pepsi board, Sony, no built-in HD — and no parallel port (the LOS installer: "no internal disk or parallel port") | Sony |
+| `$80`–`$9F` / `$E0`–`$FF`, with `$FCC015` ≠ 0 | `iob_pepsi` | **Lisa 2/10 and Macintosh XL** (Pepsi board + Sony + internal Widget on the parallel interface; fast timers) | Sony |
 
 (The OS `Mach_Info` syscall exposes this as `io_board`: `IOlisa`/`IOpepsi`/
-`IOlisaLite`/`IOpepsiLite`. Our `machine_lisa` presents `$A0` = `iob_sony`;
+`IOlisaLite`/`IOpepsiLite`. Our `machine_lisa` presents `$A0` = `iob_sony`, a
+Lisa 2/5, with its VIAs at the slow-timer rate ÷ 10 (§10);
 `machine_macxl` is left at `0` for MacWorks-XL compatibility.)
 
 ---
