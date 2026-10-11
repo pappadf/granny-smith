@@ -21,7 +21,7 @@
 // asked for exactly the URLs the link gave.  The generic-host rows build a
 // small zip in the spec and route it likewise.
 
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type Page, type Route } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';

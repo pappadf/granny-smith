@@ -8,6 +8,7 @@
 #include "link_harness.h"
 
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "test_assert.h"

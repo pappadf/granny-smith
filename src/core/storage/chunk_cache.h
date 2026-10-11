@@ -27,22 +27,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct gs_chunk_cache gs_chunk_cache_t;
+typedef struct chunk_cache chunk_cache_t;
 
 // Fill `buf` (`cap` bytes) with chunk `idx` of the source the caller keys.
 // Returns the chunk's length (<= cap), or a negative errno.
-typedef int64_t (*gs_chunk_fetch_fn)(void *ctx, uint64_t idx, uint8_t *buf, size_t cap);
+typedef int64_t (*chunk_fetch_fn)(void *ctx, uint64_t idx, uint8_t *buf, size_t cap);
 
 // A cache holding at most `mem_budget` bytes in memory.  `spill_dir` may be
 // NULL (no spill); `spill_budget` 0 means unbounded.
-gs_chunk_cache_t *gs_chunk_cache_new(size_t mem_budget, const char *spill_dir, uint64_t spill_budget);
-void gs_chunk_cache_free(gs_chunk_cache_t *c);
+chunk_cache_t *chunk_cache_new(size_t mem_budget, const char *spill_dir, uint64_t spill_budget);
+void chunk_cache_free(chunk_cache_t *c);
 
 // The process-wide cache the storage adapters share.  Memory budget
 // GS_CHUNK_CACHE_MB (default 64 MiB); spill under image_scratch_dir()/chunks
 // with budget GS_CHUNK_SPILL_MB (default 512 MiB on WASM, unbounded
 // natively).
-gs_chunk_cache_t *gs_chunk_cache_default(void);
+chunk_cache_t *chunk_cache_default(void);
 
 // The cache chunk-mapped disk images (UDIF, NDIF) decode into: memory only,
 // never spilled.  The compressed image is the persistent form, and spilling
@@ -50,33 +50,33 @@ gs_chunk_cache_t *gs_chunk_cache_default(void);
 // browser, in the origin's quota -- which is what storing it compressed
 // avoids.  Re-inflating a 64 KB chunk costs well under a millisecond.
 // Budget GS_IMAGE_CACHE_MB (default 16 MiB).
-gs_chunk_cache_t *gs_chunk_cache_images(void);
+chunk_cache_t *chunk_cache_images(void);
 
 // Change the budgets (`spill_budget` 0: unbounded).  Memory over the new
 // budget is evicted at once (to the spill area, as eviction always goes);
 // a spill area over its new budget is emptied -- spilled chunks are only
 // ever a faster way to refetch.
-void gs_chunk_cache_set_budgets(gs_chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget);
-void gs_chunk_cache_budgets(gs_chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget);
+void chunk_cache_set_budgets(chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget);
+void chunk_cache_budgets(chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget);
 
 // Copy `n` bytes at `in_off` within chunk (key, idx) into `out`, fetching
 // the chunk (into a buffer of `chunk_cap` bytes) through `fetch` if it is in
 // neither memory nor spill.  Returns the bytes copied -- fewer than `n` only
 // at the chunk's end, 0 past it -- or a negative errno (the fetch's).
 // Thread-safe; concurrent requests for one chunk share a single fetch.
-int64_t gs_chunk_cache_get(gs_chunk_cache_t *c, const char *key, uint64_t idx, size_t chunk_cap, uint64_t in_off,
-                           void *out, size_t n, gs_chunk_fetch_fn fetch, void *ctx);
+int64_t chunk_cache_get(chunk_cache_t *c, const char *key, uint64_t idx, size_t chunk_cap, uint64_t in_off, void *out,
+                        size_t n, chunk_fetch_fn fetch, void *ctx);
 
 // Store a chunk the caller produced anyway (a sequential decode passing
 // over chunks on its way to the one asked for).  0 or a negative errno.
-int gs_chunk_cache_put(gs_chunk_cache_t *c, const char *key, uint64_t idx, const void *data, size_t len);
+int chunk_cache_put(chunk_cache_t *c, const char *key, uint64_t idx, const void *data, size_t len);
 
 // True (and the length in *len) when chunk (key, idx) is held, in memory or
 // spilled; copies it into `out` when `out` is non-NULL.
-bool gs_chunk_cache_peek(gs_chunk_cache_t *c, const char *key, uint64_t idx, void *out, size_t cap, size_t *len);
+bool chunk_cache_peek(chunk_cache_t *c, const char *key, uint64_t idx, void *out, size_t cap, size_t *len);
 
 // Forget every chunk of `key` (memory and spill).
-void gs_chunk_cache_drop_key(gs_chunk_cache_t *c, const char *key);
+void chunk_cache_drop_key(chunk_cache_t *c, const char *key);
 
 // Counters, for the unit suite and diagnostics.
 typedef struct {
@@ -89,8 +89,8 @@ typedef struct {
     uint64_t spilled; // of those, written to a spill file
     size_t mem_bytes; // bytes held in memory now
     uint64_t spill_bytes; // bytes in spill files now
-} gs_chunk_cache_stats_t;
+} chunk_cache_stats_t;
 
-void gs_chunk_cache_stats(gs_chunk_cache_t *c, gs_chunk_cache_stats_t *out);
+void chunk_cache_stats(chunk_cache_t *c, chunk_cache_stats_t *out);
 
 #endif // GS_CHUNK_CACHE_H

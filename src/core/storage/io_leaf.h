@@ -5,8 +5,8 @@
 //
 // A copy, an export, a blank image, an archive's extraction cost the size
 // of a file, not of the machine, so they run on the I/O worker
-// (io/io_worker.h) and the leaf answers later (gs_result_defer /
-// gs_result_complete, mailbox.h): the page's promise or the script's call
+// (io/io_worker.h) and the leaf answers later (mailbox_result_defer /
+// mailbox_result_complete, mailbox.h): the page's promise or the script's call
 // settles when the work ends, progress reaches the client as EVT_PROGRESS
 // while it runs, and a REQ_CANCEL of the request (or of the script) stops
 // the work at its next chunk.  Without a worker, or when nothing is being

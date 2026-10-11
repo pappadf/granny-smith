@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "checkpoint.h"
 #include "common.h"
 #include "mmu_trace.h"
 

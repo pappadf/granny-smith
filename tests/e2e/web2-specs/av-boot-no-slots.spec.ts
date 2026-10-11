@@ -20,7 +20,7 @@
 // The dialog correctly sends no video_card for a slotless model, and the core
 // then supplied the last one.  machine.boot inherits nothing now; this pins it.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 

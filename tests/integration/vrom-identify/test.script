@@ -12,7 +12,7 @@
 # what protects against drift between VROM_CATALOG and the card registry.
 
 # --- Part 1: the {card_id, compatible, crc} contract (stateless probe). ---
-# Output is a JSON-encoded V_STRING; echo for visibility, then exact-match.
+# Output is a JSON-encoded VK_STRING; echo for visibility, then exact-match.
 echo "${catalog.vroms.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom")}"
 echo "${catalog.vroms.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom")}"
 echo "${catalog.vroms.identify("../../data/roms/display-card-24ac-d8daab87.vrom")}"
@@ -35,8 +35,8 @@ assert catalog.vroms.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom") == 
 # A main ROM is the wrong size for a vROM → recognised:false (no false match).
 assert catalog.vroms.identify("../../data/roms/plus-v3-4d1f8172.rom") == "{\"recognised\":false}" "non-vROM file must be unrecognised"
 
-# Unreadable path → V_ERROR (the shell's truthiness rule treats it as falsy).
-assert !catalog.vroms.identify("/dev/null/nonexistent") "unreadable path must yield V_ERROR"
+# Unreadable path → VK_ERROR (the shell's truthiness rule treats it as falsy).
+assert !catalog.vroms.identify("/dev/null/nonexistent") "unreadable path must yield VK_ERROR"
 
 # --- Part 2: every catalog card_id resolves to a registered nubus card. ---
 # The vROM catalog's card ids are registry ids: the card registry lists each

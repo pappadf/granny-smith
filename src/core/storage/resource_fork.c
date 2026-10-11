@@ -387,9 +387,9 @@ static const char *attr_name(uint8_t bit) {
 
 int rfork_info_format(const char *name, uint8_t attrs, size_t size, char *out, size_t cap) {
     // Room for the worst case: every byte of a longest name a control
-    // character, which gs_json_escape spells as six (\u00XX)
+    // character, which json_escape spells as six (\u00XX)
     char esc[6 * (RFORK_NAME_UTF8_MAX - 1) + 1];
-    if (gs_json_escape(name ? name : "", esc, sizeof(esc)) < 0)
+    if (json_escape(name ? name : "", esc, sizeof(esc)) < 0)
         return -EINVAL;
 
     int n = snprintf(out, cap, "{\"name\":\"%s\",\"attrs\":[", esc);

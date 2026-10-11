@@ -7,7 +7,7 @@
 // 95th percentile of 200 consecutive shell.highlight round trips stays
 // within 30 ms (the budget the console's 30 ms request delay assumes).
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { CONSOLE_INPUT, focusTerminal } from "../helpers/terminal";

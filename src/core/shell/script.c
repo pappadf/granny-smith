@@ -24,11 +24,13 @@
 #include "shell_funcs.h"
 #include "shell_internal.h"
 #include "shell_var.h"
+#include "status.h"
 #include "syntax.h"
 #include "value.h"
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -964,7 +966,7 @@ typedef enum {
 } exec_sig_t;
 
 typedef struct exec_ctx {
-    bool interactive; // REPL prints non-V_NONE results
+    bool interactive; // REPL prints non-VK_NONE results
     int loop_depth;
     bool in_function;
     exec_sig_t sig;
@@ -1244,7 +1246,7 @@ static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char 
 }
 
 // Resolve a command/lvalue head at *p into a node. Handles both bare
-// object paths and `$binding` heads (V_REF re-resolution, V_OBJECT
+// object paths and `$binding` heads (VK_REF re-resolution, VK_OBJECT
 // relative resolution). On success advances *p past the path text.
 // When out_path/out_base are non-NULL they receive the normalized path
 // text and the object it resolves against even when node resolution
@@ -1287,7 +1289,7 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             return false;
         }
         *p = q;
-        if (base.kind == V_REF) {
+        if (base.kind == VK_REF) {
             snprintf(path, sizeof(path), "%s%s", base.ref ? base.ref : "", sub);
             value_free(&base);
             if (out_path && out_path_size)
@@ -1302,7 +1304,7 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             *out_node = n;
             return true;
         }
-        if (base.kind == V_OBJECT) {
+        if (base.kind == VK_OBJECT) {
             struct object *obj = base.obj;
             value_free(&base);
             if (!obj) {
@@ -1396,7 +1398,7 @@ static char *scan_bare_word(const char **p) {
     return buf ? buf : strdup("");
 }
 
-// Parse one argument-mode value at *p. Returns V_ERROR on
+// Parse one argument-mode value at *p. Returns VK_ERROR on
 // failure. Advances *p. `raw_template` marks a template-typed slot: a
 // double-quoted value is captured as its raw body — no escape decoding, no
 // interpolation — for the subsystem to evaluate at fire time.
@@ -1512,8 +1514,8 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
     else if (strcmp(word, "none") == 0)
         v = val_none();
     else if (word[0] == '+' || word[0] == '-' || isdigit((unsigned char)word[0])) {
-        v = parse_literal_full(word, NULL, 0);
-        if (val_is_error(&v) || v.kind == V_STRING) {
+        v = parse_literal_whole_string(word, NULL, 0);
+        if (val_is_error(&v) || v.kind == VK_STRING) {
             // Not a clean numeric literal — the whole word is a string.
             value_free(&v);
             v = val_str(word);
@@ -1591,7 +1593,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
 
     if (fn) {
         result = shell_func_call(fn, pos_n, vals, named_n, named);
-    } else if (node.member && node.member->kind == M_METHOD) {
+    } else if (node.member && node.member->kind == MK_METHOD) {
         if (named_n > 0) {
             value_t bound[OBJ_BIND_MAX_ARGS];
             int bound_n = 0;
@@ -1731,7 +1733,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
                 return;
             }
             const char *ref_path = NULL;
-            if (k == SHELL_BINDING_VALUE && cur && cur->kind == V_REF)
+            if (k == SHELL_BINDING_VALUE && cur && cur->kind == VK_REF)
                 ref_path = cur->ref;
             else if (k == SHELL_BINDING_ALIAS)
                 ref_path = alias_path;
@@ -1774,11 +1776,11 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
             return;
         }
         node_t n = {0};
-        if (base.kind == V_REF) {
+        if (base.kind == VK_REF) {
             char full[512];
             snprintf(full, sizeof(full), "%s%s", base.ref ? base.ref : "", sub);
             n = object_resolve(object_root(), full);
-        } else if (base.kind == V_OBJECT && base.obj) {
+        } else if (base.kind == VK_OBJECT && base.obj) {
             n = object_resolve(base.obj, sub[0] == '.' ? sub + 1 : sub);
         }
         value_free(&base);
@@ -1807,7 +1809,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
         value_free(&rhs);
         return;
     }
-    if (!n.member || n.member->kind != M_ATTR) {
+    if (!n.member || n.member->kind != MK_ATTR) {
         exec_error(cx, st->line, "'%s' is not a settable attribute", st->lvalue);
         value_free(&rhs);
         return;
@@ -1895,9 +1897,9 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_free(&iter);
         return;
     }
-    if (iter.kind != V_LIST && iter.kind != V_RANGE && iter.kind != V_BYTES && iter.kind != V_MAP) {
+    if (iter.kind != VK_LIST && iter.kind != VK_RANGE && iter.kind != VK_BYTES && iter.kind != VK_MAP) {
         exec_error(cx, st->line, "for: cannot iterate a %s (use a list, map, a..b range, or bytes)",
-                   iter.kind == V_INT || iter.kind == V_UINT ? "plain integer" : "value of this kind");
+                   iter.kind == VK_INT || iter.kind == VK_UINT ? "plain integer" : "value of this kind");
         value_free(&iter);
         return;
     }
@@ -1912,11 +1914,11 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     // data that already exists, and its size is whatever the machine already
     // holds.
     size_t count = 0;
-    if (iter.kind == V_LIST)
+    if (iter.kind == VK_LIST)
         count = iter.list.len;
-    else if (iter.kind == V_MAP)
+    else if (iter.kind == VK_MAP)
         count = iter.map.len;
-    else if (iter.kind == V_BYTES)
+    else if (iter.kind == VK_BYTES)
         count = iter.bytes.n;
     else {
         uint64_t n = val_range_count(&iter);
@@ -1932,7 +1934,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     // A list holds raw object pointers: watch each object item so one the
     // body destroys is reported instead of bound (a dangling pointer).
     bool *gone = NULL;
-    if (iter.kind == V_LIST && count > 0) {
+    if (iter.kind == VK_LIST && count > 0) {
         gone = (bool *)calloc(count, sizeof(*gone));
         if (!gone) {
             exec_error(cx, st->line, "for: out of memory");
@@ -1940,7 +1942,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             return;
         }
         for (size_t i = 0; i < count; i++)
-            if (iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+            if (iter.list.items[i].kind == VK_OBJECT && iter.list.items[i].obj)
                 object_register_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
     }
 
@@ -1959,12 +1961,12 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             break;
         }
         value_t item;
-        if (iter.kind == V_LIST)
+        if (iter.kind == VK_LIST)
             item = value_dup(&iter.list.items[i]);
-        else if (iter.kind == V_MAP)
+        else if (iter.kind == VK_MAP)
             // Maps iterate their keys (dict idiom); `map[k]` fetches values.
             item = val_str(iter.map.entries[i].key);
-        else if (iter.kind == V_BYTES)
+        else if (iter.kind == VK_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else
             item = val_int(iter.range.start + (int64_t)i * iter.range.step);
@@ -1988,7 +1990,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
 
     if (gone) {
         for (size_t i = 0; i < count; i++)
-            if (!gone[i] && iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+            if (!gone[i] && iter.list.items[i].kind == VK_OBJECT && iter.list.items[i].obj)
                 object_unregister_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
         free(gone);
     }
@@ -2025,7 +2027,7 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
         const char *mp = msg_at;
         m = expr_parse_dq_string(&mp, &ectx);
     }
-    const char *msg = m.kind == V_STRING && m.s && m.s[0] ? m.s : st->text;
+    const char *msg = m.kind == VK_STRING && m.s && m.s[0] ? m.s : st->text;
     // One report, with its predicate error.  These are one failure event and
     // used to go to two streams, so a test log could interleave them in
     // either order or split them across files -- and that output is exactly
@@ -2055,7 +2057,7 @@ static void exec_include(stmt_t *st, exec_ctx_t *cx) {
         value_free(&v);
         return;
     }
-    if (v.kind != V_STRING || !v.s || !v.s[0]) {
+    if (v.kind != VK_STRING || !v.s || !v.s[0]) {
         exec_error(cx, st->line, "include: expected a non-empty path string");
         value_free(&v);
         return;
@@ -2096,7 +2098,7 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
     case ST_ALIAS: {
         char err[SCRIPT_ERR_MAX];
-        if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
+        if (alias_add_user(st->name, st->text, err, sizeof(err)) != STATUS_OK)
             exec_error(cx, st->line, "alias: %s", err);
         return;
     }

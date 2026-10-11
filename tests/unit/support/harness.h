@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 // Test harness API for unit tests
 // Provides a clean abstraction over test context management, replacing
-// direct use of global_emulator in tests.
+// direct use of the active-machine pointer in tests.
 
 #ifndef TEST_HARNESS_H
 #define TEST_HARNESS_H
@@ -15,7 +15,7 @@
 typedef struct memory memory_map_t;
 typedef struct cpu cpu_t;
 
-// Test context - replaces global_emulator for tests
+// Test context - replaces the active machine for tests
 typedef struct test_context {
     memory_map_t *memory;
     cpu_t *cpu;
@@ -33,7 +33,7 @@ test_context_t *test_harness_init(void);
 // Destroy a test context and free all associated resources.
 void test_harness_destroy(test_context_t *ctx);
 
-// Accessors - tests use these instead of global_emulator
+// Accessors - tests use these instead of the active machine
 
 // Get the memory map from the test context. May return NULL for isolated tests.
 memory_map_t *test_get_memory(test_context_t *ctx);

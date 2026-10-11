@@ -9,6 +9,7 @@
 
 // === Includes ===
 
+#include "checkpoint.h"
 #include "common.h"
 #include "keyboard.h"
 #include "scheduler.h"
@@ -73,6 +74,13 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 // Injects mouse movement deltas without changing the current button state
 void adb_mouse_move(adb_t *adb, int dx, int dy);
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
+
+// True while host mouse input waits for the guest: motion or a button change
+// no Talk R0 has carried yet, or events queued behind an unreported change.
+bool adb_mouse_input_pending(const adb_t *adb);
+
+// True while key transitions wait in the keyboard's queue for a Talk R0.
+bool adb_keyboard_input_pending(const adb_t *adb);
 
 // === Auto-poll, as the host sees it =======================================
 //

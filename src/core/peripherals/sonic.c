@@ -10,6 +10,7 @@
 // Evidence labels: [D] datasheet, [A] Apple source, [I] inferred.
 
 #include "sonic.h"
+#include "checkpoint.h"
 
 #include "log.h"
 

@@ -4,6 +4,7 @@
 // scsi_cdrom.c
 // CD-ROM device logic for the SCSI subsystem (AppleCD SC Plus / Sony CDU-8002).
 
+#include "gs_assert.h"
 #include "platform.h"
 #include "scsi.h"
 #include "scsi_internal.h"
@@ -322,9 +323,7 @@ static void cd_mode_sense(scsi_t *scsi, bool ten) {
     // Bound by the allocation length.  Zero means zero -- CDU-541 manual
     // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
     // response to a probe that allocated nothing for it.
-    int n = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (n > 0)
-        memcpy(scsi->buf.data, resp, (size_t)n);
+    scsi_data_in_copy(scsi, resp, pos, alloc_len);
 }
 
 // Handle MODE SENSE(6) for CD-ROM device
@@ -559,9 +558,7 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     toc[2] = 0x01; // first track
     toc[3] = 0x01; // last track
 
-    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, toc, (size_t)len);
+    scsi_data_in_copy(scsi, toc, pos, alloc_len);
 }
 
 // Handle the Sony vendor READ TOC (C1h) — returns the CDU-541 "TOC Data Format"
@@ -623,9 +620,7 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     toc[2] = 0x01; // first track number
     toc[3] = 0x01; // last track number
 
-    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, toc, (size_t)len);
+    scsi_data_in_copy(scsi, toc, pos, alloc_len);
 }
 
 // ============================================================================
@@ -641,9 +636,7 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
     memset(resp, 0, sizeof(resp));
     resp[1] = 0x15; // audio status: no current audio status info
 
-    int len = scsi_data_in_alloc(scsi, 4, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, resp, (size_t)len);
+    scsi_data_in_copy(scsi, resp, 4, alloc_len);
 }
 
 // ============================================================================
@@ -666,9 +659,7 @@ void scsi_cdrom_read_header(scsi_t *scsi) {
     resp[0] = 0x01; // CD-ROM data mode 1
     put_cd_address(&resp[4], lba, msf); // bytes 4-7: absolute address
 
-    int len = scsi_data_in_alloc(scsi, 8, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, resp, (size_t)len);
+    scsi_data_in_copy(scsi, resp, 8, alloc_len);
 }
 
 // ============================================================================

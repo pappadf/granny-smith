@@ -23,11 +23,12 @@
 
 #include "dafb.h"
 
+#include "checkpoint.h"
 #include "display_class.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h" // full config_t, for cfg->build_opts
+#include "system_internal.h" // full config_t, for cfg->build_opts
 
 #include <stdlib.h>
 #include <string.h>

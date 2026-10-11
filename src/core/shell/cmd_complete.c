@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -27,43 +28,129 @@
 #include "../object/value.h"
 #include "../vfs/vfs.h"
 
-// === Tiny per-call string pool ==============================================
+// === Owned strings =============================================================
 //
 // Most completion items point at static class-member or registry strings —
 // those need no copy. Indexed-child entries (`drives.0`) and any other
-// dynamically composed names need backing storage that outlives the
-// completion call; the terminal copies the strings before the next press.
-// One static buffer per call is enough for the small fan-outs we ship.
+// dynamically composed names are copied and owned by the completion they
+// belong to, released by completion_free.
 
-static char g_pool[2048];
-static size_t g_pool_used;
-
-static void pool_reset(void) {
-    g_pool_used = 0;
-}
-
-static const char *pool_strdup(const char *s) {
+// Copy `s` into storage owned by `out`; NULL (and `truncated`) on OOM.
+static const char *comp_strdup(struct completion *out, const char *s) {
     if (!s)
         return NULL;
-    size_t n = strlen(s) + 1;
-    if (g_pool_used + n > sizeof(g_pool))
+    if (out->n_owned == out->cap_owned) {
+        int cap = out->cap_owned ? out->cap_owned * 2 : 32;
+        char **t = (char **)realloc(out->owned, (size_t)cap * sizeof(*t));
+        if (!t) {
+            out->truncated = true;
+            return NULL;
+        }
+        out->owned = t;
+        out->cap_owned = cap;
+    }
+    char *copy = strdup(s);
+    if (!copy) {
+        out->truncated = true;
         return NULL;
-    char *out = g_pool + g_pool_used;
-    memcpy(out, s, n);
-    g_pool_used += n;
-    return out;
+    }
+    out->owned[out->n_owned++] = copy;
+    return copy;
+}
+
+// FNV-1a hash of a candidate string, for the dedup index.
+static uint32_t comp_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        h = (h ^ *p) * 16777619u; // fold in one byte
+    return h;
+}
+
+// Slot of `cand` in the dedup index: the slot holding an equal item, or the
+// empty slot where it would go.  seen_cap is a power of two.
+static int comp_seen_slot(const struct completion *out, const char *cand) {
+    uint32_t mask = (uint32_t)out->seen_cap - 1;
+    uint32_t i = comp_hash(cand) & mask;
+    while (out->seen[i] >= 0 && strcmp(out->items[out->seen[i]], cand) != 0)
+        i = (i + 1) & mask; // linear probe
+    return (int)i;
+}
+
+// Size the dedup index for `cap` items (twice that, a power of two) and
+// re-index the items held so far.  False when memory runs out.
+static bool comp_seen_grow(struct completion *out, int cap) {
+    int want = 16;
+    while (want < 2 * cap)
+        want *= 2;
+    if (want <= out->seen_cap)
+        return true;
+    int *t = (int *)malloc((size_t)want * sizeof(*t));
+    if (!t)
+        return false;
+    free(out->seen);
+    out->seen = t;
+    out->seen_cap = want;
+    for (int i = 0; i < want; i++)
+        t[i] = -1;
+    for (int i = 0; i < out->count; i++)
+        t[comp_seen_slot(out, out->items[i])] = i; // re-insert every held item
+    return true;
+}
+
+// Make room for one more item; false (and `truncated`) when the sanity
+// bound is reached or memory runs out.
+static bool comp_reserve(struct completion *out) {
+    if (out->count < out->cap)
+        return true;
+    if (out->count >= CMD_MAX_COMPLETIONS) {
+        out->truncated = true;
+        return false;
+    }
+    int cap = out->cap ? out->cap * 2 : 64;
+    if (cap > CMD_MAX_COMPLETIONS)
+        cap = CMD_MAX_COMPLETIONS;
+    const char **items = (const char **)realloc(out->items, (size_t)cap * sizeof(*items));
+    if (items)
+        out->items = items;
+    uint8_t *kinds = (uint8_t *)realloc(out->kinds, (size_t)cap * sizeof(*kinds));
+    if (kinds)
+        out->kinds = kinds;
+    const char **docs = (const char **)realloc(out->docs, (size_t)cap * sizeof(*docs));
+    if (docs)
+        out->docs = docs;
+    if (!items || !kinds || !docs || !comp_seen_grow(out, cap)) {
+        out->truncated = true;
+        return false;
+    }
+    out->cap = cap;
+    return true;
+}
+
+void completion_free(struct completion *c) {
+    if (!c)
+        return;
+    for (int i = 0; i < c->n_owned; i++)
+        free(c->owned[i]);
+    free(c->owned);
+    free((void *)c->items);
+    free(c->kinds);
+    free((void *)c->docs);
+    free(c->seen);
+    memset(c, 0, sizeof(*c));
+}
+
+// True when no more candidates can be taken (the sanity bound is reached)
+static bool comp_full(const struct completion *out) {
+    return out->count >= CMD_MAX_COMPLETIONS;
 }
 
 // === Completion accumulator ==================================================
 
 static void push_match(struct completion *out, const char *cand, const char *prefix) {
     if (!cand) {
-        // pool_strdup returned NULL: a composed candidate was dropped because
-        // the pool filled.  Say so rather than returning a quietly short set.
-        out->truncated = true;
-        return;
-    }
-    if (out->count >= CMD_MAX_COMPLETIONS) {
+        // A composed candidate could not be stored (out of memory, or it
+        // did not fit its buffer).  Say so rather than returning a quietly
+        // short set.
         out->truncated = true;
         return;
     }
@@ -76,14 +163,17 @@ static void push_match(struct completion *out, const char *cand, const char *pre
     size_t plen = prefix ? strlen(prefix) : 0;
     if (plen && strncmp(cand, prefix, plen) != 0)
         return;
-    // Dedup against earlier matches in this completion set.
-    for (int i = 0; i < out->count; i++) {
-        if (out->items[i] && strcmp(out->items[i], cand) == 0)
-            return;
-    }
+    // Dedup against earlier matches in this completion set (hashed: a
+    // directory of thousands of entries must not cost a quadratic scan).
+    if (out->count > 0 && out->seen[comp_seen_slot(out, cand)] >= 0)
+        return;
+    if (!comp_reserve(out))
+        return;
     out->kinds[out->count] = (uint8_t)out->cur_kind;
     out->docs[out->count] = out->cur_doc;
-    out->items[out->count++] = cand;
+    out->items[out->count] = cand;
+    out->seen[comp_seen_slot(out, cand)] = out->count; // index the new item
+    out->count++;
 }
 
 const char *comp_kind_name(comp_kind_t k) {
@@ -129,8 +219,12 @@ static void complete_paths(const char *prefix, struct completion *out) {
             dir[0] = '/';
             dir[1] = '\0';
         } else {
-            if (dir_len >= sizeof(dir))
-                dir_len = sizeof(dir) - 1;
+            // A directory part too long for the buffer is not cut short --
+            // that would list a different directory -- it gets nothing.
+            if (dir_len >= sizeof(dir)) {
+                out->truncated = true;
+                return;
+            }
             memcpy(dir, prefix, dir_len);
             dir[dir_len] = '\0';
         }
@@ -147,7 +241,7 @@ static void complete_paths(const char *prefix, struct completion *out) {
         return;
     vfs_dirent_t ent;
     set_detail(out, COMP_KIND_VALUE, NULL);
-    while (out->count < CMD_MAX_COMPLETIONS) {
+    while (!comp_full(out)) {
         int rc = be->readdir(vd, &ent);
         if (rc <= 0)
             break;
@@ -172,7 +266,7 @@ static void complete_paths(const char *prefix, struct completion *out) {
         }
         char buf[sizeof(ent.name) + 1];
         snprintf(buf, sizeof(buf), "%s%s", ent.name, is_dir ? "/" : "");
-        const char *copy = pool_strdup(buf);
+        const char *copy = comp_strdup(out, buf);
         if (!copy)
             break;
         push_match(out, copy, partial);
@@ -190,10 +284,12 @@ static void complete_enum(const char *const *enum_values, const char *partial, s
         push_match(out, *ev, partial);
 }
 
+// Every spelling val_parse_bool (value.c) accepts, the usual ones first
+static const char *const bool_values[] = {"on", "off", "true", "false", "yes", "no", "1", "0", NULL};
+
 static void complete_bool(const char *partial, struct completion *out) {
-    static const char *bool_values[] = {"on", "off", "true", "false", NULL};
     set_detail(out, COMP_KIND_VALUE, NULL);
-    for (const char **v = bool_values; *v; v++)
+    for (const char *const *v = bool_values; *v; v++)
         push_match(out, *v, partial);
 }
 
@@ -216,7 +312,7 @@ static void push_name_match(struct completion *out, const char *name, bool is_ob
     }
     char buf[128];
     snprintf(buf, sizeof(buf), "%s.", name);
-    push_match(out, pool_strdup(buf), tail);
+    push_match(out, comp_strdup(out, buf), tail);
 }
 
 // Detail kind of a child object: a collection container or a plain object.
@@ -232,12 +328,12 @@ static void complete_class_members(struct object *target, const char *tail, stru
         const member_t *m = &cls->members[i];
         if (!m->name)
             continue;
-        comp_kind_t kind = m->kind == M_ATTR     ? COMP_KIND_ATTR
-                           : m->kind == M_METHOD ? COMP_KIND_METHOD
-                           : m->child.collection ? COMP_KIND_COLLECTION
-                                                 : COMP_KIND_OBJECT;
+        comp_kind_t kind = m->kind == MK_ATTR     ? COMP_KIND_ATTR
+                           : m->kind == MK_METHOD ? COMP_KIND_METHOD
+                           : m->child.collection  ? COMP_KIND_COLLECTION
+                                                  : COMP_KIND_OBJECT;
         set_detail(out, kind, m->doc);
-        push_name_match(out, m->name, m->kind == M_CHILD, tail);
+        push_name_match(out, m->name, m->kind == MK_CHILD, tail);
     }
 }
 
@@ -270,30 +366,32 @@ static void complete_indexed_children(struct object *o, const member_t *m, const
     if (!o || !member_is_collection(m))
         return;
     set_detail(out, COMP_KIND_OBJECT, NULL);
+    size_t tlen = tail ? strlen(tail) : 0;
     int idx = object_child_next(o, m, -1);
-    while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
-        // Indexed children resolve to objects: complete to "N.".
+    while (idx >= 0 && !comp_full(out)) {
+        // Indexed children resolve to objects: complete to "N.".  Filter on
+        // the typed prefix before storing anything.
         char tmp[16];
         snprintf(tmp, sizeof(tmp), "%d.", idx);
-        const char *copy = pool_strdup(tmp);
-        if (!copy)
-            break;
-        push_match(out, copy, tail);
+        if (!tlen || strncmp(tmp, tail, tlen) == 0) {
+            const char *copy = comp_strdup(out, tmp);
+            if (!copy)
+                break;
+            push_match(out, copy, NULL);
+        }
         idx = object_child_next(o, m, idx);
     }
 }
 
-// Walk a dotted/bracketed prefix and return the deepest resolvable node.
-// `prefix` may be empty (root) or `cpu`, `cpu.pc`, `floppy.drives[0]`,
-// `floppy.drives[0].`, etc. Trailing `.` is stripped by the caller.
+// Resolve the head of a partial path: the root for an empty prefix, else
+// `cpu`, `cpu.pc`, `floppy.drives[0]`, etc. through object_resolve.  The
+// caller splits off the unfinished last segment (and with it any trailing
+// `.`), so the head is always a complete path or nothing.
 static node_t resolve_prefix(const char *prefix) {
     struct object *root = object_root();
     node_t cur = (node_t){.obj = root, .member = NULL, .index = -1};
     if (!prefix || !*prefix)
         return cur;
-    // object_resolve enforces a strict grammar; fall back to walking
-    // segments by hand so a partial `cpu.` (segment ending in `.`) still
-    // resolves to the cpu object node.
     node_t r = object_resolve(root, prefix);
     if (node_valid(r))
         return r;
@@ -322,15 +420,17 @@ static void complete_path(const char *partial, struct completion *out) {
             split = i;
     }
 
-    char head[256];
+    char head[OBJ_PATH_MAX];
     const char *tail;
     if (split < 0) {
         head[0] = '\0';
         tail = partial;
     } else {
         size_t hlen = (size_t)split;
-        if (hlen >= sizeof(head))
-            hlen = sizeof(head) - 1;
+        if (hlen >= sizeof(head)) {
+            out->truncated = true; // a head this long is no path we could resolve
+            return;
+        }
         memcpy(head, partial, hlen);
         head[hlen] = '\0';
         tail = partial + split + 1;
@@ -351,7 +451,7 @@ static void complete_path(const char *partial, struct completion *out) {
         // For an object node, the class is on the object itself; for a
         // child-member with index resolved, descend into the live child.
         struct object *target = n.obj;
-        if (n.member && n.member->kind == M_CHILD)
+        if (n.member && n.member->kind == MK_CHILD)
             target = n.member->child.collection ? object_entry_at(n.obj, n.member, n.index)
                                                 : object_named_child(n.obj, n.member);
         if (target) {
@@ -360,27 +460,26 @@ static void complete_path(const char *partial, struct completion *out) {
         }
     }
 
-    // Prepend head + '.' (or just head if empty).
-    for (int i = 0; i < local.count && out->count < CMD_MAX_COMPLETIONS; i++) {
+    // Prepend head + '.' (or just head if empty).  Pushed through
+    // push_match with no prefix (the candidates were already filtered
+    // against `tail`) so they are deduplicated against `out` like any other.
+    for (int i = 0; i < local.count && !comp_full(out); i++) {
         const char *cand = local.items[i];
         if (!cand)
             continue;
-        char composed[512];
-        if (head[0])
-            snprintf(composed, sizeof(composed), "%s.%s", head, cand);
-        else
-            snprintf(composed, sizeof(composed), "%s", cand);
-        const char *copy = pool_strdup(composed);
-        if (!copy)
-            break;
-        // Push as raw — push_match would re-filter against `partial` here,
-        // but we already filtered against `tail`, so use a direct append.
-        if (out->count < CMD_MAX_COMPLETIONS) {
-            out->kinds[out->count] = local.kinds[i];
-            out->docs[out->count] = local.docs[i];
-            out->items[out->count++] = copy;
+        char composed[OBJ_PATH_MAX];
+        int n = head[0] ? snprintf(composed, sizeof(composed), "%s.%s", head, cand)
+                        : snprintf(composed, sizeof(composed), "%s", cand);
+        if (n < 0 || (size_t)n >= sizeof(composed)) {
+            out->truncated = true; // never offer a cut-short path
+            continue;
         }
+        set_detail(out, (comp_kind_t)local.kinds[i], local.docs[i]);
+        push_match(out, comp_strdup(out, composed), NULL);
     }
+    if (local.truncated)
+        out->truncated = true;
+    completion_free(&local);
 }
 
 // === Commands =================================================================
@@ -400,13 +499,13 @@ static bool command_cb(const char *name, const char *target, bool builtin, void 
     node_t n;
     if (shell_head_resolve(name, strlen(name), &n, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
         return true;
-    // The name is the iteration's copy: keep it in the per-call pool.
-    const char *copy = pool_strdup(name);
+    // The name is the iteration's copy: keep a copy owned by the completion.
+    const char *copy = comp_strdup(acc->out, name);
     if (!copy)
         return false;
     set_detail(acc->out, COMP_KIND_METHOD, n.member->doc);
     push_match(acc->out, copy, acc->partial);
-    return acc->out->count < CMD_MAX_COMPLETIONS;
+    return !comp_full(acc->out);
 }
 
 static void complete_commands(const char *partial, struct completion *out) {
@@ -421,7 +520,7 @@ static void complete_commands(const char *partial, struct completion *out) {
 // slot's kind picks the candidates.
 
 static void complete_method_arg(const member_t *m, int slot, const char *partial, struct completion *out) {
-    if (!m || m->kind != M_METHOD || m->method.nargs <= 0)
+    if (!m || m->kind != MK_METHOD || m->method.nargs <= 0)
         return;
     int n = m->method.nargs;
     const arg_decl_t *args = m->method.args;
@@ -437,16 +536,15 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
         const char *nm = args[i].name;
         char buf[160];
         set_detail(out, COMP_KIND_VALUE, args[i].doc);
-        if (args[i].kind == V_ENUM && args[i].enum_values) {
+        if (args[i].kind == VK_ENUM && args[i].enum_values) {
             for (const char *const *ev = args[i].enum_values; *ev; ev++) {
                 snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
-                push_match(out, pool_strdup(buf), partial);
+                push_match(out, comp_strdup(out, buf), partial);
             }
-        } else if (args[i].kind == V_BOOL) {
-            static const char *bool_vals[] = {"true", "false", NULL};
-            for (const char *const *bv = bool_vals; *bv; bv++) {
+        } else if (args[i].kind == VK_BOOL) {
+            for (const char *const *bv = bool_values; *bv; bv++) {
                 snprintf(buf, sizeof(buf), "%s=%s", nm, *bv);
-                push_match(out, pool_strdup(buf), partial);
+                push_match(out, comp_strdup(out, buf), partial);
             }
         }
         return;
@@ -456,19 +554,19 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
         return;
     const arg_decl_t *a = &args[slot];
     switch (a->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         complete_bool(partial, out);
         break;
-    case V_ENUM:
+    case VK_ENUM:
         complete_enum(a->enum_values, partial, out);
         break;
-    case V_OBJECT:
+    case VK_OBJECT:
         complete_path(partial, out);
         break;
-    case V_STRING:
-        // A string declared VAL_PATH names a filesystem path. Other strings
+    case VK_STRING:
+        // A string declared VFLAG_PATH names a filesystem path. Other strings
         // get nothing — guessing here would litter the menu.
-        if (a->presentation_flags & VAL_PATH)
+        if (a->presentation_flags & VFLAG_PATH)
             complete_paths(partial, out);
         break;
     default:
@@ -483,18 +581,8 @@ static void complete_method_arg(const member_t *m, int slot, const char *partial
         char nbuf[96];
         snprintf(nbuf, sizeof(nbuf), "%s=", args[i].name);
         set_detail(out, COMP_KIND_ATTR, args[i].doc);
-        push_match(out, pool_strdup(nbuf), partial);
+        push_match(out, comp_strdup(out, nbuf), partial);
     }
-}
-
-// === Line-start (command-position) completion ================================
-
-static void complete_root_members(const char *tail, struct completion *out) {
-    struct object *root = object_root();
-    if (!root)
-        return;
-    complete_class_members(root, tail, out);
-    complete_attached(root, tail, out);
 }
 
 // === Binding-name completion (`$par` → `$pc`, `$pram_...`) =================
@@ -511,7 +599,7 @@ static bool binding_complete_var_cb(const char *name, const value_t *v, void *ud
         return true;
     char buf[128];
     snprintf(buf, sizeof(buf), "$%s", name);
-    push_match(cc->out, pool_strdup(buf), NULL);
+    push_match(cc->out, comp_strdup(cc->out, buf), NULL);
     return true;
 }
 
@@ -523,7 +611,7 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
         return true;
     char buf[128];
     snprintf(buf, sizeof(buf), "$%s", name ? name : "");
-    push_match(cc->out, pool_strdup(buf), NULL);
+    push_match(cc->out, comp_strdup(cc->out, buf), NULL);
     return true;
 }
 
@@ -553,13 +641,16 @@ static bool is_named_word(const char *word, size_t n) {
     return false;
 }
 
-// The partial word [s, e) as a NUL-terminated copy (truncated to fit).
-static void copy_word(char *buf, size_t size, const char *s, const char *e) {
+// The partial word [s, e) as a NUL-terminated copy.  False when it does
+// not fit: a word cut short (maybe inside a `[...]`) would complete
+// something the user did not type, so the caller offers nothing instead.
+static bool copy_word(char *buf, size_t size, const char *s, const char *e) {
     size_t n = (size_t)(e - s);
     if (n >= size)
-        n = size - 1;
+        return false;
     memcpy(buf, s, n);
     buf[n] = '\0';
+    return true;
 }
 
 // The head of a statement: `$` bindings, a mid-path partial's members, or
@@ -579,7 +670,11 @@ static void complete_head(const char *partial, struct completion *out) {
         set_detail(out, COMP_KIND_KEYWORD, NULL);
         push_match(out, object_keyword(i), partial);
     }
-    complete_root_members(partial, out);
+    struct object *root = object_root();
+    if (root) {
+        complete_class_members(root, partial, out);
+        complete_attached(root, partial, out);
+    }
     complete_commands(partial, out);
 }
 
@@ -611,7 +706,10 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
     }
     out->start = (int)(word - line);
     char partial[512];
-    copy_word(partial, sizeof(partial), word, cur);
+    if (!copy_word(partial, sizeof(partial), word, cur)) {
+        out->truncated = true;
+        return;
+    }
     if (partial[0] == '$') {
         complete_bindings(partial + 1, out);
         return;
@@ -622,13 +720,14 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
     // function has no declared arguments.
     if (*st->head == '$')
         return;
-    char head[256];
-    copy_word(head, sizeof(head), st->head, head_end);
+    char head[OBJ_PATH_MAX];
+    if (!copy_word(head, sizeof(head), st->head, head_end))
+        return;
     node_t cmd = object_resolve(object_root(), head);
     if (!node_valid(cmd) && !strpbrk(head, ".[") &&
         shell_word_resolve(head, strlen(head), &cmd, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
         cmd = (node_t){0};
-    if (!node_valid(cmd) || !cmd.member || cmd.member->kind != M_METHOD)
+    if (!node_valid(cmd) || !cmd.member || cmd.member->kind != MK_METHOD)
         return;
     const member_t *m = cmd.member;
     const char *eq = is_named_word(partial, strlen(partial)) ? strchr(partial, '=') : NULL;
@@ -648,9 +747,12 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_assert("shell_complete");
+    worker_thread_check("shell_complete");
 
-    if (!line || !out)
+    if (!out)
+        return;
+    completion_free(out); // empty an earlier result
+    if (!line)
         return;
     out->count = 0;
     out->has_context = false;
@@ -659,7 +761,6 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     out->ctx_arg_name = NULL;
     out->truncated = false;
     set_detail(out, COMP_KIND_VALUE, NULL);
-    pool_reset();
 
     int len = (int)strlen(line);
     if (cursor_pos < 0)
@@ -701,7 +802,10 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     if (he == cur) {
         out->start = (int)(s - line);
         char partial[512];
-        copy_word(partial, sizeof(partial), s, cur);
+        if (!copy_word(partial, sizeof(partial), s, cur)) {
+            out->truncated = true;
+            return;
+        }
         complete_head(partial, out);
         return;
     }

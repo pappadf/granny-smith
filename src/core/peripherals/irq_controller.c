@@ -15,7 +15,7 @@ static const irq_controller_ops_t *ops_of(const member_t *m) {
 
 static value_t hexed(uint32_t v) {
     value_t out = val_uint(4, v);
-    out.flags |= VAL_HEX;
+    out.flags |= VFLAG_HEX;
     return out;
 }
 

@@ -30,7 +30,7 @@
 // up to the present pass is exercised; the present itself is a real-
 // browser matter (voodoo2.md, "The WebGPU takeover").
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";

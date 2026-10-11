@@ -32,6 +32,9 @@ import {
   shmBlockOk,
 } from '@/bus/shmLayout';
 
+// Output frames the silent-depth trim crossfades over (~0.7 ms at 48 kHz).
+const XFADE_FRAMES = 32;
+
 export interface AudioRingOptions {
   srcRate: number;
   dstRate: number;
@@ -72,6 +75,11 @@ export class AudioRingConsumer {
   private gen: number;
   private flushPending = false;
   private dead = false;
+  // The depth trim's crossfade: quanta-spanning ramp from the sample played
+  // last (xfFrom, per channel) into the stream past the cut.
+  private readonly lastOut = [0, 0];
+  private readonly xfFrom = [0, 0];
+  private xfLeft = 0;
   underruns = 0;
 
   // Throws when the block is not a layout this build speaks.
@@ -186,6 +194,15 @@ export class AudioRingConsumer {
     const ts = this.targetFrames;
     const targetGain = Math.min(Math.max(Atomics.load(hdr, ARING_W_VOL), 0), 7) / 7;
     // PI controller trims the resample step ±2000 ppm toward target depth.
+    // No plant model sets these gains; what they do, per render quantum:
+    //  - P: an error of one whole target depth (ring empty, or twice full)
+    //    asks for 0.5 %, so the ±0.2 % clamp is reached at 40 % off target
+    //    and a small error trims proportionally less;
+    //  - I: errI is a leaky average of the error (time constant 200 quanta,
+    //    ~0.5 s at 48 kHz) and adds 0.1 % per target depth of it -- the slow
+    //    term that cancels a steady producer/clock rate mismatch;
+    //  - the clamp: 2000 ppm is far above any real crystal mismatch (tens of
+    //    ppm) yet a pitch shift under 3.5 cents, so the trim is inaudible.
     const error = avail - ts;
     this.errI = this.errI * 0.995 + error * 0.005;
     let adj = (error / ts) * 0.005 + (this.errI / ts) * 0.001;
@@ -219,6 +236,12 @@ export class AudioRingConsumer {
         this.dcYv[c] = hp;
         out[c][i] = hp * this.curGain;
       }
+      if (this.xfLeft > 0) {
+        // Past a depth trim: blend from where the cut left off.
+        const t = this.xfLeft / XFADE_FRAMES;
+        for (let c = 0; c < oc; c++) out[c][i] = this.xfFrom[c] * t + out[c][i] * (1 - t);
+        this.xfLeft--;
+      }
       this.frac += stepAdj;
       const consumed = this.frac | 0;
       if (consumed > 0) {
@@ -240,9 +263,17 @@ export class AudioRingConsumer {
     }
     // Silence-aware depth trim: during sustained silence, clamp the depth to
     // the target so latency can't grow when the emulator outruns real time.
+    // The jump is crossfaded over XFADE_FRAMES output frames from the last
+    // sample played: the skipped span is the OLDEST audio, which can still be
+    // the tail of a sound, so the cut may not land on equal samples.
+    for (let c = 0; c < oc; c++) this.lastOut[c] = out[c][frames - 1];
     if (Atomics.load(hdr, ARING_W_SILENT) >= 8) {
       const depth = (w2 - r) >>> 0;
-      if (depth > ts) r = (r + depth - ts) >>> 0;
+      if (depth > ts) {
+        r = (r + depth - ts) >>> 0;
+        for (let c = 0; c < oc; c++) this.xfFrom[c] = this.lastOut[c];
+        this.xfLeft = XFADE_FRAMES;
+      }
     }
     Atomics.store(hdr, ARING_W_READ, r | 0); // our index, our store
     return true;

@@ -54,10 +54,13 @@ typedef struct rom_info {
     const char *family_name; // Human-readable ("Universal IIx/IIcx/SE/30 ROM")
     const char *const *compatible; // NULL-terminated emulated model_ids; empty = not emulated
     const char *id; // Content id, lowercase hex (see above)
-    uint32_t rom_size; // Expected file size in bytes
+    // Sizes here are of the FILE (host bytes), so size_t like every other
+    // host buffer size in this header; sizes on the guest bus (the memory
+    // map's ROM region) stay uint32_t, the width of the address space.
+    size_t rom_size; // Expected file size in bytes
     // MAC68K only: bytes the header sum covers when it is not the whole image
     // (the Classic's sum stops where its ROM disk starts); 0 = whole image.
-    uint32_t checksum_span;
+    size_t checksum_span;
     uint32_t flags; // ROM_F_*
     // Short label telling this ROM apart from the other ROMs that boot the
     // same model ("Win NT", "Rev 2", "v2"); NULL when no other known ROM

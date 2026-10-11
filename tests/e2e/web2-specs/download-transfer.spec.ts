@@ -13,7 +13,7 @@
 // event can check.  The Save State button exercises the same road with a
 // checkpoint (checkpoint-resume.spec.ts covers the checkpoint itself).
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
