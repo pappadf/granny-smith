@@ -739,14 +739,16 @@ static void download_free(download_job_t *d) {
 static void download_done(bool ok, double ms, const char *error, void *ud) {
     (void)ms;
     download_job_t *d = (download_job_t *)ud;
-    if (ok) {
-        printf("download: requested '%s'\n", d->name);
-        if (d->token)
+    // A request's answer is its result (an error says why); nothing is
+    // printed.  Only a download no request asked for (a printer's output)
+    // has nobody to answer, so a failure of one is said on the console.
+    if (d->token) {
+        if (ok)
             mailbox_result_complete_ok(d->token);
-    } else {
-        printf("download: %s\n", error ? error : "failed");
-        if (d->token)
+        else
             mailbox_result_complete_error(d->token, error ? error : "download failed");
+    } else if (!ok) {
+        printf("download: %s\n", error ? error : "failed");
     }
     download_free(d);
 }
@@ -778,9 +780,10 @@ static int download_start(download_job_t *d) {
             mailbox_result_bind_io(d->token, d->io_id);
         return 0;
     }
-    printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     if (d->token)
         mailbox_result_complete_error(d->token, "the I/O worker is not running");
+    else
+        printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     download_free(d);
     return -1;
 }

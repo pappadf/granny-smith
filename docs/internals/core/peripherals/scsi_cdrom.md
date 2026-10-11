@@ -964,7 +964,8 @@ now live on `machine.scsi`:
 
 Validate a CD-ROM image file. Returns `true` if the file looks like a
 CD-ROM image (ISO 9660, HFS, or Apple Partition Map), `false` otherwise.
-Prints diagnostic information (size, detected filesystem) to the terminal.
+What it detected (size, filesystem), or why it refused, goes to the `scsi`
+log category at level 2 (`log.set scsi 2`); nothing is printed.
 
 ### 10.2 `machine.scsi.attach_cdrom(path, id)`
 

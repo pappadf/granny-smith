@@ -2111,42 +2111,40 @@ static DEF_SETTER(scsi_attr_loopback_set) {
 }
 
 // `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
-// it opens, isn't a floppy-sized image, and has a non-zero size. Prints a
-// closest-match drive model line for diagnostic context.
+// it opens, isn't a floppy-sized image, and has a non-zero size.  Why, and
+// the closest drive model, go to the scsi log category.
 static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        out_printf("invalid SCSI HD image: cannot open %s\n", path);
+        LOG(2, "identify_hd: cannot open %s", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        out_printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
+        LOG(2, "identify_hd: %s is floppy-sized (%zu bytes)", path, image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
     size_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
-    if (sz == best->size)
-        out_printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
-    else
-        out_printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+    LOG(2, "identify_hd: %s is an HD image: %zu bytes, %s %s %s", path, sz,
+        sz == best->size ? "matches" : "nearest model", best->vendor, best->product);
     image_close(img);
     return val_bool(true);
 }
 
 // `scsi.identify_cdrom(path)` — true if the file is a recognised CD-ROM
-// image (ISO 9660, HFS, or Apple Partition Map). Prints a one-line
-// diagnostic describing what was matched.
+// image (ISO 9660, HFS, or Apple Partition Map).  What was matched, or why
+// nothing was, goes to the scsi log category.
 static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        out_printf("invalid CD-ROM image: cannot open %s\n", path);
+        LOG(2, "identify_cdrom: cannot open %s", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        out_printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
+        LOG(2, "identify_cdrom: %s is floppy-sized (%zu bytes)", path, image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2164,12 +2162,12 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *fmt = image_get_format(img);
     const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
     if (!is_iso && !is_disk) {
-        out_printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        LOG(2, "identify_cdrom: %s has no ISO 9660, HFS, or Apple Partition Map", path);
         image_close(img);
         return val_bool(false);
     }
-    out_printf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
-               is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
+    LOG(2, "identify_cdrom: %s is a CD-ROM image: %.1f MB, %s%s%s%s%s", path, size_mb, is_iso ? "ISO 9660" : "",
+        is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
 }
