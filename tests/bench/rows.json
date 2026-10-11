@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "The CPU benchmark rows (docs/guide/BENCHMARKS.md).",
+    "rom/model/ram: the machine the emulator starts with (the row's bench_boot() re-boots it).",
+    "run_fn: the CPU's run function, callgrind's --toggle-collect for metric A.",
+    "a_n1/a_n2: metric A's two windows after the checkpoint, in scheduler instructions.",
+    "b_warm/b_window: metric B's warm-up and timed window.",
+    "slowpath_max: guard ceiling on memory slow-path accesses per guest instruction.",
+    "pr: gated on pull requests (all rows run nightly)."
+  ],
+  "defaults": {
+    "a_n1": 5000000,
+    "a_n2": 30000000,
+    "b_warm": 30000000,
+    "b_window": 300000000,
+    "slowpath_max": 0.05,
+    "pr": true
+  },
+  "rows": {
+    "plus-boot": {
+      "cpu": "68000", "run_fn": "cpu_run_68000",
+      "rom": "roms/plus-v3-4d1f8172.rom", "model": "plus", "ram": 2048,
+      "b_window": 200000000
+    },
+    "se30-finder-idle": {
+      "cpu": "68030", "run_fn": "cpu_run_68030",
+      "rom": "roms/iix-iicx-se30-97221136.rom", "model": "se30", "ram": 8192
+    },
+    "iicx-marathon": {
+      "cpu": "68030", "run_fn": "cpu_run_68030",
+      "rom": "roms/iix-iicx-se30-97221136.rom", "model": "iicx", "ram": 8192,
+      "slowpath_max": 0.08
+    },
+    "q840av-finder": {
+      "cpu": "68040", "run_fn": "cpu_run_68040",
+      "rom": "roms/q840av-q660av-5bf10fd1.rom", "model": "q840av", "ram": 16384
+    },
+    "pm6100-68kemu": {
+      "cpu": "601", "run_fn": "ppc_run",
+      "rom": "roms/pm6100-pm7100-pm8100-9feb69b3.rom", "model": "pm6100", "ram": 24576
+    },
+    "pm7500-of": {
+      "cpu": "604", "run_fn": "ppc_run",
+      "rom": "roms/pm7500-pm8500-pm9500-96cd923d.rom", "model": "pm7500", "ram": 32768,
+      "b_warm": 5000000, "b_window": 50000000
+    },
+    "iici-aux": {
+      "cpu": "68030", "run_fn": "cpu_run_68030",
+      "rom": "roms/iici-368cadfe.rom", "model": "iici", "ram": 16384,
+      "b_warm": 2000000, "b_window": 28000000
+    }
+  }
+}
