@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.9.3] — 2026-10-10
+
+### Fixed
+- **Lisa: boots with a diskette already inserted** — LOS no longer hangs at the hourglass when a floppy is in the drive at power-on (e.g. a URL boot with both `hd0=` and `fd0=`); the floppy controller's interrupt mask is now honoured.
+
+## [v0.9.2] — 2026-10-10
+
+### Added
+- **Lisa: save a diskette** — `export` on the floppy drive writes DiskCopy 4.2 with its sector tags, so a disk the Office System initialized or repaired comes out usable.
+- Floppy export for every Mac too (`.dc42`/`.image` = DiskCopy 4.2 with tags, else raw), in the web UI's Save As.
+- Release assets: the web build as a self-hostable zip, static `gs-headless` for Linux x86_64/arm64, and `SHA256SUMS`.
+- `machine.adb.mouse.pending` / `keyboard.pending` for scripts that wait for input to land.
+
+### Fixed
+- **Lisa: the clock now runs** — `GET_TIME` no longer stays at 1 January 1984.
+- Floppy sector tags are kept on raw-image disks and across checkpoints.
+- Quick mouse clicks are no longer lost (ADB and Plus); serial input arrives at the line rate.
+- Idle 604/750 PowerPC machines nap instead of spinning.
+
 ## [v0.9.1] — 2026-10-09
 
 ### Fixed

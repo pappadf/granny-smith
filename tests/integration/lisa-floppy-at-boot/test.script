@@ -1,0 +1,21 @@
+# Integration test: Apple Lisa 2 -- a diskette in the drive at power-on.
+#
+# The LOS 3.1 ProFile is the startup disk (BootVol = 2, as hd0= / the New
+# Machine dialog set it); the Office System's second installation diskette is
+# in the drive from the start.  The boot ROM boots the ProFile; the OS then
+# meets the diskette's latched insert event before its Sony driver exists,
+# masks floppy interrupts, and later (driver up) unmasks and mounts it.  The
+# desktop with the diskette's icon must appear.  The runner cd's into this
+# directory, so WORK_DIR is absolute and data paths are relative.
+
+include "../lib/mac.script"
+
+files.cp "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image" "${$WORK_DIR}/profile.image"
+machine.hd.attach "${$WORK_DIR}/profile.image"
+assert machine.hd.pram_init(2, false) "pram_init failed"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image"
+assert machine.floppy.drive.0.present "diskette not inserted"
+
+scheduler.run 120000000
+check("desktop.png")
+quit
