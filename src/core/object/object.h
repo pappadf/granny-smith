@@ -688,6 +688,32 @@ void object_register_invalidator(struct object *o, node_invalidate_fn cb, void *
 void object_unregister_invalidator(struct object *o, node_invalidate_fn cb, void *ud);
 void object_fire_invalidators(struct object *o);
 
+// === Watching the objects a value holds ======================================
+//
+// A value_t holds raw object pointers -- a VK_OBJECT, and any list item or
+// map value at any depth -- so whoever keeps a value across a statement that
+// can destroy objects (machine.boot) must learn when one of them dies.  An
+// object_watch_t registers one invalidator per object reference reachable in
+// the value; `gone` turns true when any of them fires, after which the value
+// must not be dereferenced.  The watch must stay at a fixed address while
+// armed, and be disarmed exactly once (object_unwatch) before it is freed or
+// re-armed: that unregisters every slot that has not fired.  A slot that
+// fired is already off its object's list and is never touched again.
+
+struct object_watch_slot;
+
+typedef struct object_watch {
+    struct object_watch_slot *slots; // one per object reference in the value
+    size_t n;
+    bool gone; // some watched object was destroyed
+} object_watch_t;
+
+// Arm `w` (zeroed or disarmed) over every object reachable in v. False on
+// out-of-memory, leaving `w` disarmed.
+bool object_watch_value(object_watch_t *w, const value_t *v);
+// Disarm: unregister the slots that have not fired, free them, clear `gone`.
+void object_unwatch(object_watch_t *w);
+
 // Verify class definition at registration time: every member name must
 // be a valid identifier, must not collide with a reserved word, and
 // must be unique within the class. STATUS_OK on success; on failure

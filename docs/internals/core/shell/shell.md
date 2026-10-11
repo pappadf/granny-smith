@@ -168,7 +168,13 @@ cap). Reads walk top-down and fall back to the alias table.
   adds a user reference that tracks whatever lives at that path.
 - **`let` snapshots.** `let d = machine.floppy.drive[0]` captures the
   live object; the handle survives unrelated adds/removes but reads as
-  an error once its object is destroyed (e.g. by a reboot).
+  an error once its object is destroyed (e.g. by a reboot). The same
+  holds for objects inside a stored list or map, at any depth:
+  `let xs = [machine.rtc]` reads as an error after `machine.boot`, as a
+  whole, rather than handing out a dangling item.
+- **Names are at most 63 characters** (`OBJ_IDENT_MAX`). Every binder —
+  `let`, a `for` variable, `def` names and parameters, `alias`, `--var` —
+  refuses a longer one, since no `$name` read could reach it.
 - Path continuation works through bindings: `$d.insert ../../fd0.image`,
   `$bp.addr + 4`, `$hits[0]` (list indexing).
 

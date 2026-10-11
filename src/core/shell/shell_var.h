@@ -70,8 +70,11 @@ void shell_binding_reattach_top(struct binding *b);
 void shell_binding_remove_top(const char *name);
 
 // Legacy string API — process-start bindings (`--var FOO=BAR`) and
-// internal init code. Stores VK_STRING in the global scope.
-int shell_var_set(const char *name, const char *value);
+// internal init code. Stores VK_STRING in the global scope.  Returns 0, or
+// -1 with a message in err_buf (may be NULL) when the name is not a valid
+// binding name (object_validate_name: an identifier, not reserved, at most
+// OBJ_IDENT_MAX characters).
+int shell_var_set(const char *name, const char *value, char *err_buf, size_t err_size);
 const char *shell_var_get(const char *name);
 
 // Walk every scope binding, innermost scope first and, within a scope, in
