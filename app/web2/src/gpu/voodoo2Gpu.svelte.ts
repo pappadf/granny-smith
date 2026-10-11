@@ -11,6 +11,7 @@
 // which canvas is on top.
 
 import { getModule } from '@/bus/emulator';
+import { showNotification } from '@/state/toasts.svelte';
 
 // Reactive overlay state, read by ScreenView.
 export const gpuOverlay = $state({ visible: false, width: 640, height: 480 });
@@ -60,6 +61,9 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
         deviceReady = true;
         resolve(true);
       } else if (m.type === 'unavailable') {
+        // Not an error: only the Voodoo2's GPU mode needs WebGPU, and its
+        // absence just withholds that option.  Logged for bug reports.
+        console.info(`[voodoo2-gpu] WebGPU unavailable: ${m.reason ?? 'no reason given'}`);
         resolve(false);
       } else if (m.type === 'mode') {
         gpuOverlay.visible = !!m.engaged;
@@ -69,6 +73,13 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
         }
       } else if (m.type === 'lost') {
         console.warn('[voodoo2-gpu] device lost:', m.reason);
+        // Visible only when it was in use: a device lost while idle costs
+        // nothing until the next machine, where it is simply not offered.
+        if (gpuOverlay.visible)
+          showNotification(
+            'The browser lost the WebGPU device the Voodoo2 was drawing with. Reload the page; if WebGPU stays unavailable, quit and restart the browser.',
+            'warning',
+          );
         gpuOverlay.visible = false;
         deviceReady = false;
       }

@@ -96,6 +96,11 @@ static prog_uniforms_t s_uniforms[NUM_FORMATS] = {0};
 // against it.
 static uint8_t *s_upload_scratch;
 
+// Set once the renderer has failed for good (no context, a lost context, a
+// shader the driver would not build): nothing touches GL again, and the page
+// has been told why (renderer_failed).
+static bool s_failed;
+
 // The canvas's intrinsic size as last set (resize_canvas), 0 before the first
 static uint32_t s_canvas_w, s_canvas_h;
 
@@ -524,6 +529,41 @@ static void announce_geometry(const display_t *d) {
 }
 
 // ============================================================================
+// Failure reporting
+// ============================================================================
+
+// Give up on the renderer, once: log it and tell the page (a `state:renderer`
+// event), which replaces the UI with an explanation.  Both strings are
+// literals without quotes or backslashes, so they go into the JSON as is.
+static void renderer_failed(const char *status, const char *detail) {
+    if (s_failed)
+        return;
+    s_failed = true;
+    LOG(0, "renderer: %s -- %s", status, detail);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"renderer\",\"status\":\"%s\",\"detail\":\"%s\"}", status, detail);
+}
+
+// A context lost while the renderer is still coming up: the browser handed
+// out a dead one, the stuck-GPU-process case only a browser restart clears.
+static bool context_dead_at_init(void) {
+    if (!emscripten_is_webgl_context_lost(s_ctx))
+        return false;
+    renderer_failed("context_dead", "the WebGL 2 context was lost as soon as it was created");
+    return true;
+}
+
+// Has the browser taken the WebGL context away?  A lost context answers every
+// query with null, and Emscripten's canvas resize dereferences that null and
+// kills the worker -- so this is asked before any GL work.  Safari can hand out
+// contexts that are lost from the start, until it is restarted.
+static bool context_lost(void) {
+    if (!s_ctx || !emscripten_is_webgl_context_lost(s_ctx))
+        return false;
+    renderer_failed("context_lost", "the browser lost the WebGL 2 context");
+    return true;
+}
+
+// ============================================================================
 // Lifecycle
 // ============================================================================
 
@@ -539,9 +579,12 @@ static void init_gl(void) {
         // No newline on the old printf here, so this one ran into whatever came
         // next in the output.  LOG ends its own lines.
         LOG(0, "WebGL 2 not supported - cannot run");
+        renderer_failed("no_context", "no WebGL 2 context for the screen canvas in the emulator worker");
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
+    if (context_dead_at_init()) // created, but dead on arrival
+        return;
 
     s_upload_scratch = calloc(1, MAX_FB_BYTES);
     if (!s_upload_scratch) {
@@ -589,6 +632,16 @@ static void init_gl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Every shader is plain GLSL ES 3.00: one the driver refuses means its
+    // WebGL is broken (a lost context fails every compile the same way).
+    if (context_dead_at_init())
+        return;
+    for (int f = 0; f < NUM_FORMATS; f++)
+        if (!s_progs[f]) {
+            renderer_failed("shader_failed", "the WebGL driver would not build the display shaders");
+            return;
+        }
 }
 
 // Upload the per-channel response LUT: the card's direct-colour DAC table
@@ -748,7 +801,7 @@ static bool s_blanked;
 // monitor with no signal would, instead of the last frame.  Once per
 // transition.
 static void blank_canvas(void) {
-    if (s_blanked || s_ctx == 0)
+    if (s_blanked || s_ctx == 0 || s_failed)
         return;
     s_blanked = true;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -757,8 +810,10 @@ static void blank_canvas(void) {
 }
 
 void em_video_update(void) {
-    if (!s_upload_scratch)
-        return; // no renderer (WebGL failed to come up)
+    if (!s_upload_scratch || s_failed)
+        return; // no renderer (WebGL failed to come up, or went away)
+    if (context_lost())
+        return;
     display_t *d = system_display();
     if (!d || !d->bits) {
         overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
@@ -824,8 +879,8 @@ void em_video_update(void) {
 }
 
 void em_video_force_redraw(void) {
-    if (!s_upload_scratch)
-        return; // no renderer (WebGL failed to come up)
+    if (!s_upload_scratch || s_failed || context_lost())
+        return; // no renderer (WebGL failed to come up, or went away)
     display_t *d = system_display();
     if (d && d->bits && !fb_fits_scratch(d))
         return;
