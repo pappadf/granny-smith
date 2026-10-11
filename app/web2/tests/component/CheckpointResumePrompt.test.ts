@@ -42,10 +42,10 @@ describe('CheckpointResumePrompt', () => {
     await expect(promise).resolves.toBe(false);
   });
 
-  it('a second prompt settles the first as declined', async () => {
+  it('a second prompt settles the first as withdrawn, not declined', async () => {
     const first = showCheckpointPrompt();
     const second = showCheckpointPrompt();
-    await expect(first).resolves.toBe(false);
+    await expect(first).resolves.toBe(null);
     expect(checkpointPrompt.shown).toBe(true);
     resolveCheckpointPrompt(true);
     await expect(second).resolves.toBe(true);

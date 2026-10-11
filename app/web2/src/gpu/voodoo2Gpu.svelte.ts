@@ -105,7 +105,8 @@ export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
     }, timeoutMs);
     void answer.then((ok) => {
       clearTimeout(timer);
-      resolve(ok);
+      // A device lost since it answered is no GPU to offer the core
+      resolve(ok && deviceReady);
     });
   });
 }

@@ -104,6 +104,9 @@ def main():
     ap.add_argument('--param', action='append', default=[], metavar='KEY=VALUE',
                     help='A default URL query parameter (repeatable), URL-encoded into the '
                          'query string appended when redirecting / to /index.html')
+    ap.add_argument('--default-params', default=None, metavar='QUERY',
+                    help='The same as a ready-made query string (key=value&key=value); '
+                         'kept for the release README and older scripts')
     ap.add_argument('--no-coi-headers', action='store_true',
                     help='Skip COOP/COEP headers (let the service worker inject them instead)')
     ap.add_argument('--strict-port', action='store_true',
@@ -115,6 +118,10 @@ def main():
         if not sep or not key:
             raise SystemExit(f"--param wants KEY=VALUE, not '{kv}'")
         params.append((key, value))
+    # --default-params: split the old ready-made query string into the same
+    # pairs, so both spellings are encoded one way
+    if a.default_params:
+        params += urllib.parse.parse_qsl(a.default_params.lstrip('?'), keep_blank_values=True)
     # Each value encoded on its own, so a media path holding '&', '%' or a
     # space neither splits the query nor breaks the Location header.
     default_params = urllib.parse.urlencode(params, safe='/', quote_via=urllib.parse.quote)

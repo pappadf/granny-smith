@@ -8,16 +8,17 @@ interface PromptState {
 
 export const checkpointPrompt: PromptState = $state({ shown: false });
 
-let resolver: ((accept: boolean) => void) | null = null;
+let resolver: ((accept: boolean | null) => void) | null = null;
 
 // Open the prompt and return a promise that settles when the user clicks
-// Resume or Discard, or the prompt is withdrawn (resolveCheckpointPrompt
-// (false) closes it from code too).  A prompt still open is settled as
-// declined first, so no caller waits forever on an orphaned promise.
-export function showCheckpointPrompt(): Promise<boolean> {
-  resolver?.(false);
+// Resume (true) or Discard (false); resolveCheckpointPrompt closes it from
+// code too.  A prompt still open is settled first as withdrawn (null) --
+// not as Discard, which would delete the checkpoint the new prompt offers --
+// so no caller waits forever on an orphaned promise.
+export function showCheckpointPrompt(): Promise<boolean | null> {
+  resolver?.(null);
   checkpointPrompt.shown = true;
-  return new Promise<boolean>((resolve) => {
+  return new Promise<boolean | null>((resolve) => {
     resolver = resolve;
   });
 }

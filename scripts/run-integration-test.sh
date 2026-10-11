@@ -132,7 +132,7 @@ EXPANDED_ARGS=$(expand "$TEST_ARGS")
 # not a silently bogus definition.  `read -a` splits without globbing.
 read -ra TEST_VAR_WORDS <<< "${TEST_VARS:-}"
 VAR_ARGV=()
-for v in "${TEST_VAR_WORDS[@]}"; do
+for v in ${TEST_VAR_WORDS[@]+"${TEST_VAR_WORDS[@]}"}; do
     if [[ "$v" != [A-Za-z_]*=* ]]; then
         echo "ERROR: TEST_VARS word '$v' is not KEY=VALUE (values cannot contain spaces)"
         echo "FAIL" > "$TEST_RESULTS_DIR/status"
@@ -141,7 +141,7 @@ for v in "${TEST_VAR_WORDS[@]}"; do
     VAR_ARGV+=(--var "$v")
 done
 # Custom runners take them as one string, which they word-split.
-VAR_ARGS="${VAR_ARGV[*]}"
+VAR_ARGS="${VAR_ARGV[*]-}"
 
 # Under a wrapper, hand custom runners a real executable rather than a
 # multi-word "valgrind --flags... /path/to/bin" string: every run.sh
@@ -191,7 +191,7 @@ else
         --var TEST_DATA="$TEST_DATA" \
         --var EXTRA_MEDIA="$EXTRA_MEDIA" \
         ${FIXTURE_DIR:+--var FIXTURES="$FIXTURE_DIR"} \
-        "${VAR_ARGV[@]}" \
+        ${VAR_ARGV[@]+"${VAR_ARGV[@]}"} \
         --speed=turbo 2>&1 | tee "$TEST_RESULTS_DIR/output.log" || rc=${PIPESTATUS[0]}
     check_rc "${rc:-0}"
 fi

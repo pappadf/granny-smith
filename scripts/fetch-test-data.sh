@@ -273,13 +273,18 @@ if GIT_LFS_SKIP_SMUDGE=1 git \
         LOCAL_README=$(cat "$DATA_DIR/README.md")
     fi
 
-    # Replace the whole tree, not directory by directory: the marker below
-    # says tests/data IS revision $DATA_COMMIT, so a file or directory
-    # deleted upstream must go here too.  Only the README (this repo's own,
-    # tracked) is kept, and a .git is never touched.
-    find "$DATA_DIR/" -mindepth 1 -maxdepth 1 ! -name README.md ! -name .git -exec rm -rf {} +
+    # Replace each top-level entry the data repository has, whole: the marker
+    # below says tests/data IS revision $DATA_COMMIT, so a file deleted
+    # upstream inside one of them must go here too.  Entries the data
+    # repository does not have (a contributor's own media, a symlink to a
+    # shared store) are left alone; the README is this repo's own.
     for entry in "$TEMP_CLONE_DIR"/*; do
-        [[ "$(basename "$entry")" == "README.md" ]] && continue
+        name="$(basename "$entry")"
+        [[ "$name" == "README.md" ]] && continue
+        if [[ -e "$DATA_DIR/$name" || -L "$DATA_DIR/$name" ]]; then
+            log_info "Replacing tests/data/$name"
+            rm -rf "${DATA_DIR:?}/$name"
+        fi
         cp -r "$entry" "$DATA_DIR/"
     done
 

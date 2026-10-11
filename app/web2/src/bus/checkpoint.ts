@@ -34,6 +34,8 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
   if (probe !== true) return false;
 
   const accept = await showCheckpointPrompt();
+  // Withdrawn by a newer prompt: that one owns the checkpoint now
+  if (accept === null) return false;
   if (!accept) {
     const cleared = await gsEval('checkpoint.clear');
     if (gsOk(cleared)) showNotification('Starting fresh (checkpoint discarded)', 'info');
