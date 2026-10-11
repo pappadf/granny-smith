@@ -51,7 +51,9 @@ built-in video where it has one.
 
 The Lisa's screen has tall pixels; Granny Smith draws them 1.5 times taller
 than wide so the picture has the right proportions. The Lisa and XL have no
-AppleTalk; their ImageWriter connects to Serial A.
+AppleTalk setting: Serial B, the port the Lisa was built to use for AppleBus,
+is always on the emulated AppleTalk network, for software that drives it as
+LocalTalk. Their ImageWriter connects to Serial A.
 
 ## 3. Macintosh II family
 
