@@ -328,8 +328,16 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
+                    bool init_ = fpu_->initialized;                                                                    \
+                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
                     fpu_fsave040(fpu_, AY);                                                                            \
+                    /* Roll back An and the FPU state for the retry */                                                 \
+                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
+                        AY += 4;                                                                                       \
+                        fpu_->initialized = init_;                                                                     \
+                        fpu_->pre_exc_mask = mask_;                                                                    \
+                    }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
                     fpu_fsave040(fpu_, ea_);                                                                           \
@@ -346,7 +354,8 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 3) {                                                                                    \
                     int sz_ = fpu_frestore040(fpu_, AY);                                                               \
-                    AY += (uint32_t)sz_;                                                                               \
+                    if (__builtin_expect(!g_bus_error_pending, 1))                                                     \
+                        AY += (uint32_t)sz_;                                                                           \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
                     fpu_frestore040(fpu_, ea_);                                                                        \
@@ -409,8 +418,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     cpu_select_soa(cpu->supervisor);                                                                                   \
-    cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t saved_trace_ = cpu->trace;                                                                                \
     if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \

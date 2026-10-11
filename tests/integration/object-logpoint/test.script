@@ -17,6 +17,11 @@ log.set logpoint 5
 
 debug.logpoints.add addr=0x16A width=l mode=write level=5 message="Ticks bumped pc=${machine.cpu.pc} addr=${$addr:08x} val=${$value:08x} size=${$size}"
 
+# Bad input is an error, never an entry: a category outside the manifest
+# (it used to trip the manifest assert and halt) and an inverted range.
+assert try(debug.logpoints.add(addr=0x400, category="nosuchcat"), none) == none "an unknown category was accepted"
+assert try(debug.logpoints.add(addr=0x400, end=0x3FF), none) == none "end below addr was accepted"
+
 scheduler.run 5000000
 
 echo "${len(debug.logpoints.entries)} logpoints"

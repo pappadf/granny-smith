@@ -1433,6 +1433,11 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     // the run ends long before 2^56 cycles for some other reason.
     uint64_t remaining_cycles = (n > UINT64_MAX / s->cpi_eff_x256) ? (UINT64_MAX >> 8) : ((n * s->cpi_eff_x256) >> 8);
 
+    // The probes below run after each instruction: tell the debugger where
+    // the first one starts, for the breakpoint resume skip.
+    if (debugger_active)
+        debug_note_pc();
+
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
 
@@ -1473,8 +1478,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         }
 
         // Convert cycles to instructions for sprint (at least one whenever
-        // any cycles remain -- cycles_to_instructions rounds that case up)
-        uint32_t instr_to_exec = (uint32_t)cycles_to_instructions(s, cycles_to_execute);
+        // any cycles remain -- cycles_to_instructions rounds that case up).
+        // Clamp rather than cast: a huge budget must not wrap to a tiny sprint
+        uint64_t instr_budget = cycles_to_instructions(s, cycles_to_execute);
+        uint32_t instr_to_exec = instr_budget > UINT32_MAX ? UINT32_MAX : (uint32_t)instr_budget;
 
         // Single-step when debugger is active
         if (debugger_active) {
@@ -1488,7 +1495,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc_before = dif ? dif->get_pc(dif->ctx) : 0;
             cpu->poll_interrupt(cpu->ctx);
-            if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
+            if (dif && dif->get_pc(dif->ctx) != pc_before && (debug_note_pc(), debug_break_and_trace())) {
                 remaining_cycles = 0;
                 if (s->saved.running)
                     s->stop_reason = SCHED_STOP_BREAKPOINT;
@@ -1549,7 +1556,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // cycle-timestamped events and the peripheral divisors observe an
         // exact integer cycle timeline at every effective CPI.
         uint64_t advance_x256 = (uint64_t)executed_slots * s->cpi_eff_x256 + s->cycle_frac_x256;
-        uint32_t executed_cycles = (uint32_t)(advance_x256 >> 8);
+        uint64_t executed_cycles = advance_x256 >> 8; // 64-bit: a sprint may plan up to UINT32_MAX slots
         s->cycle_frac_x256 = (uint32_t)(advance_x256 & 0xFF);
 
         // Overshoot check.  The sprint can only run what it planned

@@ -503,6 +503,9 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
+    // calculate_ea bumps An by 4 in (An)+ mode; the success path overwrites it
+    // with the final address below, but a fault return must put it back.
+    uint32_t saved_an = cpu->a[opcode & 7];
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
     unsigned d_mask = register_mask & 0xFFu; // D0-D7 in bits 0-7
     unsigned a_mask = register_mask >> 8; // A0-A7 in bits 8-15
@@ -514,16 +517,20 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         int i = __builtin_ctz(m);
         uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
         ea += bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            cpu->a[opcode & 7] = saved_an;
             return;
+        }
         new_d[i] = v;
     }
     for (unsigned m = a_mask; m; m &= m - 1) {
         int i = __builtin_ctz(m);
         uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
         ea += bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            cpu->a[opcode & 7] = saved_an;
             return;
+        }
         new_a[i] = v;
     }
 
@@ -739,9 +746,10 @@ static inline void enter_exception_supervisor(cpu_t *restrict cpu) {
 // (a VBR or SSP pointing at unmapped memory).  Such a fault leaves
 // g_bus_error_pending set like any other access and is delivered through the
 // deferred-bus-error path as an ordinary bus error.  Only the bus-error entry
-// points (exception_bus_error_retry, and exception_bus_error's 68000 path)
-// treat a fault during their own frame push or vector fetch as the double
-// fault that halts the CPU.
+// points (exception_bus_error_retry and exception_bus_error) treat a fault
+// during their own frame push or vector fetch as the double fault that halts
+// the CPU (M68000PRM / MC68030UM: a bus error while processing a bus error,
+// address error or reset).
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
@@ -980,8 +988,19 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         format = 0xB;
         push_bus_fault_frame_b(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
     }
+    // A fault while stacking the frame or fetching the vector is a double
+    // fault: the processor halts (MC68030UM 8.3, MC68040UM 8.4), as on the
+    // 68000 path above.
+    if (g_bus_error_pending) {
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 1);
+        return;
+    }
 
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    if (g_bus_error_pending) {
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 2);
+        return;
+    }
     cpu->trace = 0;
 
     // Clear last_bus_error_pc for "skip" scenarios (normal data bus errors where
@@ -1040,7 +1059,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
                 cpu->a[7] = cpu->ssp;
         }
         cpu->m = new_m;
-        cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // T1 in bit 1, T0 in bit 0.  Documented divergence: T0 (trace on change
+        // of flow, MC68030UM 8.1.7) is stored so SR reads back what was written,
+        // but nothing acts on it -- every trace decision tests T1 (bit 1) only,
+        // so T0-only mode never traces.  Implementing it needs a flow-change
+        // hook in every branch/jump/return/SR-write op.
+        cpu->trace = ((sr >> 14) & 3);
         // Switch SoA active pointers when supervisor bit changes
         if ((bool)new_s != old_s) {
             cpu_select_soa(new_s);

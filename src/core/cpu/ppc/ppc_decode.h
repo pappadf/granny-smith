@@ -10,11 +10,16 @@
 // Because emulator and disassembler are literally the same decode tree,
 // they cannot drift out of sync.
 //
-// The tree decides VALIDITY as well as identity: invalid forms (reserved
-// fields set, invalid BO encodings, instructions neither model has — 601UM
-// §10.3 Tables 10-6/10-8; PEM appendix A) route to OP_ILLEGAL on both
-// sides.  MODEL validity is the leaves' job, not the tree's: encodings only
-// one model implements (the POWER holdovers and MQ/RTC moves on the 601;
+// The tree decides VALIDITY as well as identity: invalid forms (invalid BO
+// encodings, instructions neither model has — 601UM §10.3 Tables
+// 10-6/10-8; PEM appendix A) route to OP_ILLEGAL on both sides.  Reserved
+// fields are checked only where a row says so (sc, tlbsync, the storage-
+// control and indexed load/store rows, the XO rows with a reserved RB, the
+// A-form rows noted below); elsewhere — rfi, mcrf, mtcrf, mfsr/mtsr, the
+// CR-logical and compare rows, among others — nonzero reserved bits decode
+// and execute as if zero, which the PEM allows ("boundedly undefined").
+// MODEL validity is the leaves' job, not the tree's: encodings only one
+// model implements (the POWER holdovers and MQ/RTC moves on the 601;
 // mftb/tlbsync/stfiwx/fsel/fres/frsqrte on the 604) decode here
 // unconditionally, and the emulator's OP_ overloads raise the program
 // exception on the other model while the disassembler's flag the encoding
@@ -81,8 +86,14 @@ PPC_DECODER_RETURN_TYPE PPC_DECODER_NAME(PPC_DECODER_ARGS) {
     case 15: OP_ADDIS; break;
     case 16: if (!ppc_bo_valid(PPC_RT(iw))) { OP_ILLEGAL; break; }
              OP_BC; break;
-    case 17: // sc: bit 30 set, every other non-opcode bit reserved-zero
-             if ((iw & ~0xFC000002u) == 0 && (iw & 2u)) { OP_SC; } else { OP_ILLEGAL; }
+    case 17: // sc: bit 30 set, every other non-opcode bit reserved-zero.
+             // The 601 also executes the POWER svc forms -- bit 30 clear,
+             // LK set, bits 16-29 nonzero (601UM sc page, POWER
+             // Compatibility Note) -- routed to their own leaf so the
+             // other models can reject them.
+             if ((iw & 0x03FF0000u) != 0) { OP_ILLEGAL; }
+             else if ((iw & 0xFFFFu) == 2u) { OP_SC; }
+             else { OP_SC_POWER; }
              break;
     case 18: OP_B; break;
 

@@ -312,6 +312,40 @@ TEST(test_5380_state_survives_a_round_trip) {
     scsi_delete(a);
 }
 
+// buf.max/size/pos are file content.  The staging writes index data[size++]
+// while size < max, so a restored max beyond the allocation was an OOB heap
+// write: the buffer must cover max, and an inconsistent triple must fail.
+TEST(test_restored_transfer_buffer_covers_its_max) {
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
+    a->bus.phase = scsi_data_out;
+    a->buf.max = a->buf.cap * 4; // as if a large WRITE(10) were mid-DATA-OUT
+    a->buf.size = 0;
+    a->buf.pos = 0;
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+    g_cp_errors = 0;
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_TRUE(b->buf.cap >= b->buf.max);
+    scsi_delete(b);
+
+    a->buf.max = 8;
+    a->buf.size = 16; // more staged than the phase asked for
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+    b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    ASSERT_TRUE(b->buf.size == 0 && b->buf.cap >= b->buf.max);
+    g_cp_errors = 0;
+
+    scsi_delete(b);
+    a->buf.max = a->buf.size = 0;
+    scsi_delete(a);
+}
+
 // A bus with no 5380 -- a Quadra, a PowerMac -- writes no chip block, and the
 // restore must not go looking for one.
 TEST(test_busless_round_trip_is_symmetric) {
@@ -482,6 +516,7 @@ int main(void) {
     RUN(test_a_restore_brings_the_cd_drives_back);
     RUN(test_a_pending_data_out_settle_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
+    RUN(test_restored_transfer_buffer_covers_its_max);
     RUN(test_busless_round_trip_is_symmetric);
     RUN(test_53c96_writes_no_host_pointers);
     RUN(test_53c96_state_survives_a_round_trip);

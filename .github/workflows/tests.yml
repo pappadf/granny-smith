@@ -100,7 +100,11 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      # The disasm corpus is tracked in the repo, so here its absence is a
+      # failure, not the skip a quick local run gets (tests/unit/README.md).
       - name: Run unit tests (native)
+        env:
+          REQUIRE_DISASM_CORPUS: 1
         run: make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
       # The parser and storage suites again under emcc + node: the shipping

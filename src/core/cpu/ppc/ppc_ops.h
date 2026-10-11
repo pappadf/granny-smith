@@ -262,6 +262,10 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // 5-22 — the POWER svc field, which §5.4.11's prose calls "undefined"; the
 // table is the specific rule and costs nothing to honour).
 #define OP_SC         OP(ppc_exception(p, PPC_VEC_SYSCALL, (iw & 0xFFFFu) << 16, p->pc))
+// sc in a POWER svc encoding: the 601 ignores bit 30 and, with LK set, also
+// loads LR with the address of the next instruction; the 604 rejects it.
+#define OP_SC_POWER                                                                                                    \
+    OP(M601(); if (iw & 1u) p->lr = p->pc; ppc_exception(p, PPC_VEC_SYSCALL, (iw & 0xFFFFu) << 16, p->pc))
 // rfi restores MSR[16-31] from SRR1; bits outside that half (the 604's POW)
 // are untouched — identical to the old whole-word form on the 601, whose
 // implemented bits all live in the low half.

@@ -159,7 +159,7 @@ struct ppc {
     uint32_t instruction_pc; // address of the instruction being executed
     uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
-    uint32_t reserve_addr;
+    uint32_t reserve_addr; // lwarx address (state only; stwcx. does not compare it)
     // 750 L2 global invalidate (750UM §9.1.5): scheduler cycle at which
     // L2IP drops back to 0 after L2I was set with L2E clear.  With no time
     // binding, l2_inval_reads counts the L2IP=1 reads still owed instead.

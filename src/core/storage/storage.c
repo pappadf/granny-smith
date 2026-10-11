@@ -48,6 +48,9 @@ LOG_USE_CATEGORY_NAME("storage");
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+#include <stdio_ext.h> // __fpurge
+#endif
 
 // ============================================================================
 // Constants
@@ -224,21 +227,40 @@ static void journal_index_add(storage_t *s, uint32_t lba) {
     s->journal_count++;
 }
 
+// Cut a partial entry off the journal again after a failed append: left in
+// place it misaligns every later append, and journal_load_index would stop at
+// it on reopen, dropping the preimages appended after it.
+static void journal_trim_partial(storage_t *s) {
+    off_t keep = (off_t)s->journal_count * (off_t)STORAGE_JOURNAL_ENTRY_SIZE(s);
+    // Drop what the failed flush left buffered: glibc and musl discard it,
+    // but BSD/macOS stdio keeps it and would write the partial entry back
+    // after the trimmed end on the next flush.
+#if defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+    __fpurge(s->journal_fp);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    fpurge(s->journal_fp);
+#endif
+    clearerr(s->journal_fp);
+    if (ftruncate(fileno(s->journal_fp), keep) != 0)
+        LOG(0, "storage: cannot trim a partial journal entry (errno=%d)", errno);
+    fseeko(s->journal_fp, 0, SEEK_END);
+}
+
 // Append a preimage entry to the journal file and index.
 static status_t journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     uint8_t le[4];
     put_le32(le, lba);
-    if (fwrite(le, sizeof(le), 1, s->journal_fp) != 1)
-        return STATUS_E_IO;
-    // Write block data
-    if (fwrite(data, s->block_size, 1, s->journal_fp) != 1)
-        return STATUS_E_IO;
     // Write-ahead: the preimage has to leave this FILE's buffer before the
     // overwrite of the block it saves can leave the delta's (the next seek
     // on the delta flushes that one).  Deferring this to the checkpoint
     // would let a crash land the new block with no preimage to undo it.
-    if (fflush(s->journal_fp) != 0)
+    // The stream is buffered, so a short write (ENOSPC) may only show at
+    // the flush.
+    if (fwrite(le, sizeof(le), 1, s->journal_fp) != 1 || fwrite(data, s->block_size, 1, s->journal_fp) != 1 ||
+        fflush(s->journal_fp) != 0) {
+        journal_trim_partial(s);
         return STATUS_E_IO;
+    }
 
     journal_index_add(s, lba);
     return STATUS_OK;
@@ -981,7 +1003,7 @@ static status_t storage_skip_snapshot(checkpoint_t *checkpoint, const storage_sn
         return STATUS_E_INVAL;
     }
     if (header->has_data) {
-        // Skip all block data
+        // Skip all block data (the geometry was bounded above)
         uint8_t discard[STORAGE_MAX_BLOCK_SIZE];
         for (uint64_t i = 0; i < header->block_count; i++) {
             system_read_checkpoint_data(checkpoint, discard, header->block_size);

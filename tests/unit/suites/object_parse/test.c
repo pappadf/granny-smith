@@ -82,6 +82,17 @@ TEST(test_int_suffix) {
     value_free(&v);
 }
 
+// A digit invalid for the base, or any trailing letter, is an error rather
+// than the end of a shorter literal (`0b12` used to read as 1).
+TEST(test_int_trailing_alnum_rejected) {
+    const char *bad[] = {"0b12", "0o18", "12abc", "100u32", "0x1fg"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        value_t v = parse_str(bad[i]);
+        ASSERT_TRUE(val_is_error(&v));
+        value_free(&v);
+    }
+}
+
 // Floats: decimal, scientific, hex-float.
 TEST(test_floats) {
     value_t v = parse_str("1.0");
@@ -215,6 +226,20 @@ TEST(test_reserved_word_check) {
     ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)) == STATUS_OK);
 }
 
+// A name longer than the readers' OBJ_IDENT_MAX is refused at bind time, so
+// no binder can create a name `$name` cannot read back; the limit itself fits.
+TEST(test_name_length_limit) {
+    char err[160];
+    char name[OBJ_IDENT_MAX + 2];
+    memset(name, 'n', sizeof(name) - 1);
+    name[OBJ_IDENT_MAX] = '\0'; // exactly the limit
+    ASSERT_TRUE(object_validate_name(name, err, sizeof(err)) == STATUS_OK);
+    name[OBJ_IDENT_MAX] = 'n'; // one over
+    name[OBJ_IDENT_MAX + 1] = '\0';
+    ASSERT_TRUE(object_validate_name(name, err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(strstr(err, "too long") != NULL);
+}
+
 // Trailing garbage past a literal is an error.
 TEST(test_trailing_garbage) {
     value_t v = parse_str("42 extra");
@@ -292,6 +317,22 @@ TEST(test_leading_zero_is_decimal_not_octal) {
     value_free(&vo);
 }
 
+// An identifier longer than the scanner's buffer is an error, not a
+// silently shortened string (or enum lookup).
+TEST(test_long_identifier_errors) {
+    char src[100];
+    memset(src, 'a', 70);
+    src[70] = '\0';
+    value_t v = parse_str(src);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(strstr(v.err, "too long") != NULL);
+    value_free(&v);
+    src[63] = '\0'; // 63 characters: fits
+    v = parse_str(src);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
+    ASSERT_EQ_INT(63, (int)strlen(v.s));
+}
+
 // A digit invalid for the base ends the literal in an error rather than
 // being swallowed (`0b12` is not 1), and the bytes-suffix width is read
 // with the integer grammar (`:010` is ten bytes, not octal eight).
@@ -317,6 +358,7 @@ int main(void) {
     RUN(test_int_octal_dec);
     RUN(test_int_underscores);
     RUN(test_int_suffix);
+    RUN(test_int_trailing_alnum_rejected);
     RUN(test_floats);
     RUN(test_bools);
     RUN(test_strings);
@@ -324,11 +366,13 @@ int main(void) {
     RUN(test_bytes_int_suffix);
     RUN(test_enum_lookup);
     RUN(test_reserved_word_check);
+    RUN(test_name_length_limit);
     RUN(test_trailing_garbage);
     RUN(test_empty);
     RUN(test_reserved_other_rejected_as_literal);
     RUN(test_integer_literal_rejects_out_of_range);
     RUN(test_integer_literal_negation_boundaries);
     RUN(test_leading_zero_is_decimal_not_octal);
+    RUN(test_long_identifier_errors);
     return 0;
 }

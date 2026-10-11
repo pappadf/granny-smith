@@ -40,6 +40,7 @@ static struct {
     bool active; // recording right now
     bool have_capture; // a stopped capture is available for match
     bool rate_changed; // rate switched mid-capture (invalidates the capture)
+    bool channels_changed; // stream re-opened with another channel count mid-capture (ditto)
     uint32_t cap_rate; // rate latched at capture start
     int cap_channels; // channels latched at capture start
     int16_t *samples; // interleaved samples (frames * channels)
@@ -53,6 +54,20 @@ static struct {
 
 // Opens (or re-parameterizes) the host audio stream
 void audio_out_open(uint32_t src_rate_hz, int channels) {
+    // A capture that spans a re-open (a machine swap, another sound chip)
+    // takes the new format if it has recorded nothing yet; otherwise the
+    // pushed frames no longer match the latched layout -- copying them at the
+    // old channel count over-reads a narrower producer buffer -- so the
+    // capture is invalidated, as for a mid-capture rate switch.
+    if (s.active && s.nsamples == 0) {
+        s.cap_rate = src_rate_hz;
+        s.cap_channels = channels ? channels : 1;
+    } else if (s.active) {
+        if (channels != s.cap_channels)
+            s.channels_changed = true;
+        if (src_rate_hz != s.cap_rate)
+            s.rate_changed = true;
+    }
     s.rate = src_rate_hz;
     s.channels = channels;
     platform_audio_open(src_rate_hz, channels);
@@ -83,7 +98,7 @@ void audio_out_push(const int16_t *frames, int nframes, int vol_0_7) {
     if (!frames || nframes <= 0)
         return;
 
-    if (s.active) {
+    if (s.active && !s.channels_changed) {
         size_t add = (size_t)nframes * (size_t)s.cap_channels;
         if (s.nsamples + add > s.max_samples) {
             // Grow geometrically; start at ~1s of stereo audio
@@ -266,6 +281,7 @@ bool audio_out_capture_start(void) {
     s.nsamples = 0;
     s.have_capture = false;
     s.rate_changed = false;
+    s.channels_changed = false;
     s.cap_rate = s.rate;
     s.cap_channels = s.channels ? s.channels : 1;
     s.active = true;
@@ -313,6 +329,10 @@ value_t audio_out_match_value(const char *golden_wav) {
     if (s.rate_changed) {
         write_actual(golden_wav);
         return val_err("sound.match: sample rate changed mid-capture");
+    }
+    if (s.channels_changed) {
+        write_actual(golden_wav);
+        return val_err("sound.match: channel count changed mid-capture");
     }
 
     int16_t *ref = NULL;

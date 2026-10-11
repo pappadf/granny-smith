@@ -440,7 +440,16 @@ static void daemon_handle_client(int client_fd) {
             break;
         }
         idle_since = host_time_ms();
-        if (pending_len + (size_t)n > STMT_MAX) {
+        if (skipping && !pending_len) {
+            // Still inside a line already reported as too long: drop up to
+            // its end, without reporting it again or buffering it
+            char *end = memchr(chunk, '\n', (size_t)n);
+            if (!end)
+                continue;
+            size_t rest = (size_t)n - (size_t)(end - chunk);
+            memmove(chunk, end, rest);
+            n = (ssize_t)rest;
+        } else if (pending_len + (size_t)n > STMT_MAX) {
             // A line longer than any statement may be: drop it up to its end.
             printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
             stmt_reset(&stmt);
@@ -500,6 +509,7 @@ static void daemon_loop(int port) {
     // Emit READY signal so callers can block-read instead of sleeping
     printf("READY\n");
     fflush(stdout);
+    hl_cycles_start();
 
     while (g_running && !g_quit_requested) {
         // A frame if the machine runs (a `scheduler.run` left it going),

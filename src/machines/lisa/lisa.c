@@ -539,6 +539,13 @@ static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
     }
 }
 
+// The ProFile's image: the Lisa's only hard-disk bay.
+static image_t *lisa_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    (void)unit;
+    lisa_state_t *ls = lisa_state(cfg);
+    return (bus == MEDIA_BUS_PROFILE && ls) ? lisa_profile_image(ls->profile) : NULL;
+}
+
 static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     lisa_state_t *ls = lisa_state(cfg);
     if (!lisa_media_present(cfg, bus, unit))
@@ -1391,6 +1398,7 @@ static const machine_substrate_t lisa_substrate = {
     .media_attach = lisa_media_attach,
     .media_present = lisa_media_present,
     .media_eject = lisa_media_eject,
+    .media_image = lisa_media_image,
 };
 
 const hw_profile_t machine_lisa = {

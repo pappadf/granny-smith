@@ -39,8 +39,9 @@ permissions:
 
 # Independent of `publish` — a real-release deploy can run while a
 # staging deploy is in flight (or vice versa) without one cancelling
-# the other. But two staging deploys in flight at once would race on
-# the gs-pages push, so cancel the in-progress one.
+# the other; their pushes to the same gs-pages branch can still race,
+# which the push step's rebase-and-retry absorbs. Two staging deploys
+# in flight at once are pointless, so cancel the in-progress one.
 concurrency:
   group: publish-staging
   cancel-in-progress: true
@@ -120,7 +121,8 @@ jobs:
 
       # 6. Commit + push. Add only the staging/ subtree so a concurrent
       #    real-release commit (which touches /latest/ and the landing
-      #    page) doesn't get caught up here.
+      #    page) doesn't get caught up here, and the rebase onto it in
+      #    the retry below cannot conflict.
       - name: Push to gs-pages
         working-directory: ./deploy
         run: |
@@ -133,7 +135,18 @@ jobs:
           fi
           SHORT_SHA="$(cd ../source && git rev-parse --short HEAD)"
           git commit -m "Staging deploy: ${SHORT_SHA}"
-          git push origin main
+          # publish.yml and publish-staging.yml push to the same branch
+          # from different concurrency groups, so the other may have
+          # pushed since our checkout: rebase onto it and retry (they
+          # touch disjoint paths, so the rebase does not conflict).
+          for attempt in 1 2 3 4 5; do
+            if git push origin main; then exit 0; fi
+            echo "Push rejected (attempt $attempt); rebasing onto the new gs-pages main."
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+          echo "Could not push to gs-pages after 5 attempts." >&2
+          exit 1
 
       # 7. Surface the staging URL prominently in the Actions UI so the
       #    maintainer doesn't have to remember the path.

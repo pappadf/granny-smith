@@ -62,7 +62,7 @@ import {
   setUrlBootStage,
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
-import { setMounted } from '@/state/images.svelte';
+import { setMounted, clearMounts } from '@/state/images.svelte';
 import { unzipAll } from '@/lib/archive';
 import {
   canonicalParamName,
@@ -332,6 +332,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     setUrlBootStage('failed', `Could not boot ${chosen}: ${gsErrorText(booted)}`);
     return false;
   }
+  clearMounts();
 
   await insertUrlFloppies(params, paths);
   // ?hdN= is the default configuration's N-th hard disk (hd0 is the startup

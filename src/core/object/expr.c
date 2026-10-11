@@ -61,7 +61,16 @@ typedef struct lex {
     const char *p;
     char err[256]; // last error message; non-empty means a syntax error
     bool err_set;
+    int depth; // live parse_ternary + parse_unary frames (EXPR_MAX_DEPTH)
 } lex_t;
+
+// How deep the recursive descent may nest: every bracket, parenthesis,
+// call argument and else-branch re-enters parse_ternary, every prefix
+// operator parse_unary.  A level costs roughly 1.5 KB of C stack (sixteen
+// frames, path buffers in parse_primary), so 200 keeps a pasted
+// `((((...` or `[[[[...` far inside the 512 KB job-thread stack -- and
+// an error rather than a crash, which wasm cannot isolate.
+#define EXPR_MAX_DEPTH 200
 
 static void lex_skip_ws(lex_t *L) {
     while (*L->p && isspace((unsigned char)*L->p))
@@ -89,6 +98,16 @@ static bool lex_eat2(lex_t *L, char a, char b) {
 }
 
 // === Forward declarations ===================================================
+
+// Enter one level of nesting; false (with the lexer error set) past the cap.
+static bool lex_enter(lex_t *L) {
+    if (L->depth >= EXPR_MAX_DEPTH) {
+        lex_error(L, "expression nested too deeply (max %d)", EXPR_MAX_DEPTH);
+        return false;
+    }
+    L->depth++;
+    return true;
+}
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx);
@@ -422,7 +441,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 // path_buf must be at least 256 bytes.
 static bool parse_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
-    char ident[64];
+    char ident[OBJ_IDENT_MAX + 1];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected identifier");
         return false;
@@ -773,7 +792,7 @@ value_t expr_object_path_read(struct object *root, const char *path) {
 // segments relative to the captured object (snapshot semantics); any
 // other kind is a plain value and admits no continuation.
 static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
-    char ident[64];
+    char ident[OBJ_IDENT_MAX + 1];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected binding name after '$'");
         return val_err("bad binding");
@@ -1268,7 +1287,18 @@ static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Unary ==================================================================
 
+static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx);
+
+// parse_unary under the nesting cap (a prefix-operator run recurses here).
 static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
+    if (!lex_enter(L))
+        return val_err("%s", L->err);
+    value_t v = parse_unary_inner(L, ctx);
+    L->depth--;
+    return v;
+}
+
+static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx) {
     lex_skip_ws(L);
     char c = *L->p;
     if (c == '!') {
@@ -1410,6 +1440,12 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err
             z = x / y;
             break;
         case '%':
+            // Same refusal as '/': fmod(x, 0) is a NaN, not an answer
+            if (y == 0) {
+                value_free(&pa);
+                value_free(&pb);
+                NUM_FAIL("division by zero");
+            }
             z = fmod(x, y);
             break;
         default:
@@ -2009,7 +2045,18 @@ static value_t parse_logor(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Ternary ================================================================
 
+static value_t parse_ternary_inner(lex_t *L, const expr_ctx_t *ctx);
+
+// parse_ternary under the nesting cap.
 static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
+    if (!lex_enter(L))
+        return val_err("%s", L->err);
+    value_t v = parse_ternary_inner(L, ctx);
+    L->depth--;
+    return v;
+}
+
+static value_t parse_ternary_inner(lex_t *L, const expr_ctx_t *ctx) {
     value_t c = parse_logor(L, ctx);
     if (L->err_set)
         return c;
@@ -2479,11 +2526,15 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
         if (p[0] == '$' && (isalpha((unsigned char)p[1]) || p[1] == '_')) {
             // `$name` binding splice.
             const char *q = p + 1;
-            char ident[64];
+            char ident[OBJ_IDENT_MAX + 1];
             size_t i = 0;
             while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
-                if (i + 1 < sizeof(ident))
-                    ident[i++] = *q;
+                // Fail rather than splice a truncated (other) binding
+                if (i + 1 >= sizeof(ident)) {
+                    free(out);
+                    return val_err("identifier too long (max %zu)", sizeof(ident) - 1);
+                }
+                ident[i++] = *q;
                 q++;
             }
             ident[i] = '\0';

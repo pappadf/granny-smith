@@ -569,8 +569,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     cpu_select_soa(cpu->supervisor);                                                                                   \
-    cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t saved_trace_ = cpu->trace;                                                                                \
     if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \

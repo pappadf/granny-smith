@@ -455,6 +455,8 @@ static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned wid
     if (off >= DISPLAY_CARD_24AC_VRAM_VISIBLE && off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET) {
         if (width == 4 && off + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             return LOAD_BE32(p->vram + off);
+        if (width == 2 && off + 2 <= DISPLAY_CARD_24AC_VRAM_SIZE)
+            return LOAD_BE16(p->vram + off);
         if (off < DISPLAY_CARD_24AC_VRAM_SIZE)
             return p->vram[off];
         return 0;
@@ -465,6 +467,8 @@ static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned wid
         uint32_t dest = off - DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET;
         if (width == 4 && dest + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             return LOAD_BE32(p->vram + dest);
+        if (width == 2 && dest + 2 <= DISPLAY_CARD_24AC_VRAM_SIZE)
+            return LOAD_BE16(p->vram + dest);
         if (dest < DISPLAY_CARD_24AC_VRAM_SIZE)
             return p->vram[dest];
         return 0;
@@ -539,6 +543,8 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
     if (off >= DISPLAY_CARD_24AC_VRAM_VISIBLE && off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET) {
         if (width == 4 && off + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             STORE_BE32(p->vram + off, val);
+        else if (width == 2 && off + 2 <= DISPLAY_CARD_24AC_VRAM_SIZE)
+            STORE_BE16(p->vram + off, (uint16_t)val);
         else if (off < DISPLAY_CARD_24AC_VRAM_SIZE)
             p->vram[off] = (uint8_t)val;
         p->display.fb_dirty = true;
@@ -599,6 +605,8 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
             // driver's software fallback.
             if (width == 4 && dest + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
                 STORE_BE32(p->vram + dest, val);
+            else if (width == 2 && dest + 2 <= DISPLAY_CARD_24AC_VRAM_SIZE)
+                STORE_BE16(p->vram + dest, (uint16_t)val);
             else if (dest < DISPLAY_CARD_24AC_VRAM_SIZE)
                 p->vram[dest] = (uint8_t)val;
             p->display.fb_dirty = true;

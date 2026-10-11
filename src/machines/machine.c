@@ -285,9 +285,12 @@ static DEF_GETTER(attr_catalog_models) {
 }
 
 // The storage devices the running machine was built with, the positions an
-// image can be attached to: {bus, bus_label, unit, position, type, present},
-// type hd or cd as machine.attach_media takes them, present when an image is
-// in it.
+// image can be attached to: {bus, bus_label, unit, position, type, present,
+// media, filename}, type hd or cd as machine.attach_media takes them,
+// present when an image is in it, media the bay as machine.attach_media
+// answers it ({bus, id, label}: what machine.eject_media takes) and filename
+// the source path of the image in it ("" when empty) -- so a page that did
+// not attach the media (a checkpoint restore) can tell what is where.
 static DEF_GETTER(attr_machine_storage) {
     value_t err;
     config_t *cfg = active_cfg_or_error("storage", &err);
@@ -310,9 +313,14 @@ static DEF_GETTER(attr_machine_storage) {
         val_map_put(m, "type", val_str(d->type == STORAGE_DEV_CD ? "cd" : "hd"));
         media_bay_t bay;
         const machine_substrate_t *sub = cfg->machine->substrate;
-        bool present = machine_storage_media_bay(cfg->machine, d->bus, d->unit, &bay) && sub->media_present &&
-                       sub->media_present(cfg, bay.bus, bay.unit);
+        bool have_bay = machine_storage_media_bay(cfg->machine, d->bus, d->unit, &bay);
+        bool present = have_bay && sub->media_present && sub->media_present(cfg, bay.bus, bay.unit);
         val_map_put(m, "present", val_bool(present));
+        image_t *img = present ? system_media_image(cfg, bay.bus, bay.unit) : NULL;
+        const char *filename = img ? image_get_filename(img) : NULL;
+        if (have_bay)
+            val_map_put(m, "media", media_bay_value(&bay));
+        val_map_put(m, "filename", val_str(filename ? filename : ""));
         items[i] = val_map_finish(m);
     }
     return val_list(items, n);
@@ -960,8 +968,8 @@ static const member_t machine_members[] = {
      .attr = {.type = VK_UINT, .get = attr_machine_ram, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "storage",
-     .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present}",
-     .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
+     .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present, media, "
+            "filename}", .attr = {.type = VK_LIST, .get = attr_machine_storage, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "irq",
      .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",

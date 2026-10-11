@@ -102,6 +102,19 @@ export async function stageOpfsFileStreaming(
     });
   } finally {
     fs.closeSync(fd);
+    // A slice that threw left the writable open, and it locks the OPFS file
+    // for its lifetime: a retry on the same page would race it.  Abort it
+    // (discarding the partial file); the page may be gone, so never throw.
+    await page
+      .evaluate(async () => {
+        const g = window as unknown as {
+          __stageWritable?: { abort(): Promise<void> };
+        };
+        const w = g.__stageWritable;
+        delete g.__stageWritable;
+        await w?.abort();
+      })
+      .catch(() => {});
   }
 }
 
