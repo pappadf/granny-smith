@@ -1733,7 +1733,7 @@ static const member_t files_members[] = {
     {.kind = MK_METHOD,
      .name = "mkdir",
      .examples = EXAMPLES("files.mkdir \"/opfs/images/cd\""),
-     .doc = "Create a directory",
+     .doc = "Create a directory (one already there is success)",
      .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_mkdir}},
     {.kind = MK_METHOD,
      .name = "cd",

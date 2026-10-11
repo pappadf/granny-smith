@@ -477,7 +477,7 @@ Content access (`src/core/vfs/vfs_class.c`, `src/core/shell/cmd_cp.c`):
 | `files.ls [path]` | List a directory (names to stdout) — descends into images, partitions, and HFS/UFS directories. Defaults to the cwd. |
 | `files.list [path]` | Like `files.ls`, but returns a list `[{name, kind, size, mtime, expandable}]` instead of printing (`mtime`: Unix seconds, 0 when unknown; HFS/MFS dates are converted from the 1904 epoch). Same descent rules. This is what the web Filesystem tree calls to expand a disk image. |
 | `files.cat <path>` | Dump a file's bytes — data fork, or `…/rsrc` resource fork, or `…/finf` Finder info. |
-| `files.mkdir <path>` | Create a directory — **host paths only** (image paths return `-EROFS`). |
+| `files.mkdir <path>` | Create a directory — **host paths only** (an image path is an error, `EROFS`). An existing directory is success. |
 | `cp <src> <dst>` | Copy a file/tree, including *out of* an image into OPFS. |
 
 Example session:
