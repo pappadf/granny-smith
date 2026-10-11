@@ -7,7 +7,9 @@
 // CD-ROM whose PACKET commands run on the real SCSI CD-ROM model.
 
 #include "ata.h"
+#include "checkpoint.h"
 #include "image.h"
+#include "image_internal.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_internal.h"
@@ -44,10 +46,17 @@ static uint8_t *medium(image_t *img, size_t *size) {
     return NULL;
 }
 
+// A disk sector the image cannot read (a corrupt chunk, a host I/O error),
+// or -1 for none: a read touching it comes back short, as image.c returns it.
+static long s_bad_sector = -1;
+
 size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
     size_t size;
     uint8_t *m = medium(img, &size);
     if (!m || off > size || len > size - off)
+        return 0;
+    if (img == &s_hd_img && s_bad_sector >= 0 && off <= (size_t)s_bad_sector * 512u &&
+        off + len > (size_t)s_bad_sector * 512u)
         return 0;
     memcpy(buf, m + off, len);
     return len;
@@ -117,7 +126,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const 
 // Link stubs for the SCSI bus model
 // ============================================================
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)context;
@@ -133,15 +145,11 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
@@ -455,6 +463,39 @@ TEST(a_sector_past_the_end_is_an_id_not_found) {
     teardown();
 }
 
+// A sector the image cannot read is an uncorrectable data error (ERR, UNC),
+// not IDNF -- the sector exists -- with the task file addressing the block
+// that failed; on the PIO and the DMA paths alike.
+TEST(an_unreadable_sector_is_an_uncorrectable_data_error) {
+    setup();
+    s_bad_sector = 30;
+    lba(30, 1, 0);
+    wr(ATA_REG_STATUS, 0x20);
+    uint8_t st = rd(ATA_REG_STATUS), er = rd(ATA_REG_ERROR), sector = rd(ATA_REG_SECTOR);
+    ASSERT_TRUE(st & ATA_ST_ERR);
+    ASSERT_EQ_INT(st & ATA_ST_DRQ, 0);
+    ASSERT_EQ_INT(er, ATA_ER_UNC);
+    ASSERT_EQ_INT(sector, 30);
+
+    lba(28, 4, 0); // DMA, failing on its first staged block
+    wr(ATA_REG_STATUS, 0xC8);
+    st = rd(ATA_REG_STATUS);
+    er = rd(ATA_REG_ERROR);
+    ASSERT_TRUE(st & ATA_ST_ERR);
+    ASSERT_EQ_INT(er, ATA_ER_UNC);
+
+    // Its neighbours still read.
+    lba(31, 1, 0);
+    wr(ATA_REG_STATUS, 0x20);
+    st = rd(ATA_REG_STATUS);
+    ASSERT_EQ_INT(st & ATA_ST_ERR, 0);
+    uint8_t b[512];
+    pio_in(b, 512);
+    ASSERT_TRUE(memcmp(b, s_hd + 31 * 512, 512) == 0);
+    s_bad_sector = -1;
+    teardown();
+}
+
 TEST(nien_holds_the_line_low) {
     setup();
     ata_write_devctl(&s_ch, ATA_DC_NIEN);
@@ -624,6 +665,7 @@ int main(void) {
     RUN(dma_read_moves_through_the_port_then_interrupts);
     RUN(dma_write_lands_on_the_medium);
     RUN(a_sector_past_the_end_is_an_id_not_found);
+    RUN(an_unreadable_sector_is_an_uncorrectable_data_error);
     RUN(nien_holds_the_line_low);
     RUN(software_reset_restores_the_signatures);
     RUN(an_empty_or_disabled_cell_floats);

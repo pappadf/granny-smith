@@ -10,6 +10,7 @@
 // AppleBMacEthernet, Linux bmac, the BSD bm driver).
 
 #include "bmac.h"
+#include "checkpoint.h"
 #include "crc32.h"
 #include "dbdma.h"
 #include "test_assert.h"

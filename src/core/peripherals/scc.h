@@ -8,6 +8,7 @@
 #define SCC_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "memory.h"
 

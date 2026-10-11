@@ -14,10 +14,7 @@
 #include <emscripten/threading.h>
 #endif
 
-static inline double host_time(void) {
-    return emscripten_get_now() / 1000.0;
-}
-
+// Monotonic host time in milliseconds
 static inline double host_time_ms(void) {
     return emscripten_get_now();
 }

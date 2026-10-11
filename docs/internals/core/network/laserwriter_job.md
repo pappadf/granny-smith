@@ -163,7 +163,13 @@ unanswered (an OpenConn is acknowledged at once, before the interpreter
 is), `status: busy …; job: <name>` once a job is running, and `status:
 printing …; page: <n>` once the acknowledged page count advances. The PAP
 layer keeps the read-driven credit model and answers the driver's status
-reads with this string.
+reads with this string. A read past the flow quantum's credits is left
+unanswered for its retry, and its ATP exactly-once entry is dropped
+(`atp_xo_forget`), so the retry reaches the printer as a new read rather
+than being swallowed as a duplicate until the entry's release timer. A disabled printer reads `status: offline`; it is
+not advertised and leaves an OpenConn unanswered, so a workstation that
+still has its address times out instead of retrying a `PrinterBusy`
+forever.
 
 The object model (`appletalk.printer`) exposes `interpreter` (is the
 interpreter linked), `status`, `capture` (also write the PostScript to the

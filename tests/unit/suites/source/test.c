@@ -24,7 +24,7 @@
 
 typedef struct {
     uint64_t size;
-    gs_tier_t tier;
+    source_tier_t tier;
     int reads;
     uint64_t bytes;
     uint64_t max_end; // highest offset + len read
@@ -38,7 +38,7 @@ static uint8_t pattern(uint64_t i) {
     return (uint8_t)((i * 7 + 3) & 0xFF);
 }
 
-static int64_t count_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t count_read(source_t *s, uint64_t off, void *buf, size_t len) {
     count_t *c = s->ctx;
     if (c->delay_us)
         usleep(c->delay_us);
@@ -60,21 +60,21 @@ static int64_t count_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
         ((uint8_t *)buf)[i] = pattern(off + i);
     return (int64_t)len;
 }
-static uint64_t count_size(gs_source_t *s) {
+static uint64_t count_size(source_t *s) {
     return ((count_t *)s->ctx)->size;
 }
-static const char *count_key(gs_source_t *s) {
+static const char *count_key(source_t *s) {
     return ((count_t *)s->ctx)->key;
 }
-static gs_tier_t count_tier(gs_source_t *s) {
+static source_tier_t count_tier(source_t *s) {
     return ((count_t *)s->ctx)->tier;
 }
-static void count_close(gs_source_t *s) {
+static void count_close(source_t *s) {
     (void)s; // the test owns the count_t
 }
-static const gs_source_ops_t count_ops = {count_read, count_size, count_key, count_tier, count_close};
+static const source_ops_t count_ops = {count_read, count_size, count_key, count_tier, count_close};
 
-static gs_source_t *counting(count_t *c, uint64_t size, gs_tier_t tier, const char *key) {
+static source_t *counting(count_t *c, uint64_t size, source_tier_t tier, const char *key) {
     memset(c, 0, sizeof(*c));
     c->size = size;
     c->tier = tier;
@@ -90,67 +90,67 @@ static gs_source_t *counting(count_t *c, uint64_t size, gs_tier_t tier, const ch
 // read past its end is short, and a view of a view composes.
 TEST(test_view_arithmetic_at_boundaries) {
     count_t c;
-    gs_source_t *s = counting(&c, 1000, GS_TIER_RANDOM, "count");
-    gs_source_t *v = gs_source_view(s, 100, 5000, NULL); // clamped to 900
-    ASSERT_EQ_INT(900, (int)gs_source_size(v));
-    ASSERT_EQ_INT(GS_TIER_RANDOM, gs_source_tier(v));
+    source_t *s = counting(&c, 1000, GS_TIER_RANDOM, "count");
+    source_t *v = source_view(s, 100, 5000, NULL); // clamped to 900
+    ASSERT_EQ_INT(900, (int)source_size(v));
+    ASSERT_EQ_INT(GS_TIER_RANDOM, source_tier(v));
     uint8_t b[16];
-    ASSERT_EQ_INT(0, gs_source_read_exact(v, 0, b, 4));
+    ASSERT_EQ_INT(0, source_read_exact(v, 0, b, 4));
     ASSERT_EQ_INT(pattern(100), b[0]);
-    ASSERT_EQ_INT(4, (int)gs_source_read(v, 896, b, 16)); // short at the end
+    ASSERT_EQ_INT(4, (int)source_read(v, 896, b, 16)); // short at the end
     ASSERT_EQ_INT(pattern(996), b[0]);
-    ASSERT_EQ_INT(0, (int)gs_source_read(v, 900, b, 1)); // past it
-    ASSERT_EQ_INT(-EIO, gs_source_read_exact(v, 898, b, 4));
-    gs_source_t *vv = gs_source_view(v, 10, 10, "inner");
-    ASSERT_EQ_INT(0, gs_source_read_exact(vv, 9, b, 1));
+    ASSERT_EQ_INT(0, (int)source_read(v, 900, b, 1)); // past it
+    ASSERT_EQ_INT(-EIO, source_read_exact(v, 898, b, 4));
+    source_t *vv = source_view(v, 10, 10, "inner");
+    ASSERT_EQ_INT(0, source_read_exact(vv, 9, b, 1));
     ASSERT_EQ_INT(pattern(119), b[0]);
-    ASSERT_TRUE(strcmp(gs_source_key(vv), "inner") == 0);
+    ASSERT_TRUE(strcmp(source_key(vv), "inner") == 0);
     // Views retain their parents: releasing the first reference keeps them.
-    gs_source_release(s);
-    gs_source_release(v);
-    ASSERT_EQ_INT(0, gs_source_read_exact(vv, 0, b, 1));
+    source_release(s);
+    source_release(v);
+    ASSERT_EQ_INT(0, source_read_exact(vv, 0, b, 1));
     ASSERT_EQ_INT(pattern(110), b[0]);
-    gs_source_release(vv);
+    source_release(vv);
 }
 
 // A padded source: the parent's bytes, then zeros up to the new size with
 // the one patch in place; misplaced patches and non-growth are refused.
 TEST(test_pad_lengthens_with_a_patch) {
     count_t c;
-    gs_source_t *s = counting(&c, 1000, GS_TIER_RANDOM, "count");
+    source_t *s = counting(&c, 1000, GS_TIER_RANDOM, "count");
     const uint8_t patch[4] = {0xB, 0xD, 0x1, 0x2};
-    gs_source_t *p = gs_source_pad(s, 2000, 1500, patch, sizeof(patch));
+    source_t *p = source_pad(s, 2000, 1500, patch, sizeof(patch));
     ASSERT_TRUE(p != NULL);
-    ASSERT_EQ_INT(2000, (int)gs_source_size(p));
-    ASSERT_EQ_INT(GS_TIER_RANDOM, gs_source_tier(p));
-    ASSERT_TRUE(strcmp(gs_source_key(p), "count#pad2000") == 0);
+    ASSERT_EQ_INT(2000, (int)source_size(p));
+    ASSERT_EQ_INT(GS_TIER_RANDOM, source_tier(p));
+    ASSERT_TRUE(strcmp(source_key(p), "count#pad2000") == 0);
     uint8_t b[32];
-    ASSERT_EQ_INT(0, gs_source_read_exact(p, 990, b, 20)); // across the parent's end
+    ASSERT_EQ_INT(0, source_read_exact(p, 990, b, 20)); // across the parent's end
     ASSERT_EQ_INT(pattern(999), b[9]);
     ASSERT_EQ_INT(0, b[10]);
-    ASSERT_EQ_INT(0, gs_source_read_exact(p, 1498, b, 8)); // across the patch
+    ASSERT_EQ_INT(0, source_read_exact(p, 1498, b, 8)); // across the patch
     ASSERT_EQ_INT(0, b[1]);
     ASSERT_EQ_INT(0xB, b[2]);
     ASSERT_EQ_INT(0x2, b[5]);
     ASSERT_EQ_INT(0, b[6]);
-    ASSERT_EQ_INT(0, (int)gs_source_read(p, 2000, b, 1)); // past the end
-    ASSERT_TRUE(gs_source_pad(s, 1000, 0, NULL, 0) == NULL); // no growth
-    ASSERT_TRUE(gs_source_pad(s, 2000, 999, patch, sizeof(patch)) == NULL); // over the parent
-    ASSERT_TRUE(gs_source_pad(s, 2000, 1998, patch, sizeof(patch)) == NULL); // past the end
-    gs_source_release(s);
-    ASSERT_EQ_INT(0, gs_source_read_exact(p, 0, b, 1)); // retains its parent
+    ASSERT_EQ_INT(0, (int)source_read(p, 2000, b, 1)); // past the end
+    ASSERT_TRUE(source_pad(s, 1000, 0, NULL, 0) == NULL); // no growth
+    ASSERT_TRUE(source_pad(s, 2000, 999, patch, sizeof(patch)) == NULL); // over the parent
+    ASSERT_TRUE(source_pad(s, 2000, 1998, patch, sizeof(patch)) == NULL); // past the end
+    source_release(s);
+    ASSERT_EQ_INT(0, source_read_exact(p, 0, b, 1)); // retains its parent
     ASSERT_EQ_INT(pattern(0), b[0]);
-    gs_source_release(p);
+    source_release(p);
 }
 
 // Keys name what is inside what.
 TEST(test_key_containment) {
-    ASSERT_TRUE(gs_key_within("/a/disk.img@1:2", "/a/disk.img@1:2"));
-    ASSERT_TRUE(gs_key_within("/a/disk.img@1:2/partition1/x", "/a/disk.img@1:2"));
-    ASSERT_TRUE(gs_key_within("/a/disk.img@1:2#dc42", "/a/disk.img@1:2"));
-    ASSERT_TRUE(!gs_key_within("/a/disk.img@1:23", "/a/disk.img@1:2"));
-    ASSERT_TRUE(!gs_key_within("/a/disk.img", "/a/disk.img@1:2"));
-    ASSERT_TRUE(!gs_key_within("x", ""));
+    ASSERT_TRUE(source_key_within("/a/disk.img@1:2", "/a/disk.img@1:2"));
+    ASSERT_TRUE(source_key_within("/a/disk.img@1:2/partition1/x", "/a/disk.img@1:2"));
+    ASSERT_TRUE(source_key_within("/a/disk.img@1:2#dc42", "/a/disk.img@1:2"));
+    ASSERT_TRUE(!source_key_within("/a/disk.img@1:23", "/a/disk.img@1:2"));
+    ASSERT_TRUE(!source_key_within("/a/disk.img", "/a/disk.img@1:2"));
+    ASSERT_TRUE(!source_key_within("x", ""));
 }
 
 // ---- Decode-through --------------------------------------------------------
@@ -160,34 +160,34 @@ TEST(test_key_containment) {
 // the source's.
 TEST(test_decode_through_backward_reads_never_redecode) {
     count_t c;
-    gs_source_t *s = counting(&c, 5 * GS_DECODE_CHUNK + 123, GS_TIER_STREAM, "stream-src");
-    gs_chunk_cache_t *cache = gs_chunk_cache_new(64u << 20, NULL, 0);
-    gs_source_t *dt = gs_source_decode_through(s, cache);
-    ASSERT_EQ_INT((int)(5 * GS_DECODE_CHUNK + 123), (int)gs_source_size(dt));
+    source_t *s = counting(&c, 5 * GS_DECODE_CHUNK + 123, GS_TIER_STREAM, "stream-src");
+    chunk_cache_t *cache = chunk_cache_new(64u << 20, NULL, 0);
+    source_t *dt = source_decode_through(s, cache);
+    ASSERT_EQ_INT((int)(5 * GS_DECODE_CHUNK + 123), (int)source_size(dt));
 
     // Straight to the last chunk: every chunk on the way is stored.
     uint8_t b[64];
-    ASSERT_EQ_INT(0, gs_source_read_exact(dt, 5 * GS_DECODE_CHUNK + 100, b, 20));
+    ASSERT_EQ_INT(0, source_read_exact(dt, 5 * GS_DECODE_CHUNK + 100, b, 20));
     ASSERT_EQ_INT(pattern(5 * GS_DECODE_CHUNK + 100), b[0]);
     uint64_t bytes_after_forward = c.bytes;
     ASSERT_TRUE(bytes_after_forward >= 5 * GS_DECODE_CHUNK); // one pass
 
     // Backward, across chunk boundaries: all hits.
     for (uint64_t off = 0; off < 5 * GS_DECODE_CHUNK; off += GS_DECODE_CHUNK / 3) {
-        ASSERT_EQ_INT(0, gs_source_read_exact(dt, off, b, sizeof(b)));
+        ASSERT_EQ_INT(0, source_read_exact(dt, off, b, sizeof(b)));
         for (size_t i = 0; i < sizeof(b); i++)
             ASSERT_EQ_INT(pattern(off + i), b[i]);
     }
     ASSERT_EQ_INT((int)bytes_after_forward, (int)c.bytes);
-    gs_source_release(dt);
-    gs_source_release(s);
-    gs_chunk_cache_free(cache);
+    source_release(dt);
+    source_release(s);
+    chunk_cache_free(cache);
 }
 
 // ---- The chunk cache -------------------------------------------------------
 
 typedef struct {
-    gs_chunk_cache_t *cache;
+    chunk_cache_t *cache;
     int fetches; // incremented by the fetch
     pthread_mutex_t mu;
     uint8_t got[16];
@@ -213,13 +213,13 @@ typedef struct {
 
 static void *reader(void *arg) {
     reader_t *rd = arg;
-    rd->rc = gs_chunk_cache_get(rd->r->cache, "k", 3, 1024, 8, rd->out, sizeof(rd->out), slow_fetch, rd->r);
+    rd->rc = chunk_cache_get(rd->r->cache, "k", 3, 1024, 8, rd->out, sizeof(rd->out), slow_fetch, rd->r);
     return NULL;
 }
 
 // Eight readers of one absent chunk share one fetch; each gets the bytes.
 TEST(test_chunk_cache_coalesces_concurrent_readers) {
-    race_t r = {.cache = gs_chunk_cache_new(1u << 20, NULL, 0)};
+    race_t r = {.cache = chunk_cache_new(1u << 20, NULL, 0)};
     pthread_mutex_init(&r.mu, NULL);
     pthread_t t[8];
     reader_t rd[8];
@@ -234,11 +234,11 @@ TEST(test_chunk_cache_coalesces_concurrent_readers) {
         ASSERT_EQ_INT(16, (int)rd[i].rc);
         ASSERT_EQ_INT(0x43, rd[i].out[0]);
     }
-    gs_chunk_cache_stats_t st;
-    gs_chunk_cache_stats(r.cache, &st);
+    chunk_cache_stats_t st;
+    chunk_cache_stats(r.cache, &st);
     ASSERT_EQ_INT(1, (int)st.fetches);
     ASSERT_EQ_INT(7, (int)(st.coalesced + st.hits));
-    gs_chunk_cache_free(r.cache);
+    chunk_cache_free(r.cache);
 }
 
 static int64_t fill_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
@@ -253,32 +253,32 @@ static int64_t fill_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
 TEST(test_chunk_cache_spills_evicted_chunks) {
     char dir[] = "/tmp/gs_chunk_spill_XXXXXX";
     ASSERT_TRUE(mkdtemp(dir) != NULL);
-    gs_chunk_cache_t *c = gs_chunk_cache_new(4096, dir, 0); // room for two 2 KiB chunks
+    chunk_cache_t *c = chunk_cache_new(4096, dir, 0); // room for two 2 KiB chunks
     int calls = 0;
     uint8_t b[4];
     for (uint64_t i = 0; i < 6; i++)
-        ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "spilly", i, 2048, 0, b, 4, fill_fetch, &calls));
+        ASSERT_EQ_INT(4, (int)chunk_cache_get(c, "spilly", i, 2048, 0, b, 4, fill_fetch, &calls));
     ASSERT_EQ_INT(6, calls);
-    gs_chunk_cache_stats_t st;
-    gs_chunk_cache_stats(c, &st);
+    chunk_cache_stats_t st;
+    chunk_cache_stats(c, &st);
     ASSERT_TRUE(st.evictions >= 4);
     ASSERT_TRUE(st.mem_bytes <= 4096);
     // Chunk 0 was evicted; it is read back from spill, not fetched.
-    ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "spilly", 0, 2048, 100, b, 4, fill_fetch, &calls));
+    ASSERT_EQ_INT(4, (int)chunk_cache_get(c, "spilly", 0, 2048, 100, b, 4, fill_fetch, &calls));
     ASSERT_EQ_INT(0, b[0]);
     ASSERT_EQ_INT(6, calls);
-    gs_chunk_cache_stats(c, &st);
+    chunk_cache_stats(c, &st);
     ASSERT_TRUE(st.spill_hits >= 1);
     // Without spill, an evicted chunk is fetched again.
-    gs_chunk_cache_t *ns = gs_chunk_cache_new(4096, NULL, 0);
+    chunk_cache_t *ns = chunk_cache_new(4096, NULL, 0);
     calls = 0;
     for (uint64_t i = 0; i < 6; i++)
-        gs_chunk_cache_get(ns, "k", i, 2048, 0, b, 4, fill_fetch, &calls);
-    gs_chunk_cache_get(ns, "k", 0, 2048, 0, b, 4, fill_fetch, &calls);
+        chunk_cache_get(ns, "k", i, 2048, 0, b, 4, fill_fetch, &calls);
+    chunk_cache_get(ns, "k", 0, 2048, 0, b, 4, fill_fetch, &calls);
     ASSERT_EQ_INT(7, calls);
-    gs_chunk_cache_free(ns);
-    gs_chunk_cache_drop_key(c, "spilly");
-    gs_chunk_cache_free(c);
+    chunk_cache_free(ns);
+    chunk_cache_drop_key(c, "spilly");
+    chunk_cache_free(c);
     rmdir(dir);
 }
 
@@ -288,20 +288,20 @@ TEST(test_chunk_cache_spills_evicted_chunks) {
 // and from the tail, however large the source.
 TEST(test_detection_reads_within_the_budget) {
     count_t c;
-    gs_source_t *s = counting(&c, 50u << 20, GS_TIER_RANDOM, "big");
-    gs_probe_t p;
-    ASSERT_EQ_INT(0, gs_probe_init(&p, s, NULL));
-    ASSERT_TRUE(gs_format_detect(&p, GS_FMT_WRAPPER) == NULL);
-    gs_probe_free(&p);
+    source_t *s = counting(&c, 50u << 20, GS_TIER_RANDOM, "big");
+    format_probe_t p;
+    ASSERT_EQ_INT(0, format_probe_init(&p, s, NULL));
+    ASSERT_TRUE(format_detect(&p, GS_FMT_WRAPPER) == NULL);
+    format_probe_free(&p);
     ASSERT_TRUE(c.max_end <= PEEL_DETECT_BUDGET);
     ASSERT_TRUE(c.min_off >= (50u << 20) - PEEL_DETECT_BUDGET);
     ASSERT_TRUE(c.bytes <= 2 * PEEL_DETECT_BUDGET);
-    gs_unwrapped_t u;
-    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    format_unwrapped_t u;
+    ASSERT_EQ_INT(0, format_unwrap(s, NULL, &u));
     ASSERT_TRUE(u.chain[0] == '\0');
     ASSERT_TRUE(u.data == s);
-    gs_unwrapped_free(&u);
-    gs_source_release(s);
+    format_unwrapped_free(&u);
+    source_release(s);
 }
 
 // A DiskCopy 4.2 file unwraps to a view of its data section; a gzip around
@@ -320,16 +320,16 @@ TEST(test_unwrap_diskcopy_inside_gzip) {
     dc[0x53] = 0x00; // magic 0x0100
     for (int i = 0; i < 1024; i++)
         dc[0x54 + i] = (uint8_t)i;
-    gs_source_t *s = gs_source_memory(dc, sizeof(dc), false, "dc42");
-    gs_unwrapped_t u;
-    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    source_t *s = source_memory(dc, sizeof(dc), false, "dc42");
+    format_unwrapped_t u;
+    ASSERT_EQ_INT(0, format_unwrap(s, NULL, &u));
     ASSERT_TRUE(strcmp(u.chain, "dc42") == 0);
-    ASSERT_EQ_INT(1024, (int)gs_source_size(u.data));
+    ASSERT_EQ_INT(1024, (int)source_size(u.data));
     ASSERT_TRUE(u.dc42 != NULL);
     uint8_t b[4];
-    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 1020, b, 4));
+    ASSERT_EQ_INT(0, source_read_exact(u.data, 1020, b, 4));
     ASSERT_EQ_INT(1020 & 0xFF, b[0]);
-    gs_unwrapped_free(&u);
+    format_unwrapped_free(&u);
 
     // The same bytes gzipped (a stored deflate block, so the test needs no
     // compressor): 10-byte header, then BFINAL stored blocks, then CRC/size.
@@ -356,16 +356,16 @@ TEST(test_unwrap_diskcopy_inside_gzip) {
         t[k] = (uint8_t)(crc >> (8 * k));
         t[4 + k] = (uint8_t)(n >> (8 * k));
     }
-    gs_source_t *g = gs_source_memory(gz, 10 + 5 + n + 8, true, "/x/disk.dc42.gz");
-    ASSERT_EQ_INT(0, gs_format_unwrap(g, NULL, &u));
+    source_t *g = source_memory(gz, 10 + 5 + n + 8, true, "/x/disk.dc42.gz");
+    ASSERT_EQ_INT(0, format_unwrap(g, NULL, &u));
     ASSERT_TRUE(strcmp(u.chain, "gz+dc42") == 0);
-    ASSERT_EQ_INT(1024, (int)gs_source_size(u.data));
-    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 0, b, 4));
+    ASSERT_EQ_INT(1024, (int)source_size(u.data));
+    ASSERT_EQ_INT(0, source_read_exact(u.data, 0, b, 4));
     ASSERT_EQ_INT(0, b[0]);
     ASSERT_EQ_INT(3, b[3]);
-    gs_unwrapped_free(&u);
-    gs_source_release(g);
-    gs_source_release(s);
+    format_unwrapped_free(&u);
+    source_release(g);
+    source_release(s);
 }
 
 // The budgets can change at run time (files.cache): a smaller memory budget
@@ -397,12 +397,12 @@ static uint8_t *make_dc42(uint32_t blocks, uint32_t tag_bytes, uint32_t tag_extr
 static void unwrap_chain(uint32_t blocks, uint32_t tag_bytes, uint32_t tag_extra, char *chain, size_t cap) {
     size_t len = 0;
     uint8_t *f = make_dc42(blocks, tag_bytes, tag_extra, &len);
-    gs_source_t *s = gs_source_memory(f, len, true, "/x/disk.dc42");
-    gs_unwrapped_t u;
-    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    source_t *s = source_memory(f, len, true, "/x/disk.dc42");
+    format_unwrapped_t u;
+    ASSERT_EQ_INT(0, format_unwrap(s, NULL, &u));
     snprintf(chain, cap, "%s", u.chain);
-    gs_unwrapped_free(&u);
-    gs_source_release(s);
+    format_unwrapped_free(&u);
+    source_release(s);
 }
 
 // ProFile block -> logical (file) block: the inverse of the Lisa OS
@@ -423,16 +423,16 @@ TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
     const uint32_t blocks = 32;
     size_t len = 0;
     uint8_t *f = make_dc42(blocks, 20, 0, &len);
-    gs_source_t *s = gs_source_memory(f, len, true, "/x/lisaem-profile.dc42");
-    gs_unwrapped_t u;
-    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    source_t *s = source_memory(f, len, true, "/x/lisaem-profile.dc42");
+    format_unwrapped_t u;
+    ASSERT_EQ_INT(0, format_unwrap(s, NULL, &u));
     ASSERT_TRUE(strcmp(u.chain, "lisaem") == 0);
     ASSERT_TRUE(u.dc42 == NULL); // the tags are in the blocks, not a side table
-    ASSERT_EQ_INT((int)(blocks * 532), (int)gs_source_size(u.data));
-    ASSERT_TRUE(strstr(gs_source_key(u.data), "#lisaem") != NULL);
+    ASSERT_EQ_INT((int)(blocks * 532), (int)source_size(u.data));
+    ASSERT_TRUE(strstr(source_key(u.data), "#lisaem") != NULL);
     uint8_t blk[532];
     for (uint32_t k = 0; k < blocks; k++) {
-        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, (uint64_t)k * 532, blk, sizeof(blk)));
+        ASSERT_EQ_INT(0, source_read_exact(u.data, (uint64_t)k * 532, blk, sizeof(blk)));
         uint32_t logical = lisaem_logical_block(k);
         for (int i = 0; i < 20; i++)
             ASSERT_EQ_INT((int)(0x80 | logical), blk[i]);
@@ -442,7 +442,7 @@ TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
     // A read straddling blocks 1 and 2: the end of block 1's data, then
     // block 2's tag and the start of its data.
     uint8_t x[40];
-    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 2 * 532 - 10, x, sizeof(x)));
+    ASSERT_EQ_INT(0, source_read_exact(u.data, 2 * 532 - 10, x, sizeof(x)));
     for (int i = 0; i < 10; i++)
         ASSERT_EQ_INT((int)lisaem_logical_block(1), x[i]);
     for (int i = 10; i < 30; i++)
@@ -450,30 +450,30 @@ TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
     for (int i = 30; i < 40; i++)
         ASSERT_EQ_INT((int)lisaem_logical_block(2), x[i]);
     uint8_t past[4];
-    ASSERT_EQ_INT(0, (int)gs_source_read(u.data, (uint64_t)blocks * 532, past, sizeof(past)));
-    gs_unwrapped_free(&u);
-    gs_source_release(s);
+    ASSERT_EQ_INT(0, (int)source_read(u.data, (uint64_t)blocks * 532, past, sizeof(past)));
+    format_unwrapped_free(&u);
+    source_release(s);
 }
 
 // A source that passes reads through to its parent and counts them.
 static int g_passthru_reads;
-static int64_t passthru_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t passthru_read(source_t *s, uint64_t off, void *buf, size_t len) {
     g_passthru_reads++;
-    return gs_source_read(s->ctx, off, buf, len);
+    return source_read(s->ctx, off, buf, len);
 }
-static uint64_t passthru_size(gs_source_t *s) {
-    return gs_source_size(s->ctx);
+static uint64_t passthru_size(source_t *s) {
+    return source_size(s->ctx);
 }
-static const char *passthru_key(gs_source_t *s) {
-    return gs_source_key(s->ctx);
+static const char *passthru_key(source_t *s) {
+    return source_key(s->ctx);
 }
-static gs_tier_t passthru_tier(gs_source_t *s) {
-    return gs_source_tier(s->ctx);
+static source_tier_t passthru_tier(source_t *s) {
+    return source_tier(s->ctx);
 }
-static void passthru_close(gs_source_t *s) {
+static void passthru_close(source_t *s) {
     (void)s; // the parent reference is the source's own
 }
-static const gs_source_ops_t passthru_ops = {passthru_read, passthru_size, passthru_key, passthru_tier, passthru_close};
+static const source_ops_t passthru_ops = {passthru_read, passthru_size, passthru_key, passthru_tier, passthru_close};
 
 // A large read of a LisaEm ProFile image returns what block-by-block reads
 // return, at any offset, and reads the file a group at a time -- two reads
@@ -482,17 +482,17 @@ TEST(test_lisaem_profile_large_reads) {
     const uint32_t blocks = 64;
     size_t len = 0;
     uint8_t *f = make_dc42(blocks, 20, 0, &len);
-    gs_source_t *mem = gs_source_memory(f, len, true, "/x/lisaem-profile.dc42");
-    gs_source_t *file = peel_source_new(&passthru_ops, mem, mem);
-    gs_unwrapped_t u;
-    ASSERT_EQ_INT(0, gs_format_unwrap(file, NULL, &u));
+    source_t *mem = source_memory(f, len, true, "/x/lisaem-profile.dc42");
+    source_t *file = peel_source_new(&passthru_ops, mem, mem);
+    format_unwrapped_t u;
+    ASSERT_EQ_INT(0, format_unwrap(file, NULL, &u));
     ASSERT_TRUE(strcmp(u.chain, "lisaem") == 0);
     size_t size = (size_t)blocks * 532;
     uint8_t *want = malloc(size), *got = malloc(size);
     for (uint32_t k = 0; k < blocks; k++)
-        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, (uint64_t)k * 532, want + (size_t)k * 532, 532));
+        ASSERT_EQ_INT(0, source_read_exact(u.data, (uint64_t)k * 532, want + (size_t)k * 532, 532));
     g_passthru_reads = 0;
-    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 0, got, size));
+    ASSERT_EQ_INT(0, source_read_exact(u.data, 0, got, size));
     ASSERT_TRUE(memcmp(want, got, size) == 0);
     ASSERT_TRUE(g_passthru_reads <= (int)(2 * blocks / 16));
     // Unaligned windows that start and end inside groups and blocks.
@@ -500,14 +500,14 @@ TEST(test_lisaem_profile_large_reads) {
     for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
         size_t n = size - offs[i] < 532 * 20 ? size - offs[i] : 532 * 20;
         memset(got, 0, size);
-        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, offs[i], got, n));
+        ASSERT_EQ_INT(0, source_read_exact(u.data, offs[i], got, n));
         ASSERT_TRUE(memcmp(want + offs[i], got, n) == 0);
     }
     free(want);
     free(got);
-    gs_unwrapped_free(&u);
-    gs_source_release(file);
-    gs_source_release(mem);
+    format_unwrapped_free(&u);
+    source_release(file);
+    source_release(mem);
 }
 
 // Only exactly 20 tag bytes per block, in whole interleave groups, is a
@@ -531,30 +531,30 @@ TEST(test_lisaem_profile_detection_is_exact) {
 TEST(test_chunk_cache_budgets_change_at_run_time) {
     char dir[] = "/tmp/gs_chunk_budget_XXXXXX";
     ASSERT_TRUE(mkdtemp(dir) != NULL);
-    gs_chunk_cache_t *c = gs_chunk_cache_new(16384, dir, 0);
+    chunk_cache_t *c = chunk_cache_new(16384, dir, 0);
     int calls = 0;
     uint8_t b[4];
     for (uint64_t i = 0; i < 8; i++)
-        ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "bud", i, 2048, 0, b, 4, fill_fetch, &calls));
-    gs_chunk_cache_stats_t st;
-    gs_chunk_cache_stats(c, &st);
+        ASSERT_EQ_INT(4, (int)chunk_cache_get(c, "bud", i, 2048, 0, b, 4, fill_fetch, &calls));
+    chunk_cache_stats_t st;
+    chunk_cache_stats(c, &st);
     ASSERT_TRUE(st.mem_bytes == 8 * 2048 && st.spill_bytes == 0);
     size_t mem;
     uint64_t spill;
-    gs_chunk_cache_set_budgets(c, 4096, 0);
-    gs_chunk_cache_budgets(c, &mem, &spill);
+    chunk_cache_set_budgets(c, 4096, 0);
+    chunk_cache_budgets(c, &mem, &spill);
     ASSERT_TRUE(mem == 4096 && spill == 0);
-    gs_chunk_cache_stats(c, &st);
+    chunk_cache_stats(c, &st);
     ASSERT_TRUE(st.mem_bytes <= 4096);
     ASSERT_TRUE(st.spill_bytes >= 4 * 2048); // evicted to spill
-    gs_chunk_cache_set_budgets(c, 4096, 2048); // the spill area is over: emptied
-    gs_chunk_cache_stats(c, &st);
+    chunk_cache_set_budgets(c, 4096, 2048); // the spill area is over: emptied
+    chunk_cache_stats(c, &st);
     ASSERT_EQ_INT(0, (int)st.spill_bytes);
     int before = calls;
-    ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "bud", 0, 2048, 8, b, 4, fill_fetch, &calls));
+    ASSERT_EQ_INT(4, (int)chunk_cache_get(c, "bud", 0, 2048, 8, b, 4, fill_fetch, &calls));
     ASSERT_EQ_INT(before + 1, calls); // fetched again
     ASSERT_EQ_INT(0, b[0]);
-    gs_chunk_cache_free(c);
+    chunk_cache_free(c);
     rmdir(dir);
 }
 
@@ -565,18 +565,18 @@ TEST(test_chunk_cache_budgets_change_at_run_time) {
 TEST(test_key_same_ignores_only_host_times) {
     const char *a = "/opfs/fd/sys.dsk@819200:1790881846";
     const char *b = "/opfs/fd/sys.dsk@819200:1790881849";
-    ASSERT_TRUE(gs_key_same(a, a, false));
-    ASSERT_TRUE(!gs_key_same(a, b, false));
-    ASSERT_TRUE(gs_key_same(a, b, true));
-    ASSERT_TRUE(!gs_key_same(a, "/opfs/fd/sys.dsk@819201:1790881846", true)); // size
-    ASSERT_TRUE(!gs_key_same(a, "/opfs/fd/sys2.dsk@819200:1790881846", true)); // path
+    ASSERT_TRUE(source_key_same(a, a, false));
+    ASSERT_TRUE(!source_key_same(a, b, false));
+    ASSERT_TRUE(source_key_same(a, b, true));
+    ASSERT_TRUE(!source_key_same(a, "/opfs/fd/sys.dsk@819201:1790881846", true)); // size
+    ASSERT_TRUE(!source_key_same(a, "/opfs/fd/sys2.dsk@819200:1790881846", true)); // path
     // Nested: the host segment inside a member key, and a wrapper layer.
-    ASSERT_TRUE(gs_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", true));
-    ASSERT_TRUE(!gs_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", false));
-    ASSERT_TRUE(!gs_key_same("/x/a.zip@100:5/disk.img", "/x/a.zip@100:5/other.img", true));
+    ASSERT_TRUE(source_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", true));
+    ASSERT_TRUE(!source_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", false));
+    ASSERT_TRUE(!source_key_same("/x/a.zip@100:5/disk.img", "/x/a.zip@100:5/other.img", true));
     // A ':' that is no time stamp is compared as it stands.
-    ASSERT_TRUE(!gs_key_same("/x/a:1/b@1:2", "/x/a:9/b@1:2", true));
-    ASSERT_TRUE(!gs_key_same(NULL, a, true));
+    ASSERT_TRUE(!source_key_same("/x/a:1/b@1:2", "/x/a:9/b@1:2", true));
+    ASSERT_TRUE(!source_key_same(NULL, a, true));
 }
 
 // ---- "Not yet" -------------------------------------------------------------
@@ -589,7 +589,7 @@ typedef struct {
     int reads;
 } late_t;
 
-static int64_t late_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t late_read(source_t *s, uint64_t off, void *buf, size_t len) {
     late_t *l = s->ctx;
     l->reads++;
     if (l->not_yet > 0)
@@ -602,44 +602,44 @@ static int64_t late_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
         ((uint8_t *)buf)[i] = pattern(off + i);
     return (int64_t)len;
 }
-static uint64_t late_size(gs_source_t *s) {
+static uint64_t late_size(source_t *s) {
     (void)s;
     return 4096;
 }
-static const char *late_key(gs_source_t *s) {
+static const char *late_key(source_t *s) {
     (void)s;
     return "late";
 }
-static gs_tier_t late_tier(gs_source_t *s) {
+static source_tier_t late_tier(source_t *s) {
     (void)s;
     return GS_TIER_RANDOM;
 }
-static void late_close(gs_source_t *s) {
+static void late_close(source_t *s) {
     (void)s;
 }
-static int late_poll(gs_source_t *s, int timeout_ms) {
+static int late_poll(source_t *s, int timeout_ms) {
     late_t *l = s->ctx;
     (void)timeout_ms;
     l->polls++;
     l->not_yet--;
     return 0;
 }
-static const gs_source_ops_t late_ops = {late_read, late_size, late_key, late_tier, late_close, late_poll};
+static const source_ops_t late_ops = {late_read, late_size, late_key, late_tier, late_close, late_poll};
 
 // GS_EAGAIN is waited out: a raw read reports it; read_exact polls and reads
 // again until the bytes are there; a view (and a locked wrapper) polls the
 // source it reads.
 TEST(test_not_yet_is_waited_out_with_poll) {
     late_t l = {.not_yet = 3};
-    gs_source_t *s = peel_source_new(&late_ops, &l, NULL);
+    source_t *s = peel_source_new(&late_ops, &l, NULL);
     uint8_t b[16];
-    ASSERT_EQ_INT(GS_EAGAIN, (int)gs_source_read(s, 0, b, sizeof(b)));
-    ASSERT_EQ_INT(0, gs_source_poll(s, 0)); // one step: two refusals left
+    ASSERT_EQ_INT(GS_EAGAIN, (int)source_read(s, 0, b, sizeof(b)));
+    ASSERT_EQ_INT(0, source_poll(s, 0)); // one step: two refusals left
     ASSERT_EQ_INT(1, l.polls);
 
-    gs_source_t *v = gs_source_view(s, 100, 1000, NULL);
-    gs_source_t *lk = gs_source_locked(v);
-    ASSERT_EQ_INT(0, gs_source_read_exact(lk, 10, b, sizeof(b)));
+    source_t *v = source_view(s, 100, 1000, NULL);
+    source_t *lk = source_locked(v);
+    ASSERT_EQ_INT(0, source_read_exact(lk, 10, b, sizeof(b)));
     for (int i = 0; i < 16; i++)
         ASSERT_EQ_INT(pattern(110 + (uint64_t)i), b[i]);
     ASSERT_EQ_INT(3, l.polls); // two more polls, through the lock and the view
@@ -647,10 +647,10 @@ TEST(test_not_yet_is_waited_out_with_poll) {
 
     // A source that never makes progress is given up on, not spun on forever.
     l.not_yet = 1 << 30;
-    ASSERT_EQ_INT(GS_EAGAIN, gs_source_read_exact(lk, 0, b, sizeof(b)));
-    gs_source_release(lk);
-    gs_source_release(v);
-    gs_source_release(s);
+    ASSERT_EQ_INT(GS_EAGAIN, source_read_exact(lk, 0, b, sizeof(b)));
+    source_release(lk);
+    source_release(v);
+    source_release(s);
 }
 
 int main(void) {

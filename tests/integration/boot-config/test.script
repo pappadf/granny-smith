@@ -28,10 +28,10 @@ assert try(machine.nubus.slot[10].number, none) == none "an empty socket has no 
 # --- A log line written while a machine is built carries the running
 # machine's PC and instruction count; it used to reach for the machine
 # under construction and stop on the construction assert. ---
-log.set setup level=1 ts=true pc=true
+log.set system level=1 ts=true pc=true
 log.set nubus level=1 ts=true pc=true
 assert machine.boot(model="iicx", rom="${$ROM}") "a boot with decorated construction logs"
-log.set setup level=0 ts=false pc=false
+log.set system level=0 ts=false pc=false
 log.set nubus level=0 ts=false pc=false
 
 # --- The document is the whole specification: model and rom are required. ---

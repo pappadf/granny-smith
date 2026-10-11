@@ -186,7 +186,7 @@ On open, the **catalog file** is read fully into memory using its three inline
 extents (`drCTExtRec`), then the B-tree **leaf chain** is walked
 (`fLink`-linked, node kind `0xFF`) and every folder/file record is flattened
 into `vol->records[]`. Lookups then scan that list; root directory is
-`HFS_ROOT_CNID = 2`. File records yield: CNID, valence (folders), the data and
+`HFS_ROOT_ID = 2`. File records yield: CNID, valence (folders), the data and
 resource fork descriptors, and the 32-byte Finder info (16 `FInfo` + 16
 `FXInfo`).
 
@@ -293,16 +293,16 @@ A/UX 3.0.x.
 
 - `ufs_open(img, partition_byte_offset, partition_byte_size)` reads the **BSD FFS
   superblock at offset 8192** (`UFS_SBOFF`) and validates `FS_MAGIC`
-  (`0x011954`). A/UX writes big-endian on 68k, but either byte order is accepted
-  (tolerating an occasional LE-rewritten image). `ufs_probe` is the cheap
-  single-sector pre-check.
+  (`0x011954`), big-endian only: A/UX writes big-endian on 68k, and
+  `ufs_probe` (the cheap pre-check, reading only the 4-byte magic) accepts
+  exactly what `ufs_open` can open.
 - Targets the `Apple_UNIX_SVR2` APM entries a period A/UX install writes.
 - **Inode layout is 4.3BSD-Tahoe**: the 32-bit `di_size` lives at inode offset
   **12** (not 8) — Tahoe used `quad_t val[0]` for `di_rdev` and `val[1]` for
   size, and A/UX inherited that. Files > 4 GiB are unsupported.
 - Block addressing follows **direct (12) + single-indirect + double-indirect**
   pointers. Triple-indirect is unimplemented (no current fixture needs it).
-- Root inode is `UFS_ROOT_INO = 2`. Inodes are read **on demand** (no full
+- Root inode is `UFS_ROOT_ID = 2`. Inodes are read **on demand** (no full
   in-RAM snapshot, unlike HFS) — suited to large volumes with sparse access.
 - Names are 8-bit clean and passed through unchanged. Symbolic links are
   *reported* (`is_symlink`) but **not followed** — callers see the link itself.
@@ -388,7 +388,8 @@ Two resolver variants:
 
 ### In-image path grammar
 
-`parse_image_path` (in `image_vfs.c`) interprets the tail:
+`parse_image_path` (in `image_vfs.c`) splits the tail; `ns_disk.c` interprets
+it for a disk image:
 
 ```
 /                              → mount root (lists partitionN)
@@ -398,32 +399,51 @@ Two resolver variants:
 /partitionN/.../file/finf      → 32-byte Finder-info blob of that file
 ```
 
-- The first component must be `partitionN` (1-based; case-insensitive
-  `partition` prefix).
-- `rsrc` / `finf` are recognised only as a **trailing** suffix on an HFS file. If
-  the suffix lookup fails, the reader retries treating the suffix as part of the
-  filename, so a real file literally named `rsrc` still resolves. UFS partitions
-  have no forks — the suffix logic is skipped for them.
+- The first component must be `partitionN` (1-based, digits only), or
+  `iso9660` on a hybrid disc. These root names are matched without regard to
+  case (`Partition1`, `ISO9660`), like HFS names; the listing spells them in
+  lower case.
+- The other names the VFS synthesises — `rsrc`, `finf`, `_raw` — are matched
+  case-sensitively.
+- A `rsrc` / `finf` component names a fork only when the components before it
+  name an existing **file**. Otherwise (a folder called `rsrc`, a name at the
+  mount root) it is an ordinary name and the path resolves literally, so a
+  real file or folder named `rsrc` still resolves. UFS partitions have no
+  forks.
+- A path may have at most `VFS_MAX_COMPONENTS` (128) components, the same cap
+  the resolver applies; a deeper one is refused with `-ENAMETOOLONG`.
 
 ### Auto-mount cache
 
 `image_vfs_acquire_mount` opens an image on first descent and caches it:
 
-- Cache holds up to **`IMAGE_VFS_MAX_MOUNTS = 8`** mounts, keyed on the canonical
-  absolute host path (via `realpath`). A recorded `dev`/`inode`/`mtime` triggers
-  reprobe + eviction if the file is swapped underneath us.
-- On open it probes **APM first, then bare HFS at offset 0**. A bare HFS floppy
-  gets a synthetic `partition1` (`Apple_HFS`, start 0, whole-image size) so the
-  rest of the code treats it uniformly. If neither matches → `-ENOTDIR` ("not a
+- The table holds up to **`IMAGE_VFS_MAX_MOUNTS` (16)** mounts — a build may
+  override it with `-DIMAGE_VFS_MAX_MOUNTS=<n>`. When it is full, the least
+  recently used idle mount (no open handle) is evicted; with every slot busy
+  a new mount fails with `-ENOSPC`.
+- Mounts are keyed by their source's key (`source.h`), which carries the
+  file's size and mtime. A host file's mount is recorded under its canonical
+  path (`realpath`; a path realpath reports missing is not mounted, and one
+  it cannot resolve for another reason — a filesystem backend that cannot
+  answer it — is mounted under the path as given). When the
+  file changes, the next descent makes a new mount; the old one is dropped at
+  once if idle, else marked **stale** (`files.mounts[n].stale`): its open
+  handles keep working, nothing new reaches it, and the last handle to close
+  drops it.
+- On open it probes **APM first, then a bare HFS/HFS+, UFS, MFS or ISO 9660
+  volume** (the signature word at byte 1024, or the format's own probe). A bare
+  volume gets a synthetic `partition1` covering the whole image, so the rest
+  of the code treats it uniformly. If nothing matches → `-ENOTDIR` ("not a
   recognised image").
-- Per-partition filesystem state is opened **lazily** on first access
-  (`get_partition_hfs` / `get_partition_ufs`, which compute `start_block*512`).
-- **Read-only**: the image backend's `mkdir`/`unlink`/`rename` slots are static
-  `-EROFS` rejecters — never conditionally writable.
+- Per-partition filesystem state is opened **lazily** on first access, at
+  `start_block * APM_BLOCK_SIZE`. A filesystem that fails to open is tried
+  again on the next access rather than remembered as broken.
+- **Read-only**: the image backend is flagged `VFS_BE_RDONLY`; `vfs.c` refuses
+  `mkdir`/`unlink`/`rename` on it with `-EROFS`.
 - **Writable-attach conflict**: while the emulator holds the same file open
   writable — an attached hard disk or floppy — the mount and every backend
   call return `-EBUSY`, because the guest's writes land in a delta this
-  read-only mount cannot see. image_vfs asks `image_path_is_open_writable()`
+  read-only mount cannot see. image_vfs asks `image_key_is_open_writable()`
   at each call, so access resumes as soon as the image is detached. Read-only
   attaches (CD-ROM) do not conflict.
 - A reference count tracks live dir/file handles so a mount is not torn down
@@ -445,8 +465,8 @@ Partition inspection (`src/core/storage/storage_class.c`):
 | Command | Effect |
 |---------|--------|
 | `files.partmap <path>` | Parse and print the partition map as a text table. |
-| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. |
-| `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`. |
+| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. On an APM disk, one line per filesystem partition (HFS, UFS, or one whose volume header is HFS/HFS+/HFSX), with the volume its header names. |
+| `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`, `stale`. |
 | `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
 | `files.mounts[n].unmount` | Force-close a cached auto-mount. |
 

@@ -383,7 +383,7 @@ static const char *attr_name(uint8_t bit) {
 
 int rfork_info_format(const char *name, uint8_t attrs, size_t size, char *out, size_t cap) {
     char esc[256];
-    if (gs_json_escape(name ? name : "", esc, sizeof(esc)) < 0)
+    if (json_escape(name ? name : "", esc, sizeof(esc)) < 0)
         return -EINVAL;
 
     int n = snprintf(out, cap, "{\"name\":\"%s\",\"attrs\":[", esc);

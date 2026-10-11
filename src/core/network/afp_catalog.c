@@ -468,6 +468,10 @@ const afp_cat_entry_t *afp_catalog_add(afp_catalog_t *cat, uint32_t parent, cons
     const afp_cat_entry_t *existing = afp_catalog_find_child(cat, parent, name);
     if (existing)
         return existing;
+    // CNIDs are never reused, so the counter only climbs; past 0xFFFFFFFF it
+    // wraps below AFP_CNID_FIRST, and then no new one is left to give.
+    if (cat->next_cnid < AFP_CNID_FIRST)
+        return NULL;
     uint32_t cnid = cat->next_cnid++;
     long si = slot_push(cat, cnid, parent, is_dir, name);
     if (si < 0)

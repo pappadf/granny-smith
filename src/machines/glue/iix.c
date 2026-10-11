@@ -18,7 +18,7 @@
 #include "mac030_glue.h"
 #include "machine.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "asc.h"
 #include "iicx_internal.h"
@@ -35,30 +35,12 @@
 #include <string.h>
 
 // ============================================================
-// Forward declarations
-// ============================================================
-
-static void iix_via2_output(void *context, uint8_t port, uint8_t output);
-static void iix_via2_shift_out(void *context, uint8_t byte);
-
-// ============================================================
-// VIA2 / SCC callbacks
+// VIA callbacks
 // ============================================================
 //
-// VIA1 callbacks come from iicx_internal.h.  VIA2 differs because the
-// IIx has no soft-power-off and no sound-jack-detect.
-
-static void iix_via2_output(void *context, uint8_t port, uint8_t output) {
-    (void)context;
-    (void)port;
-    (void)output;
-    // No machine-specific outputs on IIx VIA2.
-}
-
-static void iix_via2_shift_out(void *context, uint8_t byte) {
-    (void)context;
-    (void)byte;
-}
+// VIA1 callbacks come from iicx_internal.h.  VIA2 has nothing to observe
+// (no soft-power-off, no sound-jack-detect), so it takes the family's
+// ignored-output callbacks.
 
 // (VBL is the default GLUE NuBus VBL in glue_substrate; no IIx override.)
 
@@ -111,8 +93,8 @@ static const mac030_glue_board_t iix_board = {
     // ROM's SR writes during interrupt handling fire the callback
     // spuriously (BUG-004).  via.c tolerates a NULL here.
     .via1_shift_out = NULL,
-    .via2_output = iix_via2_output,
-    .via2_shift_out = iix_via2_shift_out,
+    .via2_output = mac030_glue_via_output_ignored,
+    .via2_shift_out = mac030_glue_via_shift_out_ignored,
     .setup_id = iix_setup_id,
     .memory_layout_tail = iicx_memory_layout_tail,
 };
@@ -120,8 +102,6 @@ static const mac030_glue_board_t iix_board = {
 // ============================================================
 // Machine descriptor
 // ============================================================
-
-static const uint32_t iix_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
 const hw_profile_t machine_iix = {
     .name = "Macintosh IIx",
@@ -132,19 +112,20 @@ const hw_profile_t machine_iix = {
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
-    .ram_default = 0x800000, // 8 MB
-    .ram_max = 0x8000000, // 128 MB
+    .ram_default = MAC030_GLUE_RAM_DEFAULT,
+    .ram_max = MAC030_GLUE_RAM_MAX,
     .rom_size = 0x040000, // 256 KB
 
-    .ram_options = iix_ram_options_kb,
+    .ram_options = iicx_iix_ram_options_kb, // shared, 5120 included (iicx.c)
     .floppy_slots = mac_floppy_slots_2int,
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
-    // Same reasoning as IIcx: no built-in video, so the slot card's
-    // VROM (mdc-8-24-revb-d1629664.vrom for the default JMFB card) must be
-    // present.  See iicx.c for the full comment.
+    // No built-in video, as on the IIcx: the screen is the NuBus card in
+    // slot $9.  The default is the Display Card 8•24 (1989), a later card
+    // than the IIx (1988) but one it takes; the card kind requires its
+    // declaration ROM.
 
     .nubus_slots = iix_slots,
 

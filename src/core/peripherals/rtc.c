@@ -6,10 +6,12 @@
 
 #include "rtc.h"
 
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 #include "via.h"
 
@@ -64,8 +66,8 @@ static const class_desc_t rtc_pram_class;
 // precalculated using any online epoch converter
 #define MAC_TO_UNIX_EPOCH 2082844800
 
-#define IS_READ(cmd)     (cmd & 0x80)
-#define IS_EXTENDED(cmd) ((cmd >> 3 & 0x0F) == 7)
+#define RTC_IS_READ(cmd)     ((cmd) & 0x80)
+#define RTC_IS_EXTENDED(cmd) (((cmd) >> 3 & 0x0F) == 7)
 
 #define CMD_SECONDS_REG_0 0x01
 #define CMD_SECONDS_REG_1 0x05
@@ -73,6 +75,17 @@ static const class_desc_t rtc_pram_class;
 #define CMD_SECONDS_REG_3 0x0D
 #define CMD_TEST          0x31
 #define CMD_WRITE_PROTECT 0x35
+
+// Validity token -- see docs/reference/formats/mac-pram.md §2..§3.
+// `_InitUtil` checks two independent tokens at cold boot and re-initialises
+// the region whose token is missing.  `rtc.pram.validate()` stamps the XPRAM
+// one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
+// one: that is the SysParam validity byte, which on the extended RTC lives at
+// physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
+// into a reserved XPRAM byte.  SysParam is left for each ROM to
+// initialise with its own defaults.
+#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
+#define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
 void rtc_input(rtc_t *rtc, bool disable, bool clock, bool data);
 
@@ -101,7 +114,7 @@ static int legacy_pram_addr(const rtc_t *rtc, uint8_t cmd) {
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
-    GS_ASSERT(cmd >> 7); // read_cmd is only reached through IS_READ(shift)
+    GS_ASSERT(cmd >> 7); // read_cmd is only reached through RTC_IS_READ(shift)
 
     switch (cmd & 0x7F) {
 
@@ -146,7 +159,7 @@ static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
 
 static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
     // High bit clear indicates write operation
-    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when IS_READ is false
+    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when RTC_IS_READ is false
 
     // Write-protect command itself is always allowed
     if (cmd != CMD_WRITE_PROTECT) {
@@ -295,23 +308,22 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
 
             if (!rtc->command) {
 
-                // if it's a non-exteded read command - simply return the data
                 // Non-extended read command: return data immediately
-                if (IS_READ(rtc->shift) && !IS_EXTENDED(rtc->shift)) {
+                if (RTC_IS_READ(rtc->shift) && !RTC_IS_EXTENDED(rtc->shift)) {
                     rtc->shift = read_cmd(rtc, (uint8_t)rtc->shift);
                     rtc->tx_bits = 8;
                 } else { // In all other cases, we need to wait for more input
                     rtc->command = (uint8_t)rtc->shift;
-                    if (IS_EXTENDED(rtc->command) && !IS_READ(rtc->command))
+                    if (RTC_IS_EXTENDED(rtc->command) && !RTC_IS_READ(rtc->command))
                         // Extended write: need cmd2 (8 bits) + data (8 bits) = 16 bits total
                         rtc->rx_bits = 16;
                     else
                         // Extended read or normal write: need one more byte (8 bits)
                         rtc->rx_bits = 8;
                 }
-            } else if (IS_EXTENDED(rtc->command)) {
+            } else if (RTC_IS_EXTENDED(rtc->command)) {
 
-                if (IS_READ(rtc->command)) {
+                if (RTC_IS_READ(rtc->command)) {
                     // Extended read: look up PRAM value and switch to transmit mode
                     rtc->shift = read_ext(rtc, rtc->command, (uint8_t)rtc->shift);
                     rtc->tx_bits = 8;
@@ -324,7 +336,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
                 rtc->command = 0;
             } else { // normal (non extended) write command
 
-                GS_ASSERT(!IS_READ(rtc->command)); // the read forms are handled above
+                GS_ASSERT(!RTC_IS_READ(rtc->command)); // the read forms are handled above
                 write_cmd(rtc, rtc->command, (uint8_t)rtc->shift);
                 rtc->command = 0;
                 rtc->rx_bits = 8;
@@ -414,17 +426,6 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     rtc->seconds = mac_seconds;
     LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
 }
-
-// === Validity token — see docs/reference/formats/mac-pram.md §2..§3 ===============
-// `_InitUtil` checks two independent tokens at cold boot and re-initialises
-// the region whose token is missing.  `rtc.pram.validate()` stamps the XPRAM
-// one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
-// one: that is the SysParam validity byte, which on the extended RTC lives at
-// physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
-// into a reserved XPRAM byte.  SysParam is left for each ROM to
-// initialise with its own defaults.
-#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
-#define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
 // === Object-model views =====================================================
 
@@ -565,7 +566,7 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint) {
 // exposed under `rtc.pram` as a child object with peek / poke / dump
 // / snapshot / restore / validate methods, mirroring the
 // memory.peek / memory.poke shape so anyone who knows that interface
-// knows this one.  `poke` takes a V_BYTES second argument (any width):
+// knows this one.  `poke` takes a VK_BYTES second argument (any width):
 // per-byte writes use the integer-with-width literal (`0xa8:1`),
 // 4-byte tokens like 'NuMc' use `0x4e754d63:4`, and the whole 8-byte
 // slot-9 sPRAMRec fits in `0x002780b6b6000000:8`.  All writes honour
@@ -592,7 +593,7 @@ static DEF_SETTER(rtc_attr_time_set) {
     }
     uint32_t mac_seconds = 0;
     bool resolved = false;
-    if (in.kind == V_STRING && in.s) {
+    if (in.kind == VK_STRING && in.s) {
         // Accept either a decimal unix-epoch string or an ISO-8601
         // "YYYY-MM-DDTHH:MM:SS" timestamp. Either way, the result is
         // unix seconds, then we shift to the Mac 1904 epoch.
@@ -630,7 +631,7 @@ static DEF_SETTER(rtc_attr_time_set) {
             return val_err("rtc.time: value is not numeric");
         }
         // Numeric input is treated as Mac-epoch seconds (matches the
-        // getter's V_UINT result). Use the string form for unix epochs
+        // getter's VK_UINT result). Use the string form for unix epochs
         // or ISO timestamps.
         mac_seconds = (uint32_t)s;
     }
@@ -645,18 +646,18 @@ static DEF_GETTER(rtc_attr_read_only) {
 }
 
 static const member_t rtc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "time",
      .doc = "Mac-epoch seconds (1904-based); writable",
      .flags = 0,
-     // .type = V_NONE: setter intentionally accepts either V_UINT (Mac
-     // seconds) or V_STRING (unix epoch / ISO-8601). Skip framework
+     // .type = VK_NONE: setter intentionally accepts either VK_UINT (Mac
+     // seconds) or VK_STRING (unix epoch / ISO-8601). Skip framework
      // kind validation; the body discriminates.
-     .attr = {.type = V_NONE, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_NONE, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
+    {.kind = MK_ATTR,
      .name = "read_only",
      .doc = "Write-protect bit",
-     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
+     .attr = {.type = VK_BOOL, .get = rtc_attr_read_only, .set = NULL}},
 };
 
 static const class_desc_t rtc_class = {
@@ -671,7 +672,7 @@ static const class_desc_t rtc_class = {
 // Modelled on memory.peek / memory.poke: per-cell read/write through
 // `peek`/`poke`, range read through `dump`, whole-buffer transfers
 // through `snapshot`/`restore`, and a domain-specific `validate` for
-// the boot-ROM cold-init tokens.  `poke` takes a V_BYTES second arg
+// the boot-ROM cold-init tokens.  `poke` takes a VK_BYTES second arg
 // (any length, big-endian) so the integer-literal width suffix from
 // parse.c (`0xa8:1`, `0x4e754d63:4`, `0x002780b6b6000000:8`) can stand
 // in for both per-byte writes and bulk seeds without polymorphism on
@@ -688,7 +689,7 @@ static DEF_METHOD(rtc_pram_method_peek) {
     if (addr > 0xFF)
         return val_err("rtc.pram.peek: addr must be 0..255");
     value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -698,8 +699,8 @@ static DEF_METHOD(rtc_pram_method_poke) {
         return val_err("rtc not available");
     uint64_t addr = argv[0].u;
     const value_t *bytes = &argv[1];
-    if (bytes->kind != V_BYTES || !bytes->bytes.p)
-        return val_err("rtc.pram.poke: bytes argument must be V_BYTES (use the :N width suffix, e.g. 0xa8:1)");
+    if (bytes->kind != VK_BYTES || !bytes->bytes.p)
+        return val_err("rtc.pram.poke: bytes argument must be VK_BYTES (use the :N width suffix, e.g. 0xa8:1)");
     size_t n = bytes->bytes.n;
     if (n == 0)
         return val_err("rtc.pram.poke: bytes argument is empty");
@@ -722,20 +723,14 @@ static DEF_METHOD(rtc_pram_method_dump) {
     if (addr > 0xFF || n == 0 || addr + n > 0x100)
         return val_err("rtc.pram.dump: read of %llu bytes at 0x%02llX would overflow PRAM (256 bytes)",
                        (unsigned long long)n, (unsigned long long)addr);
-    uint8_t buf[256];
-    for (size_t i = 0; i < (size_t)n; i++)
-        buf[i] = rtc_pram_read(rtc, (uint8_t)(addr + i));
-    return val_bytes(buf, (size_t)n);
+    return val_bytes(rtc->pram + addr, (size_t)n);
 }
 
 static DEF_METHOD(rtc_pram_method_snapshot) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
-    uint8_t buf[256];
-    for (int i = 0; i < 256; i++)
-        buf[i] = rtc_pram_read(rtc, (uint8_t)i);
-    return val_bytes(buf, sizeof(buf));
+    return val_bytes(rtc->pram, sizeof(rtc->pram));
 }
 
 // Whole-PRAM restore — used by integration tests that want to seed PRAM
@@ -749,9 +744,9 @@ static DEF_METHOD(rtc_pram_method_restore) {
     if (!rtc)
         return val_err("rtc not available");
     const value_t *bytes = &argv[0];
-    if (bytes->kind != V_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
-        return val_err("rtc.pram.restore: expected V_BYTES of length 256 (got len=%zu)",
-                       bytes->kind == V_BYTES ? bytes->bytes.n : 0);
+    if (bytes->kind != VK_BYTES || bytes->bytes.n != 256 || !bytes->bytes.p)
+        return val_err("rtc.pram.restore: expected VK_BYTES of length 256 (got len=%zu)",
+                       bytes->kind == VK_BYTES ? bytes->bytes.n : 0);
     for (int i = 0; i < 256; i++) {
         if (!rtc_pram_write(rtc, (uint8_t)i, bytes->bytes.p[i]))
             return val_err("rtc.pram.restore: PRAM is write-protected");
@@ -798,7 +793,7 @@ static DEF_GETTER(rtc_pram_attr_boot_device_get) {
 
 static DEF_SETTER(rtc_pram_attr_boot_device_set) {
     rtc_t *rtc = rtc_from(self);
-    int64_t id = in.kind == V_INT ? in.i : (int64_t)in.u;
+    int64_t id = in.kind == VK_INT ? in.i : (int64_t)in.u;
     value_free(&in);
     if (!rtc)
         return val_err("rtc not available");
@@ -814,49 +809,49 @@ static DEF_SETTER(rtc_pram_attr_boot_device_set) {
 }
 
 static const arg_decl_t rtc_pram_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
 };
 static const arg_decl_t rtc_pram_poke_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
-    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
 };
 static const arg_decl_t rtc_pram_dump_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
-    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "n", .kind = VK_UINT, .doc = "byte count"},
 };
 static const arg_decl_t rtc_pram_restore_args[] = {
-    {.name = "bytes", .kind = V_BYTES, .doc = "256-byte buffer (typically from rtc.pram.snapshot)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "256-byte buffer (typically from rtc.pram.snapshot)"},
 };
 
 static const member_t rtc_pram_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "peek",
      .doc = "Read one PRAM byte",
-     .method = {.args = rtc_pram_peek_args, .nargs = 1, .result = V_UINT, .fn = rtc_pram_method_peek}      },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_peek_args, .nargs = 1, .result = VK_UINT, .fn = rtc_pram_method_peek}      },
+    {.kind = MK_METHOD,
      .name = "poke",
      .doc = "Write 1..N PRAM bytes (honours write-protect)",
-     .method = {.args = rtc_pram_poke_args, .nargs = 2, .result = V_NONE, .fn = rtc_pram_method_poke}      },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_poke_args, .nargs = 2, .result = VK_NONE, .fn = rtc_pram_method_poke}      },
+    {.kind = MK_METHOD,
      .name = "dump",
      .doc = "Read N PRAM bytes starting at addr",
-     .method = {.args = rtc_pram_dump_args, .nargs = 2, .result = V_BYTES, .fn = rtc_pram_method_dump}     },
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_dump_args, .nargs = 2, .result = VK_BYTES, .fn = rtc_pram_method_dump}     },
+    {.kind = MK_METHOD,
      .name = "snapshot",
      .doc = "Read all 256 PRAM bytes",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = rtc_pram_method_snapshot}               },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BYTES, .fn = rtc_pram_method_snapshot}               },
+    {.kind = MK_METHOD,
      .name = "restore",
      .doc = "Write all 256 PRAM bytes from a snapshot",
-     .method = {.args = rtc_pram_restore_args, .nargs = 1, .result = V_NONE, .fn = rtc_pram_method_restore}},
-    {.kind = M_METHOD,
+     .method = {.args = rtc_pram_restore_args, .nargs = 1, .result = VK_NONE, .fn = rtc_pram_method_restore}},
+    {.kind = MK_METHOD,
      .name = "validate",
      .doc = "Stamp the XPRAM validity token ($0C-$0F: 'NuMc', or the Plus's 'Bugs')",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = rtc_pram_method_validate}                },
-    {.kind = M_ATTR,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = rtc_pram_method_validate}                },
+    {.kind = MK_ATTR,
      .name = "boot_device",
      .doc = "Start Manager default startup device, as a SCSI id (writes $77..$7B; -1 = none)",
-     .attr = {.type = V_INT, .get = rtc_pram_attr_boot_device_get, .set = rtc_pram_attr_boot_device_set}   },
+     .attr = {.type = VK_INT, .get = rtc_pram_attr_boot_device_get, .set = rtc_pram_attr_boot_device_set}   },
 };
 
 static const class_desc_t rtc_pram_class = {

@@ -36,6 +36,7 @@
 
 #include "adb.h"
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "via.h"
 

@@ -13,6 +13,7 @@
 #include "storage_util.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,17 +76,17 @@ void dc42_build_header(uint8_t hdr[DISKCOPY_HEADER_SIZE], const uint8_t name_fie
     WR_BE16(hdr + 0x52, 0x0100); // the "private" word every DiskCopy 4.2 file carries
 }
 
-static bool dc42_detect(const gs_probe_t *p) {
+static bool dc42_detect(const format_probe_t *p) {
     return dc42_parse_header(p->p.head, p->p.head_len, p->p.size, NULL, NULL);
 }
 
 // The payload is the data section: a view past the header.
-static int dc42_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc) {
+static int dc42_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
     uint32_t ds = 0;
     if (!dc42_parse_header(p->p.head, p->p.head_len, p->p.size, &ds, NULL))
         return -EINVAL;
-    char *key = gs_str_printf("%s#dc42", gs_source_key(p->data));
-    *data = gs_source_view(p->data, DISKCOPY_HEADER_SIZE, ds, key);
+    char *key = str_printf("%s#dc42", source_key(p->data));
+    *data = source_view(p->data, DISKCOPY_HEADER_SIZE, ds, key);
     free(key);
     *rsrc = NULL;
     return *data ? 0 : -ENOMEM;
@@ -108,14 +109,14 @@ uint32_t lisaem_profile_blocks(const uint8_t *hdr, size_t len, uint64_t file_siz
     return blocks;
 }
 
-static bool lisaem_detect(const gs_probe_t *p) {
+static bool lisaem_detect(const format_probe_t *p) {
     return lisaem_profile_blocks(p->p.head, p->p.head_len, p->p.size) != 0;
 }
 
 #define LISAEM_BLOCK (512u + LISAEM_TAG_BYTES) // one ProFile block, tag first
 
 typedef struct {
-    gs_source_t *file; // the DiskCopy file (borrowed: the source's parent)
+    source_t *file; // the DiskCopy file (borrowed: the source's parent)
     uint32_t blocks;
     char *key;
 } lisaem_src_t;
@@ -126,7 +127,7 @@ typedef struct {
 // within a group of LISAEM_INTERLEAVE, so a group is read whole -- its data
 // and its tags, two reads -- and assembled here: a host file is read in a
 // few large pieces rather than twice per block.
-static int64_t lisaem_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t lisaem_read(source_t *s, uint64_t off, void *buf, size_t len) {
     lisaem_src_t *m = s->ctx;
     uint64_t size = (uint64_t)m->blocks * LISAEM_BLOCK;
     if (off >= size)
@@ -140,9 +141,9 @@ static int64_t lisaem_read(gs_source_t *s, uint64_t off, void *buf, size_t len) 
     while (done < len) {
         uint64_t pos = off + done;
         uint32_t group = (uint32_t)(pos / (LISAEM_BLOCK * LISAEM_INTERLEAVE)) * LISAEM_INTERLEAVE;
-        int rc = gs_source_read_exact(m->file, DISKCOPY_HEADER_SIZE + (uint64_t)group * 512, data, sizeof data);
+        int rc = source_read_exact(m->file, DISKCOPY_HEADER_SIZE + (uint64_t)group * 512, data, sizeof data);
         if (!rc)
-            rc = gs_source_read_exact(m->file, tags_at + (uint64_t)group * LISAEM_TAG_BYTES, tags, sizeof tags);
+            rc = source_read_exact(m->file, tags_at + (uint64_t)group * LISAEM_TAG_BYTES, tags, sizeof tags);
         if (rc)
             return done ? (int64_t)done : rc;
         // Copy what the request wants of this group, block by block.
@@ -170,19 +171,19 @@ static int64_t lisaem_read(gs_source_t *s, uint64_t off, void *buf, size_t len) 
     return (int64_t)done;
 }
 
-static uint64_t lisaem_size(gs_source_t *s) {
+static uint64_t lisaem_size(source_t *s) {
     return (uint64_t)((lisaem_src_t *)s->ctx)->blocks * LISAEM_BLOCK;
 }
 
-static const char *lisaem_key(gs_source_t *s) {
+static const char *lisaem_key(source_t *s) {
     return ((lisaem_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t lisaem_tier(gs_source_t *s) {
-    return gs_source_tier(((lisaem_src_t *)s->ctx)->file); // pure arithmetic over the file
+static source_tier_t lisaem_tier(source_t *s) {
+    return source_tier(((lisaem_src_t *)s->ctx)->file); // pure arithmetic over the file
 }
 
-static void lisaem_close(gs_source_t *s) {
+static void lisaem_close(source_t *s) {
     lisaem_src_t *m = s->ctx;
     if (m) {
         free(m->key);
@@ -190,9 +191,9 @@ static void lisaem_close(gs_source_t *s) {
     }
 }
 
-static const gs_source_ops_t lisaem_ops = {lisaem_read, lisaem_size, lisaem_key, lisaem_tier, lisaem_close, NULL};
+static const source_ops_t lisaem_ops = {lisaem_read, lisaem_size, lisaem_key, lisaem_tier, lisaem_close, NULL};
 
-static int lisaem_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc) {
+static int lisaem_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
     *data = *rsrc = NULL;
     uint32_t blocks = lisaem_profile_blocks(p->p.head, p->p.head_len, p->p.size);
     if (!blocks)
@@ -202,7 +203,7 @@ static int lisaem_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **
         return -ENOMEM;
     m->file = p->data;
     m->blocks = blocks;
-    m->key = gs_str_printf("%s#lisaem", gs_source_key(p->data));
+    m->key = str_printf("%s#lisaem", source_key(p->data));
     if (!m->key) {
         free(m);
         return -ENOMEM;
@@ -217,22 +218,22 @@ static int lisaem_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **
 // UDIF and NDIF
 // ============================================================================
 
-static bool udif_detect_probe(const gs_probe_t *p) {
+static bool udif_detect_probe(const format_probe_t *p) {
     return udif_source_detect(p->p.tail, p->p.tail_len);
 }
 
-static int udif_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc) {
+static int udif_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
     int err = 0;
     *data = udif_source_open(p->data, &err);
     *rsrc = NULL;
     return *data ? 0 : (err ? err : -EINVAL);
 }
 
-static bool ndif_detect_probe(const gs_probe_t *p) {
+static bool ndif_detect_probe(const format_probe_t *p) {
     return p->rsrc && ndif_source_detect(p->rsrc);
 }
 
-static int ndif_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc) {
+static int ndif_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
     int err = 0;
     *data = ndif_source_open(p->data, p->rsrc, &err);
     *rsrc = NULL; // the decoded disk has no forks of its own
@@ -244,7 +245,7 @@ static int ndif_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rs
 // ============================================================================
 
 // A peeler wrapper's detect, by name.
-static bool peeler_detect(const gs_probe_t *p, const char *name) {
+static bool peeler_detect(const format_probe_t *p, const char *name) {
     int n = 0;
     const peel_format_desc_t *d = peel_formats(&n);
     for (int i = 0; i < n; i++)
@@ -253,52 +254,52 @@ static bool peeler_detect(const gs_probe_t *p, const char *name) {
     return false;
 }
 
-static bool hqx_detect_probe(const gs_probe_t *p) {
+static bool hqx_detect_probe(const format_probe_t *p) {
     return peeler_detect(p, "hqx");
 }
-static bool bin_detect_probe(const gs_probe_t *p) {
+static bool bin_detect_probe(const format_probe_t *p) {
     return peeler_detect(p, "bin");
 }
-static bool gz_detect_probe(const gs_probe_t *p) {
+static bool gz_detect_probe(const format_probe_t *p) {
     return peeler_detect(p, "gz");
 }
 
 // The one file's forks.  Decoding ones fill the scratch sink; each is
 // wrapped in a lock, since peeler's sources are not thread-safe.
-static int peeler_unwrap(const gs_probe_t *p, const char *name, gs_source_t **data, gs_source_t **rsrc) {
+static int peeler_unwrap(const format_probe_t *p, const char *name, source_t **data, source_t **rsrc) {
     *data = *rsrc = NULL;
     peel_err_t *err = NULL;
-    peel_archive_t *a = peel_open_as(name, p->data, gs_scratch_sink(), NULL, &err);
+    peel_archive_t *a = peel_open_as(name, p->data, source_scratch_sink(), NULL, &err);
     if (!a) {
-        LOG(2, "%s wrapper '%s' did not open: %s", name, gs_source_key(p->data), peel_err_msg(err));
+        LOG(2, "%s wrapper '%s' did not open: %s", name, source_key(p->data), peel_err_msg(err));
         peel_err_free(err);
         return -EINVAL;
     }
     const peel_entry_t *e = peel_entry(a, 0);
     int rc = -EINVAL;
     if (e && !e->is_dir) {
-        gs_source_t *d = peel_open_fork(a, 0, PEEL_FORK_DATA, &err);
-        gs_source_t *r = (d && e->rsrc_len) ? peel_open_fork(a, 0, PEEL_FORK_RSRC, &err) : NULL;
+        source_t *d = peel_open_fork(a, 0, PEEL_FORK_DATA, &err);
+        source_t *r = (d && e->rsrc_len) ? peel_open_fork(a, 0, PEEL_FORK_RSRC, &err) : NULL;
         if (d) {
-            *data = gs_source_locked(d);
-            *rsrc = r ? gs_source_locked(r) : NULL;
+            *data = source_locked(d);
+            *rsrc = r ? source_locked(r) : NULL;
             rc = *data ? 0 : -ENOMEM;
         }
-        gs_source_release(d);
-        gs_source_release(r);
+        source_release(d);
+        source_release(r);
     }
     peel_err_free(err);
     peel_close(a);
     return rc;
 }
 
-static int hqx_unwrap(const gs_probe_t *p, gs_source_t **d, gs_source_t **r) {
+static int hqx_unwrap(const format_probe_t *p, source_t **d, source_t **r) {
     return peeler_unwrap(p, "hqx", d, r);
 }
-static int bin_unwrap(const gs_probe_t *p, gs_source_t **d, gs_source_t **r) {
+static int bin_unwrap(const format_probe_t *p, source_t **d, source_t **r) {
     return peeler_unwrap(p, "bin", d, r);
 }
-static int gz_unwrap(const gs_probe_t *p, gs_source_t **d, gs_source_t **r) {
+static int gz_unwrap(const format_probe_t *p, source_t **d, source_t **r) {
     return peeler_unwrap(p, "gz", d, r);
 }
 
@@ -309,7 +310,7 @@ static int gz_unwrap(const gs_probe_t *p, gs_source_t **d, gs_source_t **r) {
 // Order: the trailer-identified container first (a UDIF's payload may
 // begin with anything), then the fork-identified one, then header formats
 // -- the LisaEm ProFile image before the plain DiskCopy 4.2 it refines.
-static const gs_format_t g_wrappers[] = {
+static const format_t g_wrappers[] = {
     {"udif",   GS_FMT_WRAPPER, "UDIF (.dmg) disk image",        udif_detect_probe, udif_unwrap,   NULL},
     {"ndif",   GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image", ndif_detect_probe, ndif_unwrap,   NULL},
     {"lisaem", GS_FMT_WRAPPER, "LisaEm ProFile disk image",     lisaem_detect,     lisaem_unwrap, NULL},
@@ -321,7 +322,7 @@ static const gs_format_t g_wrappers[] = {
 #define N_WRAPPERS (sizeof(g_wrappers) / sizeof(g_wrappers[0]))
 
 #define MAX_FORMATS 32
-static const gs_format_t *g_all[MAX_FORMATS];
+static const format_t *g_all[MAX_FORMATS];
 static int g_n_all;
 
 static void table_init(void) {
@@ -331,7 +332,7 @@ static void table_init(void) {
         g_all[g_n_all++] = &g_wrappers[i];
 }
 
-void gs_format_register(const gs_format_t *f) {
+void format_register(const format_t *f) {
     table_init();
     for (int i = 0; i < g_n_all; i++)
         if (strcmp(g_all[i]->name, f->name) == 0)
@@ -340,16 +341,16 @@ void gs_format_register(const gs_format_t *f) {
         g_all[g_n_all++] = f;
 }
 
-const gs_format_t *const *gs_formats(int *count) {
+const format_t *const *format_list(int *count) {
     table_init();
     if (count)
         *count = g_n_all;
     return g_all;
 }
 
-static struct gs_namespace *(*g_wrapper_ns)(gs_source_t *src, const char *format);
+static struct ns *(*g_wrapper_ns)(source_t *src, const char *format);
 
-void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *src, const char *format)) {
+void format_set_wrapper_namespace(struct ns *(*open)(source_t *src, const char *format)) {
     g_wrapper_ns = open;
 }
 
@@ -357,7 +358,7 @@ void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *s
 // Detection and unwrapping
 // ============================================================================
 
-int gs_probe_init(gs_probe_t *p, gs_source_t *data, gs_source_t *rsrc) {
+int format_probe_init(format_probe_t *p, source_t *data, source_t *rsrc) {
     memset(p, 0, sizeof(*p));
     int rc = peel_probe_init(&p->p, data);
     if (rc != 0)
@@ -367,11 +368,11 @@ int gs_probe_init(gs_probe_t *p, gs_source_t *data, gs_source_t *rsrc) {
     return 0;
 }
 
-void gs_probe_free(gs_probe_t *p) {
+void format_probe_free(format_probe_t *p) {
     peel_probe_free(&p->p);
 }
 
-const gs_format_t *gs_format_detect(const gs_probe_t *p, gs_fmt_kind_t kind) {
+const format_t *format_detect(const format_probe_t *p, format_kind_t kind) {
     table_init();
     for (int i = 0; i < g_n_all; i++)
         if (g_all[i]->kind == kind && g_all[i]->detect(p))
@@ -385,22 +386,22 @@ static void chain_add(char *chain, size_t cap, const char *name) {
     snprintf(chain + n, cap - n, "%s%s", n ? "+" : "", name);
 }
 
-static bool is_peeler_wrapper(const gs_format_t *f) {
+static bool is_peeler_wrapper(const format_t *f) {
     return strcmp(f->name, "hqx") == 0 || strcmp(f->name, "bin") == 0 || strcmp(f->name, "gz") == 0;
 }
 
-int gs_format_unwrap(gs_source_t *data, gs_source_t *rsrc, gs_unwrapped_t *out) {
+int format_unwrap(source_t *data, source_t *rsrc, format_unwrapped_t *out) {
     memset(out, 0, sizeof(*out));
-    out->data = gs_source_retain(data);
-    out->rsrc = gs_source_retain(rsrc);
+    out->data = source_retain(data);
+    out->rsrc = source_retain(rsrc);
     for (int depth = 0; depth < MAX_UNWRAP; depth++) {
-        gs_probe_t p;
-        if (gs_probe_init(&p, out->data, out->rsrc) != 0)
+        format_probe_t p;
+        if (format_probe_init(&p, out->data, out->rsrc) != 0)
             break;
-        const gs_format_t *f = gs_format_detect(&p, GS_FMT_WRAPPER);
-        gs_source_t *nd = NULL, *nr = NULL;
+        const format_t *f = format_detect(&p, GS_FMT_WRAPPER);
+        source_t *nd = NULL, *nr = NULL;
         int rc = f ? f->unwrap(&p, &nd, &nr) : -ENOENT;
-        gs_probe_free(&p);
+        format_probe_free(&p);
         if (rc != 0) {
             if (f) {
                 out->failed_format = f->name;
@@ -410,46 +411,46 @@ int gs_format_unwrap(gs_source_t *data, gs_source_t *rsrc, gs_unwrapped_t *out) 
         }
         chain_add(out->chain, sizeof(out->chain), f->name);
         if (strcmp(f->name, "dc42") == 0) {
-            gs_source_release(out->dc42);
-            out->dc42 = gs_source_retain(out->data);
+            source_release(out->dc42);
+            out->dc42 = source_retain(out->data);
         }
         if (is_peeler_wrapper(f)) {
-            gs_source_release(out->peeler_outer);
-            out->peeler_outer = gs_source_retain(out->data);
+            source_release(out->peeler_outer);
+            out->peeler_outer = source_retain(out->data);
             out->peeler_format = f->name;
         }
-        gs_source_release(out->data);
-        gs_source_release(out->rsrc);
+        source_release(out->data);
+        source_release(out->rsrc);
         out->data = nd;
         out->rsrc = nr;
     }
     return 0;
 }
 
-void gs_unwrapped_free(gs_unwrapped_t *u) {
+void format_unwrapped_free(format_unwrapped_t *u) {
     if (!u)
         return;
-    gs_source_release(u->data);
-    gs_source_release(u->rsrc);
-    gs_source_release(u->dc42);
-    gs_source_release(u->peeler_outer);
+    source_release(u->data);
+    source_release(u->rsrc);
+    source_release(u->dc42);
+    source_release(u->peeler_outer);
     memset(u, 0, sizeof(*u));
 }
 
-struct gs_namespace *gs_format_open_namespace(gs_source_t *data, gs_source_t *rsrc, const char **format, int *err) {
+struct ns *format_open_namespace(source_t *data, source_t *rsrc, const char **format, int *err) {
     int e = 0;
     if (!err)
         err = &e;
     *err = -ENOTDIR;
     if (format)
         *format = NULL;
-    gs_unwrapped_t u;
-    gs_format_unwrap(data, rsrc, &u);
-    struct gs_namespace *ns = NULL;
-    gs_probe_t p;
-    if (gs_probe_init(&p, u.data, u.rsrc) == 0) {
-        const gs_format_t *f = gs_format_detect(&p, GS_FMT_NAMESPACE);
-        gs_probe_free(&p);
+    format_unwrapped_t u;
+    format_unwrap(data, rsrc, &u);
+    struct ns *ns = NULL;
+    format_probe_t p;
+    if (format_probe_init(&p, u.data, u.rsrc) == 0) {
+        const format_t *f = format_detect(&p, GS_FMT_NAMESPACE);
+        format_probe_free(&p);
         if (f) {
             ns = f->open_namespace(u.data, u.rsrc);
             if (ns && format)
@@ -463,34 +464,34 @@ struct gs_namespace *gs_format_open_namespace(gs_source_t *data, gs_source_t *rs
         if (ns && format)
             *format = u.peeler_format;
     }
-    gs_unwrapped_free(&u);
+    format_unwrapped_free(&u);
     if (ns)
         *err = 0;
     return ns;
 }
 
-bool gs_format_is_namespace(gs_source_t *data, gs_source_t *rsrc) {
-    gs_probe_t p;
-    if (gs_probe_init(&p, data, rsrc) != 0)
+bool format_is_namespace(source_t *data, source_t *rsrc) {
+    format_probe_t p;
+    if (format_probe_init(&p, data, rsrc) != 0)
         return false;
     // A peeler wrapper always opens as at least its one file; a disk
     // wrapper (dc42, udif, ndif) is a tree when its disk is.  Checking the
     // outermost layer keeps this cheap: no wrapper is decoded to answer.
-    const gs_format_t *w = gs_format_detect(&p, GS_FMT_WRAPPER);
+    const format_t *w = format_detect(&p, GS_FMT_WRAPPER);
     bool yes = false;
     if (w)
         yes = is_peeler_wrapper(w) ? g_wrapper_ns != NULL : true;
     else
-        yes = gs_format_detect(&p, GS_FMT_NAMESPACE) != NULL;
-    gs_probe_free(&p);
+        yes = format_detect(&p, GS_FMT_NAMESPACE) != NULL;
+    format_probe_free(&p);
     return yes;
 }
 
-const gs_format_t *gs_format_contents(gs_source_t *data, gs_source_t *rsrc) {
-    gs_probe_t p;
-    if (!data || gs_probe_init(&p, data, rsrc) != 0)
+const format_t *format_contents(source_t *data, source_t *rsrc) {
+    format_probe_t p;
+    if (!data || format_probe_init(&p, data, rsrc) != 0)
         return NULL;
-    const gs_format_t *f = gs_format_detect(&p, GS_FMT_NAMESPACE);
-    gs_probe_free(&p);
+    const format_t *f = format_detect(&p, GS_FMT_NAMESPACE);
+    format_probe_free(&p);
     return f;
 }

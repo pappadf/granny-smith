@@ -51,6 +51,7 @@
 #include "display_timing.h"
 #include "tnt.h"
 
+#include "card.h"
 #include "log.h"
 #include "pci.h"
 #include "ppc.h"

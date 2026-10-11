@@ -218,7 +218,7 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
-           -s EXPORTED_FUNCTIONS="['_main','_get_gs_mailbox']" \
+           -s EXPORTED_FUNCTIONS="['_main','_get_mailbox']" \
            -sINCOMING_MODULE_JS_API=canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \

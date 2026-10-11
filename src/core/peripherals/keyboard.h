@@ -9,6 +9,7 @@
 
 // === Includes ===
 
+#include "checkpoint.h"
 #include "common.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -41,7 +42,7 @@ void keyboard_checkpoint(keyboard_t *restrict keyboard, checkpoint_t *checkpoint
 void keyboard_input(keyboard_t *keyboard, unsigned char val);
 
 // Processes a key event from the host system
-extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int key);
+void keyboard_update(keyboard_t *keyboard, key_event_t event, int key);
 
 // True while key transitions wait in the queue for the Mac to fetch
 bool keyboard_input_pending(keyboard_t *keyboard);

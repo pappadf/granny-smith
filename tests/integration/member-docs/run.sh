@@ -3,7 +3,7 @@
 #
 # shell.lint_members() walks the live tree and reports each documentation
 # gap as `<path>: <rule>` (src/core/object/lint.c lists the rules):
-# an argument or node with no doc, an untyped argument, a V_ANY result with
+# an argument or node with no doc, an untyped argument, a VK_ANY result with
 # nothing said about it, an enum without its values, a default mentioned in
 # prose but not declared.  help, the command browser and the argument forms
 # show exactly these, so a gap is something a user sees as blank or wrong.

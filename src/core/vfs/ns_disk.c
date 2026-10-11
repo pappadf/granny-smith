@@ -27,7 +27,11 @@
 #include <string.h>
 #include <strings.h>
 
-#define DISK_MAX_COMPONENTS 64
+// Where a volume's signature word sits when there is no partition map:
+// block 2 (of 512 bytes) holds the HFS Master Directory Block, the HFS+ /
+// HFSX Volume Header and the MFS Master Directory Block alike.  The
+// signatures themselves are the storage modules' (HFS_SIG_*, MFS_SIG).
+#define VOLUME_SIG_OFFSET 1024
 
 // ============================================================================
 // Filesystems
@@ -55,13 +59,14 @@ typedef struct fs_ops {
     const char *name; // "HFS" / "UFS" / "MFS" / "ISO"
     bool forks; // files can have a resource fork
     uint64_t root_id;
-    void *(*open)(gs_source_t *src, uint64_t off, uint64_t size);
+    void *(*open)(source_t *src, uint64_t off, uint64_t size);
     void (*close)(void *vol);
     int (*lookup)(void *vol, const char *const *comp, size_t nc, fs_entry_t *out);
     void *(*opendir)(void *vol, uint64_t dir_id);
     int (*readdir)(void *iter, fs_entry_t *out); // 1 = entry, 0 = end, <0 = error
     void (*closedir)(void *iter);
-    int (*read)(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n, size_t *nread);
+    int (*read)(void *vol, const fs_entry_t *file, source_fork_t fork, uint64_t off, void *buf, size_t n,
+                size_t *nread);
 } fs_ops_t;
 
 // Seconds from the Mac epoch (1904-01-01) to the Unix one.
@@ -88,7 +93,7 @@ static void hfs_entry(const hfs_dirent_t *d, fs_entry_t *out) {
         out->has_finder_info = true;
     }
 }
-static void *hfs_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+static void *hfs_ops_open(source_t *src, uint64_t off, uint64_t size) {
     return hfs_open_source(src, off, size);
 }
 static void hfs_ops_close(void *vol) {
@@ -114,7 +119,7 @@ static int hfs_ops_readdir(void *iter, fs_entry_t *out) {
 static void hfs_ops_closedir(void *iter) {
     hfs_closedir_iter(iter);
 }
-static int hfs_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+static int hfs_ops_read(void *vol, const fs_entry_t *file, source_fork_t fork, uint64_t off, void *buf, size_t n,
                         size_t *nread) {
     return hfs_read_fork(vol, fork == GS_FORK_RSRC ? &file->rsrc_fork : &file->data_fork, off, buf, n, nread);
 }
@@ -127,7 +132,7 @@ static void ufs_entry(const ufs_dirent_t *d, fs_entry_t *out) {
     out->mtime = d->mtime;
     out->id = d->ino;
 }
-static void *ufs_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+static void *ufs_ops_open(source_t *src, uint64_t off, uint64_t size) {
     return ufs_open_source(src, off, size);
 }
 static void ufs_ops_close(void *vol) {
@@ -153,7 +158,7 @@ static int ufs_ops_readdir(void *iter, fs_entry_t *out) {
 static void ufs_ops_closedir(void *iter) {
     ufs_closedir_iter(iter);
 }
-static int ufs_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+static int ufs_ops_read(void *vol, const fs_entry_t *file, source_fork_t fork, uint64_t off, void *buf, size_t n,
                         size_t *nread) {
     if (fork != GS_FORK_DATA)
         return -ENOENT;
@@ -172,7 +177,7 @@ static void mfs_fs_entry(const mfs_dirent_t *m, fs_entry_t *out) {
     memcpy(out->finder_info, m->finder_info, sizeof(m->finder_info)); // FInfo; FXInfo stays zero
     out->has_finder_info = true;
 }
-static void *mfs_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+static void *mfs_ops_open(source_t *src, uint64_t off, uint64_t size) {
     return mfs_open_source(src, off, size);
 }
 static void mfs_ops_close(void *vol) {
@@ -215,7 +220,7 @@ static int mfs_ops_readdir(void *iter, fs_entry_t *out) {
 static void mfs_ops_closedir(void *iter) {
     free(iter);
 }
-static int mfs_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+static int mfs_ops_read(void *vol, const fs_entry_t *file, source_fork_t fork, uint64_t off, void *buf, size_t n,
                         size_t *nread) {
     return mfs_read_fork(vol, &file->mfs, fork == GS_FORK_RSRC, off, buf, n, nread);
 }
@@ -235,11 +240,11 @@ static void iso_fs_entry(const iso_dirent_t *e, fs_entry_t *out) {
     out->id = iso_dir_id(e->extent, e->size);
     out->iso = *e;
     if (!e->is_dir && e->has_finder_info) {
-        gs_ns_finder_info(e->type, e->creator, e->finder_flags, out->finder_info);
+        ns_finder_info(e->type, e->creator, e->finder_flags, out->finder_info);
         out->has_finder_info = true;
     }
 }
-static void *iso_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+static void *iso_ops_open(source_t *src, uint64_t off, uint64_t size) {
     return iso_open_source(src, off, size);
 }
 static void iso_ops_close(void *vol) {
@@ -271,7 +276,7 @@ static int iso_ops_readdir(void *iter, fs_entry_t *out) {
 static void iso_ops_closedir(void *iter) {
     iso_closedir(iter);
 }
-static int iso_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+static int iso_ops_read(void *vol, const fs_entry_t *file, source_fork_t fork, uint64_t off, void *buf, size_t n,
                         size_t *nread) {
     if (fork == GS_FORK_RSRC)
         return iso_read(vol, file->iso.rsrc_extent, file->iso.rsrc_size, off, buf, n, nread);
@@ -280,7 +285,7 @@ static int iso_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint6
 
 static const fs_ops_t HFS_OPS = {"HFS",
                                  true,
-                                 HFS_ROOT_CNID,
+                                 HFS_ROOT_ID,
                                  hfs_ops_open,
                                  hfs_ops_close,
                                  hfs_ops_lookup,
@@ -288,7 +293,7 @@ static const fs_ops_t HFS_OPS = {"HFS",
                                  hfs_ops_readdir,
                                  hfs_ops_closedir,
                                  hfs_ops_read};
-static const fs_ops_t UFS_OPS = {"UFS",          false,           UFS_ROOT_INO,    ufs_ops_open,     ufs_ops_close,
+static const fs_ops_t UFS_OPS = {"UFS",          false,           UFS_ROOT_ID,     ufs_ops_open,     ufs_ops_close,
                                  ufs_ops_lookup, ufs_ops_opendir, ufs_ops_readdir, ufs_ops_closedir, ufs_ops_read};
 static const fs_ops_t MFS_OPS = {"MFS",
                                  true,
@@ -332,10 +337,10 @@ static const fs_ops_t *fs_ops_for(enum apm_fs_kind kind) {
 // The disk
 // ============================================================================
 
-// One partition's filesystem, opened on first use.
+// One partition's filesystem, opened on first use.  Its kind is the
+// partition's (fs_ops_for), so only the open volume is kept.
 typedef struct {
-    const fs_ops_t *ops; // NULL: no filesystem we read
-    bool attempted;
+    const fs_ops_t *ops; // the filesystem it was opened with (when vol is set)
     void *vol;
 } part_fs_t;
 
@@ -366,8 +371,9 @@ static const apm_partition_t *disk_part(const disk_ns_t *d, uint32_t idx1) {
 
 // The open filesystem of partition N (1-based), opened on first use.  NULL
 // with *err: -ENOENT no such partition, -ENOTDIR no filesystem we read,
-// -EIO one that would not open (not tried again).
-static part_fs_t *disk_fs(gs_namespace_t *ns, uint32_t idx1, int *err) {
+// -EIO one that would not open.  A failed open is tried again on the next
+// access, so a transient read error (a slow OPFS) does not stick.
+static part_fs_t *disk_fs(ns_t *ns, uint32_t idx1, int *err) {
     disk_ns_t *d = ns->ctx;
     const apm_partition_t *p = disk_part(d, idx1);
     if (!p) {
@@ -375,56 +381,69 @@ static part_fs_t *disk_fs(gs_namespace_t *ns, uint32_t idx1, int *err) {
         return NULL;
     }
     part_fs_t *pf = &d->parts[idx1 - 1];
-    if (!pf->ops) {
-        *err = -ENOTDIR;
-        return NULL;
+    if (!pf->vol) {
+        const fs_ops_t *ops = fs_ops_for(p->fs_kind);
+        if (!ops) {
+            *err = -ENOTDIR;
+            return NULL;
+        }
+        // APM extents count 512-byte blocks (APM_BLOCK_SIZE; a bare volume's
+        // synthetic partition uses the same unit).
+        pf->vol = ops->open(ns->src, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
+        if (!pf->vol) {
+            *err = -EIO;
+            return NULL;
+        }
+        pf->ops = ops;
     }
-    if (!pf->vol && !pf->attempted) {
-        pf->attempted = true;
-        pf->vol = pf->ops->open(ns->src, p->start_block * 512, p->size_blocks * 512);
-    }
-    *err = -EIO;
-    return pf->vol ? pf : NULL;
+    return pf;
 }
 
-// A path split into its partition and the path inside it.
+// A path split into its partition and the path inside it.  `comps` points
+// into the struct's own `all`, and those into `path_storage`: valid only in
+// the disk_parse caller's frame, never copied.
 typedef struct {
-    uint32_t part; // 0: the disk's root
-    const char *comps[DISK_MAX_COMPONENTS];
-    int n; // components inside the partition
-    char buf[1024];
+    bool is_root; // the disk's root (the partition list); `part` unused
+    uint32_t part; // 1-based slot: a partition, or the hybrid's ISO side
+    const char *all[GS_NS_MAX_COMPONENTS + 1]; // every component, the partition's first
+    const char *const *comps; // the components inside the partition
+    int n; // how many
+    char path_storage[1024]; // owns the component strings
 } disk_path_t;
 
 // Parse `path`.  0, or -ENOENT for a first component that is no partitionN
-// of the disk (nor the hybrid's "iso9660").
+// of the disk (nor the hybrid's "iso9660").  These root names are matched
+// without regard to case -- "Partition1" and "ISO9660" work, though the
+// listing spells them in lower case -- like the HFS names below them; the
+// other names the VFS synthesises ("rsrc", "finf", "_raw") are exact.
 static int disk_parse(const disk_ns_t *d, const char *path, disk_path_t *dp) {
-    const char *all[DISK_MAX_COMPONENTS + 1];
-    int n = gs_ns_split(path, dp->buf, sizeof(dp->buf), all, DISK_MAX_COMPONENTS + 1);
+    int n = ns_split(path, dp->path_storage, sizeof(dp->path_storage), dp->all, GS_NS_MAX_COMPONENTS + 1);
     if (n < 0)
         return n;
+    dp->is_root = (n == 0);
     dp->part = 0;
-    dp->n = 0;
+    dp->comps = dp->all + 1;
+    dp->n = n > 0 ? n - 1 : 0;
     if (n == 0)
         return 0;
-    if (d->hybrid && strcasecmp(all[0], DISK_ISO_SIDE) == 0) {
+    const char *first = dp->all[0];
+    if (d->hybrid && strcasecmp(first, DISK_ISO_SIDE) == 0) {
         dp->part = d->n_parts + 1;
     } else {
-        // "partitionN" (case-insensitive, N a positive number).
-        if (strncasecmp(all[0], "partition", 9) != 0 || !all[0][9])
+        // "partitionN", N a positive decimal number without sign.
+        if (strncasecmp(first, "partition", 9) != 0 || first[9] < '0' || first[9] > '9')
             return -ENOENT;
         char *end = NULL;
-        unsigned long idx = strtoul(all[0] + 9, &end, 10);
-        if (!end || *end || idx == 0 || idx > d->n_parts || all[0][9] == '-' || all[0][9] == '+')
+        unsigned long idx = strtoul(first + 9, &end, 10);
+        if (!end || *end || idx == 0 || idx > d->n_parts)
             return -ENOENT;
         dp->part = (uint32_t)idx;
     }
-    for (int i = 1; i < n; i++)
-        dp->comps[dp->n++] = all[i];
     return 0;
 }
 
 // Fill a namespace dirent from a filesystem entry.
-static void to_dirent(const fs_entry_t *e, gs_dirent_t *out) {
+static void to_dirent(const fs_entry_t *e, ns_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     snprintf(out->name, sizeof(out->name), "%s", e->name);
     out->is_dir = e->is_dir;
@@ -441,7 +460,7 @@ static void to_dirent(const fs_entry_t *e, gs_dirent_t *out) {
 }
 
 // A partition (or the hybrid's ISO side) as a directory entry.
-static void part_dirent(const disk_ns_t *d, uint32_t idx1, gs_dirent_t *out) {
+static void part_dirent(const disk_ns_t *d, uint32_t idx1, ns_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     if (idx1 > d->n_parts)
         snprintf(out->name, sizeof(out->name), "%s", DISK_ISO_SIDE);
@@ -450,13 +469,13 @@ static void part_dirent(const disk_ns_t *d, uint32_t idx1, gs_dirent_t *out) {
     out->is_dir = true;
 }
 
-static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
+static int disk_stat(ns_t *ns, const char *path, ns_dirent_t *out) {
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
     int rc = disk_parse(d, path, &dp);
     if (rc < 0)
         return rc;
-    if (dp.part == 0) {
+    if (dp.is_root) {
         memset(out, 0, sizeof(*out));
         out->is_dir = true;
         return 0;
@@ -478,14 +497,14 @@ static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
     return 0;
 }
 
-static int disk_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int cap, int *count) {
+static int disk_list(ns_t *ns, const char *path, ns_dirent_t *out, int cap, int *count) {
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
     int rc = disk_parse(d, path, &dp);
     if (rc < 0)
         return rc;
     *count = 0;
-    if (dp.part == 0) {
+    if (dp.is_root) {
         // Every partition, including ones we cannot descend into (map,
         // driver, free space): they list as directories that do not open.
         for (uint32_t i = 1; i <= n_slots(d); i++) {
@@ -526,15 +545,15 @@ static int disk_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int
 // ---- A file of the disk as a source ----
 
 typedef struct {
-    gs_namespace_t *ns; // retained: the volume lives in it
+    ns_t *ns; // retained: the volume lives in it
     part_fs_t *pf;
     fs_entry_t entry;
-    gs_fork_t fork;
+    source_fork_t fork;
     uint64_t size;
     char *key;
 } file_src_t;
 
-static int64_t file_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+static int64_t file_read(source_t *s, uint64_t off, void *buf, size_t len) {
     file_src_t *f = s->ctx;
     if (off >= f->size)
         return 0;
@@ -545,34 +564,34 @@ static int64_t file_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return rc < 0 ? rc : (int64_t)got;
 }
 
-static uint64_t file_size(gs_source_t *s) {
+static uint64_t file_size(source_t *s) {
     return ((file_src_t *)s->ctx)->size;
 }
 
-static const char *file_key(gs_source_t *s) {
+static const char *file_key(source_t *s) {
     return ((file_src_t *)s->ctx)->key;
 }
 
-static gs_tier_t file_tier(gs_source_t *s) {
-    return gs_source_tier(((file_src_t *)s->ctx)->ns->src); // extents: what the disk costs
+static source_tier_t file_tier(source_t *s) {
+    return source_tier(((file_src_t *)s->ctx)->ns->src); // extents: what the disk costs
 }
 
-static void file_close(gs_source_t *s) {
+static void file_close(source_t *s) {
     file_src_t *f = s->ctx;
     if (!f)
         return;
-    gs_namespace_release(f->ns);
+    ns_release(f->ns);
     free(f->key);
     free(f);
 }
 
-static const gs_source_ops_t file_ops = {file_read, file_size, file_key, file_tier, file_close};
+static const source_ops_t file_ops = {file_read, file_size, file_key, file_tier, file_close};
 
-static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, int *err) {
+static source_t *disk_open(ns_t *ns, const char *path, source_fork_t fork, int *err) {
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
     int rc = disk_parse(d, path, &dp);
-    if (rc < 0 || dp.part == 0 || dp.n == 0) {
+    if (rc < 0 || dp.is_root || dp.n == 0) {
         *err = rc < 0 ? rc : -EISDIR;
         return NULL;
     }
@@ -588,10 +607,10 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
         return NULL;
     }
     // The key: the disk's, and the path inside it.
-    char *key = gs_str_printf("%s/%s%s", gs_source_key(ns->src), path[0] == '/' ? path + 1 : path,
-                              fork == GS_FORK_RSRC    ? "/rsrc"
-                              : fork == GS_FORK_FINFO ? "/finf"
-                                                      : "");
+    char *key = str_printf("%s/%s%s", source_key(ns->src), path[0] == '/' ? path + 1 : path,
+                           fork == GS_FORK_RSRC    ? "/rsrc"
+                           : fork == GS_FORK_FINFO ? "/finf"
+                                                   : "");
     if (!key) {
         *err = -ENOMEM;
         return NULL;
@@ -609,7 +628,7 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
             return NULL;
         }
         memcpy(fi, e.finder_info, GS_FINDER_INFO_SIZE);
-        gs_source_t *s = gs_source_memory(fi, GS_FINDER_INFO_SIZE, true, key);
+        source_t *s = source_memory(fi, GS_FINDER_INFO_SIZE, true, key);
         free(key);
         *err = s ? 0 : -ENOMEM;
         return s;
@@ -625,18 +644,18 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
         *err = -ENOMEM;
         return NULL;
     }
-    f->ns = gs_namespace_retain(ns);
+    f->ns = ns_retain(ns);
     f->pf = pf;
     f->entry = e;
     f->fork = fork;
     f->size = fork == GS_FORK_RSRC ? e.rsrc_size : e.size;
     f->key = key;
-    gs_source_t *s = peel_source_new(&file_ops, f, NULL);
+    source_t *s = peel_source_new(&file_ops, f, NULL);
     *err = s ? 0 : -ENOMEM;
     return s;
 }
 
-static void disk_close(gs_namespace_t *ns) {
+static void disk_close(ns_t *ns) {
     disk_ns_t *d = ns->ctx;
     if (!d)
         return;
@@ -648,7 +667,7 @@ static void disk_close(gs_namespace_t *ns) {
     free(d);
 }
 
-static const gs_namespace_ops_t disk_ops = {"disk", disk_list, disk_stat, disk_open, disk_close};
+static const ns_ops_t disk_ops = {"disk", disk_list, disk_stat, disk_open, disk_close};
 
 // A volume with no partition map is one synthetic "partition1" covering the
 // whole disk.
@@ -663,13 +682,13 @@ static void set_synthetic(disk_ns_t *d, uint64_t size, const char *name, const c
     d->n_parts = 1;
 }
 
-gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
+ns_t *ns_open_disk(source_t *src) {
     if (!src)
         return NULL;
     disk_ns_t *d = calloc(1, sizeof(*d));
     if (!d)
         return NULL;
-    uint64_t size = gs_source_size(src);
+    uint64_t size = source_size(src);
     // The partition map first, then a bare HFS / HFS+, UFS, MFS or ISO 9660
     // volume.
     d->apm = image_apm_parse_source(src, NULL);
@@ -677,10 +696,12 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
         d->n_parts = d->apm->n_partitions;
         d->kind = "APM";
     } else {
-        uint8_t mdb[512];
+        // The signature word only: a volume too small to hold the 512-byte
+        // block it starts is no volume.
+        uint8_t sig_bytes[2];
         uint16_t sig = 0;
-        if (size >= 1024 + 512 && gs_source_read_exact(src, 1024, mdb, sizeof(mdb)) == 0)
-            sig = RD_BE16(mdb);
+        if (size >= VOLUME_SIG_OFFSET + 512 && source_read_exact(src, VOLUME_SIG_OFFSET, sig_bytes, 2) == 0)
+            sig = RD_BE16(sig_bytes);
         if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX) {
             set_synthetic(d, size, "HFS", "Apple_HFS", APM_FS_HFS);
             d->kind = "HFS";
@@ -710,18 +731,17 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
         d->iso_side.fs_kind = APM_FS_ISO9660;
     }
     if (n_slots(d)) {
+        // One slot per partition for the volume opened on first use.
         d->parts = calloc(n_slots(d), sizeof(*d->parts));
         if (!d->parts) {
             image_apm_free(d->apm);
             free(d);
             return NULL;
         }
-        for (uint32_t i = 0; i < n_slots(d); i++)
-            d->parts[i].ops = fs_ops_for(disk_part(d, i + 1)->fs_kind);
     }
-    gs_namespace_t *ns = gs_namespace_new(&disk_ops, d, src);
+    ns_t *ns = ns_new(&disk_ops, d, src);
     if (!ns) {
-        gs_namespace_t tmp = {.ctx = d};
+        ns_t tmp = {.ctx = d};
         disk_close(&tmp);
     }
     return ns;
@@ -729,23 +749,23 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
 
 // The disk's display format ("APM", "HFS", "UFS"), or NULL when `ns` is no
 // disk.
-const char *gs_ns_disk_kind(gs_namespace_t *ns) {
+const char *ns_disk_kind(ns_t *ns) {
     return (ns && ns->ops == &disk_ops) ? ((disk_ns_t *)ns->ctx)->kind : NULL;
 }
 
-gs_namespace_t *gs_ns_open_hfs(gs_source_t *src) {
-    gs_namespace_t *ns = gs_ns_open_disk(src);
-    if (ns && strcmp(gs_ns_disk_kind(ns), "HFS") != 0) {
-        gs_namespace_close(ns);
+ns_t *ns_open_hfs(source_t *src) {
+    ns_t *ns = ns_open_disk(src);
+    if (ns && strcmp(ns_disk_kind(ns), "HFS") != 0) {
+        ns_close(ns);
         return NULL;
     }
     return ns;
 }
 
-gs_namespace_t *gs_ns_open_ufs(gs_source_t *src) {
-    gs_namespace_t *ns = gs_ns_open_disk(src);
-    if (ns && strcmp(gs_ns_disk_kind(ns), "UFS") != 0) {
-        gs_namespace_close(ns);
+ns_t *ns_open_ufs(source_t *src) {
+    ns_t *ns = ns_open_disk(src);
+    if (ns && strcmp(ns_disk_kind(ns), "UFS") != 0) {
+        ns_close(ns);
         return NULL;
     }
     return ns;

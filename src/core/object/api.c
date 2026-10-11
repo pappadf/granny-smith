@@ -2,17 +2,17 @@
 // Copyright (c) pappadf
 
 // api.c
-// Public entry point: gs_eval. The former gs_inspect and gs_complete
+// Public entry point: object_eval. The former gs_inspect and gs_complete
 // entry points were folded into the object model itself — schema is now
 // reached via `<path>.meta.*` and tab-completion via
-// `gs_eval("meta.complete", [...])`.
+// `object_eval("meta.complete", [...])`.
 
 #include "api.h"
 
 #include "value_format.h"
 
-#include <inttypes.h>
-#include <stdarg.h>
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,97 +23,46 @@
 
 // === JSON formatting ========================================================
 //
-// Tiny JSON emitter — values become a single JSON-encodable shape:
-//   numeric / bool      → bare number / true / false
-//   strings, errors     → quoted string with the standard escapes
-//   bytes               → "0x..." hex string (the default formatter)
+// The document is value_format's VFMT_JSON_TAGGED rendering (value_format.h):
+//   numeric / bool      → bare number / true / false (a VFLAG_HEX VK_UINT → "0x…" string)
+//   strings             → quoted string with the standard escapes
+//   bytes               → "0x..." hex string
 //   enum                → {"enum": "<name>", "index": <idx>}
-//   list                → JSON array, recurse
-//   object              → {"object": "<class>", "name": "<name>"}
+//   list / map          → JSON array / object, recursing
+//   object              → {"object": "<class>", "name": "<name>", "path": …}
+//   error               → {"error": "<message>"}
 //   none                → null
-// Caller passes a buffer; the formatter truncates on overflow rather than
-// failing, and returns the document's full length.  gs_eval compares that
-// length with its buffer and replaces an oversized payload with an explicit
-// {"error": ...} so no consumer parses a truncated document.
+// Every result, failures included, is a value_t rendered through that one
+// encoder into a growable buffer; object_eval then copies it out whole or, when
+// it does not fit, replaces it with an explicit {"error": ...} so no
+// consumer parses a truncated document.
 
-static void buf_append(char *buf, size_t size, size_t *pos, const char *src, size_t n) {
-    if (!buf || !size || *pos >= size - 1)
-        return;
-    size_t room = size - 1 - *pos;
-    size_t k = n < room ? n : room;
-    memcpy(buf + *pos, src, k);
-    *pos += k;
-    buf[*pos] = '\0';
-}
-
-static void buf_appendf(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
-    if (!buf || !size || *pos >= size - 1)
-        return;
-    char tmp[160];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
-    va_end(ap);
-    if (n < 0)
-        return;
-    buf_append(buf, size, pos, tmp, (size_t)n);
-}
-
-// Append `s` as a JSON string literal (with quotes and escapes).
-static void buf_append_jstring(char *buf, size_t size, size_t *pos, const char *s) {
-    buf_append(buf, size, pos, "\"", 1);
-    if (s) {
-        for (const char *p = s; *p; p++) {
-            unsigned char c = (unsigned char)*p;
-            switch (c) {
-            case '"':
-                buf_append(buf, size, pos, "\\\"", 2);
-                break;
-            case '\\':
-                buf_append(buf, size, pos, "\\\\", 2);
-                break;
-            case '\n':
-                buf_append(buf, size, pos, "\\n", 2);
-                break;
-            case '\r':
-                buf_append(buf, size, pos, "\\r", 2);
-                break;
-            case '\t':
-                buf_append(buf, size, pos, "\\t", 2);
-                break;
-            default:
-                if (c < 0x20)
-                    buf_appendf(buf, size, pos, "\\u%04x", c);
-                else
-                    buf_append(buf, size, pos, (char *)&c, 1);
-            }
-        }
-    }
-    buf_append(buf, size, pos, "\"", 1);
-}
-
-// The JS bridge's encoder, now a bridge onto the one renderer.
-//
-// VFMT_JSON_TAGGED reproduces the shapes this function used to build by hand
-// -- {"enum":…,"index":N}, {"object":…,"name":…}, {"error":…} -- because a
-// caller reading gsEval output has to discriminate those kinds.  It differs
-// from the VFMT_JSON that script text uses, and that difference is now
-// declared rather than, as expr.c's comment used to claim, an agreement that
-// happened not to hold.
-//
-// It also gains two cases this function never had: V_REF and V_RANGE fell
-// through the switch with no default, emitting NOTHING and producing a
-// malformed document rather than a wrong one.  Latent -- gs_eval resolves a
-// path, and those kinds come only from expression evaluation and shell
-// bindings -- but it is the shape that makes an eighth kind break the bridge
-// in silence.
-static size_t format_value_json(const value_t *v, char *buf, size_t size, size_t *pos) {
+// Render `v` and copy it into out_buf. Returns false (out_buf then holding an
+// error document naming both sizes) when the document exceeds out_size - 1.
+static bool emit_json(const value_t *v, const char *path, char *out_buf, size_t out_size) {
     vbuf_t b = {0};
     value_format(v, VFMT_JSON_TAGGED, &b);
-    size_t len = b.p ? b.len : 4; // the whole document, whatever fits
-    buf_append(buf, size, pos, b.p ? b.p : "null", len);
+    const char *doc = b.p ? b.p : "null";
+    size_t len = b.p ? b.len : 4;
+    bool fits = len <= out_size - 1;
+    if (fits) {
+        memcpy(out_buf, doc, len + 1);
+    } else {
+        // The result is larger than the limit. A silently truncated payload
+        // is worse than a failure -- the consumer would parse garbage (or,
+        // for a string result, a shorter valid-looking document).
+        value_t e = val_err("result of '%.64s' is %zu bytes, over the %zu-byte result limit", path, len, out_size - 1);
+        vbuf_t eb = {0};
+        value_format(&e, VFMT_JSON_TAGGED, &eb);
+        size_t n = eb.len < out_size - 1 ? eb.len : out_size - 1;
+        if (eb.p)
+            memcpy(out_buf, eb.p, n);
+        out_buf[n] = '\0';
+        vbuf_free(&eb);
+        value_free(&e);
+    }
     vbuf_free(&b);
-    return len;
+    return fits;
 }
 
 // === Minimal JSON-array parser for `args_json` ==============================
@@ -138,6 +87,44 @@ static const char *json_skip_ws(const char *p) {
     return p;
 }
 
+// Append one byte to the heap string json_parse_string builds, keeping room
+// for the NUL. False (buffer freed) on OOM.
+static bool jstr_push(char **buf, size_t *len, size_t *cap, char c) {
+    if (*len + 1 >= *cap) {
+        size_t nc = *cap * 2;
+        char *nb = (char *)realloc(*buf, nc);
+        if (!nb) {
+            free(*buf);
+            *buf = NULL;
+            return false;
+        }
+        *buf = nb;
+        *cap = nc;
+    }
+    (*buf)[(*len)++] = c;
+    return true;
+}
+
+// Decode the 4 hex digits of a \uXXXX escape at p. -1 if malformed.
+static int jstr_hex4(const char *p) {
+    unsigned code = 0;
+    for (int i = 0; i < 4; i++) {
+        char h = p[i];
+        int d;
+        if (h >= '0' && h <= '9')
+            d = h - '0';
+        else if (h >= 'a' && h <= 'f')
+            d = 10 + h - 'a';
+        else if (h >= 'A' && h <= 'F')
+            d = 10 + h - 'A';
+        else
+            return -1; // also stops at the NUL of a short escape
+        code = (code << 4) | (unsigned)d;
+    }
+    return (int)code;
+}
+
+// Parse a JSON string literal at *pp into a heap copy. 0 on success.
 static int json_parse_string(const char **pp, char **out) {
     const char *p = *pp;
     if (*p != '"')
@@ -150,6 +137,13 @@ static int json_parse_string(const char **pp, char **out) {
     while (*p && *p != '"') {
         char c = *p++;
         if (c == '\\') {
+            // An escape needs a character after the backslash; a document
+            // ending here is unterminated (checked explicitly, not left to
+            // the default arm below).
+            if (!*p) {
+                free(buf);
+                return -1;
+            }
             char e = *p++;
             switch (e) {
             case 'n':
@@ -161,63 +155,38 @@ static int json_parse_string(const char **pp, char **out) {
             case 'r':
                 c = '\r';
                 break;
-            case '"':
-                c = '"';
-                break;
-            case '\\':
-                c = '\\';
-                break;
-            case '/':
-                c = '/';
-                break;
             case 'b':
                 c = '\b';
                 break;
             case 'f':
                 c = '\f';
                 break;
+            case '"':
+            case '\\':
+            case '/':
+                c = e;
+                break;
             case 'u': {
                 // BMP-only Unicode escape — emit UTF-8.
-                if (!p[0] || !p[1] || !p[2] || !p[3]) {
+                int code = jstr_hex4(p);
+                if (code < 0) {
                     free(buf);
                     return -1;
                 }
-                unsigned code = 0;
-                for (int i = 0; i < 4; i++) {
-                    char h = p[i];
-                    int d;
-                    if (h >= '0' && h <= '9')
-                        d = h - '0';
-                    else if (h >= 'a' && h <= 'f')
-                        d = 10 + h - 'a';
-                    else if (h >= 'A' && h <= 'F')
-                        d = 10 + h - 'A';
-                    else {
-                        free(buf);
-                        return -1;
-                    }
-                    code = (code << 4) | d;
-                }
                 p += 4;
-                if (len + 4 >= cap) {
-                    cap *= 2;
-                    char *nb = (char *)realloc(buf, cap);
-                    if (!nb) {
-                        free(buf);
-                        return -1;
-                    }
-                    buf = nb;
-                }
-                if (code < 0x80)
-                    buf[len++] = (char)code;
-                else if (code < 0x800) {
-                    buf[len++] = (char)(0xC0 | (code >> 6));
-                    buf[len++] = (char)(0x80 | (code & 0x3F));
+                bool ok;
+                if (code < 0x80) {
+                    ok = jstr_push(&buf, &len, &cap, (char)code);
+                } else if (code < 0x800) {
+                    ok = jstr_push(&buf, &len, &cap, (char)(0xC0 | (code >> 6))) &&
+                         jstr_push(&buf, &len, &cap, (char)(0x80 | (code & 0x3F)));
                 } else {
-                    buf[len++] = (char)(0xE0 | (code >> 12));
-                    buf[len++] = (char)(0x80 | ((code >> 6) & 0x3F));
-                    buf[len++] = (char)(0x80 | (code & 0x3F));
+                    ok = jstr_push(&buf, &len, &cap, (char)(0xE0 | (code >> 12))) &&
+                         jstr_push(&buf, &len, &cap, (char)(0x80 | ((code >> 6) & 0x3F))) &&
+                         jstr_push(&buf, &len, &cap, (char)(0x80 | (code & 0x3F)));
                 }
+                if (!ok)
+                    return -1;
                 continue;
             }
             default:
@@ -225,16 +194,8 @@ static int json_parse_string(const char **pp, char **out) {
                 return -1;
             }
         }
-        if (len + 1 >= cap) {
-            cap *= 2;
-            char *nb = (char *)realloc(buf, cap);
-            if (!nb) {
-                free(buf);
-                return -1;
-            }
-            buf = nb;
-        }
-        buf[len++] = c;
+        if (!jstr_push(&buf, &len, &cap, c))
+            return -1;
     }
     if (*p != '"') {
         free(buf);
@@ -284,15 +245,19 @@ static int json_parse_value(const char **pp, value_t *out) {
                 is_float = true;
             q++;
         }
+        // Out-of-range numbers are refused rather than saturated: strtoll
+        // would turn 1e20-as-integer into INT64_MAX and strtod 1e999 into
+        // inf, both plausible-looking wrong arguments.
+        errno = 0;
         if (is_float) {
             double d = strtod(p, &endp);
-            if (!endp || endp == p)
+            if (!endp || endp == p || errno == ERANGE || !isfinite(d))
                 return -1;
             *out = val_float(d);
             *pp = endp;
         } else {
             long long ll = strtoll(p, &endp, 10);
-            if (!endp || endp == p)
+            if (!endp || endp == p || errno == ERANGE)
                 return -1;
             *out = val_int((int64_t)ll);
             *pp = endp;
@@ -454,61 +419,36 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 
 // === Public entry points ====================================================
 
-int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
+int object_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_assert("gs_eval");
+    worker_thread_check("object_eval");
 
     if (!out_buf || out_size == 0)
         return -1;
     out_buf[0] = '\0';
-    size_t pos = 0;
-
-    if (!path || !*path) {
-        // `{"error": ...}`, like every sibling branch.  This one emitted the
-        // bare document `"empty path"`, so a JS caller doing
-        // `if (result.error)` got undefined and treated the failure as a
-        // successful string result -- while object-model.md promises JS
-        // callers see error SHAPES, never raw values.
-        buf_append(out_buf, out_size, &pos, "{\"error\":", 9);
-        buf_append_jstring(out_buf, out_size, &pos, "empty path");
-        buf_append(out_buf, out_size, &pos, "}", 1);
-        return -1;
-    }
-
-    node_t n = object_resolve(object_root(), path);
-    if (!node_valid(n)) {
-        size_t p = 0;
-        out_buf[0] = '\0';
-        buf_append(out_buf, out_size, &p, "{\"error\":", 9);
-        char msg[256];
-        snprintf(msg, sizeof(msg), "path '%s' did not resolve", path);
-        buf_append_jstring(out_buf, out_size, &p, msg);
-        buf_append(out_buf, out_size, &p, "}", 1);
-        return -1;
-    }
 
     value_t *argv = NULL;
     int argc = 0;
     char **arg_names = NULL;
-    if (args_json && *args_json) {
-        if (json_parse_args(args_json, &argv, &argc, &arg_names) < 0) {
-            size_t p = 0;
-            out_buf[0] = '\0';
-            buf_append(out_buf, out_size, &p, "{\"error\":", 9);
-            buf_append_jstring(out_buf, out_size, &p,
-                               "args_json must be a JSON array of primitives or an object of named arguments");
-            buf_append(out_buf, out_size, &p, "}", 1);
-            return -1;
-        }
-    }
-
     value_t v;
-    // Method paths always dispatch via node_call. Attribute paths route to
-    // node_set when args carry exactly one value, otherwise node_get. Bare
-    // object/child nodes go through node_get (returns a V_OBJECT reference).
-    if (arg_names && (!n.member || n.member->kind != M_METHOD)) {
+    node_t n = {0};
+
+    // Every failure is a VK_ERROR rendered by the same encoder as a result,
+    // so a JS caller always sees the {"error": ...} shape (object-model.md),
+    // never a bare string.
+    if (!path || !*path) {
+        v = val_err("empty path");
+        path = "";
+    } else if (!node_valid(n = object_resolve(object_root(), path))) {
+        v = val_err("path '%s' did not resolve", path);
+    } else if (args_json && *args_json && json_parse_args(args_json, &argv, &argc, &arg_names) < 0) {
+        v = val_err("args_json must be a JSON array of primitives or an object of named arguments");
+    } else if (arg_names && (!n.member || n.member->kind != MK_METHOD)) {
+        // Method paths always dispatch via node_call. Attribute paths route
+        // to node_set when args carry exactly one value, otherwise node_get.
+        // Bare object/child nodes go through node_get (a VK_OBJECT reference).
         v = val_err("path '%s' is not a method — named arguments require one", path);
-    } else if (n.member && n.member->kind == M_METHOD && arg_names) {
+    } else if (n.member && n.member->kind == MK_METHOD && arg_names) {
         // Object form: bind every entry by name, no positionals.
         named_arg_t named[OBJ_BIND_MAX_ARGS];
         if (argc > OBJ_BIND_MAX_ARGS) {
@@ -523,9 +463,9 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
             value_t err = node_bind_args(n, 0, NULL, argc, named, bound, &bound_n);
             v = val_is_error(&err) ? err : node_call(n, bound_n, bound);
         }
-    } else if (n.member && n.member->kind == M_METHOD) {
+    } else if (n.member && n.member->kind == MK_METHOD) {
         v = node_call(n, argc, argv);
-    } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
+    } else if (n.member && n.member->kind == MK_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
         // outer free_args() can still walk argv.
         v = node_set(n, value_dup(&argv[0]));
@@ -535,23 +475,9 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
         v = node_get(n);
     }
 
-    size_t need = format_value_json(&v, out_buf, out_size, &pos);
     int rc = val_is_error(&v) ? -1 : 0;
-    if (need > out_size - 1) {
-        // The result is larger than the limit. A silently truncated payload
-        // is worse than a failure — the consumer would parse garbage (or,
-        // for a string result, a shorter valid-looking document) — so
-        // replace it with an explicit error naming both sizes.
-        size_t p = 0;
-        out_buf[0] = '\0';
-        buf_append(out_buf, out_size, &p, "{\"error\":", 9);
-        char msg[192];
-        snprintf(msg, sizeof(msg), "result of '%.64s' is %zu bytes, over the %zu-byte result limit", path, need,
-                 out_size - 1);
-        buf_append_jstring(out_buf, out_size, &p, msg);
-        buf_append(out_buf, out_size, &p, "}", 1);
+    if (!emit_json(&v, path, out_buf, out_size))
         rc = -1;
-    }
     value_free(&v);
     free_args(argv, argc);
     free_arg_names(arg_names, argc);

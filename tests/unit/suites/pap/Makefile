@@ -7,6 +7,6 @@ TEST_SRCS := test.c
 TEST_HARNESS := isolated
 EXTRA_SRCS := ../../../../src/core/network/appletalk_printer.c \
               ../../../../src/core/network/laserwriter_job.c \
-              ../../../../src/core/event/gs_event.c
+              ../../../../src/core/event/event.c
 EXTRA_CFLAGS := -DPRINTER_CAPTURE_MAX=64
 include ../../common.mk

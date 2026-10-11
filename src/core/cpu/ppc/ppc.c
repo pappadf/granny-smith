@@ -10,9 +10,11 @@
 #include "ppc_softfp.h"
 
 #include <stddef.h> // offsetof
+#include <stdio.h>
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "debug_mmu.h"
 #include "log.h"
@@ -20,6 +22,7 @@
 #include "object.h"
 #include "ppc_disasm.h"
 #include "scheduler.h"
+#include "status.h"
 #include "system.h"
 #include "value.h"
 
@@ -905,7 +908,7 @@ void ppc_reset(ppc_t *p) {
 
 static void register_alias_or_warn(const char *name, const char *path) {
     char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
+    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
         LOG(0, "ppc: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
 }
 
@@ -1327,7 +1330,7 @@ static DEF_GETTER(attr_ppc_get) {
         raw = *slot;
     }
     value_t v = val_uint(4, raw);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1359,9 +1362,9 @@ static DEF_SETTER(attr_ppc_set) {
 
 #define PPC_ATTR(name_, id_, doc_)                                                                                     \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
-            .type = V_UINT,                                                                                            \
-            .presentation_flags = VAL_HEX,                                                                             \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .attr = {                                                         \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = VFLAG_HEX,                                                                           \
             .get = attr_ppc_get,                                                                                       \
             .set = attr_ppc_set,                                                                                       \
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
@@ -1434,12 +1437,12 @@ static const member_t ppc_members[] = {
     PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
     PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
     PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
-    {.kind = M_ATTR, .name = "instr_count", 
+    {.kind = MK_ATTR, .name = "instr_count", 
      .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
-     .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
-    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0xfff00100 16"),
+     .attr = {.type = VK_UINT, .get = ppc_attr_instr_count}},
+    {.kind = MK_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0xfff00100 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
-     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = VK_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 
@@ -1554,7 +1557,7 @@ static DEF_METHOD(mmu_method_peek) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 4u;
+    uint32_t size = (argc >= 2 && argv[1].kind == VK_UINT) ? (uint32_t)argv[1].u : 4u;
     if (size != 1 && size != 2 && size != 4)
         return val_err("size must be 1, 2 or 4");
     bool physical;
@@ -1572,39 +1575,39 @@ static DEF_METHOD(mmu_method_peek) {
         raw = (raw << 8) | memory_debug_read_uint8(pa);
     }
     value_t v = val_uint((int)size, raw);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 // peek's default size.
-static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 // descriptor formats: the one PowerPC page-table entry layout.
 static const char *const ppc_desc_formats[] = {"pte", NULL};
 
 static const arg_decl_t mmu_desc_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first entry"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "physical address of the first entry"},
     {.name = "count",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &debug_mmu_desc_count_default,
      .doc = "how many consecutive entries (8 = one PTE group; at most 256)"},
     {.name = "format",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = ppc_desc_formats,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"pte\", the one PowerPC entry layout (accepted for the uniform signature)",
      .default_doc = "pte"},
 };
 static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "effective (logical) address"},
     {.name = "size",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"logical\" or \"physical\"",
@@ -1612,47 +1615,47 @@ static const arg_decl_t mmu_peek_args[] = {
 };
 
 static const member_t ppc_mmu_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "translate",
      .examples = EXAMPLES("machine.cpu.mmu.translate 0x5fff8000"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
      .method = {.result_doc = "{phys, valid, via, access}",
                 .args = debug_mmu_xlate_args,
                 .nargs = DEBUG_MMU_XLATE_NARGS,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = mmu_method_translate}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "walk",
      .examples = EXAMPLES("machine.cpu.mmu.walk 0x5fff8000", "machine.cpu.mmu.walk 0x2000 supervisor=false"),
      .doc = "Translate an address and show every step: segment register, BATs, each PTE group searched",
      .method = {.result_doc = "{phys, valid, via, access, steps: [{step, outcome, ...}]}",
                 .args = debug_mmu_xlate_args,
                 .nargs = DEBUG_MMU_XLATE_NARGS,
-                .result = V_MAP,
+                .result = VK_MAP,
                 .fn = mmu_method_walk}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "map",
      .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map 0 0x10000000 supervisor=false"),
      .doc = "List the mapped address ranges: runs that translate linearly with the same via and access",
      .method = {.result_doc = "[{start, size, phys, via, access}]",
                 .args = debug_mmu_map_args,
                 .nargs = DEBUG_MMU_MAP_NARGS,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = mmu_method_map}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "descriptor",
      .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x00F00000 8"),
      .doc = "Decode raw page-table entries at a physical address",
      .method = {.result_doc = "[{addr, desc, desc_lo, type, vsid, h, api, phys, r, c, wimg, pp, ea?}]",
                 .args = mmu_desc_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = mmu_method_descriptor}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
-     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}},
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = VK_UINT, .fn = mmu_method_peek}},
 };
 
 static const class_desc_t ppc_mmu_class = {
@@ -1672,7 +1675,7 @@ static DEF_GETTER(attr_fpr_get) {
         return val_err("cpu not initialised");
     int idx = (int)(uintptr_t)m->attr.user_data;
     value_t v = (idx == 32) ? val_uint(4, p->fpscr) : val_uint(8, p->fpr[idx]);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1690,9 +1693,9 @@ static DEF_SETTER(attr_fpr_set) {
 
 #define PPC_FPR_ATTR(name_, id_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
-            .type = V_UINT,                                                                                            \
-            .presentation_flags = VAL_HEX,                                                                             \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .attr = {                                                         \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = VFLAG_HEX,                                                                           \
             .get = attr_fpr_get,                                                                                       \
             .set = attr_fpr_set,                                                                                       \
             .user_data = (const void *)(uintptr_t)(id_)                                                                \

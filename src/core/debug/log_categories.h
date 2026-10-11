@@ -113,7 +113,7 @@
     X("vrom", 0, "Video declaration ROMs")                                                                             \
     X("prom", 0, "Boot/parameter ROM")                                                                                 \
     X("board", 0, "Machine construction and teardown")                                                                 \
-    X("setup", 0, "System setup and media attachment")                                                                 \
+    X("system", 0, "System setup and media attachment")                                                                \
     X("ckpt", 0, "Checkpoint save and restore")                                                                        \
     X("alias", 0, "Shell alias table")                                                                                 \
     /* Debug surfaces, declared in log.h rather than by a module */                                                    \

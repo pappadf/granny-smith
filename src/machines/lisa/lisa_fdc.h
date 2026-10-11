@@ -25,6 +25,7 @@
 #ifndef LISA_FDC_H
 #define LISA_FDC_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

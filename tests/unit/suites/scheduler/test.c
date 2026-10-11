@@ -52,15 +52,18 @@
 //   - pin/unpin: writing a speed pins (governor off), 0 returns to auto and
 //     restarts from the authentic floor
 
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
 #include "scheduler.h"
 #include "test_assert.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // Must match scheduler.c (not exported; the tests below pin the contract).
@@ -71,11 +74,11 @@
 
 // --- Fake host clock -------------------------------------------------------
 
-static double g_now; // seconds; returned by host_time()
+static double g_now; // seconds; host_time_ms() returns it in milliseconds
 static double g_secs_per_instr; // simulated emulation cost (0 = free)
 
-double host_time(void) {
-    return g_now;
+double host_time_ms(void) {
+    return g_now * 1000.0;
 }
 
 // --- Fake audio-ring signal (governor feedback) ----------------------------
@@ -113,18 +116,18 @@ const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
 }
 
-// The core's events (gs_event.h), captured: the last STATE payload and how
+// The core's events (event.h), captured: the last STATE payload and how
 // many were emitted.  Overrides the weak default.
 static char g_last_event[GS_EVENT_MAX];
 static int g_events;
-static uint32_t g_client = 7; // what gs_current_client answers
-void gs_event_emit(gs_event_kind_t kind, const char *json) {
+static uint32_t g_client = 7; // what platform_current_client answers
+void event_emit(event_kind_t kind, const char *json) {
     if (kind != GS_EVENT_STATE)
         return;
     snprintf(g_last_event, sizeof g_last_event, "%s", json);
     g_events++;
 }
-uint32_t gs_current_client(void) {
+uint32_t platform_current_client(void) {
     return g_client;
 }
 
@@ -182,19 +185,9 @@ void cpu_poll_interrupt(cpu_t *restrict cpu) {
         g_fake_stopped = false; // an event fired since the STOP: it is the wake-up
 }
 
-uint32_t g_io_penalty_remainder = 0;
-uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi_x256 = 0;
-uint32_t *g_sprint_burndown_ptr = NULL;
-uint32_t g_sprint_unrun_slots = 0;
-uint32_t g_io_stall_owed = 0;
-// E-clock sync state: normally defined in memory.c and written by scheduler.c
-// (scheduler_set_frequency / the sprint loop). memory.c is not linked into
-// this isolated scheduler suite, so stub the storage here.
-uint64_t g_sprint_base_cycles = 0;
-uint32_t g_sprint_frac_x256 = 0;
-uint32_t g_sprint_total_slots = 0;
-uint32_t g_esync_period_x256 = 0;
+// The sprint state (memory.h): normally stored in memory.c, which this
+// isolated scheduler suite does not link.
+sprint_io_t g_sprint_io;
 
 // A recording checkpoint stream: save writes into g_cp[g_cp_slot], restore
 // always reads back slot 0.  Used only by
@@ -300,13 +293,13 @@ value_t val_enum(int idx, const char *const *table, size_t n_table) {
 }
 value_t val_int(int64_t i) {
     value_t v = {0};
-    v.kind = V_INT;
+    v.kind = VK_INT;
     v.width = 8;
     v.i = i;
     return v;
 }
 
-// scheduler.events builds a V_LIST of V_MAPs, so the suite needs the map
+// scheduler.events builds a VK_LIST of V_MAPs, so the suite needs the map
 // builder and the list accumulator.  Minimal versions: this suite asserts on
 // queue COUNTS, not on the rendered list.
 struct value_map_builder {
@@ -342,7 +335,7 @@ bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
 }
 value_t val_list(value_t *items, size_t len) {
     value_t v = {0};
-    v.kind = V_LIST;
+    v.kind = VK_LIST;
     v.list.items = items;
     v.list.len = len;
     return v;
@@ -437,7 +430,7 @@ static void teardown(scheduler_t *s) {
 static int tick_at(double now_s) {
     uint64_t before = g_vbls;
     if (now_s > g_now)
-        g_now = now_s; // keep host_time() >= the tick timestamps we feed
+        g_now = now_s; // keep host_time_ms() >= the tick timestamps we feed
     scheduler_main_loop(TEST_CFG, now_s * 1000.0, platform_pacing());
     return (int)(g_vbls - before);
 }
@@ -1058,6 +1051,52 @@ static void forget_cb_b(void *src, uint64_t data) {
     (void)data;
 }
 
+// A delay in nanoseconds becomes cycles, floored -- except that a delay
+// shorter than one cycle rounds UP to one, so it never fires at "now", ahead
+// of the next instruction.  At 1 MHz one cycle is 1000 ns, and
+// scheduler_last_event_ns reports the event's deadline back in ns.
+TEST(test_ns_delay_rounds_sub_cycle_up_to_one_cycle) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    ASSERT_TRUE(scheduler_cpu_cycles(s) == 0);
+
+    const uint64_t delays[] = {1, 999, 1000, 1999, 2000};
+    const double want_ns[] = {1000.0, 1000.0, 1000.0, 1000.0, 2000.0}; // 1, 1, 1, 1 (floored), 2 cycles
+    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, delays[i]);
+        ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == want_ns[i]);
+        scheduler_forget_source(s, &src);
+        scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    }
+    teardown(s);
+}
+
+// The conversion does not overflow: ns * frequency would pass 2^64 for a
+// delay this long (1e18 ns at 1 MHz is 1e24), so it is split into whole
+// seconds and the sub-second rest.  The deadline is 1e15 cycles, 1e18 ns.
+TEST(test_ns_delay_conversion_does_not_overflow) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, 1000000000000000000ULL + 1999);
+    double got = scheduler_last_event_ns(s, forget_cb_a);
+    // 1e15 + 1 cycles; a wrapped product would land many orders away.
+    ASSERT_TRUE(got > 1e18 - 1e4 && got < 1e18 + 1e4);
+    scheduler_forget_source(s, &src);
+
+    // A frequency that is not a divisor of 1e9: 15.6672 MHz (the Plus clock),
+    // one second and a half -- 15667200 + 7833600 cycles exactly.
+    scheduler_set_frequency(s, 15667200);
+    scheduler_new_event_type(s, "probe", &src, "a", forget_cb_a);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 0, 1500000000ULL);
+    double cycles = scheduler_last_event_ns(s, forget_cb_a) * 15667200.0 / 1e9;
+    ASSERT_TRUE(cycles > 23500800.0 - 0.01 && cycles < 23500800.0 + 0.01);
+    teardown(s);
+}
+
 // One call drops every queued event for an object whatever its callback, plus
 // the event-type rows.  remove_event() matches on callback AND source, so a
 // device with N callbacks needs N calls and 27 of 38 destructors got that
@@ -1152,7 +1191,7 @@ TEST(test_forget_source_drops_events_and_types) {
 // The scheduler's plain-data prefix used to run past `cpu_cycles` and over
 // `previous_time`, `vbl_acc_error`, `host_secs_per_vbl` and
 // `host_secs_per_loop` -- the pacing governor's smoothing, all derived from
-// host_time().  The restore overwrote all four immediately, so nothing
+// host_time_ms().  The restore overwrote all four immediately, so nothing
 // consumed them, but they still went into every save file and made two
 // processes saving identical guest state produce different bytes.
 //
@@ -1631,6 +1670,8 @@ TEST(test_a_stall_past_an_event_is_carried_not_dropped) {
 
 int main(void) {
     RUN(test_a_mode_reports_its_owner_and_its_reason);
+    RUN(test_ns_delay_rounds_sub_cycle_up_to_one_cycle);
+    RUN(test_ns_delay_conversion_does_not_overflow);
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
     RUN(test_paced_rate_120hz);

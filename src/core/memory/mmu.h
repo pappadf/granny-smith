@@ -202,23 +202,9 @@ void mmu_delete(mmu_state_t *mmu);
 // Called on PMOVE to TC/CRP/SRP and PFLUSHA.
 void mmu_invalidate_tlb(mmu_state_t *mmu);
 
-// Record that page p has been written into one of the four SoA arrays since
-// the last invalidation. Callers in the slow path of memory.c use this when
-// lazy-installing an identity mapping for an MMU-disabled access.
-void tlb_track_page(uint32_t page_index);
-
-// The list of populated page indices a memory map keeps for the fast
-// invalidation above.  A map owns one (memory_map_init / _delete) and
-// memory_map_select makes it the one tlb_track_page and mmu_invalidate_tlb use.
-#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
-typedef struct tlb_track {
-    uint32_t page[TLB_TRACK_MAX]; // populated page indices
-    int count; // entries in the list
-    bool overflow; // too many to list: the next invalidation zeroes everything
-} tlb_track_t;
-tlb_track_t *tlb_track_new(void);
-void tlb_track_free(tlb_track_t *t);
-void tlb_track_select(tlb_track_t *t);
+// The population tracker the invalidation above uses (tlb_track_page,
+// memory_soa_invalidate) belongs to the memory map, which owns the SoA arrays
+// it describes: see memory.h.
 
 // === Address Translation ===
 
@@ -300,18 +286,11 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // with each mmu_init.  Logs and drops the region when the list is full.
 void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
 
-// The host-region fill records kept for machines with NO 68k MMU, whose
-// windows are filled straight into the page table instead (see
-// memory_map_host_region): one table per memory map, which owns it; the
-// selected map's is the one memory_map_host_region uses.
-void *mmu_host_fill_regions_new(void);
-
-// Forget the PMMU's process-wide caches (the TLB fill tracker, the ATC block
-// cache, the user-CRP snapshot): they describe the map that was selected,
-// and every one of them refills from the tables.  Run on every memory map
-// selection and at PMMU construction.
-void mmu_host_fill_regions_free(void *table);
-void mmu_host_fill_regions_select(void *table);
+// Clone the registered host region that starts at `original_phys_base` at a
+// second physical address (memory_map_host_region_alias on a 68k machine).
+// The clone resolves in table walks but is never page-filled.  False when no
+// region starts there.
+bool mmu_register_host_region_alias(mmu_state_t *mmu, uint32_t alias_phys_base, uint32_t original_phys_base);
 
 // Project every registered host region into the CPU page table by calling
 // `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after
@@ -362,13 +341,20 @@ extern struct mmu_state *g_mmu;
 // descriptor produced a Format $B retry frame and the handler RTE'd straight
 // back into the same access.  The 040's transparent-translation path already
 // set the flag false explicitly for exactly this reason.
-static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
+//
+// The fill went to the SoA of the walk's function code (`supervisor`), so that
+// is the array checked -- not the active pair, which differs from it for a
+// PLOAD naming the other FC.
+static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write,
+                                      bool supervisor) {
+    uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
     if (page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            // For closer ranges (e.g. $006DB000 from corrupted page tables) the
-            // f_trap handler detects unmapped instruction fetches separately.
+        uintptr_t *filled =
+            write ? (supervisor ? g_supervisor_write : g_user_write) : (supervisor ? g_supervisor_read : g_user_read);
+        if (filled && filled[page_index] == 0) {
+            // Closer unmapped ranges (e.g. $006DB000 from corrupted page
+            // tables) do not fault here; an instruction fetch from one reads
+            // $FFFF, and f_trap (cpu_internal.h) turns that into a bus error.
             if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base) {
                 g_bus_error_is_pmmu = false; // bus timeout: skip semantics
                 return false;

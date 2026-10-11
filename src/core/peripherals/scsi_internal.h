@@ -521,6 +521,12 @@ void phase_message_in(scsi_t *scsi, uint8_t message);
 // faithful answer and the one the drive we advertise documents.
 int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
 
+// scsi_data_in_alloc plus the fill: copies the first min(have, alloc) bytes
+// of `src` into the freshly sized buffer in the same call, so no caller
+// leaves DATA IN armed over an unfilled buffer.  Returns the length, as
+// scsi_data_in_alloc does.
+int scsi_data_in_copy(scsi_t *scsi, const void *src, int have, int alloc);
+
 // Emit Apple's vendor-identification MODE SENSE page $30 into `buf`.  Shared by
 // the hard-disk and CD-ROM paths; the identification STRING is not shared, and
 // the reason is written out at the definition in scsi_bus.c.

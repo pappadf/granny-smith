@@ -7,17 +7,18 @@
 // the machine's own source file (e.g., src/machines/plus.c) and is invoked
 // through the hw_profile_t callback interface.
 
-#include "system_config.h" // full config_t definition (includes system.h transitively)
+#include "system_internal.h" // full config_t definition (includes system.h transitively)
 
 #include "adb.h"
 #include "appletalk.h"
 #include "build_id.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "display.h"
 #include "drive_catalog.h"
 #include "floppy.h"
-#include "gs_out.h"
+#include "gs_assert.h"
 #include "host_input.h"
 #include "image.h"
 #include "image_wrap.h"
@@ -28,7 +29,9 @@
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
+#include "out.h"
 #include "pci.h"
+#include "platform_hooks.h"
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"
@@ -39,9 +42,10 @@
 #include "scsi_internal.h"
 #include "shell.h"
 #include "sound.h"
+#include "status.h"
 #include "via.h"
 #include "vrom.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 #include <assert.h>
 #include <dirent.h>
@@ -54,46 +58,90 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-LOG_USE_CATEGORY_NAME("setup");
+LOG_USE_CATEGORY_NAME("system");
 
-// Global emulator pointer (definition)
-config_t *global_emulator = NULL;
+// The active machine (NULL before the first boot), private to this file:
+// everyone else reads it through system_config() / system_running().
+// Ownership contract: system.c is the only writer -- system_swap_in publishes
+// a fully built config and system_destroy clears the pointer when it destroys
+// the config it names -- and every reader is expected to run on the emulator
+// thread, so no barrier is needed today (nothing enforces this; a reader on
+// another thread needs a real publication protocol first).  A constructor
+// never reads it (it uses the cfg it was given; the system_*() accessors
+// assert this).
+static config_t *global_emulator = NULL;
 
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
-// the manifest).  For volatile bases under /tmp/ — typically test
-// artifacts uploaded to memfs — fall back to NULL so image_create places
-// deltas in its scratch root (also under /tmp), preserving memfs-only I/O
-// performance.
+// the manifest).  For a base on volatile scratch storage -- which paths those
+// are is the platform's knowledge (platform_path_is_volatile) -- fall back to NULL
+// so image_create places deltas in its scratch root.
 static const char *pick_delta_dir(const char *path) {
-    if (path && strncmp(path, "/tmp/", 5) == 0)
+    if (platform_path_is_volatile(path))
         return NULL;
     return checkpoint_machine_dir();
 }
 
-// Config field accessors for opaque handle access
-image_t *config_get_image(config_t *cfg, int index) {
-    if (!cfg || index < 0 || index >= cfg->n_images)
-        return NULL;
-    return cfg->images[index];
+// The most disk images one machine tracks; also the bound a restored
+// checkpoint's image list is checked against (config_max_images).
+#define MAX_IMAGES 10
+
+// A machine's tracked disk images (config_t.image_table): system.c owns them
+// and closes them at teardown; everyone else goes through the accessors.
+// Slots are dense from 0 to view.n - 1, a slot NULL only if cleared.
+struct image_table {
+    image_t *items[MAX_IMAGES];
+    image_list_t view; // {items, n}: the list config_images hands out
+};
+
+// A new, empty image table, or NULL when out of memory.
+static struct image_table *image_table_new(void) {
+    struct image_table *t = calloc(1, sizeof(*t));
+    if (t)
+        t->view.items = t->items;
+    return t;
 }
-int config_get_n_images(config_t *cfg) {
-    return cfg ? cfg->n_images : 0;
+
+// Close every tracked image and free the table.
+static void image_table_free(config_t *cfg) {
+    struct image_table *t = cfg->image_table;
+    if (!t)
+        return;
+    for (int i = 0; i < t->view.n; ++i)
+        if (t->items[i])
+            image_close(t->items[i]);
+    free(t);
+    cfg->image_table = NULL;
+}
+
+// Config field accessors for opaque handle access
+image_t *config_get_image(const config_t *cfg, int index) {
+    if (!cfg || !cfg->image_table || index < 0 || index >= cfg->image_table->view.n)
+        return NULL;
+    return cfg->image_table->items[index];
+}
+int config_get_n_images(const config_t *cfg) {
+    return cfg && cfg->image_table ? cfg->image_table->view.n : 0;
+}
+int config_max_images(void) {
+    return MAX_IMAGES;
+}
+const image_list_t *config_images(config_t *cfg) {
+    return cfg && cfg->image_table ? &cfg->image_table->view : NULL;
 }
 
 // Add an image to the config's tracked image list.  Runtime-checked
 // rather than asserted because asserts compile out under release builds
-// and silent overflow into the next struct field would be a memory-
-// corruption bug.
+// and silent overflow past the table would be a memory-corruption bug.
 void config_add_image(config_t *cfg, image_t *image) {
-    if (!cfg || !image)
+    if (!cfg || !cfg->image_table || !image)
         return;
-    if (cfg->n_images >= MAX_IMAGES) {
+    struct image_table *t = cfg->image_table;
+    if (t->view.n >= MAX_IMAGES) {
         LOG(1, "config_add_image: image table full (max %d), dropping image", MAX_IMAGES);
         return;
     }
-    cfg->images[cfg->n_images] = image;
-    cfg->n_images++;
+    t->items[t->view.n++] = image;
 }
 
 // Set while system_create builds a machine.  The machine under construction
@@ -112,7 +160,7 @@ static bool s_constructing;
 static void construction_misuse(const char *accessor) {
     (void)accessor; // unused when asserts compile out
     s_constructing = false;
-    gs_event_hold(0);
+    event_hold(0);
     GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }
 
@@ -167,18 +215,6 @@ bool system_mouse_move(int dx, int dy) {
         return true;
     }
     return false;
-}
-
-// Injects mouse movement deltas through ADB only (no button change).
-// Returns true if injected through ADB, false on non-ADB machines.
-// Used by the default set-mouse path to preserve the original behavior where
-// ADB machines use delta injection and non-ADB machines fall through to
-// direct global writes.
-bool system_mouse_move_adb(int dx, int dy) {
-    if (!global_emulator || !global_emulator->adb)
-        return false;
-    adb_mouse_move(global_emulator->adb, dx, dy);
-    return true;
 }
 
 // Deltas already queued at the ADB device but not yet consumed — see
@@ -236,7 +272,9 @@ static void system_cpu_reset(config_t *cfg) {
     }
 }
 
-void system_machine_reset(void) {
+// Weak (here, not on the declaration) so a unit suite's stub_system.c
+// definition overrides it.
+__attribute__((weak)) void system_machine_reset(void) {
     config_t *cfg = global_emulator;
     if (!cfg)
         return;
@@ -256,9 +294,9 @@ void system_machine_reset(void) {
 // the vector fetch reads a cold machine.
 void system_machine_power_cycle(void) {
     config_t *cfg = global_emulator;
-    if (!cfg || !cfg->mem_map)
+    if (!cfg || !cfg->memory_map)
         return;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     if (ram && cfg->ram_size)
         memset(ram, 0, cfg->ram_size); // DRAM loses its contents
     // The ADB bus is powered by the machine: its devices lose power too.
@@ -270,11 +308,6 @@ void system_machine_power_cycle(void) {
     // is its substrate's power_on).
     if (cfg->nubus)
         nubus_power_on(cfg->nubus);
-    system_machine_reset();
-}
-
-// Retained under its old name for the callers that mean "level 2".
-void system_hardware_reset(void) {
     system_machine_reset();
 }
 
@@ -332,41 +365,33 @@ void system_reset_common_devices(config_t *cfg) {
 // both per the sources in machine_profile.h: a guest RESET re-arms the ROM
 // overlay (it did not before, and the boot ROM executes RESET while the
 // overlay is already on), and the PPC families' chipsets are reached for the
-// first time from this path.
-void system_reset_devices(void) {
+// first time from this path.  Weak so the single-step CPU suite, which
+// executes the RESET opcode without system.c, links its stub instead.
+__attribute__((weak)) void system_reset_devices(void) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine || !cfg->machine->substrate->bus_reset) {
-        // No bus_reset bound yet (Plus, Lisa -- a gap, not hardware).  Fall
-        // back to the common set so those two keep the behaviour they had.
+        // No bus_reset bound (the Lisa -- a gap, not hardware).  Fall back
+        // to the common set so it keeps the behaviour it had.
         system_reset_common_devices(cfg);
         return;
     }
     cfg->machine->substrate->bus_reset(cfg);
 }
 
-// System-level scheduler accessor: returns the current scheduler object
-scheduler_t *system_scheduler(void) {
-    NOT_DURING_CONSTRUCTION();
-    return global_emulator ? global_emulator->scheduler : NULL;
-}
+// One accessor for the active machine's subsystem `field`: NULL with no
+// machine, an assert during construction.  Adding a subsystem accessor is
+// this one line plus its declaration in system.h.
+#define DEFINE_SUBSYSTEM_ACCESSOR(type, name, field)                                                                   \
+    type *name(void) {                                                                                                 \
+        NOT_DURING_CONSTRUCTION();                                                                                     \
+        return global_emulator ? global_emulator->field : NULL;                                                        \
+    }
 
-// System-level memory accessor: returns the current memory object
-memory_map_t *system_memory(void) {
-    NOT_DURING_CONSTRUCTION();
-    return global_emulator ? global_emulator->mem_map : NULL;
-}
-
-// System-level debug accessor: returns the current debugger object
-debug_t *system_debug(void) {
-    NOT_DURING_CONSTRUCTION();
-    return global_emulator ? global_emulator->debugger : NULL;
-}
-
-// System-level CPU accessor: returns the current CPU object
-cpu_t *system_cpu(void) {
-    NOT_DURING_CONSTRUCTION();
-    return global_emulator ? global_emulator->cpu : NULL;
-}
+DEFINE_SUBSYSTEM_ACCESSOR(scheduler_t, system_scheduler, scheduler) // the scheduler
+DEFINE_SUBSYSTEM_ACCESSOR(memory_map_t, system_memory, memory_map) // the memory map
+DEFINE_SUBSYSTEM_ACCESSOR(debug_t, system_debug, debugger) // the debugger
+DEFINE_SUBSYSTEM_ACCESSOR(cpu_t, system_cpu, cpu) // the 68K main CPU (NULL on PowerPC)
+DEFINE_SUBSYSTEM_ACCESSOR(rtc_t, system_rtc, rtc) // the RTC / PRAM chip
 
 // Main-CPU debug interface accessor.  Returns NULL until
 // a machine with a main CPU has been built (ctx doubles as the "populated"
@@ -399,13 +424,15 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
     for (int k = 0; k < DRIVE_KIND_COUNT; k++)
         reads[k] = writes[k] = 0;
     config_t *cfg = global_emulator;
-    for (int i = 0; cfg && i < cfg->n_images; i++) {
-        const image_t *img = cfg->images[i];
+    for (int i = 0; i < config_get_n_images(cfg); i++) {
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        int k = image_is_floppy(img->type) ? DRIVE_KIND_FD : img->type == image_cdrom ? DRIVE_KIND_CD : DRIVE_KIND_HD;
-        reads[k] += img->reads;
-        writes[k] += img->writes;
+        int k = image_is_floppy(image_get_type(img)) ? DRIVE_KIND_FD
+                : image_get_type(img) == image_cdrom ? DRIVE_KIND_CD
+                                                     : DRIVE_KIND_HD;
+        reads[k] += image_get_reads(img);
+        writes[k] += image_get_writes(img);
     }
 }
 
@@ -439,12 +466,6 @@ int system_input_mouse_button(bool down, const char *mode) {
     if (!cfg || !cfg->machine || !cfg->machine->substrate->input_mouse_button)
         return -1;
     return cfg->machine->substrate->input_mouse_button(cfg, down, mode);
-}
-
-// System-level RTC accessor: returns the current RTC object
-rtc_t *system_rtc(void) {
-    NOT_DURING_CONSTRUCTION();
-    return global_emulator ? global_emulator->rtc : NULL;
 }
 
 // System-level framebuffer accessor: thin wrapper over system_display()
@@ -496,10 +517,16 @@ const char *system_machine_model_id(void) {
 // substrate implements fd_present/fd_insert — Macs route to mac_fd_* (their
 // IWM/SWIM via cfg->floppy), the Lisa to its parallel FDC — so there is one
 // uniform path and no cfg->floppy special-case here.
+//
+// A substrate without the hooks (none today) has no drive a disk can go in,
+// and both helpers say so the same way: sys_fd_is_inserted answers
+// "occupied" so no drive is ever picked for it, and sys_fd_insert refuses.
+// Callers pick before they insert (sys_fd_pick), so the refusal is the
+// backstop, never the first answer.
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
     if (cfg->machine && cfg->machine->substrate->fd_present)
         return cfg->machine->substrate->fd_present(cfg, drive);
-    return true; // no controller → treat as occupied
+    return true; // no controller: nothing can be inserted, so never pickable
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
@@ -511,13 +538,6 @@ static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
 // Public present-state accessor for the active machine's floppy drive `drive`.
 bool system_fd_present(int drive) {
     return global_emulator ? sys_fd_is_inserted(global_emulator, drive) : false;
-}
-
-// Trigger a vertical blanking interval event (delegates to machine callback)
-void trigger_vbl(struct config *restrict config) {
-    if (config && config->machine && config->machine->substrate->trigger_vbl) {
-        config->machine->substrate->trigger_vbl(config);
-    }
 }
 
 // ============================================================================
@@ -544,12 +564,12 @@ static int sys_fd_count(config_t *cfg) {
 static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
     int n = sys_fd_count(cfg);
     if (preferred < -1 || preferred >= n) {
-        gs_outf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        out_printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
         return -1;
     }
     if (preferred != -1) {
         if (sys_fd_is_inserted(cfg, preferred)) {
-            gs_outf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            out_printf("%s: floppy drive %d is already occupied.\n", who, preferred);
             return -1;
         }
         return preferred;
@@ -558,9 +578,9 @@ static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
         if (!sys_fd_is_inserted(cfg, d))
             return d;
     if (n == 0)
-        gs_outf("%s: this machine has no floppy drive.\n", who);
+        out_printf("%s: this machine has no floppy drive.\n", who);
     else
-        gs_outf("%s: no free floppy drive.\n", who);
+        out_printf("%s: no free floppy drive.\n", who);
     return -1;
 }
 
@@ -569,7 +589,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("fd insert: emulator config not initialized.\n");
+        out_printf("fd insert: emulator config not initialized.\n");
         return -1;
     }
     int target = sys_fd_pick(config, preferred, "fd insert");
@@ -578,7 +598,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
     image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
-        gs_outf("fd insert: failed to open disk image: %s\n", path);
+        out_printf("fd insert: failed to open disk image: %s\n", path);
         return -1;
     }
 
@@ -586,12 +606,12 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // insert's result and printed "inserted" whatever the drive said, so a
     // drive that refused left an orphan on the image list and a success claim.
     if (sys_fd_insert(config, target, disk) != 0) {
-        gs_outf("fd insert: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd insert: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
-    add_image(config, disk);
-    gs_outf("fd insert: inserted %s into floppy drive %d.\n", path, target);
+    config_add_image(config, disk);
+    out_printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }
 
@@ -600,27 +620,27 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 int system_probe_floppy(const char *path) {
     image_t *disk = image_open_readonly(path);
     if (!disk) {
-        gs_outf("%s: NOT a supported format\n", path);
+        out_printf("%s: NOT a supported format\n", path);
         return 1;
     }
 
-    if (!image_is_floppy(disk->type)) {
-        gs_outf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
+    if (!image_is_floppy(image_get_type(disk))) {
+        out_printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, image_get_raw_size(disk));
         image_close(disk);
         return 1;
     }
 
     const char *type_str = "unknown";
-    if (disk->type == image_fd_ss)
+    if (image_get_type(disk) == image_fd_ss)
         type_str = "single-sided 400KB";
-    else if (disk->type == image_fd_ds)
+    else if (image_get_type(disk) == image_fd_ds)
         type_str = "double-sided 800KB";
-    else if (disk->type == image_fd_dd_mfm)
+    else if (image_get_type(disk) == image_fd_dd_mfm)
         type_str = "double-density 720KB MFM";
-    else if (disk->type == image_fd_hd)
+    else if (image_get_type(disk) == image_fd_hd)
         type_str = "high-density 1440KB";
 
-    gs_outf("%s: Valid floppy image (%s)\n", path, type_str);
+    out_printf("%s: Valid floppy image (%s)\n", path, type_str);
     image_close(disk);
     return 0;
 }
@@ -630,7 +650,7 @@ int system_probe_floppy(const char *path) {
 int system_create_floppy(const char *path, bool high_density, int preferred) {
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("fd create: emulator config not initialized.\n");
+        out_printf("fd create: emulator config not initialized.\n");
         return -1;
     }
 
@@ -643,26 +663,27 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
-        if (rc == -2)
-            gs_outf("fd create: file already exists: %s (won't overwrite)\n", path);
+        if (rc == IMAGE_CREATE_EXISTS)
+            out_printf("fd create: file already exists: %s (won't overwrite)\n", path);
         else
-            gs_outf("fd create: failed to create blank floppy file: %s\n", path);
+            out_printf("fd create: failed to create blank floppy file: %s\n", path);
         return -1;
     }
 
     image_t *disk = image_create(path, pick_delta_dir(path));
     if (!disk) {
-        gs_outf("fd create: failed to open newly created image: %s\n", path);
+        out_printf("fd create: failed to open newly created image: %s\n", path);
         return -1;
     }
 
     if (sys_fd_insert(config, target, disk) != 0) {
-        gs_outf("fd create: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd create: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
-    add_image(config, disk);
-    gs_outf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
+    config_add_image(config, disk);
+    out_printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K",
+               target);
     return 0;
 }
 
@@ -683,26 +704,26 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 static int do_create_hd(const char *path, const char *size_str) {
     size_t size = drive_catalog_parse_size(size_str);
     if (size == 0) {
-        gs_outf("hd create: invalid size: %s\n", size_str);
-        gs_outf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
-        gs_outf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
-        gs_outf("  Run 'hd models' to see available drive sizes.\n");
+        out_printf("hd create: invalid size: %s\n", size_str);
+        out_printf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
+        out_printf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
+        out_printf("  Run 'hd models' to see available drive sizes.\n");
         return -1;
     }
     if (size > HD_CREATE_MAX_SIZE) {
-        gs_outf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
+        out_printf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
         return -1;
     }
     // reject floppy-sized images
     if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
-        gs_outf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
+        out_printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
         return -1;
     }
     // refuse to overwrite existing files
     FILE *exist = fopen(path, "rb");
     if (exist) {
         fclose(exist);
-        gs_outf("hd create: file already exists: %s (won't overwrite)\n", path);
+        out_printf("hd create: file already exists: %s (won't overwrite)\n", path);
         return -1;
     }
     // A .dmg is a UDIF of one zero run -- a couple of KB however large the
@@ -712,39 +733,40 @@ static int do_create_hd(const char *path, const char *size_str) {
     bool udif = plen >= 4 && strcasecmp(path + plen - 4, ".dmg") == 0;
     int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
     if (rc != 0) {
-        gs_outf("hd create: failed to create image: %s\n", path);
+        out_printf("hd create: failed to create image: %s\n", path);
         return -1;
     }
-    gs_outf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
+    out_printf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
     return 0;
 }
 
-// Attach a SCSI hard disk image. Delegates to add_scsi_drive().
+// Attach a SCSI hard disk image. Delegates to system_attach_scsi_hd().
 // Returns 0 on success, -1 on error.
 static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     if (scsi_id < 0 || scsi_id > 7) {
-        gs_outf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
+        out_printf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
         return -1;
     }
     config_t *config = global_emulator;
     if (!config) {
-        gs_outf("hd attach: emulator not initialized.\n");
+        out_printf("hd attach: emulator not initialized.\n");
         return -1;
     }
     // Report what actually happened.  This returned 0 unconditionally, so
     // `attach_hd` on an unopenable file printed "Failed to open image" and then
     // answered true -- and once insert() started reporting its attach result,
     // a test could assert on a lie.
-    return add_scsi_drive_on(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
+    return system_attach_scsi_hd(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
 }
 
 static int do_attach_hd(const char *path, int scsi_id) {
     return do_attach_hd_on(NULL, path, scsi_id);
 }
 
-// Initialize the setup system and register commands
-void setup_init() {
-    gs_outf("Granny Smith build %s\n", get_build_id());
+// One-time, machine-independent process setup: log categories, the image
+// system, the AppleTalk network.
+void system_init(void) {
+    out_printf("Granny Smith build %s\n", build_id_get());
 
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
@@ -756,15 +778,13 @@ void setup_init() {
     // was the tell that a manifest was missing.
     log_register_manifest();
 
-    image_init(NULL);
-
     // The AppleTalk network: host state, one per process.  Machines plug into
     // it as they are built (atalk_conn_new) and never tear it down.
     appletalk_network_init();
 }
 
 // The default AppleShare volume.  The platform names its path once, at
-// startup, after setup_init (the browser: /opfs/shared; headless:
+// startup, after system_init (the browser: /opfs/shared; headless:
 // --shared-dir or $GS_SHARED_DIR), and the network publishes it then: a
 // share is the network's, so it is there for every machine that plugs in.
 // A failure is a logged warning, never a startup error -- a user who removed
@@ -781,36 +801,6 @@ void system_set_default_share(const char *path) {
     char err[192];
     if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, path, err, sizeof(err)) < 0)
         LOG(0, "warning: default share: %s", err);
-}
-
-// Background-checkpoint auto state. WASM-only at the moment — the
-// headless build has no auto-checkpoint loop, so the weak defaults
-// just stub out; em_main.c overrides them to read/write the live
-// `checkpoint_auto_enabled` flag.
-// A new machine is the active one (machine.boot, checkpoint.load).  The host
-// re-bases whatever it samples from the machine: nothing it observed of the
-// previous machine is compared with this one (the page's MIPS sample, headless
-// --max-cycles' count).  The weak default serves a host that samples nothing.
-__attribute__((weak)) void platform_machine_attached(void) {}
-
-__attribute__((weak)) bool gs_checkpoint_auto_get(void) {
-    return false;
-}
-
-__attribute__((weak)) int gs_checkpoint_auto_set(bool enabled) {
-    (void)enabled;
-    return -2; // no auto-checkpoint loop on this platform
-}
-
-// Platform-specific entry points (see system.h): the weak defaults say "not
-// supported on this platform" (-2), and a platform that has the thing
-// overrides them -- headless quit, wasm download.
-__attribute__((weak)) int gs_quit(void) {
-    return -2; // the browser owns the page's lifecycle
-}
-__attribute__((weak)) int gs_download(const char *path) {
-    (void)path;
-    return -2; // no browser to hand a file to
 }
 
 // The quick-checkpoint heartbeat: the web status bar flashes on it.
@@ -831,21 +821,21 @@ static double g_last_quick_checkpoint_ms = 0.0;
 static bool g_quick_verbose = false;
 static char g_quick_final_path[QUICK_CHECKPOINT_PATH_MAX];
 
-// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
-// when the machine dir is set and the path fits.
-static int build_state_checkpoint_path(char *out_path, size_t out_len) {
+// Build "<machine_dir>/state.checkpoint" into out_path.  STATUS_E_NOENT
+// when no machine dir is set, STATUS_E_RANGE when the path does not fit.
+static status_t build_state_checkpoint_path(char *out_path, size_t out_len) {
     const char *dir = checkpoint_machine_dir();
     if (!dir)
-        return GS_ERROR;
+        return STATUS_E_NOENT;
     int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
+    return (written > 0 && (size_t)written < out_len) ? STATUS_OK : STATUS_E_RANGE;
 }
 
 // The path of the machine's current valid quick checkpoint, in a static
 // buffer, or NULL when there is none (or it is from another build).
 const char *find_valid_checkpoint_path(void) {
     static char path_buf[QUICK_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
+    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != STATUS_OK)
         return NULL;
     struct stat st;
     if (stat(path_buf, &st) != 0)
@@ -856,41 +846,42 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
-int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
+status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // No machine configured → nothing to save, like the idle and
     // no-directory cases below (a hidden tab before any boot lands here).
     scheduler_t *sched = system_scheduler();
     if (!sched) {
         if (verbose)
-            gs_outf("[checkpoint] no machine, nothing to save\n");
-        return GS_SUCCESS;
+            out_printf("[checkpoint] no machine, nothing to save\n");
+        return STATUS_OK;
     }
 
     // Skip checkpointing when the emulator is idle — nothing meaningful to save
     if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
-        return GS_SUCCESS;
+        return STATUS_OK;
 
     // No machine identity yet → nothing to save under.
     if (!checkpoint_machine_dir()) {
         if (verbose)
-            gs_outf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
-        return GS_SUCCESS;
+            out_printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
+        return STATUS_OK;
     }
 
     double now = host_time_ms();
     if (rate_limit && g_last_quick_checkpoint_ms > 0.0) {
         double delta = now - g_last_quick_checkpoint_ms;
         if (delta >= 0.0 && delta < QUICK_CHECKPOINT_MIN_INTERVAL_MS)
-            return GS_SUCCESS;
+            return STATUS_OK;
     }
 
     char final_path[QUICK_CHECKPOINT_PATH_MAX];
     char tmp_path[QUICK_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
-        return GS_ERROR;
+    status_t rc = build_state_checkpoint_path(final_path, sizeof(final_path));
+    if (rc != STATUS_OK)
+        return rc;
     int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
     if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
-        return GS_ERROR;
+        return STATUS_E_RANGE;
 
     // Settle the sprint counters so the checkpoint captures an exact
     // instruction count.  Not a stop: the machine's run state is saved as
@@ -903,7 +894,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // (the rate limit already says "not yet") and count.
     if (checkpoint_quick_in_flight()) {
         checkpoint_quick_note_skipped();
-        return GS_SUCCESS;
+        return STATUS_OK;
     }
 
     // Serialise here (the guest state is this thread's); the write and the
@@ -913,35 +904,35 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     g_quick_verbose = verbose;
     snprintf(g_quick_final_path, sizeof g_quick_final_path, "%s", final_path);
     checkpoint_publish_next(final_path);
-    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
-    if (rc != GS_SUCCESS) {
+    rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
+    if (rc != STATUS_OK) {
         checkpoint_publish_next(NULL);
         unlink(tmp_path);
         if (verbose)
-            gs_outf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+            out_printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
         return rc;
     }
     g_last_quick_checkpoint_ms = now;
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
     if (ok) {
-        gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
+        event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
         if (g_quick_verbose)
-            gs_outf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
+            out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
-        gs_outf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
+        out_printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
     }
 }
 
-int gs_background_checkpoint(const char *reason) {
+int system_background_checkpoint(const char *reason) {
     // A snapshot promises a complete file when it returns: let a publish in
     // flight land first, save, and wait for this one's publish too.
     checkpoint_quick_wait();
-    int rc = system_quick_checkpoint(reason ? reason : "manual", true, false);
+    status_t rc = system_quick_checkpoint(reason ? reason : "manual", true, false);
     checkpoint_quick_wait();
-    return rc == GS_SUCCESS ? 0 : -1;
+    return rc == STATUS_OK ? 0 : -1;
 }
 
 // Clear checkpoint files inside the current machine directory: drops
@@ -949,12 +940,12 @@ int gs_background_checkpoint(const char *reason) {
 // open: clearing must not pull a live file from under it.
 static bool image_file_in_use(const char *path) {
     config_t *cfg = global_emulator;
-    for (int i = 0; cfg && i < cfg->n_images; i++) {
-        const image_t *img = cfg->images[i];
+    for (int i = 0; i < config_get_n_images(cfg); i++) {
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        if ((img->delta_path && strcmp(img->delta_path, path) == 0) ||
-            (img->journal_path && strcmp(img->journal_path, path) == 0))
+        if ((image_get_delta_path(img) && strcmp(image_get_delta_path(img), path) == 0) ||
+            (image_get_journal_path(img) && strcmp(image_get_journal_path(img), path) == 0))
             return true;
     }
     return false;
@@ -1005,18 +996,18 @@ static int clear_checkpoint_files(void) {
     return removed;
 }
 
-int gs_checkpoint_clear(void) {
+int system_checkpoint_clear(void) {
     int removed = clear_checkpoint_files();
-    gs_outf("Cleared %d checkpoint file(s)\n", removed);
+    out_printf("Cleared %d checkpoint file(s)\n", removed);
     return 0;
 }
 
-int gs_register_machine(const char *machine_id, const char *created) {
+int system_register_machine(const char *machine_id, const char *created) {
     if (!machine_id || !created)
         return -1;
     int rc = checkpoint_machine_set(machine_id, created);
     if (rc != 0)
-        gs_outf("register_machine: failed to set %s-%s\n", machine_id, created);
+        out_printf("register_machine: failed to set %s-%s\n", machine_id, created);
     return rc == 0 ? 0 : -1;
 }
 
@@ -1026,10 +1017,10 @@ int gs_register_machine(const char *machine_id, const char *created) {
 // found" / IO error.  The web frontend runs it after an archive extraction
 // (FS.readdir from the main thread is broken with WasmFS pthreads, so this
 // runs on the worker).
-int gs_find_media(const char *dir_path, const char *dest) {
+int system_find_media(const char *dir_path, const char *dest) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
-        gs_outf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
+        out_printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
         return 1;
     }
 
@@ -1046,7 +1037,7 @@ int gs_find_media(const char *dir_path, const char *dest) {
         // Try as floppy image
         image_t *img = image_open_readonly(full);
         if (img) {
-            bool is_floppy = image_is_floppy(img->type);
+            bool is_floppy = image_is_floppy(image_get_type(img));
             image_close(img);
             if (is_floppy) {
                 snprintf(found_path, sizeof(found_path), "%s", full);
@@ -1082,82 +1073,10 @@ int gs_find_media(const char *dir_path, const char *dest) {
         fclose(fout);
     }
 
-    gs_outf("%s\n", found_path);
+    out_printf("%s\n", found_path);
     return 0;
 }
 
-// Host video-input seam: the defaults model "no camera attached" — the
-// headless build drives capture from the deterministic machine.videoin
-// sources instead; em_camera.c overrides these on WASM.
-__attribute__((weak)) bool gs_video_in_connected(void) {
-    return false;
-}
-
-__attribute__((weak)) int gs_video_in_frame(uint8_t *rgba) {
-    (void)rgba;
-    return -1;
-}
-
-__attribute__((weak)) void gs_video_in_state(bool active) {
-    (void)active;
-}
-
-// Host GPU-transport seam (system.h): no GPU on a native host.
-__attribute__((weak)) bool gs_v2gpu_available(void) {
-    return false;
-}
-
-__attribute__((weak)) bool gs_v2gpu_attach(void *ctrl, uint32_t bytes) {
-    (void)ctrl;
-    (void)bytes;
-    return false;
-}
-
-__attribute__((weak)) void gs_v2gpu_detach(void *ctrl) {
-    (void)ctrl;
-}
-
-__attribute__((weak)) int gs_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
-    (void)addr;
-    (void)expected;
-    (void)timeout_ms;
-    return -1;
-}
-
-__attribute__((weak)) void gs_v2gpu_notify(volatile uint32_t *addr) {
-    (void)addr;
-}
-
-// Host audio-input seam: the defaults model "no microphone attached" —
-// the headless build drives capture from the deterministic
-// machine.audioin sources instead; a WASM override can trail.
-__attribute__((weak)) bool gs_audio_in_connected(void) {
-    return false;
-}
-
-__attribute__((weak)) bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
-    (void)lr;
-    (void)frames;
-    (void)rate;
-    return false;
-}
-
-__attribute__((weak)) void gs_audio_in_state(bool active) {
-    (void)active;
-}
-
-__attribute__((weak)) void gs_audio_in_injected(const char *path) {
-    (void)path;
-}
-
-__attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
-    (void)buf;
-    (void)buflen;
-    return false;
-}
-
-// Create an emulator instance for the given machine profile.
-// Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
 // The board's block: the model and the RAM size, which the rest of the
 // machine is built for.  It is the checkpoint's first part, so a restore
 // reads it before it builds anything (system_restore).
@@ -1171,7 +1090,7 @@ static void board_part_save(void *obj, checkpoint_t *cp) {
     board_block_t b;
     memset(&b, 0, sizeof b);
     snprintf(b.model, sizeof b.model, "%s", cfg->machine->id);
-    b.ram_kb = cfg->ram_size / 1024u;
+    b.ram_kb = cfg->ram_size / 1024u; // exact: system_create sets ram_size = ram_kb * 1024
     system_write_checkpoint_data(cp, &b, sizeof b, "machine");
 }
 
@@ -1223,13 +1142,15 @@ static void events_part_save(void *obj, checkpoint_t *cp) {
 // chosen, which selection resets to supervisor (a 68000 re-picks it only on a
 // mode change).
 static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write) {
-    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+    memory_map_select(global_emulator ? global_emulator->memory_map : NULL);
     if (global_emulator) {
         g_active_read = active_read;
         g_active_write = active_write;
     }
 }
 
+// Create an emulator instance for the given machine profile: allocate the
+// config_t, wire the machine descriptor, and call profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
 
     assert(profile != NULL);
@@ -1241,6 +1162,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
+    cfg->image_table = image_table_new();
+    if (!cfg->image_table) {
+        free(cfg);
+        return NULL;
+    }
     cfg->build_opts = *opts;
 
     // The build selects its own memory map (memory_map_init); afterwards the
@@ -1263,20 +1189,24 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
     storage_part(cfg, checkpoint);
 
-    // Delegate all machine-specific initialisation to the profile.  A
+    // Delegate all machine-specific initialisation to the profile.  The substrate
+    // builds every device and registers its own object nodes against cfg; the
+    // object-model root that wraps them is installed later, by system_swap_in
+    // (root_install), so init never touches the root.  A
     // non-zero return means the machine could not be built (the only cause
     // today is an allocation failure); tear down whatever it managed and
     // report the failure rather than handing back a half-built config.  Every
     // teardown tolerates a partially-constructed machine -- each guards its
     // machine_context -- which is what makes this safe to call here.
     s_constructing = true;
-    gs_event_hold(1);
+    event_hold(1);
     if (profile->substrate->init(cfg, checkpoint) != 0) {
         s_constructing = false;
-        gs_event_hold(0);
+        event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
+        image_table_free(cfg);
         machine_parts_free(cfg);
         free(cfg);
         reselect_active_map(active_read, active_write);
@@ -1327,7 +1257,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         scheduler_restore_events(cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
     s_constructing = false;
-    gs_event_hold(0);
+    event_hold(0);
 
     // The fast-path aliases go back to the active machine's until the swap
     // step.
@@ -1344,7 +1274,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing) {
     config_t *old = global_emulator;
     global_emulator = cfg;
-    memory_map_select(cfg->mem_map);
+    memory_map_select(cfg->memory_map);
 
     // Label the machine container node with the active model name so the
     // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
@@ -1378,7 +1308,7 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // on checkpoint restore — the manifest is fixed at original creation
     // time and is purely informational.  Failure is non-fatal.
     if (!restored && checkpoint_machine_dir())
-        checkpoint_machine_write_manifest();
+        checkpoint_machine_write_manifest(cfg);
 
     // The machine it replaces goes last; its teardown leaves the new
     // machine's object tree alone (root_uninstall_if).
@@ -1391,8 +1321,8 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     // built at the default pacing and given the host's here.
     scheduler_apply_pacing(cfg->scheduler, pacing);
     scheduler_announce_speed(cfg->scheduler);
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
-                   cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
+                cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
     platform_machine_attached();
 }
 
@@ -1400,6 +1330,9 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
 void system_destroy(config_t *config) {
     if (!config)
         return;
+    // system_create sets the machine before anything else, so a config
+    // without one is corrupt: its teardown cannot be found.
+    GS_ASSERTF(config->machine != NULL, "system_destroy: config has no machine");
 
     // Tear down the object-model root before machine teardown so stub
     // getters cannot dereference half-freed subsystem state.  Use the
@@ -1446,13 +1379,7 @@ void system_destroy(config_t *config) {
     }
 
     // Free all tracked images (managed at the system level)
-    for (int i = 0; i < config->n_images; ++i) {
-        if (config->images[i]) {
-            image_close(config->images[i]);
-            config->images[i] = NULL;
-        }
-    }
-    config->n_images = 0;
+    image_table_free(config);
 
     // The process-global pointer dies with the config it names.  This used to
     // be every caller's job: five sites remembered and one -- system_restore's
@@ -1475,11 +1402,6 @@ void system_destroy(config_t *config) {
     free(config);
 }
 
-// Reset Mac hardware to initial state
-void mac_reset(config_t *restrict sim) {
-    scc_reset(sim->scc);
-}
-
 // Open `path` as the medium a bay on `bus` takes and fill in `slot` -- the
 // image handle plus, on SCSI, the identity the device presents -- ready for
 // a substrate's media_attach.  One open for every attach path: a hard disk
@@ -1490,30 +1412,37 @@ void mac_reset(config_t *restrict sim) {
 static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot_t *slot) {
     *slot = (media_slot_t){.bus = bus};
     if (!path || !*path) {
-        gs_outf("Cannot attach: no image path\n");
+        out_printf("Cannot attach: no image path\n");
         return false;
     }
     if (bus == MEDIA_BUS_PROFILE) {
         const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
         slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
         if (!slot->img)
-            gs_outf("Failed to open ProFile image: %s\n", path);
+            out_printf("Failed to open ProFile image: %s\n", path);
         return slot->img != NULL;
     }
     if (cdrom) {
         // The drive is the one the machine's profile declares for its CD bay.
         const struct scsi_cd_drive *drive = global_emulator ? global_emulator->machine->cdrom_drive : NULL;
         if (!drive) {
-            gs_outf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
+            out_printf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
             return false;
         }
         // CD-ROM images are always opened read-only
         slot->img = image_open_readonly(path);
         if (!slot->img) {
-            gs_outf("Failed to open CD-ROM image: %s\n", path);
+            out_printf("Failed to open CD-ROM image: %s\n", path);
             return false;
         }
-        slot->img->type = image_cdrom;
+        // The attach names the medium a CD-ROM, and that wins over the size
+        // heuristic image_open_readonly applied (a small ISO can look like a
+        // floppy).  Say so when the two disagree on a floppy: the image_t
+        // keeps no floppy-specific state, but the caller may have picked the
+        // wrong file.
+        if (image_is_floppy(image_get_type(slot->img)))
+            LOG(1, "%s: floppy-sized image attached as a CD-ROM", path);
+        image_set_type(slot->img, image_cdrom);
         // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
         // sector, not a property of the disc — so serve every disc at 2048 and let
         // the guest ask for anything else.  A host that wants 512-byte addressing
@@ -1536,13 +1465,13 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
         snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
         snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
-        gs_outf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
-                drive->product, disk_size(slot->img), slot->block_size);
+        out_printf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
+                   drive->product, disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));
     if (!slot->img) {
-        gs_outf("Failed to open image: %s\n", path);
+        out_printf("Failed to open image: %s\n", path);
         return false;
     }
     // An HFS volume with no driver in front of it (a bare volume, or a
@@ -1551,22 +1480,22 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
     // driver instead.  The file itself is untouched.
     int wrapped = image_wrap_volume(slot->img);
     if (wrapped < 0) {
-        gs_outf("Failed to wrap volume: %s\n", path);
+        out_printf("Failed to wrap volume: %s\n", path);
         image_close(slot->img);
         slot->img = NULL;
         return false;
     }
     if (wrapped == IMAGE_WRAP_BARE)
-        gs_outf("%s: bare HFS volume — wrapped with a partition map and the GSDisk driver\n", path);
+        out_printf("%s: bare HFS volume — wrapped with a partition map and the GSDisk driver\n", path);
     else if (wrapped == IMAGE_WRAP_DRIVERLESS)
-        gs_outf("%s: partitioned disk without a driver — its HFS partition wrapped with a partition map and the "
-                "GSDisk driver\n",
-                path);
+        out_printf("%s: partitioned disk without a driver — its HFS partition wrapped with a partition map and the "
+                   "GSDisk driver\n",
+                   path);
     size_t sz = disk_size(slot->img);
     // Find the closest drive model from the catalog
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (!best) {
-        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", path);
+        LOG(1, "media_open: drive catalog is empty; cannot attach %s", path);
         image_close(slot->img);
         slot->img = NULL;
         return false;
@@ -1581,23 +1510,19 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
     return true;
 }
 
-// Add a SCSI hard disk to the configuration.
-bool add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
-    return add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
-}
-
-// ...on a NAMED bus.  Every Macintosh has exactly one SCSI bus a guest can
-// see, so the call above — and every consumer of it — means `config->scsi`.
-// The Apple Network Servers are the first machines with more than one:
+// Add a SCSI hard disk to the configuration, on a NAMED bus.  Every
+// Macintosh has exactly one SCSI bus a guest can see, so nearly every caller
+// passes `config->scsi`.  The Apple Network Servers are the first machines
+// with more than one:
 // two fast/wide 53C825A channels carrying the backplane's bays between
 // them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
 //
 // A NULL bus is refused: the Lisa has no SCSI at all, and `hd=` on a Lisa
 // used to hand NULL to scsi_add_device and crash the harness.
-bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_hd(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
-        gs_outf("Cannot attach %s: this machine has no SCSI bus\n", filename);
+        out_printf("Cannot attach %s: this machine has no SCSI bus\n", filename);
         return false;
     }
     media_slot_t slot;
@@ -1611,15 +1536,11 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     return true;
 }
 
-// Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    return add_scsi_cdrom_on(config, config ? config->scsi : NULL, filename, scsi_id);
-}
-
-// ...on a NAMED bus; see add_scsi_drive_on.
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+// Attach a SCSI CD-ROM (AppleCD SC Plus / Sony CDU-8002) on a named bus;
+// see system_attach_scsi_hd.
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
-        gs_outf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
+        out_printf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
         return false;
     }
     media_slot_t slot;
@@ -1648,7 +1569,7 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     case MEDIA_BUS_FLOPPY:
         if (sys_fd_insert(cfg, slot->unit, slot->img) != 0)
             return -1;
-        add_image(cfg, slot->img);
+        config_add_image(cfg, slot->img);
         return 0;
     case MEDIA_BUS_SCSI:
         return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
@@ -1666,11 +1587,11 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     // A CD-ROM drive is construction: a hard disk cannot replace one, or the
     // next checkpoint would hold a bus no restore of this machine can rebuild.
     if (slot->scsi_type != scsi_dev_cdrom && slot->unit >= 0 && scsi_device_is_cd_drive(bus, (unsigned)slot->unit)) {
-        gs_outf("Cannot attach %s at SCSI id %d: that is a CD-ROM drive (insert a CD there instead)\n",
-                slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
+        out_printf("Cannot attach %s at SCSI id %d: that is a CD-ROM drive (insert a CD there instead)\n",
+                   slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
         return -1;
     }
-    add_image(cfg, slot->img);
+    config_add_image(cfg, slot->img);
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
     return 0;
@@ -1749,18 +1670,19 @@ int system_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 }
 
 // Save current machine state to a checkpoint file.
-// Returns GS_SUCCESS on success, GS_ERROR on failure.
-int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
+// STATUS_OK on success; STATUS_E_NOENT with no machine, STATUS_E_IO when the
+// file cannot be opened, written or finished.
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (!global_emulator) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: no emulator instance to checkpoint");
-        return GS_ERROR;
+        return STATUS_E_NOENT;
     }
     double start_time = host_time_ms();
 
     checkpoint_t *checkpoint = checkpoint_open_write(filename, kind);
     if (!checkpoint) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for writing: %s", filename);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
 
     // Every part of the machine, in the order it was built: the board first,
@@ -1770,17 +1692,21 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
 
-    checkpoint_close(checkpoint);
+    // A consolidated checkpoint is published (renamed into place) here.
+    if (!checkpoint_close(checkpoint)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to finish checkpoint %s", filename);
+        return STATUS_E_IO;
+    }
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
     // every ~15 s and used to spam the terminal. `log.set ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Restore machine state from a checkpoint file.
@@ -1860,17 +1786,21 @@ int system_checkpoint_load(const char *filename) {
     if (!new_config)
         return -1;
 
-    // Swap the restored machine in; the old one is destroyed.  Safe because
-    // commands are registered globally rather than per-config, and no part of
-    // the call stack holds the old config.
+    // Swap the restored machine in; the old one is destroyed.  The caller is
+    // a typed method on the emulator thread: object nodes and commands are
+    // process-wide, not per-config, and nothing between here and the job's
+    // entry point keeps a config pointer across this call.  (Nothing checks
+    // that; a caller that cached system_config() before this returns holds a
+    // freed pointer.)
     system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
-    extern void frontend_force_redraw(void);
-    frontend_force_redraw();
+    platform_force_redraw();
 
+    // The scheduler came back in the run state it was saved in: a machine
+    // checkpointed while running runs again on the platform's next frame.
     if (scheduler_is_running(new_config->scheduler))
-        LOG(1, "Checkpoint was saved while running - resuming execution");
+        LOG(1, "Checkpoint was saved while running - the scheduler is restored running");
     return 0;
 }
 

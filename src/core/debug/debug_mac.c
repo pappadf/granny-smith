@@ -5,10 +5,11 @@
 // Mac-specific debugging utilities: trap names, global variable lookup, and process inspection.
 
 #include "debug_mac.h"
-#include "gs_out.h"
+#include "out.h"
 
 #include "cpu.h"
 #include "debug.h"
+#include "debug_data.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mouse.h"
@@ -23,25 +24,10 @@
 #include <strings.h>
 #include <time.h>
 
-// Global variable info (defined in mac_globals_data.c)
-extern struct {
-    const char *name;
-    uint32_t address;
-    int size;
-    const char *description;
-} mac_global_vars[];
-extern const size_t mac_global_vars_count;
-
-// macos_atrap_name() lives in mac_traps_data.c, beside the table it reads.
+// debug_mac_atrap_name() lives in mac_traps_data.c, beside the table it reads.
 uint32_t debug_mac_lookup_global_address(const char *name) {
-    if (!name)
-        return 0;
-    for (size_t i = 0; i < mac_global_vars_count; i++) {
-        if (strcmp(mac_global_vars[i].name, name) == 0) {
-            return mac_global_vars[i].address;
-        }
-    }
-    return 0; // Not found
+    const mac_global_info_t *g = mac_global_find(name);
+    return g ? g->address : 0; // 0 = not found
 }
 
 // Every 68k-world address in this file resolves through the mac-world
@@ -57,275 +43,6 @@ uint32_t debug_mac_xlate(uint32_t addr) {
     }
     return addr;
 }
-
-static uint8_t read_8bit_be(uint32_t addr) {
-    if (!system_memory())
-        return 0;
-    return memory_debug_read_uint8(debug_mac_xlate(addr));
-}
-
-static uint16_t read_16bit_be(uint32_t addr) {
-    if (!system_memory())
-        return 0;
-    return memory_debug_read_uint16(debug_mac_xlate(addr));
-}
-
-static uint32_t read_32bit_be(uint32_t addr) {
-    if (!system_memory())
-        return 0;
-    return memory_debug_read_uint32(debug_mac_xlate(addr));
-}
-
-static void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
-    if (!system_memory())
-        return;
-    for (size_t i = 0; i < size; ++i) {
-        buffer[i] = memory_debug_read_uint8(debug_mac_xlate(addr + (uint32_t)i));
-    }
-}
-
-static size_t read_pstring(uint32_t addr, char *buffer, size_t max_length) {
-    if (max_length == 0)
-        return 0; // No room for NUL terminator
-    size_t length = 0;
-    while (length < max_length - 1) {
-        uint8_t byte = read_8bit_be(addr + length);
-        if (byte == 0) {
-            break; // Null terminator found
-        }
-        buffer[length] = byte;
-        length++;
-    }
-    buffer[length] = '\0'; // Null-terminate the string
-    return length;
-}
-
-/**
- * @file resource_map.h
- * @brief C data structures for representing a classic Mac OS resource map.
- *
- * This file defines the C structures that correspond to the in-memory format
- * of a resource map. A resource map is the directory for all resources
- * (like CODE, MENU, ICON, etc.) within an application's resource fork.
- *
- * The structure is hierarchical:
- * 1.  A main `resource_map` contains a header and a list of resource types.
- * 2.  Each `resource_type_info` entry describes a type (e.g., 'CODE') and
- * points to a list of all resources of that type.
- * 3.  Each `resource_reference` contains the ID, name, attributes, and a
- * handle to the actual resource data for a specific resource.
- */
-
-#pragma pack(push, 1) // Ensure structures are packed without padding
-
-/**
- * @struct resource_reference
- * @brief Describes a single resource instance (e.g., CODE resource #1).
- *
- * This corresponds to an entry in the reference list within the resource map.
- */
-typedef struct {
-    int16_t resource_id; // The ID number of this resource.
-    int16_t name_offset; // Offset from the beginning of the resource name list to this resource's name. -1 if no name.
-    uint8_t attributes; // Resource attributes (e.g., purgeable, locked).
-    uint8_t data_handle_high; // High byte of the handle to the resource data.
-    uint16_t data_handle_low; // Low two bytes of the handle. (A handle is conceptually 24 bits on 68k).
-    uint32_t reserved; // Reserved for future use.
-} resource_reference;
-
-/**
- * @struct resource_type_info
- * @brief Describes a single type of resource (e.g., 'CODE').
- *
- * This corresponds to an entry in the type list within the resource map.
- */
-typedef struct {
-    uint32_t type_tag; // The four-character code for the type (e.g., 'CODE', 'MENU').
-    uint16_t num_resources; // Number of resources of this type minus one.
-    uint16_t ref_list_offset; // Offset from the beginning of the type list to this type's reference list.
-    resource_reference *reference_list; // A dynamically allocated array to hold the parsed references.
-} resource_type_info;
-
-/**
- * @struct resource_map_header
- * @brief The header at the very beginning of the resource map data.
- *
- * It contains offsets to the other key parts of the map.
- */
-typedef struct {
-    uint8_t reserved_header_copy[16]; // A copy of the resource fork header.
-    uint32_t next_map_handle; // Handle to the next resource map in the chain (for searching multiple files).
-    uint16_t file_ref_num; // The file reference number for this resource file.
-    uint16_t attributes; // Attributes of the resource file itself (e.g., read-only).
-    uint16_t type_list_offset; // Offset from the beginning of the header to the type list.
-    uint16_t name_list_offset; // Offset from the beginning of the header to the resource name list.
-} resource_map_header;
-
-/**
- * @struct resource_map
- * @brief The top-level structure to hold the entire parsed resource map.
- */
-typedef struct {
-    resource_map_header header; // The parsed header of the map.
-    uint16_t num_types; // Number of resource types minus one.
-    resource_type_info *type_list; // A dynamically allocated array to hold the parsed types.
-    // GUEST address of the resource-name list, not a host pointer.
-    //
-    // This was `char *`, assigned map_base_addr + name_list_offset -- a guest
-    // address cast straight to a host pointer.  Nothing dereferences it (the
-    // resource-name parsing is unfinished), so it is inert, but it handed the
-    // next person to finish that parsing a ready-made arbitrary-host-read
-    // primitive.  Read it through read_bytes /
-    // debug_mac_xlate like every other field in this file.
-    uint32_t name_list_addr;
-} resource_map;
-
-#pragma pack(pop) // Restore default packing
-
-/**
- * @brief Frees the memory allocated for a resource_map structure.
- *
- * @param map A pointer to the resource_map structure to be freed.
- */
-void free_resource_map(resource_map *map) {
-    if (!map) {
-        return;
-    }
-
-    if (map->type_list) {
-        for (int i = 0; i < map->num_types; ++i) {
-            if (map->type_list[i].reference_list) {
-                free(map->type_list[i].reference_list);
-            }
-        }
-        free(map->type_list);
-    }
-
-    free(map);
-}
-
-/**
- * @brief Reads the current application's resource map from memory.
- *
- * This function locates the resource map using the TopMapHndl global,
- * allocates memory for a local copy, and parses it into the C structures
- * defined in resource_map.h.
- *
- * @return A pointer to a newly allocated resource_map structure, or NULL on failure.
- * The caller is responsible for freeing this structure using free_resource_map().
- */
-resource_map *read_resource_map(void) {
-    // 1. Find the resource map handle from low-memory globals
-    uint32_t map_handle = read_32bit_be(0x0A50);
-    if (map_handle == 0) {
-        // No resource map found
-        return NULL;
-    }
-
-    // 2. Dereference the handle to get the map's address in the heap
-    // A handle points to a master pointer, which points to the data.
-    uint32_t master_ptr_addr = map_handle;
-    uint32_t map_base_addr = read_32bit_be(master_ptr_addr);
-    if (map_base_addr == 0) {
-        return NULL;
-    }
-
-    // 3. Allocate the top-level structure for our parsed map
-    resource_map *parsed_map = (resource_map *)malloc(sizeof(resource_map));
-    if (!parsed_map) {
-        return NULL;
-    }
-    memset(parsed_map, 0, sizeof(resource_map));
-
-    // 4. Read the resource map header
-    read_bytes(map_base_addr, (uint8_t *)&parsed_map->header, sizeof(resource_map_header));
-
-    // The number of types immediately follows the header in the map data
-    parsed_map->num_types = read_16bit_be(map_base_addr + parsed_map->header.type_list_offset - 2) + 1;
-
-    // 5. Parse the Type List
-    uint32_t type_list_addr = map_base_addr + parsed_map->header.type_list_offset;
-    parsed_map->type_list = (resource_type_info *)malloc(sizeof(resource_type_info) * parsed_map->num_types);
-    if (!parsed_map->type_list) {
-        free_resource_map(parsed_map);
-        return NULL;
-    }
-
-    for (int i = 0; i < parsed_map->num_types; ++i) {
-        uint32_t current_type_addr = type_list_addr + (i * 8); // Each type entry is 8 bytes
-        resource_type_info *current_type_info = &parsed_map->type_list[i];
-
-        current_type_info->type_tag = read_32bit_be(current_type_addr);
-        current_type_info->num_resources = read_16bit_be(current_type_addr + 4) + 1;
-        current_type_info->ref_list_offset = read_16bit_be(current_type_addr + 6);
-
-        // 6. Parse the Reference List for this type
-        uint32_t ref_list_addr =
-            map_base_addr + parsed_map->header.type_list_offset + current_type_info->ref_list_offset;
-        current_type_info->reference_list =
-            (resource_reference *)malloc(sizeof(resource_reference) * current_type_info->num_resources);
-        if (!current_type_info->reference_list) {
-            free_resource_map(parsed_map);
-            return NULL;
-        }
-        read_bytes(ref_list_addr, (uint8_t *)current_type_info->reference_list,
-                   sizeof(resource_reference) * current_type_info->num_resources);
-    }
-
-    // 7. Store a pointer to the name list data (optional, could be parsed further)
-    // For simplicity, we just point to the raw data block.
-    // A full implementation would need to know the total size of the name list.
-    parsed_map->name_list_addr = map_base_addr + parsed_map->header.name_list_offset;
-
-    return parsed_map;
-}
-
-/**
- * @brief Prints information about the currently running application.
- *
- * This function reads various low-memory globals to display the application's
- * name, memory layout (heap and stack), and other relevant details.
- */
-uint64_t cmd_process_info(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-    gs_outf("--- Current Application Info ---\n");
-
-    // 1. Get the Application Name
-    char app_name[64];
-    read_pstring(0x0910, app_name, sizeof(app_name));
-    gs_outf("Name: %s\n", app_name);
-
-    // 2. Get the Application's Memory Map
-    gs_outf("\n--- Memory Map ---\n");
-
-    uint32_t heap_start_ptr = read_32bit_be(0x02AA);
-    uint32_t heap_limit_ptr = read_32bit_be(0x0130);
-    uint32_t a5_world_ptr = read_32bit_be(0x0904);
-
-    gs_outf("Application Partition Start: %#010x\n", heap_start_ptr);
-    gs_outf("Application Partition Limit: %#010x\n", heap_limit_ptr);
-    gs_outf("  Heap Start:                %#010x\n", heap_start_ptr);
-    gs_outf("  Stack Base (Top of A5):    %#010x (grows downwards)\n", a5_world_ptr);
-    if (heap_limit_ptr >= heap_start_ptr) {
-        uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
-        gs_outf("Total Partition Size:        %u KB\n", partition_size_bytes / 1024);
-    } else {
-        gs_outf("Total Partition Size:        <invalid: heap limit %#010x < start %#010x>\n", heap_limit_ptr,
-                heap_start_ptr);
-    }
-
-    return 0;
-}
-
-// Helper to print process info programmatically (used by assertion handler)
-void debug_mac_print_process_info(void) {
-    (void)cmd_process_info(0, NULL);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Target (68K) backtrace and diagnostic functions
-// ────────────────────────────────────────────────────────────────────────────
 
 // Memory read helpers (mac-world addresses; see debug_mac_xlate above)
 static uint8_t read8(uint32_t addr) {
@@ -361,12 +78,84 @@ static void write32(uint32_t addr, uint32_t value) {
         memory_debug_write_uint32(debug_mac_xlate(addr), value);
 }
 
-// Print target 68K backtrace by walking stack frames
+// Read the Pascal string (length byte, then that many characters) at addr
+// into buffer as a C string, truncated to fit.  Returns the stored length.
+static size_t read_pstring(uint32_t addr, char *buffer, size_t max_length) {
+    if (max_length == 0)
+        return 0; // No room for NUL terminator
+    size_t length = read8(addr);
+    if (length > max_length - 1)
+        length = max_length - 1;
+    for (size_t i = 0; i < length; i++)
+        buffer[i] = (char)read8(addr + 1 + (uint32_t)i);
+    buffer[length] = '\0';
+    return length;
+}
+
+// Read the 32-bit low-memory global `name`; *found reports whether the
+// globals table knows it (the value is 0 when it does not).
+static uint32_t read_global32(const char *name, bool *found) {
+    uint32_t addr = debug_mac_lookup_global_address(name);
+    *found = addr != 0;
+    return addr ? read32(addr) : 0;
+}
+
+// Print the current application's name and memory layout from the
+// low-memory globals (CurApName, ApplZone, ApplLimit, CurrentA5,
+// CurStackBase).
+void debug_mac_print_process_info(void) {
+    out_printf("--- Current Application Info ---\n");
+
+    // 1. The application name: CurApName is a Pascal string (Str31)
+    char app_name[64] = "";
+    uint32_t addr_name = debug_mac_lookup_global_address("CurApName");
+    if (addr_name)
+        read_pstring(addr_name, app_name, sizeof(app_name));
+    out_printf("Name: %s\n", app_name);
+
+    // 2. The application's memory map
+    out_printf("\n--- Memory Map ---\n");
+
+    bool have_zone, have_limit, have_a5, have_stack;
+    uint32_t heap_start_ptr = read_global32("ApplZone", &have_zone);
+    uint32_t heap_limit_ptr = read_global32("ApplLimit", &have_limit);
+    uint32_t a5_world_ptr = read_global32("CurrentA5", &have_a5);
+    uint32_t stack_base_ptr = read_global32("CurStackBase", &have_stack);
+    if (!have_zone || !have_limit || !have_a5 || !have_stack) {
+        out_printf("(ApplZone/ApplLimit/CurrentA5/CurStackBase missing from the globals table)\n");
+        return;
+    }
+
+    out_printf("Application Partition Start: $%08X\n", heap_start_ptr);
+    out_printf("Application Partition Limit: $%08X\n", heap_limit_ptr);
+    out_printf("  Heap Start:                $%08X\n", heap_start_ptr);
+    out_printf("  A5 World (CurrentA5):      $%08X\n", a5_world_ptr);
+    out_printf("  Stack Base:                $%08X (grows downwards)\n", stack_base_ptr);
+    if (heap_limit_ptr >= heap_start_ptr) {
+        uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
+        out_printf("Total Partition Size:        %u bytes (%u.%u KB)\n", partition_size_bytes,
+                   partition_size_bytes / 1024, (partition_size_bytes % 1024) * 10 / 1024);
+    } else {
+        out_printf("Total Partition Size:        <invalid: heap limit $%08X < start $%08X>\n", heap_limit_ptr,
+                   heap_start_ptr);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Target (68K) backtrace and diagnostic functions
+// ────────────────────────────────────────────────────────────────────────────
+
+#define BACKTRACE_MAX_FRAMES 16
+
+// Print target 68K backtrace by walking stack frames.  Frame #0 is the
+// instruction at the PC, disassembled; the rest are return addresses, shown
+// as addresses only (a return address points mid-routine, so disassembling
+// there tells nothing about the frame).
 void debug_mac_print_target_backtrace(void) {
-    gs_outf("\n=== Target 68K backtrace ===\n");
+    out_printf("\n=== Target 68K backtrace ===\n");
     cpu_t *cpu = system_cpu();
     if (!cpu) {
-        gs_outf("(CPU not initialized)\n");
+        out_printf("(CPU not initialized)\n");
         return;
     }
 
@@ -374,32 +163,38 @@ void debug_mac_print_target_backtrace(void) {
     uint32_t pc = cpu_get_pc(cpu);
     char linebuf[160];
     debugger_disasm(linebuf, sizeof(linebuf), pc);
-    gs_outf("#0  %s\n", linebuf);
+    out_printf("#0  %s\n", linebuf);
 
+    // Frame pointers already walked: a chain that comes back to any of them
+    // (A -> B -> A, not just A -> A) is a cycle, and the walk stops.
+    uint32_t visited[BACKTRACE_MAX_FRAMES];
+    int n_visited = 0;
     uint32_t a6 = cpu_get_an(cpu, 6);
-    for (int depth = 1; depth <= 16; depth++) {
+    for (int depth = 1; depth <= BACKTRACE_MAX_FRAMES; depth++) {
         if (a6 == 0)
             break; // end of chain
-        // Standard 68K frame: [0]: previous A6, [4]: return address
-        uint32_t prev_a6 = 0, ret = 0;
-        // Guard against invalid memory reads (use address mask to bound the check)
-        if (a6 < 0x100 || a6 > g_address_mask)
+        // A frame pointer is word-aligned, above the vectors and inside the
+        // address space; anything else is not a frame (e.g. A6 used as a
+        // scratch register just before a LINK).
+        if (a6 < 0x100 || a6 > g_address_mask || (a6 & 1))
             break;
-        prev_a6 = read32(a6 + 0);
-        ret = read32(a6 + 4);
+        for (int i = 0; i < n_visited; i++)
+            if (visited[i] == a6)
+                return; // cycle
+        visited[n_visited++] = a6;
+        // Standard 68K frame: [0]: previous A6, [4]: return address
+        uint32_t prev_a6 = read32(a6 + 0);
+        uint32_t ret = read32(a6 + 4);
         if (ret == 0 || ret > g_address_mask)
             break;
-        debugger_disasm(linebuf, sizeof(linebuf), ret);
-        gs_outf("#%d  %s\n", depth, linebuf);
-        if (prev_a6 == a6)
-            break; // prevent loops
+        out_printf("#%d  $%08X  (frame $%08X)\n", depth, ret, a6);
         a6 = prev_a6;
     }
 }
 
 // Print current Mac application process info (wrapper for diagnostic output)
 void debug_mac_print_process_info_header(void) {
-    gs_outf("\n=== Current Mac application ===\n");
+    out_printf("\n=== Current Mac application ===\n");
     debug_mac_print_process_info();
 }
 
@@ -408,7 +203,10 @@ void debug_mac_print_process_info_header(void) {
 // (Moved from test.c - these interact with Mac OS low-memory globals)
 // ────────────────────────────────────────────────────────────────────────────
 
-// Command implementation placed after init to keep file order simple
+// Each set_mouse_* route returns -1 when it could not attempt the move at
+// all (a missing global, no mouse device) and 0 otherwise; the reason for a
+// failure has been printed by then.  The aux route is best-effort past that
+// point (see set_mouse_aux).
 
 // Payload of the mouse trace event (bits 0-15 h, bits 16-31 v).
 static uint64_t mouse_point_pack(int16_t h, int16_t v) {
@@ -419,7 +217,7 @@ static uint64_t mouse_point_pack(int16_t h, int16_t v) {
 // This is the classic technique used by ChromiVNC/MiniVNC and Basilisk II.
 // Note: on SE/30 (and other NuBus-capable Macs), this updates the position globals
 // but may not redraw the cursor image on screen until the next slot VBL fires.
-static void set_mouse_global(long x, long y) {
+static int set_mouse_global(long x, long y) {
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
     uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
@@ -427,8 +225,8 @@ static void set_mouse_global(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        gs_outf("Error: could not resolve mouse-related globals.\n");
-        return;
+        out_printf("Error: could not resolve mouse-related globals.\n");
+        return -1;
     }
 
     uint16_t v = (uint16_t)(y & 0xFFFF); // vertical in high word
@@ -453,14 +251,18 @@ static void set_mouse_global(long x, long y) {
     } else {
         write8(addr_CrsrNew, 0xFF);
     }
+    return 0;
 }
 
 // Injects relative mouse movement through the hardware path (ADB or quadrature).
 // Preserves the current button state on both ADB and non-ADB machines.
-static void set_mouse_hw(long dx, long dy) {
+static int set_mouse_hw(long dx, long dy) {
     bool injected = system_mouse_move((int)dx, (int)dy);
-    if (!injected)
-        gs_outf("Error: no mouse device available for hardware injection.\n");
+    if (!injected) {
+        out_printf("Error: no mouse device available for hardware injection.\n");
+        return -1;
+    }
+    return 0;
 }
 
 // Translate `va` against the cached MAE user CRP and write `value` to the
@@ -492,6 +294,19 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
     return true;
 }
 
+// Count of the aux writes attempted and of those that landed
+typedef struct {
+    int ok;
+    int total;
+} aux_tally_t;
+
+// Record one aux write's outcome in the tally
+static void aux_tally(aux_tally_t *t, bool ok) {
+    t->total++;
+    if (ok)
+        t->ok++;
+}
+
 // Set mouse position under A/UX 3.0 Mac OS compatibility (MAE).
 //
 // A/UX runs Mac OS apps under the Macintosh Application Environment, a
@@ -502,10 +317,9 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 // data — so any write that rides the active SoA is correct only if the
 // CPU happens to be in user mode at the instant of the write.
 //
-// `--global` ignores that distinction: it writes via the active SoA and
-// then installs a 1ms guard tick that re-writes the same VAs forever.
-// Under A/UX the guard fires while supervisor is active and corrupts the
-// kernel's $0828 region.  Forbidden under A/UX.
+// `--global` ignores that distinction: it writes via the active SoA, so
+// under A/UX a write made while supervisor is active lands on the kernel's
+// $0828 region instead.  Forbidden under A/UX.
 //
 // `--aux` translates each VA against the *cached MAE CRP*
 // (`mmu_state_t.last_user_crp`, snapshotted by cpu_internal.h on every
@@ -517,15 +331,15 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 //      page tables, not the active CPU mode.
 //   2. The kernel's $0828 region is never touched; A/UX kernel data is
 //      safe.
-//   3. No 1ms guard tick is installed.  The Toolbox globals are written
-//      exactly once per `set-mouse --aux` call, so there is no recurring
-//      race against MAE's own cursor updates.
+//   3. The Toolbox globals are written exactly once per `set-mouse --aux`
+//      call, so there is no recurring race against MAE's own cursor
+//      updates.
 //
 // If no user-mode entry has been observed yet (`last_user_crp == 0`),
 // or the snapshot CRP doesn't map a page for one of the target VAs, the
 // write is reported as failed and silently skipped — better than landing
 // on the wrong page.
-static void set_mouse_aux(long x, long y) {
+static int set_mouse_aux(long x, long y) {
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
     uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
@@ -533,17 +347,18 @@ static void set_mouse_aux(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        gs_outf("Error: could not resolve mouse-related globals.\n");
-        return;
+        out_printf("Error: could not resolve mouse-related globals.\n");
+        return -1;
     }
     if (!g_mmu || !g_mmu->enabled) {
-        gs_outf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
-        set_mouse_global(x, y);
-        return;
+        out_printf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
+        return set_mouse_global(x, y);
     }
     if (g_mmu->last_user_crp == 0) {
-        gs_outf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
-        return;
+        // Reported, not failed: the guest has not entered user mode yet,
+        // which is a state of the guest rather than a fault in the request.
+        out_printf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
+        return 0;
     }
 
     uint16_t v = (uint16_t)(y & 0xFFFF); // vertical word
@@ -551,27 +366,14 @@ static void set_mouse_aux(long x, long y) {
 
     // Write Toolbox position globals into MAE's address space.  Each
     // write is independent so a partial mapping reports cleanly.
-    int ok = 0;
-    int total = 0;
-    total++;
-    if (aux_write_uint16(addr_MTemp, v))
-        ok++;
-    total++;
-    if (aux_write_uint16(addr_MTemp + 2, h))
-        ok++;
-    total++;
-    if (aux_write_uint16(addr_RawMouse, v))
-        ok++;
-    total++;
-    if (aux_write_uint16(addr_RawMouse + 2, h))
-        ok++;
+    aux_tally_t tally = {0, 0};
+    aux_tally(&tally, aux_write_uint16(addr_MTemp, v));
+    aux_tally(&tally, aux_write_uint16(addr_MTemp + 2, h));
+    aux_tally(&tally, aux_write_uint16(addr_RawMouse, v));
+    aux_tally(&tally, aux_write_uint16(addr_RawMouse + 2, h));
     if (addr_Mouse) {
-        total++;
-        if (aux_write_uint16(addr_Mouse, v))
-            ok++;
-        total++;
-        if (aux_write_uint16(addr_Mouse + 2, h))
-            ok++;
+        aux_tally(&tally, aux_write_uint16(addr_Mouse, v));
+        aux_tally(&tally, aux_write_uint16(addr_Mouse + 2, h));
     }
 
     // Signal MAE's cursor VBL task: copy CrsrCouple → CrsrNew (standard
@@ -579,22 +381,23 @@ static void set_mouse_aux(long x, long y) {
     uint8_t couple = 0xFF;
     if (addr_CrsrCouple)
         (void)aux_read_uint8(addr_CrsrCouple, &couple);
-    total++;
-    if (aux_write_uint8(addr_CrsrNew, couple))
-        ok++;
+    aux_tally(&tally, aux_write_uint8(addr_CrsrNew, couple));
 
-    gs_outf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
-            (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), ok, total);
+    out_printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n",
+               (int)x, (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), tally.ok, tally.total);
+    // Best-effort: a partial mapping (a process without MAE's globals mapped,
+    // e.g. under X11) is reported above, not failed.
+    return 0;
 }
 
 // Default set-mouse: absolute coordinates, platform-dependent strategy.
 // ADB (SE/30): computes deltas from current position and injects via ADB hardware.
 // Non-ADB (Plus): writes globals directly.
-static void set_mouse_default(long x, long y) {
+static int set_mouse_default(long x, long y) {
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
     if (!addr_MTemp) {
-        gs_outf("Error: could not resolve MTemp.\n");
-        return;
+        out_printf("Error: could not resolve MTemp.\n");
+        return -1;
     }
 
     // Read current cursor position from MTemp
@@ -620,24 +423,21 @@ static void set_mouse_default(long x, long y) {
     // Non-ADB machines (Plus) fall through to global writes.
     if (has_adb) {
         if (dx != 0 || dy != 0)
-            system_mouse_move_adb(dx, dy);
-    } else {
-        set_mouse_global(x, y);
+            system_mouse_move(dx, dy); // routes through ADB on an ADB machine
+        return 0;
     }
+    return set_mouse_global(x, y);
 }
 
-// Set the mouse cursor position via the requested routing mode.
-//   'g' = global (Mac OS Toolbox MTemp)
-//   'h' = hardware (raw quadrature / ADB delta)
-//   'a' = aux (A/UX MAE physical-page write)
-//   else = default (per-platform best route)
-// Returns 0 on success, non-zero if memory is unavailable. Coordinates are
-// clamped to int16 for absolute modes ('g'/'a'/default) since the Mac OS
-// Point type is 16-bit signed; 'h' passes deltas through unchanged.
-int debug_mac_set_mouse_mode(long x, long y, char mode) {
+// Set the mouse cursor position via the requested route (mouse_route_t).
+// Returns 0 on success, -1 if memory is unavailable or the route failed.
+// Coordinates are clamped to int16 for the absolute routes (global / aux /
+// default) since the Mac OS Point type is 16-bit signed; the hardware route
+// passes deltas through unchanged.
+int debug_mac_set_mouse_mode(long x, long y, mouse_route_t route) {
     if (!system_memory())
         return -1;
-    if (mode != 'h') {
+    if (route != MOUSE_ROUTE_HW) {
         if (x < INT16_MIN)
             x = INT16_MIN;
         else if (x > INT16_MAX)
@@ -647,21 +447,19 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
         else if (y > INT16_MAX)
             y = INT16_MAX;
     }
-    switch (mode) {
-    case 'g':
-        set_mouse_global(x, y);
-        break;
-    case 'h':
-        set_mouse_hw(x, y);
-        break;
-    case 'a':
-        set_mouse_aux(x, y);
-        break;
-    default:
-        set_mouse_default(x, y);
+    switch (route) {
+    case MOUSE_ROUTE_GLOBAL:
+        return set_mouse_global(x, y);
+    case MOUSE_ROUTE_HW:
+        return set_mouse_hw(x, y);
+    case MOUSE_ROUTE_AUX:
+        return set_mouse_aux(x, y);
+    case MOUSE_ROUTE_DEFAULT:
+        return set_mouse_default(x, y);
+    case MOUSE_ROUTE_INVALID:
         break;
     }
-    return 0;
+    return -1;
 }
 
 // ---- trace-mouse implementation ----
@@ -675,11 +473,16 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
 
 void debug_mac_mouse_trace_tick(void *source, uint64_t data) {
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
+    if (!addr_Mouse) {
+        // Not rescheduling ends the trace (its event IS its state).
+        out_printf("[trace-mouse] the Mouse global is unknown; trace stopped\n");
+        return;
+    }
     int16_t v = (int16_t)memory_debug_read_uint16(addr_Mouse);
     int16_t h = (int16_t)memory_debug_read_uint16(addr_Mouse + 2);
     uint64_t sample = mouse_point_pack(h, v) | TRACE_MOUSE_HAVE_LAST;
     if (sample != data)
-        gs_outf("[trace-mouse] h=%d v=%d\n", h, v);
+        out_printf("[trace-mouse] h=%d v=%d\n", h, v);
     scheduler_new_cpu_event(system_scheduler(), &debug_mac_mouse_trace_tick, source, sample, 0,
                             TRACE_MOUSE_INTERVAL_NS);
 }
@@ -714,7 +517,7 @@ static void mouse_button_global(bool button_down) {
     uint32_t addr_Ticks = debug_mac_lookup_global_address("Ticks");
 
     if (!addr_MBState) {
-        gs_outf("Error: could not resolve MBState.\n");
+        out_printf("Error: could not resolve MBState.\n");
         return;
     }
 
@@ -731,14 +534,23 @@ static void mouse_button_global(bool button_down) {
     }
 }
 
-// Inject a mouse button up/down event via the requested routing mode.
-//   'g' = global (Mac OS Toolbox MBState write)
-//   else = hw / default (route through ADB/VIA PB3 hardware emulation)
-void debug_mac_mouse_button_mode(bool button_down, char mode) {
-    if (mode == 'g')
+// Inject a mouse button up/down event via the requested route.
+//   GLOBAL = Mac OS Toolbox MBState write
+//   HW / DEFAULT / AUX = ADB/VIA PB3 hardware emulation.  AUX has no
+//   button-specific path: the button is hardware state, not a per-process
+//   Toolbox global, so the hardware route already reaches MAE.
+void debug_mac_mouse_button_mode(bool button_down, mouse_route_t route) {
+    switch (route) {
+    case MOUSE_ROUTE_GLOBAL:
         mouse_button_global(button_down);
-    else
+        break;
+    case MOUSE_ROUTE_HW:
+    case MOUSE_ROUTE_DEFAULT:
+    case MOUSE_ROUTE_AUX:
+    case MOUSE_ROUTE_INVALID:
         system_mouse_update(button_down, 0, 0);
+        break;
+    }
 }
 
 // Resolves one printable ASCII character to the US-layout ADB raw keycode
@@ -857,40 +669,42 @@ int debug_mac_resolve_ascii(char c, bool *shift) {
 
 // Resolves a key name to an ADB raw keycode, or -1 if unknown
 int debug_mac_resolve_key_name(const char *name) {
-    // Named keys (case-insensitive comparison via manual lowering)
-    if (!strcasecmp(name, "return") || !strcasecmp(name, "enter"))
-        return 0x24;
-    if (!strcasecmp(name, "space"))
-        return 0x31;
-    if (!strcasecmp(name, "escape") || !strcasecmp(name, "esc"))
-        return 0x35;
-    if (!strcasecmp(name, "tab"))
-        return 0x30;
-    if (!strcasecmp(name, "delete") || !strcasecmp(name, "backspace"))
-        return 0x33;
-    // The arrows' RAW codes, $3B-$3E.  These were the virtual codes $7B-$7E,
-    // which on the ADB wire are the right-hand modifiers: "left" pressed
-    // Right Shift.
-    if (!strcasecmp(name, "up"))
-        return 0x3E;
-    if (!strcasecmp(name, "down"))
-        return 0x3D;
-    if (!strcasecmp(name, "left"))
-        return 0x3B;
-    if (!strcasecmp(name, "right"))
-        return 0x3C;
-    if (!strcasecmp(name, "command") || !strcasecmp(name, "cmd"))
-        return 0x37;
-    if (!strcasecmp(name, "shift"))
-        return 0x38;
-    if (!strcasecmp(name, "option") || !strcasecmp(name, "alt"))
-        return 0x3A;
-    if (!strcasecmp(name, "control") || !strcasecmp(name, "ctrl"))
-        return 0x36;
-    // Caps Lock is a locking switch on real Apple keyboards: hold it with
-    // keyboard.down and it stays reported in ADB Register 2 until keyboard.up.
-    if (!strcasecmp(name, "capslock") || !strcasecmp(name, "caps"))
-        return 0x39;
+    // Named keys, matched case-insensitively.
+    static const struct {
+        const char *name;
+        uint8_t code;
+    } named[] = {
+        {"return",    0x24},
+        {"enter",     0x24},
+        {"space",     0x31},
+        {"escape",    0x35},
+        {"esc",       0x35},
+        {"tab",       0x30},
+        {"delete",    0x33},
+        {"backspace", 0x33},
+        // The arrows' RAW codes, $3B-$3E.  These were the virtual codes
+        // $7B-$7E, which on the ADB wire are the right-hand modifiers:
+        // "left" pressed Right Shift.
+        {"up",        0x3E},
+        {"down",      0x3D},
+        {"left",      0x3B},
+        {"right",     0x3C},
+        {"command",   0x37},
+        {"cmd",       0x37},
+        {"shift",     0x38},
+        {"option",    0x3A},
+        {"alt",       0x3A},
+        {"control",   0x36},
+        {"ctrl",      0x36},
+        // Caps Lock is a locking switch on real Apple keyboards: hold it with
+        // keyboard.down and it stays reported in ADB Register 2 until
+        // keyboard.up.
+        {"capslock",  0x39},
+        {"caps",      0x39},
+    };
+    for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++)
+        if (!strcasecmp(name, named[i].name))
+            return named[i].code;
 
     // Hex keycode (e.g., 0x24)
     if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) {

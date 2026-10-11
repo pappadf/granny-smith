@@ -9,15 +9,17 @@
 #include "floppy.h"
 #include "floppy_internal.h"
 #include "log.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 static void floppy_notify_present(int drive, bool present);
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "memory.h"
 #include "object.h"
 #include "platform.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but
@@ -47,9 +49,32 @@ LOG_USE_CATEGORY_NAME("floppy");
 // Shared IWM Core Functions (used by both IWM and SWIM code paths)
 // ============================================================================
 
-// Forward declarations for scheduler callbacks
-static void floppy_step_settle_callback(void *src, uint64_t data);
-static void floppy_speed_settle_callback(void *src, uint64_t data);
+// Callback invoked when step settle period completes
+static void floppy_step_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
+        LOG(1, "Drive %d: Invalid drive in step settle callback", drive_index);
+        return;
+    }
+
+    // /STEP now returns 1 (settled)
+    floppy->drives[drive_index].step_settle_count = 0;
+    LOG(5, "Drive %d: Step settle complete", drive_index);
+}
+
+// Callback invoked when motor speed settle period completes after a zone change
+static void floppy_speed_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES)
+        return;
+
+    floppy->drives[drive_index].speed_settling = false;
+    LOG(5, "Drive %d: Speed settle complete", drive_index);
+}
 
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
@@ -112,7 +137,7 @@ static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int 
     if (track > NUM_TRACKS - 1)
         track = NUM_TRACKS - 1;
 
-    drive->_dirtn = outward;
+    drive->dirtn = outward;
     drive->track = track;
     drive->offset = 0;
     drive->write_hdr_start = -1; // a seek abandons any sector mid-write
@@ -151,8 +176,8 @@ static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool mod
     if (!floppy || drv >= NUM_DRIVES)
         return;
     floppy_drive_t *drive = &floppy->drives[drv];
-    bool was_off = drive->_motoron;
-    drive->_motoron = !on; // the signal is active low: false = running
+    bool was_off = drive->motoron;
+    drive->motoron = !on; // the signal is active low: false = running
 
     if (!model_spinup) {
         if (was_off == on) // i.e. the latch actually changed
@@ -178,7 +203,7 @@ static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool mod
         remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
         LOG(2, "Drive %u: Motor OFF", drv);
     } else {
-        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
+        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->motoron ? "off" : "on");
     }
 }
 
@@ -212,7 +237,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
     switch (key) {
     case 0x00: // /DIRTN: active-low — returns 0 when stepping inward
         desc = "/DIRTN";
-        ret = drive->_dirtn; // _dirtn: false=inward → 0, true=outward → 1
+        ret = drive->dirtn; // dirtn: false=inward → 0, true=outward → 1
         break;
     case 0x01: // /STEP: zero during step settle period
         desc = "/STEP";
@@ -221,7 +246,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         break;
     case 0x02: // /MOTORON: active-low — returns 0 when motor is ON
         desc = "/MOTORON";
-        ret = drive->_motoron; // _motoron: false=on → 0, true=off → 1
+        ret = drive->motoron; // motoron: false=on → 0, true=off → 1
         break;
     case 0x03: // EJECT
         desc = "EJECT";
@@ -265,7 +290,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         break;
     case 0x09: // /WRTPRT: zero when write protected
         desc = "/WRTPRT";
-        ret = (floppy->disk[drv] != NULL) ? floppy->disk[drv]->writable : 0;
+        ret = (floppy->disk[drv] != NULL) ? image_is_writable(floppy->disk[drv]) : 0;
         break;
     case 0x0A: // /TKO: zero when head on track 0
         desc = "/TKO";
@@ -284,9 +309,9 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         // sensor detecting the hub mark, followed by a long LOW phase.
         // The asymmetric duty cycle is critical: MacTest's MEASURE_SPEED
         // function uses VIA T2 overflow counting during the LOW phase.
-        bool ism_mode =
+        bool ism_index =
             (floppy->type == FLOPPY_TYPE_SWIM && floppy->in_ism_mode && (floppy->ism_mode & ISM_MODE_MOTOR_ON));
-        if (ism_mode) {
+        if (ism_index) {
             double now_ns = scheduler_time_ns(floppy->scheduler);
             double ns_per_rev = (60.0 / 300) * 1e9; // 200ms at 300 RPM
             // HD disks: 1 INDEX pulse per revolution (200ms cycle)
@@ -295,7 +320,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             // 1440K only: the deviation from swim.md's "2 pulses per
             // revolution unconditionally" is justified by MacTest for HD
             // media specifically, so 720K MFM stays on the 2/rev path.
-            bool is_hd = (img && img->type == image_fd_hd);
+            bool is_hd = (img && image_get_type(img) == image_fd_hd);
             ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
@@ -303,7 +328,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
             ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
             desc = "/TACH";
         }
-        LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_mode,
+        LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_index,
             floppy->ism_mode, floppy->in_ism_mode, drive->track);
         return ret;
     }
@@ -326,7 +351,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
         desc = "NEWINTF";
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             // Report new interface (0) only for HD disks
-            ret = (floppy->disk[drv] && floppy->disk[drv]->type == image_fd_hd) ? 0 : 1;
+            ret = (floppy->disk[drv] && image_get_type(floppy->disk[drv]) == image_fd_hd) ? 0 : 1;
         } else {
             ret = 1; // 800K drive
         }
@@ -338,7 +363,7 @@ int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
 
     LOG(6, "Drive %d: Reading %s = %d", drv, desc, ret);
     LOG(8, "  detail: key=0x%02X ca0=%d ca1=%d ca2=%d sel=%d dirtn=%d motoron=%d track=%d", key, ca0, ca1, ca2,
-        floppy->sel, drive->_dirtn ? 1 : 0, drive->_motoron ? 1 : 0, drive->track);
+        floppy->sel, drive->dirtn ? 1 : 0, drive->motoron ? 1 : 0, drive->track);
 
     return ret;
 }
@@ -378,7 +403,7 @@ void floppy_disk_control(floppy_t *floppy) {
         } else {
             // STEP (CA0=1, CA1=0, CA2=0)
             if (!IWM_CA2(floppy)) {
-                floppy_drive_seek(floppy, (unsigned)drv, drive->_dirtn, 1, true);
+                floppy_drive_seek(floppy, (unsigned)drv, drive->dirtn, 1, true);
             }
         }
     } else {
@@ -387,8 +412,8 @@ void floppy_disk_control(floppy_t *floppy) {
             floppy_drive_motor(floppy, (unsigned)drv, !IWM_CA2(floppy), true);
         } else {
             // DIRTN (CA0=0, CA1=0): CA2 sets direction
-            drive->_dirtn = IWM_CA2(floppy);
-            LOG(4, "Drive %d: Direction = %s", drv, drive->_dirtn ? "outward" : "inward");
+            drive->dirtn = IWM_CA2(floppy);
+            LOG(4, "Drive %d: Direction = %s", drv, drive->dirtn ? "outward" : "inward");
         }
     }
 }
@@ -405,33 +430,6 @@ void floppy_motor_spinup_callback(void *source, uint64_t data) {
 
     floppy->drives[drive_index].motor_spinning_up = false;
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
-}
-
-// Callback invoked when step settle period completes
-static void floppy_step_settle_callback(void *source, uint64_t data) {
-    floppy_t *floppy = (floppy_t *)source;
-    int drive_index = (int)data;
-
-    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
-        LOG(1, "Drive %d: Invalid drive in step settle callback", drive_index);
-        return;
-    }
-
-    // /STEP now returns 1 (settled)
-    floppy->drives[drive_index].step_settle_count = 0;
-    LOG(5, "Drive %d: Step settle complete", drive_index);
-}
-
-// Callback invoked when motor speed settle period completes after a zone change
-static void floppy_speed_settle_callback(void *source, uint64_t data) {
-    floppy_t *floppy = (floppy_t *)source;
-    int drive_index = (int)data;
-
-    if (drive_index < 0 || drive_index >= NUM_DRIVES)
-        return;
-
-    floppy->drives[drive_index].speed_settling = false;
-    LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
 // The IWM state lines an access at `offset` leaves (even=clear, odd=set)
@@ -699,8 +697,8 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
 // A drive's disk came or went: the page clears or sets its badge on this
 // (it used to poll the drives every tick).
 static void floppy_notify_present(int drive, bool present) {
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"floppy\",\"drive\":%d,\"present\":%s}", drive,
-                   present ? "true" : "false");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"floppy\",\"drive\":%d,\"present\":%s}", drive,
+                present ? "true" : "false");
 }
 
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
@@ -717,6 +715,16 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
         return -1;
     }
 
+    // Defence in depth: the shell validates sizes too, but the core API must
+    // not accept a medium no drive can present (the image layer classifies
+    // floppy images by size: 400K, 800K, 720K and 1440K).
+    floppy_media_t media;
+    if (disk && !floppy_media_from_image(disk, &media)) {
+        LOG(1, "Drive %d: Insert refused - '%s' is not a floppy-sized image", drive,
+            image_get_filename(disk) ? image_get_filename(disk) : "<unnamed>");
+        return -1;
+    }
+
     floppy->disk[drive] = disk;
     floppy_notify_present(drive, true);
 
@@ -728,7 +736,8 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     // something writes a format.
     floppy->drives[drive].cur_format_known = false;
     const char *name = disk ? image_get_filename(disk) : NULL;
-    LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>", disk ? disk->writable : 0);
+    LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>",
+        disk ? image_is_writable(disk) : 0);
 
     return 0;
 }
@@ -787,8 +796,8 @@ void floppy_media_set_format(floppy_t *floppy, unsigned drive, floppy_format_t f
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES)
         return false;
-    // _motoron is active-low: false = motor running.
-    return !floppy->drives[drive]._motoron;
+    // motoron is active-low: false = motor running.
+    return !floppy->drives[drive].motoron;
 }
 const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
@@ -826,7 +835,7 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     // Mirror the in-controller eject flow (see the IWM CA0/1/2=1 path
     // around line 240): flush modified tracks first while the image is
     // still valid, drop the cached GCR buffers, then null the slot.
-    // The image_t* itself is owned by cfg->images and freed at system
+    // The image_t* itself is owned by the machine's tracked images (system.c) and freed at system
     // teardown; calling image_close here would double-free.
     iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
     floppy_drive_drop_tracks(floppy, drive);
@@ -926,9 +935,105 @@ int floppy_drive_count(const floppy_t *floppy) {
     return floppy ? floppy->n_drives : 0;
 }
 
+// ============================================================================
+// Mac Plus IWM memory-mapped I/O (address decoding)
+// ============================================================================
+//
+// The board-level wiring of the IWM-only controller: odd-byte lane, A9-A12
+// to the chip's A1-A4.  SWIM and the controller-driven chips are mapped by
+// their machines instead.
+
+// Memory interface handler for 8-bit reads from IWM address space
+static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
+    floppy_t *s = (floppy_t *)floppy;
+
+    // [3]: the IWM sits on the lower byte of the data bus, so only odd-addressed
+    // byte accesses reach it.  That is a property of how THIS board wired /LDS,
+    // which is why it is checked here and not in the chip -- and it is logged
+    // rather than asserted, because a guest must not be able to pause the
+    // emulator by executing a wrong instruction.
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte read at 0x%08X; the chip is on the low byte", addr);
+
+    // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
+    return floppy_iwm_read(s, (addr >> 9) & 0x0F);
+}
+
+// An inspection of the same register: the state lines stay where they are.
+static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
+    return floppy_iwm_peek((floppy_t *)floppy, (addr >> 9) & 0x0F);
+}
+
+// The chip is on one byte of the data bus, so a wide access reaches nothing.
+// These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
+// than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
+// halted the emulator and surfaced in CI as an unexplained hang.  Log it and
+// return open bus, as grand_central.c does.
+static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
+    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFF;
+}
+
+static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' open bus, without their log lines.
+static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFF;
+}
+static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFFFFFFu;
+}
+
+// Memory interface handler for 8-bit writes to IWM address space
+static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
+    floppy_t *s = (floppy_t *)floppy;
+
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte write at 0x%08X; the chip is on the low byte", addr);
+
+    // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
+    floppy_iwm_write(s, (addr >> 9) & 0x0F, value);
+}
+
+static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
+    (void)floppy;
+    (void)value;
+    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
+}
+
+static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
+    (void)floppy;
+    (void)value;
+    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
+}
+
+// Sets up the IWM memory interface callbacks on the floppy controller
+static void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
+    floppy->memory_interface.read_uint8 = &iwm_read_uint8;
+    floppy->memory_interface.read_uint16 = &iwm_read_uint16;
+    floppy->memory_interface.read_uint32 = &iwm_read_uint32;
+    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
+    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
+    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
+    floppy->memory_interface.write_uint8 = &iwm_write_uint8;
+    floppy->memory_interface.write_uint16 = &iwm_write_uint16;
+    floppy->memory_interface.write_uint32 = &iwm_write_uint32;
+
+    memory_map_add(map, 0x00d80000, 0x00080000, "floppy", &floppy->memory_interface, floppy);
+}
+
 // Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
-                      const image_list_t *images) {
+floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
+                      checkpoint_t *checkpoint, const image_list_t *images) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
     if (!floppy) {
         LOG(1, "Floppy: Allocation failed");
@@ -1262,7 +1367,7 @@ static DEF_METHOD(floppy_method_identify) {
     if (!img)
         return val_str("");
     const char *density = "";
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_ss:
         density = "400K";
         break;
@@ -1289,9 +1394,9 @@ static DEF_METHOD(floppy_method_identify) {
 static DEF_METHOD(floppy_method_create) {
     bool high_density = false;
     int preferred = -1;
-    // hd is V_NONE-kind: body discriminates string / bool / integer.
+    // hd is VK_NONE-kind: body discriminates string / bool / integer.
     if (argc >= 2) {
-        if (argv[1].kind == V_STRING && argv[1].s) {
+        if (argv[1].kind == VK_STRING && argv[1].s) {
             if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
                 high_density = true;
             } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
@@ -1299,10 +1404,10 @@ static DEF_METHOD(floppy_method_create) {
             } else if (*argv[1].s) {
                 return val_err("floppy.create: second arg must be \"hd\" or drive index 0/1");
             }
-        } else if (argv[1].kind == V_BOOL) {
+        } else if (argv[1].kind == VK_BOOL) {
             high_density = argv[1].b;
-        } else if (argv[1].kind == V_INT || argv[1].kind == V_UINT) {
-            int64_t d = (argv[1].kind == V_INT) ? argv[1].i : (int64_t)argv[1].u;
+        } else if (argv[1].kind == VK_INT || argv[1].kind == VK_UINT) {
+            int64_t d = (argv[1].kind == VK_INT) ? argv[1].i : (int64_t)argv[1].u;
             if (d != 0 && d != 1)
                 return val_err("floppy.create: drive index must be 0 or 1");
             preferred = (int)d;
@@ -1313,37 +1418,37 @@ static DEF_METHOD(floppy_method_create) {
 }
 
 static const arg_decl_t floppy_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Floppy image path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Floppy image path"},
 };
 
 static const arg_decl_t floppy_create_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Output path"},
     {.name = "hd",
-     .kind = V_NONE,
+     .kind = VK_NONE,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
-     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                    },
+     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                       },
 };
 
 static const member_t floppy_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "type",
      .doc = "Controller type: iwm (Plus), swim (SE/30-class), swim3 (PowerMac) or new_age (AV Quadras)",
-     .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = floppy_attr_type, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "sel",
      .doc = "VIA-driven head-select signal",
-     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = floppy_attr_sel, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "identify",
      .flags = M_CAT_ADVANCED,
      .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
-     .method = {.args = floppy_path_arg, .nargs = 1, .result = V_STRING, .fn = floppy_method_identify}},
-    {.kind = M_METHOD,
+     .method = {.args = floppy_path_arg, .nargs = 1, .result = VK_STRING, .fn = floppy_method_identify}},
+    {.kind = MK_METHOD,
      .name = "create",
      .examples = EXAMPLES("machine.floppy.create \"/opfs/images/fd/blank.dsk\"",
      "machine.floppy.create \"/opfs/images/fd/blank-hd.dsk\" hd"),
      .doc = "Create a blank floppy image and auto-mount it",
-     .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
+     .method = {.args = floppy_create_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_method_create}},
 };
 
 static const class_desc_t floppy_class = {
@@ -1398,38 +1503,38 @@ static DEF_GETTER(floppy_ctrl_attr_iwm_mode) {
 }
 
 static const member_t floppy_controller_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "iwm_lines",
      .doc = "IWM state lines: CA0-CA2, LSTRB, ENABLE, SELECT, Q6, Q7 (IWM and SWIM)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "iwm_mode",
      .doc = "IWM mode register (IWM and SWIM)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "in_ism_mode",
      .doc = "SWIM: true once the 4-write entry sequence has switched the chip to ISM",
-     .attr = {.type = V_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "ism_mode",
      .doc = "SWIM: ISM mode/status register",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "ism_setup",
      .doc = "SWIM: ISM setup register (bit 2 = GCR framing)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_error",
      .doc = "SWIM: ISM error register (read-clears on the guest side; reading it here does not)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_phase",
      .doc = "SWIM: ISM phase register (drive control lines and their directions)",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "ism_fifo_count",
      .doc = "SWIM: bytes currently in the 2-byte ISM FIFO",
-     .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
+     .attr = {.type = VK_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
 };
 
 static const class_desc_t floppy_controller_class = {
@@ -1500,7 +1605,7 @@ static DEF_GETTER(floppy_disk_attr_writable) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
-    return val_bool(img && img->writable);
+    return val_bool(img && image_is_writable(img));
 }
 
 static DEF_GETTER(floppy_disk_attr_density) {
@@ -1509,7 +1614,7 @@ static DEF_GETTER(floppy_disk_attr_density) {
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
     if (!img)
         return val_str("");
-    switch (img->type) {
+    switch (image_get_type(img)) {
     case image_fd_ss:
         return val_str("400k");
     case image_fd_ds:
@@ -1567,48 +1672,48 @@ static DEF_METHOD(floppy_disk_method_export) {
 
 static const arg_decl_t floppy_disk_export_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "New file: .dc42/.diskcopy/.image = DiskCopy 4.2 with tags, .dmg = UDIF, else raw"},
 };
 
 static const member_t floppy_disk_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True if a disk is inserted",
-     .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_present, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "writable",
      .doc = "False when the medium is write-protected",
-     .attr = {.type = V_BOOL, .get = floppy_disk_attr_writable, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_disk_attr_writable, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "density",
      .doc = "Medium capacity: 400k, 800k, 720k or 1440k",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_density, .set = NULL} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_density, .set = NULL} },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_path, .set = NULL}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_path, .set = NULL}    },
+    {.kind = MK_ATTR,
      .name = "filename",
      .doc = "Source path the disk was loaded from",
-     .attr = {.type = V_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Eject the disk from the owning drive",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = floppy_disk_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                       },
-    {.kind = M_METHOD,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                        },
+    {.kind = MK_METHOD,
      .name = "export",
      .doc = "Save the disk as it is now to a new image file (Save As)",
      .method = {.ui_flags = MM_MUTATE | MM_IO,
                 .args = floppy_disk_export_args,
                 .nargs = 1,
-                .result = V_BOOL,
-                .fn = floppy_disk_method_export}                              },
+                .result = VK_BOOL,
+                .fn = floppy_disk_method_export}                               },
 };
 
 static const class_desc_t floppy_disk_class = {
@@ -1650,53 +1755,53 @@ static DEF_METHOD(floppy_drive_method_insert) {
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
-static const value_t floppy_false = {.kind = V_BOOL, .b = false};
+static const value_t floppy_false = {.kind = VK_BOOL, .b = false};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "Host path or storage URI of the image to mount"},
     {.name = "writable",
-     .kind = V_BOOL,
+     .kind = VK_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &floppy_false,
      .doc = "Mount writable"},
 };
 
 static const member_t floppy_drive_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "Drive number on the controller (0 = internal, 1 = second internal or external)",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_index, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_index, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True when a disk image is inserted in this drive",
-     .attr = {.type = V_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "track",
      .doc = "Track the head is currently over (0 = outermost)",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_track, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_track, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "side",
      .doc = "Selected disk side, 0 or 1; always 0 on a single-sided 400K disk",
-     .attr = {.type = V_INT, .get = floppy_drive_attr_side, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = floppy_drive_attr_side, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "motor_on",
      .doc = "True while the spindle is spinning — the guest keeps it off between accesses",
-     .attr = {.type = V_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Remove the inserted disk",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = floppy_drive_method_eject}},
-    {.kind = M_CHILD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = floppy_drive_method_eject}},
+    {.kind = MK_CHILD,
      .name = "disk",
      .doc = "The disk currently in this drive (present only when inserted)",
      .label = "Disk",
      .child = {.cls = &floppy_disk_class, .lookup = floppy_drive_disk_lookup}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into this drive",
-     .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = V_BOOL, .fn = floppy_drive_method_insert}},
+     .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = VK_BOOL, .fn = floppy_drive_method_insert}},
 };
 
 static const class_desc_t floppy_drive_class = {

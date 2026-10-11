@@ -5,7 +5,7 @@ The image module manages floppy and hard-disk containers while delegating all bl
 The image subsystem speaks **paths only**. It does not know about machine ids, slots, drives, or `/opfs/checkpoints/`; the higher layer (`config_t` in `system.c`) decides where to place per-image state and remembers the result across boots.
 
 **Types & Key Values**
-- **`image_t`** *(see `src/core/storage/image.h`)* keeps the paths and handles needed by the delta-file storage layer:
+- **`image_t`** *(declared in `src/core/storage/image.h`; its layout is private to the storage module, in `image_internal.h`, and every other module reads it through the `image_get_*` / `image_is_writable` accessors in `image.h`, implemented in `image_access.c`)* keeps the paths and handles needed by the delta-file storage layer:
 	- `storage`: opaque `storage_t*` handle used for every block read/write.
 	- `filename`: original path supplied by the user (the immutable base image); it may run through an image or archive.
 	- `source_key`: key of the byte source that path opened ([source.md](source.md)).
@@ -17,14 +17,14 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `block_size`: bytes per logical block — 512 for flat disks (the default openers), 532 for a Lisa ProFile (512 data + 20 inline tag).
 	- `writable`: true when the caller asked for write access.
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
-	- `type`: detected category (`image_fd_ds`, `image_hd`, ...).
+	- `type`: detected category (`image_fd_ds`, `image_hd`, ...): a floppy by its size, `image_cdrom` for an ISO 9660 disc (a primary volume descriptor at 32 KB), `image_hd` for anything else — an HFS-only CD included, since nothing in its bytes says CD.
 	- `from_diskcopy`: marks DiskCopy 4.2 sources so their headers can be skipped.
-	- `tags` / `tag_bytes` / `tag_count`: the per-sector tags, 12 bytes beside each 512-byte GCR sector. The Lisa file system keeps its page labels there (file id, page links) and the Lisa boot ROM checks the boot block's; the Mac file systems write them too. Loaded from a DiskCopy 4.2 source's tag section; a 400K/800K GCR disk from any other source gets a zeroed area, so the guest's tag writes (`disk_write_tag`, from the IWM/SWIM, SWIM3, IOP SWIM and Lisa controllers) are kept rather than dropped. `NULL` for anything else. They live only in memory: a checkpoint carries them and a DiskCopy 4.2 export writes them out.
+	- `tags` / `tag_bytes` / `tag_count`: the per-sector tags, 12 bytes beside each 512-byte GCR sector. The Lisa file system keeps its page labels there (file id, page links) and the Lisa boot ROM checks the boot block's; the Mac file systems write them too. Loaded from a DiskCopy 4.2 source's tag section; a 400K/800K GCR disk from any other source gets a zeroed area, so the guest's tag writes (`disk_write_tag`, from the IWM/SWIM, SWIM3, IOP SWIM and Lisa controllers) are kept rather than dropped. `NULL` for anything else. They live only in memory: a checkpoint carries them (the restore hands them back through `image_set_tags()`) and a DiskCopy 4.2 export writes them out.
 	- `dc42_name` / `dc42_format_byte`: how a DiskCopy 4.2 export labels the disk — a DiskCopy source's own header values, or a machine's (`image_set_diskcopy_identity()`: the Lisa's controller sets `-not a Macintosh disk-` and `$02` on insert); else derived at export.
 	- `wrap_prefix` / `wrap_blocks` / `wrap_base` / `wrap_storage_size`: the volume wrapper's synthesised partition map + driver, served in front of an HFS volume when a bare volume or a driverless partitioned disk is attached as a SCSI hard disk ([bare-volume-wrapper.md](bare-volume-wrapper.md)). The volume starts `wrap_base` bytes into `storage` (0 for a bare volume, the `Apple_HFS` partition's start otherwise); `raw_size` is the prefix plus the volume, and `wrap_storage_size` the storage's own size.
 
 **Module lifecycle**
-- **`image_init(checkpoint_t *checkpoint)`** and **`image_delete(void)`** remain no-ops (no global resources).
+- The module has no global state to set up or tear down; every image is opened and closed by its owner.
 
 **Opening images** — three typed entry points
 
@@ -40,9 +40,9 @@ After construction the caller queries the instance stem with **`image_path(const
 
 Common steps (shared by all three openers):
 
-1. `stat()` + a lightweight DiskCopy 4.2 probe distinguish raw images from DC archives. DiskCopy images must have `data_size` aligned to 512 bytes.
-2. A `storage_config_t` is built with `base_path=base`, `delta_path`, `journal_path`, and `base_data_offset` (0 for raw, 0x54 for DiskCopy).
-3. `storage_new()` opens the base file read-only, opens or creates the delta and journal, and reads existing bitmaps when the delta already exists.
+1. The path's forks go through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip — any nesting); the innermost byte source is the disk. Its size must be a whole number of blocks.
+2. A `storage_config_t` is built with that source as `base` (a DiskCopy image's base is a view past its header, so no offset is needed), `delta_path` and `journal_path`.
+3. `storage_new()` takes its own reference on the base, opens or creates the delta and journal, and reads existing bitmaps when the delta already exists.
 
 No seeding step is needed — unmodified blocks are read directly from the base file.
 
@@ -66,7 +66,7 @@ static const char *pick_delta_dir(const char *path) {
 
 **Image formats** — the format registry
 
-Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`gs_format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2 (and the LisaEm ProFile variant, read for compatibility with existing images), MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, a LisaEm ProFile image a view that interleaves each block's 20-byte tag with its data in drive order, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the image cache (`gs_chunk_cache_images()`, memory only — the default chunk cache spills to scratch files, which for a compressed disk would rebuild the expanded image on disk; `files.cache.image_mb`, default 16 MiB). `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row. <!-- lint-allow: LisaEm -->
+Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2 (and the LisaEm ProFile variant, read for compatibility with existing images), MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, a LisaEm ProFile image a view that interleaves each block's 20-byte tag with its data in drive order, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the image cache (`chunk_cache_images()`, memory only — the default chunk cache spills to scratch files, which for a compressed disk would rebuild the expanded image on disk; `files.cache.image_mb`, default 16 MiB). `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row. <!-- lint-allow: LisaEm -->
 
 | | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
 |---|---|---|
@@ -120,6 +120,21 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 
 **Reading/Writing image data**
 - **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce `disk->block_size` alignment (512 for flat disks, 532 for a ProFile) and forward to `storage_read_block` / `storage_write_block` in a loop.
+- **A read the backing image cannot serve** (a corrupt compressed chunk, a damaged archive member, a host or OPFS I/O error: `storage_read_blocks` returns `STATUS_E_IO`) makes `disk_read_data` return a short count. It neither halts the emulator nor hands back zeros; the first failure per image is logged at level 0 (`image` category), later ones at level 1. Each device model turns the short count into the read error its hardware reports, so the guest sees an I/O error:
+
+  | Device | What the guest sees |
+  |---|---|
+  | SCSI hard disk / CD-ROM (`scsi_bus.c`), ATAPI CD-ROM | READ(6/10/12): CHECK CONDITION, MEDIUM ERROR / UNRECOVERED READ ERROR (11h). VERIFY: the same, with or without BytChk (a medium verification reads the blocks). ATAPI reports it as sense key 3 in the error register. |
+  | ATA hard disk (`ata.c`) | Status ERR, error register UNC (uncorrectable data error), the task file addressing the first sector of the failing block. |
+  | IWM/SWIM GCR floppy (`floppy_gcr.c`) | The track is read a sector at a time; each unreadable sector is laid down with a bad data checksum (the .Sony driver's badDCksum). The other sectors read. |
+  | SWIM ISM MFM floppy (`floppy_swim.c`) | The sector is laid down with a data CRC that fails the ISM's CRC check. |
+  | SWIM3 (`swim3_xfer.c`) | Data CRC error (`SWIM3_E_CRC_DATA`). |
+  | New Age FDC (`new_age.c`) | Abnormal termination, ST1 DE / ST2 DD (data error in the data field). |
+  | IOP SWIM block transfer (`iop_swim.c`) | ioErr. |
+  | Lisa FDC (`lisa_fdc.c`) | Status $17 (unreadable). |
+  | Lisa ProFile (`lisa_profile.c`) | Status byte 0 $09, the CRC error on read. |
+
+  Image-layer readers (`image_read_bytes`, partition and filesystem walkers, the wrapper sniff) get `-EIO` / false and fail their operation.
 
 **Background work**
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).
@@ -130,7 +145,7 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 	- `.dc42`, `.diskcopy`, or `.image` for a floppy (the classic Mac name for a DiskCopy file): a self-contained DiskCopy 4.2 file — header, data, then one tag per sector, with the data and tag checksums (the tag sum skips the first sector's tag, as DiskCopy does). The tags are copied when the export begins, with the read side. 400K, 800K, 720K and 1440K floppies only; anything else is refused. The header carries `dc42_name` and `dc42_format_byte` when set, so a DiskCopy disk exported unchanged comes back byte for byte; otherwise the source file's name and the Mac format byte (`$12` for 400K, `$22` otherwise).
 	- anything else: a dense raw copy (no tags).
 
-  It refuses to overwrite and never writes the base image in place. Every device's Save As goes through it: `machine.scsi.device[N].image.export`, `machine.floppy.drive[N].disk.export` (IWM/SWIM/SWIM3/New Age), the Lisa's `machine.floppy.drive[0].export` and `machine.hd.save`, the ATA `export`, and `files.export_raw` (which exports a file's source, not a mounted disk).
+  Whatever the format, the destination is created exclusively (an existing file is never overwritten), a base block that cannot be read fails the export rather than writing zeros in its place, and the base image is never written in place. Every device's Save As goes through it: `machine.scsi.device[N].image.export`, `machine.floppy.drive[N].disk.export` (IWM/SWIM/SWIM3/New Age), the Lisa's `machine.floppy.drive[0].export` and `machine.hd.save`, the ATA `export`, and `files.export_raw` (which exports a file's source, not a mounted disk).
 
 **Creating blank hard disks**
 - **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 4 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.

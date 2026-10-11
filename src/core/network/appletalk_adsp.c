@@ -25,12 +25,14 @@
 #include "appletalk_internal.h"
 #include "atalk_id.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "scheduler.h"
 #include "value.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1317,19 +1319,19 @@ static DEF_METHOD(adsp_conn_method_close) {
 
 #define ADSP_CONN_ATTR(nm, w, getter, doc_text)                                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = nm, .doc = doc_text, .attr = {.type = V_UINT, .width = w, .get = getter }              \
+        .kind = MK_ATTR, .name = nm, .doc = doc_text, .attr = {.type = VK_UINT, .width = w, .get = getter }            \
     }
 
 static const member_t adsp_conn_members[] = {
     ADSP_CONN_ATTR("id", 4, adsp_conn_attr_id, "Stable identity of this connection end"),
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
                                                                             .name = "state",
                                                                             .doc = "Connection-end state (Inside AppleTalk 12-5)",
-                                                                            .attr = {.type = V_ENUM, .enum_values = ADSP_STATE_NAMES, .get = adsp_conn_attr_state}},
-    {.kind = M_ATTR,
+                                                                            .attr = {.type = VK_ENUM, .enum_values = ADSP_STATE_NAMES, .get = adsp_conn_attr_state}},
+    {.kind = MK_ATTR,
                                                                             .name = "role",
                                                                             .doc = "initiator if we sent the first open request, else responder",
-                                                                            .attr = {.type = V_STRING, .get = adsp_conn_attr_role}                                },
+                                                                            .attr = {.type = VK_STRING, .get = adsp_conn_attr_role}                                },
     ADSP_CONN_ATTR("local_socket", 1, adsp_conn_attr_local_socket, "Socket this end owns"),
     ADSP_CONN_ATTR("remote_node", 1, adsp_conn_attr_remote_node, "LLAP node of the remote end"),
     ADSP_CONN_ATTR("remote_socket", 1, adsp_conn_attr_remote_socket, "Socket of the remote end"),
@@ -1343,14 +1345,14 @@ static const member_t adsp_conn_members[] = {
     ADSP_CONN_ATTR("bytes_in", 8, adsp_conn_attr_bytes_in, "Stream bytes accepted on this connection"),
     ADSP_CONN_ATTR("bytes_out", 8, adsp_conn_attr_bytes_out, "Stream bytes transmitted on this connection"),
     ADSP_CONN_ATTR("retransmits", 8, adsp_conn_attr_retransmits, "Retransmission events on this connection"),
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
                                                                             .name = "close",
                                                                             .doc = "Send close advice and drop this connection end",
                                                                             .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = adsp_conn_method_close,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                                                                           },
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                                                                            },
 };
 
 static const class_desc_t adsp_conn_class = {
@@ -1421,10 +1423,10 @@ static DEF_GETTER(adsp_attr_max_data) {
 }
 
 static const member_t adsp_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "max_data",
      .doc = "ADSP data bytes per packet (Inside AppleTalk 12-12)",
-     .attr = {.type = V_UINT, .width = 2, .get = adsp_attr_max_data}},
+     .attr = {.type = VK_UINT, .width = 2, .get = adsp_attr_max_data}},
 };
 
 static const class_desc_t adsp_class = {

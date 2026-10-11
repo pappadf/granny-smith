@@ -8,14 +8,16 @@
 
 #include "scsi.h"
 #include "format_registry.h"
-#include "gs_out.h"
 #include "image_iso9660.h"
 #include "image_part.h"
+#include "out.h"
 
 #include "io_leaf.h"
 
 value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
+#include "checkpoint.h"
 #include "drive_catalog.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "log.h"
 #include "object.h"
@@ -24,10 +26,8 @@ value_t io_leaf_export_image(struct image *img, const char *dest, const char *wh
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
-
-extern config_t *global_emulator;
 
 // Forward declaration — defined alongside the static singleton near the
 // end of the file. scsi_init calls this to detach the pre-machine
@@ -506,11 +506,16 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             if (scsi->bus.initiator >= 8)
                 scsi->bus.initiator = 7;
 
-            // ODR will contain the "OR" of target and initiator ID
-            scsi->bus.target = platform_ntz32(scsi->chip5380->reg.odr & ~(1 << scsi->bus.initiator));
+            // ODR will contain the "OR" of target and initiator ID.  With no
+            // target bit at all nothing answers the selection: the bus goes
+            // free, exactly as for an absent device.  (ntz32 of the empty mask
+            // is 32, and `& 7` used to turn that into target 0, selecting
+            // whatever was at ID 0.)
+            uint32_t target_bits = scsi->chip5380->reg.odr & ~(1u << scsi->bus.initiator) & 0xFFu;
+            scsi->bus.target = target_bits ? platform_ntz32(target_bits) : 7;
 
             // [6]: target will assert BSY - if no target, the bus will be free again
-            if (!scsi->device_images[scsi->bus.target & 7])
+            if (!target_bits || !scsi->device_images[scsi->bus.target])
                 phase_free(scsi);
             else
                 phase_command(scsi);
@@ -1294,7 +1299,7 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
     // Object-tree binding — instance_data is the scsi itself, with bus
     // and devices children plus the per-slot device entries that the
     // indexed-child get() returns on demand. The pre-machine static
-    // singleton (mounted by scsi_class_register from shell_init) shares
+    // singleton (mounted by scsi_class_register from core_init) shares
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
@@ -1667,7 +1672,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
 //
 // `scsi` exposes:
 //   - `loopback` (R/W bool) — wraps scsi_get/set_loopback
-//   - `bus` named child with `phase` (V_ENUM), `target`, `initiator`
+//   - `bus` named child with `phase` (VK_ENUM), `target`, `initiator`
 //   - `devices` indexed children — sparse stable indices = SCSI ID 0..7;
 //     each device exposes id, type and other attributes, an `image` child,
 //     and eject() / insert()
@@ -1764,16 +1769,16 @@ static DEF_METHOD(scsi_dev_method_eject) {
     if (rc == -2)
         return val_err("scsi.devices[%u].eject: the guest has locked the drive (PREVENT MEDIUM REMOVAL)", slot);
     if (rc == 0)
-        gs_outf("scsi.devices[%u].eject: no medium present\n", slot);
+        out_printf("scsi.devices[%u].eject: no medium present\n", slot);
     else
-        gs_outf("scsi.devices[%u].eject: ejected\n", slot);
+        out_printf("scsi.devices[%u].eject: ejected\n", slot);
     return val_bool(rc != 0);
 }
 
 // `insert(path)` — mount an image into this slot, as the kind of device the
 // slot already is.
 //
-// This used to call add_scsi_cdrom() whatever was in the slot, so inserting
+// This used to call system_attach_scsi_cdrom() whatever was in the slot, so inserting
 // into a hard disk turned it into a read-only SONY CDU-8002 with 2048-byte
 // blocks -- a running machine's boot disk, mid-session.
 //
@@ -1787,7 +1792,8 @@ static DEF_METHOD(scsi_dev_method_insert) {
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     if (!scsi)
         return val_err("scsi.devices.N.insert: scsi controller not available");
-    if (!global_emulator)
+    config_t *cfg = system_config();
+    if (!cfg)
         return val_err("scsi.devices.N.insert: emulator not initialised");
     // Slot 7 is the initiator and scsi_add_device asserts against it.  No node
     // for it can exist today -- scsi_devices_get hands out an entry only for a
@@ -1798,7 +1804,7 @@ static DEF_METHOD(scsi_dev_method_insert) {
 
     // The attach's own result (it used to answer true whatever happened).
     if (scsi_device_type(scsi, slot) == scsi_dev_cdrom)
-        return val_bool(add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot));
+        return val_bool(system_attach_scsi_cdrom(cfg, scsi, argv[0].s, (int)slot));
     return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
 }
 
@@ -1809,25 +1815,25 @@ static DEF_METHOD(scsi_dev_method_info) {
     if (!scsi)
         return val_err("scsi.devices.N.info: scsi controller not available");
     if (!scsi_device_present(scsi, slot)) {
-        gs_outf("scsi.devices[%u]: no device present\n", slot);
+        out_printf("scsi.devices[%u]: no device present\n", slot);
         return val_bool(false);
     }
     image_t *img = scsi_device_image(scsi, slot);
     if (!img) {
-        gs_outf("scsi.devices[%u]: device present, no medium\n", slot);
+        out_printf("scsi.devices[%u]: device present, no medium\n", slot);
         return val_bool(true);
     }
     const char *fname = image_get_filename(img);
     size_t sz = disk_size(img);
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    gs_outf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
+    out_printf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
     return val_bool(true);
 }
 
 static const arg_decl_t scsi_dev_insert_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "Host path or storage URI of the image to mount"},
 };
 
@@ -1899,50 +1905,50 @@ static DEF_METHOD(scsi_image_method_eject) {
 
 static const arg_decl_t scsi_image_export_args[] = {
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Destination host path for the flattened image (must not exist)"},
 };
 
 static const member_t scsi_image_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True if a medium is loaded",
-     .attr = {.type = V_BOOL, .get = scsi_image_attr_present, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scsi_image_attr_present, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
-     .attr = {.type = V_STRING, .get = scsi_image_attr_path, .set = NULL}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = scsi_image_attr_path, .set = NULL}    },
+    {.kind = MK_ATTR,
      .name = "filename",
      .doc = "Display filename of the medium",
-     .attr = {.type = V_STRING, .get = scsi_image_attr_filename, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = scsi_image_attr_filename, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "raw_size",
      .doc = "Medium size in bytes",
-     .attr = {.type = V_UINT, .get = scsi_image_attr_raw_size, .set = NULL}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = scsi_image_attr_raw_size, .set = NULL}  },
+    {.kind = MK_ATTR,
      .name = "writable",
      .doc = "True if the medium accepts writes",
-     .attr = {.type = V_BOOL, .get = scsi_image_attr_writable, .set = NULL}  },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = scsi_image_attr_writable, .set = NULL}  },
+    {.kind = MK_METHOD,
      .name = "export",
      .doc = "Save a flattened copy (base + delta) of this disk to a new file",
      .method = {.args = scsi_image_export_args,
                 .nargs = 1,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,
-                .verb_label = "Save image…"}                               },
-    {.kind = M_METHOD,
+                .verb_label = "Save image…"}                                },
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Eject the medium from the owning device",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_BOOL,
+                .result = VK_BOOL,
                 .fn = scsi_image_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                      },
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                       },
 };
 
 static const class_desc_t scsi_image_class = {
@@ -1966,51 +1972,51 @@ static struct object *scsi_dev_image_lookup(struct object *self, const char *nam
 }
 
 static const member_t scsi_device_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "SCSI ID 0-6 this device answers on (7 is the initiator, the Mac itself)",
-     .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = scsi_dev_attr_id, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "type",
      .doc = "What is attached at this ID: \"hd\", \"cdrom\", or \"none\" for an empty slot",
-     .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "vendor",
      .doc = "Vendor field of the INQUIRY response, as the guest's driver sees it",
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = scsi_dev_attr_vendor, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "product",
      .doc = "Product field of the INQUIRY response; Apple's drivers match on this to decide what they will mount",
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = scsi_dev_attr_product, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "revision",
      .doc = "Revision field of the INQUIRY response",
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = scsi_dev_attr_revision, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "block_size",
      .doc = "Bytes per logical block — 512 for a hard disk, 2048 for a CD-ROM",
-     .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = scsi_dev_attr_block_size, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "read_only",
      .doc = "True when the device rejects writes (always so for a CD-ROM)",
-     .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "medium_present",
      .doc = "True when media is loaded; a CD-ROM slot stays attached with this false after `eject`",
-     .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}},
+    {.kind = MK_METHOD,
      .name = "eject",
      .doc = "Eject the medium (CD-ROMs leave the slot attached, HDs detach)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_eject}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = scsi_dev_method_eject}},
+    {.kind = MK_METHOD,
      .name = "insert",
      .doc = "Mount a CD-ROM image into this slot",
-     .method = {.args = scsi_dev_insert_args, .nargs = 1, .result = V_BOOL, .fn = scsi_dev_method_insert}},
-    {.kind = M_METHOD,
+     .method = {.args = scsi_dev_insert_args, .nargs = 1, .result = VK_BOOL, .fn = scsi_dev_method_insert}},
+    {.kind = MK_METHOD,
      .name = "info",
      .doc = "Print a human-readable summary of the device contents",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_info}},
-    {.kind = M_CHILD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = scsi_dev_method_info}},
+    {.kind = MK_CHILD,
      .name = "image",
      .doc = "The medium currently in this device (present only when loaded)",
      .label = "Image",
@@ -2039,21 +2045,21 @@ static DEF_GETTER(scsi_bus_attr_initiator) {
 }
 
 static const member_t scsi_bus_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "phase",
      .flags = M_CAT_ADVANCED,
      .doc = "Current bus phase: bus_free, arbitration, selection, reselection, command, data_in, data_out, "
-            "status, message_in, or message_out",                                             .attr = {.type = V_ENUM, .get = scsi_bus_attr_phase, .set = NULL}},
-    {.kind = M_ATTR,
+            "status, message_in, or message_out",                                             .attr = {.type = VK_ENUM, .get = scsi_bus_attr_phase, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "target",
      .flags = M_CAT_ADVANCED,
      .doc = "SCSI ID the current transaction is addressing, or -1 when the bus is free",
-     .attr = {.type = V_INT, .get = scsi_bus_attr_target, .set = NULL}                                                                                         },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = scsi_bus_attr_target, .set = NULL}                                                                                         },
+    {.kind = MK_ATTR,
      .name = "initiator",
      .flags = M_CAT_ADVANCED,
      .doc = "SCSI ID that won arbitration, normally 7 (the Mac), or -1 when the bus is free",
-     .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}                                                                                      },
+     .attr = {.type = VK_INT, .get = scsi_bus_attr_initiator, .set = NULL}                                                                                      },
 };
 static const class_desc_t scsi_bus_class = {
     .name = "scsi_bus",
@@ -2111,20 +2117,20 @@ static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        gs_outf("invalid SCSI HD image: cannot open %s\n", path);
+        out_printf("invalid SCSI HD image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (image_is_floppy(img->type)) {
-        gs_outf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", img->raw_size);
+    if (image_is_floppy(image_get_type(img))) {
+        out_printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
-    size_t sz = img->raw_size;
+    size_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (sz == best->size)
-        gs_outf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
+        out_printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
     else
-        gs_outf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+        out_printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
     image_close(img);
     return val_bool(true);
 }
@@ -2136,11 +2142,11 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        gs_outf("invalid CD-ROM image: cannot open %s\n", path);
+        out_printf("invalid CD-ROM image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (image_is_floppy(img->type)) {
-        gs_outf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
+    if (image_is_floppy(image_get_type(img))) {
+        out_printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2149,20 +2155,21 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     // image was opened through the registry already, so a .dmg or a Toast
     // image inside an archive is judged by the disk it holds.
     size_t sz = disk_size(img);
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
-    const gs_format_t *f = gs_format_contents(src, NULL);
-    gs_source_release(src);
+    const format_t *f = format_contents(src, NULL);
+    source_release(src);
     bool is_disk = f && strcmp(f->name, "disk") == 0;
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    const char *enc = (img->format && strcmp(img->format, "raw") != 0) ? img->format : NULL;
+    const char *fmt = image_get_format(img);
+    const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
     if (!is_iso && !is_disk) {
-        gs_outf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        out_printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
         image_close(img);
         return val_bool(false);
     }
-    gs_outf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
-            is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
+    out_printf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
+               is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
 }
@@ -2183,13 +2190,14 @@ static DEF_METHOD(scsi_method_attach_cdrom) {
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_cdrom: id must be 0..6");
-    if (!global_emulator)
+    config_t *cfg = system_config();
+    if (!cfg)
         return val_err("scsi.attach_cdrom: emulator not initialised");
     scsi_t *bus = (scsi_t *)object_data(self);
-    return val_bool(add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id));
+    return val_bool(system_attach_scsi_cdrom(cfg, bus ? bus : cfg->scsi, argv[0].s, (int)id));
 }
 
-// `scsi.hd_models` — V_LIST of {label, vendor, product, revision, size} maps
+// `scsi.hd_models` — VK_LIST of {label, vendor, product, revision, size} maps
 // for the known SCSI HD model catalog.
 static DEF_GETTER(scsi_attr_hd_models) {
     int count = drive_catalog_count();
@@ -2212,12 +2220,12 @@ static DEF_GETTER(scsi_attr_hd_models) {
 }
 
 static const arg_decl_t scsi_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file path"},
 };
 
 static const arg_decl_t scsi_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
-    {.name = "id", .kind = V_INT, .doc = "SCSI bus index 0..6"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "Image file path"},
+    {.name = "id", .kind = VK_INT, .doc = "SCSI bus index 0..6"},
 };
 
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
@@ -2227,21 +2235,21 @@ static const arg_decl_t scsi_attach_args[] = {
 // HD / CD-ROM upload validation) resolve `scsi.identify_hd` /
 // `scsi.identify_cdrom` without needing a machine on the tree.
 static const member_t scsi_static_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
+    {.kind = MK_METHOD,
      .name = "identify_hd",
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}   },
-    {.kind = M_METHOD,
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}   },
+    {.kind = MK_METHOD,
      .name = "identify_cdrom",
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},
 };
 
 static const class_desc_t scsi_static_class = {
@@ -2275,36 +2283,36 @@ static void scsi_static_detach(void) {
 }
 
 static const member_t scsi_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "loopback",
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
+    {.kind = MK_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
      .flags = M_CAT_ADVANCED,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
+    {.kind = MK_METHOD,
      .name = "identify_hd",
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}    },
-    {.kind = M_METHOD,
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_hd}    },
+    {.kind = MK_METHOD,
      .name = "identify_cdrom",
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom} },
-    {.kind = M_METHOD,
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom} },
+    {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),
      .doc = "Attach a hard-disk image at the given SCSI id",
-     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_hd}   },
-    {.kind = M_METHOD,
+     .method = {.args = scsi_attach_args, .nargs = 2, .result = VK_BOOL, .fn = scsi_method_attach_hd}   },
+    {.kind = MK_METHOD,
      .name = "attach_cdrom",
      .examples = EXAMPLES("machine.scsi.attach_cdrom \"/opfs/images/cd/install.iso\" 3"),
      .doc = "Attach a CD-ROM image at the given SCSI id",
-     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_cdrom}},
+     .method = {.args = scsi_attach_args, .nargs = 2, .result = VK_BOOL, .fn = scsi_method_attach_cdrom}},
 };
 
 static const class_desc_t scsi_class = {

@@ -59,13 +59,33 @@ fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and `/opfs/upload/.scratch` at boot v
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
 the **mailbox** — a control block and two record rings in shared memory
-(`src/core/mailbox/mailbox.h`, exported via the lone `_get_gs_mailbox()`
+(`src/core/mailbox/mailbox.h`, exported via the lone `_get_mailbox()`
 accessor; see "The Mailbox" below). JS binds to it once at init, checks
 its MAGIC and VERSION so layout drift fails loudly, and from then on
 writes request records and reads result records through `Module.HEAPU8`
 and Atomics.
 
-Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
+**The rule: no direct calls into the core.** Under `PROXY_TO_PTHREAD`
+an exported wasm function is still callable from the browser main thread
+(`Module.ccall(...)`), and such a call does *not* proxy to the worker: it
+runs the core on the main thread, with the main thread's pthread context,
+while the worker is inside `em_main_tick`. Only the handful of built-in
+Emscripten callbacks (pointer lock, mouse, keyboard, visibility) are
+proxied to the worker for us. Calling into the core from the main thread
+races the worker for scheduler, machine and device state, uses WasmFS/OPFS
+handles from a thread that did not open them, and can deadlock or stall on
+the runtime's mutexes. So every JS→C request goes through the mailbox, and
+the Makefile no longer exports `ccall`/`cwrap`.
+
+The rule was learned the hard way (a regression, 2026-05-02):
+`Module.ccall('em_gs_eval', ...)` carried the typed object-model bridge
+(`gsEval` / `gsInspect`) and ran `shell_dispatch()` on the main thread.
+E2E tests saving and loading checkpoints through `gsEval` saw 60–90 s per
+call, a post-load `run` that did not advance the emulator, and "browser
+closed" crashes; `pthread_self()` probed inside `shell_poll` and inside
+`em_gs_eval` showed two different threads.
+
+Every JS→C request is a `REQ_EVAL` record (`object_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
 completion ride on the `Shell` class's `run` / `complete` methods. The
 worker's `shell_poll()` (called every tick, and from the idle wait on a
@@ -78,16 +98,16 @@ page: any number may be in flight.
 **The result contract.** `gsEval(path, args)` resolves to one of three
 shapes, and callers must tell them apart:
 
-- a **value** — the attribute's or method's result (a V_MAP arrives as an
-  object, a V_LIST as an array, a V_BOOL as `true`/`false`);
-- **`null`** — only a *successful* method that returns nothing (V_NONE);
-- **`{ error }`** — failure.  A V_ERROR from the core carries its message;
+- a **value** — the attribute's or method's result (a VK_MAP arrives as an
+  object, a VK_LIST as an array, a VK_BOOL as `true`/`false`);
+- **`null`** — only a *successful* method that returns nothing (VK_NONE);
+- **`{ error }`** — failure.  A VK_ERROR from the core carries its message;
   a failure of the bridge itself (the module not ready, a request too
   large, a dead worker) also sets `transport: true`.
 
 So `r !== null` is never a success test — `{ error }` passes it.  Use
-`gsOk(r)` for "did it work" (neither an error nor a V_BOOL `false`),
-`r === true` for a V_BOOL method, and a shape check for a read;
+`gsOk(r)` for "did it work" (neither an error nor a VK_BOOL `false`),
+`r === true` for a VK_BOOL method, and a shape check for a read;
 `gsErrorText(r)` gives the reason
 ([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
 
@@ -178,7 +198,7 @@ These callbacks are for one thing only: a platform transport handing the
 page a handle or a buffer (screen geometry, a ring's control block, a
 worklet URL). Anything the core has to *say* — run state, a media change,
 a log line, progress, a download's chunk — is an event on the mailbox's
-event ring (`gs_event_emit`, "Events from the core" below), not a new
+event ring (`event_emit`, "Events from the core" below), not a new
 `Module.on*` callback: an event never blocks the emulator thread, is
 ordered with the results, and reaches headless clients the same way.
 
@@ -196,7 +216,7 @@ whose id it carries. Any number of requests may be in flight; a late answer
 can never be mistaken for another call's.
 
 ```
-control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
+control block, 32 × uint32, 64-byte aligned (`_get_mailbox()`)
   [0]  MAGIC 'GSMB'   [1] VERSION 9
   [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
   [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
@@ -225,7 +245,7 @@ no room for is held back and delivered once the page has read; the core
 never blocks on the page.
 
 **Output.** What a leaf prints while it runs (every stdout site in the core
-goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
+goes through the sink `out.h`) travels with its answer: `EVT_RESULT`'s
 `output` text, which the page hands to the terminal, so a page leaf's
 printout reads as it did when stdout reached the terminal directly. A
 job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
@@ -246,7 +266,7 @@ fills, whose `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
 
-The core also speaks first. `gs_event_emit` (`src/core/event/gs_event.h`)
+The core also speaks first. `event_emit` (`src/core/event/event.h`)
 takes a kind and a small JSON object and, in the browser, writes it as an
 `EVT_STATE` / `EVT_NOTIFY` / `EVT_LOG` record on the event ring at once,
 waking the page — from a leaf, from the tick, from anywhere on the emulator
@@ -338,11 +358,11 @@ machine — `files.cp`, `files.import`, `files.export_raw`,
 the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
 at boot. `meta.method_info` reports such a method with `io: true`
 (`MM_IO`). The leaf takes its request off the drain's answer path
-(`gs_result_defer`) and returns at once; the worker does the work in
+(`mailbox_result_defer`) and returns at once; the worker does the work in
 1 MB chunks (`GS_IO_CHUNK_KB`), yielding between them and reporting
 progress (`io_progress` → `EVT_PROGRESS {id, done, total}`; `gsEvalWithProgress`
 on the page); the completion, reported at a later drain, writes the
-request's `EVT_RESULT` (`gs_result_complete`), so the page's promise
+request's `EVT_RESULT` (`mailbox_result_complete`), so the page's promise
 settles when the file is done and the emulator thread served frames
 throughout. A script's call is held the same way and a failure is the
 call's error. `REQ_CANCEL` of the request — or of the script whose call it
@@ -454,7 +474,7 @@ works under any deploy path.
 The canvas reference is passed once; Emscripten transfers it to the
 worker via `transferControlToOffscreen` and resolves the `#screen` DOM
 id from `OFFSCREENCANVASES_TO_PTHREAD`. After `createModule` returns,
-JS calls `Module._get_gs_mailbox()` to resolve the mailbox's control
+JS calls `Module._get_mailbox()` to resolve the mailbox's control
 block, verifies its MAGIC and VERSION, waits for `READY`, then
 `await gsEval('machine.register', …)` to activate the per-machine
 checkpoint directory.
@@ -778,7 +798,7 @@ typed-dispatch and introspection surface.
   an auxiliary core listed in `capabilities.aux_cpus` has
   `machine.<name>.frame` (the AV DSP3210's `machine.dsp.frame`).
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
-  returns `V_BOOL` (truthy for shell `assert ${…}` use). The web2
+  returns `VK_BOOL` (truthy for shell `assert ${…}` use). The web2
   Disasm pane uses `debug.frame` instead.
 - **`debug.breakpoints.add(addr [, condition])`** — set (a second add at
   the same address returns the existing entry);
@@ -787,7 +807,7 @@ typed-dispatch and introspection surface.
   **`debug.breakpoints.entries[id].{addr,enabled,condition,hit_count}`** and
   **`.remove()`** — read, toggle, and clear one entry.
 - **`machine.memory.peek.{b,w,l}(addr)`** — single-byte / word / long read.
-- **`machine.memory.peek.bytes(addr, count)`** — bulk read, `V_BYTES`,
+- **`machine.memory.peek.bytes(addr, count)`** — bulk read, `VK_BYTES`,
   capped at 4 KB. The Memory pane uses this so a 128-byte refresh is one
   bridge call.
 - **`machine.floppy.drive[i].insert(path, writable)` / `.eject()` /
@@ -1403,7 +1423,7 @@ via `Module.onVideoInReady`. The **main thread** decodes each camera
 frame onto a 640×480 canvas, writes it into the *non-active* slot
 through `Module.HEAPU8`, flips the active index and bumps `seq`; the
 **worker** copies out of the active slot at field cadence through the
-`gs_video_in_frame` seam. Writing only the non-active slot does not by
+`platform_video_in_frame` seam. Writing only the non-active slot does not by
 itself rule out a tear — a reader still copying slot A can see the
 writer finish B, flip, and start on A — so the reader checks `seq`
 after its copy and retries. Staleness is at most one frame and no locks

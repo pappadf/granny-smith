@@ -33,13 +33,14 @@
 
 #include "sym53c8xx.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "memory.h"
 #include "pci.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -70,8 +71,8 @@ static bool lanes_reversed(const sym53c8xx_t *s) {
 void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
     bool rev = lanes_reversed(s);
-    if (cfg && cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    if (cfg && cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
+        const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(buf, ram + phys, len);
         else
@@ -86,8 +87,8 @@ void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t 
 void sym53c8xx_write_block(sym53c8xx_t *s, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
     bool rev = lanes_reversed(s);
-    if (cfg && cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    if (cfg && cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
+        uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(ram + phys, buf, len);
         else

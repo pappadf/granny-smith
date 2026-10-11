@@ -245,7 +245,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   // (a) The transport is alive end to end. `produced` is written by the
   //     AudioWorklet on the browser main thread and `consumed` by the
   //     emulator worker through the seam, so both climbing proves
-  //     getUserMedia → worklet → shared-heap ring → gs_audio_in_frames →
+  //     getUserMedia → worklet → shared-heap ring → platform_audio_in_frames →
   //     the Singer's DMA. This is the assertion that would have caught the
   //     original bug (the worklet was never rendered, so `produced` stayed
   //     at 0 forever).

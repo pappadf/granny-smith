@@ -17,6 +17,6 @@ _Static_assert(sizeof(g_build_id) == BUILD_ID_LEN + 1, "build id payload must be
 _Static_assert(sizeof(g_build_id) - 1 == BUILD_ID_LEN, "BUILD_ID_LEN must match __DATE__ \" \" __TIME__ length");
 
 // Returns the build ID string
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return g_build_id;
 }

@@ -292,9 +292,9 @@ static void prefix_add(prefix_t *pf, const char *s, const char *e, bool dot) {
 
 static const char *node_class(node_t n) {
     if (n.member) {
-        if (n.member->kind == M_ATTR)
+        if (n.member->kind == MK_ATTR)
             return "attribute";
-        if (n.member->kind == M_METHOD)
+        if (n.member->kind == MK_METHOD)
             return "method";
     }
     return "object";
@@ -540,7 +540,7 @@ static void arguments(hl_t *h, const char *p, node_t m) {
 
 // An enum-typed attribute's values, for `PATH = word`.
 static bool attr_enum(node_t n, const char *s, const char *e) {
-    if (!n.member || n.member->kind != M_ATTR || !n.member->attr.enum_values)
+    if (!n.member || n.member->kind != MK_ATTR || !n.member->attr.enum_values)
         return false;
     for (const char *const *v = n.member->attr.enum_values; *v; v++)
         if (word_is(s, e, *v))

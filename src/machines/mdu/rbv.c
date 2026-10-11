@@ -420,7 +420,7 @@ static const irq_controller_ops_t rbv_irq_ops = {
     static value_t rbv_attr_##FIELD(struct object *self, const member_t *m) {                                          \
         (void)m;                                                                                                       \
         value_t v = val_uint(1, ((const rbv_t *)object_data(self))->FIELD);                                            \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -434,26 +434,29 @@ static DEF_GETTER(rbv_attr_variant) {
 }
 
 static const member_t rbv_members[] = {
-    IRQ_CONTROLLER_MEMBERS(&rbv_irq_ops){.kind = M_ATTR,
+    IRQ_CONTROLLER_MEMBERS(&rbv_irq_ops){.kind = MK_ATTR,
                                          .name = "variant",
                                          .doc = "RBV silicon variant",
-                                         .attr = {.type = V_STRING, .get = rbv_attr_variant, .set = NULL}                                                 },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_STRING, .get = rbv_attr_variant, .set = NULL}                                 },
+    {.kind = MK_ATTR,
                                          .name = "slot_pending",
                                          .doc = "Raw slot IRQ requests, active-high (before RvSEnb)",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = rbv_attr_slot_pending, .set = NULL}},
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_UINT,
+              .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE,
+              .get = rbv_attr_slot_pending,
+              .set = NULL}                                                                                                                 },
+    {.kind = MK_ATTR,
                                          .name = "slot_enable",
                                          .doc = "RvSEnb: which slots may raise RvAnySlot",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_senb, .set = NULL}                   },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = rbv_attr_reg_senb, .set = NULL} },
+    {.kind = MK_ATTR,
                                          .name = "monp",
                                          .doc = "RvMonP: depth, monitor sense and video bits",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_monp, .set = NULL}                   },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = rbv_attr_reg_monp, .set = NULL} },
+    {.kind = MK_ATTR,
                                          .name = "datab",
                                          .doc = "RvDataB: latched control bits (cache, soft power, sound path)",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_datab, .set = NULL}                  },
+                                         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = rbv_attr_reg_datab, .set = NULL}},
 };
 
 static const class_desc_t rbv_class = {

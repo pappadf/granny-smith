@@ -35,9 +35,9 @@ value_t machine_config_defaults(const hw_profile_t *p);
 
 // Resolve everything a boot needs besides the ROM -- memory, options,
 // floppies, storage, the startup device, the expansion cards and the display
-// devices -- from the configuration document `config` (a V_MAP, or NULL when
+// devices -- from the configuration document `config` (a VK_MAP, or NULL when
 // the caller gave none) and the named arguments in `legacy`, into `out`.
-// Every check runs here, before the running machine is touched; V_ERROR
+// Every check runs here, before the running machine is touched; VK_ERROR
 // names the node on a rejection.
 value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, const boot_config_t *legacy,
                                machine_build_opts_t *out);

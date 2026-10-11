@@ -5,6 +5,8 @@
 // Implements Mac Plus keyboard emulation via VIA shift register interface.
 
 #include "keyboard.h"
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
@@ -28,9 +30,8 @@ LOG_USE_CATEGORY_NAME("keyboard");
 #define CMD_MODEL_NUMBER 0x16
 #define CMD_TEST         0x36
 
-// Test command responses (only ACK implemented for now)
+// Test command response: the self-test always passes (no NAK, $77, modelled)
 #define TEST_ACK_RESPONSE 0x7D
-// #define TEST_NAK_RESPONSE 0x77 // (unused – would indicate self-test failure)
 
 #define NULL_RESPONSE 0x7B
 
@@ -192,9 +193,12 @@ static void add_key_event(keyboard_t *keyboard, uint8_t key) {
 }
 
 // Processes a key event from the host and converts to Mac keyboard protocol
-extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
+void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_key) {
     LOG(3, "keyboard_update: event=%s, host_key=0x%02X", event == key_down ? "key_down" : "key_up", host_key);
 
+    // Two checks with different jobs: this one bounds pressed[] (any int can
+    // arrive from the host layer); the table lookup below rejects in-range
+    // ADB codes the Plus keyboard does not have.
     if (host_key < 0 || host_key >= 128) {
         LOG(1, "keyboard_update: invalid host_key=%d, ignoring", host_key);
         return;
@@ -423,6 +427,9 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
         break;
     case CMD_INQUIRY:
         LOG(2, "keyboard_input: INQUIRY command, scheduling 250ms timeout");
+        // A new Inquiry restarts the window: drop a timeout still pending from
+        // an earlier one, or both would fire and send two NULL responses.
+        remove_event(keyboard->scheduler, &keyboard_timeout_callback, keyboard);
         scheduler_new_cpu_event(keyboard->scheduler, &keyboard_timeout_callback, keyboard, 0, 0, NS_PER_SEC / 4);
         // Respond promptly (spec: host polls roughly every 0.25s; keyboard must not wait that long)
         break;

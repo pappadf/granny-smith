@@ -18,7 +18,7 @@ This document describes the implemented, lightweight logging framework for Grann
 - Non‑goals (for now)
   - Persistent configuration (e.g., storing levels in localStorage). See “future extensions”.
   - Rich sinks (JSON, structured fields). Current implementation writes formatted text lines to per‑category sinks.
-  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`gs_out.h`) like any other printed text; the per-line `log` event (`gs_event_emit`) is the structured stream the browser's Logs view reads.
+  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`out.h`) like any other printed text; the per-line `log` event (`event_emit`) is the structured stream the browser's Logs view reads.
 
 
 ## Terminology
@@ -38,8 +38,9 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
   - `typedef struct log_category log_category_t;` (opaque to callers)
 
 - Initialization
-  - `void log_init(void);`
-    - Optional; idempotent. Prepares internal registry (the legacy `log` shell command registration is retired — configuration goes through the `log.set` method).
+  - None needed: the registry is static and categories are created on first registration.
+  - `void log_set_context_hooks(const log_context_hooks_t* hooks);`
+    - The logger is a leaf module (libc only). What it knows about the running machine arrives through three optional hooks: `instr_count` (the `@count` timestamp), `format_pc` (the `PC=` decoration) and `observe_line` (sees every emitted line — the debug trace's capture). `src/core/debug/log_context.c` supplies them; `core_init` installs them with `log_context_install()`. Without hooks, the decorations read `@0` and `PC=00000000`.
 
 - Category management
   - `log_category_t* log_register_category(const char* name);`
@@ -55,7 +56,7 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 
 - Fast path predicate
   - `static inline int log_would_log(const log_category_t* cat, int level);`
-    - True when the message should be emitted (i.e., `level <= log_get_level(cat)` and compile‑time filter, see below).
+    - True when the message should be emitted (i.e., `level <= log_get_level(cat)` and compile‑time filter, see below). `log_emit`/`log_vemit` apply the same gate themselves, so a direct call honours the level too.
 
 - Emission (formatted)
   - `void log_emit(const log_category_t* cat, int level, const char* fmt, ...)`
@@ -73,6 +74,7 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 
 - Output sinks
   - Per‑category sinks (implemented in `log.c`): each category can emit to stdout and/or an optional file path (append mode). See “Shell command” below for runtime control.
+  - A file that cannot be opened makes `log_set_category_file` return -1 with `errno` from `fopen` (its other failures set `errno` too: `EINVAL` for an unknown category, `ENOMEM`); the caller (`log.set`, `log.category[...].file`) puts the reason in its error value (`cannot set log file '<path>': <reason>`) — nothing is printed to stderr.
   - Optional global sink: `typedef void (*log_sink_fn)(const char* line, void* user);` and `void log_set_sink(log_sink_fn fn, void* user);`
     - If a global sink is installed, every formatted line is also forwarded to it in addition to the per‑category sinks.
     - If no global sink is installed (default), only per‑category sinks are used.
@@ -90,6 +92,8 @@ To enable `LOG(level, ...)` without passing a category each time, a translation 
   - Then: `LOG_USE_CATEGORY(cat_var);`
 
 If `LOG(level, ...)` is used without setting an implicit category in the file, it should cause a compile‑time error to avoid silent misuse.
+
+The macros define a file-local `log_local_category()` accessor (and, for the one-liner, a `log_local_category_ptr` cache); `LOG` calls it. The variadic macros rely on the GNU `, ##__VA_ARGS__` comma swallow — the project is GCC/Clang-only (`docs/guide/STYLE_GUIDE.md`, "Compiler Extensions").
 
 
 ## Levels and semantics
@@ -136,7 +140,7 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
 ## Internal design (log.c)
 
 - Registry
-  - Use a singly‑linked list of categories (`log_category` nodes) because the expected number of categories is small (dozens). Simpler, no dynamic map needed.
+  - Categories (`log_category` nodes) are indexed by name in a fixed open-addressed table (FNV-1a hash, linear probing; 256 slots, statically asserted to be at least twice the manifest) and also kept on a singly-linked list, newest first, for enumeration (`log_foreach_category`).
   - Each node contains:
     - `char* name;` (owned, NUL‑terminated)
     - `int level;` (current threshold; 0 is the off position for level-1-and-up sites)
@@ -144,7 +148,7 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
     - Optional `uint16_t id;` if we later want stable IDs.
 
 - Lookups
-  - `log_get_category(name)` does a case‑sensitive strcmp scan.
+  - `log_get_category(name)` is a case‑sensitive hash-table lookup.
   - Category registration reuses existing category (idempotent) and sets level only the first time. Duplicate registrations are common during module init in tests; this avoids conflicts.
 
 - Fast path check
@@ -156,13 +160,14 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
 - Emission
   - Build a single line per call: `[name] <level> message\n` (example prefix; see formatting)
   - Formatting pipeline:
-    - Small fixed‑size stack buffer (e.g., 512 B) for composing the line using `vsnprintf`. If exceeded, truncate with ellipsis.
+    - Prefix, indent and body are formatted straight into one buffer: a 768-byte stack buffer for the common case, moving to the heap (exact size, second `vsnprintf`) when a line outgrows it. Lines are never clipped; only if that allocation fails is the line cut short and ended with `...`.
+    - The indent is a slice of a constant 64-space string (no per-line fill).
     - Write directly to the sink (default: stdout). For Emscripten, stdout maps to console; we may optionally add a JS sink later.
 
 - Thread‑safety
-  - Not strictly required for now (browser single‑thread). Keep simple:
-    - Registry mutation during early init only.
-    - `level` reads/writes are `int`; if we later need threads, we can mark as `atomic_int` without API change.
+  - No locking. `LOG` runs on the emulator thread and the job thread, so this rests on two facts:
+    - Registry mutation happens at setup only: `log_register_manifest` creates every category, so later `log_register_category` calls (the lazy `LOG_USE_CATEGORY_NAME` first use included) are read-only lookups.
+    - Configuration (`level`, sinks, the indent, the global sink) is written by `log.set` and the host at quiet points; a racing reader sees the old or the new `int`/pointer. Should that stop being enough, those fields become `atomic_int`/atomic pointers without an API change — open debt.
 
 - Memory and lifetime
   - Category pointers are stable for the process lifetime. Modules cache their `log_category_t*` in static file‑scope variables for fast checks.
@@ -170,7 +175,7 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
 
 ## Shell surface (`log.set`)
 
-The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a V_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
+The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a VK_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
 
 - Grammar
   - `log.levels` — every registered category and its current level, as a map
@@ -254,8 +259,8 @@ The shell exposes the configuration as a typed method on the root `log` object: 
   - No `va_list`, no `snprintf`, and argument expressions are evaluated only if enabled.
 
 - Enabled path
-  - Single `vsnprintf` into a stack buffer, then one write to the sink.
-  - Buffer size chosen to avoid heap allocations and keep stack modest (e.g., 512B). Truncation strategy is predictable.
+  - Single `vsnprintf` into a stack buffer, then one write to each sink.
+  - The 768-byte stack buffer avoids heap allocation for ordinary lines; a longer line costs one allocation instead of being truncated.
 
 - Registry costs
   - Category lookups occur only in shell commands. Normal logging uses cached pointers and simple integer reads.
@@ -276,7 +281,8 @@ The shell exposes the configuration as a typed method on the root `log` object: 
 - `src/core/debug/log.c` — implementation (registry, sinks, formatting) and the category manifest loader.
 - `src/core/debug/log_categories.h` — the category manifest (`GS_LOG_CATEGORIES`), the one place a new category is declared.
 - `src/core/debug/log.h` — public header used by modules and the shell.
-- `src/core/shell/shell.c` — calls `log_init()`; the `log.set` method and `log.levels` attribute live on the root `log` object (`src/core/debug/log_class.c`).
+- `src/core/debug/log_context.c` — the context hooks (instruction count, PC decoration, debug-trace capture); `src/core/core_init.c` installs them (`log_context_install()`).
+- `src/core/debug/log_class.c` — the root `log` object: the `log.set` method (which prints the category's settings through the output sink), `log.levels` and `log.category[...]`.
 
 ## Level guidelines and recommendations
 

@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// gs_event.c -- see gs_event.h.  The weak defaults: no delivery, no client.
+// event.c -- see event.h.  The weak defaults: no delivery, no client.
 
-#include "gs_event.h"
+#include "event.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-__attribute__((weak)) void gs_event_emit(gs_event_kind_t kind, const char *json) {
+__attribute__((weak)) void event_emit(event_kind_t kind, const char *json) {
     (void)kind;
     (void)json;
 }
 
-__attribute__((weak)) uint32_t gs_current_client(void) {
+__attribute__((weak)) uint32_t platform_current_client(void) {
     return 0;
 }
 
 static int s_held;
 
-void gs_event_hold(int held) {
+void event_hold(int held) {
     s_held = held;
 }
 
-void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) {
+void event_emitf(event_kind_t kind, const char *fmt, ...) {
     if (s_held && kind != GS_EVENT_LOG)
         return;
     char buf[GS_EVENT_MAX];
@@ -35,10 +35,10 @@ void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) {
     va_end(ap);
     if (n < 0 || (size_t)n >= sizeof buf)
         return;
-    gs_event_emit(kind, buf);
+    event_emit(kind, buf);
 }
 
-void gs_event_emit_text(gs_event_kind_t kind, const char *event, const char *field, const char *text) {
+void event_emit_text(event_kind_t kind, const char *event, const char *field, const char *text) {
     if (s_held && kind != GS_EVENT_LOG)
         return;
     if (!text)
@@ -66,6 +66,6 @@ void gs_event_emit_text(gs_event_kind_t kind, const char *event, const char *fie
     buf[o++] = '"';
     buf[o++] = '}';
     buf[o] = '\0';
-    gs_event_emit(kind, buf);
+    event_emit(kind, buf);
     free(buf);
 }

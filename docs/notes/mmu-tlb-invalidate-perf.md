@@ -1,5 +1,16 @@
 # Why SE/30 Boots Slowly: The MMU TLB Invalidate Hotspot
 
+> **Historical note.** This investigation describes the code as it stood
+> when it was written; the file and line references below are not kept
+> current.  The populated-page tracker it introduces has since moved out of
+> `src/core/memory/mmu.c` into `src/core/memory/memory.c`
+> (`tlb_track_page` / `memory_soa_invalidate`, declared in `memory.h`) and
+> grown: it is now per memory map (`memory_map_t`'s `track_page` list)
+> rather than the fixed global `g_tlb_track[TLB_TRACK_MAX]` array, starting
+> at 8192 entries and doubling on demand up to `TLB_TRACK_LIMIT` (2^17
+> pages, 512 MB of touched pages) before falling back to the full zeroing
+> pass.  `mmu_invalidate_tlb` calls `memory_soa_invalidate`.
+
 This document is a deep dive on a single, surprising performance finding: the
 emulator's SE/30 cold boot runs at roughly **13 MIPS**, while a Macintosh Plus
 cold boot on the same host runs at roughly **95 MIPS** — a ~7× gap. The cause

@@ -12,6 +12,7 @@
 #ifndef GS_MACHINES_MCU_Q900_INTERNAL_H
 #define GS_MACHINES_MCU_Q900_INTERNAL_H
 
+#include "checkpoint.h"
 #include "mcu.h"
 #include "nubus.h" // nubus_slot_decl_t, for the shared socket table below
 

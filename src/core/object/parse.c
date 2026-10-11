@@ -13,8 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "object.h" // for object_is_reserved_word
-
 // Skip ASCII whitespace at *p in place.
 static void skip_ws(const char **p) {
     while (**p && isspace((unsigned char)**p))
@@ -116,7 +114,7 @@ value_t parse_string_literal(const char **p) {
         return val_err("unterminated string literal");
     }
     *p = q + 1;
-    // Wrap the heap buffer into a V_STRING. val_str strdups, so we then
+    // Wrap the heap buffer into a VK_STRING. val_str strdups, so we then
     // free our own buffer — slightly wasteful, but keeps the "constructors
     // copy" rule consistent.
     value_t v = val_str(buf ? buf : "");
@@ -126,7 +124,7 @@ value_t parse_string_literal(const char **p) {
 
 // Parse an integer literal: optional sign, optional base prefix, digits
 // (with `_` as a separator), optional `u`/`i` suffix. On success
-// advances *p and returns V_UINT (default) or V_INT (if signed/`i`).
+// advances *p and returns VK_UINT (default) or VK_INT (if signed/`i`).
 value_t parse_integer_literal(const char **p) {
     if (!p || !*p)
         return val_err("expected integer literal");
@@ -158,7 +156,8 @@ value_t parse_integer_literal(const char **p) {
     }
 
     // Collect digits + underscores into a temporary buffer to ignore '_'.
-    char tmp[80];
+    // PARSE_NUMBER_MAX (parse.h) caps the digits; a longer run is refused.
+    char tmp[PARSE_NUMBER_MAX + 1];
     size_t ti = 0;
     bool any = false;
     while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
@@ -183,7 +182,7 @@ value_t parse_integer_literal(const char **p) {
         return val_err("expected integer literal");
     tmp[ti] = '\0';
 
-    // Suffix: u|i, optional bit-width number (8/16/32/64) is not yet honoured.
+    // Suffix: u|i.
     bool force_signed = negative;
     bool force_unsigned = false;
     if (*q == 'u' || *q == 'U') {
@@ -193,8 +192,11 @@ value_t parse_integer_literal(const char **p) {
         force_signed = true;
         q++;
     }
-    while (isdigit((unsigned char)*q))
-        q++; // swallow optional bit-width
+    // A literal ends at a non-identifier character. A digit invalid for the
+    // base (`0b12`, `0o18`) or any other trailing letter is an error, not
+    // the end of a shorter literal: `devices.0o18` must not select index 1.
+    if (isalnum((unsigned char)*q) || *q == '_')
+        return val_err("malformed integer literal");
 
     char *endp = NULL;
     errno = 0;
@@ -224,7 +226,7 @@ value_t parse_integer_literal(const char **p) {
     return val_int((int64_t)uv);
 }
 
-// Parse a float literal at *p. Returns V_ERROR if not a float; on
+// Parse a float literal at *p. Returns VK_ERROR if not a float; on
 // success advances *p. A literal qualifies as a float if it has a '.',
 // or an 'e'/'E' exponent, or starts with `0x` and contains a 'p'/'P'.
 static value_t parse_float_literal(const char **p) {
@@ -292,9 +294,9 @@ static value_t parse_float_literal(const char **p) {
 
     // Defer to strtod on a copy that strips underscores.
     size_t span = (size_t)(q - *p);
-    if (span >= 80)
+    if (span > PARSE_NUMBER_MAX)
         return val_err("float literal too long");
-    char tmp[80];
+    char tmp[PARSE_NUMBER_MAX + 1];
     size_t ti = 0;
     for (size_t i = 0; i < span; i++) {
         if ((*p)[i] != '_')
@@ -393,7 +395,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         if (maybe_float) {
             const char *save = *p;
             value_t fv = parse_float_literal(p);
-            if (fv.kind == V_FLOAT) {
+            if (fv.kind == VK_FLOAT) {
                 // No :bytes suffix on floats.
                 return fv;
             }
@@ -403,24 +405,22 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         // Integer.
         const char *save = *p;
         value_t iv = parse_integer_literal(p);
-        if (iv.kind == V_INT || iv.kind == V_UINT) {
-            // Optional bytes suffix: NUMBER:N → big-endian V_BYTES of N
-            // bytes: "0xDEAD_BEEF:4" — N is the byte width.
+        if (iv.kind == VK_INT || iv.kind == VK_UINT) {
+            // Optional bytes suffix: NUMBER:N → big-endian VK_BYTES of N
+            // bytes: "0xDEAD_BEEF:4" — N is the byte width, read with the
+            // same integer grammar as the value (so `:010` is ten, not an
+            // octal eight).
             if (**p == ':') {
-                const char *r = *p + 1;
+                const char *after = *p + 1;
                 long long n = 0;
-                const char *after = NULL;
-                {
-                    char *endp = NULL;
-                    long long v = strtoll(r, &endp, 0);
-                    if (endp && endp != r) {
-                        n = v;
-                        after = endp;
-                    }
-                }
-                if (after && n > 0 && n <= 16) {
+                value_t nv = parse_integer_literal(&after);
+                bool have_n = !val_is_error(&nv);
+                if (have_n)
+                    n = (long long)val_as_i64(&nv, NULL);
+                value_free(&nv);
+                if (have_n && n > 0 && n <= 16) {
                     *p = after;
-                    uint64_t u = (iv.kind == V_INT) ? (uint64_t)iv.i : iv.u;
+                    uint64_t u = (iv.kind == VK_INT) ? (uint64_t)iv.i : iv.u;
                     uint8_t buf[16] = {0};
                     for (int i = (int)n - 1; i >= 0; i--) {
                         buf[i] = (uint8_t)(u & 0xFF);
@@ -470,7 +470,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
     return val_err("unexpected character '%c'", *q);
 }
 
-value_t parse_literal_full(const char *s, const char *const *enum_table, size_t n_enum) {
+value_t parse_literal_whole_string(const char *s, const char *const *enum_table, size_t n_enum) {
     if (!s)
         return val_err("null literal string");
     const char *p = s;
@@ -483,4 +483,74 @@ value_t parse_literal_full(const char *s, const char *const *enum_table, size_t 
         return val_err("trailing garbage after literal: '%s'", p);
     }
     return v;
+}
+
+// === Keywords ================================================================
+//
+// The table sits here, in the lexical layer, so the literal parser can refuse
+// reserved words without depending on the object model.
+
+// The shell's keywords, each with its one-line syntax (shell.keywords); the
+// syntax sits next to the word so the two cannot drift.  One table for the
+// reserved-word check, shell.keywords and completion.
+//   reserved   may not name a member, alias or binding; a contextual
+//              keyword (`command`) is a keyword only in its statement shape
+//   statement  heads a statement (offered at the start of a line)
+enum { KW_RESERVED = 1, KW_STATEMENT = 2 };
+static const struct {
+    const char *word;
+    const char *syntax;
+    unsigned flags;
+} KEYWORDS[] = {
+    // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
+    // words to bool-slot input coercions (validate_slot) — they are
+    // ordinary identifiers again.
+    {"true",     "true — the boolean literal",                                 KW_RESERVED               },
+    {"false",    "false — the boolean literal",                                KW_RESERVED               },
+    {"none",     "none — no value (an unset optional, an absent result)",      KW_RESERVED               },
+    // Statement keywords.
+    {"let",      "let <name> = <expr>",                                          KW_RESERVED | KW_STATEMENT},
+    {"alias",    "alias <name> = <path>",                                        KW_RESERVED | KW_STATEMENT},
+    {"command",  "command <name> = <path> — a bare word that runs the method", KW_STATEMENT              },
+    {"if",       "if <expr> { … }",                                            KW_RESERVED | KW_STATEMENT},
+    {"elif",     "} elif <expr> { … }",                                        KW_RESERVED | KW_STATEMENT},
+    {"else",     "} else { … }",                                               KW_RESERVED | KW_STATEMENT},
+    {"while",    "while <expr> { … }",                                         KW_RESERVED | KW_STATEMENT},
+    {"for",      "for <name> in <expr> { … }",                                 KW_RESERVED | KW_STATEMENT},
+    {"in",       "for <name> in <expr> { … }",                                 KW_RESERVED               },
+    {"break",    "break — leave the innermost loop",                           KW_RESERVED | KW_STATEMENT},
+    {"continue", "continue — next iteration of the innermost loop",            KW_RESERVED | KW_STATEMENT},
+    {"return",   "return [<expr>]",                                              KW_RESERVED | KW_STATEMENT},
+    {"def",      "def <name>(<param>, …) { … }",                             KW_RESERVED | KW_STATEMENT},
+    {"assert",   "assert <expr> [\"message\"]",                                  KW_RESERVED | KW_STATEMENT},
+    {"include",  "include <path> — run a script file here",                    KW_RESERVED | KW_STATEMENT},
+    // Held for a possible future post-test loop.
+    {"do",       "do — reserved",                                              KW_RESERVED               },
+};
+
+#define N_KEYWORDS (sizeof(KEYWORDS) / sizeof(KEYWORDS[0]))
+
+size_t object_keyword_count(void) {
+    return N_KEYWORDS;
+}
+
+const char *object_keyword(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].word : NULL;
+}
+
+const char *object_keyword_syntax(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].syntax : NULL;
+}
+
+bool object_keyword_is_statement(size_t i) {
+    return i < N_KEYWORDS && (KEYWORDS[i].flags & KW_STATEMENT);
+}
+
+bool object_is_reserved_word(const char *name) {
+    if (!name)
+        return false;
+    for (size_t i = 0; i < N_KEYWORDS; i++)
+        if ((KEYWORDS[i].flags & KW_RESERVED) && strcmp(name, KEYWORDS[i].word) == 0)
+            return true;
+    return false;
 }

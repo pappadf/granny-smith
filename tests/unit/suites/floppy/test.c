@@ -15,6 +15,8 @@
 // floppy_gcr.c is #included so the tests can reach its static codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
+#include "gs_assert.h"
+#include "image_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -132,7 +134,7 @@ TEST(test_sector_round_trip) {
             int spt = iwm_sectors_per_track(track);
             for (int sector = 0; sector < spt; sector++) {
                 memset(track_buf, 0xFF, sizeof track_buf);
-                uint8_t *end = encode_sector(track_buf, tag, data, track, sector, side, 2);
+                uint8_t *end = encode_sector(track_buf, tag, data, track, sector, side, 2, false);
                 ASSERT_TRUE(end > track_buf);
 
                 uint8_t *mark = find_address_mark(track_buf, end);
@@ -165,7 +167,7 @@ TEST(test_sector_round_trip_edge_payloads) {
         memset(data, fills[f], sizeof data);
         memset(tag, fills[f], sizeof tag);
         memset(track_buf, 0xFF, sizeof track_buf);
-        uint8_t *end = encode_sector(track_buf, tag, data, 3, 5, 1, 2);
+        uint8_t *end = encode_sector(track_buf, tag, data, 3, 5, 1, 2, false);
         uint8_t *mark = find_address_mark(track_buf, end);
         ASSERT_TRUE(mark != NULL);
 
@@ -189,7 +191,7 @@ TEST(test_track_round_trip) {
         for (int i = 0; i < spt * 512; i++)
             sectors[i] = (uint8_t)(i ^ track);
 
-        encode_track(buf, len, track, 0, sectors, 2, NULL, 0);
+        encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 0);
 
         // Every sector number must appear exactly once in the encoded track.
         int seen[16] = {0};
@@ -215,6 +217,40 @@ TEST(test_track_round_trip) {
         free(buf);
         free(sectors);
     }
+}
+
+// A sector the image could not read is laid down with its header intact and
+// a data checksum that fails: the decoder (and so the guest's driver) rejects
+// that sector, and only that one.
+TEST(test_track_unreadable_sector_fails_its_checksum) {
+    const int track = 20, bad_sector = 3;
+    int spt = iwm_sectors_per_track(track);
+    size_t len = iwm_track_length(track);
+    uint8_t *buf = malloc(len);
+    uint8_t *sectors = calloc((size_t)spt, 512);
+    ASSERT_TRUE(buf != NULL && sectors != NULL);
+    encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 1u << bad_sector);
+    int good[16] = {0}, rejected = 0;
+    uint8_t *end = buf + len;
+    for (uint8_t *p = buf; p + 730 < end; p++) {
+        if (p[0] != 0xD5 || p[1] != 0xAA || p[2] != 0x96)
+            continue;
+        uint8_t out[512], out_tag[12];
+        int d_track = -1, d_side = -1, d_sector = -1;
+        uint8_t *next = decode_sector(out_tag, out, p, end, &d_track, &d_side, &d_sector);
+        if (!next) {
+            rejected++;
+            continue;
+        }
+        ASSERT_TRUE(d_sector >= 0 && d_sector < spt);
+        good[d_sector]++;
+        p = next - 1;
+    }
+    ASSERT_EQ_INT(rejected, 1);
+    for (int i = 0; i < spt; i++)
+        ASSERT_EQ_INT(good[i], i == bad_sector ? 0 : 1);
+    free(buf);
+    free(sectors);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +342,7 @@ TEST(test_write_through_detects_sector_boundary) {
         tag[i] = (uint8_t)(i + 1);
 
     memset(track, 0xFF, sizeof track);
-    uint8_t *end = encode_sector(track, tag, data, 7, 2, 1, 2);
+    uint8_t *end = encode_sector(track, tag, data, 7, 2, 1, 2, false);
     size_t len = (size_t)(end - track);
 
     // Walk the encoded sector one byte at a time, as a guest writing through
@@ -388,7 +424,7 @@ TEST(test_decode_sector_rejects_corruption) {
 
     // A good sector, as the control.
     memset(buf, 0xFF, sizeof buf);
-    uint8_t *end = encode_sector(buf, tag, data, 10, 4, 0, 2);
+    uint8_t *end = encode_sector(buf, tag, data, 10, 4, 0, 2, false);
     uint8_t *mark = find_address_mark(buf, end);
     ASSERT_TRUE(mark != NULL);
     ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) != NULL);
@@ -647,6 +683,7 @@ int main(void) {
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
+    RUN(test_track_unreadable_sector_fails_its_checksum);
     RUN(test_decode_sector_rejects_corruption);
     RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);

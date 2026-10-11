@@ -25,6 +25,7 @@
 #ifndef PCI_CARD_H
 #define PCI_CARD_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "config_space.h"
 #include "machine_build_opts.h" // slot_opts_t

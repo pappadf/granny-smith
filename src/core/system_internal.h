@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// system_config.h
+// system_internal.h
 // Private config_t struct definition for machine implementations.
 //
 // This header exposes the full `struct config` layout to machine code
@@ -9,28 +9,35 @@
 // headless_main.c) must NOT include this header — they interact with
 // config_t only through the opaque handle declared in system.h.
 
-#ifndef SYSTEM_CONFIG_H
-#define SYSTEM_CONFIG_H
+#ifndef SYSTEM_INTERNAL_H
+#define SYSTEM_INTERNAL_H
 
-#include "adb.h"
-#include "card.h"
-#include "checkpoint.h"
-#include "cpu.h"
+// Only the headers whose types config_t embeds by value: the profile and
+// storage-device table (machine_profile.h), the build options
+// (machine_build_opts.h), cpu_debug_if_t (debug.h) and the handle typedefs
+// (system.h).  The devices config_t points at are forward-declared -- in
+// system.h, or below -- so a TU that dereferences one includes its header.
 #include "debug.h"
-#include "floppy.h"
-#include "image.h"
-#include "keyboard.h"
 #include "machine_build_opts.h"
 #include "machine_profile.h"
-#include "memory.h"
-#include "mouse.h"
-#include "rtc.h"
-#include "scc.h"
-#include "scheduler.h"
-#include "scsi.h"
-#include "sound.h"
 #include "system.h"
-#include "via.h"
+
+#include <stdint.h>
+
+struct adb;
+typedef struct adb adb_t;
+
+struct nubus_bus;
+typedef struct nubus_bus nubus_bus_t;
+
+// The machine's mutable runtime state, kept apart from the fields that say
+// what the machine is made of: written by interrupt sources and read on
+// dispatch while the composition above it stays fixed after construction.
+typedef struct system_runtime {
+    // Active interrupt-source bitmask; the bits are the family's own
+    // (PLUS_IRQ_*, MAC030_GLUE_IRQ_*, AV_IRQ_*, the Lisa's levels, OSS).
+    uint32_t irq;
+} system_runtime_t;
 
 // Full definition of the opaque config_t handle.
 // The forward declaration (`struct config;`) in system.h makes this type
@@ -65,7 +72,7 @@ struct config {
     cpu_t *cpu; // 68K main CPU (NULL on PPC machines)
     struct ppc *ppc; // PowerPC main CPU (NULL on 68K machines)
     cpu_debug_if_t cpu_dbg; // main-CPU debug seam (populated by system_create)
-    memory_map_t *mem_map;
+    memory_map_t *memory_map;
 
     // VIA chips (via1 = primary; via2 = NULL on Plus)
     via_t *via1;
@@ -92,12 +99,15 @@ struct config {
 
     debug_t *debugger;
 
-    // Disk images tracked for checkpoint/restore
-    image_t *images[MAX_IMAGES];
-    int n_images;
+    // Disk images tracked for checkpoint/restore: owned by system.c, reached
+    // through config_get_image / config_get_n_images / config_images /
+    // config_add_image (system.h)
+    struct image_table *image_table;
 
     scheduler_t *scheduler;
-    uint32_t irq; // active interrupt bitmask
+
+    // Runtime state (system_runtime_t above)
+    system_runtime_t rt;
 
     // NuBus subsystem. NULL on machines without NuBus.
     nubus_bus_t *nubus;
@@ -105,12 +115,8 @@ struct config {
     // PCI subsystem (one root, one bus per host bridge).  NULL on machines
     // without PCI.  Declared by struct tag: core/peripherals/pci/pci.h is
     // a machine-side include, and this header must not drag it in (its
-    // sibling card.h would shadow the NuBus one included above).
+    // sibling card.h would shadow the NuBus one).
     struct pci_root *pci;
 };
 
-// The machine's image list as a construction argument (image_list_t): the
-// controllers a restore builds resolve their saved media in it.
-#define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
-
-#endif // SYSTEM_CONFIG_H
+#endif // SYSTEM_INTERNAL_H

@@ -29,6 +29,7 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // Logical/physical layout (identity-mapped except the hole):
@@ -56,9 +57,11 @@ static void store_be16(uint8_t *p, uint16_t val) {
     p[1] = (uint8_t)(val);
 }
 
+// The 68030 decoder: cpu.c declares it for itself, no header exports it.
+void cpu_run_68030(cpu_t *cpu, uint32_t *instructions);
+
 // Run one 68030 instruction (plus any pending exception dispatch).
 static void run_one(cpu_t *cpu) {
-    extern void cpu_run_68030(cpu_t * cpu, uint32_t * instructions);
     uint32_t one = 1;
     cpu_run_68030(cpu, &one);
 }

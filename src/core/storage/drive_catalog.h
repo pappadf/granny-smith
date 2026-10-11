@@ -34,7 +34,8 @@ const struct drive_model *drive_catalog_find_closest(size_t size);
 
 // parse a human-friendly size string into exact model bytes.
 //   "20mb" / "40mb"     -> closest model with size >= N megabytes
-//   "HD20SC" / "hd20sc" -> exact model lookup by label
+//   "HD20SC" / "hd20sc" -> exact model lookup by label (a label two
+//                          models share resolves to the first)
 //   "20M" / "512K"      -> exact binary power (1M = 1048576)
 //   "21411840"          -> raw byte count (pass-through)
 // returns the resolved size in bytes, or 0 on parse error.
