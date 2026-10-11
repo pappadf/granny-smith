@@ -679,8 +679,10 @@ void memory_host_written(const uint8_t *host, uint32_t len);
 // === Inline Accessors (SoA fast-path with adjusted-base trick) ===
 // Non-zero entry in g_active_read/write = adjusted host address.
 // Zero entry = slow path (device I/O, unmapped, or MMU TLB miss).
+// Always inlined: the interpreter loops are large enough that the compiler
+// otherwise outlines these, turning every guest load and store into a call.
 
-static inline uint8_t memory_read_uint8(uint32_t addr) {
+static inline __attribute__((always_inline)) uint8_t memory_read_uint8(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
@@ -688,7 +690,7 @@ static inline uint8_t memory_read_uint8(uint32_t addr) {
     return memory_read_uint8_slow(masked);
 }
 
-static inline uint16_t memory_read_uint16(uint32_t addr) {
+static inline __attribute__((always_inline)) uint16_t memory_read_uint16(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -697,7 +699,7 @@ static inline uint16_t memory_read_uint16(uint32_t addr) {
     return memory_read_uint16_slow(masked);
 }
 
-static inline uint32_t memory_read_uint32(uint32_t addr) {
+static inline __attribute__((always_inline)) uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -740,7 +742,7 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
     return (uint32_t)memory_read_uint16_slow(masked) << 16;
 }
 
-static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1)) {
@@ -750,7 +752,7 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     memory_write_uint8_slow(masked, value);
 }
 
-static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -761,7 +763,7 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     memory_write_uint16_slow(masked, value);
 }
 
-static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary

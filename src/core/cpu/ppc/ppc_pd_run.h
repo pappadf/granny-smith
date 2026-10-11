@@ -129,6 +129,11 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
     pd_entry_t *cur = NULL; // the entry to dispatch next
     uint32_t page_lo = 1; // guest address of that page (odd: none yet)
     uint32_t ipc = p->instruction_pc; // address of the instruction being dispatched
+    // ipc from the cursor in one shift and add: entries are 8 bytes and
+    // instructions 4, so ipc = page_lo + (cur - blk->e) * 4
+    // = ((uintptr_t)cur >> 1) + ipc_bias, the bias set with the block.
+    _Static_assert(sizeof(pd_entry_t) == 8, "ipc_bias assumes 8-byte entries");
+    uint32_t ipc_bias = 0;
     g_ppc_fetch.blk = NULL; // re-validate the window's block once per sprint (demotions, logpoints)
     goto relookup;
 
@@ -142,7 +147,7 @@ top:
         ppc_poll_interrupt(p);
         goto relookup;
     }
-    ipc = page_lo + ((uint32_t)(cur - blk->e) << 2);
+    ipc = (uint32_t)((uintptr_t)cur >> 1) + ipc_bias;
     {
         pd_entry_t e = *cur;
         uint16_t id = e.id;
@@ -406,12 +411,13 @@ relookup:
                      g_ppc_fetch.blk->guest_lo != g_ppc_fetch.lo))
                     g_ppc_fetch.blk = NULL;
                 if (!g_ppc_fetch.blk)
-                    g_ppc_fetch.blk = predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo),
-                                                       g_ppc_fetch.lo, PD_ARCH_PPC);
+                    g_ppc_fetch.blk = predecode_find((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo),
+                                                     g_ppc_fetch.lo, PD_ARCH_PPC);
                 blk = g_ppc_fetch.blk;
                 page_lo = g_ppc_fetch.lo;
                 if (blk) {
                     predecode_enter(blk, *instructions);
+                    ipc_bias = page_lo - (uint32_t)((uintptr_t)blk->e >> 1);
                     cur = blk->e + ((pc - page_lo) >> 2);
                     goto top;
                 }

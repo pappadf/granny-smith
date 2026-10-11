@@ -397,6 +397,30 @@ Detaching a block (eviction, demotion, reset) clears the slot, **unmarks
 the page** (its write entries refill lazily), and clears `g_pd_current` if
 the block was current.
 
+**The transition cache.**  Executors do not call `predecode_lookup`
+directly at a page transition; they call `predecode_find` (predecode.h),
+which first tries `g_pd_tcache`, a 256-entry direct-mapped table of the
+last block found per host page (indexed by host address bits 12-19).
+Every block the lookup returns or allocates is written there.  A cached
+block is trusted only while:
+- it still holds that host page (`blk->host`) at that alias
+  (`blk->guest_lo`): eviction, demotion and reset detach it, which clears
+  `host`;
+- it is not marked `thrashed`, so the demotion still happens in the full
+  lookup;
+- the pool belongs to the current memory map
+  (`g_pd_generation == g_mem_map_generation`).
+
+Anything else falls through to `predecode_lookup`.  A hit still does
+`g_pd_stats.lookups++`, so the pool's clock (the thrash window and the
+demotion hold) ticks exactly as without the cache.  `predecode_reset` and
+`predecode_set_enabled` clear the table.
+
+The cache matters most for branchy code that crosses pages every few
+instructions.  The 6100's 68K emulator does this, with a transition every
+3-4 instructions.  There the full lookup (region search, slot table,
+checks) cost about 17 host instructions per guest instruction.
+
 Memory budget: a block is 20,536 bytes.  At the default `pool_cap` of 2048
 the pool tops out near 40 MB, allocated block by block as pages execute.
 Typical Mac OS boots stay well below the cap.  Setting `pool_cap` frees the
@@ -614,9 +638,9 @@ address:
    step.
 4. **New page:**
    - read the page's fast-path read entry;
-   - if it is nonzero, call `predecode_lookup(base + page, page_lo,
-     PD_ARCH_68K)`; a NULL result sets `pd_held` and counts
-     `relookup_nopool`;
+   - if it is nonzero, call `predecode_find(base + page, page_lo,
+     PD_ARCH_68K)` (the transition cache in front of `predecode_lookup`,
+     §3.1); a NULL result sets `pd_held` and counts `relookup_nopool`;
    - if it is zero (MMU page not walked yet, or a device), count
      `relookup_nomap` and take one generic step: its fetch fills the entry,
      and the next relookup finds the page.
@@ -874,6 +898,13 @@ intact:
 - `PPD_JUMP_PC` always folds.  A branch out of the page can never target
   itself.
 
+**`ipc` costs one shift and one add.**  Every dispatch computes `ipc`, the
+address of the instruction at the cursor.  Entries are 8 bytes and
+instructions 4, so `page_lo + (cur - blk->e) * 4` equals
+`((uintptr_t)cur >> 1) + ipc_bias`.  `ipc_bias` is
+`page_lo - ((uintptr_t)blk->e >> 1)`, set once when a block is entered.
+Arithmetic is modulo 2^32.
+
 **T0 handlers do not materialize the PC.**  None of them can fault:
 loads, stores and every exception-raising leaf are T1.  `PPD_CASE` is
 audit + body + `cur++` → `retire`.  T1 bodies set `instruction_pc` and
@@ -914,8 +945,8 @@ audit + body + `cur++` → `retire`.  T1 bodies set `instruction_pc` and
    - **Use the window's block.** If the window is a full page:
      - check that `g_ppc_fetch.blk` still holds this page (`host` and
        `guest_lo` match; the pool may have recycled it);
-     - otherwise look the page up;
-     - enter the block and go to `top`.
+     - otherwise look the page up through `predecode_find` (§3.1);
+     - enter the block, set `ipc_bias`, and go to `top`.
 4. Otherwise take one generic step, polling interrupts first.  This covers
    an unaligned PC, little-endian mode, a device window (`span = 0`), a
    logpointed page, and a demoted page.

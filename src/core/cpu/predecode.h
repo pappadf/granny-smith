@@ -150,6 +150,31 @@ typedef struct pd_stats {
 extern pd_stats_t g_pd_stats;
 extern uint32_t g_pd_blocks_live; // blocks currently holding a page
 
+// Page-transition cache: the last block found per host page (direct-mapped).
+// A transition whose page is cached skips the pool walk; the entry is
+// trusted only while the block still holds that page at that alias, is not
+// marked for demotion, and the pool still belongs to the current memory map
+// — any of those failing falls back to predecode_lookup, which also refills
+// the entry.  It ticks the lookup clock like a lookup, so the thrash windows
+// and demotion holds (counted in lookups) keep their length.
+#define PD_TCACHE_SIZE 256
+extern pd_block_t *g_pd_tcache[PD_TCACHE_SIZE];
+extern uint32_t g_pd_generation; // g_mem_map_generation the pool belongs to
+extern uint32_t g_mem_map_generation;
+static inline uint32_t predecode_tcache_slot(const uint8_t *host_page) {
+    return (uint32_t)((uintptr_t)host_page >> 12) & (PD_TCACHE_SIZE - 1);
+}
+static inline pd_block_t *predecode_find(uint8_t *host_page, uint32_t guest_lo, pd_arch_t arch) {
+    pd_block_t *blk = g_pd_tcache[predecode_tcache_slot(host_page)];
+    if (__builtin_expect(blk && blk->host == host_page && blk->guest_lo == guest_lo && !blk->thrashed &&
+                             g_pd_generation == g_mem_map_generation,
+                         1)) {
+        g_pd_stats.lookups++;
+        return blk;
+    }
+    return predecode_lookup(host_page, guest_lo, arch);
+}
+
 // Debug-build audit (GS_DEBUG): re-verify a dispatched entry's raw words
 // against live memory.  Compiled to nothing in release builds.
 #ifdef GS_DEBUG
