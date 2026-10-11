@@ -18,7 +18,8 @@ export interface MountInfo {
 interface ImagesState {
   collapsed: Record<ImageCategory, boolean>;
   /** OPFS path → where it is mounted. Set by the Images-section insert/eject
-   *  (and the upload auto-insert); onFloppyDriveChange() removes floppy entries
+   *  (and the upload auto-insert), and read back from the machine's drives
+   *  after a checkpoint restore; onFloppyDriveChange() removes floppy entries
    *  the guest has ejected on its own. */
   mounted: Record<string, MountInfo>;
   /** Number of floppy drives the active machine exposes (-1 = not yet probed).

@@ -347,6 +347,17 @@ bool gos_media_present(config_t *cfg, media_bus_t bus, int unit) {
     return system_media_present_scsi_bus(st->atapi, unit);
 }
 
+image_t *gos_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus != MEDIA_BUS_ATA)
+        return system_media_image_std(cfg, bus, unit);
+    gossamer_state_t *st = gos_st(cfg);
+    if (!st || !st->ata_ready || !unit_ok(unit))
+        return NULL;
+    if (st->ata[unit >> 1].img[unit & 1])
+        return st->ata[unit >> 1].img[unit & 1];
+    return system_media_image_scsi_bus(st->atapi, unit);
+}
+
 int gos_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     if (bus != MEDIA_BUS_ATA)
         return system_media_eject_std(cfg, bus, unit);

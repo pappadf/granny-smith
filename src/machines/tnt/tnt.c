@@ -1034,6 +1034,14 @@ static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
     return system_media_present_std(cfg, bus, unit);
 }
 
+static image_t *tnt_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_image_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_image_std(cfg, bus, unit);
+}
+
 static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     if (bus == MEDIA_BUS_SCSI2) {
         tnt_state_t *st = tnt_st(cfg);
@@ -1346,4 +1354,5 @@ const machine_substrate_t tnt_substrate = {
     .media_attach = tnt_media_attach,
     .media_present = tnt_media_present,
     .media_eject = tnt_media_eject,
+    .media_image = tnt_media_image,
 };

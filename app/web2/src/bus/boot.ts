@@ -5,7 +5,7 @@
 
 import { gsEval, gsErrorText, gsOk, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
-import { attachMedia, insertFloppy, type MediaResult } from './media';
+import { attachMedia, insertFloppy, readMounts, type MediaResult } from './media';
 import type { MachineConfig } from './types';
 import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
 import { images, setMounted, clearMounts } from '@/state/images.svelte';
@@ -184,9 +184,18 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   if (model) await applyCapabilities(model);
   // Per-machine caches go with the machine.  A boot cleared the mounts
   // before attaching its own media; a restore brings the checkpoint's media,
-  // which the page has no record of, so no badge may claim a drive.
+  // which the page did not attach, so its mounts are read back from the
+  // machine's drives (none, if that fails: no badge may claim a drive it
+  // cannot name).
   images.fdDriveCount = -1;
-  if (origin === 'restore') clearMounts();
+  if (origin === 'restore') {
+    clearMounts();
+    try {
+      for (const [path, info] of Object.entries(await readMounts())) setMounted(path, info);
+    } catch {
+      clearMounts();
+    }
+  }
   // machine.videoin / machine.audioin reset with the machine; re-assert the
   // user's camera and microphone toggles (or drop them if the new model has
   // no digitizer / no audio input).

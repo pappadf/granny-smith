@@ -387,6 +387,7 @@ uint32_t gos_ata_peek32(config_t *cfg, uint32_t off);
 int gos_media_attach(config_t *cfg, const media_slot_t *slot);
 bool gos_media_present(config_t *cfg, media_bus_t bus, int unit);
 int gos_media_eject(config_t *cfg, media_bus_t bus, int unit);
+struct image *gos_media_image(config_t *cfg, media_bus_t bus, int unit);
 
 // === swim3 glue (gossamer.c) ================================================
 void gos_swim3_bind(config_t *cfg);
