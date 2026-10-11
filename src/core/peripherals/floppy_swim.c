@@ -418,6 +418,8 @@ static void ism_write_capture_reset(floppy_t *floppy) {
     floppy->ism_write_state = 0;
     floppy->ism_write_pos = 0;
     floppy->ism_write_a1_count = 0;
+    floppy->ism_write_id_pos = 0;
+    floppy->ism_write_id_valid = false;
 }
 
 // Flushes captured sector data to the disk image
@@ -444,6 +446,30 @@ static void ism_write_capture_flush(floppy_t *floppy) {
 
     int sectors_per_track = ism_mfm_spt(floppy, drv);
 
+    // An ID field written ahead of this data field in the same ACTION names the
+    // sector, as on the disk: a later read finds this data behind that header.
+    // A format, or any whole-track write, lays its sectors down in whatever
+    // order and interleave the driver chose, so taking the position the last
+    // read left behind put each field on the wrong block.  The latched
+    // position stays the target only for a data field written with no ID
+    // field before it -- rewriting one sector after reading its header.
+    if (floppy->ism_write_id_valid) {
+        const uint8_t *id = floppy->ism_write_id;
+        // The medium can hold only what its geometry has: like the GCR path's
+        // header check, a field naming anything else is dropped, never folded
+        // onto some other block.
+        if (id[0] >= NUM_TRACKS || id[1] >= m.sides || id[2] < 1 || id[2] > sectors_per_track) {
+            LOG(2, "ISM write: ID field C=%d H=%d R=%d N=%d outside the medium; data field dropped", id[0], id[1],
+                id[2], id[3]);
+            return;
+        }
+        if (id[0] != track || id[1] != side)
+            LOG(3, "ISM write: ID field C=%d H=%d written with the head at T=%d S=%d", id[0], id[1], track, side);
+        track = id[0];
+        side = id[1];
+        sector = id[2];
+    }
+
     if (sector < 1 || sector > sectors_per_track) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
         return;
@@ -467,10 +493,10 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
     LOG(3, "ISM write: flushed T=%d S=%d Sec=%d (%zu bytes written)", track, side, sector, written);
 
-    // The head has passed this sector: the next data field written in the same
-    // ACTION (a format writes a whole track in one) belongs to the next one,
-    // in the model's 1:1 rotation order (mfm_advance_sector).  Without this
-    // every field of the track landed on the same image block.
+    // The head has passed this sector: a following data field written in the
+    // same ACTION with no ID field of its own belongs to the next one, in the
+    // model's 1:1 rotation order (mfm_advance_sector).  Without this every
+    // such field of the track landed on the same image block.
     floppy->mfm_cur_sector = (uint8_t)(sector >= sectors_per_track ? 1 : sector + 1);
 
     // Invalidate MFM read buffer so subsequent reads pick up the new data
@@ -870,13 +896,28 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
             if (floppy->ism_write_state == 0) {
-                // Scanning: check for data address mark ($FB) after $A1 marks
+                // Scanning: check for an ID ($FE) or data ($FB) address mark after $A1 marks
                 if (floppy->ism_write_a1_count >= 3 && byte == 0xFB) {
                     floppy->ism_write_state = 1;
                     floppy->ism_write_pos = 0;
                     LOG(4, "ISM write: data mark found, capturing sector data");
+                } else if (floppy->ism_write_a1_count >= 3 && byte == 0xFE) {
+                    // A new ID field supersedes any earlier one not yet used
+                    floppy->ism_write_state = 2;
+                    floppy->ism_write_id_pos = 0;
+                    floppy->ism_write_id_valid = false;
+                    LOG(4, "ISM write: ID mark found, capturing ID field");
                 }
                 floppy->ism_write_a1_count = 0; // non-mark byte resets count
+            } else if (floppy->ism_write_state == 2) {
+                // Capturing the ID field: track, side, sector, size code
+                floppy->ism_write_id[floppy->ism_write_id_pos++] = byte;
+                if (floppy->ism_write_id_pos == sizeof floppy->ism_write_id) {
+                    floppy->ism_write_id_valid = true;
+                    floppy->ism_write_state = 0; // its CRC follows; scan for the data mark
+                    LOG(4, "ISM write: ID field C=%d H=%d R=%d N=%d", floppy->ism_write_id[0], floppy->ism_write_id[1],
+                        floppy->ism_write_id[2], floppy->ism_write_id[3]);
+                }
             } else if (floppy->ism_write_state == 1) {
                 // Capturing: store data bytes
                 if (floppy->ism_write_pos < 512) {
