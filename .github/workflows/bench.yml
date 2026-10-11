@@ -14,6 +14,10 @@ name: Bench
 #   dispatch the same, with the rows, mode, pairing and rounds as inputs.
 
 on:
+  # TEMPORARY (validation on the branch; removed before merge)
+  push:
+    branches:
+      - claude/compassionate-pascal-7t0jjy
   pull_request:
     branches:
       - main
