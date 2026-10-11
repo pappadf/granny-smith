@@ -1,0 +1,342 @@
+name: Bench
+
+# CPU performance benchmarks (docs/guide/BENCHMARKS.md).  Its own workflow rather than a job in tests.yml because its
+# triggers differ: the perf-accepted label re-runs it (labeled/unlabeled),
+# it only runs for changes that can move the interpreter's cost (paths), the
+# nightly run on main writes the trend history (the one job here with
+# contents: write), and a dispatch picks rows and modes.  It shares only the
+# dev image with CI and runs beside it, so it adds no wall time to a PR.
+#
+#   PR       metrics A (gate: +1.5 % host instructions per guest instruction)
+#            and B (warn: paired wall clock), head vs its merge base.
+#   nightly  every row, A + A2 + B + C on main alone; the numbers go to the
+#            bench-data branch, one JSON line per row, metric and date.
+#   dispatch the same, with the rows, mode, pairing and rounds as inputs.
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'src/core/**'
+      - 'src/machines/**'
+      - 'src/platform/headless/**'
+      - 'src/sources.mk'
+      - 'Makefile'
+      - 'Makefile.headless'
+      - 'tests/bench/**'
+      - 'tests/integration/lib/mac.script'
+      - 'scripts/bench/**'
+      - '.github/workflows/bench.yml'
+  schedule:
+    # 02:40 UTC daily, before the nightly integration run.
+    - cron: '40 2 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pr (head vs merge base, A+B) or nightly (head alone, A+A2+B+C, history on main)'
+        required: false
+        default: 'pr'
+      rows:
+        description: 'Rows: pr, all, or a comma list (tests/bench/rows.json)'
+        required: false
+        default: ''
+      base:
+        description: 'Base commit for pr mode (default: the merge base with main)'
+        required: false
+        default: ''
+      pairing:
+        description: 'Metric B pairing: alternate (one core) or concurrent (two cores)'
+        required: false
+        default: 'alternate'
+      rounds:
+        description: 'Metric B rounds per binary'
+        required: false
+        default: '5'
+      metrics:
+        description: 'Metrics override (e.g. A,B,C); empty = the mode default'
+        required: false
+        default: ''
+      browser:
+        description: 'Also run the browser variant (two WASM builds in one session; report only)'
+        required: false
+        default: 'false'
+
+# Least privilege: the bench job runs the PR's code with a read-only token;
+# only the history job, which runs nothing from a PR, may write.
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: bench-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bench:
+    # A label event re-runs the gate only for the label it reads.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      github.event.label.name == 'perf-accepted'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      has_data: ${{ steps.fetch-data.outputs.has_test_data }}
+      mode: ${{ steps.plan.outputs.mode }}
+    steps:
+      # The PR's own head commit (not the merge ref): base is its merge base,
+      # so the comparison is exactly the PR's commits.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify valgrind, taskset and m68k binutils
+        run: |
+          which valgrind || { echo 'valgrind not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+          which taskset || { echo 'taskset not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+          valgrind --version
+
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_test_data=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Test data not available: the CPU benchmarks are skipped"
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      # What to run: mode, rows, metrics, and the base commit (pr mode).
+      - name: Plan
+        id: plan
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_ROWS: ${{ inputs.rows }}
+          IN_BASE: ${{ inputs.base }}
+          IN_METRICS: ${{ inputs.metrics }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mode=pr
+          [ "$EVENT" = schedule ] && mode=nightly
+          [ "$EVENT" = workflow_dispatch ] && [ -n "$IN_MODE" ] && mode="$IN_MODE"
+          if [ "$mode" = nightly ]; then rows=all; metrics=A,A2,B,C; else rows=pr; metrics=A,B; fi
+          [ -n "$IN_ROWS" ] && rows="$IN_ROWS"
+          [ -n "$IN_METRICS" ] && metrics="$IN_METRICS"
+          base=""
+          if [ "$mode" = pr ]; then
+            git fetch --no-tags origin "$BASE_REF" || true  # fetch-depth 0 already has it
+            base="${IN_BASE:-$(git merge-base "origin/$BASE_REF" HEAD)}"
+            base="$(git rev-parse "$base")"
+            if [ "$base" = "$(git rev-parse HEAD)" ]; then
+              echo "::notice::HEAD is its own merge base: comparing against HEAD^"
+              base="$(git rev-parse HEAD^)"
+            fi
+          fi
+          image="ubuntu24-emsdk6.0.7-node22"
+          {
+            echo "mode=$mode"; echo "rows=$rows"; echo "metrics=$metrics"
+            echo "base=$base"; echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+          echo "mode=$mode rows=$rows metrics=$metrics base=${base:-none} head=$(git rev-parse HEAD)"
+
+      # The release build, as shipped (-O2; Makefile.headless's default).
+      - name: Build head
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: make -f Makefile.headless -j"$(nproc)"
+
+      # The base binary is cached by commit and image: a base is built once
+      # for all the PRs on top of it.
+      - name: Restore base binary
+        id: base-cache
+        if: steps.plan.outputs.base != ''
+        uses: actions/cache@v6
+        with:
+          path: bench-base/gs-headless
+          key: bench-base-${{ steps.plan.outputs.image }}-${{ steps.plan.outputs.base }}
+
+      - name: Build base
+        if: steps.plan.outputs.base != '' && steps.base-cache.outputs.cache-hit != 'true'
+        run: scripts/bench/build-base.sh "${{ steps.plan.outputs.base }}" bench-base/gs-headless
+
+      # Head and base on the same runner: A is deterministic and B pairs them.
+      - name: Run benchmarks
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          ROWS: ${{ steps.plan.outputs.rows }}
+          METRICS: ${{ steps.plan.outputs.metrics }}
+          BASE: ${{ steps.plan.outputs.base }}
+          PAIRING: ${{ inputs.pairing || 'alternate' }}
+          ROUNDS: ${{ inputs.rounds || '5' }}
+        run: |
+          mkdir -p bench-out
+          base_arg=()
+          [ -n "$BASE" ] && base_arg=(--base bench-base/gs-headless)
+          python3 scripts/bench/run.py --head build/headless/gs-headless "${base_arg[@]}" \
+            --rows "$ROWS" --metrics "$METRICS" --pairing "$PAIRING" --rounds "$ROUNDS" \
+            --work bench-work --out bench-out/raw.jsonl 2>&1 | tee bench-out/run.log
+          exit "${PIPESTATUS[0]}"
+
+      # The verdict: tables into the step summary, bench.json, and a failing
+      # exit on a metric-A regression unless the PR carries perf-accepted.
+      - name: Compare
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          ACCEPT: ${{ contains(github.event.pull_request.labels.*.name, 'perf-accepted') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ steps.plan.outputs.base }}
+        run: |
+          accept=()
+          [ "$ACCEPT" = true ] && accept=(--accept)
+          {
+            echo "head \`${HEAD_SHA:0:12}\` vs base \`${BASE:0:12}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/bench/compare.py bench-out/raw.jsonl --summary "$GITHUB_STEP_SUMMARY" \
+            --json bench-out/bench.json "${accept[@]}"
+
+      - name: Upload results
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench
+          path: bench-out/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Upload run logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-work-logs
+          path: bench-work/**/output.log
+          if-no-files-found: ignore
+
+  # The browser variant (tests/e2e/web2-specs/perf-headbase.spec.ts): the
+  # head and base WASM builds alternated in one browser session.  Report
+  # only, on request: it needs two WASM builds and Playwright.
+  browser:
+    if: github.event_name == 'workflow_dispatch' && inputs.browser == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_test_data=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Test data not available: the browser benchmark is skipped"
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      - name: Build head and base (WASM)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          IN_BASE: ${{ inputs.base }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin main || true  # fetch-depth 0 already has it
+          base="${IN_BASE:-$(git merge-base origin/main HEAD)}"
+          [ "$(git rev-parse "$base")" = "$(git rev-parse HEAD)" ] && base=HEAD^
+          make ui2
+          scripts/bench/build-base.sh --wasm "$base" "$GITHUB_WORKSPACE/bench-base-dist"
+
+      - name: Install Playwright (tests/e2e)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: perf-headbase (Playwright)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          CI: true
+          PERF_BASE_DIST: ${{ github.workspace }}/bench-base-dist
+          PERF_LABEL: ${{ github.sha }}
+        working-directory: tests/e2e
+        run: |
+          npx playwright test --config=playwright.web2.config.ts --project=serial web2-specs/perf-headbase.spec.ts 2>&1 | tee perf-headbase.log
+          status="${PIPESTATUS[0]}"
+          { echo "## Browser head vs base"; echo '```'; grep PERFBENCH perf-headbase.log || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  # The trend history: the nightly numbers appended to the bench-data branch.
+  # Runs nothing from a PR (schedule runs main; a dispatch is a maintainer's,
+  # and its points carry their ref so a trend can keep to main).
+  history:
+    needs: bench
+    if: >-
+      needs.bench.result == 'success' && needs.bench.outputs.has_data == 'true' &&
+      needs.bench.outputs.mode == 'nightly' &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: bench
+          path: bench-out
+
+      - name: Append to bench-data
+        env:
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 scripts/bench/history.py bench-out/bench.json --sha "$SHA" --ref "$REF" --run "$RUN_ID" > /tmp/points.jsonl
+          if git fetch --depth=1 origin bench-data; then
+            git worktree add --detach /tmp/bench-data FETCH_HEAD
+            git -C /tmp/bench-data checkout -B bench-data
+          else
+            git worktree add --detach /tmp/bench-data
+            git -C /tmp/bench-data checkout --orphan bench-data
+            git -C /tmp/bench-data rm -rfq .
+            printf '%s\n' "CPU benchmark history: one JSON line per row, metric and night (scripts/bench/history.py)." > /tmp/bench-data/README.md
+            git -C /tmp/bench-data add README.md
+          fi
+          cat /tmp/points.jsonl >> /tmp/bench-data/history.jsonl
+          git -C /tmp/bench-data add history.jsonl
+          git -C /tmp/bench-data commit -qm "bench: nightly ${SHA:0:12} (run $RUN_ID)"
+          git -C /tmp/bench-data push origin bench-data
