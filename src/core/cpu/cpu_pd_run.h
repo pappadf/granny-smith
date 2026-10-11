@@ -839,32 +839,22 @@ PD_DEF_ST_INC_DEC(32)
 // --- MOVEM helpers: the staged, restart-safe loops of cpu_internal.h with
 //     the mask and the resolved address passed in ---
 static inline void pd_movem_to_regs(cpu_t *restrict cpu, uint16_t mask, uint32_t ea, int bits, int postinc_off) {
-    uint32_t new_d[8], new_a[8];
-    uint8_t d_set = 0, a_set = 0;
-    for (int i = 0; i < 8; i++)
-        if (mask & (1 << i)) {
-            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)READ16(ea) : READ32(ea);
-            ea += (uint32_t)bits >> 3;
-            if (g_bus_error_pending)
-                return;
-            new_d[i] = v;
-            d_set |= (uint8_t)(1 << i);
-        }
-    for (int i = 0; i < 8; i++)
-        if (mask & (0x100 << i)) {
-            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)READ16(ea) : READ32(ea);
-            ea += (uint32_t)bits >> 3;
-            if (g_bus_error_pending)
-                return;
-            new_a[i] = v;
-            a_set |= (uint8_t)(1 << i);
-        }
-    for (int i = 0; i < 8; i++)
-        if (d_set & (1 << i))
-            cpu->d[i] = new_d[i];
-    for (int i = 0; i < 8; i++)
-        if (a_set & (1 << i))
-            cpu->a[i] = new_a[i];
+    // Mask bit i is register i of the contiguous d[8], a[8] file (D0-D7
+    // then A0-A7, cpu_pd_classify.h asserts the layout): visit only the set
+    // bits, staged so a fault partway leaves every register untouched.
+    uint32_t staged[16];
+    for (unsigned m = mask; m; m &= m - 1) {
+        unsigned i = (unsigned)__builtin_ctz(m);
+        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)READ16(ea) : READ32(ea);
+        ea += (uint32_t)bits >> 3;
+        if (g_bus_error_pending)
+            return;
+        staged[i] = v;
+    }
+    for (unsigned m = mask; m; m &= m - 1) {
+        unsigned i = (unsigned)__builtin_ctz(m);
+        PD_R((uint8_t)(offsetof(cpu_t, d) + 4u * i)) = staged[i];
+    }
     if (postinc_off >= 0)
         PD_R((uint8_t)postinc_off) = ea; // (An)+ lands past the last register
 }
@@ -1007,12 +997,18 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     pd_entry_t *cur = NULL; // the entry to dispatch next
     uint32_t page_lo = 1; // guest address of the page (odd: no page yet)
     uint32_t ipc = cpu->instruction_pc; // address of the instruction being dispatched
+    // ipc from the cursor in one shift and add: entries are 8 bytes and
+    // instruction words 2, so ipc = page_lo + (cur - blk->e) * 2
+    // = ((uintptr_t)cur >> 2) + ipc_bias, the bias set with the block
+    // (blocks are calloc'd, so blk->e is 8-byte aligned).
+    _Static_assert(sizeof(pd_entry_t) == 8, "ipc_bias assumes 8-byte entries");
+    uint32_t ipc_bias = 0;
     goto relookup;
 
 top:
     if (*instructions == 0)
         goto done;
-    ipc = page_lo + ((uint32_t)(cur - blk->e) << 1);
+    ipc = (uint32_t)((uintptr_t)cur >> 2) + ipc_bias;
     (*instructions)--;
     {
         pd_entry_t e = *cur;
@@ -1543,6 +1539,7 @@ relookup:
         }
         predecode_enter(blk, *instructions); // charge the page being left, open the new one
         if (blk) {
+            ipc_bias = page_lo - (uint32_t)((uintptr_t)blk->e >> 2);
             cur = blk->e + ((pc & MEM_PAGE_MASK) >> 1);
             goto top;
         }
