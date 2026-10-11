@@ -241,6 +241,37 @@ static inline uint16_t ppd_cls_spr(const ppc_cls_t *c, uint32_t iw, bool to_spr,
 #define OP_DCBF   return PPD_NOP
 #undef OP_ISYNC
 #define OP_ISYNC  return PPD_ISYNC
+// D-form loads and stores: the common shapes with a base register (rA != 0;
+// rA = 0 and the X forms stay T1).  The update forms keep the T1 order.
+#define PPD_LS(ID, T1) return PPC_RA(iw) ? ppd_emit(ctx, ID, PPD_GOFF(PPC_RT(iw)), PPD_GOFF(PPC_RA(iw)), (uint32_t)PPC_SIMM(iw)) : T1
+#undef OP_LWZ
+#define OP_LWZ    PPD_LS(PPD_LWZ, T1_LWZ)
+#undef OP_LWZU
+#define OP_LWZU   PPD_LS(PPD_LWZU, T1_LWZU)
+#undef OP_LBZ
+#define OP_LBZ    PPD_LS(PPD_LBZ, T1_LBZ)
+#undef OP_LBZU
+#define OP_LBZU   PPD_LS(PPD_LBZU, T1_LBZU)
+#undef OP_LHZ
+#define OP_LHZ    PPD_LS(PPD_LHZ, T1_LHZ)
+#undef OP_LHZU
+#define OP_LHZU   PPD_LS(PPD_LHZU, T1_LHZU)
+#undef OP_LHA
+#define OP_LHA    PPD_LS(PPD_LHA, T1_LHA)
+#undef OP_LHAU
+#define OP_LHAU   PPD_LS(PPD_LHAU, T1_LHAU)
+#undef OP_STW
+#define OP_STW    PPD_LS(PPD_STW, T1_STW)
+#undef OP_STWU
+#define OP_STWU   PPD_LS(PPD_STWU, T1_STWU)
+#undef OP_STB
+#define OP_STB    PPD_LS(PPD_STB, T1_STB)
+#undef OP_STBU
+#define OP_STBU   PPD_LS(PPD_STBU, T1_STBU)
+#undef OP_STH
+#define OP_STH    PPD_LS(PPD_STH, T1_STH)
+#undef OP_STHU
+#define OP_STHU   PPD_LS(PPD_STHU, T1_STHU)
 // clang-format on
 
 #define PPC_DECODER_NAME        PPC_PD_TREE_NAME

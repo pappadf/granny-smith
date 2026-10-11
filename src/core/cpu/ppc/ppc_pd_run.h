@@ -107,6 +107,63 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
     PPD_CASE(ID, uint32_t a = ppc_cr_bit(p, e.b); uint32_t b = ppc_cr_bit(p, e.c); (void)a; (void)b;                   \
              ppc_set_cr_bit(p, e.a, (EXPR) & 1u))
 
+// T0 loads and stores: the access, then the cursor advance (or the
+// relookup a fault or a flushed window needs).
+#define PPD_LS_BEGIN(ID)                                                                                               \
+    case ID: {                                                                                                         \
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));                                                                   \
+        uint32_t ea = PPD_R(e.b) + e.c;                                                                                \
+        uint32_t xa = ea;                                                                                              \
+        uint32_t iw = blk->raw32[cur - blk->e];                                                                        \
+        p->instruction_pc = ipc;                                                                                       \
+        p->pc = ipc + 4;
+#define PPD_LS_END()                                                                                                   \
+    if (__builtin_expect(g_ppc_fetch.blk != blk || g_ppc_fetch.span != MEM_PAGE_SIZE, 0))                              \
+        goto retire_relookup;                                                                                          \
+    PPD_NEXT();                                                                                                        \
+    }
+#define PPD_LOAD(ID, SZ, BITS, EXT, UPD)                                                                               \
+    PPD_LS_BEGIN(ID)                                                                                                   \
+    uint64_t lv_ = 0;                                                                                                  \
+    int lg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, false, &lv_);                                                        \
+    if (lg_ < 0)                                                                                                       \
+        goto retire_relookup;                                                                                          \
+    uint32_t v_ = EXT(lg_ ? (uint##BITS##_t)lv_ : memory_read_uint##BITS(xa));                                         \
+    if (UPD)                                                                                                           \
+        PPD_R(e.b) = ea;                                                                                               \
+    PPD_R(e.a) = v_;                                                                                                   \
+    PPD_LS_END()
+#define PPD_LOAD_BYTE(ID, UPD)                                                                                         \
+    PPD_LS_BEGIN(ID)                                                                                                   \
+    xa = ppc_le_ea(p, ea, 1);                                                                                          \
+    if (ppc_dxlate(p, iw, &xa, false))                                                                                 \
+        goto retire_relookup;                                                                                          \
+    uint32_t v_ = memory_read_uint8(xa);                                                                               \
+    if (UPD)                                                                                                           \
+        PPD_R(e.b) = ea;                                                                                               \
+    PPD_R(e.a) = v_;                                                                                                   \
+    PPD_LS_END()
+#define PPD_STORE(ID, SZ, BITS, UPD)                                                                                   \
+    PPD_LS_BEGIN(ID)                                                                                                   \
+    uint64_t sv_ = PPD_R(e.a);                                                                                         \
+    int sg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, true, &sv_);                                                         \
+    if (sg_ < 0)                                                                                                       \
+        goto retire_relookup;                                                                                          \
+    if (!sg_)                                                                                                          \
+        memory_write_uint##BITS(xa, (uint##BITS##_t)sv_);                                                              \
+    if (UPD)                                                                                                           \
+        PPD_R(e.b) = ea; /* store before update: rS == rA stores the pre-update value */                               \
+    PPD_LS_END()
+#define PPD_STORE_BYTE(ID, UPD)                                                                                        \
+    PPD_LS_BEGIN(ID)                                                                                                   \
+    xa = ppc_le_ea(p, ea, 1);                                                                                          \
+    if (ppc_dxlate(p, iw, &xa, true))                                                                                  \
+        goto retire_relookup;                                                                                          \
+    memory_write_uint8(xa, (uint8_t)PPD_R(e.a));                                                                       \
+    if (UPD)                                                                                                           \
+        PPD_R(e.b) = ea;                                                                                               \
+    PPD_LS_END()
+
 // The T1 case body: bind the word, materialize PC, run the leaf.
 #define PD_T1_BODY(OPX)                                                                                                \
     do {                                                                                                               \
@@ -235,6 +292,29 @@ top:
             PPD_CASE(PPD_MCRF, ppc_set_cr_field(p, e.a, ppc_get_cr_field(p, e.b)))
             PPD_CASE(PPD_NOP, (void)0)
             PPD_CASE(PPD_ISYNC, ppc_context_sync(p))
+
+            // ---- T0: D-form loads and stores (rA != 0) ----
+            // The T1 bodies (CHKA gate, XLT for bytes, update order) with the
+            // fields pre-extracted.  instruction_pc and pc are set as T1 does,
+            // for the exceptions and slow paths the access may take; the raw
+            // word (the DSISR and alignment images need it) comes from the
+            // shadow.  A raised exception moved the PC: retire_relookup, as
+            // T1.  An access with side effects (a device store remapping
+            // memory) may have flushed the fetch window: then relookup too.
+            PPD_LOAD(PPD_LWZ, 4, 32, (uint32_t), 0)
+            PPD_LOAD(PPD_LWZU, 4, 32, (uint32_t), 1)
+            PPD_LOAD(PPD_LHZ, 2, 16, (uint32_t), 0)
+            PPD_LOAD(PPD_LHZU, 2, 16, (uint32_t), 1)
+            PPD_LOAD(PPD_LHA, 2, 16, (uint32_t)(int32_t)(int16_t), 0)
+            PPD_LOAD(PPD_LHAU, 2, 16, (uint32_t)(int32_t)(int16_t), 1)
+            PPD_LOAD_BYTE(PPD_LBZ, 0)
+            PPD_LOAD_BYTE(PPD_LBZU, 1)
+            PPD_STORE(PPD_STW, 4, 32, 0)
+            PPD_STORE(PPD_STWU, 4, 32, 1)
+            PPD_STORE(PPD_STH, 2, 16, 0)
+            PPD_STORE(PPD_STHU, 2, 16, 1)
+            PPD_STORE_BYTE(PPD_STB, 0)
+            PPD_STORE_BYTE(PPD_STBU, 1)
 
             // ---- T0: branches (the 601 fold rule: a taken branch to itself burns a slot) ----
         case PPD_B_IN: {

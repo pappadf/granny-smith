@@ -45,7 +45,10 @@
     /* CR logical: a = bT, b = bA, c = bB; mcrf: a = crfD, b = crfS */ \
     X(CRAND) X(CRANDC) X(CROR) X(CRORC) X(CRXOR) X(CREQV) X(CRNAND) X(CRNOR) X(MCRF) \
     /* cache/sync no-ops and isync */ \
-    X(NOP) X(ISYNC)
+    X(NOP) X(ISYNC) \
+    /* D-form loads/stores with rA != 0: a = rT/rS offset, b = rA offset, c = displacement */ \
+    X(LWZ) X(LWZU) X(LBZ) X(LBZU) X(LHZ) X(LHZU) X(LHA) X(LHAU) \
+    X(STW) X(STWU) X(STB) X(STBU) X(STH) X(STHU)
 // clang-format on
 
 enum {
