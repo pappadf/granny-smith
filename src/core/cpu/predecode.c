@@ -58,7 +58,8 @@ static pd_block_t **g_pd_slots[MEM_CODE_REGIONS_MAX];
 static uint32_t *g_pd_demoted[MEM_CODE_REGIONS_MAX];
 static uint8_t *g_pd_demote_count[MEM_CODE_REGIONS_MAX]; // demotions so far per page: the hold backs off
 static uint32_t g_pd_slot_pages[MEM_CODE_REGIONS_MAX];
-static uint32_t g_pd_generation = 0; // g_mem_map_generation the slots belong to
+uint32_t g_pd_generation = 0; // g_mem_map_generation the slots belong to
+pd_block_t *g_pd_tcache[PD_TCACHE_SIZE]; // predecode_find's page-transition cache
 
 bool predecode_enabled(void) {
     return g_pd_enabled;
@@ -66,6 +67,7 @@ bool predecode_enabled(void) {
 
 void predecode_set_enabled(bool on) {
     g_pd_enabled = on;
+    memset(g_pd_tcache, 0, sizeof(g_pd_tcache)); // a disabled pool hands out no blocks
 }
 
 int predecode_elide_level(void) {
@@ -148,6 +150,7 @@ void predecode_reset(void) {
     g_pd_pool_next = 0;
     g_pd_blocks_live = 0;
     g_pd_current = NULL;
+    memset(g_pd_tcache, 0, sizeof(g_pd_tcache));
     memset(&g_pd_stats, 0, sizeof(g_pd_stats));
     for (int a = 0; a < 2; a++)
         if (g_pd_hist[a])
@@ -236,6 +239,7 @@ pd_block_t *predecode_lookup(uint8_t *host_page, uint32_t guest_lo, pd_arch_t ar
             blk->guest_lo = guest_lo;
             g_pd_stats.realiases++;
         }
+        g_pd_tcache[predecode_tcache_slot(host_page)] = blk;
         return blk;
     }
     if ((uint32_t)g_pd_stats.lookups - g_pd_demoted[r][page] > 0x80000000u) {
@@ -265,6 +269,7 @@ pd_block_t *predecode_lookup(uint8_t *host_page, uint32_t guest_lo, pd_arch_t ar
     memory_code_page_mark(host_page); // suppress the page's write entries
     g_pd_stats.allocs++;
     g_pd_blocks_live++;
+    g_pd_tcache[predecode_tcache_slot(host_page)] = blk;
     return blk;
 }
 
