@@ -159,7 +159,7 @@ differences; across models it is a best effort.
 ## Validation
 
 The thresholds (`tests/bench/rows.json`, `"thresholds"`) and the pairing mode
-come from ten runs of the bench on GitHub-hosted runners on a change that
+come from eleven runs of the bench on GitHub-hosted runners on a change that
 added the calibration code and left the CPU cores alone, five per pairing
 mode, plus one run with a deliberate regression (an extra per-instruction
 test in the 68030 loop). The runners came as four CPU models: AMD EPYC 7763
@@ -168,7 +168,8 @@ test in the 68030 loop). The runners came as four CPU models: AMD EPYC 7763
 | Check | Result |
 |---|---|
 | A on the no-op change | head = base to the last printed digit on all seven rows, in all ten runs, on all four CPU models, and equal to the values measured in a development container |
-| A on the deliberate regression | +2.6 to +2.8 % on the three 68030 rows (FAIL), 0.00 % on the other four |
+| A on the deliberate regression | +2.6 to +2.8 % on the three 68030 rows (FAIL), 0.00 % on the other four; the same to the last digit in a development container and on a fifth CPU model (Xeon Platinum 8573C) |
+| B on the deliberate regression (alternate pairing) | did not see it (68030 rows 0.968–0.999: one more well-predicted branch per instruction costs that CPU next to nothing) and warned on the untouched 68040 row at 0.913 |
 | B, concurrent pairing | ratios 0.960–1.013, no warning; lowest interval upper bound 0.981 |
 | B, alternate pairing | ratios 0.930–1.052, six warnings |
 | Calibration spread before/after | 0.03–4.3 %, under the 5 % noise line |
