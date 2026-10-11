@@ -1,0 +1,18 @@
+# se30-finder-idle — the 68030 with its PMMU idle: an SE/30 at the System
+# 7.5.3 Finder desktop (the bare 25 MB volume), the state users leave the
+# machine in.  Under 0.1 % slow-path accesses per instruction.  (The
+# media-free SE/30 looks idle too but is the ROM's SCSI scan busy-waiting on
+# the 5380, half of its instructions device reads -- not a CPU workload.)
+
+def bench_boot() {
+    machine.boot model="se30" ram=8192 rom="${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
+    machine.rtc.time = "2026-04-26T21:30:00"
+    assert machine.scsi.attach_hd("${$TEST_DATA}/systems/system_7_5_3_25mb_bare.img", 0) "se30-finder-idle: attach_hd failed"
+    machine.rtc.pram.boot_device = 0
+    wait_desktop(1600000000)
+    bench_guard()
+}
+
+def bench_guard() {
+    bench_assert_finder("se30-finder-idle")
+}

@@ -1,0 +1,61 @@
+# tests/bench/lib/bench.script — shared helpers for the CPU benchmark rows
+# (docs/guide/BENCHMARKS.md).
+#
+# A row script (tests/bench/<row>.script) defines two functions:
+#
+#   bench_boot()    boot from nothing to the row's state, deterministically
+#                   (RTC pinned after machine.boot, scripted input only), and
+#                   assert that the state was reached;
+#   bench_guard()   assert, at the end of a measured window, that the machine
+#                   is still in that state (the right application, the MMU on,
+#                   the 68K emulator running...).  Called through try(), so a
+#                   failure marks the measurement invalid, not the run red.
+#
+# The harness (scripts/bench/run.py) writes a small driver script per run
+# that includes ../integration/lib/mac.script, this file and the row, then
+# either boots and saves a checkpoint or loads one and measures a window.
+# The slow-path ceiling and the "not stuck" check are applied by the
+# harness to the numbers bench_window() prints, so they are tuned in one
+# place (tests/bench/rows.json).
+
+# Run `n` scheduler instructions and print what the window cost: guest
+# instructions retired, memory slow-path accesses, host CPU time of the
+# process, and where the PC ended.  One @@WIN line, read by run.py.
+def bench_window(n) {
+    let i0 = scheduler.instr_count
+    let s0 = machine.memory.slowpath_count
+    let t0 = scheduler.host_user_ns
+    scheduler.run $n
+    let t1 = scheduler.host_user_ns
+    let di = scheduler.instr_count - $i0
+    let ds = machine.memory.slowpath_count - $s0
+    echo "@@WIN {\"planned\":${$n},\"guest_instr\":${$di},\"slowpath\":${$ds},\"host_ns\":${$t1 - $t0},\"pc\":\"${machine.cpu.pc:08x}\"}"
+}
+
+# The row's state guard, reported rather than asserted: one @@GUARD line.
+def bench_check() {
+    if try(bench_guard(), "FAILED") == "FAILED" {
+        echo "@@GUARD {\"ok\":false}"
+    } else {
+        echo "@@GUARD {\"ok\":true}"
+    }
+}
+
+# True when the current application's name (CurApName, $910, a Pascal
+# string) starts with the 4-byte word `w0` followed by the 2-byte `w1` --
+# the length byte and the first five characters, as wait_desktop() reads it.
+def bench_app_is(w0, w1) {
+    return try(machine.cpu.mmu.peek(0x910, 4), 0) == $w0 && try(machine.cpu.mmu.peek(0x914, 2), 0) == $w1
+}
+
+# The Finder is the current application and has an application heap.
+def bench_assert_finder(label) {
+    assert bench_app_is(0x0646696E, 0x6465) "${$label}: the Finder is not the current application"
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "${$label}: no application heap"
+}
+
+# A PowerPC machine is running 68K code under the ROM's emulator: the
+# nanokernel runs the emulator in user mode (MSR[PR]).
+def bench_assert_68k_emulator(label) {
+    assert (machine.cpu.msr & 0x4000) != 0 "${$label}: not in the 68K emulator (MSR=${machine.cpu.msr:08x})"
+}

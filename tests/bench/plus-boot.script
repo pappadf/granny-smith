@@ -1,0 +1,21 @@
+# plus-boot — the 68000 core: a Macintosh Plus booting System 6.0.8 from
+# floppy.  The checkpoint is 60 M instructions in, past the ROM's memory
+# test and the boot blocks, where the boot mixes ROM, Toolbox and disk-driver
+# code (measured: 0.2 % slow-path accesses per instruction from there on).
+
+def bench_boot() {
+    machine.boot model="plus" ram=2048 rom="${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
+    # Pinned after the boot, which seeds the RTC from the host clock.
+    machine.rtc.time = "2026-04-26T21:30:00"
+    machine.floppy.drive[0].insert "${$TEST_DATA}/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+    scheduler.run 60000000
+    bench_guard()
+}
+
+# Still booting from the floppy: a disk is in drive 0 and the PC is in RAM
+# or ROM (a Plus has nothing else to run from), and the System has not
+# crashed into the debugger trap vector.
+def bench_guard() {
+    assert machine.floppy.drive[0].present "plus-boot: the boot floppy is gone"
+    assert machine.cpu.pc < 0x00500000 "plus-boot: PC ${machine.cpu.pc:08x} outside RAM and ROM"
+}

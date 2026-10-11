@@ -342,6 +342,7 @@ static void print_usage(const char *program) {
     printf("                       (also settable with $GS_SHARED_DIR; created if missing)\n");
     printf("  --print-dir=DIR      Write each LaserWriter job's PDF as DIR/<job>-<title>.pdf\n");
     printf("                       (also $GS_PRINT_DIR; created if missing; needs a PLATEN=1 build)\n");
+    printf("  --calibrate     Time the host-yardstick kernels (CPU benchmarks, metric C) and exit\n");
     printf("  --framed        Core events as `@event <kind> <json>` lines, a job's output as `@out <json>`,\n");
     printf("                  an I/O job's progress as `@progress <json>`, and `@end ok|error` after each\n");
     printf("                  statement (for a client that parses)\n");
@@ -1132,6 +1133,10 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 0;
         }
+
+        // --calibrate: the host yardstick of the CPU benchmarks (calibrate.c)
+        if (strcmp(arg, "--calibrate") == 0)
+            return hl_calibrate();
 
         if (strcmp(arg, "--quiet") == 0 || strcmp(arg, "-q") == 0) {
             quiet = 1;
