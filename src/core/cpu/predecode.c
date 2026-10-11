@@ -60,6 +60,7 @@ static uint8_t *g_pd_demote_count[MEM_CODE_REGIONS_MAX]; // demotions so far per
 static uint32_t g_pd_slot_pages[MEM_CODE_REGIONS_MAX];
 uint32_t g_pd_generation = 0; // g_mem_map_generation the slots belong to
 pd_block_t *g_pd_tcache[PD_TCACHE_SIZE]; // predecode_find's page-transition cache
+void (*g_pd_pool_freed_hook)(void) = NULL; // predecode_set_pool_cap freed the blocks
 
 bool predecode_enabled(void) {
     return g_pd_enabled;
@@ -168,6 +169,8 @@ void predecode_set_pool_cap(uint32_t blocks) {
     g_pd_pool = NULL;
     g_pd_pool_count = 0;
     g_pd_pool_cap = blocks;
+    if (g_pd_pool_freed_hook)
+        g_pd_pool_freed_hook();
 }
 
 // Take a block for a new page: a fresh one below the cap, else the next

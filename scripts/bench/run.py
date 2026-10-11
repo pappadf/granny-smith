@@ -172,6 +172,10 @@ def run_emu(cmd, d, timeout, wrapper=None):
     p = subprocess.run(full, cwd=d, capture_output=True, text=True, timeout=timeout, env=env)
     with open(os.path.join(d, "output.log"), "w") as f:
         f.write("$ " + " ".join(full) + "\n" + p.stdout + p.stderr)
+    # The run's disk deltas are not read again (the checkpoint is its own
+    # file), and on a large image each is the size of the disk: a few
+    # dozen runs of a 516 MB image would fill a runner.
+    shutil.rmtree(env["GS_STORAGE_CACHE"], ignore_errors=True)
     return p, time.time() - t0
 
 

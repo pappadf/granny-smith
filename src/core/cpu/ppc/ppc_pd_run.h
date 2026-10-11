@@ -134,6 +134,11 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
     // = ((uintptr_t)cur >> 1) + ipc_bias, the bias set with the block.
     _Static_assert(sizeof(pd_entry_t) == 8, "ipc_bias assumes 8-byte entries");
     uint32_t ipc_bias = 0;
+    // The page the pool last declined (demoted and held, no region): while
+    // the PC stays on it under the same window, every instruction goes
+    // straight to the generic step instead of asking the pool again (the
+    // 68K loop's pd_held).  Odd: none.
+    uint32_t held_lo = 1;
     g_ppc_fetch.blk = NULL; // re-validate the window's block once per sprint (demotions, logpoints)
     goto relookup;
 
@@ -377,6 +382,15 @@ relookup:
             cur = blk->e + ((pc - page_lo) >> 2);
             goto top;
         }
+        if (!blk && (pc - held_lo) < MEM_PAGE_SIZE && g_ppc_fetch.lo == held_lo && g_ppc_fetch.span == MEM_PAGE_SIZE) {
+            // Still on the declined page: generic, with the boundary's
+            // budget and interrupt checks.
+            if (*instructions == 0)
+                goto done;
+            if ((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE))
+                ppc_poll_interrupt(p);
+            goto t2_step;
+        }
         // Leaving the block: from here p->pc is authoritative (the exit
         // materializes from the cursor only while a block is current).
         blk = NULL;
@@ -388,40 +402,49 @@ relookup:
         // on the generic tier, whose fetch applies the munge.  Setting MSR[LE]
         // flushes the fetch window, so a block never outlives the switch.
         if (!(pc & 3u) && !(p->msr & PPC_MSR_LE)) {
+            bool refilled = false;
             if ((pc - g_ppc_fetch.lo) >= g_ppc_fetch.span) {
                 // The window belongs to the page being left: refill it here
-                // (an ftlb hit for a page seen before) rather than through a
-                // generic step — the transition is the common case.
+                // rather than through a generic step — the transition is the
+                // common case.  A page seen before refills inline from the
+                // fetch TLB, which also hands over the page's last block.
                 g_pd_stats.relookup_nomap++;
-                uint32_t iw;
-                p->instruction_pc = pc;
-                if (!ppc_fetch_fill(p, pc, &iw)) {
-                    // ISI (pc now at the vector), or a fetch fault: the burndown
-                    // was zeroed, and the next relookup reaches the epilogue.
-                    ipc = pc;
-                    goto relookup;
+                refilled = true;
+                if (!ppc_fetch_window_hit(p->msr, pc)) {
+                    uint32_t iw;
+                    p->instruction_pc = pc;
+                    if (!ppc_fetch_fill(p, pc, &iw)) {
+                        // ISI (pc now at the vector), or a fetch fault: the burndown
+                        // was zeroed, and the next relookup reaches the epilogue.
+                        ipc = pc;
+                        goto relookup;
+                    }
                 }
             }
             if ((pc - g_ppc_fetch.lo) < g_ppc_fetch.span && g_ppc_fetch.span == MEM_PAGE_SIZE) {
-                // The window's cached block may have been recycled by the
-                // pool since (eviction, demotion, reset): trust it only
-                // while it still holds this page.
-                if (g_ppc_fetch.blk &&
-                    (g_ppc_fetch.blk->host != (uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo) ||
-                     g_ppc_fetch.blk->guest_lo != g_ppc_fetch.lo))
-                    g_ppc_fetch.blk = NULL;
-                if (!g_ppc_fetch.blk)
-                    g_ppc_fetch.blk = predecode_find((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo),
-                                                     g_ppc_fetch.lo, PD_ARCH_PPC);
+                // The window's block (kept in the fetch TLB across sprints)
+                // may have been recycled, demoted or reset since: trust it
+                // only while predecode_block_ok holds.  Taking it on a
+                // refill ticks the lookup clock as the lookup it replaces.
+                uint8_t *host_page = (uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo);
+                if (!predecode_block_ok(g_ppc_fetch.blk, host_page, g_ppc_fetch.lo)) {
+                    g_ppc_fetch.blk = predecode_find(host_page, g_ppc_fetch.lo, PD_ARCH_PPC);
+                    if (g_ppc_fetch.fe)
+                        g_ppc_fetch.fe->blk = g_ppc_fetch.blk;
+                } else if (refilled) {
+                    g_pd_stats.lookups++;
+                }
                 blk = g_ppc_fetch.blk;
                 page_lo = g_ppc_fetch.lo;
                 if (blk) {
                     predecode_enter(blk, *instructions);
                     ipc_bias = page_lo - (uint32_t)((uintptr_t)blk->e >> 1);
                     cur = blk->e + ((pc - page_lo) >> 2);
+                    held_lo = 1;
                     goto top;
                 }
                 g_pd_stats.relookup_nopool++;
+                held_lo = g_ppc_fetch.lo;
             }
         }
         // No window for this page yet, a device window, a logpointed or

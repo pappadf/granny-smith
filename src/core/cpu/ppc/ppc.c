@@ -21,6 +21,7 @@
 #include "machine_profile.h"
 #include "object.h"
 #include "ppc_disasm.h"
+#include "predecode.h"
 #include "scheduler.h"
 #include "status.h"
 #include "system.h"
@@ -948,6 +949,9 @@ static void ppc_hook_selected(void *ctx) {
 }
 
 memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
+    // The fetch TLB keeps predecoded block pointers across sprints: drop
+    // them with the blocks when the pool is freed.
+    g_pd_pool_freed_hook = ppc_mmu_flush_fetch;
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).
     return (memory_cpu_hooks_t){.user_soa_reserved = true,

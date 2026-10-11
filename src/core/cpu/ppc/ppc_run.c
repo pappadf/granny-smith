@@ -596,6 +596,11 @@ static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
         *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ g_ppc_fetch.le_xor)));
         return true;
     }
+    // A page seen before: refill the window from the fetch TLB inline.
+    if (ppc_fetch_window_hit(p->msr, pc)) {
+        *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ g_ppc_fetch.le_xor)));
+        return true;
+    }
     return ppc_fetch_fill(p, pc, iw);
 }
 

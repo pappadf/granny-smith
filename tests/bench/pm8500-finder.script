@@ -1,16 +1,19 @@
 # pm8500-finder — the 604 core: a Power Macintosh 8500 (120 MHz 604, Control
-# video) at the System 7.6 Finder desktop, the suite-tnt image.  Most of the
-# Finder's idle loop is 68K code under the ROM's emulator, with native
-# Toolbox and driver code between.
+# video) at the System 7.6 desktop, the suite-tnt image, 4 G instructions
+# after power-on (suite-tnt's budget for the same boot).  The desktop's
+# idle loop is mostly 68K code under the ROM's emulator, with native
+# Toolbox and driver code between.  The image's first-boot dialog (Energy
+# Saver) is in front, so the guard checks the emulator, not the Finder.
 
 def bench_boot() {
     machine.boot model="pm8500" ram=32768 rom="${$TEST_DATA}/roms/pm7500-pm8500-pm9500-96cd923d.rom"
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$TEST_DATA}/systems/system_7_6_170mb_24ac.img" 0
-    wait_desktop(5000000000)
+    scheduler.run 4000000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "pm8500-finder: system error during startup"
     bench_guard()
 }
 
 def bench_guard() {
-    bench_assert_finder("pm8500-finder")
+    bench_assert_68k_emulator("pm8500-finder")
 }

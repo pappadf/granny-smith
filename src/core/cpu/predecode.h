@@ -96,8 +96,10 @@ int predecode_elide_level(void); // 0 = off, 1 = E1 (register-only definers), 2 
 void predecode_set_elide(int level);
 
 // Tunables (also settable through the `predecode` node).  Setting the pool
-// cap drops every block.
+// cap drops every block and frees them: g_pd_pool_freed_hook then lets a
+// core that keeps block pointers of its own (the PowerPC fetch TLB) drop them.
 void predecode_set_pool_cap(uint32_t blocks);
+extern void (*g_pd_pool_freed_hook)(void);
 void predecode_set_thrash(uint32_t limit, uint32_t window_lookups, uint32_t demote_hold_allocs);
 
 // === Pool ===
@@ -164,11 +166,16 @@ extern uint32_t g_mem_map_generation;
 static inline uint32_t predecode_tcache_slot(const uint8_t *host_page) {
     return (uint32_t)((uintptr_t)host_page >> 12) & (PD_TCACHE_SIZE - 1);
 }
+// A block remembered outside the pool (this cache, the PowerPC fetch TLB)
+// still stands for host_page at guest_lo: not recycled to another page or
+// alias, not marked for demotion, and the pool is on the current map.
+static inline bool predecode_block_ok(const pd_block_t *blk, const uint8_t *host_page, uint32_t guest_lo) {
+    return blk && blk->host == host_page && blk->guest_lo == guest_lo && !blk->thrashed &&
+           g_pd_generation == g_mem_map_generation;
+}
 static inline pd_block_t *predecode_find(uint8_t *host_page, uint32_t guest_lo, pd_arch_t arch) {
     pd_block_t *blk = g_pd_tcache[predecode_tcache_slot(host_page)];
-    if (__builtin_expect(blk && blk->host == host_page && blk->guest_lo == guest_lo && !blk->thrashed &&
-                             g_pd_generation == g_mem_map_generation,
-                         1)) {
+    if (__builtin_expect(predecode_block_ok(blk, host_page, guest_lo), 1)) {
         g_pd_stats.lookups++;
         return blk;
     }
