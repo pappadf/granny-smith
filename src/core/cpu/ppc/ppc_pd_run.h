@@ -37,6 +37,13 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
         cur++;                                                                                                         \
         goto retire;                                                                                                   \
     } while (0)
+// The same for an entry that is not a branch: nothing it does can fold, so
+// it retires through retire_plain (no fold test).
+#define PPD_ADVANCE()                                                                                                  \
+    do {                                                                                                               \
+        cur++;                                                                                                         \
+        goto retire_plain;                                                                                             \
+    } while (0)
 #define PPD_JUMP_IN(index, fold_)                                                                                      \
     do {                                                                                                               \
         p->fold = (fold_);                                                                                             \
@@ -64,7 +71,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
     case ID: {                                                                                                         \
         PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));                                                                   \
         BODY;                                                                                                          \
-        PPD_NEXT();                                                                                                    \
+        PPD_ADVANCE();                                                                                                 \
     }
 #define PPD_PAIR(ID, BODY)                                                                                             \
     PPD_CASE(ID, BODY(0))                                                                                              \
@@ -120,7 +127,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_LS_END()                                                                                                   \
     if (__builtin_expect(g_ppc_fetch.blk != blk || g_ppc_fetch.span != MEM_PAGE_SIZE, 0))                              \
         goto retire_relookup;                                                                                          \
-    PPD_NEXT();                                                                                                        \
+    PPD_ADVANCE();                                                                                                     \
     }
 #define PPD_LOAD(ID, SZ, BITS, EXT, UPD)                                                                               \
     PPD_LS_BEGIN(ID)                                                                                                   \
@@ -202,6 +209,7 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
 top:
     if (*instructions == 0)
         goto done;
+dispatch:
     // Level-sensitive interrupt inputs re-checked at every boundary (as the
     // switch loop does); taking one redirects the PC.
     if (__builtin_expect((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE), 0)) {
@@ -404,6 +412,19 @@ top:
     }
     // T1 leaves: the body set p->pc (sequentially or by branching).
     goto retire_relookup;
+
+retire_plain:
+    // A non-branch entry: one read of the budget for the saturating
+    // decrement and the zero test, then straight past top's own test.
+    {
+        uint32_t n_ = *instructions;
+        if (__builtin_expect(n_ > 1, 1)) {
+            *instructions = n_ - 1;
+            goto dispatch;
+        }
+        *instructions = 0;
+        goto done;
+    }
 
 retire:
     // The switch loop's tail: a folded branch keeps its slot unless it is
