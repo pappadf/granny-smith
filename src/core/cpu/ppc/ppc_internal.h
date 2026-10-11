@@ -505,6 +505,16 @@ static inline bool ppc_fp_check(ppc_t *p) {
 // big-endian value via *val, stores consumed it.
 int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val);
 
+// The gate's common case, inline at every load and store: a naturally
+// aligned access with MSR[LE] clear.  It cannot cross a page or segment,
+// and no model's alignment rule applies to it, so only the translation
+// remains (the inline ppc_dxlate).  Everything else takes the full gate.
+static inline int ppc_scalar_gate_inl(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val) {
+    if (__builtin_expect(((*addr & (size - 1u)) | (p->msr & PPC_MSR_LE)) == 0, 1))
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    return ppc_scalar_gate(p, iw, addr, size, store, val);
+}
+
 // Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
 // one-liner table: branches, divides with their deterministic-undefined
 // results, string transfers, and the store-conditional.

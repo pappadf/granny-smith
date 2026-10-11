@@ -200,7 +200,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // register writeback (a faulted access abandons with no side effects).
 // M601/M604 reject the other model's encodings with the illegal program
 // exception (decode-tree validity per model).
-// CHKA_* route through ppc_scalar_gate (per-model alignment + the 604's
+// CHKA_* route through ppc_scalar_gate_inl / ppc_scalar_gate (per-model alignment + the 604's
 // hardware-split page crossings): loads read their value via LDV(bits) —
 // the gate's byte-wise value when it split, a normal access at xa
 // otherwise — and stores capture the value into `sv_` up front so the
@@ -209,8 +209,8 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define FP()    if (ppc_fp_check(p)) break
 #define M601()  if (ppc_is_604(p)) { ppc_illegal_op(p, iw); break; }
 #define M604()  if (!ppc_is_604(p)) { ppc_illegal_op(p, iw); break; }
-#define CHKA_LD(ea, sz) uint32_t xa = ea; uint64_t lv_ = 0; int lg_ = ppc_scalar_gate(p, iw, &xa, sz, false, &lv_); if (lg_ < 0) break
-#define CHKA_ST(ea, sz, vexpr) uint32_t xa = ea; uint64_t sv_ = (vexpr); int sg_ = ppc_scalar_gate(p, iw, &xa, sz, true, &sv_); if (sg_ < 0) break
+#define CHKA_LD(ea, sz) uint32_t xa = ea; uint64_t lv_ = 0; int lg_ = ppc_scalar_gate_inl(p, iw, &xa, sz, false, &lv_); if (lg_ < 0) break
+#define CHKA_ST(ea, sz, vexpr) uint32_t xa = ea; uint64_t sv_ = (vexpr); int sg_ = ppc_scalar_gate_inl(p, iw, &xa, sz, true, &sv_); if (sg_ < 0) break
 #define LDV(bits)       (lg_ ? (uint##bits##_t)lv_ : READ(bits, xa))
 #define STV(bits)       do { if (!sg_) WRITE(bits, xa, (uint##bits##_t)sv_); } while (0) // gate already stored byte-wise when it split — but the op body (update forms) must still run
 // Byte accesses skip the scalar gate (no alignment class applies) but

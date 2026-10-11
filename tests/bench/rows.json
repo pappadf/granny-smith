@@ -46,7 +46,7 @@
       "rom": "roms/pm6100-pm7100-pm8100-9feb69b3.rom", "model": "pm6100", "ram": 24576
     },
     "pm7500-of": {
-      "cpu": "604", "run_fn": "ppc_run",
+      "cpu": "601", "run_fn": "ppc_run",
       "rom": "roms/pm7500-pm8500-pm9500-96cd923d.rom", "model": "pm7500", "ram": 32768,
       "b_warm": 5000000, "b_window": 50000000
     },
@@ -54,6 +54,14 @@
       "cpu": "68030", "run_fn": "cpu_run_68030",
       "rom": "roms/iici-368cadfe.rom", "model": "iici", "ram": 16384,
       "b_warm": 2000000, "b_window": 28000000
+    },
+    "pm8500-finder": {
+      "cpu": "604", "run_fn": "ppc_run",
+      "rom": "roms/pm7500-pm8500-pm9500-96cd923d.rom", "model": "pm8500", "ram": 32768
+    },
+    "g3dt-boot": {
+      "cpu": "750", "run_fn": "ppc_run",
+      "rom": "roms/pmg3dt-pmg3mt-78f57389.rom", "model": "pmg3dt", "ram": 65536
     }
   }
 }
