@@ -127,7 +127,8 @@ static const config_option_decl_t k_imagewriter_option = {
     .values = k_imagewriter_values,
     .default_value = "none",
 };
-// The same on a machine without AppleTalk (the Lisa): Serial A.
+// The same on a machine with no AppleTalk option (the Lisa, whose AppleTalk
+// cable is always on Serial B): Serial A.
 static const config_option_decl_t k_imagewriter_option_serial_a = {
     .id = "imagewriter",
     .label = "ImageWriter",
