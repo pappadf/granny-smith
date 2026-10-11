@@ -441,7 +441,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 // path_buf must be at least 256 bytes.
 static bool parse_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
-    char ident[64];
+    char ident[OBJ_IDENT_MAX + 1];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected identifier");
         return false;
@@ -792,7 +792,7 @@ value_t expr_object_path_read(struct object *root, const char *path) {
 // segments relative to the captured object (snapshot semantics); any
 // other kind is a plain value and admits no continuation.
 static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
-    char ident[64];
+    char ident[OBJ_IDENT_MAX + 1];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected binding name after '$'");
         return val_err("bad binding");
@@ -2526,7 +2526,7 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
         if (p[0] == '$' && (isalpha((unsigned char)p[1]) || p[1] == '_')) {
             // `$name` binding splice.
             const char *q = p + 1;
-            char ident[64];
+            char ident[OBJ_IDENT_MAX + 1];
             size_t i = 0;
             while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
                 // Fail rather than splice a truncated (other) binding

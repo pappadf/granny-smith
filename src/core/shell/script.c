@@ -1261,7 +1261,7 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
         *out_base = NULL;
     if (**p == '$') {
         (*p)++;
-        char name[64];
+        char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         if (!ident_start(**p)) {
             *errv = val_err("expected binding name after '$'");
@@ -1531,7 +1531,7 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
 // dispatch. `fn` selects a user function instead of a tree node.
 static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t node, script_func_t *fn) {
     value_t vals[CMD_MAX_ARGS_V2];
-    char named_names[CMD_MAX_ARGS_V2][64];
+    char named_names[CMD_MAX_ARGS_V2][OBJ_IDENT_MAX + 1];
     named_arg_t named[CMD_MAX_ARGS_V2];
     int pos_n = 0, named_n = 0, total = 0;
     value_t result = val_none();
@@ -1709,7 +1709,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
     const char *p = st->lvalue;
     if (*p == '$') {
         p++;
-        char name[64];
+        char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         while (ident_char(*p)) {
             // Fail rather than assign to a truncated (other) binding
@@ -1754,7 +1754,9 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
                 value_free(&r);
                 return;
             }
-            shell_binding_mutate(name, rhs);
+            // The binding exists (classified above), so a failure is out-of-memory
+            if (shell_binding_mutate(name, rhs) < 0)
+                exec_error(cx, st->line, "$%s: out of memory", name);
             return;
         }
         // `$name.path = …` — write through the binding.
@@ -1882,12 +1884,6 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
 // How many times a `for … in <range>` body may run.  See exec_for.
 #define FOR_RANGE_MAX_ITERATIONS (1u << 20)
 
-// Invalidator for a for-loop's object items: the body destroyed one
-// (machine.boot tears down the whole tree), so its slot must not be bound.
-static void for_item_gone(void *ud) {
-    *(bool *)ud = true;
-}
-
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1931,19 +1927,24 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = (size_t)n;
     }
 
-    // A list holds raw object pointers: watch each object item so one the
-    // body destroys is reported instead of bound (a dangling pointer).
-    bool *gone = NULL;
+    // A list holds raw object pointers, also inside nested lists and maps:
+    // watch each item's objects so an item the body destroys (machine.boot
+    // tears down the whole tree) is reported instead of bound (a dangling
+    // pointer, which the binding store would also register on).
+    object_watch_t *watches = NULL;
     if (iter.kind == VK_LIST && count > 0) {
-        gone = (bool *)calloc(count, sizeof(*gone));
-        if (!gone) {
+        watches = (object_watch_t *)calloc(count, sizeof(*watches));
+        bool ok = watches != NULL;
+        for (size_t i = 0; ok && i < count; i++)
+            ok = object_watch_value(&watches[i], &iter.list.items[i]);
+        if (!ok) {
+            for (size_t i = 0; watches && i < count; i++)
+                object_unwatch(&watches[i]);
+            free(watches);
             exec_error(cx, st->line, "for: out of memory");
             value_free(&iter);
             return;
         }
-        for (size_t i = 0; i < count; i++)
-            if (iter.list.items[i].kind == VK_OBJECT && iter.list.items[i].obj)
-                object_register_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
     }
 
     // Detach any shadowed same-named binding in the current scope (it stays
@@ -1956,7 +1957,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             exec_error(cx, st->line, "interrupted");
             break;
         }
-        if (gone && gone[i]) {
+        if (watches && watches[i].gone) {
             exec_error(cx, st->line, "for: item %zu was destroyed (e.g. by machine.boot)", i);
             break;
         }
@@ -1988,11 +1989,10 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             break;
     }
 
-    if (gone) {
+    if (watches) {
         for (size_t i = 0; i < count; i++)
-            if (!gone[i] && iter.list.items[i].kind == VK_OBJECT && iter.list.items[i].obj)
-                object_unregister_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
-        free(gone);
+            object_unwatch(&watches[i]);
+        free(watches);
     }
     shell_binding_remove_top(st->name);
     shell_binding_reattach_top(saved);
@@ -2172,13 +2172,14 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
     case ST_DEF: {
         char err[SCRIPT_ERR_MAX];
-        if (shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err)) < 0) {
-            exec_error(cx, st->line, "def: %s", err);
-            return;
-        }
-        // Ownership of the body moved into the registry; detach it from
-        // the statement so re-running the def (e.g. in a loop) is safe.
+        int rc = shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err));
+        // Ownership of the body moved into the registry, which frees it
+        // itself on failure; detach it from the statement either way so
+        // re-running the def (e.g. in a loop) is safe and stmt_free does
+        // not free it a second time.
         st->body = NULL;
+        if (rc < 0)
+            exec_error(cx, st->line, "def: %s", err);
         // Params are duplicated by the registry; nothing to detach.
         return;
     }

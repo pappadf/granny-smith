@@ -226,6 +226,20 @@ TEST(test_reserved_word_check) {
     ASSERT_TRUE(object_validate_name("_secret", err, sizeof(err)) == STATUS_OK);
 }
 
+// A name longer than the readers' OBJ_IDENT_MAX is refused at bind time, so
+// no binder can create a name `$name` cannot read back; the limit itself fits.
+TEST(test_name_length_limit) {
+    char err[160];
+    char name[OBJ_IDENT_MAX + 2];
+    memset(name, 'n', sizeof(name) - 1);
+    name[OBJ_IDENT_MAX] = '\0'; // exactly the limit
+    ASSERT_TRUE(object_validate_name(name, err, sizeof(err)) == STATUS_OK);
+    name[OBJ_IDENT_MAX] = 'n'; // one over
+    name[OBJ_IDENT_MAX + 1] = '\0';
+    ASSERT_TRUE(object_validate_name(name, err, sizeof(err)) != STATUS_OK);
+    ASSERT_TRUE(strstr(err, "too long") != NULL);
+}
+
 // Trailing garbage past a literal is an error.
 TEST(test_trailing_garbage) {
     value_t v = parse_str("42 extra");
@@ -352,6 +366,7 @@ int main(void) {
     RUN(test_bytes_int_suffix);
     RUN(test_enum_lookup);
     RUN(test_reserved_word_check);
+    RUN(test_name_length_limit);
     RUN(test_trailing_garbage);
     RUN(test_empty);
     RUN(test_reserved_other_rejected_as_literal);

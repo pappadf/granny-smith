@@ -1388,8 +1388,15 @@ int main(int argc, char *argv[]) {
         }
         memcpy(name, var_defs[i], name_len);
         name[name_len] = '\0';
-        shell_var_set(name, eq + 1);
+        // A name `$name` could not read back (too long, not an identifier,
+        // reserved) is a startup error, not a binding that silently never matches
+        char err[160];
+        int rc = shell_var_set(name, eq + 1, err, sizeof(err));
         free(name);
+        if (rc < 0) {
+            fprintf(stderr, "Error: --var %s\n", err);
+            return 1;
+        }
     }
 
     system_init();
