@@ -106,9 +106,9 @@ it for PRs.
 
 For each row and executor, head and base each load their checkpoint, run a
 warm-up and time a window with `scheduler.host_user_ns` (process CPU time),
-pinned to one core (`taskset -c 0`), five rounds alternated H B H B …,
-starting with base in every other row. The machine, its cache, frequency and
-neighbours are the same for both within minutes, so the ratio
+five rounds. By default the two run **at the same time**, pinned to cores 0
+and 1 (`taskset`), which core each gets swapping from row to row: both see the
+same instant of the machine, its frequency and its neighbours, so the ratio
 `median(MIPS_head) / median(MIPS_base)` divides the runner out. The report
 gives a 95 % bootstrap interval over the rounds and the Hodges–Lehmann
 estimate (both robust to the occasional wild round).
@@ -118,9 +118,19 @@ estimate (both robust to the occasional wild round).
 - **never fail** on B alone. A warning on B with A clean says: look at A2, or
   profile.
 
-`--pairing=concurrent` runs head and base at the same time on two pinned cores
-instead (same instant of the machine, different cores); the default is the one
-with the tighter spread on the validation runs.
+`--pairing=alternate` runs them one after the other on one core instead
+(H B H B …). On the validation runs it was the noisier mode by half (mean
+round-to-round spread 1.7 % against 0.8 %) and warned six times on a change
+that left the CPU code alone, where concurrent pairing never came within
+2 % of the line. Two emulators at once share the runner (on a 4-vCPU EPYC
+7763 runner each ran at half its alone speed, cores 0 and 1 being SMT
+siblings), which is fair to both sides of the ratio but makes the MIPS of a
+concurrent run useless as absolute numbers: C only uses head-only runs.
+
+B also sees what A cannot, including effects nobody wrote: two builds whose
+CPU code is identical differed by up to 4 % on single rows (the PowerPC rows
+2 % slower on every runner; `iici-aux` 4–7 % on the EPYC 7763 alone), which
+is code placement, not code. A B warning is a prompt to look, never a verdict.
 
 ## Metric C: normalized MIPS
 
@@ -145,6 +155,31 @@ C points are stored but kept out of trend lines). Points are keyed by the
 runner's CPU model (`/proc/cpuinfo`) and the calibration version: one trend
 line per model. Within a model the score absorbs instance and neighbour
 differences; across models it is a best effort.
+
+## Validation
+
+The thresholds (`tests/bench/rows.json`, `"thresholds"`) and the pairing mode
+come from ten runs of the bench on GitHub-hosted runners on a change that
+added the calibration code and left the CPU cores alone, five per pairing
+mode, plus one run with a deliberate regression (an extra per-instruction
+test in the 68030 loop). The runners came as four CPU models: AMD EPYC 7763
+(five runs), 9V45 (three), 9V74 and Intel Xeon Platinum 8370C (one each).
+
+| Check | Result |
+|---|---|
+| A on the no-op change | head = base to the last printed digit on all seven rows, in all ten runs, on all four CPU models, and equal to the values measured in a development container |
+| A on the deliberate regression | +2.6 to +2.8 % on the three 68030 rows (FAIL), 0.00 % on the other four |
+| B, concurrent pairing | ratios 0.960–1.013, no warning; lowest interval upper bound 0.981 |
+| B, alternate pairing | ratios 0.930–1.052, six warnings |
+| Calibration spread before/after | 0.03–4.3 %, under the 5 % noise line |
+| Runtime | the PR job (A + B, seven rows) took 11 minutes end to end, 8 of them measuring |
+
+The calibration could not show what it was meant to show within a CPU
+model, because there was nothing to remove: on the EPYC 7763 the alternate
+runs' MIPS agreed to 0.4 % run to run, and so did the score. Across models
+the levels disagree widely (the Zen 5 9V45 runs the `interp` kernel three
+times faster than the 9V74 and the emulator no faster), so the trend stays
+one line per CPU model, as the C section says.
 
 ## Running it locally
 
@@ -200,7 +235,8 @@ checkout's and a base build's `dist/` (`PERF_BASE_DIST`, served on a second
 port) — in two pages of one browser session, and measures their turbo MIPS
 alternately on the SE/30 Finder and Marathon rows, plus a JS port of the
 calibration kernels. Report only (`PERFBENCH` lines); skipped without
-`PERF_BASE_DIST`.
+`PERF_BASE_DIST`. Expect its ratios to wander by ±5 %: an A/A run (a build
+against a copy of itself, three pairs of 4 s windows) read 1.039.
 
 ```bash
 scripts/bench/build-base.sh --wasm "$(git merge-base origin/main HEAD)" tmp/bench-base-dist

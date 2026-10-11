@@ -196,6 +196,12 @@ def analyse(recs, t, accept):
                                 "calib_v": res["calib"][0].get("calib_v"), "cpu": meta.get("cpu")}
         if noisy:
             res["warnings"].append("calibration moved %.1f %% during the run: C values are noisy" % (100 * spread))
+        # Concurrent pairing runs head and base at once: the runner is shared,
+        # so the MIPS are fair to compare with each other but not absolute.
+        if meta.get("pairing") == "concurrent" and has_base:
+            noisy = res["calib_summary"]["noisy"] = True
+            res["warnings"].append("C from a concurrent-pairing run: head and base shared the runner, "
+                                   "so its MIPS are not absolute (C is for head-only runs)")
         for e in res["B"]:
             if e["head"] is not None:
                 res["C"].append({"row": e["row"], "exec": e["exec"], "mips": e["head"],

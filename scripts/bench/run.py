@@ -15,8 +15,8 @@ per measurement; scripts/bench/compare.py turns them into the verdict.
            difference of two windows after the checkpoint, collected only
            inside the CPU's run function.  Deterministic.  With A2 the same
            runs also simulate caches and branch prediction.
-  B        native MIPS of head and base, interleaved on one pinned core (or
-           at the same time on two), rounds of each; compare.py takes the
+  B        native MIPS of head and base, at the same time on two pinned
+           cores (or alternated on one), rounds of each; compare.py takes the
            ratio of medians and its confidence interval.
   C        gs-headless --calibrate before and after the measurements; head's
            MIPS over the calibration score is the runner-normalized trend
@@ -393,7 +393,8 @@ def main():
     ap.add_argument("--test-data", default=os.path.join(ROOT, "tests", "data"))
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel boots and callgrind runs")
     ap.add_argument("--rounds", type=int, default=5, help="metric B rounds per binary")
-    ap.add_argument("--pairing", choices=["alternate", "concurrent"], default="alternate")
+    ap.add_argument("--pairing", choices=["alternate", "concurrent"], default="concurrent",
+                    help="metric B: head and base at once on two cores (default) or alternated on one")
     ap.add_argument("--core", type=int, default=0, help="first host core metric B pins to (-1: no pinning)")
     args = ap.parse_args()
 

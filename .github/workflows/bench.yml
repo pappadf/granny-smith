@@ -51,9 +51,9 @@ on:
         required: false
         default: ''
       pairing:
-        description: 'Metric B pairing: alternate (one core) or concurrent (two cores)'
+        description: 'Metric B pairing: concurrent (two cores at once) or alternate (one core)'
         required: false
-        default: 'alternate'
+        default: 'concurrent'
       rounds:
         description: 'Metric B rounds per binary'
         required: false
@@ -189,7 +189,7 @@ jobs:
           ROWS: ${{ steps.plan.outputs.rows }}
           METRICS: ${{ steps.plan.outputs.metrics }}
           BASE: ${{ steps.plan.outputs.base }}
-          PAIRING: ${{ inputs.pairing || 'alternate' }}
+          PAIRING: ${{ inputs.pairing || 'concurrent' }}
           ROUNDS: ${{ inputs.rounds || '5' }}
         run: |
           mkdir -p bench-out

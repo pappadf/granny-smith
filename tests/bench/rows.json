@@ -6,8 +6,14 @@
     "a_n1/a_n2: metric A's two windows after the checkpoint, in scheduler instructions.",
     "b_warm/b_window: metric B's warm-up and timed window.",
     "slowpath_max: guard ceiling on memory slow-path accesses per guest instruction.",
-    "pr: gated on pull requests (all rows run nightly)."
+    "pr: gated on pull requests (all rows run nightly).",
+    "thresholds: a_fail (metric A, fraction), b_warn (metric B), calib_spread (C's noise flag); chosen from the validation runs, docs/guide/BENCHMARKS.md."
   ],
+  "thresholds": {
+    "a_fail": 0.015,
+    "b_warn": 0.03,
+    "calib_spread": 0.05
+  },
   "defaults": {
     "a_n1": 5000000,
     "a_n2": 30000000,

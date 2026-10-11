@@ -3,7 +3,8 @@ name: Bench validation (temporary)
 # TEMPORARY: the bench workflow's validation runs, on this branch only.
 # Ten no-op runs (head = this branch, base = its merge base; nothing under the
 # CPU's run function differs), five per metric-B pairing mode, and one run
-# with a deliberate per-instruction regression in the 68030 loop.  Removed
+# with a deliberate per-instruction regression in the 68030 loop.  (The
+# no-op runs went with the previous push; this one reruns the regression.)  Removed
 # before merge; the thresholds commit records the run.
 
 on:
@@ -27,16 +28,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {rep: 1, pairing: alternate, regress: false}
-          - {rep: 2, pairing: alternate, regress: false}
-          - {rep: 3, pairing: alternate, regress: false}
-          - {rep: 4, pairing: alternate, regress: false}
-          - {rep: 5, pairing: alternate, regress: false}
-          - {rep: 6, pairing: concurrent, regress: false}
-          - {rep: 7, pairing: concurrent, regress: false}
-          - {rep: 8, pairing: concurrent, regress: false}
-          - {rep: 9, pairing: concurrent, regress: false}
-          - {rep: 10, pairing: concurrent, regress: false}
           - {rep: 11, pairing: alternate, regress: true}
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
@@ -66,7 +57,7 @@ jobs:
           s = s[:i] + add + s[i:]
           open(p, 'w').write(s)
           EOF
-          git diff --stat
+          git -c safe.directory='*' diff --stat || true
 
       - name: Build head and base
         run: |
