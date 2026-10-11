@@ -285,16 +285,17 @@ static bool init_test_memory(void) {
     // Update the page table and SoA arrays to point to our test buffer for all pages
     // This makes the full 24-bit address space accessible
     if (g_page_table) {
-        for (int p = 0; p < (TEST_MEM_SIZE >> PAGE_SHIFT); p++) {
-            g_page_table[p].host_base = test_memory_buffer + (p << PAGE_SHIFT);
+        for (int p = 0; p < (TEST_MEM_SIZE >> MEM_PAGE_SHIFT); p++) {
+            g_page_table[p].host_base = test_memory_buffer + (p << MEM_PAGE_SHIFT);
             g_page_table[p].dev = NULL;
             g_page_table[p].dev_context = NULL;
             g_page_table[p].writable = true;
             // Update SoA fast-path arrays with adjusted base (write entries
             // through memory_write_fill: the predecoded executor's code-page
             // marks must be able to find and suppress them)
-            uintptr_t adjusted = (uintptr_t)(test_memory_buffer + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
-            uintptr_t wadj = memory_write_fill((uint32_t)p, test_memory_buffer + (p << PAGE_SHIFT), adjusted,
+            uintptr_t adjusted =
+                (uintptr_t)(test_memory_buffer + (p << MEM_PAGE_SHIFT)) - ((uint32_t)p << MEM_PAGE_SHIFT);
+            uintptr_t wadj = memory_write_fill((uint32_t)p, test_memory_buffer + (p << MEM_PAGE_SHIFT), adjusted,
                                                MEM_WT_SUPER | MEM_WT_USER);
             if (g_supervisor_read)
                 g_supervisor_read[p] = adjusted;

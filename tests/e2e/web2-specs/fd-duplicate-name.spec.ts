@@ -17,7 +17,7 @@
 // upload runs through the shipped UI so its image-revision bump drives the
 // real re-scan.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsText } from '../helpers/web2-fs';
 

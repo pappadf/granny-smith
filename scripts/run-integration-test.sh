@@ -16,6 +16,8 @@
 #   WORK_DIR          per-test scratch dir (created fresh here)
 #   WRAPPER           optional command prefix (e.g. "valgrind --quiet ...")
 #   TEST_VARS         optional extra shell --var definitions ("ROW=x REGEN=1")
+#   FIXTURE_DIR       optional: the run's checkpoint-fixture directory, passed
+#                     to the script as $FIXTURES (set by `make test` only)
 #   GS_EXTRA_MEDIA_DIR  optional: a directory of media that is not
 #                     redistributable and so not in the test data.  Scripts
 #                     see it as $EXTRA_MEDIA and skip rows whose media is
@@ -38,9 +40,21 @@ LABEL="${WRAPPER:+ (valgrind)}"
 # so and record it, rather than exiting silently with no status file.
 trap 'echo "=== FAIL${LABEL}: $TEST (runner error at line $LINENO) ==="; echo FAIL > "${TEST_RESULTS_DIR:-/nonexistent}/status" 2>/dev/null || true' ERR
 
+# Wall seconds per test: printed on the result line and appended, one JSON
+# record per test, to durations.jsonl beside the per-test result dirs --
+# what scripts/gen-test-weights.py turns into test-weights.json, the
+# longest-first order make -j starts the tests in.  An O_APPEND write of one
+# short line is atomic, so concurrent tests do not interleave records.
+SECONDS=0
+record_duration() {
+    printf '{"test":"%s","secs":%d,"status":"%s"}\n' "$TEST" "$SECONDS" "$1" \
+        >> "$(dirname "$TEST_RESULTS_DIR")/durations.jsonl" 2>/dev/null || true
+}
+
 fail() {
-    echo "=== FAIL${LABEL}: $TEST ==="
+    echo "=== FAIL${LABEL}: $TEST (${SECONDS}s) ==="
     echo "FAIL" > "$TEST_RESULTS_DIR/status" 2>/dev/null
+    record_duration FAIL
     exit 1
 }
 
@@ -75,7 +89,7 @@ TEST_TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TEST_TMPDIR"' EXIT
 rm -rf "$WORK_DIR"
 mkdir -p "$TEST_RESULTS_DIR" "$WORK_DIR"
-rm -f "$TEST_RESULTS_DIR/status"
+rm -f "$TEST_RESULTS_DIR/status" "$TEST_RESULTS_DIR/skipped" "$TEST_RESULTS_DIR/output.log"
 export GS_STORAGE_CACHE="$WORK_DIR/storage-cache"
 EXTRA_MEDIA="${GS_EXTRA_MEDIA_DIR:-$WORK_DIR/no-extra-media}"
 
@@ -98,6 +112,7 @@ check_rc() {
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
         echo "=== FAIL${LABEL}: $TEST (timeout after ${TEST_TIMEOUT}s) ==="
         echo "FAIL" > "$TEST_RESULTS_DIR/status" 2>/dev/null
+        record_duration TIMEOUT
         exit 1
     fi
     fail
@@ -111,11 +126,22 @@ fi
 
 EXPANDED_ARGS=$(expand "$TEST_ARGS")
 
-# Optional extra shell variables (ROW=, REGEN=, KEEP_GOING=, ...).
-VAR_ARGS=""
-for v in ${TEST_VARS:-}; do
-    VAR_ARGS="$VAR_ARGS --var $v"
+# Optional extra shell variables (ROW=, REGEN=, KEEP_GOING=, ...):
+# whitespace-separated KEY=VALUE words, so a value cannot hold a space.  A
+# word with no '=' (the tail of a quoted value that had one) is an error,
+# not a silently bogus definition.  `read -a` splits without globbing.
+read -ra TEST_VAR_WORDS <<< "${TEST_VARS:-}"
+VAR_ARGV=()
+for v in ${TEST_VAR_WORDS[@]+"${TEST_VAR_WORDS[@]}"}; do
+    if [[ "$v" != [A-Za-z_]*=* ]]; then
+        echo "ERROR: TEST_VARS word '$v' is not KEY=VALUE (values cannot contain spaces)"
+        echo "FAIL" > "$TEST_RESULTS_DIR/status"
+        exit 1
+    fi
+    VAR_ARGV+=(--var "$v")
 done
+# Custom runners take them as one string, which they word-split.
+VAR_ARGS="${VAR_ARGV[*]-}"
 
 # Under a wrapper, hand custom runners a real executable rather than a
 # multi-word "valgrind --flags... /path/to/bin" string: every run.sh
@@ -150,7 +176,7 @@ if [ -n "$TEST_RUNNER" ]; then
         timeout -k 30 "$TEST_TIMEOUT" bash "$TEST_RUNNER" || rc=$?
     check_rc "${rc:-0}"
 else
-    # shellcheck disable=SC2086 — args and vars are intentionally word-split
+    # shellcheck disable=SC2086 — the args are intentionally word-split
     # $ROM mirrors the startup rom= so scripts can re-boot with an explicit
     # rom="${$ROM}" (machine.boot inherits nothing from the running machine).
     # $TEST_DATA is the fixture root, for rows that name a second file by
@@ -164,10 +190,28 @@ else
         --var ROM="$ROM_PATH" \
         --var TEST_DATA="$TEST_DATA" \
         --var EXTRA_MEDIA="$EXTRA_MEDIA" \
-        $VAR_ARGS \
-        --speed=turbo || rc=$?
+        ${FIXTURE_DIR:+--var FIXTURES="$FIXTURE_DIR"} \
+        ${VAR_ARGV[@]+"${VAR_ARGV[@]}"} \
+        --speed=turbo 2>&1 | tee "$TEST_RESULTS_DIR/output.log" || rc=${PIPESTATUS[0]}
     check_rc "${rc:-0}"
 fi
 
-echo "=== PASS${LABEL}: $TEST ==="
+# A test that could not run at all (lib/mac.script's skip_test(), for media
+# the fetched test data does not have) still exits 0, so it does not fail
+# the run, but it says SKIP rather than PASS: CI must not report green for
+# coverage it did not exercise.
+skip=""
+if [ -f "$TEST_RESULTS_DIR/output.log" ]; then
+    skip=$(sed -n '/^@@SKIP /{s///p;q;}' "$TEST_RESULTS_DIR/output.log")
+fi
+if [ -n "$skip" ]; then
+    echo "=== SKIP${LABEL}: $TEST ${skip#"$TEST "} ==="
+    echo "$skip" > "$TEST_RESULTS_DIR/skipped"
+    echo "PASS" > "$TEST_RESULTS_DIR/status"
+    record_duration SKIP
+    exit 0
+fi
+
+echo "=== PASS${LABEL}: $TEST (${SECONDS}s) ==="
 echo "PASS" > "$TEST_RESULTS_DIR/status"
+record_duration PASS

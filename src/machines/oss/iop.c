@@ -18,6 +18,7 @@
 
 #include "iop_internal.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "system.h"
 

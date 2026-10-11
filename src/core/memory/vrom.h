@@ -20,14 +20,6 @@
 struct class_desc;
 struct object;
 
-// The common declaration-ROM chip size (32 KB); some revisions are 64 KB
-// (2 * VROM_EXPECTED_SIZE) — vrom_identify_card accepts both.
-#define VROM_EXPECTED_SIZE (32 * 1024)
-
-// True if a file at `path` is the common 32 KB chip size. *out_size
-// (if non-NULL) gets the file size regardless of validity.
-bool vrom_probe_file(const char *path, size_t *out_size);
-
 // === Content-based identification (the declaration-ROM catalog) ============
 //
 // Identity is the NuBus Format-Block CRC of the chip image — the same key

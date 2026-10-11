@@ -26,6 +26,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "config_seed.h"
 #include "debug.h"
 #include "floppy.h"
@@ -106,7 +107,7 @@ void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the USER
     // arrays belong to the 601 MMU front end (logical fills, ppc_mmu.c)
@@ -215,12 +216,12 @@ static void pdm_id_write32(void *ctx, uint32_t offset, uint32_t value) {
 // pages (offset = addr & $3FFFFF — the wrap HWInit's self-rebase, the
 // $40800000 OS view, and the $FFF00100 reset fetch all rely on).
 static void pdm_map_rom_window(config_t *cfg, uint32_t base, uint32_t window) {
-    uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
+    uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t first = base >> PAGE_SHIFT;
-    uint32_t pages = window >> PAGE_SHIFT;
+    uint32_t first = base >> MEM_PAGE_SHIFT;
+    uint32_t pages = window >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < pages; p++)
-        pdm_fill_page(first + p, rom + ((p << PAGE_SHIFT) % rom_size), false);
+        pdm_fill_page(first + p, rom + ((p << MEM_PAGE_SHIFT) % rom_size), false);
 }
 
 static void pdm_memory_layout(config_t *cfg) {
@@ -238,7 +239,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.write_uint16 = pdm_io_write16;
     st->io_interface.write_uint32 = pdm_io_write32;
     st->io_interface.peek_uint8 = pdm_io_peek8; // wider peeks compose
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
+    memory_map_add(cfg->memory_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
     // Machine-ID page.
     st->id_interface.read_uint8 = pdm_id_read8;
@@ -247,7 +248,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->id_interface.write_uint8 = pdm_id_write8;
     st->id_interface.write_uint16 = pdm_id_write16;
     st->id_interface.write_uint32 = pdm_id_write32;
-    memory_map_add(cfg->mem_map, 0x5FFFF000u, 0x00001000u, "Machine ID", &st->id_interface, cfg);
+    memory_map_add(cfg->memory_map, 0x5FFFF000u, 0x00001000u, "Machine ID", &st->id_interface, cfg);
 
     // BART: the register file plus every window the bridge claims — slot
     // space, super slot space and the PDS slot-$E window — each of them
@@ -351,19 +352,19 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
     // makes the measured clock land exactly on the snap-table value.
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map =
+    cfg->memory_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     // No 68k MMU owns this machine's page table, so host-backed regions that
     // core code registers on the bus map — a NuBus card's VRAM and
     // declaration ROM — are filled through our own page filler.
-    memory_map_set_host_fill(cfg->mem_map, pdm_fill_page);
+    memory_map_set_host_fill(cfg->memory_map, pdm_fill_page);
     machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     if (cfg->ppc) {
         memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
     }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
@@ -461,7 +462,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // of its own, so the shared module only carries the drive and media.
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
     // Board state + memory map.

@@ -32,6 +32,7 @@
 #ifndef PCI_SYM53C8XX_H
 #define PCI_SYM53C8XX_H
 
+#include "checkpoint.h"
 #include "memory.h" // memory_interface_t (the BAR backings)
 #include "scsi_msgsession.h"
 

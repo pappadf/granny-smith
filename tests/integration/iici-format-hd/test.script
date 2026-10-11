@@ -53,27 +53,27 @@ check("desktop.png")
 
 # Double-click the "Utilities" floppy icon (top-right) to open its window.
 double_click(590, 45)
-wait_stable(600000000)
+scheduler.run 600000000
 
 # Double-click the "Apple HD SC Setup" label to launch it. (The clickable hit
 # region is the text label, not the gap above it.)
 double_click(196, 113)
-wait_stable(900000000)
+scheduler.run 900000000
 # HD SC Setup recognises the uninitialised drive at SCSI Device 0.
 check("ready.png")
 
 # Click "Initialize" -> the "erase all data" confirmation alert.
 click(247, 121)
-wait_stable(400000000)
+scheduler.run 400000000
 
 # Click "Init" to confirm.
 click(432, 194)
-wait_stable(900000000)
+scheduler.run 900000000
 
 # Click "OK" to accept the default volume name ("Untitled"). This writes the
 # full HFS volume (MDB + bitmap + catalog/extents B-trees + alternate MDB).
 click(263, 181)
-wait_stable(900000000)
+scheduler.run 900000000
 # The guest OS reports the format completed and mounted the volume.
 check("done.png")
 

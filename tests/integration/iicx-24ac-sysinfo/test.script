@@ -96,14 +96,14 @@ check("utilities-disk-640x480-8bpp.png")
 # propagate.  50M instr after the second release is well past System Info's
 # fully-drawn benchmark window.
 machine.adb.mouse.move 264 100 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 50000000
 # System Info's window is up and it has identified the machine + the 24AC card.
 # All four suites (Test CPU / Display / Volume / FPU) are checked by default.
@@ -114,22 +114,22 @@ check("system-info-640x480-8bpp.png")
 # Test FPU, leaving only Test Display.  The checkboxes are at screen x=187,
 # y=224 (CPU) / 264 (Volume) / 284 (FPU) — Test Display at y=244 is left alone.
 machine.adb.mouse.move 187 224 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1500000
 machine.adb.mouse.move 187 264 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1500000
 machine.adb.mouse.move 187 284 "global"
-scheduler.run 2000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 500000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 3000000
 # Pixel-proof that ONLY Test Display is now checked (CPU/Volume/FPU cleared).
 check("system-info-display-only-640x480-8bpp.png")
@@ -143,10 +143,10 @@ check("system-info-display-only-640x480-8bpp.png")
 # instr after the click (verified: identical frame at +350M and +400M), so 380M
 # lands on the stable result.
 machine.adb.mouse.move 456 255 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 380000000
 # The Display benchmark completed: "System Ratings" (Video) with a Current
 # System rating vs the Quadra 700 reference — only the Display suite ran.

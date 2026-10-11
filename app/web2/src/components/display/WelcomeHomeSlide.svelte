@@ -89,7 +89,7 @@
 <div class="home-content">
   <Hero
     title="Granny Smith"
-    subtitle="A classic Macintosh emulator in the browser."
+    subtitle="A Macintosh emulator in the browser."
     titleClass="welcome-title"
     subtitleClass="welcome-subtitle"
   />

@@ -101,7 +101,7 @@ if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
 every case already ends in `break;` — so a `break` inside an op macro binds to
 the innermost *switch*, falls through to the outer switch's own `break`, and
 runs on to the end of the loop body. It cannot leave the loop. That is why the
-two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_030`, use
+two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_68030`, use
 `continue`: `switch` captures `break` but not `continue`.
 
 **`goto` to a per-exception label is a legitimate alternative**, and on its own
@@ -148,6 +148,36 @@ sprint's entry decides again.  Same semantics, no per-instruction test.
 |---|---|---|
 | `if (!g_bus_error_pending)` guarding the `cpu->ir` / `ir_pc` latch | 68000 (switch core) | **kept**: the alternative, an unconditional latch plus a one-deep shadow f_trap restores, measured worse on the Plus boot (124.50 against 123.52 host instructions per emulated instruction).  The predecoded loop latches from its cached raw word with no test; only its generic step carries the guard |
 | `if (cpu->pc & 1) { m68k_fetch_address_error(cpu); break; }` | 68000 (switch core) | open: the fetch half of the odd-PC address error.  The architected place is the control transfer that computes the target.  The predecoded loop pays nothing for it: its relookup already tests `pc & 1` before any block lookup |
+
+### The 68K decoder prologue
+
+The three 68K decoders (`cpu_68000.c`, `cpu_68030.c`, `cpu_68040.c`) share
+their operand, memory and exception macros (`cpu_decoder_macros.h`) and
+differ only in the `CPU_DECODER_PROLOGUE` / `CPU_DECODER_EPILOGUE` around the
+`cpu_decode.h` template. Two details of the per-instruction prologue need
+more explanation than fits beside the code.
+
+**Saturating burn-down decrement.** The prologue ends with
+`if (*instructions > 0) (*instructions)--;` rather than a bare decrement.
+`memory_io_penalty` can clamp `*instructions` to 0 during the opcode fetch
+(when an I/O penalty equals or exceeds the remaining burn-down); an
+unconditional decrement would then wrap to `UINT32_MAX` and break the
+`sprint_burndown <= sprint_total` invariant that `reconcile_sprint` in
+`scheduler.c` relies on — on any sprint whose last instruction ended on a
+slow I/O access.
+
+**Double-fault latch, cleared in user mode only.** A bus error on an
+instruction fetch leaves `cpu->last_bus_error_pc` set, so a retry that faults
+again at the same PC can be recognised as a true double fault (see
+`exception_bus_error`). The latch must be cleared once the CPU has moved past
+that PC *in user mode* — otherwise a different process that later faults at
+the same virtual address (two execs of A/UX `/etc/init`, both with crt0 at
+`$148`) would be flagged as a double fault. It is deliberately not cleared
+in supervisor mode: the kernel instructions that run between the first fault
+and the RTE retry must not reset the tracking, or a user retry that faults
+again at the same PC would be missed. The test sits in the per-instruction
+prologue today; the "Known deviations" table above lists moving it out of
+the loop.
 
 ### Deferred bus errors: skip or retry
 

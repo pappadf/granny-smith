@@ -103,7 +103,7 @@ static void slots_reset(void) {
 static bool slots_ensure(int r) {
     if (g_pd_slots[r])
         return true;
-    uint32_t pages = (uint32_t)((g_mem_code_regions[r].size + MEM_PAGE_SIZE - 1) >> PAGE_SHIFT);
+    uint32_t pages = (uint32_t)((g_mem_code_regions[r].size + MEM_PAGE_SIZE - 1) >> MEM_PAGE_SHIFT);
     g_pd_slots[r] = (pd_block_t **)calloc(pages, sizeof(pd_block_t *));
     g_pd_demoted[r] = (uint32_t *)calloc(pages, sizeof(uint32_t));
     g_pd_demote_count[r] = (uint8_t *)calloc(pages, sizeof(uint8_t));
@@ -512,7 +512,7 @@ static value_t pd_method_hist(struct object *self, const member_t *m, int argc, 
 }
 
 static const arg_decl_t pd_hist_args[] = {
-    {.name = "top", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "entries to print (default 40)"},
+    {.name = "top", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "entries to print (default 40)"},
 };
 
 static value_t pd_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -526,8 +526,8 @@ static value_t pd_method_reset(struct object *self, const member_t *m, int argc,
 
 #define PD_ATTR_RW(name_, id_, doc_)                                                                                   \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .attr = {                                                         \
+            .type = VK_UINT,                                                                                           \
             .get = pd_attr_get,                                                                                        \
             .set = pd_attr_set,                                                                                        \
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
@@ -536,8 +536,8 @@ static value_t pd_method_reset(struct object *self, const member_t *m, int argc,
 // A read-only counter, shown only under the Advanced toggle.
 #define PD_ATTR_RO(name_, id_, doc_)                                                                                   \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                 \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                \
+            .type = VK_UINT,                                                                                           \
             .get = pd_attr_get,                                                                                        \
             .set = NULL,                                                                                               \
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
@@ -545,14 +545,14 @@ static value_t pd_method_reset(struct object *self, const member_t *m, int argc,
     }
 
 static const member_t predecode_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "1 = the predecoded executors run the main CPU; 0 = the switch cores (A/B from the shell)",
-     .attr = {.type = V_UINT, .get = pd_attr_enabled, .set = pd_set_enabled}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = pd_attr_enabled, .set = pd_set_enabled}                             },
+    {.kind = MK_ATTR,
      .name = "elide",
      .doc = "68K flag-liveness elision level: 0 off, 1 register-only definers (E1), 2 memory forms too (E2)",
-     .attr = {.type = V_UINT, .get = pd_attr_elide, .set = pd_set_elide}                                 },
+     .attr = {.type = VK_UINT, .get = pd_attr_elide, .set = pd_set_elide}                                 },
     PD_ATTR_RW("pool_cap", PDA_POOL_CAP, "maximum blocks in the pool (setting it drops every block)"),
     PD_ATTR_RW("thrash_limit", PDA_THRASH_LIMIT, "stores into one code page within thrash_window before it is demoted"),
     PD_ATTR_RW("thrash_window", PDA_THRASH_WINDOW, "the demotion window, in page transitions"),
@@ -577,14 +577,14 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("lookup_held", PDA_LOOKUP_HELD, "...of which the page is demoted and held"),
     PD_ATTR_RO("suppressed_writes", PDA_SUPPRESSED_WRITES,
                "guest stores that hit a code page (slow path + invalidate)"),
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "hist",
      .doc = "Print the most-decoded ids with their names (static shape histogram; consumes the counts)",
-     .method = {.args = pd_hist_args, .nargs = 1, .result = V_NONE, .fn = pd_method_hist}                },
-    {.kind = M_METHOD,
+     .method = {.args = pd_hist_args, .nargs = 1, .result = VK_NONE, .fn = pd_method_hist}                },
+    {.kind = MK_METHOD,
      .name = "reset",
      .doc = "Drop every block and zero the counters",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = pd_method_reset, .ui_flags = MM_MUTATE}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = pd_method_reset, .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t predecode_class = {

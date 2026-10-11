@@ -12,7 +12,7 @@
 // TNT ROM it claims to be, fails its own 64-bit sum, and the upload says so —
 // it must not fall through to the permissive hard-disk probe either.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 

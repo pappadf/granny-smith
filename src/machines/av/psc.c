@@ -24,6 +24,7 @@
 #include "av.h"
 #include "singer.h" // AV_SINGER_STAT presentation
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "irq_controller.h"
 #include "log.h"
@@ -171,6 +172,8 @@ void av_psc_set_dsp_hook(av_psc_t *psc, av_psc_dsp_fn fn, void *ctx) {
 
 uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off) {
     off &= 0x1F;
+    if (off + 1u >= sizeof(psc->snd))
+        return 0; // $21C-$21F hold no sound latches (the array is $1C bytes)
     return (uint16_t)((psc->snd[off] << 8) | psc->snd[off + 1]);
 }
 
@@ -708,7 +711,7 @@ static DEF_GETTER(psc_attr_level_pending) {
         return val_err("psc.level_pending: out of memory");
     for (int i = 0; i < 4; i++) {
         value_t v = val_uint(1, (uint8_t)((psc->l_level[i] | psc->l_latched[i]) & 0x7Fu));
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         items[i] = v;
     }
     return val_list(items, 4);
@@ -721,7 +724,7 @@ static DEF_GETTER(psc_attr_level_ier) {
         return val_err("psc.level_ier: out of memory");
     for (int i = 0; i < 4; i++) {
         value_t v = val_uint(1, psc->l_ier[i] & 0x7Fu);
-        v.flags |= VAL_HEX;
+        v.flags |= VFLAG_HEX;
         items[i] = v;
     }
     return val_list(items, 4);
@@ -729,24 +732,25 @@ static DEF_GETTER(psc_attr_level_ier) {
 
 static DEF_GETTER(psc_attr_sint_active) {
     value_t v = val_uint(1, ((const av_psc_t *)object_data(self))->sint_active);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static const member_t psc_members[] = {
     IRQ_CONTROLLER_MEMBERS(&psc_irq_ops){
-                                         .kind = M_ATTR,
+                                         .kind = MK_ATTR,
                                          .name = "level_pending",
                                          .doc = "L3-L6 source registers, unmasked, index 0 = L3",
-                                         .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = psc_attr_level_pending, .set = NULL}        },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_LIST, .presentation_flags = VFLAG_VOLATILE, .get = psc_attr_level_pending, .set = NULL}},
+    {.kind = MK_ATTR,
                                          .name = "level_ier",
                                          .doc = "L3-L6 enable registers, index 0 = L3",
-                                         .attr = {.type = V_LIST, .get = psc_attr_level_ier, .set = NULL}                                                },
-    {.kind = M_ATTR,
+                                         .attr = {.type = VK_LIST, .get = psc_attr_level_ier, .set = NULL}                                          },
+    {.kind = MK_ATTR,
                                          .name = "sint_active",
                                          .doc = "SInt slot sources currently asserting (aggregated onto VIA2 CA1)",
-                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = psc_attr_sint_active, .set = NULL}},
+                                         .attr =
+         {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = psc_attr_sint_active, .set = NULL}                              },
 };
 
 static const class_desc_t psc_class = {

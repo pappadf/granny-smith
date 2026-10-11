@@ -44,7 +44,7 @@ if have_media($cd) {
     try(machine.screen.save("${$RESULTS_DIR}/hd-desktop.png"), none)
     check_ex("hd-desktop.png", 0, 440, 20, 640)
 } else {
-    echo "skip: g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)"
+    skip_test("g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
 }
 
 quit

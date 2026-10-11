@@ -33,6 +33,7 @@ import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
+import { audioTargetLatencyFromQuery } from '@/audio/latency';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
 import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
@@ -84,7 +85,7 @@ interface EmscriptenModule {
     ): number;
     close(stream: unknown): void;
   };
-  _get_gs_mailbox(): number;
+  _get_mailbox(): number;
   // Returns the bytes written, excluding the terminating NUL.
   stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
@@ -109,6 +110,9 @@ interface EmscriptenModuleConfig {
   onPrinterAttach?(ctrl: number, version: string): void;
   // The audio-out AudioWorklet module (em_audio.c addModule()s it).
   gsAudioWorkletUrl?: string;
+  // The audio-out latency target in seconds (?audio_latency=; em_audio.c
+  // keeps its default when unset).
+  gsAudioTargetLatency?: number;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -242,6 +246,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onVoodooGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
+    gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),
   });
 
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
@@ -253,7 +258,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
   mailbox = new Mailbox(
     Module.HEAP32.buffer,
-    Module._get_gs_mailbox(),
+    Module._get_mailbox(),
     CLIENT_PAGE,
     () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
   );
@@ -294,12 +299,12 @@ export function isModuleReady(): boolean {
 
 // The result contract:
 //   - a value     — the method or attribute's result;
-//   - null        — ONLY a successful method that returns nothing (V_NONE);
-//   - { error }   — failure.  A C-side V_ERROR carries the core's message;
+//   - null        — ONLY a successful method that returns nothing (VK_NONE);
+//   - { error }   — failure.  A C-side VK_ERROR carries the core's message;
 //                   a failure of the bridge itself (module not ready, a
 //                   thrown request) also sets `transport: true`.
 // So `r !== null` is never a success test: `{ error }` satisfies it.  Use
-// gsOk() for "did it work", `=== true` for a V_BOOL method, and a shape check
+// gsOk() for "did it work", `=== true` for a VK_BOOL method, and a shape check
 // for a read.
 export interface GsError {
   error: string;
@@ -375,7 +380,7 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
 
 // Paths that are legitimately long: the notice waits longer for them.
 const LONG_REQUEST =
-  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|hd\.save)|files\.(cp|mv|import|export_raw|hd_create|xfer_|udif_|convert|verify|archive\.|download$|ls|list|mkdir|cat))/;
+  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|floppy\.drive\[\d+\](\.disk)?\.export|hd\.save)|files\.(cp|mv|import|export_raw|hd_create|xfer_|udif_|convert|verify|archive\.|download$|ls|list|mkdir|cat))/;
 const BUSY_AFTER_MS = 5_000;
 const BUSY_AFTER_LONG_MS = 30_000;
 // An ordinary request still in flight after this long is not slow, it is
@@ -474,13 +479,13 @@ function routeErrLine(line: string): void {
   routeErrorLine(line);
 }
 
-// True for any failure shape — the core's V_ERROR or a transport failure.
+// True for any failure shape — the core's VK_ERROR or a transport failure.
 export function isGsError(res: unknown): res is GsError {
   return !!res && typeof res === 'object' && 'error' in res;
 }
 
-// "Did the call work?": not an error, and not a V_BOOL method's `false`.
-// A V_NONE success (null) counts as success.
+// "Did the call work?": not an error, and not a VK_BOOL method's `false`.
+// A VK_NONE success (null) counts as success.
 export function gsOk(res: unknown): boolean {
   return !isGsError(res) && res !== false;
 }
@@ -515,11 +520,14 @@ let foregroundJob: number | null = null;
 // Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
 // shell's new prompt when the job ends -- after every `scheduler.run` in
 // it has run to its stop -- or an error, which the interpreter has already
-// printed into the job's output.  Resolves when the job is over.
-export async function gsEvalLine(line: string): Promise<void> {
-  if (!moduleReady || !mailbox) return;
+// printed into the job's output.  Resolves when the job is over, to the
+// reason the line failed when the console has not already shown it (a
+// transport failure, a request the mailbox refused), else null.
+export async function gsEvalLine(line: string): Promise<string | null> {
+  if (bridgeDead) return `emulator crashed: ${bridgeDead}`;
+  if (!moduleReady || !mailbox) return 'emulator not ready';
   const text = (line ?? '').toString();
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   const stopWatch = watchRequest('terminal line');
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
@@ -530,12 +538,25 @@ export async function gsEvalLine(line: string): Promise<void> {
     // printed is in by now: the console ends the job (a last line without a
     // newline, a value whose marker never came).
     if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
-    if (r.ok) {
-      const prompt: unknown = JSON.parse(r.json);
-      if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
+    let res: unknown = r.json;
+    try {
+      res = JSON.parse(r.json);
+    } catch {
+      // Not JSON: keep the text as the reason.
     }
-  } catch {
-    // The request itself failed: the console shows nothing for it.
+    if (r.ok) {
+      if (typeof res === 'string') cachedPrompt = res.length ? res : null;
+      return null;
+    }
+    // A script error was printed by the interpreter, and a cancel is the
+    // user's own Ctrl-C; anything else never reached the job's output.
+    const why = gsErrorText(res);
+    return why === 'command failed' || why === 'cancelled' ? null : why;
+  } catch (e) {
+    if (e === 'deadline') return 'the line did not complete in time';
+    if (e === 'lost' || e === 'detached')
+      return `emulator crashed: ${bridgeDead ?? 'mailbox lost'}`;
+    return `request failed: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     foregroundJob = null;
     stopWatch();
@@ -667,7 +688,7 @@ async function executeMailboxRequest(
 
 // --- Events from the core ------------------------------------------------
 
-// What the core emits on its own (src/core/event/gs_event.h), decoded off
+// What the core emits on its own (src/core/event/event.h), decoded off
 // the mailbox's event ring: `kind` is the ring's family, `data` the JSON
 // object the emitter wrote, whose `event` names it.  Today: 'state' with
 // `mode_started {mode, owner, budget}` and `mode_ended {mode, owner,
@@ -837,6 +858,13 @@ export function getModule(): EmscriptenModule | null {
   return Module;
 }
 
+// The WebGPU device went away after startup: answer "no GPU" from now on,
+// so a Voodoo2 created later picks the thread backend at once instead of
+// waiting out an attach the page can no longer serve.
+export function setGpuUnavailable(): void {
+  mailbox?.setGpuAvailable(false);
+}
+
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
 // buffer can be replaced, so callers must never cache these.
@@ -861,18 +889,24 @@ export async function setCapsLock(on: boolean): Promise<void> {
 }
 
 export async function shutdownEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
+  const res = await gsEval('scheduler.stop');
+  if (!gsOk(res)) {
+    showNotification(`Stop failed: ${gsErrorText(res)}`, 'error');
+    return;
+  }
   machine.status = 'stopped' as MachineStatus;
   showNotification('Machine stopped', 'info');
 }
 
 export async function pauseEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
-  // The mode_ended event reflects the new state.
+  const res = await gsEval('scheduler.stop');
+  // On success the mode_ended event reflects the new state.
+  if (!gsOk(res)) showNotification(`Pause failed: ${gsErrorText(res)}`, 'error');
 }
 
 export async function resumeEmulator(): Promise<void> {
-  await gsEval('scheduler.run');
+  const res = await gsEval('scheduler.run');
+  if (!gsOk(res)) showNotification(`Resume failed: ${gsErrorText(res)}`, 'error');
 }
 
 // UI mode name → core `pacing.mode` value.
@@ -889,7 +923,7 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 // runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
   const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
-  if (res && typeof res === 'object' && 'error' in res) {
+  if (!gsOk(res)) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;
   }

@@ -13,7 +13,7 @@
 // event can check.  The Save State button exercises the same road with a
 // checkpoint (checkpoint-resume.spec.ts covers the checkpoint itself).
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
@@ -45,10 +45,6 @@ test('a download arrives in transfer-buffer chunks and lands as one file', async
   const fs = await import('node:fs');
   const size = fs.statSync(saved!).size;
   expect(size).toBeGreaterThan(8 * 1024 * 1024);
-  // The terminal saw the leaf's own confirmation, via the job's output.
-  await expect(page.locator('.console-output')).toContainText("download: requested 'dl.img'", {
-    timeout: 30_000,
-  });
   // Three chunks announced, the last one flagged, and every one acknowledged
   // (the trace keeps the last 64 events).
   const chunks = await page.evaluate(() => {

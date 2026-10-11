@@ -54,7 +54,7 @@ peel_source_release(src);
   `read`, `size`, `key` and `tier`. The tier says how reads cost:
   `RANDOM` (a view or a memory buffer), `INDEXED` (BGZF), `EARNED`
   (decoded once, then random), `STREAM` or `WHOLE`. The emulator's
-  core uses the same type as `gs_source_t`
+  core uses the same type as `source_t`
   (see [`source.md`](../internals/core/storage/source.md)).
 - **Probe** — `peel_probe_init` reads a bounded head and tail of a
   source; `peel_identify` and `peel_formats` run the detectors over it
@@ -123,8 +123,8 @@ volume.
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
-| `files.archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
+| `files.archive.identify(path)` | `VK_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
+| `files.archive.extract(path, [out_dir])` | `VK_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
 
 Both go through the VFS, so `path` may itself be inside an image or
 another archive. `extract` is a recursive copy of the archive's tree:

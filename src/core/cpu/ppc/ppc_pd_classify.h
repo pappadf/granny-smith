@@ -47,9 +47,9 @@ static inline uint16_t ppd_cls_x(const ppc_cls_t *c, uint32_t iw, uint16_t id) {
 
 // In-page target → entry index; false when the target leaves the page.
 static inline bool ppd_in_page(const ppc_cls_t *c, uint32_t target, uint32_t *index) {
-    if ((target & ~(uint32_t)PAGE_MASK) != c->page_lo)
+    if ((target & ~(uint32_t)MEM_PAGE_MASK) != c->page_lo)
         return false;
-    *index = (target & PAGE_MASK) >> 2;
+    *index = (target & MEM_PAGE_MASK) >> 2;
     return true;
 }
 

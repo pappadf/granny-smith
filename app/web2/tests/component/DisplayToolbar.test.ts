@@ -67,4 +67,17 @@ describe('DisplayToolbar', () => {
     appearance.skin = 'workbench';
     closeContextMenu();
   });
+
+  it('the screen-mode menu offers the three modes, current one checked', async () => {
+    layout.fullscreen = false;
+    const { container } = render(DisplayToolbar);
+    await fireEvent.click(container.querySelector('.fullscreen-menu') as HTMLElement);
+    const items = Array.from(document.querySelectorAll('.context-menu .item'));
+    expect(items.map((i) => i.textContent?.trim())).toEqual([
+      'Normal',
+      'Full Screen',
+      'Full Screen, Hide Toolbar and Status Bar',
+    ]);
+    closeContextMenu();
+  });
 });

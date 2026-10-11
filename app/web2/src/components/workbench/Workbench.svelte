@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout } from '@/state/layout.svelte';
+  import { layout, chromeHidden } from '@/state/layout.svelte';
   import DisplayToolbar from '../display/DisplayToolbar.svelte';
   import DisplayContent from '../display/DisplayContent.svelte';
   import Panel from '../panel/Panel.svelte';
@@ -15,7 +15,7 @@
   style="--gs-panel-size: {panelSizeVar}"
 >
   <section class="gs-display">
-    {#if !layout.fullscreen}
+    {#if !chromeHidden()}
       <DisplayToolbar />
     {/if}
     <DisplayContent />

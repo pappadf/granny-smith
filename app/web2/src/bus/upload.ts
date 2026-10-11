@@ -30,12 +30,12 @@
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
 // through the worker (files.mv/files.rm).
 
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
 import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
-import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
+import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
@@ -678,6 +678,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
     return;
   }
+  clearMounts();
   await reconcileUiWithMachine('boot');
   await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
@@ -689,22 +690,22 @@ async function loadCheckpointFile(file: File): Promise<void> {
   // deleted once loaded.  It used to be read whole into memory and written
   // to the memory-backed /tmp, where it stayed for the session.
   const staged = scratchPath(sanitizeName(file.name) || 'checkpoint');
-  let ok: boolean;
+  let res: unknown;
   try {
     if (!(await streamToOpfs(staged, file))) {
       showNotification('Emulator not ready for checkpoint load', 'warning');
       return;
     }
     showNotification(`Loading checkpoint ${file.name}…`, 'info');
-    ok = (await gsEval('checkpoint.load', [staged])) === true;
+    res = await gsEval('checkpoint.load', [staged]);
   } finally {
     await discardStaging(staged);
   }
-  if (ok) {
+  if (res === true) {
     await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');
   } else {
-    showNotification(`Checkpoint load failed`, 'error');
+    showNotification(`Checkpoint load failed: ${gsErrorText(res)}`, 'error');
   }
 }
 
@@ -715,9 +716,15 @@ async function loadCheckpointFile(file: File): Promise<void> {
 export async function pickAndLoadCheckpoint(): Promise<void> {
   const [file] = await openFilePicker('', false);
   if (!file) return;
+  // The button shows before the core is up (right after a page load), and
+  // the user has already picked the file: wait for the core rather than drop
+  // the pick.  A core that failed to start has said so on the page.
   if (!isModuleReady()) {
-    showNotification('Emulator still starting; please retry', 'warning');
-    return;
+    try {
+      await whenModuleReady();
+    } catch {
+      return;
+    }
   }
   if (!(await fileHasCheckpointSignature(file))) {
     showNotification(`'${file.name}' is not a Granny Smith checkpoint`, 'error');

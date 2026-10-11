@@ -32,10 +32,10 @@
 
 struct value;
 
-struct gs_mailbox;
-typedef struct gs_job gs_job_t;
+struct mailbox;
+typedef struct job job_t;
 
-// Records the calling thread as the emulator thread.  Once, at shell_init.
+// Records the calling thread as the emulator thread.  Once, at core_init.
 void job_layer_init(void);
 
 // True on the emulator thread (or before job_layer_init: single-threaded).
@@ -49,7 +49,7 @@ bool job_thread_running(void);
 
 // THE SEAM.  Runs fn(ud) on the emulator thread and returns when it has
 // run: directly when already there, else posted and waited for.  The
-// emulator thread serves it from gs_mailbox_drain with the job's client
+// emulator thread serves it from mailbox_drain with the job's client
 // as the current client, and holds the job while a mode that call started
 // is running.
 void job_on_emulator(void (*fn)(void *ud), void *ud);
@@ -66,13 +66,13 @@ int job_cancel(uint32_t client, uint32_t req_id);
 int job_cancel_client(uint32_t client);
 
 // The job the calling thread is running, NULL on the emulator thread.
-gs_job_t *job_current(void);
+job_t *job_current(void);
 uint32_t job_current_client(void);
 // The interpreter's cancel check (every statement).
 bool job_current_cancelled(void);
 
 // The word the emulator thread parks on when idle (mailbox.c sets it): a
-// job wakes it through gs_mailbox_notify on that word.
+// job wakes it through mailbox_notify on that word.
 void job_layer_set_wake_word(volatile uint32_t *word);
 
 // Emulator thread: is there a call or a finished job to serve?  Cheap.
@@ -80,7 +80,7 @@ bool job_layer_has_work(void);
 // Emulator thread, from the drain: serve the pending call, release a
 // call whose mode has ended, write the results of finished jobs.
 // Returns the number of results written.
-int job_layer_service(struct gs_mailbox *m);
+int job_layer_service(struct mailbox *m);
 
 // The interpreter-table lock (recursive).
 void job_tables_lock(void);
@@ -90,7 +90,7 @@ void job_tables_unlock(void);
 // (the leaf running now was called by a script).
 bool job_serving_call(void);
 
-// A leaf served for a job's call may answer later (gs_result_defer): the
+// A leaf served for a job's call may answer later (mailbox_result_defer): the
 // call stays held until job_call_complete(token) -- tokens have the top
 // bit set -- and a failure becomes the call's error, which the job thread
 // picks up with job_call_take_failure right after the seam returns.
@@ -103,7 +103,7 @@ void job_call_bind_io(uint32_t token, uint32_t io_job);
 uint32_t job_call_request_id(uint32_t token);
 
 // --- Output ------------------------------------------------------------------
-// gs_out.c: appends text to the job that owns the calling context -- the
+// out.c: appends text to the job that owns the calling context -- the
 // job running on this thread, or the job whose call the emulator thread is
 // serving.  False when there is none (the text goes elsewhere).  The
 // buffered text is delivered by job_layer_service as EVT_LOG
@@ -114,7 +114,7 @@ bool job_output_append(const char *text, size_t len);
 // Places an annotation record in the calling job's record stream at the
 // current output position (same context test as job_output_append): after
 // the text printed so far, before whatever is printed next.  Written as
-// {"event":<kind>,"id":req,"client":c,<fields>}, the entries of the V_MAP
+// {"event":<kind>,"id":req,"client":c,<fields>}, the entries of the VK_MAP
 // `fields` (plain data; tagged JSON) following the header; NULL for none.
 // When the full record would exceed the ring's record bound the `reduced`
 // map (optional; callers keep it small) is used instead, and
@@ -139,7 +139,7 @@ void job_inline_after_call(uint32_t mode_before);
 // --- Between seam.c and job.c ---------------------------------------------
 typedef void (*job_post_fn)(void (*fn)(void *ud), void *ud);
 void job_seam_set_poster(job_post_fn post);
-void job_seam_set_current(gs_job_t *job, uint32_t client, const bool *cancel);
+void job_seam_set_current(job_t *job, uint32_t client, const bool *cancel);
 void job_seam_note_failure(const char *error);
 
 // --- Glue the platform-independent job.c needs from the rest of the core

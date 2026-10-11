@@ -51,6 +51,7 @@
 #include "display_timing.h"
 #include "tnt.h"
 
+#include "card.h"
 #include "log.h"
 #include "pci.h"
 #include "ppc.h"
@@ -391,6 +392,10 @@ static void control_compose(config_t *cfg) {
                 continue; // transparent
             uint32_t px = x + i;
             if (px >= w)
+                continue;
+            // The width is the guest's, not clamped to the pitch: a pixel
+            // past the row's stride would write past the composite buffer.
+            if ((uint64_t)(px + 1u) * bpx > stride)
                 continue;
             const uint8_t *pal = c->crsr[nib & 7u];
             uint8_t *dst = line + (size_t)px * bpx;

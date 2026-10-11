@@ -8,7 +8,7 @@
 // the active framebuffer without knowing which bus it is on.  That only works
 // if the node on the far end is the SAME node.  It was not: the NuBus node
 // called its byte count `raw_size` and the PCI one called it `size`, NuBus
-// typed width/height/depth as V_INT and PCI as V_UINT, and only NuBus had
+// typed width/height/depth as VK_INT and PCI as VK_UINT, and only NuBus had
 // `format` -- so a script reading `.raw_size` worked on a IIcx and errored on
 // a pm9500, and one reading `.format` worked on NuBus only.
 // The built-in video chips had no framebuffer node at all, which is why the

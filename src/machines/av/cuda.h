@@ -29,6 +29,7 @@
 #ifndef GS_MACHINES_AV_CUDA_H
 #define GS_MACHINES_AV_CUDA_H
 
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

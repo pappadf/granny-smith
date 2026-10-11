@@ -7,7 +7,7 @@
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
   import DialogHost from './components/dialogs/DialogHost.svelte';
   import { applyAppearance } from '@/state/appearance.svelte';
-  import { layout } from '@/state/layout.svelte';
+  import { layout, chromeHidden } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
   import { startCapsLockSync } from '@/lib/capslock';
 
@@ -33,7 +33,7 @@
 </script>
 
 <Workbench />
-{#if !layout.fullscreen}
+{#if !chromeHidden()}
   <StatusBar />
 {/if}
 <ToastStack />

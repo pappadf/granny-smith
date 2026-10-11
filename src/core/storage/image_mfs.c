@@ -29,7 +29,7 @@
 #define MFS_MAP_LAST 1u
 
 struct mfs_volume {
-    gs_source_t *src; // retained
+    source_t *src; // retained
     uint64_t off, size;
     char name[256];
     uint16_t n_alloc; // drNmAlBlks
@@ -62,7 +62,7 @@ static void mfs_name(const uint8_t *mac, size_t len, char *out, size_t cap) {
 
 bool mfs_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
     uint8_t sig[2];
-    if (!src || size < MFS_MDB_OFF + MFS_BLOCK || gs_source_read_exact(src, off + MFS_MDB_OFF, sig, 2) != 0)
+    if (!src || size < MFS_MDB_OFF + MFS_BLOCK || source_read_exact(src, off + MFS_MDB_OFF, sig, 2) != 0)
         return false;
     return be16(sig) == MFS_SIG;
 }
@@ -73,8 +73,7 @@ static int mfs_read_map(mfs_volume_t *v) {
     size_t bytes = ((size_t)v->n_alloc * 3 + 1) / 2;
     uint8_t *raw = malloc(bytes ? bytes : 1);
     v->map = calloc((size_t)v->n_alloc + 2, sizeof(*v->map));
-    if (!raw || !v->map ||
-        (bytes && gs_source_read_exact(v->src, v->off + MFS_MDB_OFF + MFS_MAP_OFF, raw, bytes) != 0)) {
+    if (!raw || !v->map || (bytes && source_read_exact(v->src, v->off + MFS_MDB_OFF + MFS_MAP_OFF, raw, bytes) != 0)) {
         free(raw);
         return -1;
     }
@@ -99,8 +98,7 @@ static int mfs_read_dir(mfs_volume_t *v, uint16_t start, uint16_t blocks, uint16
     uint8_t blk[MFS_BLOCK];
     for (uint32_t b = 0; b < blocks; b++) {
         uint64_t at = (uint64_t)start + b;
-        if ((at + 1) * MFS_BLOCK > v->size ||
-            gs_source_read_exact(v->src, v->off + at * MFS_BLOCK, blk, MFS_BLOCK) != 0)
+        if ((at + 1) * MFS_BLOCK > v->size || source_read_exact(v->src, v->off + at * MFS_BLOCK, blk, MFS_BLOCK) != 0)
             return -1;
         size_t p = 0;
         while (p + MFS_DIRENT_MIN <= MFS_BLOCK && (blk[p] & 0x80)) {
@@ -137,12 +135,12 @@ static int mfs_read_dir(mfs_volume_t *v, uint16_t start, uint16_t blocks, uint16
 
 mfs_volume_t *mfs_open_source(struct peel_source *src, uint64_t off, uint64_t size) {
     uint8_t mdb[MFS_MAP_OFF];
-    if (!mfs_probe_source(src, off, size) || gs_source_read_exact(src, off + MFS_MDB_OFF, mdb, sizeof(mdb)) != 0)
+    if (!mfs_probe_source(src, off, size) || source_read_exact(src, off + MFS_MDB_OFF, mdb, sizeof(mdb)) != 0)
         return NULL;
     mfs_volume_t *v = calloc(1, sizeof(*v));
     if (!v)
         return NULL;
-    v->src = gs_source_retain(src);
+    v->src = source_retain(src);
     v->off = off;
     v->size = size;
     uint16_t n_files = be16(mdb + 12), dir_start = be16(mdb + 14), dir_blocks = be16(mdb + 16);
@@ -164,7 +162,7 @@ mfs_volume_t *mfs_open_source(struct peel_source *src, uint64_t off, uint64_t si
 void mfs_close(mfs_volume_t *vol) {
     if (!vol)
         return;
-    gs_source_release(vol->src);
+    source_release(vol->src);
     free(vol->map);
     free(vol->files);
     free(vol);
@@ -247,7 +245,7 @@ int mfs_read_fork(mfs_volume_t *vol, const mfs_dirent_t *file, bool rsrc, uint64
             size_t k = n - *nread;
             if (k > vol->alloc_size - in)
                 k = (size_t)(vol->alloc_size - in);
-            rc = gs_source_read_exact(vol->src, at, out + *nread, k);
+            rc = source_read_exact(vol->src, at, out + *nread, k);
             if (rc != 0)
                 break;
             *nread += k;

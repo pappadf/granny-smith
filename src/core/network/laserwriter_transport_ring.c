@@ -176,6 +176,12 @@ static void ring_fail_outstanding(const char *why) {
     }
 }
 
+// A field length padded to 4, in 64 bits so a hostile length cannot wrap
+// the bounds sum the way LWRING_PAD4's 32-bit result would.
+static uint64_t ring_pad4(uint32_t n) {
+    return ((uint64_t)n + 3u) & ~(uint64_t)3u;
+}
+
 // Reads one text field of `len` bytes at `p`, capped by what the record
 // holds, into a NUL-terminated scratch copy (the callbacks take C strings).
 static const char *ring_text(const uint8_t *p, uint32_t len, char *scratch, size_t cap) {
@@ -196,6 +202,18 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
         return;
     }
     char scratch[256];
+    // A record too short for its fixed words is a broken worker: fail what
+    // waits on it rather than reading past the record
+    uint32_t fixed_words = kind == LWRING_R_OPEN_FAILED ? LWRING_OPEN_FAILED_WORDS
+                           : kind == LWRING_R_FED       ? LWRING_FED_WORDS
+                           : kind == LWRING_R_FINISHED  ? LWRING_FINISHED_WORDS
+                                                        : 0;
+    if (payload_len < 4 * fixed_words) {
+        LOG(1, "laserwriter: ring record kind %u is %u bytes, short of its %u-word header", (unsigned)kind,
+            (unsigned)payload_len, (unsigned)fixed_words);
+        ring_fail_outstanding("malformed reply from the interpreter worker");
+        return;
+    }
     switch (kind) {
     case LWRING_R_OPENED: {
         uint32_t flags = payload_len >= 4 * LWRING_OPENED_WORDS ? RD_LE32(p + 4 * LWRING_OPENED_FLAGS) : 0;
@@ -207,7 +225,7 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
     case LWRING_R_OPEN_FAILED: {
         uint32_t text_len = RD_LE32(p + 4 * LWRING_OPEN_FAILED_TEXT);
         const uint8_t *text = p + 4 * LWRING_OPEN_FAILED_WORDS;
-        if (4 * LWRING_OPEN_FAILED_WORDS + text_len > payload_len)
+        if (text_len > payload_len - 4 * LWRING_OPEN_FAILED_WORDS)
             text_len = payload_len - 4 * LWRING_OPEN_FAILED_WORDS;
         g_ring.outstanding = 0;
         g_ring.job_id = 0;
@@ -224,7 +242,7 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
         uint32_t flags = RD_LE32(p + 4 * LWRING_FED_FLAGS);
         const uint8_t *reply = p + 4 * LWRING_FED_WORDS;
         const uint8_t *errors = reply + LWRING_PAD4(reply_len);
-        if (4 * LWRING_FED_WORDS + LWRING_PAD4(reply_len) + LWRING_PAD4(error_len) > payload_len) {
+        if (4 * LWRING_FED_WORDS + ring_pad4(reply_len) + ring_pad4(error_len) > payload_len) {
             LOG(1, "laserwriter: job %u: malformed FED record (lengths exceed the record)", (unsigned)job_id);
             reply_len = 0;
             error_len = 0;
@@ -249,8 +267,8 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
         const uint8_t *offend = name + LWRING_PAD4(name_len);
         const uint8_t *reply = offend + LWRING_PAD4(offend_len);
         const uint8_t *errors = reply + LWRING_PAD4(reply_len);
-        if (4 * LWRING_FINISHED_WORDS + LWRING_PAD4(name_len) + LWRING_PAD4(offend_len) + LWRING_PAD4(reply_len) +
-                LWRING_PAD4(error_len) >
+        if (4 * LWRING_FINISHED_WORDS + ring_pad4(name_len) + ring_pad4(offend_len) + ring_pad4(reply_len) +
+                ring_pad4(error_len) >
             payload_len) {
             LOG(1, "laserwriter: job %u: malformed FINISHED record (lengths exceed the record)", (unsigned)job_id);
             name_len = offend_len = reply_len = error_len = 0;

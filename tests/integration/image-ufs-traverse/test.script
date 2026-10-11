@@ -19,7 +19,7 @@ files.path_exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6
 files.path_exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/unix
 
 # Writes into a UFS image path must be structurally refused (EROFS).
-files.mkdir ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir
+assert try(files.mkdir("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir"), "refused") == "refused" "mkdir into the image is refused"
 
 # Recursive cp out of UFS into WORK_DIR (host path provided by runner).
 # /etc is ~380 entries including symlinks; exercises direct + single-indirect

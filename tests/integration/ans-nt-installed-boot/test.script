@@ -95,6 +95,7 @@ def nt_installed_boot() {
     nt_key($K_RETURN)
     nt_screen("nt-desktop.png", 400000000000)
     echo "B5: Ctrl+Alt+Del from the ADB keyboard; Administrator is logged on to the desktop"
+    report_perf("ans-nt-installed-boot/desktop", scheduler.instr_count)
 
     echo "ans-nt-installed-boot: an installed Windows NT 4.0 cold-boots through the powermac-nt-hal floppy's bootdisk.of to its logon screen, and Administrator logs on from the ADB keyboard (rung B5)"
 }
@@ -102,7 +103,7 @@ def nt_installed_boot() {
 if have_media($nt_rom) && have_media($nt_disk) && have_media($nt_floppy) {
     nt_installed_boot()
 } else {
-    echo "skip: ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 9b20396 or later; run scripts/fetch-test-data.sh)"
+    skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 9b20396 or later; run scripts/fetch-test-data.sh)")
 }
 
 quit

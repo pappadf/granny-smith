@@ -20,6 +20,7 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // ============================================================================

@@ -168,16 +168,16 @@ static bool init_test_memory(void) {
     // executor may cache (CPU_TEST_PREDECODE=1).
     memory_code_region_register(g_mem, TEST_MEM_SIZE);
 
-    for (int p = 0; p < (TEST_MEM_SIZE >> PAGE_SHIFT); p++) {
-        g_page_table[p].host_base = g_mem + (p << PAGE_SHIFT);
+    for (int p = 0; p < (TEST_MEM_SIZE >> MEM_PAGE_SHIFT); p++) {
+        g_page_table[p].host_base = g_mem + (p << MEM_PAGE_SHIFT);
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = true;
         // Write entries through memory_write_fill: the code-page marks must
         // be able to find and suppress them.
-        uintptr_t adjusted = (uintptr_t)(g_mem + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
+        uintptr_t adjusted = (uintptr_t)(g_mem + (p << MEM_PAGE_SHIFT)) - ((uint32_t)p << MEM_PAGE_SHIFT);
         uintptr_t wadj =
-            memory_write_fill((uint32_t)p, g_mem + (p << PAGE_SHIFT), adjusted, MEM_WT_SUPER | MEM_WT_USER);
+            memory_write_fill((uint32_t)p, g_mem + (p << MEM_PAGE_SHIFT), adjusted, MEM_WT_SUPER | MEM_WT_USER);
         g_supervisor_read[p] = adjusted;
         g_supervisor_write[p] = wadj;
         g_user_read[p] = adjusted;

@@ -12,11 +12,13 @@
 #include "floppy.h"
 #include "floppy_geometry.h"
 #include "image.h"
+#include "image_internal.h"
 #include "new_age.h"
 #include "scheduler.h"
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // ============================================================================
@@ -81,8 +83,14 @@ size_t disk_size(image_t *disk) {
     (void)disk;
     return sizeof s_disk;
 }
+// An image sector the backing image cannot read, or -1 for none: a read
+// touching it comes back short, as image.c returns it.
+static long s_bad_sector = -1;
+
 size_t disk_read_data(image_t *disk, size_t off, uint8_t *buf, size_t size) {
     (void)disk;
+    if (s_bad_sector >= 0 && off <= (size_t)s_bad_sector * 512 && off + size > (size_t)s_bad_sector * 512)
+        return 0;
     memcpy(buf, s_disk + off, size);
     return size;
 }
@@ -346,7 +354,7 @@ TEST(test_cstin_poll) {
 // Bring the drive up and read sectors 3..5 of cylinder 5, head 1.  The
 // launch byte leaves RQM low until the result phase; with the channel's
 // count ending on sector 5 the command terminates normally, C unchanged.
-static void read_track(int count_bytes, uint8_t *st0, uint8_t *st1, uint8_t *c, uint8_t *r) {
+static void read_track(int count_bytes, uint8_t *st0, uint8_t *st1, uint8_t *st2, uint8_t *c, uint8_t *r) {
     cmd((const uint8_t[]){0x9B, 0x00}, 2);
     int len;
     uint8_t pcn;
@@ -368,7 +376,9 @@ static void read_track(int count_bytes, uint8_t *st0, uint8_t *st1, uint8_t *c, 
     *st0 = result();
     ASSERT_TRUE(!s_int); // the first result read drops INT
     *st1 = result();
-    result(); // ST2
+    uint8_t s2 = result();
+    if (st2)
+        *st2 = s2;
     *c = result();
     result(); // H
     *r = result();
@@ -381,7 +391,7 @@ TEST(test_read_tc) {
     for (size_t i = 0; i < sizeof s_disk; i++)
         s_disk[i] = (uint8_t)(i / 512);
     uint8_t st0, st1, c, r;
-    read_track(3 * 512, &st0, &st1, &c, &r);
+    read_track(3 * 512, &st0, &st1, NULL, &c, &r);
     ASSERT_EQ_INT(st0, 0x04); // normal, head 1
     ASSERT_EQ_INT(st1, 0);
     ASSERT_EQ_INT(c, 5); // the cylinder the head is on (see na_update_id)
@@ -395,9 +405,26 @@ TEST(test_read_tc) {
 TEST(test_read_no_tc) {
     fresh();
     uint8_t st0, st1, c, r;
-    read_track(8 * 512, &st0, &st1, &c, &r);
+    read_track(8 * 512, &st0, &st1, NULL, &c, &r);
     ASSERT_EQ_INT(st0, 0x44);
     ASSERT_EQ_INT(st1, 0x80);
+}
+
+// A sector whose data the image cannot read ends the read abnormally with a
+// data error in the data field (ST1 DE, ST2 DD), as a damaged sector does --
+// not as a sector that is not there (ND).  The sectors before it transferred.
+TEST(test_read_unreadable_sector_is_a_data_error) {
+    fresh();
+    for (size_t i = 0; i < sizeof s_disk; i++)
+        s_disk[i] = (uint8_t)(i / 512);
+    s_bad_sector = (5 * 2 + 1) * 18 + 3; // cylinder 5 head 1 sector 4
+    uint8_t st0, st1, st2, c, r;
+    read_track(3 * 512, &st0, &st1, &st2, &c, &r);
+    s_bad_sector = -1;
+    ASSERT_EQ_INT(st0 & 0xC0, 0x40); // abnormal termination
+    ASSERT_EQ_INT(st1, NEW_AGE_ST1_DE);
+    ASSERT_EQ_INT(st2, NEW_AGE_ST2_DD);
+    ASSERT_EQ_INT(s_dma[0], (uint8_t)((5 * 2 + 1) * 18 + 2));
 }
 
 // The wrong recording: a GCR Read ID on an MFM medium finds no mark.
@@ -422,6 +449,7 @@ int main(void) {
     RUN(test_cstin_poll);
     RUN(test_read_tc);
     RUN(test_read_no_tc);
+    RUN(test_read_unreadable_sector_is_a_data_error);
     RUN(test_wrong_encoding);
     fprintf(stderr, "new_age: all tests passed\n");
     return 0;

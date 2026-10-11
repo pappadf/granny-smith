@@ -375,7 +375,7 @@ relookup:
         // Leaving the block: from here p->pc is authoritative (the exit
         // materializes from the cursor only while a block is current).
         blk = NULL;
-        page_lo = pc & ~(uint32_t)PAGE_MASK;
+        page_lo = pc & ~(uint32_t)MEM_PAGE_MASK;
         predecode_enter(NULL, *instructions); // charge the page being left
         if (*instructions == 0)
             goto done;

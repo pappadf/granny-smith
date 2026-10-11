@@ -1,6 +1,14 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
-  import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
+  import {
+    layout,
+    setPanelPos,
+    setPanelCollapsed,
+    setScreenMode,
+    screenMode,
+    type PanelPos,
+    type ScreenMode,
+  } from '@/state/layout.svelte';
   import { resolved, setSkin } from '@/state/appearance.svelte';
   import { skins } from '@/skins/registry';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
@@ -57,23 +65,33 @@
     }
   }
 
-  function onFullscreenClick() {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => undefined);
-    } else {
-      document.documentElement.requestFullscreen().catch(() => {
-        showNotification('Full screen blocked by the browser', 'warning');
-      });
-    }
+  // The screen-mode menu: normal, full screen keeping the toolbar and
+  // status bar, or full screen with them hidden (Esc returns to normal).
+  // The menu action runs synchronously in the click, so requestFullscreen
+  // still sees the user gesture.
+  function onFullscreenMenu(ev: MouseEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const current = screenMode();
+    const modes: Array<[ScreenMode, string]> = [
+      ['normal', 'Normal'],
+      ['fullscreen', 'Full Screen'],
+      ['fullscreen-bare', 'Full Screen, Hide Toolbar and Status Bar'],
+    ];
+    const items: ContextMenuItem[] = modes.map(([mode, label]) => ({
+      label,
+      checked: current === mode,
+      action: () =>
+        setScreenMode(mode, () =>
+          showNotification('Full screen blocked by the browser', 'warning'),
+        ),
+    }));
+    openContextMenu(items, r.left, r.bottom);
   }
 
   // Note: layout.fullscreen is kept in sync with the browser's native
   // fullscreen state by a listener in App.svelte (not here) so it survives
   // this toolbar being unmounted while fullscreen is active.
   const fullscreenIcon: IconName = $derived(layout.fullscreen ? 'screen-normal' : 'screen-full');
-  const fullscreenTitle = $derived(
-    layout.fullscreen ? 'Exit full screen' : 'Enter full screen — hide panel and chrome',
-  );
 
   // The appearance menu: every skin, the one on screen checked.
   function onAppearanceMenu(ev: MouseEvent) {
@@ -332,10 +350,11 @@
       onclick={onAppearanceMenu}
     />
     <IconButton
-      class="tbtn"
+      class="tbtn fullscreen-menu"
       icon={fullscreenIcon}
-      label={fullscreenTitle}
-      onclick={onFullscreenClick}
+      label="Screen Mode"
+      aria-haspopup="menu"
+      onclick={onFullscreenMenu}
     />
     <Separator class="sep" />
     <IconButton

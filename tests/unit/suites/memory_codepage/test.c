@@ -46,7 +46,7 @@ static memory_map_t *make_plus(void) {
 
 // Host pointer of guest RAM page `page`.
 static uint8_t *ram_page(memory_map_t *mem, uint32_t page) {
-    return ram_native_pointer(mem, page << PAGE_SHIFT);
+    return ram_native_pointer(mem, page << MEM_PAGE_SHIFT);
 }
 
 // ============================================================================
@@ -293,7 +293,7 @@ TEST(test_mmu_slow_write_lands) {
 TEST(test_extra_region) {
     memory_map_t *mem = make_plus();
     uint8_t *buf = calloc(8 * MEM_PAGE_SIZE + MEM_PAGE_SIZE, 1);
-    uint8_t *base = (uint8_t *)(((uintptr_t)buf + MEM_PAGE_SIZE - 1) & ~(uintptr_t)PAGE_MASK);
+    uint8_t *base = (uint8_t *)(((uintptr_t)buf + MEM_PAGE_SIZE - 1) & ~(uintptr_t)MEM_PAGE_MASK);
     int r = memory_code_region_register(base, 8 * MEM_PAGE_SIZE);
     ASSERT_EQ_INT(1, r);
     uint32_t page;

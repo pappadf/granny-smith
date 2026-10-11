@@ -13,6 +13,7 @@
 #include "dma_mem.h"
 #include "test_assert.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static uint8_t s_mem[64];

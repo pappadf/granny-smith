@@ -96,8 +96,9 @@ export function createConsole(): Console {
           continue;
         }
         state.runningSince = performance.now();
-        await gsEvalLine(text);
+        const failed = await gsEvalLine(text);
         if (disposed) return;
+        if (failed) notice(`Command failed: ${failed}`);
         state.runningSince = null;
         refreshPrompt();
         for (const cb of jobDone) cb();

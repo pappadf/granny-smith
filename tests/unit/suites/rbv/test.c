@@ -24,6 +24,7 @@
 #include "value.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // RBV register offsets (native + VIA-spaced aliases)
@@ -143,13 +144,9 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     (void)iface;
     (void)device;
 }
-void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                       void *device) {
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
     (void)mem;
     (void)addr;
-    (void)size;
-    (void)name;
-    (void)iface;
     (void)device;
 }
 

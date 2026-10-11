@@ -71,7 +71,7 @@ static pd_block_t *block_of(uint32_t page) {
     uintptr_t base = g_supervisor_read[page];
     if (!base)
         return NULL;
-    return predecode_lookup((uint8_t *)(base + (page << PAGE_SHIFT)), page << PAGE_SHIFT, PD_ARCH_68K);
+    return predecode_lookup((uint8_t *)(base + (page << MEM_PAGE_SHIFT)), page << MEM_PAGE_SHIFT, PD_ARCH_68K);
 }
 
 // The POD part of cpu_t (everything before the pointers).
@@ -261,7 +261,7 @@ TEST(test_cross_page) {
     // core does) — never a specialized id, which would need the words.
     pd_block_t *blk = block_of(1);
     ASSERT_TRUE(blk != NULL);
-    uint16_t id = blk->e[(0x1FFC & PAGE_MASK) >> 1].id;
+    uint16_t id = blk->e[(0x1FFC & MEM_PAGE_MASK) >> 1].id;
     ASSERT_TRUE(id != PD_UNDECODED && id < T1_END);
     predecode_set_enabled(false);
 }

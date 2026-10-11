@@ -10,9 +10,10 @@ TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/scheduler/scheduler.c \
-                ../../../../src/core/event/gs_event.c
+                ../../../../src/core/scheduler/scheduler_class.c \
+                ../../../../src/core/event/event.c
 # $(CURDIR) comes FIRST so this suite's platform_clock.h (extern, controllable
-# host_time) shadows the support default (static inline, always 0.0).  That
+# host_time_ms) shadows the support default (static inline, always 0.0).  That
 # order is why the suite names its own list rather than taking the default;
 # it is expanded after common.mk has set UNIT_ROOT and EMU_ROOT, hence `=`.
 INCLUDE_FLAGS = -I$(CURDIR) \

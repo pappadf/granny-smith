@@ -347,6 +347,7 @@ static void dis_mftb(ppc_insn *o, uint32_t w) {
 #define OP_BCCTR      dis_bcond(o, iw, addr, 2)
 #define OP_B          dis_b(o, iw, addr)
 #define OP_SC         (o->is_branch = 1, ASM("sc"))
+#define OP_SC_POWER   (PWR, o->is_branch = 1, ASM("sc"))
 #define OP_RFI        (o->is_branch = 1, ASM("rfi"))
 #define OP_ISYNC      ASM("isync")
 

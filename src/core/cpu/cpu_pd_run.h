@@ -986,11 +986,10 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
         PD_HW_RESET(cpu);
     }
 #ifdef CPU_DECODER_IS_68030
-    g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;
-    g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;
+    cpu_select_soa(cpu->supervisor);
 #endif
-    cpu_check_interrupt(cpu);
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
+    cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per
     // instruction (m68k_bus_error_latch_settle).
     if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
@@ -999,7 +998,7 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     uint32_t _saved_trace = cpu->trace;
     if (__builtin_expect(_saved_trace & 2, 0))
         if (*instructions > 1) {
-            g_sprint_unrun_slots += *instructions - 1; // the rest of the plan is not run
+            g_sprint_io.unrun_slots += *instructions - 1; // the rest of the plan is not run
             *instructions = 1;
         }
 #endif
@@ -1518,17 +1517,17 @@ relookup:
         // same user page differently in the two spaces), and a PMOVE /
         // PFLUSH through the generic step can remap it.
         if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 1u) &&
-            g_active_read[bus >> PAGE_SHIFT] + (page_lo & g_address_mask) == (uintptr_t)blk->host) {
+            g_active_read[bus >> MEM_PAGE_SHIFT] + (page_lo & g_address_mask) == (uintptr_t)blk->host) {
             cur = blk->e + ((pc - page_lo) >> 1);
             goto top; // same block, same mapping: no memory access
         }
-        if (!blk && pd_held && ((pc ^ page_lo) & ~(uint32_t)PAGE_MASK) == 0)
+        if (!blk && pd_held && ((pc ^ page_lo) & ~(uint32_t)MEM_PAGE_MASK) == 0)
             goto t2_loop; // still on a page the pool declined (demoted, held, no region)
         blk = NULL;
         pd_held = false;
-        page_lo = pc & ~(uint32_t)PAGE_MASK;
+        page_lo = pc & ~(uint32_t)MEM_PAGE_MASK;
         if (!(pc & 1u)) {
-            uintptr_t base = g_active_read[bus >> PAGE_SHIFT];
+            uintptr_t base = g_active_read[bus >> MEM_PAGE_SHIFT];
             if (base != 0) {
                 blk = predecode_lookup((uint8_t *)(base + (page_lo & g_address_mask)), page_lo, PD_ARCH_68K);
                 if (!blk) {
@@ -1544,7 +1543,7 @@ relookup:
         }
         predecode_enter(blk, *instructions); // charge the page being left, open the new one
         if (blk) {
-            cur = blk->e + ((pc & PAGE_MASK) >> 1);
+            cur = blk->e + ((pc & MEM_PAGE_MASK) >> 1);
             goto top;
         }
         // Uncached (device window, logpointed, demoted) or an odd PC: the
@@ -1581,24 +1580,24 @@ done:
 #ifdef CPU_DECODER_IS_68040
         if (g_bus_error_is_pmmu)
 #else
-        if (g_mmu && g_mmu->enabled && g_bus_error_is_pmmu)
+        GS_ASSERT(cpu->mmu == (void *)g_mmu);
+        if (cpu->mmu && ((mmu_state_t *)cpu->mmu)->enabled && g_bus_error_is_pmmu)
 #endif
             exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);
         else
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;
+            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);
+        cpu_select_soa(cpu->supervisor);
     } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));
     }
 #else
     if (__builtin_expect(g_bus_error_pending, 0)) {
         g_bus_error_pending = false;
-        if (!g_bus_error_is_address) // an address error keeps the PC the instruction reached
-            cpu->pc = cpu->instruction_pc + 2;
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;
+        // An address error keeps the PC the instruction reached; a bus
+        // error stacks the faulting instruction + 2 (cpu_68000.c).
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw,
+                            g_bus_error_is_address ? cpu->pc : cpu->instruction_pc + 2);
+        cpu_select_soa(cpu->supervisor);
     }
 #endif
     cpu_check_interrupt(cpu);

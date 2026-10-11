@@ -88,7 +88,7 @@ bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t
     char dir[PATH_MAX];
     if (!afp_host_join(root, AFP_CONTROL_DIR, dir, sizeof(dir)))
         return false;
-    gs_mkdir_p(dir); // idempotent; a failure only costs persistence
+    mkdir_p(dir); // idempotent; a failure only costs persistence
     return (size_t)snprintf(out, cap, "%s/%s", dir, leaf) < cap;
 }
 
@@ -316,8 +316,8 @@ static int meta_write(const char *host_path, const afp_meta_t *meta, const uint8
         return (int)hl;
 
     // ".gstmp", not ".tmp": "._x.tmp" is the sidecar of a file named "x.tmp".
-    gs_atomic_t out;
-    FILE *f = gs_atomic_open(&out, sc, ".gstmp");
+    file_replace_t out;
+    FILE *f = file_replace_open(&out, sc, ".gstmp");
     if (!f)
         return errno ? -errno : -EIO;
     bool ok = fwrite(hdr, 1, (size_t)hl, f) == (size_t)hl;
@@ -339,7 +339,7 @@ static int meta_write(const char *host_path, const afp_meta_t *meta, const uint8
         if (left)
             ok = false; // the source ran short of the declared length
     }
-    return gs_atomic_commit(&out, ok);
+    return file_replace_commit(&out, ok);
 }
 
 int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, size_t rsrc_len) {

@@ -13,7 +13,7 @@
 
 #include <stdbool.h>
 
-// Spans of `text` as a V_LIST of {start, end, class} maps: UTF-8 byte
+// Spans of `text` as a VK_LIST of {start, end, class} maps: UTF-8 byte
 // offsets, half-open, ordered and non-overlapping.  Classes: keyword,
 // decl, variable, alias, number, string, interp, operator, comment,
 // object, method, attribute, enum, unknown.  Text that does not lex gets no

@@ -27,6 +27,7 @@
 // keyboard.c uses.  Nothing fires on its own; fire_event() runs a pending
 // event the way the scheduler would.
 
+#include "checkpoint.h"
 #include "keyboard.h"
 
 #include "test_assert.h"

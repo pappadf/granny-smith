@@ -29,6 +29,8 @@
 // so that changing it there without looking here fails this test rather
 // than silently widening the bound it is supposed to pin.
 
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "scc.h"
 
 #include "scheduler.h"
@@ -57,9 +59,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                     void *device) {
     (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
 }
-void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                       void *device) {
-    (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)device;
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device) {
+    (void)mem, (void)addr, (void)device;
 }
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
@@ -222,6 +223,27 @@ TEST(test_sdlc_send_refuses_an_oversized_frame) {
     scc_delete(scc);
 }
 
+// A maximum-length frame plus its 2-byte CRC trailer must fit the receive
+// buffer: the trailer used to be read from past the buffer's end, so the
+// driver popped stale bytes (here the frame's own fill) as the "CRC".
+TEST(test_max_frame_trailer_fits_the_rx_buffer) {
+    scc_t *scc = make();
+    wr(scc, CH_B_CTL, 4, WR4_SDLC);
+    wr(scc, CH_B_CTL, 3, 0x11); // Rx enable + enter hunt
+
+    static uint8_t frame[SDLC_MAX_FRAME_PINNED];
+    memset(frame, 0xA5, sizeof frame);
+    frame[0] = 0xFF; // broadcast
+    ASSERT_EQ_INT(0, scc_sdlc_send(scc, frame, sizeof frame));
+
+    for (int i = 0; i < SDLC_MAX_FRAME_PINNED; i++)
+        ASSERT_EQ_INT(frame[i], rd(scc, CH_B_CTL, 8));
+    ASSERT_EQ_INT(0, rd(scc, CH_B_CTL, 8)); // CRC trailer, zeroed
+    ASSERT_EQ_INT(0, rd(scc, CH_B_CTL, 8));
+
+    scc_delete(scc);
+}
+
 // --- The LocalTalk frame sink ----------------------------------------------
 //
 // The SCC used to hand every flushed transmit buffer to a global
@@ -318,6 +340,7 @@ int main(void) {
     RUN(test_sdlc_send_refuses_when_the_channel_left_sdlc);
     RUN(test_sdlc_send_refuses_a_short_frame);
     RUN(test_sdlc_send_refuses_an_oversized_frame);
+    RUN(test_max_frame_trailer_fits_the_rx_buffer);
     RUN(test_sdlc_frame_on_channel_b_reaches_the_sink);
     RUN(test_async_bytes_on_channel_b_are_not_a_frame);
     RUN(test_sdlc_frame_on_channel_a_is_not_delivered);

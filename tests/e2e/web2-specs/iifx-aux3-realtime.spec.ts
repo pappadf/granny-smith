@@ -29,10 +29,13 @@
 // as the legacy spec did. If the boot hangs or resets, no poll ever matches
 // and the test times out with the stuck frame in the failure screenshot.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+
+// Keep web2's default pacing: its point is a boot with no speed override.
+test.use({ gsSpeed: null });
 
 const DATA = path.resolve(__dirname, '../../data');
 const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');

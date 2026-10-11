@@ -451,7 +451,7 @@ void phase_message_out(scsi_t *scsi);
 const char *phase_name(int p);
 void phase_selection(scsi_t *scsi);
 void run_cmd(scsi_t *scsi);
-void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
+bool scsi_buf_ensure(scsi_t *scsi, size_t bytes);
 
 // 5380 services the bus calls back into.  Three of these are the chip's
 // interrupt and DRQ wiring, which the bus pokes when a phase changes; the
@@ -520,6 +520,12 @@ void phase_message_in(scsi_t *scsi, uint8_t message);
 // block would be a truncated header, not that format, so zero is both the more
 // faithful answer and the one the drive we advertise documents.
 int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
+
+// scsi_data_in_alloc plus the fill: copies the first min(have, alloc) bytes
+// of `src` into the freshly sized buffer in the same call, so no caller
+// leaves DATA IN armed over an unfilled buffer.  Returns the length, as
+// scsi_data_in_alloc does.
+int scsi_data_in_copy(scsi_t *scsi, const void *src, int have, int alloc);
 
 // Emit Apple's vendor-identification MODE SENSE page $30 into `buf`.  Shared by
 // the hard-disk and CD-ROM paths; the identification STRING is not shared, and

@@ -17,6 +17,7 @@
 #include "lint.h"
 #include "meta.h"
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -42,15 +43,18 @@ static value_t toy_step(struct object *self, const member_t *m, int argc, const 
 }
 
 static const arg_decl_t toy_step_args[] = {
-    {.name = "n", .kind = V_INT, .doc = "Steps"},
+    {.name = "n", .kind = VK_INT, .doc = "Steps"},
 };
 
 static const member_t toy_members[] = {
-    {.kind = M_ATTR,   .name = "pc", .doc = "Program counter", .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
-    {.kind = M_METHOD,
+    {.kind = MK_ATTR,
+     .name = "pc",
+     .doc = "Program counter",
+     .attr = {.type = VK_UINT, .get = toy_get_pc, .set = NULL}                       },
+    {.kind = MK_METHOD,
      .name = "step",
      .doc = "Advance by N",
-     .method = {.args = toy_step_args, .nargs = 1, .result = V_NONE, .fn = toy_step}                                   },
+     .method = {.args = toy_step_args, .nargs = 1, .result = VK_NONE, .fn = toy_step}},
 };
 static const class_desc_t toy_class = {
     .name = "Toy",
@@ -66,13 +70,13 @@ static struct object *attach_toy(const char *name) {
     return o;
 }
 
-// Find a V_STRING in a V_LIST.
+// Find a VK_STRING in a VK_LIST.
 static bool list_contains(const value_t *list, const char *name) {
-    if (!list || list->kind != V_LIST || !name)
+    if (!list || list->kind != VK_LIST || !name)
         return false;
     for (size_t i = 0; i < list->list.len; i++) {
         const value_t *v = &list->list.items[i];
-        if (v->kind == V_STRING && v->s && strcmp(v->s, name) == 0)
+        if (v->kind == VK_STRING && v->s && strcmp(v->s, name) == 0)
             return true;
     }
     return false;
@@ -103,7 +107,7 @@ TEST(test_meta_class_returns_class_name) {
     node_t n = object_resolve(object_root(), "toy.meta.class");
     ASSERT_TRUE(node_valid(n));
     value_t v = node_get(n);
-    ASSERT_TRUE(v.kind == V_STRING);
+    ASSERT_TRUE(v.kind == VK_STRING);
     ASSERT_TRUE(v.s && strcmp(v.s, "Toy") == 0);
     value_free(&v);
     object_root_reset();
@@ -115,7 +119,7 @@ TEST(test_meta_path_returns_inspected_path) {
     node_t n = object_resolve(object_root(), "toy.meta.path");
     ASSERT_TRUE(node_valid(n));
     value_t v = node_get(n);
-    ASSERT_TRUE(v.kind == V_STRING);
+    ASSERT_TRUE(v.kind == VK_STRING);
     ASSERT_TRUE(v.s && strcmp(v.s, "toy") == 0);
     value_free(&v);
     object_root_reset();
@@ -128,7 +132,7 @@ TEST(test_meta_attributes_and_methods_lists) {
     node_t a = object_resolve(object_root(), "toy.meta.attributes");
     ASSERT_TRUE(node_valid(a));
     value_t alist = node_get(a);
-    ASSERT_TRUE(alist.kind == V_LIST);
+    ASSERT_TRUE(alist.kind == VK_LIST);
     ASSERT_TRUE(list_contains(&alist, "pc"));
     ASSERT_TRUE(!list_contains(&alist, "step")); // methods not in attributes
     value_free(&alist);
@@ -136,7 +140,7 @@ TEST(test_meta_attributes_and_methods_lists) {
     node_t m = object_resolve(object_root(), "toy.meta.methods");
     ASSERT_TRUE(node_valid(m));
     value_t mlist = node_get(m);
-    ASSERT_TRUE(mlist.kind == V_LIST);
+    ASSERT_TRUE(mlist.kind == VK_LIST);
     ASSERT_TRUE(list_contains(&mlist, "step"));
     ASSERT_TRUE(!list_contains(&mlist, "pc"));
     value_free(&mlist);
@@ -151,7 +155,7 @@ TEST(test_root_meta_children_includes_attached) {
     node_t n = object_resolve(object_root(), "meta.children");
     ASSERT_TRUE(node_valid(n));
     value_t list = node_get(n);
-    ASSERT_TRUE(list.kind == V_LIST);
+    ASSERT_TRUE(list.kind == VK_LIST);
     ASSERT_TRUE(list_contains(&list, "toy_a"));
     ASSERT_TRUE(list_contains(&list, "toy_b"));
     value_free(&list);
@@ -164,7 +168,7 @@ TEST(test_meta_meta_self_introspection) {
     node_t n = object_resolve(object_root(), "toy.meta.meta.attributes");
     ASSERT_TRUE(node_valid(n));
     value_t list = node_get(n);
-    ASSERT_TRUE(list.kind == V_LIST);
+    ASSERT_TRUE(list.kind == VK_LIST);
     // The Meta class itself declares class/doc/path/children/attributes/methods.
     ASSERT_TRUE(list_contains(&list, "class"));
     ASSERT_TRUE(list_contains(&list, "path"));
@@ -188,10 +192,10 @@ TEST(test_meta_node_cached) {
 
 TEST(test_class_with_meta_member_rejected) {
     static const member_t bad_members[] = {
-        {.kind = M_ATTR,
+        {.kind = MK_ATTR,
          .name = "meta",
          .doc = "reserved name",
-         .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
+         .attr = {.type = VK_UINT, .get = toy_get_pc, .set = NULL}},
     };
     static const class_desc_t bad_class = {
         .name = "Bad",
@@ -199,7 +203,7 @@ TEST(test_class_with_meta_member_rejected) {
         .n_members = 1,
     };
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&bad_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&bad_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL || strstr(err, "meta") != NULL);
 }
 
@@ -212,7 +216,7 @@ TEST(test_meta_complete_returns_empty_without_provider) {
     ASSERT_TRUE(node_valid(n));
     value_t args[2] = {val_str("toy.p"), val_int(5)};
     value_t result = node_call(n, 2, args);
-    ASSERT_TRUE(result.kind == V_LIST);
+    ASSERT_TRUE(result.kind == VK_LIST);
     ASSERT_TRUE(result.list.len == 0);
     value_free(&args[0]);
     value_free(&args[1]);
@@ -242,7 +246,7 @@ static struct object *img_lookup(struct object *self, const char *name) {
 }
 
 static const member_t dev_members[] = {
-    {.kind = M_CHILD, .name = "image", .doc = "Medium", .child = {.cls = &empty_class, .lookup = img_lookup}},
+    {.kind = MK_CHILD, .name = "image", .doc = "Medium", .child = {.cls = &empty_class, .lookup = img_lookup}},
 };
 static const class_desc_t dev_class = {.name = "Dev", .members = dev_members, .n_members = 1};
 
@@ -256,7 +260,7 @@ static const collection_desc_t devs_entries = {
 };
 
 static const member_t devs_members[] = {
-    {.kind = M_CHILD, .name = "entries", .doc = "Devices", .child = {.collection = &devs_entries}},
+    {.kind = MK_CHILD, .name = "entries", .doc = "Devices", .child = {.collection = &devs_entries}},
 };
 static const class_desc_t devs_class = {.name = "Devs", .members = devs_members, .n_members = 1};
 
@@ -280,7 +284,7 @@ static const collection_desc_t cats_entries = {
 };
 
 static const member_t cats_members[] = {
-    {.kind = M_CHILD, .name = "entries", .doc = "Categories", .child = {.collection = &cats_entries}},
+    {.kind = MK_CHILD, .name = "entries", .doc = "Categories", .child = {.collection = &cats_entries}},
 };
 static const class_desc_t cats_class = {.name = "Cats", .members = cats_members, .n_members = 1};
 
@@ -292,7 +296,7 @@ static bool path_is(const char *path, const char *want) {
     if (!node_valid(n))
         return false;
     value_t v = node_get(n);
-    bool ok = v.kind == V_STRING && v.s && strcmp(v.s, want) == 0;
+    bool ok = v.kind == VK_STRING && v.s && strcmp(v.s, want) == 0;
     value_free(&v);
     return ok;
 }
@@ -328,7 +332,7 @@ TEST(test_logical_parent_paths) {
     node_t cn = object_resolve(object_root(), "category.count");
     ASSERT_TRUE(node_valid(cn));
     value_t c = node_get(cn);
-    ASSERT_TRUE(c.kind == V_UINT && c.u == 2);
+    ASSERT_TRUE(c.kind == VK_UINT && c.u == 2);
 
     // The parent going first clears the link: no dangling back-pointer, and
     // the child loses its path rather than printing a freed one.
@@ -382,41 +386,41 @@ TEST(test_valid_keys) {
 // === meta.members keys ====================================================
 
 static const arg_decl_t tk_args[] = {
-    {.name = "mode", .kind = V_ENUM, .enum_values = (const char *const[]){"a", "b", NULL}, .doc = "Mode"},
+    {.name = "mode", .kind = VK_ENUM, .enum_values = (const char *const[]){"a", "b", NULL}, .doc = "Mode"},
 };
 
 static const member_t tk_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "x",
      .doc = "An x",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = toy_get_pc}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = toy_get_pc}},
+    {.kind = MK_METHOD,
      .name = "go",
      .doc = "Go",
-     .method = {.args = tk_args, .nargs = 1, .result = V_NONE, .fn = toy_step} },
-    {.kind = M_METHOD,
+     .method = {.args = tk_args, .nargs = 1, .result = VK_NONE, .fn = toy_step}   },
+    {.kind = MK_METHOD,
      .name = "save",
      .doc = "Save",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}    },
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = toy_step}      },
 };
 static const class_desc_t tk_class = {.name = "Tk", .members = tk_members, .n_members = 3, .doc = "A toy node"};
 
 // Lint: each example must pass the caller's check.
 static const member_t lx_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "bare",
      .doc = "No examples",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = toy_step}},
+    {.kind = MK_METHOD,
      .name = "good",
      .examples = (const char *const[]){"lx.good", NULL},
      .doc = "A resolving example",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = toy_step}},
+    {.kind = MK_METHOD,
      .name = "bad",
      .examples = (const char *const[]){"lx.good", "lx.bda", NULL},
      .doc = "One example that does not resolve",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = toy_step}},
 };
 static const class_desc_t lx_class = {.name = "Lx", .members = lx_members, .n_members = 3, .doc = "A lint node"};
 
@@ -436,7 +440,7 @@ TEST(test_lint_examples) {
     struct object *lx = object_new(&lx_class, NULL, "lx");
     object_attach(object_root(), lx);
     value_t out = object_lint_members(example_ok);
-    ASSERT_EQ_INT(V_LIST, out.kind);
+    ASSERT_EQ_INT(VK_LIST, out.kind);
     ASSERT_TRUE(has_line(&out, "lx.bad: example does not resolve: lx.bda"));
     ASSERT_EQ_INT(1, (int)out.list.len);
     value_free(&out);
@@ -452,13 +456,13 @@ TEST(test_lint_examples) {
 // Lint: a class's gaps are reported once, under its first object's path, and
 // a basic-tier node needs a doc.
 static const arg_decl_t lg_args[] = {
-    {.name = "x", .kind = V_ANY, .doc = "Anything"},
+    {.name = "x", .kind = VK_ANY, .doc = "Anything"},
 };
 static const member_t lg_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "m",
      .doc = "Untyped argument",
-     .method = {.args = lg_args, .nargs = 1, .result = V_NONE, .fn = toy_step}},
+     .method = {.args = lg_args, .nargs = 1, .result = VK_NONE, .fn = toy_step}},
 };
 static const class_desc_t lg_class = {.name = "Lg", .members = lg_members, .n_members = 1, .doc = "A lint node"};
 static const class_desc_t undocumented_class = {.name = "Undoc", .members = NULL, .n_members = 0};
@@ -473,7 +477,7 @@ TEST(test_lint_once_per_class) {
     object_attach(b, kid);
     value_t out = object_lint_members(NULL);
     ASSERT_EQ_INT(2, (int)out.list.len);
-    ASSERT_TRUE(has_line(&out, "lg1.m arg 'x': untyped argument (V_ANY/V_NONE) without OBJ_ARG_POLY"));
+    ASSERT_TRUE(has_line(&out, "lg1.m arg 'x': untyped argument (VK_ANY/VK_NONE) without OBJ_ARG_POLY"));
     ASSERT_TRUE(has_line(&out, "lg2.kid: node shown in the basic tier has no doc"));
     value_free(&out);
     object_root_reset();
@@ -537,7 +541,7 @@ TEST(test_walk_canonical_paths) {
 
 // A value's map entry by key, or NULL.
 static const value_t *map_get(const value_t *m, const char *key) {
-    if (!m || m->kind != V_MAP)
+    if (!m || m->kind != VK_MAP)
         return NULL;
     for (size_t i = 0; i < m->map.len; i++)
         if (strcmp(m->map.entries[i].key, key) == 0)
@@ -552,32 +556,32 @@ TEST(test_meta_members_keys) {
     node_t n = object_resolve(object_root(), "top.meta.members");
     ASSERT_TRUE(node_valid(n));
     value_t list = node_call(n, 0, NULL);
-    ASSERT_TRUE(list.kind == V_LIST && list.list.len == 3);
+    ASSERT_TRUE(list.kind == VK_LIST && list.list.len == 3);
     const value_t *x = &list.list.items[0];
     const value_t *type = map_get(x, "type");
-    ASSERT_TRUE(type && type->kind == V_MAP);
+    ASSERT_TRUE(type && type->kind == VK_MAP);
     ASSERT_TRUE(strcmp(map_get(type, "kind")->s, "uint") == 0);
     ASSERT_TRUE(strcmp(map_get(type, "presentation")->s, "hex") == 0);
-    ASSERT_TRUE(map_get(type, "enum")->kind == V_NONE);
+    ASSERT_TRUE(map_get(type, "enum")->kind == VK_NONE);
     ASSERT_TRUE(map_get(x, "task") == NULL);
     const value_t *go = &list.list.items[1];
     const value_t *args = map_get(go, "args");
-    ASSERT_TRUE(args && args->kind == V_LIST && args->list.len == 1);
+    ASSERT_TRUE(args && args->kind == VK_LIST && args->list.len == 1);
     const value_t *atype = map_get(&args->list.items[0], "type");
     ASSERT_TRUE(strcmp(map_get(atype, "kind")->s, "enum") == 0);
-    ASSERT_TRUE(map_get(atype, "enum")->kind == V_LIST && map_get(atype, "enum")->list.len == 2);
-    ASSERT_TRUE(map_get(&args->list.items[0], "optional")->kind == V_BOOL);
-    ASSERT_TRUE(map_get(&args->list.items[0], "default")->kind == V_NONE);
+    ASSERT_TRUE(map_get(atype, "enum")->kind == VK_LIST && map_get(atype, "enum")->list.len == 2);
+    ASSERT_TRUE(map_get(&args->list.items[0], "optional")->kind == VK_BOOL);
+    ASSERT_TRUE(map_get(&args->list.items[0], "default")->kind == VK_NONE);
     ASSERT_TRUE(strcmp(map_get(map_get(go, "result"), "kind")->s, "none") == 0);
     value_free(&list);
 
     // The root's view of `top`: doc from the class, domain.
     node_t r = object_resolve(object_root(), "meta.members");
     value_t rl = node_call(r, 0, NULL);
-    ASSERT_TRUE(rl.kind == V_LIST && rl.list.len == 1);
+    ASSERT_TRUE(rl.kind == VK_LIST && rl.list.len == 1);
     ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "doc")->s, "A toy node") == 0);
     ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "domain")->s, "emulator") == 0);
-    ASSERT_TRUE(map_get(&rl.list.items[0], "collection")->kind == V_BOOL);
+    ASSERT_TRUE(map_get(&rl.list.items[0], "collection")->kind == VK_BOOL);
     value_free(&rl);
     object_detach(top);
     object_delete(top);

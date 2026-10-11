@@ -8,6 +8,7 @@
 #define CPU_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "debug.h" // cpu_debug_if_t (the main-CPU debug seam)
 #include "platform.h"
@@ -17,7 +18,7 @@
 
 // === Constants ===
 
-// CPU model identifiers (also defined in cpu_internal.h for decoder use)
+// CPU model identifiers (the sole definition; decoders reach it via cpu_internal.h)
 #define CPU_MODEL_68000 68000
 #define CPU_MODEL_68030 68030
 #define CPU_MODEL_68040 68040
@@ -34,56 +35,33 @@ bool cpu_has_fpu(int cpu_model);
 
 // Condition Code Register (CCR) bit masks
 typedef enum {
-    cpu_ccr_c = 1 << 0,
-    cpu_ccr_v = 1 << 1,
-    cpu_ccr_z = 1 << 2,
-    cpu_ccr_n = 1 << 3,
-    cpu_ccr_x = 1 << 4,
-    cpu_ccr_mask = (1 << 5) - 1,
+    CPU_CCR_CARRY = 1 << 0,
+    CPU_CCR_OVERFLOW = 1 << 1,
+    CPU_CCR_ZERO = 1 << 2,
+    CPU_CCR_NEGATIVE = 1 << 3,
+    CPU_CCR_EXTEND = 1 << 4,
+    CPU_CCR_MASK = (1 << 5) - 1,
 } cpu_ccr_bit_t;
 
 // Status Register (SR) bit masks (includes CCR bits)
 typedef enum {
-    cpu_sr_c = cpu_ccr_c,
-    cpu_sr_v = cpu_ccr_v,
-    cpu_sr_z = cpu_ccr_z,
-    cpu_sr_n = cpu_ccr_n,
-    cpu_sr_x = cpu_ccr_x,
+    CPU_SR_CARRY = CPU_CCR_CARRY,
+    CPU_SR_OVERFLOW = CPU_CCR_OVERFLOW,
+    CPU_SR_ZERO = CPU_CCR_ZERO,
+    CPU_SR_NEGATIVE = CPU_CCR_NEGATIVE,
+    CPU_SR_EXTEND = CPU_CCR_EXTEND,
 
-    cpu_sr_ipl0 = 1 << 8,
-    cpu_sr_ipl1 = 1 << 9,
-    cpu_sr_ipl2 = 1 << 10,
-    cpu_sr_ipl = cpu_sr_ipl0 | cpu_sr_ipl1 | cpu_sr_ipl2,
+    CPU_SR_IPL0 = 1 << 8,
+    CPU_SR_IPL1 = 1 << 9,
+    CPU_SR_IPL2 = 1 << 10,
+    CPU_SR_INTERRUPT_MASK = CPU_SR_IPL0 | CPU_SR_IPL1 | CPU_SR_IPL2,
 
-    cpu_sr_rsvd11 = 1 << 11,
-    cpu_sr_m = 1 << 12, // unused on 68000, present on later models
-    cpu_sr_s = 1 << 13,
-    cpu_sr_t0 = 1 << 14, // unused on 68000 (T0 on later CPUs)
-    cpu_sr_t1 = 1 << 15,
+    CPU_SR_RESERVED11 = 1 << 11,
+    CPU_SR_MASTER = 1 << 12, // M: unused on 68000, present on later models
+    CPU_SR_SUPERVISOR = 1 << 13,
+    CPU_SR_TRACE0 = 1 << 14, // T0: unused on 68000 (68020+ only)
+    CPU_SR_TRACE1 = 1 << 15,
 } cpu_sr_bit_t;
-
-typedef enum {
-
-    ea_dn = 0x00001,
-    ea_an = 0x00002,
-    ea_an_mem = 0x00004,
-    ea_an_plus = 0x00008,
-    ea_min_an = 0x00010,
-    ea_d16_an = 0x00020,
-    ea_d8_an_xn = 0x00040,
-    ea_xxx_w = 0x00080,
-    ea_xxx_l = 0x00100,
-    ea_d16_pc = 0x00200,
-    ea_d8_pc_xn = 0x00400,
-    ea_xxx = 0x00800,
-
-    ea_any = 0x00FFF,
-    ea_data = ea_any & ~ea_an,
-    ea_memory = ea_data & ~ea_dn,
-    ea_control = ea_memory & ~(ea_an_plus | ea_min_an | ea_xxx),
-    ea_alterable = ea_any & ~(ea_d16_pc | ea_d8_pc_xn | ea_xxx),
-
-} ea_mode_t;
 
 // === Type Definitions ===
 struct cpu;
@@ -91,7 +69,9 @@ typedef struct cpu cpu_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
+// Create a CPU of the given CPU_MODEL_* (restoring its state from `checkpoint`
+// when non-NULL) and bind its `machine.cpu` object node.
+cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 
 // The CPU half of a reset: everything inside the package, PC and SSP reloaded
 // from the vectors at $0/$4.  The BUS half must already have run -- those
@@ -100,8 +80,10 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 void cpu_reset_to_vector_68030(cpu_t *restrict cpu);
 void cpu_reset_to_vector_68040(cpu_t *restrict cpu);
 
+// Free a CPU created by cpu_init, with its object nodes and owned FPU/040 MMU.
 void cpu_delete(cpu_t *cpu);
 
+// Save CPU state (register file, 040 MMU, FPU) to a checkpoint.
 void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);
 
 // Attach an MMU instance to the CPU.  Sets `cpu->mmu` and creates a `cpu.mmu`
@@ -116,9 +98,11 @@ void cpu_attach_mmu_node(cpu_t *cpu, const struct class_desc *cls, void *data);
 
 // === Operations ===
 
-extern void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);
+// Run the model's decoder until the burn-down counter *instructions reaches 0.
+void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);
 
-extern int cpu_disasm(uint16_t *instr, char *buf);
+// Disassemble the instruction in instr[] into buf; returns its length in words.
+int cpu_disasm(uint16_t *instr, char *buf);
 
 uint32_t cpu_get_an(cpu_t *restrict cpu, int n);
 

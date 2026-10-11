@@ -88,7 +88,7 @@ int udif_create_empty(const char *path, uint64_t size);
 // otherwise, with a message in `err`.  `stats` (may be NULL) gets what was
 // seen: sectors, extents, stored and zero bytes, the decoded CRC when there
 // is one table.
-int udif_verify(gs_source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap);
+int udif_verify(source_t *data, udif_writer_stats_t *stats, char *err, size_t errcap);
 
 // What a UDIF's trailer and block map say, read without decoding a chunk.
 typedef struct {
@@ -100,13 +100,13 @@ typedef struct {
     uint32_t tables; // 'mish' block tables
     uint32_t crc; // the block table's checksum, when there is one table
     uint64_t max_chunk_bytes; // largest decoded compressed chunk
-    bool gs_profile; // written by this emulator
+    bool is_gs_profile; // written by this emulator
     char source_name[256]; // gs-source, or ""
     char origin[UDIF_ORIGIN_MAX]; // gs-origin, or "" (cut short when longer)
 } udif_info_t;
 
 // Read a UDIF's trailer and property list.  0, or a negative errno when it
 // is not a UDIF this reader understands.
-int udif_info(gs_source_t *data, udif_info_t *out);
+int udif_info(source_t *data, udif_info_t *out);
 
 #endif // GS_UDIF_WRITER_H

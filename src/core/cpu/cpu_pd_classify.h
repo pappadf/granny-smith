@@ -318,9 +318,9 @@ static inline uint16_t pd_cls_shift_reg(const pd_cls_t *c, uint16_t opcode, uint
 static inline bool pd_in_page(const pd_cls_t *c, uint32_t target, uint32_t *index) {
     if (target & 1u)
         return false;
-    if ((target & ~(uint32_t)PAGE_MASK) != c->page_lo)
+    if ((target & ~(uint32_t)MEM_PAGE_MASK) != c->page_lo)
         return false;
-    *index = (target & PAGE_MASK) >> 1;
+    *index = (target & MEM_PAGE_MASK) >> 1;
     return true;
 }
 
