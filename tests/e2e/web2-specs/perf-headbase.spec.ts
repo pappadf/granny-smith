@@ -395,11 +395,6 @@ for (const machine of MACHINES) {
       await terminalRun(pages[side], 'scheduler.stop');
     }
 
-    const calib = await calibrateInPage(pages.head);
-    console.log(
-      `PERFBENCH label=${LABEL} calib alu_ns=${calib.alu.toFixed(3)} chase_ns=${calib.chase.toFixed(3)} interp_ns=${calib.interp.toFixed(3)}`,
-    );
-
     const results: Record<'head' | 'base', number[]> = { head: [], base: [] };
     for (let pair = 1; pair <= PAIRS; pair++) {
       // Alternate which side goes first, so slow drift hits both alike.
@@ -415,6 +410,14 @@ for (const machine of MACHINES) {
     const b = median(results.base);
     console.log(
       `PERFBENCH label=${LABEL} machine=${machine} median head=${h.toFixed(2)} base=${b.toFixed(2)} ratio=${(h / b).toFixed(3)}`,
+    );
+    // The calibration kernels last, in a page of their own: run in the head
+    // page beforehand they left that page measurably slower than base's.
+    const calibPage = await context.newPage();
+    await calibPage.goto('about:blank');
+    const calib = await calibrateInPage(calibPage);
+    console.log(
+      `PERFBENCH label=${LABEL} calib alu_ns=${calib.alu.toFixed(3)} chase_ns=${calib.chase.toFixed(3)} interp_ns=${calib.interp.toFixed(3)}`,
     );
     await context.close();
     // Sanity only.

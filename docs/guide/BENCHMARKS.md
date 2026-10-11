@@ -75,8 +75,12 @@ subtracting cancels the warm-up. Everything under the run function counts
 (memory slow paths, devices, the scheduler's I/O penalties); the event
 dispatch between sprints does not.
 
-The counts are a property of the binary and the input: repeat runs are
-bit-identical, and so are two builds of the same source. The gate compares
+The counts are a property of the binary and the input: repeat runs of one
+binary are bit-identical. Two builds whose CPU code is the same agree to a
+few parts per million, not always to the last digit: the first measurements
+found one assert-only lookup (`scheduler_new_cpu_event_ex` searching the
+registered event types) whose cost differed by 5 % between two such builds,
+5 ppm of the total. The gate compares
 head with its merge base in the same job, never with a stored number, so
 nothing needs regenerating when main gets faster:
 
@@ -172,7 +176,7 @@ python3 scripts/bench/compare.py tmp/bench/raw.jsonl --json tmp/bench/bench.json
 | `workflow_dispatch` | either mode, with rows, base, pairing, rounds and metrics as inputs |
 
 The job runs beside `CI`, sharing only the dev image, so it adds no wall time
-to a PR. The step summary carries the tables; `bench` (90 days) carries
+to a PR. The step summary carries the tables; `bench` (30 days, the repository maximum) carries
 `raw.jsonl` and `bench.json`. The base binary is cached by commit and image.
 Without the test data (forks) the job is skipped, as the integration tiers
 are. Only the `history` job, which runs nothing from a PR, has

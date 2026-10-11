@@ -281,7 +281,7 @@ def callgrind_window(binary, row, executor, n, sim, test_data):
     return w, secs
 
 
-def metric_a(row, windows):
+def metric_a(row, windows, sim):
     """A = (Ir(N2) - Ir(N1)) / (G(N2) - G(N1)), and the A2 counts likewise,
     from the two callgrind_window() results."""
     n2 = row["a_n2"]
@@ -470,7 +470,7 @@ def main():
                                 ex.submit(callgrind_window, b, rows[n], e, rows[n][k], sim, test_data)
                                 for k in ("a_n1", "a_n2")]
             for (n, e, label), fs in futs.items():
-                r = metric_a(rows[n], [f.result() for f in fs])
+                r = metric_a(rows[n], [f.result() for f in fs], sim)
                 emit(out, dict(common, metric="A", row=n, exec=e, binary=label, **r))
                 log("bench: A %-18s %-9s %-4s %s" % (n, e, label,
                     "%.3f" % r["value"] if r.get("valid") else r.get("invalid", "?")))
