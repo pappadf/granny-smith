@@ -90,7 +90,9 @@ static inline void predecode_enter(struct pd_block *blk, uint32_t budget) {
 // Demotion economics: a page is demoted once it took more than thrash_limit
 // stores in a window AND those stores outnumber a ratio'th of the
 // instructions it retired in the window (a suppressed store costs roughly
-// `ratio` instructions' worth of predecode gain).
+// `ratio` instructions' worth of predecode gain).  The ratio is per
+// architecture (predecode.thrash_ratio, thrash_ratio_ppc); this sets both
+// (0: never demote, as the conformance suites run).
 void predecode_set_thrash_ratio(uint32_t ratio);
 int predecode_elide_level(void); // 0 = off, 1 = E1 (register-only definers), 2 = E2 (memory forms too)
 void predecode_set_elide(int level);

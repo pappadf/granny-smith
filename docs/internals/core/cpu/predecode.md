@@ -564,7 +564,7 @@ predecoded code.
 | `blk` | the block of the page being executed; NULL on the generic tier |
 | `cur` | the entry to dispatch next |
 | `page_lo` | the guest address of `blk`'s page |
-| `ipc` | the guest address of the instruction being dispatched (`page_lo + 2 * (cur - blk->e)`) |
+| `ipc` | the guest address of the instruction being dispatched (`page_lo + 2 * (cur - blk->e)`, computed as `((uintptr_t)cur >> 2) + ipc_bias`: entries are 8 bytes and instruction words 2, and `ipc_bias` is set when a block is entered) |
 | `pd_held` | the current page was declined by the pool: stay generic without re-asking until the PC leaves it |
 
 **Prologue** (the switch core's, minus the loop):
@@ -877,8 +877,30 @@ come from the switch loop it mirrors.
 
 **The fetch window decides where the PC runs from.**  `g_ppc_fetch` (the
 switch loop's one-page fetch window: `lo`, `span`, `host_adjust`) gains
-`blk`, the block for the window's page.  At sprint start `blk` is cleared,
-so it is re-validated once per sprint against demotions and logpoints.
+`blk`, the block for the window's page, and `fe`, the fetch-TLB entry the
+window came from.  At sprint start `blk` is cleared, so it is re-validated
+once per sprint.
+
+**The fetch TLB carries the block.**  Behind the window is the fetch TLB
+(`g_ppc_ftlb`, 256 entries, direct-mapped by logical page, tagged with the
+page and MSR[PR], used only with MSR[IT] set).  Each entry also remembers
+the predecoded block last found for its page.  `ppc_fetch_window_hit`
+refills the window from a hit inline, with the entry's block; both cores
+try it before `ppc_fetch_fill`.  The block is trusted only while
+`predecode_block_ok` holds (§3.1: same host page and alias, not marked for
+demotion, current memory map); taking it ticks the lookup clock as the
+lookup it replaces.  A page transition to a page seen before therefore
+costs neither a call nor a pool lookup.  The entry's block is reset when
+the entry is refilled, and the whole TLB is flushed by
+`ppc_mmu_flush_fetch` (BAT changes at a context synchronization, `mtsr`,
+SDR1, logpoints, a map change) and per congruence class by `tlbie`.
+`predecode_set_pool_cap` frees the blocks, so it calls
+`g_pd_pool_freed_hook`, which the PowerPC core points at
+`ppc_mmu_flush_fetch`.
+
+An MSR write (every exception, `rfi`, `mtmsr`) drops only the window
+(`ppc_mmu_flush_fetch_window`), not the fetch TLB: the tag carries MSR[PR],
+and no other MSR bit changes an instruction translation.
 
 **Interrupts are polled at every instruction boundary**, as in the switch
 loop.  At `top`, if `ext_irq` or `dec_pending` is set and `MSR[EE]` is
@@ -905,10 +927,21 @@ instructions 4, so `page_lo + (cur - blk->e) * 4` equals
 `page_lo - ((uintptr_t)blk->e >> 1)`, set once when a block is entered.
 Arithmetic is modulo 2^32.
 
-**T0 handlers do not materialize the PC.**  None of them can fault:
-loads, stores and every exception-raising leaf are T1.  `PPD_CASE` is
-audit + body + `cur++` → `retire`.  T1 bodies set `instruction_pc` and
-`pc = ipc + 4` and run the leaf, then go to `retire_relookup`.
+**Register-only T0 handlers do not materialize the PC.**  None of them can
+fault.  `PPD_CASE` is audit + body + `cur++` → `retire`.  T1 bodies set
+`instruction_pc` and `pc = ipc + 4` and run the leaf, then go to
+`retire_relookup`.
+
+**T0 loads and stores** (`lwz`/`lwzu`, `lbz`/`lbzu`, `lhz`/`lhzu`,
+`lha`/`lhau`, `stw`/`stwu`, `stb`/`stbu`, `sth`/`sthu` with rA ≠ 0;
+a = rT/rS offset, b = rA offset, c = displacement) keep the T1 semantics:
+they set `instruction_pc` and `pc` as T1 does, take the inline scalar gate
+(`ppc_scalar_gate_inl`; the byte forms the LE munge and `ppc_dxlate`), keep
+the update order, and read the raw word from the shadow for the DSISR and
+alignment images.  A success advances the cursor without a relookup.  A
+raised exception (the PC is at the vector), or a fetch window that an
+access with side effects flushed (a device store remapping memory), leaves
+through `retire_relookup`, as T1 does.
 
 **`t2_step`** is the switch loop's iteration, verbatim:
 1. set `instruction_pc`;
@@ -938,15 +971,19 @@ audit + body + `cur++` → `retire`.  T1 bodies set `instruction_pc` and
    - if the budget is 0, go to `done`;
    - from here `p->pc` is authoritative.
 3. If the PC is aligned and **`MSR[LE]` is clear**:
-   - **Refill the window.** If the PC is outside the window, call
-     `ppc_fetch_fill` right here (an ftlb hit for a page seen before).
+   - **Refill the window.** If the PC is outside the window, refill it
+     from the fetch TLB inline, or call `ppc_fetch_fill` right here.
      This avoids a generic step for the common page transition.  An ISI or
      a fetch bus error is handled as in `t2_step`.
    - **Use the window's block.** If the window is a full page:
-     - check that `g_ppc_fetch.blk` still holds this page (`host` and
-       `guest_lo` match; the pool may have recycled it);
-     - otherwise look the page up through `predecode_find` (§3.1);
-     - enter the block, set `ipc_bias`, and go to `top`.
+     - take `g_ppc_fetch.blk` if `predecode_block_ok` holds;
+     - otherwise look the page up through `predecode_find` (§3.1) and
+       store the result in the fetch-TLB entry;
+     - enter the block, set `ipc_bias`, and go to `top`;
+     - if the pool declined the page, remember it in `held_lo`: while the
+       PC stays on that page under the same window, relookup goes straight
+       to the generic step (with the budget and interrupt checks) instead
+       of asking the pool on every instruction.
 4. Otherwise take one generic step, polling interrupts first.  This covers
    an unaligned PC, little-endian mode, a device window (`span = 0`), a
    logpointed page, and a demoted page.
@@ -1058,13 +1095,21 @@ current block is `g_pd_current`.
    current visit's if the block is current.  The current visit is read
    through `g_bus_error_instr_ptr`, and only while that block is current:
    between sprints the pointer is stale.
-3. If `++writes > thrash_limit` **and** `writes * thrash_ratio > execs`,
-   set `thrashed`.
+3. If `++writes > thrash_limit` **and** `writes * ratio > execs`, set
+   `thrashed`.  `ratio` is per architecture: `thrash_ratio` (64) for 68K
+   blocks, `thrash_ratio_ppc` (8) for PowerPC blocks.
 
-The reasoning behind the rule: a suppressed store costs about
-`thrash_ratio` instructions' worth of predecode gain.  A hot loop that
-stores into its own page retires many instructions per store and is kept.
-A data page that is executed occasionally is dropped quickly.
+The reasoning behind the rule: a suppressed store costs about `ratio`
+instructions' worth of predecode gain.  A hot loop that stores into its
+own page retires many instructions per store and is kept.  A data page
+that is executed occasionally is dropped quickly.
+
+The PowerPC ratio is lower because a predecoded PowerPC page is worth more
+over the generic tier.  On the 604 desktop bench row (pm8500, System 7.6)
+a ratio of 64 ran 30 % of the instructions on demoted pages (pages that mix
+code with written data); 8 ran 1.4 % there and cost 12 % fewer host
+instructions per guest instruction, with no PowerPC row worse.  The 68K
+rows prefer 64: at 8 the SE/30 Finder row costs 5 % more.
 
 **Acting on it.**  The block stays in place until the next
 `predecode_lookup` of its page (the executor may be running from it
@@ -1077,13 +1122,15 @@ right now).  That lookup:
 - counts `demotions`;
 - returns NULL.
 
-Lookups during the hold return NULL (`lookup_held`).  The 68K loop
-remembers this in `pd_held` and stays generic until the PC leaves the page.
+Lookups during the hold return NULL (`lookup_held`).  Both loops remember
+this (`pd_held` in the 68K loop, `held_lo` in the PowerPC loop) and stay
+generic until the PC leaves the page, instead of asking the pool on every
+instruction.
 
 Defaults: `thrash_limit = 32`, `thrash_window = 4096` lookups,
-`thrash_ratio = 64`, `demote_hold = 65536` lookups.
-`predecode_set_thrash_ratio(0)` disables the rule (the conformance suites
-use it, §6).
+`thrash_ratio = 64`, `thrash_ratio_ppc = 8`, `demote_hold = 65536` lookups.
+`predecode_set_thrash_ratio(0)` sets both ratios to 0, which disables the
+rule (the conformance suites use it, §6).
 
 ### 3.14 Host-page aliasing
 
@@ -1162,7 +1209,8 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 | `predecode.pool_cap` | RW | maximum blocks (16..65536, default 2048); setting it frees the pool |
 | `predecode.thrash_limit` | RW | stores per window before the ratio rule applies (32) |
 | `predecode.thrash_window` | RW | the window, in pool lookups (4096) |
-| `predecode.thrash_ratio` | RW | demote when stores × ratio exceed the instructions retired in the window (64; 0 disables) |
+| `predecode.thrash_ratio` | RW | 68K: demote when stores × ratio exceed the instructions retired in the window (64; 0 disables) |
+| `predecode.thrash_ratio_ppc` | RW | PowerPC: the same rule's ratio (8; 0 disables) |
 | `predecode.demote_hold` | RW | base hold, in pool lookups, of a demoted page (65536; doubles per repeat demotion) |
 | `predecode.blocks` | RO | blocks currently holding a page |
 | `predecode.lookups` / `allocs` / `evictions` | RO | pool activity |

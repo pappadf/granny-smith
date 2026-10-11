@@ -27,7 +27,14 @@ static uint32_t g_pd_pool_cap = 2048; // blocks (16 KB of 68K entries + 4 KB sha
 static uint32_t g_pd_thrash_limit = 32; // stores into one page within the window before the ratio rule applies
 static uint32_t g_pd_thrash_window = 4096; // the window, in pool lookups (page transitions)
 static uint32_t g_pd_demote_hold = 65536; // pool lookups (page transitions) a demoted page stays on the generic tier
-static uint32_t g_pd_thrash_ratio = 64; // stores × ratio > instructions retired from the page → demote
+static uint32_t g_pd_thrash_ratio = 64; // stores × ratio > instructions retired from the page → demote (68K)
+// The PowerPC ratio is lower: a predecoded PowerPC page is worth more over
+// the generic tier than a 68K page is, so it keeps its block through more
+// stores.  At 64 the 604 desktop row ran 30 % of its instructions generic
+// (pages mixing code and written data); at 8 it ran 1.4 %, 12 % fewer host
+// instructions per guest instruction, with no PowerPC row worse.  The 68K
+// rows prefer 64 (at 8 the SE/30 Finder row costs 5 % more).
+static uint32_t g_pd_thrash_ratio_ppc = 8;
 pd_block_t *g_pd_current = NULL;
 
 // === Pool state ===
@@ -87,6 +94,7 @@ void predecode_set_thrash(uint32_t limit, uint32_t window_lookups, uint32_t demo
 
 void predecode_set_thrash_ratio(uint32_t ratio) {
     g_pd_thrash_ratio = ratio;
+    g_pd_thrash_ratio_ppc = ratio;
 }
 
 // Forget the per-region slot tables (the regions they index are gone).
@@ -333,7 +341,8 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     uint32_t execs = blk->execs;
     if (blk == g_pd_current)
         execs += blk->enter_budget - budget;
-    if (++blk->writes > g_pd_thrash_limit && (uint64_t)blk->writes * g_pd_thrash_ratio > execs)
+    uint32_t ratio = blk->arch == PD_ARCH_PPC ? g_pd_thrash_ratio_ppc : g_pd_thrash_ratio;
+    if (++blk->writes > g_pd_thrash_limit && (uint64_t)blk->writes * ratio > execs)
         blk->thrashed = true;
 }
 
@@ -400,6 +409,7 @@ enum {
     PDA_ELIDED,
     PDA_SUPPRESSED_WRITES,
     PDA_THRASH_RATIO,
+    PDA_THRASH_RATIO_PPC,
     PDA_REALIASES,
     PDA_GENERIC_STEPS,
     PDA_GENERIC_CROSS,
@@ -441,6 +451,8 @@ static value_t pd_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_mem_code_write_count);
     case PDA_THRASH_RATIO:
         return val_uint(4, g_pd_thrash_ratio);
+    case PDA_THRASH_RATIO_PPC:
+        return val_uint(4, g_pd_thrash_ratio_ppc);
     case PDA_REALIASES:
         return val_uint(8, g_pd_stats.realiases);
     case PDA_GENERIC_STEPS:
@@ -481,6 +493,9 @@ static value_t pd_attr_set(struct object *self, const member_t *m, value_t in) {
         return val_none();
     case PDA_THRASH_RATIO:
         g_pd_thrash_ratio = (uint32_t)in.u;
+        return val_none();
+    case PDA_THRASH_RATIO_PPC:
+        g_pd_thrash_ratio_ppc = (uint32_t)in.u;
         return val_none();
     default:
         return val_err("read-only predecode attribute");
@@ -566,7 +581,9 @@ static const member_t predecode_members[] = {
     PD_ATTR_RW("thrash_window", PDA_THRASH_WINDOW, "the demotion window, in page transitions"),
     PD_ATTR_RW("demote_hold", PDA_DEMOTE_HOLD, "page transitions a demoted page stays on the generic tier"),
     PD_ATTR_RW("thrash_ratio", PDA_THRASH_RATIO,
-               "demote when stores x ratio exceed the instructions the page retired in the window"),
+               "68K: demote when stores x ratio exceed the instructions the page retired in the window"),
+    PD_ATTR_RW("thrash_ratio_ppc", PDA_THRASH_RATIO_PPC,
+               "PowerPC: the same rule's ratio (lower: blocks are worth more)"),
     PD_ATTR_RO("blocks", PDA_BLOCKS, "blocks currently holding a code page"),
     PD_ATTR_RO("lookups", PDA_LOOKUPS, "page transitions that consulted the pool"),
     PD_ATTR_RO("allocs", PDA_ALLOCS, "blocks allocated"),
