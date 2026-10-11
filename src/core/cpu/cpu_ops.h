@@ -2118,10 +2118,17 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                 if (EA_MODE == 4) {                                                                                    \
                     /* -(An) predecrement: compute frame size, then write */                                           \
                     int sz_ = fpu_->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
+                    bool init_ = fpu_->initialized;                                                                    \
+                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= (uint32_t)sz_;                                                                               \
                     fpu_fsave(fpu_, AY);                                                                               \
-                    if (__builtin_expect(g_bus_error_pending, 0))                                                      \
-                        AY += (uint32_t)sz_; /* roll back for the Format $B retry */                                   \
+                    /* A faulted save rolls back An and the FPU state it left: */                                      \
+                    /* the Format $B retry must write the same frame again.    */                                      \
+                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
+                        AY += (uint32_t)sz_;                                                                           \
+                        fpu_->initialized = init_;                                                                     \
+                        fpu_->pre_exc_mask = mask_;                                                                    \
+                    }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
                     fpu_fsave(fpu_, ea_);                                                                              \

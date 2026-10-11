@@ -237,10 +237,11 @@ static binding_t *shell_binding_detach_top_impl(const char *name) {
     binding_t *b = scope_find(top, name);
     if (!b)
         return NULL;
-    // Unlink without freeing: the entry (and its invalidator) lives on
+    // Unlink without freeing: the entry (and its invalidator) lives on.  The
+    // others keep their order (listings and completion follow it).
     for (int i = 0; i < top->n; i++) {
         if (top->items[i] == b) {
-            top->items[i] = top->items[top->n - 1];
+            memmove(&top->items[i], &top->items[i + 1], (size_t)(top->n - i - 1) * sizeof(top->items[0]));
             top->n--;
             break;
         }

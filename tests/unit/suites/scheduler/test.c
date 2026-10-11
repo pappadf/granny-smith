@@ -113,9 +113,7 @@ int debug_break_and_trace(void) {
     return 0;
 }
 
-bool debug_break_on_run_entry(void) {
-    return false;
-}
+void debug_note_pc(void) {}
 const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
 }

@@ -664,12 +664,11 @@ static bool parse_classic(peel_reader_t *rd, uint64_t archive_off, sit_entry_lis
 
     while (done < file_count) {
         const uint8_t *hdr = peel_reader_at(rd, archive_off + cursor, SIT_ENTRY_HDR_SIZE);
-        if (!hdr) {
-            // The header promised more entries than the input holds: a
-            // truncated archive, not a shorter one
-            *err = make_err("SIT classic: archive ends after %u of %u entries", (unsigned)done, (unsigned)file_count);
-            return false;
-        }
+        // The header's entry count is not trusted to the end (other readers
+        // walk to the archive's total size instead): an archive that ends
+        // before it lists the entries it holds, not nothing.
+        if (!hdr)
+            break;
 
         uint8_t rm = hdr[0];
         uint8_t dm = hdr[1];

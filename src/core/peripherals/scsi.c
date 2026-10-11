@@ -1156,10 +1156,8 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;
     scsi_5380_t *chip = (scsi_5380_t *)calloc(1, sizeof(scsi_5380_t));
-    if (!chip) {
-        LOG(0, "scsi_5380_attach: out of memory");
-        return NULL;
-    }
+    // Every board's construction uses the chip unconditionally: fail here
+    GS_ASSERTF(chip != NULL, "scsi_5380_attach: out of memory");
     chip->bus = bus;
     bus->chip5380 = chip;
 

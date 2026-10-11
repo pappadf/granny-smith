@@ -321,7 +321,7 @@ int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
             fpu->fpsr = (fpu->fpsr & ~FPEXC_INEX2) | FPEXC_OPERR;
             return INT32_MIN;
         }
-        return -(int32_t)abs_val;
+        return (int32_t)(0u - (uint32_t)abs_val); // abs_val may be 2^31 (exact INT32_MIN): no signed negate
     }
     if (abs_val > (uint64_t)INT32_MAX) {
         fpu->fpsr = (fpu->fpsr & ~FPEXC_INEX2) | FPEXC_OPERR;

@@ -1433,15 +1433,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     // the run ends long before 2^56 cycles for some other reason.
     uint64_t remaining_cycles = (n > UINT64_MAX / s->cpi_eff_x256) ? (UINT64_MAX >> 8) : ((n * s->cpi_eff_x256) >> 8);
 
-    // The probes below run after each instruction, so the one at the PC
-    // this run starts on needs its own breakpoint check (it also lets the
-    // instruction a breakpoint stopped on run once).
-    if (debugger_active && remaining_cycles > 0 && debug_break_on_run_entry()) {
-        remaining_cycles = 0;
-        if (s->saved.running)
-            s->stop_reason = SCHED_STOP_BREAKPOINT;
-        s->saved.running = false;
-    }
+    // The probes below run after each instruction: tell the debugger where
+    // the first one starts, for the breakpoint resume skip.
+    if (debugger_active)
+        debug_note_pc();
 
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
@@ -1500,7 +1495,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc_before = dif ? dif->get_pc(dif->ctx) : 0;
             cpu->poll_interrupt(cpu->ctx);
-            if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
+            if (dif && dif->get_pc(dif->ctx) != pc_before && (debug_note_pc(), debug_break_and_trace())) {
                 remaining_cycles = 0;
                 if (s->saved.running)
                     s->stop_reason = SCHED_STOP_BREAKPOINT;
@@ -1561,7 +1556,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // cycle-timestamped events and the peripheral divisors observe an
         // exact integer cycle timeline at every effective CPI.
         uint64_t advance_x256 = (uint64_t)executed_slots * s->cpi_eff_x256 + s->cycle_frac_x256;
-        uint32_t executed_cycles = (uint32_t)(advance_x256 >> 8);
+        uint64_t executed_cycles = advance_x256 >> 8; // 64-bit: a sprint may plan up to UINT32_MAX slots
         s->cycle_frac_x256 = (uint32_t)(advance_x256 & 0xFF);
 
         // Overshoot check.  The sprint can only run what it planned

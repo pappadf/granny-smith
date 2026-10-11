@@ -468,10 +468,16 @@ void platform_machine_attached(void) {
 static uint64_t s_max_cycles;
 static uint64_t s_spent_cycles;
 static uint64_t s_last_cycles;
+static bool s_cycles_counting; // hl_cycles_start has run
+
+void hl_cycles_start(void) {
+    s_cycles_counting = true;
+    s_count_rebase = true; // count from here, not from the session's start
+}
 
 // True once the --cycles budget is spent (never without one).
 static bool cycle_budget_spent(void) {
-    if (!s_max_cycles)
+    if (!s_max_cycles || !s_cycles_counting)
         return false;
     uint64_t now = cpu_instr_count();
     if (s_count_rebase) {
@@ -1061,6 +1067,7 @@ static int too_many(const char *program, const char *what, int max, const char *
 static void interactive_run(int quiet) {
     if (!quiet)
         printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
+    hl_cycles_start();
 
     while (g_running && !g_quit_requested) {
         // One frame-unit per iteration while the machine runs (the same

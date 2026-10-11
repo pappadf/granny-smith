@@ -48,6 +48,9 @@ LOG_USE_CATEGORY_NAME("storage");
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+#include <stdio_ext.h> // __fpurge
+#endif
 
 // ============================================================================
 // Constants
@@ -229,6 +232,14 @@ static void journal_index_add(storage_t *s, uint32_t lba) {
 // it on reopen, dropping the preimages appended after it.
 static void journal_trim_partial(storage_t *s) {
     off_t keep = (off_t)s->journal_count * (off_t)STORAGE_JOURNAL_ENTRY_SIZE(s);
+    // Drop what the failed flush left buffered: glibc and musl discard it,
+    // but BSD/macOS stdio keeps it and would write the partial entry back
+    // after the trimmed end on the next flush.
+#if defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+    __fpurge(s->journal_fp);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    fpurge(s->journal_fp);
+#endif
     clearerr(s->journal_fp);
     if (ftruncate(fileno(s->journal_fp), keep) != 0)
         LOG(0, "storage: cannot trim a partial journal entry (errno=%d)", errno);

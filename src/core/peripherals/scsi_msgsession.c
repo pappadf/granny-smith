@@ -85,9 +85,10 @@ void scsi_msg_complete(scsi_msgsession_t *s, const scsi_msg_caps_t *caps, scsi_m
         }
         uint8_t len = s->out[i + 1];
         if (len == 0) {
-            // The length counts the code byte, so zero is malformed: there is
-            // no code to read (out[i + 2] is past what arrived).  Reject it
-            // and move on, as for an extended message we do not implement.
+            // A length of 0 means 256 bytes (SCSI-2 6.5), longer than the
+            // message-out buffer can hold, and there is no code byte to read
+            // yet (out[i + 2] is past what arrived): reject it and move on,
+            // as for an extended message we do not implement.
             queue_byte(s, MSG_REJECT);
             i = (uint8_t)(i + 2);
             continue;

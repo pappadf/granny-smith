@@ -509,6 +509,7 @@ static void daemon_loop(int port) {
     // Emit READY signal so callers can block-read instead of sleeping
     printf("READY\n");
     fflush(stdout);
+    hl_cycles_start();
 
     while (g_running && !g_quit_requested) {
         // A frame if the machine runs (a `scheduler.run` left it going),

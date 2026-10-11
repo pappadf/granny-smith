@@ -81,10 +81,15 @@ struct debug {
     bool active;
     int step;
     breakpoint_t *breakpoints;
-    // A breakpoint stopped the machine at skip_pc: the next run's entry
-    // probe lets that instruction execute once instead of stopping again.
+    // A breakpoint stopped the machine at skip_pc: resuming lets that
+    // instruction execute once instead of stopping on it again.  The skip
+    // ends when that instruction has run (prev_pc, the start of the
+    // instruction just executed, equals skip_pc), or is spent at skip_pc
+    // itself when control comes back there before it ran (an interrupt
+    // taken at the resume).
     bool skip_pending;
     uint32_t skip_pc;
+    uint32_t prev_pc; // where the instruction the next probe follows started
     logpoint_t *logpoints;
     // Per-instruction / per-access fast paths, rebuilt by index_breakpoints
     // and index_logpoints after every add or remove.  The step hook skips the
@@ -748,23 +753,6 @@ void debug_exc_trace_dump(int filter) {
     }
 }
 
-// Find a logpoint by id; the list walkers re-find their entry this way after
-// evaluating a message template, which may have edited the list.
-static logpoint_t *find_logpoint_by_id(debug_t *debug, int id) {
-    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        if (lp->id == id)
-            return lp;
-    return NULL;
-}
-
-// Find a breakpoint by id (see find_logpoint_by_id).
-static breakpoint_t *find_breakpoint_by_id(debug_t *debug, int id) {
-    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
-        if (bp->id == id)
-            return bp;
-    return NULL;
-}
-
 // True when the memory access the logpoint hook is servicing runs with
 // supervisor privileges.  The hook runs inside the access (on the memory
 // slow path), and the 68K core repoints g_active_read / g_active_write at
@@ -860,7 +848,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
             LOG_WITH(category, level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
                      access_width_letter(size), (int)(size * 2), value, formatted);
-            lp = find_logpoint_by_id(debug, id);
+            lp = debug_logpoint_by_id(debug, id);
             if (!lp)
                 return;
         } else {
@@ -983,7 +971,7 @@ static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
             if (bp->condition) {
                 int id = bp->id;
                 bool pass = eval_breakpoint_condition(bp->condition);
-                bp = find_breakpoint_by_id(debug, id);
+                bp = debug_breakpoint_by_id(debug, id);
                 if (!bp)
                     break;
                 if (!pass) {
@@ -998,7 +986,7 @@ static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
                 out_printf("breakpoint hit at $%08X\n", bp->addr);
             }
             event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc, bp->addr);
-            // The next run resumes past this instruction (debug_break_on_run_entry)
+            // The next run resumes past this instruction (struct debug)
             debug->skip_pending = true;
             debug->skip_pc = current_pc;
             return true;
@@ -1008,22 +996,13 @@ static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
     return false;
 }
 
-// Breakpoint probe at the start of a run: the instruction at the PC the
-// run starts on is otherwise never checked, since debug_break_and_trace
-// runs after each instruction.  The instruction a breakpoint just stopped
-// on is skipped once, so the run resumes past it.  Breakpoints only: the
-// PC logpoints there already fired when the previous run reached it.
-bool debug_break_on_run_entry(void) {
+// Record the PC the next instruction starts at: at the start of a run, and
+// after an interrupt moved the PC before anything executed (scheduler).
+void debug_note_pc(void) {
     debug_t *debug = system_debug();
     const cpu_debug_if_t *dif = system_cpu_debug_if();
-    if (!debug || !dif)
-        return false;
-    uint32_t current_pc = dif->get_pc(dif->ctx);
-    bool resuming = debug->skip_pending && current_pc == debug->skip_pc;
-    debug->skip_pending = false;
-    if (resuming)
-        return false;
-    return check_breakpoints(debug, current_pc);
+    if (debug && dif)
+        debug->prev_pc = dif->get_pc(dif->ctx);
 }
 
 // Check if execution should break and trace current instruction
@@ -1042,9 +1021,22 @@ int debug_break_and_trace(void) {
         stop = true;
     }
 
+    // The resume skip (see struct debug): spent once the instruction it
+    // protects has executed, or used here if control is back at it first.
+    bool skip = false;
+    if (debug->skip_pending) {
+        if (debug->prev_pc == debug->skip_pc) {
+            debug->skip_pending = false;
+        } else if (current_pc == debug->skip_pc) {
+            debug->skip_pending = false;
+            skip = true;
+        }
+    }
+    debug->prev_pc = current_pc;
+
     // Check for breakpoints at the current PC (the filter rules out most PCs
-    // without walking the list; the resume skip is consumed at run entry)
-    if ((debug->bp_any_physical || (debug->bp_pc_filter & bp_filter_bit(current_pc))) &&
+    // without walking the list)
+    if (!skip && (debug->bp_any_physical || (debug->bp_pc_filter & bp_filter_bit(current_pc))) &&
         check_breakpoints(debug, current_pc))
         stop = true;
 
@@ -1077,7 +1069,7 @@ int debug_break_and_trace(void) {
                 char formatted[256];
                 format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
                 LOG_WITH(category, level, "logpoint $%08X: %s", current_pc, formatted);
-                lp = find_logpoint_by_id(debug, id);
+                lp = debug_logpoint_by_id(debug, id);
                 if (!lp)
                     break;
             } else {
@@ -2157,6 +2149,29 @@ void debug_cleanup(debug_t *debug) {
     if (g_mem_hook_owner == debug) {
         g_mem_logpoint_hook = NULL;
         g_mem_hook_owner = NULL;
+    }
+
+    // Free trace log buffer entries
+    if (debug->trace_log_buffer) {
+        for (uint32_t i = 0; i < debug->trace_log_buffer_size; i++) {
+            if (debug->trace_log_buffer[i].text) {
+                free(debug->trace_log_buffer[i].text);
+            }
+        }
+        free(debug->trace_log_buffer);
+        debug->trace_log_buffer = NULL;
+    }
+
+    // Free trace entries buffer
+    if (debug->trace_entries) {
+        free(debug->trace_entries);
+        debug->trace_entries = NULL;
+    }
+
+    // Free trace buffer
+    if (debug->trace_buffer) {
+        free(debug->trace_buffer);
+        debug->trace_buffer = NULL;
     }
 
     // Free the debug structure itself

@@ -245,8 +245,9 @@ void debug_trace_capture_log(const char *line);
 
 int debug_trace_is_active(void);
 
-// Breakpoint probe at the PC a scheduler run starts on (see debug.c).
-bool debug_break_on_run_entry(void);
+// Note the PC the next instruction starts at (run entry, interrupt entry),
+// for the breakpoint resume skip (see debug.c).
+void debug_note_pc(void);
 
 bool debug_active(debug_t *debug);
 

@@ -216,8 +216,12 @@ void phase_data_in(scsi_t *scsi, int bytes) {
 
     scsi->bus.phase = scsi_data_in;
     scsi->bus.req = scsi->bus.bsy = true;
-    if (!scsi_buf_ensure(scsi, (size_t)bytes))
-        bytes = (int)scsi->buf.cap; // never stage past the allocation
+    // Every transfer that can outgrow BUF_LIMIT reserved its buffer before
+    // this phase (and failed the command if it could not): a failure here
+    // is a size no caller reserved, so never stage past the allocation.
+    bool reserved = scsi_buf_ensure(scsi, (size_t)bytes);
+    GS_ASSERTF(reserved, "SCSI: transfer of %d bytes was not reserved", bytes);
+    (void)reserved; // GS_ASSERTF compiles out in a release build
     scsi->buf.size = scsi->buf.max = bytes;
     scsi->buf.pos = 0; // fresh fill: deliver from the front
     // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
@@ -311,8 +315,12 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->bus.req = false; // ...but not asking for a byte yet
     scsi->bus.data_out_pending = true;
     scsi->bus.data_out_ready_cy = sch ? scheduler_cpu_cycles(sch) + SCSI_DATA_OUT_SETTLE_CYCLES : 0;
-    if (!scsi_buf_ensure(scsi, (size_t)bytes))
-        bytes = (int)scsi->buf.cap; // never stage past the allocation
+    // Every transfer that can outgrow BUF_LIMIT reserved its buffer before
+    // this phase (and failed the command if it could not): a failure here
+    // is a size no caller reserved, so never stage past the allocation.
+    bool reserved = scsi_buf_ensure(scsi, (size_t)bytes);
+    GS_ASSERTF(reserved, "SCSI: transfer of %d bytes was not reserved", bytes);
+    (void)reserved; // GS_ASSERTF compiles out in a release build
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
     // Entering DATA OUT resets a 5380's priming state, if there is one.

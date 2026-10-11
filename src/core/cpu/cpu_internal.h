@@ -746,25 +746,11 @@ static inline void enter_exception_supervisor(cpu_t *restrict cpu) {
 // (a VBR or SSP pointing at unmapped memory).  Such a fault leaves
 // g_bus_error_pending set like any other access and is delivered through the
 // deferred-bus-error path as an ordinary bus error.  Only the bus-error entry
-// points (exception_bus_error_retry, and exception_bus_error's 68000 path)
-// treat a fault during their own frame push or vector fetch as the double
-// fault that halts the CPU.
-// A bus error while stacking an exception frame or fetching its vector is a
-// double fault: the processor halts (MC68030UM 8.3).  `kind` is 1 for the
-// frame push, 2 for the vector read, as in the bus-error paths.
-static __attribute__((noinline, cold)) void exception_double_fault(cpu_t *restrict cpu, uint32_t vector, uint32_t pc,
-                                                                   uint16_t sr, int kind) {
-    cpu->halted = 1;
-    g_bus_error_pending = false;
-    memory_end_sprint(g_bus_error_instr_ptr);
-    exc_trace_record(vector, cpu->instruction_pc, pc, g_bus_error_address, g_bus_error_rw, cpu->vbr, sr, 0, kind);
-}
-
-// A fault during the frame push or vector fetch halts the CPU; a fault
-// already pending on entry (the instruction's own access) is left for the
-// decoder epilogue to deliver, as before.
+// points (exception_bus_error_retry and exception_bus_error) treat a fault
+// during their own frame push or vector fetch as the double fault that halts
+// the CPU (M68000PRM / MC68030UM: a bus error while processing a bus error,
+// address error or reset).
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
-    const bool fault_on_entry = g_bus_error_pending;
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
     // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
@@ -800,24 +786,18 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         memory_write_uint32(cpu->a[7], pc);
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
+        cpu->pc = memory_read_uint32(cpu->vbr + vector);
+        // Exception processing clears T1/T0 per M68000 PRM
+        cpu->trace = 0;
     } else {
         // 68000 frame: PC then SR (6 bytes, no format word)
         cpu->a[7] -= 4;
         memory_write_uint32(cpu->a[7], pc);
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
+        cpu->pc = memory_read_uint32(vector);
+        cpu->trace = 0;
     }
-    if (__builtin_expect(g_bus_error_pending, 0) && !fault_on_entry) {
-        exception_double_fault(cpu, vector, pc, sr, 1);
-        return;
-    }
-    cpu->pc = memory_read_uint32((cpu->cpu_model >= CPU_MODEL_68030 ? cpu->vbr : 0) + vector);
-    if (__builtin_expect(g_bus_error_pending, 0) && !fault_on_entry) {
-        exception_double_fault(cpu, vector, pc, sr, 2);
-        return;
-    }
-    // Exception processing clears T1/T0 per M68000 PRM
-    cpu->trace = 0;
 }
 
 // Push the MC68040 format $7 access-error frame (30 words, MC68040UM §8.4.4).

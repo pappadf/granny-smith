@@ -1426,8 +1426,8 @@ TEST(test_sit_classic_long_folder_name_is_clamped) {
 }
 
 // Classic StuffIt: an archive whose header counts more entries than the input
-// holds is truncated, and refused -- not listed as the entries that remain.
-TEST(test_sit_classic_truncated_entry_count_is_refused) {
+// holds lists the entries it does hold (the count is not trusted).
+TEST(test_sit_classic_short_entry_count_lists_what_is_there) {
     uint8_t a[22 + 112 + 1] = {0};
     memcpy(a, "SIT!", 4);
     put16(a + 4, 2); // two top-level entries, but only one follows
@@ -1442,9 +1442,9 @@ TEST(test_sit_classic_truncated_entry_count_is_refused) {
     h[112] = 'x';
     peel_err_t *err = NULL;
     peel_file_list_t list = peel_sit(a, sizeof(a), &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_EQ_INT(0, list.count);
-    peel_err_free(err);
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    peel_file_list_free(&list);
 }
 
 // StuffIt 5: a file under more nested folders than the old fixed 32-entry
@@ -1843,7 +1843,7 @@ int main(void) {
     RUN(test_cpt_dot_dot_folder_is_prefixed);
     RUN(test_hqx_slash_in_a_name_cannot_escape);
     RUN(test_sit_classic_long_folder_name_is_clamped);
-    RUN(test_sit_classic_truncated_entry_count_is_refused);
+    RUN(test_sit_classic_short_entry_count_lists_what_is_there);
     RUN(test_sit5_deep_folder_paths_resolve);
     RUN(test_peel_passes_unrecognised_input_through);
     RUN(test_sit3_decodes_a_tree_and_message);

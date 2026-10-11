@@ -873,11 +873,7 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
     disk_write_data(img, off, buf, 512);
     disk_write_tag(img, off / 512u, tag, sizeof tag);
-    // `modified` stays set: this sector is in the image now, but the track
-    // buffer may already hold nibbles of the next one (a header with no data
-    // field yet), and the checkpoint saves a track only while it is modified.
-    // The eject/teardown flush rewrites the completed sectors with the same
-    // bytes, which is harmless.
+    t->modified = false; // this sector is in the image now (a later nibble write re-marks it)
     LOG(5, "Drive %d: Wrote through track=%d side=%d sector=%d", drive_index, hdr_track, hdr_side, hdr_sector);
 }
 

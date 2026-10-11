@@ -18,9 +18,7 @@ int debug_break_and_trace(void) {
     return 0;
 }
 
-bool debug_break_on_run_entry(void) {
-    return false;
-}
+void debug_note_pc(void) {}
 
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     (void)addr;

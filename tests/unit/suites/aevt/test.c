@@ -489,10 +489,11 @@ TEST(test_malformed_streams_rejected) {
     assert_rejects(s.b, s.len, "fixed-length count past the end");
 }
 
-// A short list of zero-length factored items is still legal.
+// A list of zero-length factored items is still legal, even one with more
+// items than its descriptor has bytes.
 TEST(test_decode_zero_length_factored_items) {
     sbuf_t items = {0};
-    put32(&items, 3);
+    put32(&items, 40);
     put32(&items, 8);
     put_code(&items, "null");
     put32(&items, 0);
@@ -502,7 +503,7 @@ TEST(test_decode_zero_length_factored_items) {
     put_param(&s, "----", "list", items.b, items.len);
     value_t ev = aevt_decode("aevt", "test", s.b, s.len);
     ASSERT_TRUE(!val_is_error(&ev));
-    ASSERT_EQ_INT((int)leaf_data(&ev, "----")->list.len, 3);
+    ASSERT_EQ_INT((int)leaf_data(&ev, "----")->list.len, 40);
     value_free(&ev);
 }
 

@@ -328,10 +328,16 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
+                    bool init_ = fpu_->initialized;                                                                    \
+                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
                     fpu_fsave040(fpu_, AY);                                                                            \
-                    if (__builtin_expect(g_bus_error_pending, 0))                                                      \
-                        AY += 4; /* roll back for the retry */                                                         \
+                    /* Roll back An and the FPU state for the retry */                                                 \
+                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
+                        AY += 4;                                                                                       \
+                        fpu_->initialized = init_;                                                                     \
+                        fpu_->pre_exc_mask = mask_;                                                                    \
+                    }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
                     fpu_fsave040(fpu_, ea_);                                                                           \
