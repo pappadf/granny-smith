@@ -12,6 +12,17 @@
 // Workloads (the native rows of the same name, reached the same way):
 //   se30    System 7.5.3 from the bare volume at the Finder desktop, idle
 //   iicx    Marathon at its main menu on a IIcx with the 8•24 GC
+//   pm6100  the 601: a media-free ROM boot 200 M instructions in, the ROM's
+//           68K emulator running the Start Manager (pm6100-68kemu)
+//   pm8500  the 604: the System 7.6 desktop 4 G instructions after power-on
+//           (pm8500-finder)
+// The PowerPC rows are reached by instruction count, as the native rows
+// are, with the browser's clock (the native rows pin the RTC).  The windows
+// run on from there (turbo, seconds each), so they measure a later stretch
+// than the native rows' windows: the pm6100 the ROM's wait for a boot disk,
+// the pm8500 the desktop.  No G3 row: its boot naps in stretches, and
+// windows of this length run into them.
+// After the pairs each page reports predecode.enabled and its counters.
 //
 // Report only: `PERFBENCH label=<...> machine=<...> binary=<head|base>
 // pair=<n> mips=<...>` lines and a ratio per machine; the assertions are
@@ -41,8 +52,9 @@ const BASE_URL = `http://localhost:${BASE_PORT}/index.html?speed=turbo`;
 type Row = {
   rom: string;
   ram: string;
-  hd: string;
-  settle: 'finder' | 'marathon';
+  hd?: string; // none: a media-free ROM boot
+  settle: 'finder' | 'marathon' | 'instr';
+  instr?: number; // settle 'instr': run to this instruction count
   vrom?: string;
   card?: string;
   monitor?: string;
@@ -65,6 +77,19 @@ const ROWS: Record<string, Row> = {
     card: '824gc',
     monitor: '13in_rgb',
     mode: '640x480x8',
+  },
+  pm6100: {
+    rom: 'pm6100-pm7100-pm8100-9feb69b3.rom',
+    ram: '24 MB',
+    settle: 'instr',
+    instr: 200_000_000,
+  },
+  pm8500: {
+    rom: 'pm7500-pm8500-pm9500-96cd923d.rom',
+    ram: '32 MB',
+    hd: 'systems/system_7_6_170mb_24ac.img',
+    settle: 'instr',
+    instr: 4_000_000_000,
   },
 };
 
@@ -151,7 +176,8 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
   const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
-  await stageOpfsFileStreaming(page, `/opfs/images/hd/${path.basename(row.hd)}`, path.join(DATA, row.hd));
+  if (row.hd)
+    await stageOpfsFileStreaming(page, `/opfs/images/hd/${path.basename(row.hd)}`, path.join(DATA, row.hd));
   if (row.vrom)
     await stageOpfsFile(page, `/opfs/images/vrom/${path.basename(row.vrom)}`, path.join(DATA, row.vrom));
 
@@ -175,7 +201,7 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
     if (row.monitor) await page.locator('#cfg-monitor').selectOption(row.monitor);
     if (row.mode) await page.locator('#cfg-video-mode').selectOption(row.mode);
   }
-  await page.locator('#cfg-media-scsi-0').selectOption({ label: path.basename(row.hd) });
+  if (row.hd) await page.locator('#cfg-media-scsi-0').selectOption({ label: path.basename(row.hd) });
   await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({ timeout: 60_000 });
 
@@ -184,7 +210,11 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
   await terminalRun(page, 'scheduler.mode = "turbo"');
   expect(await probeString(page, 'scheduler.mode')).toBe('turbo');
   if (row.settle === 'finder') await settleFinder(page);
-  else await launchMarathon(page);
+  else if (row.settle === 'marathon') await launchMarathon(page);
+  else
+    await expect
+      .poll(() => instrCount(page), { timeout: 1_200_000, intervals: [5_000] })
+      .toBeGreaterThan(row.instr ?? 0);
 }
 
 // One measured window on the page in front, its machine running.
@@ -406,6 +436,13 @@ for (const machine of MACHINES) {
       }
     }
     const median = (v: number[]) => [...v].sort((x, y) => x - y)[Math.floor(v.length / 2)];
+    for (const side of ['head', 'base'] as const) {
+      const pd = (attr: string) => probeString(pages[side], `predecode.${attr}`);
+      console.log(
+        `PERFBENCH label=${LABEL} machine=${machine} binary=${side} predecode=${await pd('enabled')} ` +
+          `lookups=${await pd('lookups')} generic=${await pd('generic_steps')} instr=${await instrCount(pages[side])}`,
+      );
+    }
     const h = median(results.head);
     const b = median(results.base);
     console.log(
