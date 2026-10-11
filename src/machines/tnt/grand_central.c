@@ -882,10 +882,17 @@ static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
         if (tnt_board(cfg)->has_gbus)
             return tnt_lcd_read8(cfg, offset - OFF_LCDGB);
         break;
-    case OFF_EPROM: // Ethernet address PROM + MP doorbell (ANS only)
+    case OFF_EPROM: // Ethernet address PROM + MP doorbell
+        // On the dual-processor Macintosh card the chip select is the
+        // secondary-to-primary interrupt (mp.c); the read itself rings it.
+        if (!peek && tnt_mp_present(cfg))
+            tnt_mp_eprom_access(cfg);
+        // fall through
     case OFF_BREG2: // Board Register 2 — the environmental halfword
         if (tnt_board(cfg)->has_gbus)
             return peek ? tnt_gbus_peek8(cfg, offset) : tnt_gbus_read8(cfg, offset);
+        if (block == OFF_EPROM && tnt_mp_present(cfg))
+            return 0;
         break;
     case OFF_RADACAL:
         return peek ? tnt_control_rad_peek(cfg, offset - OFF_RADACAL) : tnt_control_rad_read(cfg, offset - OFF_RADACAL);

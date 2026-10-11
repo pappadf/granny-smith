@@ -96,6 +96,12 @@
 #define PPC_DSISR_ATOMIC   0x04000000u // bit 5: lwarx/stwcx./eciwx/ecowx to a direct-store segment
 #define PPC_DSISR_STORE    0x02000000u // bit 6: access was a store
 
+// One core's MMU translation caches (ppc_mmu.c): xtlb, fetch TLB, the
+// user-SoA fill tracker and — while the core is not the running one — its
+// parked fetch window and user SoA arrays.  Host-pointer state, never
+// checkpointed.
+typedef struct ppc_mmu_ctx ppc_mmu_ctx_t;
+
 // === Instruction state ===
 
 // The 601 core state.  Plain data first; pointer fields last — the whole
@@ -195,6 +201,11 @@ struct ppc {
     struct object *fpu_object; // machine.cpu.fpu
     struct object *mmu_object; // machine.cpu.mmu
     struct scheduler *scheduler; // time source (ppc_bind_time; NULL in tests)
+    ppc_mmu_ctx_t *mmu_ctx; // this core's translation caches (the primary context unless a peer)
+    // A peer's retired-instruction count (the scheduler counts the main
+    // CPU's); NULL = the scheduler's count.
+    uint64_t (*instr_counter)(void *ctx);
+    void *instr_counter_ctx;
 };
 
 // Instruction-field accessors, shared with the dependency-free disassembler.
@@ -351,6 +362,14 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store);
 // Returns 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
 int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr);
 
+// The running core's MMU context (ppc_mmu.c).  Exactly one context is live
+// in the globals at a time; a peer core's is installed by ppc_mmu_activate
+// for the length of its burst.
+extern ppc_mmu_ctx_t *g_ppc_mmu_cur;
+ppc_mmu_ctx_t *ppc_mmu_ctx_primary(void);
+ppc_mmu_ctx_t *ppc_mmu_ctx_new(void); // a peer core's context, with private user SoA arrays
+void ppc_mmu_ctx_free(ppc_mmu_ctx_t *c);
+
 // Rebuild sr_t_mask from sr[] (reset, checkpoint restore, shell pokes).
 void ppc_recompute_sr_t_mask(ppc_t *p);
 
@@ -397,6 +416,10 @@ uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 // (supervisor-translated accesses rewrite their address in ppc_dxlate_slow
 // before touching memory).
 static inline void ppc_update_active_maps(ppc_t *p) {
+    // A core that is not running (a parked peer, poked from the shell) owns
+    // none of the globals: its new MSR takes effect when it is activated.
+    if (p->mmu_ctx && p->mmu_ctx != g_ppc_mmu_cur)
+        return;
     ppc_mmu_flush_fetch();
     if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
         g_active_read = g_user_read;

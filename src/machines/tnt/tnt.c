@@ -640,6 +640,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // quarter of the bus clock (Motorola, MPC604UM/AD, §1.3.2.2).
     uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
+    if (tnt_board(cfg)->pvr && !cp)
+        ppc_set_identity(cfg->ppc, tnt_board(cfg)->pvr, 0);
+    // The dual-processor card's second 604, parked until system software
+    // rings its start doorbell (mp.c).  Nothing on a uniprocessor board.
+    if (tnt_mp_init(cfg, cp, tick_hz) < 0)
+        return -1;
 
     machine_part_begin(cfg, cp, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
@@ -902,6 +908,7 @@ static void tnt_bus_reset(config_t *cfg) {
     // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_mp_reset(cfg); // the second processor back to parked
     dbdma_reset(st->dbdma);
     // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
     // drive and its media) is reset by the shared chain; the SWIM3 was the
@@ -937,6 +944,7 @@ static void tnt_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
     if (st) {
+        tnt_mp_teardown(cfg); // the peer core references the scheduler: before it goes
         tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);

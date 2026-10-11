@@ -123,6 +123,38 @@ void ppc_poll_interrupt(ppc_t *p);
 // writes do from guest code.
 void ppc_mmu_invalidate_all(ppc_t *p);
 
+// === Multiprocessor peers (the dual-604 TNT boards) ===
+
+// Create a PEER core: the same module as the main CPU, with its own
+// translation caches (a private MMU context and user SoA arrays) and its
+// object node at `machine.<node_name>` — no `$` aliases, which stay the
+// main CPU's.  `checkpoint` restores state as ppc_init does.
+ppc_t *ppc_init_peer(checkpoint_t *checkpoint, int cpu_model, const char *node_name);
+
+// Make `p` the running core: swap the global fast-path view (fetch window,
+// user SoA arrays, the active pair) to p's context.  Called by the peer
+// glue around a peer's burst, never mid-sprint.
+void ppc_mmu_activate(ppc_t *p);
+
+// Bind the time source with an explicit event-type module name, so a peer's
+// decrementer event checkpoints under its own name ("cpu1"/"dec").
+void ppc_bind_time_named(ppc_t *p, struct scheduler *s, const char *module, uint32_t freq_hz, uint32_t tick_hz);
+
+// Drop the lwarx reservation (the peer glue's coherence rule: a core that
+// has not run since the other one did cannot still hold a valid one).
+void ppc_clear_reservation(ppc_t *p);
+
+// Where `machine.<node>.instr_count` reads a peer's retired count from.
+void ppc_set_instr_counter(ppc_t *p, uint64_t (*fn)(void *ctx), void *ctx);
+
+// Processor identification register (SPR 1023), set by the board glue.
+void ppc_set_pir(ppc_t *p, uint32_t pir);
+
+// Start a parked peer at `pc` in the hard-reset machine state (translation
+// off), with LR = `lr` (where a `blr` from the entry code returns); the
+// board glue calls this when the start doorbell rings.
+void ppc_start_at(ppc_t *p, uint32_t pc, uint32_t lr);
+
 // === Register access (tests / glue; the shell reads via machine.cpu.*) ===
 
 uint32_t ppc_get_pc(ppc_t *restrict p);

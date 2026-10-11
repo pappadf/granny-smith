@@ -163,6 +163,27 @@ def row_pm9500_76_mach64() {
     report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
 }
 
+# ---- pm9500mp-76-hd ---------------------------------------------------------
+# The 9500/180MP: the 9500 board with the two-way processor card
+# (docs/internals/machines/tnt/mp.md).  Mac OS boots on CPU 0 exactly as
+# on the uniprocessor 9500; the card's only boot-time event is Open
+# Firmware's.  Its /chosen construction reads ArbConfig, finds TwoCPU, and
+# CALLS the secondary at a three-word routine (mfspr pvr / stw / blr) that
+# stores CPU 1's PVR and returns — so CPU 1 runs a handful of instructions
+# and parks again in the card's return path, where it stays (Mac OS's MP
+# Library starts it only for MP tasks).
+def row_pm9500mp_76_hd() {
+    tnt_hd_boot("pm9500mp", "mach64_gx", 4000000000)
+    assert machine.mp.calls == 1 "pm9500mp: Open Firmware should call CPU 1 exactly once (calls ${machine.mp.calls})"
+    assert machine.mp.entry == 0x00408B38 "pm9500mp: OF's start vector moved (${machine.mp.entry:08x})"
+    assert machine.mp.running == false "pm9500mp: CPU 1 did not return to its parked state"
+    assert machine.cpu1.instr_count > 0 "pm9500mp: CPU 1 never ran"
+    assert machine.cpu1.pc == machine.mp.park_pc "pm9500mp: CPU 1 is not at its parking spin"
+    check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display mp")
+    report_perf("suite-tnt/pm9500mp-76-hd", scheduler.instr_count)
+}
+
 # ---- tnt-voodoo2-display ----------------------------------------------------
 # The Voodoo2 pass-through switch against a live System 7.6 desktop
 # (docs/internals/core/peripherals/pci/cards/voodoo2.md).  A pm8500 boots to the Finder
@@ -375,6 +396,13 @@ if row_on("pm9500-76-mach64") {
         row_end("pm9500-76-mach64", try(row_pm9500_76_mach64(), "FAILED"))
     } else {
         echo "skip: pm9500-76-mach64 (7.6 image not fetched)"
+    }
+}
+if row_on("pm9500mp-76-hd") {
+    if have_media($hd_76) {
+        row_end("pm9500mp-76-hd", try(row_pm9500mp_76_hd(), "FAILED"))
+    } else {
+        echo "skip: pm9500mp-76-hd (7.6 image not fetched)"
     }
 }
 if row_on("tnt-voodoo2-display") {

@@ -280,6 +280,10 @@ static void addr_raw_write8(tnt_bandit_t *b, uint32_t offset, uint8_t value) {
     uint32_t shift = 8 * (offset & 3u);
     b->cfg_addr = (b->cfg_addr & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     LOG(3, "$%08X config addr = $%08X", b->base, b->cfg_addr);
+    // Bandit 1's latch doubles as the dual-processor card's start-vector
+    // mailbox ($F2800000, mp.c).  Writing it starts no config cycle.
+    if (b->base == 0xF2000000u)
+        tnt_mp_mailbox(b->cfg, b->cfg_addr);
 }
 
 static uint8_t addr_read8(void *ctx, uint32_t offset) {

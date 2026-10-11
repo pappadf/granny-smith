@@ -1408,9 +1408,21 @@ static void test_604_timebase(void) {
     step1_valid(e_spr(4, 285, 1)); // mtspr tbu,r4
     CHECK_EQ(P->rtcu, 0xAAAAAAAAu);
     CHECK_EQ(P->rtcl, 0xAAAAAAAAu);
-    // mfspr of the TB write encodings is undefined → illegal (reads go
-    // through mftb only, PEM §2.3.1)
-    expect_illegal_604(e_spr(3, 284, 0));
+    // mfspr reads the timebase too, from the TBR numbers and from the
+    // write encodings: the 60x parts treat mfspr and mftb identically
+    // (MPC603e UM §2.3.5.1, "ignoring bit 25"), and BeOS's kernel samples
+    // TB with mfspr 285/284/285 at its clock calibration.
+    fresh604();
+    P->rtcu = 0x00000034u;
+    P->rtcl = 0x56789ABCu;
+    step1_valid(e_spr(3, 284, 0)); // mfspr r3,284
+    CHECK_EQ(P->gpr[3], 0x56789ABCu);
+    step1_valid(e_spr(3, 285, 0)); // mfspr r3,285
+    CHECK_EQ(P->gpr[3], 0x00000034u);
+    step1_valid(e_spr(3, 268, 0)); // mfspr r3,268
+    CHECK_EQ(P->gpr[3], 0x56789ABCu);
+    step1_valid(e_spr(3, 269, 0)); // mfspr r3,269
+    CHECK_EQ(P->gpr[3], 0x00000034u);
     // mftb with an undefined TBR field traps
     expect_illegal_604(e_spr(3, 270, 0) + (32u << 1));
     // The 601 rejects the whole mftb opcode (existing behavior, re-pinned)

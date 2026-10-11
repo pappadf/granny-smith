@@ -94,6 +94,7 @@
     X("bandit", 0, "Bandit PCI bridge")                                                                                \
     X("gc", 0, "Grand Central I/O controller")                                                                         \
     X("hammerhead", 0, "Hammerhead memory controller")                                                                 \
+    X("mp", 0, "Dual-processor card: CPU 1 start, doorbells, bursts")                                                  \
     X("grackle", 0, "Grackle (MPC106) PCI bridge and memory controller")                                               \
     X("heathrow", 0, "Heathrow I/O controller")                                                                        \
     X("i2c", 0, "Cuda I2C bus devices (SPD, PERCH)")                                                                   \

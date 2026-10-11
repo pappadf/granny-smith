@@ -249,11 +249,11 @@ assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
 # capability arrives with the pluggable-card follow-up.
 assert_contains pm7500 '"model":601' "pm7500 is a PowerPC 601"
 assert_contains pm7500 '"kind":"ppc_601"' "pm7500 has the 601 MMU"
-for m in pm8500 pm9500; do
+for m in pm8500 pm9500 pm9500mp; do
     assert_contains "$m" '"model":604' "$m is a PowerPC 604"
     assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
 done
-for m in pm7500 pm8500 pm9500; do
+for m in pm7500 pm8500 pm9500 pm9500mp; do
     assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
@@ -266,6 +266,9 @@ done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
+# The 9500/180MP: the 9500 board with the two-way processor card; the second
+# processor is machine state (machine.cpu1), not a profile capability.
+assert_contains pm9500mp '"freq":180000000' "pm9500mp runs at 180 MHz"
 
 # The Apple Network Servers — the same TNT substrate with the Macintosh
 # removed.  Both are plain 604s and both advertise PCI; what distinguishes
@@ -392,7 +395,7 @@ done
 
 # Every Macintosh has the AppleTalk option, default Active (D22); the Lisa
 # and the Macintosh XL do not.
-for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt; do
+for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 pm9500mp ans500 ans700 pmg3dt pmg3mt; do
     assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
 done
 for m in lisa macxl; do

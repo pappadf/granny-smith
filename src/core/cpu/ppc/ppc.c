@@ -208,6 +208,10 @@ void ppc_dec_arm(ppc_t *p) {
 }
 
 void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz, uint32_t tick_hz) {
+    ppc_bind_time_named(p, s, "ppc", freq_hz, tick_hz);
+}
+
+void ppc_bind_time_named(ppc_t *p, struct scheduler *s, const char *module, uint32_t freq_hz, uint32_t tick_hz) {
     // Reduce tick_hz/freq_hz once; all derivations use the reduced pair.
     uint32_t a = tick_hz, b = freq_hz;
     while (b) {
@@ -218,7 +222,7 @@ void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz, uint32_t tic
     p->scheduler = s;
     p->tick_mul = tick_hz / a;
     p->tick_div = freq_hz / a;
-    scheduler_new_event_type(s, "ppc", p, "dec", ppc_dec_event);
+    scheduler_new_event_type(s, module, p, "dec", ppc_dec_event);
     // No rebase: the stored base ticks are in the scheduler-cycle-derived
     // tick domain, which checkpoint restore reproduces exactly (cold init
     // starts both at zero).  Only the expiry event needs re-arming.
@@ -356,6 +360,29 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         break;
     case 9:
         v = p->ctr;
+        break;
+    // The timebase through mfspr (604-class).  The architecture reads TB
+    // with mftb (xo 371), but leaves "mfspr and mftb implemented
+    // identically" to the implementation (PEM mftb page), and the 60x
+    // parts do exactly that: they ignore the bit that tells the two
+    // opcodes apart (MPC603e UM §2.3.5.1, "ignoring bit 25 of both
+    // instructions and treating them identically").  So mfspr from the
+    // TBR numbers 268/269 reads TB, and so does mfspr from the write-side
+    // numbers 284/285 — which is how BeOS's kernel samples the timebase
+    // (`mfspr r3,285 / mfspr r4,284 / mfspr r5,285` at its boot-time
+    // clock calibration); taking the illegal-instruction exception there
+    // leaves its clock scale at zero and every snooze() spinning forever.
+    case 268:
+    case 284:
+        if (!ppc_is_604(p))
+            goto undefined;
+        v = (uint32_t)ppc_tb_now(p);
+        break;
+    case 269:
+    case 285:
+        if (!ppc_is_604(p))
+            goto undefined;
+        v = (uint32_t)(ppc_tb_now(p) >> 32);
         break;
     case 18:
         if (spr_priv_fault(p, iw))
@@ -847,8 +874,12 @@ void ppc_reset(ppc_t *p) {
     struct object *keep_cpu = p->cpu_object;
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
+    ppc_mmu_ctx_t *keep_ctx = p->mmu_ctx;
+    uint64_t (*keep_ic)(void *) = p->instr_counter;
+    void *keep_ic_ctx = p->instr_counter_ctx;
     int keep_model = p->cpu_model;
     uint32_t keep_pvr = p->reset_pvr, keep_hid1 = p->reset_hid1;
+    uint32_t keep_pir = p->pir; // the processor's bus identity is a board strap
     // The TIME BINDING survives a reset, for the same reason the object
     // handles and the model do: it is not processor state, it is how this
     // core is wired to the machine's clock.  A reset line does not unbind a
@@ -866,9 +897,13 @@ void ppc_reset(ppc_t *p) {
     p->cpu_object = keep_cpu;
     p->fpu_object = keep_fpu;
     p->mmu_object = keep_mmu;
+    p->mmu_ctx = keep_ctx;
+    p->instr_counter = keep_ic;
+    p->instr_counter_ctx = keep_ic_ctx;
     p->cpu_model = keep_model;
     p->reset_pvr = keep_pvr;
     p->reset_hid1 = keep_hid1;
+    p->pir = keep_pir;
     p->scheduler = keep_sched;
     p->tick_mul = keep_tick_mul;
     p->tick_div = keep_tick_div;
@@ -952,11 +987,16 @@ memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
                                 .ctx = p};
 }
 
-ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
+static ppc_t *ppc_init_common(checkpoint_t *checkpoint, int cpu_model, const char *node_name, bool primary) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
         return NULL;
     assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750);
+    ppc_mmu_ctx_t *ctx = primary ? ppc_mmu_ctx_primary() : ppc_mmu_ctx_new();
+    if (!ctx) {
+        free(p);
+        return NULL;
+    }
 
     if (checkpoint) {
         // The stream carries the prefix only; the pointer section is not in
@@ -965,6 +1005,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         // same-process-restore double-free precedent).
         memset(p, 0, sizeof(ppc_t));
         system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
+        p->mmu_ctx = ctx;
         p->tick_mul = p->tick_div = 0;
         // The MMU caches are derived state and refill lazily; the T-bit
         // mask is derived from the restored SRs.
@@ -974,15 +1015,17 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         ppc_context_sync(p); // restoring a checkpoint is context-synchronizing
     } else {
         memset(p, 0, sizeof(ppc_t));
+        p->mmu_ctx = ctx;
         p->cpu_model = cpu_model; // ppc_reset keeps the model
         ppc_reset(p);
     }
 
-    // Object-tree binding: the main CPU owns `machine.cpu`.
-    p->cpu_object = object_new(&ppc_cpu_class, p, "cpu");
+    // Object-tree binding: the main CPU owns `machine.cpu`; a peer its own
+    // node (`machine.cpu1`).
+    p->cpu_object = object_new(&ppc_cpu_class, p, node_name);
     if (p->cpu_object) {
-        object_set_label(p->cpu_object, "CPU");
-        object_set_order(p->cpu_object, 10);
+        object_set_label(p->cpu_object, primary ? "CPU" : "CPU (peer)");
+        object_set_order(p->cpu_object, primary ? 10 : 11);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window.
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
@@ -999,10 +1042,43 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     }
 
     // `$pc`, `$r0`... — the 68K `$d0`-style aliases simply don't exist on a
-    // PPC machine; registration is idempotent.
-    register_ppc_aliases();
+    // PPC machine; registration is idempotent.  Main CPU only (cores.md).
+    if (primary)
+        register_ppc_aliases();
 
     return p;
+}
+
+ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
+    return ppc_init_common(checkpoint, cpu_model, "cpu", true);
+}
+
+ppc_t *ppc_init_peer(checkpoint_t *checkpoint, int cpu_model, const char *node_name) {
+    return ppc_init_common(checkpoint, cpu_model, node_name, false);
+}
+
+void ppc_clear_reservation(ppc_t *p) {
+    p->reserve = 0;
+}
+
+void ppc_set_instr_counter(ppc_t *p, uint64_t (*fn)(void *ctx), void *ctx) {
+    p->instr_counter = fn;
+    p->instr_counter_ctx = ctx;
+}
+
+void ppc_set_pir(ppc_t *p, uint32_t pir) {
+    p->pir = pir;
+}
+
+// The hard-reset machine state at an arbitrary entry point: what the
+// dual-processor card's start logic hands the secondary when it releases
+// it at the mailbox address (translation off, MSR[IP] as at HRESET — the
+// guest's entry code clears it).
+void ppc_start_at(ppc_t *p, uint32_t pc, uint32_t lr) {
+    ppc_reset(p);
+    p->pc = pc;
+    p->instruction_pc = pc;
+    p->lr = lr;
 }
 
 void ppc_delete(ppc_t *p) {
@@ -1025,6 +1101,8 @@ void ppc_delete(ppc_t *p) {
         object_delete(p->cpu_object);
         p->cpu_object = NULL;
     }
+    if (p->mmu_ctx != ppc_mmu_ctx_primary())
+        ppc_mmu_ctx_free(p->mmu_ctx);
     free(p);
 }
 
@@ -1385,6 +1463,9 @@ static DEF_SETTER(attr_ppc_set) {
 // Read `instr_count`: the scheduler's retired-instruction count, which is
 // architecture-neutral (68K exposes the same attribute).
 static DEF_GETTER(ppc_attr_instr_count) {
+    ppc_t *p = ppc_from(self);
+    if (p && p->instr_counter)
+        return val_uint(8, p->instr_counter(p->instr_counter_ctx));
     return val_uint(8, cpu_instr_count());
 }
 

@@ -10,7 +10,9 @@ did the hardware bring-up, on TNT even that is guest code: the ROM's own
 device tree on our CPU core.
 
 Models: `pm7500` (7500/100, 100 MHz 601, one Bandit), `pm8500` (8500/120,
-120 MHz 604, two Bandits), `pm9500` (9500/132, 132 MHz 604, two Bandits);
+120 MHz 604, two Bandits), `pm9500` (9500/132, 132 MHz 604, two Bandits),
+`pm9500mp` (9500/180MP: the 9500 board with the two-way processor card, a
+second 604 as a peer core — [mp.md](mp.md));
 all sharing the 1995-08 TNT ROM (stored checksums `96CD923D` v1 /
 `9630C68B` v2, covering the image's 3 MB 68k half).  The 8500/9500 are
 the first machines on the `CPU_MODEL_PPC604` core model
