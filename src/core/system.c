@@ -1604,8 +1604,12 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // every caller branched on hd_bus itself and chose between scsi.attach_hd,
 // scsi2.attach_hd and hd.attach -- and several chose wrong.
 
+image_t *system_media_image_scsi_bus(struct scsi *bus, int unit) {
+    return (bus && unit >= 0 && unit <= 6) ? scsi_device_image(bus, (unsigned)unit) : NULL;
+}
+
 bool system_media_present_scsi_bus(struct scsi *bus, int unit) {
-    return bus && unit >= 0 && unit <= 6 && scsi_device_image(bus, (unsigned)unit) != NULL;
+    return system_media_image_scsi_bus(bus, unit) != NULL;
 }
 
 int system_media_eject_scsi_bus(struct scsi *bus, int unit) {
@@ -1635,6 +1639,17 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
     default:
         return -1;
     }
+}
+
+image_t *system_media_image_std(config_t *cfg, media_bus_t bus, int unit) {
+    return bus == MEDIA_BUS_SCSI ? system_media_image_scsi_bus(cfg->scsi, unit) : NULL;
+}
+
+image_t *system_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    const machine_substrate_t *sub = (cfg && cfg->machine) ? cfg->machine->substrate : NULL;
+    if (!sub)
+        return NULL;
+    return sub->media_image ? sub->media_image(cfg, bus, unit) : system_media_image_std(cfg, bus, unit);
 }
 
 int system_media_attach_path(config_t *cfg, const media_bay_t *bay, bool cdrom, const char *path, char *err,

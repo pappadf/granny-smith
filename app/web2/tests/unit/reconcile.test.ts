@@ -133,6 +133,64 @@ describe('one post-boot reconciliation, every path', () => {
     expect(images.mounted).toEqual({});
   });
 
+  // A restore brings the checkpoint's media without the page attaching them:
+  // the mounts are read back from the machine's drives, with the same badge
+  // and eject target an attach would have recorded.
+  it("a restore marks the checkpoint's media mounted, where the machine holds them", async () => {
+    se30();
+    images.mounted['/opfs/images/fd/old.img'] = { kind: 'fd', drive: 1 };
+    bridge.reply('machine.floppy.drive[0].present', true);
+    bridge.reply('machine.floppy.drive[1].present', false);
+    bridge.reply('machine.floppy.drive[0].disk.filename', '/opfs/images/fd/sys.img');
+    bridge.reply('machine.storage', [
+      {
+        bus: 'scsi',
+        unit: 0,
+        type: 'hd',
+        present: true,
+        media: { bus: 'scsi', id: 0, label: 'SCSI' },
+        filename: '/opfs/images/hd/a.img',
+      },
+      {
+        bus: 'ata1',
+        unit: 0,
+        type: 'hd',
+        present: true,
+        media: { bus: 'ata', id: 2, label: 'Secondary ATA bus' },
+        filename: '/opfs/images/hd/b.img',
+      },
+      {
+        bus: 'scsi',
+        unit: 3,
+        type: 'cd',
+        present: true,
+        media: { bus: 'scsi', id: 3, label: 'SCSI' },
+        filename: '/opfs/images/cd/c.iso',
+      },
+      {
+        bus: 'scsi',
+        unit: 4,
+        type: 'cd',
+        present: false,
+        media: { bus: 'scsi', id: 4 },
+        filename: '',
+      },
+    ]);
+    await reconcileUiWithMachine('restore');
+    expect(images.mounted).toEqual({
+      '/opfs/images/fd/sys.img': { kind: 'fd', bus: 'floppy', drive: 0 },
+      '/opfs/images/hd/a.img': { kind: 'hd', bus: 'scsi', drive: 0 },
+      '/opfs/images/hd/b.img': { kind: 'hd', bus: 'ata', drive: 2 },
+      '/opfs/images/cd/c.iso': { kind: 'cd', bus: 'scsi', drive: 3 },
+    });
+    expect(images.fdDriveCount).toBe(2);
+    // A machine that cannot say what it holds shows nothing mounted.
+    bridge.reply('machine.storage', { error: 'machine.storage: no machine is running' });
+    bridge.reply('machine.floppy.drive[0].disk.filename', { error: 'no disk' });
+    await reconcileUiWithMachine('restore');
+    expect(images.mounted).toEqual({});
+  });
+
   it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');

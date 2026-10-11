@@ -833,8 +833,12 @@ position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
 n)` and `attach_cdrom(path)` name the default configuration's Nth hard
 disk and its CD-ROM drive).  `machine.storage` lists the devices the
 running machine was built with -- `{bus, bus_label, unit, position, type,
-present}` each, kept with the machine and in its checkpoint -- which is what
-the web app's Images panel offers an image to.
+present, media, filename}` each, kept with the machine and in its
+checkpoint -- which is what the web app's Images panel offers an image to.
+`media` is the device's bay as `attach_media` answers it (`{bus, id,
+label}`, what `machine.eject_media` takes) and `filename` the source path of
+the image in it (`""` when empty), so after a checkpoint restore the panel
+can tell which image is in which device (the substrate's `media_image`).
 
 The whole document is validated before anything is built, and a
 rejection names the node at fault: an option value the model does not

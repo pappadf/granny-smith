@@ -766,4 +766,5 @@ const machine_substrate_t gossamer_substrate = {
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,
+    .media_image = gos_media_image,
 };

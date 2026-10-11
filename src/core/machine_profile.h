@@ -374,6 +374,11 @@ typedef struct machine_substrate {
     // system_media_eject_std; a second SCSI bus or a ProFile adds its own.
     bool (*media_present)(struct config *cfg, media_bus_t bus, int unit);
     int (*media_eject)(struct config *cfg, media_bus_t bus, int unit);
+    // The image in the hard-disk or CD bay (bus, unit) now, or NULL: what
+    // machine.storage names as the device's medium.  NULL hook = the standard
+    // cfg->scsi (system_media_image_std); a second SCSI bus, the ATA buses or
+    // a ProFile add their own.
+    struct image *(*media_image)(struct config *cfg, media_bus_t bus, int unit);
 
     // How many key-transition bytes this machine's keyboard queue holds
     // before it starts dropping, which is what keyboard.type costs itself
@@ -601,6 +606,11 @@ bool system_media_present_std(struct config *cfg, media_bus_t bus, int unit);
 int system_media_eject_std(struct config *cfg, media_bus_t bus, int unit);
 bool system_media_present_scsi_bus(struct scsi *bus, int unit);
 int system_media_eject_scsi_bus(struct scsi *bus, int unit);
+// The image in the hard-disk or CD bay (bus, unit), through the substrate's
+// media_image (the standard cfg->scsi when it has none); NULL when empty.
+struct image *system_media_image(struct config *cfg, media_bus_t bus, int unit);
+struct image *system_media_image_std(struct config *cfg, media_bus_t bus, int unit);
+struct image *system_media_image_scsi_bus(struct scsi *bus, int unit);
 
 // === Object-model topology =================================================
 // The single `machine` container node — all emulated hardware nests under it

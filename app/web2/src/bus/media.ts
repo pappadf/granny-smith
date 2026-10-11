@@ -151,6 +151,34 @@ export async function insertFloppy(
   };
 }
 
+// What the running machine holds, as path → MountInfo: each floppy drive's
+// disk (its source path) and each storage device's image, with the bay
+// machine.storage names for it -- the same MountInfo insertFloppy and
+// attachMedia answer, so the badge and the eject target are the same as if
+// the page had attached it.  For a machine the page attached nothing to (a
+// checkpoint restore).  A query that fails leaves its drive out.
+export async function readMounts(): Promise<Record<string, MountInfo>> {
+  const out: Record<string, MountInfo> = {};
+  const count = await detectFdDriveCount(true);
+  for (let d = 0; d < count; d++) {
+    const name = await gsEval(`machine.floppy.drive[${d}].disk.filename`);
+    if (gsOk(name) && typeof name === 'string' && name)
+      out[name] = { kind: 'fd', bus: 'floppy', drive: d };
+  }
+  const devices = await gsEval('machine.storage');
+  if (!Array.isArray(devices)) return out;
+  for (const d of devices as Record<string, unknown>[]) {
+    const bay = d.media as Partial<MediaBay> | undefined;
+    if (d.present !== true || typeof d.filename !== 'string' || !d.filename || !bay) continue;
+    out[d.filename] = {
+      kind: d.type === 'cd' ? 'cd' : 'hd',
+      bus: bay.bus ?? '',
+      drive: bay.id ?? 0,
+    };
+  }
+  return out;
+}
+
 // Take a medium back out, wherever attach put it.
 export async function ejectMedia(mount: MountInfo): Promise<{ ok: boolean; reason?: string }> {
   const r =
