@@ -115,6 +115,15 @@ typedef struct lisa_board_desc {
     // sequence only matches with SYSTYPE 0 (revisit when MacWorks's own
     // machine-id handling is investigated).
     uint8_t fdc_diskrom;
+    // CPU cycles per 6522 cycle: the I/O board's VIA clock.  It must agree
+    // with the timer bits of fdc_diskrom, because LisaOS sizes its 20 ms
+    // system tick from those bits (LIBHW-DRIVERS: VIA T1 = $27CA on a
+    // slow-timer board, $637B on a fast one).  The Lisa 2/5's old board
+    // ($A0, bit 5 SLOTMR) runs its VIAs at CPU/10, ~509 kHz; the Pepsi board
+    // of the 2/10 and the Macintosh XL at CPU/4, ~1.27 MHz.  Clocking the
+    // 2/5's VIAs at CPU/4 made every LisaOS tick 8 ms, so DELAY_TIME and the
+    // millisecond timer ran 2.5x fast against the COPS clock.
+    uint8_t via_freq_factor;
 } lisa_board_desc_t;
 
 static const lisa_board_desc_t lisa_board = {
@@ -126,6 +135,7 @@ static const lisa_board_desc_t lisa_board = {
     .via2_base = 0xD800,
     .via2_len = 0x200,
     .fdc_diskrom = 0xA0,
+    .via_freq_factor = 10,
 };
 
 static const lisa_board_desc_t macxl_board = {
@@ -137,6 +147,7 @@ static const lisa_board_desc_t macxl_board = {
     .via2_base = 0xD901,
     .via2_len = 16 * 8,
     .fdc_diskrom = 0, // iob_pepsi
+    .via_freq_factor = 4,
 };
 
 static const lisa_board_desc_t *lisa_board_of(const config_t *cfg) {
@@ -973,7 +984,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     machine_part(cfg, checkpoint, "scheduler", part_save_scheduler, cfg->scheduler);
     // Run at the Lisa's real 5.09375 MHz, not the scheduler's Mac-Plus default
-    // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/4, so the
+    // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/N, so the
     // wrong CPU frequency would skew every VIA-timer-derived rate — including the
     // ~250 Hz tick MacWorks XL programs into VIA2 T1 — and inflate the real-time
     // CPU budget ~1.5x, which on a throughput-bound host shows up as a sluggish
@@ -1002,20 +1013,22 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
-    // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/reference/machines/lisa/lisa.md §10).
+    // interface itself.  freq_factor is the board's: 10 = 68000/10 ≈ 509 kHz on
+    // the Lisa 2/5, 4 = 68000/4 ≈ 1.27 MHz on the Macintosh XL's Pepsi board
+    // (docs/reference/machines/lisa/lisa.md §10).
     //
     // Deliberately NOT via_freq_factor_for_clock(): that helper divides by the
-    // 783.36 kHz φ2 every Macintosh 6522 runs at, and would return 7 here.  The
-    // Lisa's VIAs are clocked from the CPU at /4, a different quantity, so this
-    // is the one family where a literal is the correct answer rather than a
-    // stale one.
+    // 783.36 kHz φ2 every Macintosh 6522 runs at.  The Lisa's VIAs are clocked
+    // from the CPU by a board-specific divider, a different quantity, so this
+    // is the one family where the value comes from the board table rather
+    // than the clock.
     machine_part_begin(cfg, checkpoint, "via1");
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, lisa_board_of(cfg)->via_freq_factor, "via1", lisa_via1_output,
+                         lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     machine_part_begin(cfg, checkpoint, "via2");
-    cfg->via2 =
-        via_init(NULL, cfg->scheduler, 4, "via2", lisa_via2_output, lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
+    cfg->via2 = via_init(NULL, cfg->scheduler, lisa_board_of(cfg)->via_freq_factor, "via2", lisa_via2_output,
+                         lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via2", part_save_via, cfg->via2);
 
     // Register each VIA at its Lisa physical I/O base through the stride
