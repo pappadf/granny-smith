@@ -19,7 +19,7 @@
 // Everything goes through the shipped Terminal panel (web2 has no
 // window.gsEval), the scheduler-accelerated.spec.ts idiom.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine } from '../helpers/terminal';

@@ -40,224 +40,242 @@ defaults:
     shell: bash
 
 jobs:
-  test:
+  # The native headless build and the static checks that need neither data
+  # nor a long run.  A fork PR (no data) still gets these and the unit job.
+  static:
     runs-on: ubuntu-24.04
-    # Bounds a hang the per-test timeout cannot see (the build, a fetch).
-    timeout-minutes: 150
+    timeout-minutes: 30
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
-      # Optionally, after a build you can pin by digest instead for immutability:
-      # image: ghcr.io/pappadf/granny-smith-dev@sha256:<digest-here>
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-
-    # NOTE: GS_TEST_DATA_TOKEN is scoped to the single step that needs it
-    # (see "Fetch test data" below) to minimize exposure to other steps/actions.
-    # Secrets are not available to fork PRs, so external PRs see an empty value.
-
     steps:
-      # Submodules: the unit suites build against single-step-tests and
-      # powerpc-test.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
           persist-credentials: false
 
-      # 7z extracts the large binary archives (CD-ROM images and the like).
-      # The devcontainer Dockerfile installs `7zip`, so this VERIFIES rather
-      # than installs — see the m68k step below for why self-repair is the
-      # wrong shape here.
-      - name: Verify 7z presence
-        shell: bash
+      # 7z extracts the large binary archives (CD-ROM images and the like) and
+      # m68k binutils assembles the declaration-ROM fragments.  The dev image
+      # installs both, so these VERIFY rather than install: a self-repairing
+      # step hides a stale image pin, which is exactly how publish-staging
+      # drifted onto a five-month-old image unnoticed.
+      - name: Verify 7z and m68k binutils
         run: |
-          which 7z || {
-            echo '7z not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          7z i | sed -n '1,2p'
+          which 7z || { echo '7z not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
 
-      # m68k binutils assembles the generic declaration-ROM fragments
-      # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
-      # Dockerfile installs it, so this VERIFIES rather than installs: a
-      # self-repairing step hides a stale image pin, which is exactly how
-      # publish-staging drifted onto a five-month-old image unnoticed.
-      - name: Verify m68k binutils presence
-        shell: bash
-        run: |
-          which m68k-linux-gnu-as || {
-            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          m68k-linux-gnu-as --version | sed -n '1p'
-
-      # Fetch proprietary test data (only works for internal builds with token access)
-      - name: Fetch test data
-        id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            # No flag: fetches the revision pinned in tests/data-version, not
-            # whatever gs-test-data HEAD happens to be. CI is therefore
-            # reproducible against the media the goldens were captured from,
-            # and adopting newer data is a reviewed pin bump rather than
-            # something that silently changes under a green build.
-            ./scripts/fetch-test-data.sh
-            # Only mark test data as available once fetch actually succeeds,
-            # otherwise gated steps below would run without data and fail confusingly.
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::notice::Test data not available (external contributor or missing secret)"
-            echo "Skipping integration and e2e tests that require proprietary data."
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
-
-      - name: Verify emcc presence
-        shell: bash
-        run: |
-          which emcc || { echo 'emcc not on PATH'; exit 1; }
-          emcc -v | head -n 5
-
-      - name: Show tool versions
-        run: |
-          node -v
-          npm -v
-          g++ --version | head -n 1
-          cmake --version | head -n 1
-          ninja --version
-
-      # The native headless build, ungated: it needs no test data, so a fork
-      # PR compiles it too (the WASM build runs in the ui job).  PLATEN=1 as
-      # the integration steps below build it, so they reuse these objects
-      # instead of rebuilding the tree.
+      # PLATEN=1 WERROR=1 as every integration shard builds it, so a
+      # warning or a link failure is reported once, here, by name.
       - name: Build headless (clean)
-        shell: bash
         run: |
           rm -rf build
           make -f Makefile.headless PLATEN=1 WERROR=1 -j"$(nproc)"
 
-      - name: List build artifacts
-        run: ls -l build/headless || true
-
-      # Static checks that need neither data nor a build: the core layering
-      # rules (tests/integration/core-layering/run.sh, also run in the unit
-      # tier) and every integration test having a tier CI will run.
       - name: Check core layering
         run: bash tests/integration/core-layering/run.sh
 
       - name: Check every integration test has a tier
         run: make -C tests/integration check-tiers
 
-      # The unit suites need no proprietary data (the CPU corpora are the
-      # single-step-tests and powerpc-test submodules).  Built in parallel:
-      # every suite has its own object directory.
-      - name: Run unit tests (native)
-        run: |
-          make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
-
-      # The parser and storage suites again, built with emcc and run under node:
-      # the shipping build is wasm32, where size_t and long are 32 bits, and a
-      # defect that only wraps at 32 bits is invisible to the native run above.
-      # ~10 s.
-      - name: Run unit tests (wasm32)
-        run: |
-          make -C tests/unit run-wasm32 WERROR=1
-
-      # Integration and e2e tests require proprietary test data.
-      #
-      # Tiers (docs/guide/TESTING.md): unit is seconds, matrix is the
-      # per-machine boot suites, extended is the long diagnostics, installers
-      # and app choreography.
-      # Normally the PR gate is unit + matrix and extended is nightly-only —
-      # but while the integration-test rework settles, extended runs here too
-      # (see its step below). Suites are parallel-safe because each test gets a
-      # private GS_STORAGE_CACHE, so nothing writes beside the shared media.
-      # PLATEN=1 throughout: the printer rows (appletalk-print,
-      # appletalk-print-71, appletalk-print-lw8, appletalk-print-persist) reach the PostScript interpreter only in a
-      # bridge build — without it they detect the missing interpreter,
-      # log a skip and pass, which is how a System 7.1 printing defect
-      # reached a user with CI green. The build fetches the prebuilt
-      # library from the pinned EfterScript release (see
-      # src/core/network/laserwriter.mk); it needs no Rust toolchain, but
-      # it does need the network. Set on every tier so one binary serves
-      # all three: toggling PLATEN rebuilds the tree.
-      - name: Run integration tests (unit tier)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        timeout-minutes: 15
-        run: |
-          make integration-test PLATEN=1 WERROR=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
-          exit "${PIPESTATUS[0]}"
-
-      - name: Run integration tests (matrix tier)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        # ~20 min on a fast runner, ~28 on the slower class -- too close to 30.
-        timeout-minutes: 40
-        run: |
-          make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
-          exit "${PIPESTATUS[0]}"
-
-      # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
-      # The tiers put the long diagnostics, installers and app choreography in
-      # the nightly so the PR gate stays quick; while the integration-test
-      # rework settles we want the full set on every PR and every push to main
-      # instead, so a regression in a long row is caught before merge rather
-      # than the following morning. KEEP_GOING=1 so one red row does not
-      # truncate the report — the build still fails at the end.
-      #
-      # Revert to nightly-only once the rework has proven stable: delete this
-      # step, and the nightly workflow already covers the tier unchanged.
-      - name: Run integration tests (extended tier)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        timeout-minutes: 120
-        run: |
-          make integration-test PLATEN=1 WERROR=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
-            2>&1 | tee /tmp/it-extended.log
-          exit "${PIPESTATUS[0]}"
-
-      # Coverage contract: diff the cells the run actually reported
-      # (@@COV records, read from the live machine) against the declared
-      # roster in tests/integration/matrix-targets.json. A declared cell that
-      # went uncovered fails; cells owed by another tier, blocked by a known
-      # emulator defect, or gated on absent media are reported, not failed.
-      - name: Check coverage contract
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        run: |
-          python3 scripts/test-matrix.py --check --tier=matrix /tmp/it-matrix.log \
-            | tee /tmp/coverage.log
-          exit "${PIPESTATUS[0]}"
-
-      # The extended tier owns cells too, and runs on the PR gate (see its
-      # step above), so its check gates as well.
-      - name: Check coverage contract (extended tier)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        run: |
-          python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log \
-            | tee /tmp/coverage-extended.log
-          exit "${PIPESTATUS[0]}"
-
-      # Golden-collision gate: two DIFFERENT goldens asserted in one script must
-      # not hold identical bytes, or one frame is silently doing the work of
-      # several assertions. Needs no test data and no build — it only reads the
-      # scripts and the committed PNGs — so it runs regardless of the data fetch
-      # and catches a bad recapture before the expensive tiers do.
+      # Two DIFFERENT goldens asserted in one script must not hold identical
+      # bytes, or one frame is silently doing the work of several assertions.
       - name: Check golden distinctness
         run: python3 scripts/check-goldens.py
 
-      # Performance gate: per-row guest instruction spend
-      # is host-independent and bit-reproducible, so a row outside its
-      # tolerance band is a real change and fails like a pixel golden.
-      # Absorbing a legitimate timing change means committing a reviewed
-      # perf-baselines.json diff (scripts/gen-baselines.py) in the same PR.
-      - name: Check performance baselines
+  # The native unit suites and their wasm32 rerun.  They need the CPU corpora
+  # (submodules) but no proprietary data, and nothing else needs them, so
+  # they run beside the integration shards instead of in front of them.
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Run unit tests (native)
+        run: make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
+
+      # The parser and storage suites again under emcc + node: the shipping
+      # build is wasm32, where size_t and long are 32 bits.
+      - name: Run unit tests (wasm32)
+        run: make -C tests/unit run-wasm32 WERROR=1
+
+  # Every integration tier, as ONE longest-first -j pool, split across
+  # runners.  tests/integration/test-weights.json orders the tests (longest
+  # first, so the long suites never start late) and bin-packs them onto the
+  # shards; every shard computes the same partition from the same file, and
+  # `make integration-test SHARD=k/4` reproduces one locally.  Fixture
+  # groups (a producer and the tests that restore its checkpoint) pack as
+  # one item, so they always share a shard.
+  #
+  # The extended tier is on the PR gate as well as the nightly while the
+  # integration-test rework settles; in this pool it costs CPU-seconds on
+  # whichever shard it lands, not a serial half hour after the matrix tier.
+  #
+  # PLATEN=1 throughout: the printer rows reach the PostScript interpreter
+  # only in a bridge build (without it they detect the missing interpreter,
+  # log a skip and pass).  KEEP_GOING=1 so one red row does not truncate a
+  # suite's report — the shard still fails at the end.
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shard count is the length of this list (strategy.job-total
+        # below); the contracts job checks for that many logs.
+        shard: [1, 2, 3, 4]
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 7z extracts the large binary archives (CD-ROM images and the like) and
+      # m68k binutils assembles the declaration-ROM fragments.  The dev image
+      # installs both, so these VERIFY rather than install: a self-repairing
+      # step hides a stale image pin, which is exactly how publish-staging
+      # drifted onto a five-month-old image unnoticed.
+      - name: Verify 7z and m68k binutils
+        run: |
+          which 7z || { echo '7z not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+          which m68k-linux-gnu-as || { echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'; exit 1; }
+
+      # Proprietary test data (internal builds with token access only).  No
+      # flag: fetches the revision pinned in tests/data-version, so CI runs
+      # against the media the goldens were captured from.  The token is
+      # scoped to this step; fork PRs see it empty and skip the data steps.
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_data=false" >> $GITHUB_OUTPUT
+            echo "::notice::Test data not available (external contributor or missing secret)"
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      # --output-sync=target prints each test's output as one block when it
+      # ends, so parallel tests never interleave inside a line (a split
+      # @@COV or @@PERF record, or a PASS line in the middle of another
+      # test's output, would mislead the contracts job).  The price is no
+      # live output from a test until it finishes.
+      - name: Run integration tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          python3 scripts/test-matrix.py --perf /tmp/it-unit.log /tmp/it-matrix.log \
-            /tmp/it-extended.log | tee /tmp/perf.log
+          mkdir -p shard-out
+          make integration-test PLATEN=1 WERROR=1 TIER="unit matrix extended" \
+            SHARD=${{ matrix.shard }}/${{ strategy.job-total }} TEST_VARS="KEEP_GOING=1" -j"$(nproc)" \
+            --output-sync=target 2>&1 | tee shard-out/it-shard.log
           exit "${PIPESTATUS[0]}"
 
-      - name: Coverage + row report into the step summary
+      # The log carries the @@COV / @@PERF records the contracts job checks;
+      # durations.jsonl is what scripts/gen-test-weights.py regenerates the
+      # weights from.  Both go into ONE directory and are uploaded from
+      # there: upload-artifact keeps paths relative to the files' common
+      # ancestor, and two files from different trees land at different depths
+      # in the artifact, which the contracts job's glob then misses.
+      - name: Collect shard durations
         if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        run: cp tests/integration/test-results/durations.jsonl shard-out/ 2>/dev/null || true
+
+      - name: Upload shard log
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-shard-${{ matrix.shard }}
+          path: shard-out/
+          if-no-files-found: error
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-results-shard-${{ matrix.shard }}
+          path: tests/integration/test-results
+          if-no-files-found: ignore
+
+  # The coverage and performance contracts over the UNION of the shard logs:
+  # a cell is covered if any shard covered it.
+  contracts:
+    needs: integration
+    if: always() && needs.integration.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: integration-shard-*
+          path: shards
+
+      # Skipping is right only when there was no test data to run with (a
+      # fork PR has no token).  With data, every shard must have uploaded its
+      # log: a missing one would otherwise turn the contracts into a green
+      # check of nothing.
+      - name: Gather shard logs
+        id: logs
+        env:
+          HAS_DATA: ${{ secrets.GS_TEST_DATA_TOKEN != '' }}
+        run: |
+          n=$(ls shards/*/it-shard.log 2>/dev/null | wc -l)
+          if [ "$HAS_DATA" != "true" ]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No test data (no token): contracts skipped"
+            exit 0
+          fi
+          if [ "$n" -ne 4 ]; then
+            echo "::error::expected 4 shard logs (the integration matrix), found $n"
+            ls -R shards || true
+            exit 1
+          fi
+          echo "have=true" >> "$GITHUB_OUTPUT"
+          cat shards/*/it-shard.log > /tmp/it-all.log
+          cat shards/*/durations.jsonl > /tmp/durations.jsonl 2>/dev/null || true
+
+      # A declared cell that went uncovered fails; cells owed by another
+      # tier, blocked by a known defect, or gated on absent media are
+      # reported, not failed.
+      - name: Check coverage contract (matrix tier)
+        if: steps.logs.outputs.have == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=matrix /tmp/it-all.log | tee /tmp/coverage.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Check coverage contract (extended tier)
+        if: steps.logs.outputs.have == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=extended /tmp/it-all.log | tee /tmp/coverage-extended.log
+          exit "${PIPESTATUS[0]}"
+
+      # Per-row guest instruction spend is host-independent and
+      # bit-reproducible, so a row outside its band is a real change.
+      - name: Check performance baselines
+        if: steps.logs.outputs.have == 'true'
+        run: |
+          python3 scripts/test-matrix.py --perf /tmp/it-all.log | tee /tmp/perf.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Coverage, rows and timings into the step summary
+        if: always() && steps.logs.outputs.have == 'true'
         run: |
           {
             echo "## Integration coverage"
@@ -265,9 +283,13 @@ jobs:
             cat /tmp/coverage.log 2>/dev/null || echo "(no coverage log)"
             echo '```'
             echo "### Cells covered by this run"
-            python3 scripts/test-matrix.py --from-results /tmp/it-matrix.log 2>/dev/null || true
+            python3 scripts/test-matrix.py --from-results /tmp/it-all.log 2>/dev/null || true
             echo "### Milestone rows (known gaps, non-fatal)"
-            grep -h "MILESTONE" /tmp/it-matrix.log /tmp/it-extended.log 2>/dev/null || echo "(none)"
+            grep -h "MILESTONE" /tmp/it-all.log 2>/dev/null || echo "(none)"
+            echo "### Skipped tests (their media is not in the test data)"
+            echo '```'
+            grep -h "^=== SKIP" /tmp/it-all.log 2>/dev/null || echo "(none)"
+            echo '```'
             echo "### Extended-tier coverage"
             echo '```'
             cat /tmp/coverage-extended.log 2>/dev/null || echo "(no extended coverage log)"
@@ -276,39 +298,29 @@ jobs:
             echo '```'
             cat /tmp/perf.log 2>/dev/null || echo "(no perf log)"
             echo '```'
+            echo "### Slowest tests (wall seconds)"
+            echo '```'
+            python3 - <<'EOF' 2>/dev/null || echo "(no durations)"
+          import json
+          rows = [json.loads(l) for l in open("/tmp/durations.jsonl") if l.strip()]
+          for r in sorted(rows, key=lambda r: -r["secs"])[:25]:
+              print(f"{r['secs']:6d}  {r['status']:7s} {r['test']}")
+          EOF
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # NOTE: the browser end-to-end suite (Playwright) now runs in the `ui`
-      # job against the web2 (Svelte) frontend — see `make ui2-e2e` there.
-      # The legacy web UI's e2e (tests/e2e/specs/**) was retired with it.
-
-      - name: Summary for builds without test data
-        if: steps.fetch-data.outputs.has_test_data == 'false'
-        run: |
-          {
-            echo "## Limited test coverage"
-            echo ""
-            echo "Proprietary test data (ROM and disk images) is not available to this run."
-            echo ""
-            echo "**Ran:** the headless build, core layering and tier checks, the unit"
-            echo "suites (native and wasm32), golden distinctness; in the ui job,"
-            echo "svelte-check, lint, vitest, the WASM and Vite builds and prod-smoke."
-            echo ""
-            echo "**Skipped:** the integration tiers, the coverage and performance"
-            echo "contracts, and the functional web2 e2e."
-            echo ""
-            echo "For full coverage see https://github.com/${{ github.repository }}/blob/main/docs/guide/TEST_DATA.md"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # New Svelte UI at app/web2. Typecheck + lint + Vitest + Vite build, then
-  # the WASM build and the browser end-to-end suites: prod-smoke (always) and
-  # the functional web2 Playwright specs (gated on proprietary test data).
-  # This is the sole home of browser e2e since the legacy web UI was retired.
+  # The web2 frontend (app/web2) is three kinds of job, run in parallel: the
+  # static checks and fast tests (ui), the component-gallery screenshots
+  # (ui-gallery), and the functional browser end-to-end suite, sharded across
+  # runners (ui-e2e).  Each shard runs its specs in two passes: the parallel
+  # project three at a time, then the serial one (pacing, jitter, real-time
+  # media) alone.  This is the sole home of browser e2e since the legacy web
+  # UI was retired.
   ui:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    # Every make in this job -- the explicit steps and the ones the Playwright
-    # webServers run (`make ui2` builds the core) -- must see the same flags,
+    timeout-minutes: 30
+    # Every make in this job -- the explicit steps and the one the Playwright
+    # webServer runs (`make ui2` builds the core) -- must see the same flags,
     # or the flags stamp changes and the core is rebuilt from scratch.
     env:
       WERROR: "1"
@@ -324,47 +336,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
-      # web2 e2e specs boot from (see the matching step in the test job).
-      - name: Verify 7z presence
-        shell: bash
-        run: |
-          which 7z || {
-            echo '7z not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          7z i | sed -n '1,2p'
-
-      # m68k binutils for the WASM build's declaration-ROM fragments —
-      # verified, not installed (see the matching step in the test job).
+      # m68k binutils for the WASM build's declaration-ROM fragments --
+      # verified, not installed (see the matching step in the static job).
       - name: Verify m68k binutils presence
-        shell: bash
         run: |
           which m68k-linux-gnu-as || {
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | sed -n '1p'
-
-      # Fetch proprietary test data (internal builds with token access only).
-      # Gates the functional web2 e2e below; the token is scoped to this step.
-      - name: Fetch test data
-        id: fetch-data
-        run: |
-          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            ./scripts/fetch-test-data.sh
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_test_data=false" >> $GITHUB_OUTPUT
-            echo "::notice::Test data not available — running prod-smoke only, skipping functional web2 e2e."
-          fi
-        env:
-          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
-
-      - name: Show tool versions
-        run: |
-          node -v
-          npm -v
 
       - name: Install (app/web2)
         working-directory: app/web2
@@ -408,32 +387,12 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # The UI gallery: every component story, both colour schemes, compared
-      # pixel for pixel with the committed baselines (Vite dev server, no
-      # WASM or test data needed). Styling refactors claim zero diff here.
-      - name: UI gallery screenshots (Playwright)
-        env:
-          CI: true
-        run: make ui2-gallery
-
       # End-to-end smoke: serves dist/ from a subpath WITHOUT
       # COOP/COEP headers, asserts the page reaches __gsReady and
       # crossOriginIsolated === true. This is the production env
       # GitHub Pages provides; `make run` masks it.
       - name: prod-smoke (Playwright)
         run: make ui2-prod-smoke
-
-      # Functional web2 end-to-end suite (tests/e2e/web2-specs/**): config
-      # dialog, checkpoint resume, display drop, URL boot, A/UX realtime boot,
-      # video-mode shader baselines, Lisa/Xenix, filesystem tab. Needs the
-      # proprietary ROMs/disks, so it's gated on the fetch above. `make
-      # ui2-e2e`'s webServer rebuilds + serves app/web2/dist with COOP/COEP
-      # (the core is already fresh, so its WASM build is a no-op).
-      - name: web2 e2e (Playwright)
-        if: steps.fetch-data.outputs.has_test_data == 'true'
-        env:
-          CI: true
-        run: make ui2-e2e
 
       - name: Upload UI build (on failure)
         if: failure()
@@ -443,10 +402,169 @@ jobs:
           path: app/web2/dist
           if-no-files-found: ignore
 
+  # The UI gallery: every component story, both colour schemes, compared
+  # pixel for pixel with the committed baselines (Vite dev server, no WASM or
+  # test data needed). Styling refactors claim zero diff here.
+  ui-gallery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install (app/web2)
+        working-directory: app/web2
+        run: npm ci
+
+      - name: Install Playwright (tests/e2e)
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: UI gallery screenshots (Playwright)
+        env:
+          CI: true
+        run: make ui2-gallery
+
+      - name: Upload gallery traces (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-gallery-traces
+          path: tests/e2e/test-results
+          if-no-files-found: ignore
+
+  # Functional web2 end-to-end suite (tests/e2e/web2-specs/**): config dialog,
+  # checkpoint resume, display drop, URL boot, A/UX realtime boot, video-mode
+  # shader baselines, Lisa/Xenix, filesystem tab, ...  Needs the proprietary
+  # ROMs/disks, so a job without the token skips it.  scripts/e2e-shard.py
+  # splits the spec files across the three runners by their measured
+  # durations (tests/e2e/e2e-weights.json, regenerated with
+  # scripts/gen-e2e-weights.py from the web2-e2e-report-shard-* artifacts);
+  # `npx playwright test --config=playwright.web2.config.ts --project=P
+  # $(python3 ../../scripts/e2e-shard.py K/3 P)` reproduces one locally.
+  ui-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # Every make in this job -- the explicit steps and the one the Playwright
+    # webServer runs (`make ui2` builds the core) -- must see the same flags,
+    # or the flags stamp changes and the core is rebuilt from scratch.
+    env:
+      WERROR: "1"
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 7z extracts the large binary archives (e.g. the A/UX HD) the specs
+      # boot from.  Verified, not installed (see the static job).
+      - name: Verify 7z presence
+        run: |
+          which 7z || {
+            echo '7z not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+
+      # m68k binutils for the WASM build's declaration-ROM fragments --
+      # verified, not installed (see the matching step in the static job).
+      - name: Verify m68k binutils presence
+        run: |
+          which m68k-linux-gnu-as || {
+            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+
+      # Proprietary test data (internal builds with token access only); the
+      # token is scoped to this step.
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_data=false" >> $GITHUB_OUTPUT
+            echo "::notice::Test data not available — skipping the functional web2 e2e."
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      # Built here rather than by the Playwright webServer's `make ui2`, so
+      # the build does not count against that server's start-up timeout; the
+      # webServer's own `make ui2` is then a no-op.
+      - name: WASM build + ui2
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: make ui2
+
+      - name: Install Playwright (tests/e2e)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # Two passes over this shard's specs: the `parallel` project with
+      # GS_E2E_WORKERS at once, then the `serial` project (pacing, jitter and
+      # real-time media specs) alone, so nothing else competes with it for
+      # the runner.  The second pass runs even if the first failed, so one red
+      # spec does not hide the other project's results.
+      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3, parallel)
+        id: e2e-parallel
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          CI: true
+          GS_E2E_WORKERS: "3"
+          GS_E2E_JSON: e2e-report/parallel.json
+        working-directory: tests/e2e
+        run: |
+          specs=$(python3 ../../scripts/e2e-shard.py ${{ matrix.shard }}/3 parallel)
+          if [ -z "$specs" ]; then echo "No parallel specs on this shard."; exit 0; fi
+          # shellcheck disable=SC2086 -- one spec path per word
+          npx playwright test --config=playwright.web2.config.ts --project=parallel --output=test-results/parallel $specs
+
+      - name: web2 e2e (Playwright, shard ${{ matrix.shard }}/3, serial)
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true' && steps.e2e-parallel.outcome != 'skipped'
+        env:
+          CI: true
+          GS_E2E_JSON: e2e-report/serial.json
+        working-directory: tests/e2e
+        run: |
+          specs=$(python3 ../../scripts/e2e-shard.py ${{ matrix.shard }}/3 serial)
+          if [ -z "$specs" ]; then echo "No serial specs on this shard."; exit 0; fi
+          # shellcheck disable=SC2086 -- one spec path per word
+          npx playwright test --config=playwright.web2.config.ts --project=serial --output=test-results/serial $specs
+
+      # Per-test durations (the github reporter prints none).
+      - name: Upload e2e report
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: web2-e2e-report-shard-${{ matrix.shard }}
+          path: tests/e2e/e2e-report
+          if-no-files-found: ignore
+
       - name: Upload e2e traces (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: web2-e2e-traces
+          name: web2-e2e-traces-shard-${{ matrix.shard }}
           path: tests/e2e/test-results
           if-no-files-found: ignore

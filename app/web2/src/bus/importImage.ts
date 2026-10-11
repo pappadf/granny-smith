@@ -61,6 +61,10 @@ export interface ImportOptions {
   // later URL boot looks for to use the stored image instead of downloading
   // it again (bus/urlMedia.ts).
   origin?: string;
+  // A Mac archive this pipeline leaves to the caller is handed back staged
+  // (ImportOutcome.archive) instead of being removed, so a download is not
+  // fetched a second time to be unpacked.
+  keepArchive?: boolean;
 }
 
 export interface ImportOutcome {
@@ -71,6 +75,9 @@ export interface ImportOutcome {
   // when nothing was stored (the user has been told why).
   path: string | null;
   category?: DiskCategory;
+  // With keepArchive, when handled is false: the archive, staged whole; the
+  // caller's to remove.
+  archive?: string;
 }
 
 // Names a disk image may carry that the stored .dmg replaces.
@@ -492,6 +499,14 @@ async function importMacArchive(
   const staged = scratchPath(base);
   const part = scratchPath(`${base}.dmg.part`);
   const body = src.kind === 'blob' ? src.blob : src.stream;
+  let handedOver = false;
+  // Not imported: the caller's extracting flow takes it, from the staged
+  // copy when it asked for one.
+  const leave = (): ImportOutcome => {
+    if (!opts.keepArchive) return { handled: false, path: null };
+    handedOver = true;
+    return { handled: false, path: null, archive: staged };
+  };
   try {
     if (
       !(await streamToOpfs(staged, body, (n) =>
@@ -510,8 +525,7 @@ async function importMacArchive(
       bytes_in?: number;
       stored_bytes?: number;
     } | null;
-    if (!r || typeof r !== 'object' || typeof r.member !== 'string')
-      return { handled: false, path: null };
+    if (!r || typeof r !== 'object' || typeof r.member !== 'string') return leave();
     const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {
       if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
@@ -525,9 +539,9 @@ async function importMacArchive(
       }
     }
     // Not a disk (a floppy, a ROM, an application): the staged flow.
-    return { handled: false, path: null };
+    return leave();
   } finally {
-    await rmQuiet(staged);
+    if (!handedOver) await rmQuiet(staged);
     await rmQuiet(part);
   }
 }

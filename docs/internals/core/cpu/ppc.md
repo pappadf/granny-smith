@@ -224,8 +224,16 @@ precedent).  The deltas, each keyed on `cpu_model`:
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.
-- **MSR**: adds POW (accepted as a no-op idle hint), BE, PM, RI, and the
-  little-endian pair ILE/LE.  Exception entry keeps ME/EP/PM/ILE, clears
+- **MSR**: adds POW, BE, PM, RI, and the little-endian pair ILE/LE.
+- **Nap/doze** (604UM §1.4, 750UM §10.2): an `mtmsr` that raises POW stops
+  the core until an asynchronous interrupt -- on the 604 POW alone naps; on
+  the 750 it enters the HID0-selected mode, and only DOZE and NAP are
+  honoured (SLEEP also stops the time base, which the model derives from
+  the scheduler clock).  `ppc_check_power_mode` ends the sprint there with
+  the PC past the `mtmsr`, the scheduler adapter's `is_stopped` reports
+  `dozing`, and the scheduler sleeps emulated time to the next event (the
+  decrementer is one) exactly as for the 68K's STOP; exception entry
+  clears it.  Mac OS 9 idles this way on the G3.  Exception entry keeps ME/EP/PM/ILE, clears
   the rest, and REPLACES LE with a copy of ILE; `rfi` restores MSR[16-31]
   only (POW and ILE survive).  The 601 masks ILE/LE off (its Macs never
   leave big-endian).

@@ -25,6 +25,7 @@
 #include "appletalk.h"
 #include "appletalk_ppc.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "object.h"
 #include "scheduler.h"
@@ -85,7 +86,7 @@ typedef struct {
     char *text; // the request, text form
     char *error; // why it failed, when it did
     value_t request; // the request map (owned)
-    value_t reply; // the reply map (owned; V_NONE until one arrives)
+    value_t reply; // the reply map (owned; VK_NONE until one arrives)
     int64_t errn;
     bool no_reply; // fire and forget
     uint64_t sent_at_instr;
@@ -166,7 +167,7 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 // ============================================================================
 
 static aevt_event_t *aevt_alloc_event(void) {
-    // Events are append-only for the life of the connection so the V_OBJECT a
+    // Events are append-only for the life of the connection so the VK_OBJECT a
     // send returns stays valid in a `let` binding (§8).
     if (g_aevt == &g_no_link || g_aevt->event_count >= AEVT_MAX_EVENTS)
         return NULL;
@@ -645,13 +646,13 @@ static DEF_GETTER(aevt_event_attr_id) {
 }
 static DEF_GETTER(aevt_event_attr_reply) {
     aevt_event_t *ev = aevt_obj_event(self);
-    if (!ev || ev->reply.kind != V_MAP)
+    if (!ev || ev->reply.kind != VK_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->reply);
 }
 static DEF_GETTER(aevt_event_attr_request) {
     aevt_event_t *ev = aevt_obj_event(self);
-    if (!ev || ev->request.kind != V_MAP)
+    if (!ev || ev->request.kind != VK_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->request);
 }
@@ -671,44 +672,44 @@ static DEF_GETTER(aevt_event_attr_return_id) {
 }
 
 static const member_t aevt_event_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "state",
      .doc = "queued, sent, replied, error or timeout",
-     .attr = {.type = V_ENUM, .enum_values = AEVT_STATE_NAMES, .get = aevt_event_attr_state}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_ENUM, .enum_values = AEVT_STATE_NAMES, .get = aevt_event_attr_state}                                },
+    {.kind = MK_ATTR,
      .name = "target",
      .doc = "The program-linking port this event was addressed to",
-     .attr = {.type = V_STRING, .get = aevt_event_attr_target}                                                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_event_attr_target}                                                              },
+    {.kind = MK_ATTR,
      .name = "tag",
      .doc = "Lookup key given at send time, if any",
-     .attr = {.type = V_STRING, .get = aevt_event_attr_tag}                                                                 },
-    {.kind = M_ATTR, .name = "class", .doc = "Event class",         .attr = {.type = V_STRING, .get = aevt_event_attr_class}},
-    {.kind = M_ATTR, .name = "id",    .doc = "Event ID",            .attr = {.type = V_STRING, .get = aevt_event_attr_id}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_event_attr_tag}                                                                 },
+    {.kind = MK_ATTR, .name = "class", .doc = "Event class",        .attr = {.type = VK_STRING, .get = aevt_event_attr_class}},
+    {.kind = MK_ATTR, .name = "id",    .doc = "Event ID",           .attr = {.type = VK_STRING, .get = aevt_event_attr_id}   },
+    {.kind = MK_ATTR,
      .name = "text",
      .doc = "The request in text form",
-     .attr = {.type = V_STRING, .get = aevt_event_attr_text}                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_event_attr_text}                                                                },
+    {.kind = MK_ATTR,
      .name = "request",
      .doc = "The request as a map",
-     .attr = {.type = V_MAP, .get = aevt_event_attr_request}                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_MAP, .get = aevt_event_attr_request}                                                                },
+    {.kind = MK_ATTR,
      .name = "reply",
      .doc = "The reply as a map; empty until one arrives",
-     .attr = {.type = V_MAP, .get = aevt_event_attr_reply}                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_MAP, .get = aevt_event_attr_reply}                                                                  },
+    {.kind = MK_ATTR,
      .name = "errn",
      .doc = "keyErrorNumber from the reply; 0 means success",
-     .attr = {.type = V_INT, .get = aevt_event_attr_errn}                                                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = aevt_event_attr_errn}                                                                   },
+    {.kind = MK_ATTR,
      .name = "error",
      .doc = "Why the event failed, when it did",
-     .attr = {.type = V_STRING, .get = aevt_event_attr_error}                                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_event_attr_error}                                                               },
+    {.kind = MK_ATTR,
      .name = "return_id",
      .doc = "The return ID that correlates the reply",
-     .attr = {.type = V_UINT, .width = 4, .get = aevt_event_attr_return_id}                                                 },
+     .attr = {.type = VK_UINT, .width = 4, .get = aevt_event_attr_return_id}                                                 },
 };
 
 static const class_desc_t aevt_event_class = {
@@ -774,7 +775,7 @@ static DEF_GETTER(aevt_inbox_attr_id) {
 }
 static DEF_GETTER(aevt_inbox_attr_event) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
-    if (!in || in->map.kind != V_MAP)
+    if (!in || in->map.kind != VK_MAP)
         return val_map(NULL, 0);
     return value_dup(&in->map);
 }
@@ -790,24 +791,24 @@ static DEF_GETTER(aevt_inbox_attr_error) {
 }
 
 static const member_t aevt_inbox_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "sender",
      .doc = "The port the event came from",
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_sender}                                                             },
-    {.kind = M_ATTR, .name = "class", .doc = "Event class",        .attr = {.type = V_STRING, .get = aevt_inbox_attr_class}},
-    {.kind = M_ATTR, .name = "id",    .doc = "Event ID",           .attr = {.type = V_STRING, .get = aevt_inbox_attr_id}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_inbox_attr_sender}                                                             },
+    {.kind = MK_ATTR, .name = "class", .doc = "Event class",       .attr = {.type = VK_STRING, .get = aevt_inbox_attr_class}},
+    {.kind = MK_ATTR, .name = "id",    .doc = "Event ID",          .attr = {.type = VK_STRING, .get = aevt_inbox_attr_id}   },
+    {.kind = MK_ATTR,
      .name = "event",
      .doc = "The decoded event as a map",
-     .attr = {.type = V_MAP, .get = aevt_inbox_attr_event}                                                                 },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_MAP, .get = aevt_inbox_attr_event}                                                                 },
+    {.kind = MK_ATTR,
      .name = "text",
      .doc = "The event in text form",
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_text}                                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = aevt_inbox_attr_text}                                                               },
+    {.kind = MK_ATTR,
      .name = "error",
      .doc = "Why the event could not be decoded, if it could not",
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_error}                                                              },
+     .attr = {.type = VK_STRING, .get = aevt_inbox_attr_error}                                                              },
 };
 
 static const class_desc_t aevt_inbox_entry_class = {
@@ -833,12 +834,12 @@ static const collection_desc_t aevt_inbox_entries = {
 };
 
 static const member_t aevt_inbox_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "clear",
      .doc = "Forget every event guests have sent us, making room for more",
      .method = {.args = NULL,
                 .nargs = 0,
-                .result = V_NONE,
+                .result = VK_NONE,
                 .fn = aevt_inbox_method_clear,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
     OBJ_ENTRIES(&aevt_inbox_entries, NULL),
@@ -957,19 +958,19 @@ static DEF_METHOD(aevt_method_send) {
     // Named arguments: timeout is an instruction budget, mode picks whether a
     // reply is expected at all (§8).
     ev->timeout_instr = AEVT_DEFAULT_TIMEOUT_INSTR;
-    if (argc > 2 && argv[2].kind != V_NONE) {
+    if (argc > 2 && argv[2].kind != VK_NONE) {
         uint64_t budget = val_as_u64(&argv[2], NULL);
         if (budget > 0)
             ev->timeout_instr = budget; // 0 means "wait indefinitely"
         else
             ev->timeout_instr = 0;
     }
-    if (argc > 3 && argv[3].kind != V_NONE) {
+    if (argc > 3 && argv[3].kind != VK_NONE) {
         const char *tag = val_as_str(&argv[3]);
         if (tag)
             snprintf(ev->tag, sizeof(ev->tag), "%s", tag);
     }
-    if (argc > 4 && argv[4].kind != V_NONE) {
+    if (argc > 4 && argv[4].kind != VK_NONE) {
         const char *mode = val_as_str(&argv[4]);
         ev->no_reply = (mode && !strcmp(mode, "no_reply"));
     }
@@ -990,7 +991,7 @@ static DEF_METHOD(aevt_method_send_raw) {
     const char *target = val_as_str(&argv[0]);
     if (!target || !*target)
         return val_err("no target port was named");
-    if (argv[1].kind != V_BYTES)
+    if (argv[1].kind != VK_BYTES)
         return val_err("send_raw needs the flattened event as bytes");
 
     // A pre-flattened payload still has to name its class and ID, so it is
@@ -1043,73 +1044,73 @@ static DEF_METHOD(aevt_method_send_raw) {
     return val_obj(object_cache_at(&g_host->event_entries, ev->slot, NULL));
 }
 
-static const value_t aevt_def_timeout = {.kind = V_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
-static const value_t aevt_def_mode = {.kind = V_STRING, .s = (char *)"wait"};
+static const value_t aevt_def_timeout = {.kind = VK_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
+static const value_t aevt_def_mode = {.kind = VK_STRING, .s = (char *)"wait"};
 
 static const arg_decl_t aevt_send_args[] = {
     {.name = "target",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Program-linking port name, as `ppc.ports` shows it"},
     {.name = "event",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "The event in text form, e.g. aevt/odoc{'----':[…]}"},
     {.name = "timeout",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .width = 8,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_timeout,
      .doc = "Reply budget in guest instructions"},
     {.name = "tag",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Lookup key, so events[\"name\"] finds this event"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = VK_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_mode,
      .doc = "\"wait\" or \"no_reply\""},
 };
 
 static const arg_decl_t aevt_send_raw_args[] = {
-    {.name = "target", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Program-linking port name"},
-    {.name = "stream", .kind = V_BYTES, .doc = "A pre-flattened event stream"},
-    {.name = "class", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Event class"},
-    {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Event ID"},
+    {.name = "target", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Program-linking port name"},
+    {.name = "stream", .kind = VK_BYTES, .doc = "A pre-flattened event stream"},
+    {.name = "class", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Event class"},
+    {.name = "id", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Event ID"},
 };
 
 static const member_t aevt_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Advertise the host program-linking port and accept sessions",
-     .attr = {.type = V_BOOL, .get = aevt_attr_enabled, .set = aevt_attr_set_enabled}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = aevt_attr_enabled, .set = aevt_attr_set_enabled}},
+    {.kind = MK_ATTR,
      .name = "port_name",
      .doc = "NBP object name of the host port guests see in their PPC browser",
-     .attr = {.type = V_STRING,
+     .attr = {.type = VK_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = aevt_attr_port_name,
               .set = aevt_attr_set_port_name}},
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "auto_reply",
      .doc = "Text-form reply sent for each inbox event; empty means a plain noErr answer",
-     .attr = {.type = V_STRING, .get = aevt_attr_auto_reply, .set = aevt_attr_set_auto_reply}},
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = aevt_attr_auto_reply, .set = aevt_attr_set_auto_reply}},
+    {.kind = MK_METHOD,
      .name = "send",
      .doc = "Send an Apple event to a guest application; returns the event object, does not wait",
      .method = {.args = aevt_send_args,
                 .nargs = ARRAY_LEN(aevt_send_args),
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = aevt_method_send,
                 .ui_flags = MM_MUTATE}},
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "send_raw",
      .flags = M_CAT_ADVANCED,
      .doc = "Send a pre-flattened event stream verbatim (golden and fuzz path)",
      .method = {.args = aevt_send_raw_args,
                 .nargs = ARRAY_LEN(aevt_send_raw_args),
-                .result = V_OBJECT,
+                .result = VK_OBJECT,
                 .fn = aevt_method_send_raw,
                 .ui_flags = MM_MUTATE}},
 };

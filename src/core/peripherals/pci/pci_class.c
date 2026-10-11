@@ -17,7 +17,7 @@
 #include "object.h"
 #include "pci.h"
 #include "root.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -45,7 +45,7 @@ static object_cache_t g_slot_objects = OBJECT_CACHE(&pci_slot_class, "slot");
 
 // === catalog.pci_cards ======================================================
 
-// Every registered PCI card-driver id, as V_LIST<V_STRING> (catalog.pci_cards).
+// Every registered PCI card-driver id, as VK_LIST<VK_STRING> (catalog.pci_cards).
 value_t pci_cards_list(void) {
     const pci_card_kind_t *const *reg = pci_card_registry();
     size_t n = 0;
@@ -121,26 +121,26 @@ static DEF_GETTER(bar_attr_kind) {
 }
 
 static const member_t bar_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "BAR number (6 = the expansion-ROM BAR at config $30)",
-     .attr = {.type = V_INT, .get = bar_attr_index}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = bar_attr_index}                                 },
+    {.kind = MK_ATTR,
      .name = "base",
      .doc = "Decoded base address assigned by the guest's firmware",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bar_attr_base}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = bar_attr_base}},
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Region size in bytes (what the $FFFFFFFF sizing probe reports)",
-     .attr = {.type = V_UINT, .get = bar_attr_size}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = bar_attr_size}                                 },
+    {.kind = MK_ATTR,
      .name = "kind",
      .doc = "Space this BAR decodes: mem / mem_prefetch / io / rom",
-     .attr = {.type = V_STRING, .get = bar_attr_kind}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = bar_attr_kind}                               },
+    {.kind = MK_ATTR,
      .name = "mapped",
      .doc = "True while the device actually decodes this region",
-     .attr = {.type = V_BOOL, .get = bar_attr_mapped}                             },
+     .attr = {.type = VK_BOOL, .get = bar_attr_mapped}                               },
 };
 static const class_desc_t pci_bar_class = {
     .name = "bar", .members = bar_members, .n_members = sizeof(bar_members) / sizeof(bar_members[0])};
@@ -182,30 +182,30 @@ static struct object *pci_bar_get(struct object *self, int index) {
 }
 
 static const member_t config_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "command",
      .doc = "Config $04 command register (bit 0 = I/O, 1 = memory, 2 = bus master)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_command}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = cfg_attr_command}},
+    {.kind = MK_ATTR,
      .name = "status",
      .doc = "Config $06 status register",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_status} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = cfg_attr_status} },
+    {.kind = MK_ATTR,
      .name = "cache_line",
      .doc = "Config $0C cache line size, in longwords",
-     .attr = {.type = V_UINT, .get = cfg_attr_cache_line}                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = cfg_attr_cache_line}                              },
+    {.kind = MK_ATTR,
      .name = "interrupt_line",
      .doc = "Config $3C interrupt line — the controller line number the OS stored",
-     .attr = {.type = V_INT, .get = cfg_attr_int_line}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = cfg_attr_int_line}                                 },
+    {.kind = MK_ATTR,
      .name = "rom_bar",
      .doc = "Config $30 expansion-ROM BAR (bit 0 = decode enable)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_rom_bar}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = cfg_attr_rom_bar}},
+    {.kind = MK_ATTR,
      .name = "rom_size",
      .doc = "Expansion-ROM image size in bytes (0 = no ROM)",
-     .attr = {.type = V_UINT, .get = cfg_attr_rom_size}                              },
+     .attr = {.type = VK_UINT, .get = cfg_attr_rom_size}                                },
 };
 // `config.bar` -- the BAR collection: a container whose entries are the bar
 // nodes.  Its instance data is the slot record, like the config node's.
@@ -248,23 +248,23 @@ static DEF_GETTER(card_attr_class) {
 }
 
 static const member_t card_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Card kind id (catalog.pci_cards)",
-     .attr = {.type = V_STRING, .get = card_attr_id}                                                                },
-    {.kind = M_ATTR, .name = "name", .doc = "Device display name", .attr = {.type = V_STRING, .get = card_attr_name}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = card_attr_id}                                                                 },
+    {.kind = MK_ATTR, .name = "name", .doc = "Device display name", .attr = {.type = VK_STRING, .get = card_attr_name}},
+    {.kind = MK_ATTR,
      .name = "vendor_id",
      .doc = "PCI vendor id (config $00)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_vendor}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = card_attr_vendor}                              },
+    {.kind = MK_ATTR,
      .name = "device_id",
      .doc = "PCI device id (config $02)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_device}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = card_attr_device}                              },
+    {.kind = MK_ATTR,
      .name = "class_code",
      .doc = "24-bit class / subclass / prog-if (config $09..$0B)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_class}                                },
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = card_attr_class}                               },
 };
 static const class_desc_t pci_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -305,30 +305,30 @@ static DEF_GETTER(slot_attr_irq) {
 }
 
 static const member_t slot_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "number",
      .doc = "Logical slot number (1-based, in the machine's declared order)",
-     .attr = {.type = V_INT, .get = slot_attr_number}          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = slot_attr_number}          },
+    {.kind = MK_ATTR,
      .name = "label",
      .doc = "The slot's name, as Apple's documentation gives it (\"PCI slot A1\")",
-     .attr = {.type = V_STRING, .get = slot_attr_label}        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = slot_attr_label}        },
+    {.kind = MK_ATTR,
      .name = "firmware_name",
      .doc = "The firmware's own name for the slot (\"A1\", \"SLOT1_PCI0\", \"VCI\")",
-     .attr = {.type = V_STRING, .get = slot_attr_firmware_name}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = slot_attr_firmware_name}},
+    {.kind = MK_ATTR,
      .name = "bus",
      .doc = "Host-bridge bus index this slot sits on",
-     .attr = {.type = V_INT, .get = slot_attr_bus}             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = slot_attr_bus}             },
+    {.kind = MK_ATTR,
      .name = "device",
      .doc = "PCI device number (IDSEL AD line) on that bus",
-     .attr = {.type = V_INT, .get = slot_attr_device}          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = slot_attr_device}          },
+    {.kind = MK_ATTR,
      .name = "irq",
      .doc = "Interrupt-controller line the slot's strapped INTA-D reaches",
-     .attr = {.type = V_INT, .get = slot_attr_irq}             },
+     .attr = {.type = VK_INT, .get = slot_attr_irq}             },
 };
 static const class_desc_t pci_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};

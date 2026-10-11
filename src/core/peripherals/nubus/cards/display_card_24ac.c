@@ -41,7 +41,7 @@
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
@@ -975,16 +975,16 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // above DISPLAY_CARD_24AC_VRAM_VISIBLE and are served by the operand device
     // region's passive fall-through (reg_read/reg_write), so the whole bank
     // remains addressable.
-    memory_map_host_region(cfg->mem_map, "display_card_24ac_vram", p->vram, p->slot_base,
+    memory_map_host_region(cfg->memory_map, "display_card_24ac_vram", p->vram, p->slot_base,
                            DISPLAY_CARD_24AC_VRAM_VISIBLE,
                            /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "display_card_24ac_declrom", p->vrom,
+    memory_map_host_region(cfg->memory_map, "display_card_24ac_declrom", p->vrom,
                            p->slot_base + DISPLAY_CARD_24AC_DECLROM_BUS_OFFSET, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
                            /*writable*/ false);
     // 24-bit Memory Manager mode framebuffer alias (mirrors VRAM at
     // slot+0x900000 = ScrnBase).  Same mechanism the 8•24 uses.  Sized by the
     // host region above (DISPLAY_CARD_24AC_VRAM_VISIBLE), so it ends at 0xC80000.
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_FB_ALIAS_OFFSET, p->slot_base);
+    memory_map_host_region_alias(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_FB_ALIAS_OFFSET, p->slot_base);
 
     // Register/engine regions share the one dispatcher; each region's
     // reg_ctx carries its slot-relative base so reg_read/reg_write see full
@@ -997,13 +997,13 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->ctx_operand = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_VRAM_VISIBLE};
     p->ctx_active = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET};
 
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_CLUT_PAGE, MEM_PAGE_SIZE, "display_card_24ac_clut",
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_CLUT_PAGE, MEM_PAGE_SIZE, "display_card_24ac_clut",
                    &s_display_card_24ac_mem_iface, &p->ctx_clut);
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D00_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d00",
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_D00_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d00",
                    &s_display_card_24ac_mem_iface, &p->ctx_d00);
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D40_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d40",
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_D40_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d40",
                    &s_display_card_24ac_mem_iface, &p->ctx_d40);
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D80_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d80",
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_D80_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d80",
                    &s_display_card_24ac_mem_iface, &p->ctx_d80);
     // Carved-off top of the passive bank [DISPLAY_CARD_24AC_VRAM_VISIBLE,
     // 0x400000): the VRAM host region stops at DISPLAY_CARD_24AC_VRAM_VISIBLE so the
@@ -1011,12 +1011,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // the rest of the bank up to the active alias — it intercepts the operand
     // longword (0x3FE000) and serves every other byte as plain passive VRAM
     // (reg_read/reg_write fall through to p->vram), leaving no unmapped hole.
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_VRAM_VISIBLE,
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_VRAM_VISIBLE,
                    DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET - DISPLAY_CARD_24AC_VRAM_VISIBLE, "display_card_24ac_operand",
                    &s_display_card_24ac_mem_iface, &p->ctx_operand);
     // Active-bank alias: the engine-transforming mirror of the passive bank
     // (covers the operand commit window at +0x400000 too).
-    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET, DISPLAY_CARD_24AC_VRAM_SIZE,
+    memory_map_add(cfg->memory_map, p->slot_base + DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET, DISPLAY_CARD_24AC_VRAM_SIZE,
                    "display_card_24ac_engine", &s_display_card_24ac_mem_iface, &p->ctx_active);
 
     return 0;
@@ -1188,7 +1188,7 @@ static DEF_GETTER(eng_attr_enabled_get) {
     return val_bool(display_card_24ac_engine_enabled(node_card(self)));
 }
 static DEF_SETTER(eng_attr_enabled_set) {
-    if (in.kind != V_BOOL) {
+    if (in.kind != VK_BOOL) {
         value_free(&in);
         return val_err("engine.enabled: expected a boolean");
     }
@@ -1215,34 +1215,34 @@ static DEF_GETTER(eng_attr_copy_bytes) {
     return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
 }
 static const member_t engine_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Acceleration gate; clear to force the software-fallback path (the oracle)",
-     .attr = {.type = V_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
+    {.kind = MK_ATTR,
      .name = "mode",
      .doc = "Latched CONTROL op byte ($01 fill / $03 stretch / $7F copy / ROP)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = eng_attr_mode}   },
+    {.kind = MK_ATTR,
      .name = "operand",
      .doc = "Latched 32-bit fill/pattern operand",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = eng_attr_operand}},
+    {.kind = MK_ATTR,
      .name = "fill_ops",
      .doc = "Diagnostic: hardware run-length fills executed by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_fill_ops}                                },
+    {.kind = MK_ATTR,
      .name = "fill_bytes",
      .doc = "Diagnostic: total bytes filled by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_fill_bytes}                              },
+    {.kind = MK_ATTR,
      .name = "copy_ops",
      .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = eng_attr_copy_ops}                                },
+    {.kind = MK_ATTR,
      .name = "copy_bytes",
      .doc = "Diagnostic: total bytes copied by the engine",
-     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}                              },
+     .attr = {.type = VK_UINT, .get = eng_attr_copy_bytes}                              },
 };
 static const class_desc_t display_card_24ac_engine_class = {
     .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};

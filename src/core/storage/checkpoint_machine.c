@@ -9,9 +9,10 @@
 #include "build_id.h"
 #include "common.h"
 #include "image.h"
+#include "image_internal.h"
 #include "log.h"
 #include "storage_util.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -38,14 +39,17 @@ static const char *machine_root(void) {
     return g_machine_root ? g_machine_root : "/opfs/checkpoints";
 }
 
-void checkpoint_machine_set_root(const char *root) {
+int checkpoint_machine_set_root(const char *root) {
+    // Once the identity is set, its directory exists and writable images may
+    // already keep their deltas in it: moving the root then would split the
+    // machine's state between two trees.  Set the root first.
+    if (g_machine_id) {
+        LOG(1, "checkpoint_machine_set_root: refused, the machine directory %s is in use", g_machine_dir);
+        return -1;
+    }
     free(g_machine_root);
     g_machine_root = root ? gs_strdup(root) : NULL;
-    // Recompute machine dir if id+created already set.
-    if (g_machine_id && g_machine_created) {
-        free(g_machine_dir);
-        g_machine_dir = gs_str_printf("%s/%s-%s", machine_root(), g_machine_id, g_machine_created);
-    }
+    return 0;
 }
 
 // Undo a partial checkpoint_machine_set so a retry is possible, putting
@@ -94,17 +98,17 @@ int checkpoint_machine_set(const char *machine_id, const char *created) {
         return -1;
     }
     // Ensure parent + machine dir exist.
-    if (gs_mkdir_p(machine_root()) != 0) {
+    if (mkdir_p(machine_root()) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create root %s", machine_root());
         checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
-    g_machine_dir = gs_str_printf("%s/%s-%s", machine_root(), machine_id, created);
+    g_machine_dir = str_printf("%s/%s-%s", machine_root(), machine_id, created);
     if (!g_machine_dir) {
         checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
-    if (gs_mkdir_p(g_machine_dir) != 0) {
+    if (mkdir_p(g_machine_dir) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create machine dir %s", g_machine_dir);
         checkpoint_machine_forget_identity(prev_dir);
         return -1;
@@ -124,7 +128,7 @@ int checkpoint_machine_set_dir(const char *dir) {
     g_machine_dir = gs_strdup(dir);
     if (!g_machine_dir)
         return -1;
-    return gs_mkdir_p(g_machine_dir);
+    return mkdir_p(g_machine_dir);
 }
 
 const char *checkpoint_machine_id(void) {
@@ -184,6 +188,8 @@ int checkpoint_machine_sweep_others(void) {
         return -1;
     }
 
+    // Best effort: every entry is tried, and a failure is reported at the end.
+    bool failed = false;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         const char *name = entry->d_name;
@@ -205,15 +211,19 @@ int checkpoint_machine_sweep_others(void) {
             LOG(2, "checkpoint_machine: leaving unrecognised entry %s alone", name);
             continue;
         }
-        char *child = gs_str_printf("%s/%s", root, name);
+        char *child = str_printf("%s/%s", root, name);
         if (!child)
             continue;
         struct stat st;
         if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
             LOG(2, "checkpoint_machine: sweeping orphan dir %s", child);
-            (void)gs_rm_tree(child);
-        } else {
-            unlink(child);
+            if (rm_tree(child) != 0) {
+                LOG(1, "checkpoint_machine: could not remove all of %s", child);
+                failed = true;
+            }
+        } else if (unlink(child) != 0 && errno != ENOENT) {
+            LOG(1, "checkpoint_machine: could not remove %s (errno=%d)", child, errno);
+            failed = true;
         }
         free(child);
     }
@@ -230,23 +240,24 @@ int checkpoint_machine_sweep_others(void) {
                 continue;
             size_t nlen = strlen(name);
             if (nlen >= 4 && strcmp(name + nlen - 4, ".tmp") == 0) {
-                char *p = gs_str_printf("%s/%s", g_machine_dir, name);
+                char *p = str_printf("%s/%s", g_machine_dir, name);
                 if (p) {
-                    unlink(p);
+                    if (unlink(p) != 0 && errno != ENOENT)
+                        failed = true;
                     free(p);
                 }
             }
         }
         closedir(me);
     }
-    return 0;
+    return failed ? -1 : 0;
 }
 
-int checkpoint_machine_write_manifest(void) {
+int checkpoint_machine_write_manifest(const config_t *cfg) {
     if (!g_machine_dir)
         return -1;
     // Defer to a JSON build inline.  Keep the schema shallow and stable.
-    char *path = gs_str_printf("%s/manifest.json", g_machine_dir);
+    char *path = str_printf("%s/manifest.json", g_machine_dir);
     if (!path)
         return -1;
 
@@ -254,9 +265,9 @@ int checkpoint_machine_write_manifest(void) {
     // We avoid pulling JSON dependencies; the schema is small enough to write
     // by hand.
     char *body = NULL;
-    char *id_esc = gs_json_escape_dup(g_machine_id);
-    char *created_esc = gs_json_escape_dup(g_machine_created);
-    char *build_esc = gs_json_escape_dup(get_build_id());
+    char *id_esc = json_escape_dup(g_machine_id);
+    char *created_esc = json_escape_dup(g_machine_created);
+    char *build_esc = json_escape_dup(build_id_get());
     if (!id_esc || !created_esc || !build_esc) {
         free(id_esc);
         free(created_esc);
@@ -264,7 +275,7 @@ int checkpoint_machine_write_manifest(void) {
         free(path);
         return -1;
     }
-    char *prefix = gs_str_printf(
+    char *prefix = str_printf(
         "{\n  \"schema\": 1,\n  \"machine_id\": \"%s\",\n  \"created\": \"%s\",\n  \"build\": { \"id\": \"%s\" },\n",
         id_esc, created_esc, build_esc);
     free(id_esc);
@@ -277,17 +288,17 @@ int checkpoint_machine_write_manifest(void) {
 
     const char *model_id = "";
     uint32_t ram_bytes = 0;
-    if (global_emulator && global_emulator->machine && global_emulator->machine->id) {
-        model_id = global_emulator->machine->id;
-        ram_bytes = global_emulator->ram_size;
+    if (cfg && cfg->machine && cfg->machine->id) {
+        model_id = cfg->machine->id;
+        ram_bytes = cfg->ram_size;
     }
-    char *model_esc = gs_json_escape_dup(model_id);
+    char *model_esc = json_escape_dup(model_id);
     if (!model_esc) {
         free(prefix);
         free(path);
         return -1;
     }
-    char *machine = gs_str_printf("  \"machine\": { \"model\": \"%s\", \"ram_bytes\": %u },\n", model_esc, ram_bytes);
+    char *machine = str_printf("  \"machine\": { \"model\": \"%s\", \"ram_bytes\": %u },\n", model_esc, ram_bytes);
     free(model_esc);
     if (!machine) {
         free(prefix);
@@ -295,23 +306,23 @@ int checkpoint_machine_write_manifest(void) {
         return -1;
     }
 
-    // Image list, built by appending: at most MAX_IMAGES entries, so the
+    // Image list, built by appending: at most config_max_images() entries, so the
     // copying costs nothing, and there is no capacity arithmetic to get
     // wrong -- the hand-grown buffer this replaces overran on a failed
     // realloc.  A failure writes no manifest rather than
     // a truncated one.
     char *img_buf = gs_strdup("  \"images\": [");
     bool first = true;
-    int n = global_emulator ? global_emulator->n_images : 0;
+    int n = config_get_n_images(cfg);
     for (int i = 0; i < n && img_buf; i++) {
-        image_t *img = global_emulator->images[i];
+        const image_t *img = config_get_image(cfg, i);
         if (!img)
             continue;
-        char *base_esc = gs_json_escape_dup(img->filename ? img->filename : "");
-        char *inst_esc = gs_json_escape_dup((img->writable && img->instance_path) ? img->instance_path : "");
+        char *base_esc = json_escape_dup(img->filename ? img->filename : "");
+        char *inst_esc = json_escape_dup((img->writable && img->instance_path) ? img->instance_path : "");
         char *grown = NULL;
         if (base_esc && inst_esc)
-            grown = gs_str_printf(
+            grown = str_printf(
                 "%s%s\n    { \"index\": %d, \"base_path\": \"%s\", \"size\": %zu, \"instance_path\": \"%s\" }", img_buf,
                 first ? "" : ",", i, base_esc, img->raw_size, inst_esc);
         free(base_esc);
@@ -321,7 +332,7 @@ int checkpoint_machine_write_manifest(void) {
         first = false;
     }
     if (img_buf) {
-        char *closed = gs_str_printf("%s%s]\n", img_buf, first ? "" : "\n  ");
+        char *closed = str_printf("%s%s]\n", img_buf, first ? "" : "\n  ");
         free(img_buf);
         img_buf = closed;
     }
@@ -332,7 +343,7 @@ int checkpoint_machine_write_manifest(void) {
         return -1;
     }
 
-    body = gs_str_printf("%s%s%s}\n", prefix, machine, img_buf);
+    body = str_printf("%s%s%s}\n", prefix, machine, img_buf);
     free(prefix);
     free(machine);
     free(img_buf);
@@ -341,7 +352,7 @@ int checkpoint_machine_write_manifest(void) {
         return -1;
     }
 
-    int rc = gs_write_atomic(path, body, strlen(body));
+    int rc = file_write_atomic(path, body, strlen(body));
     free(body);
     free(path);
     if (rc != 0)

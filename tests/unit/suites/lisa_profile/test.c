@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // Port-B control levels (PB4 = CMD/, active low; PB3 = DRW).
 #define CMD_ASSERT   0x08 // PB4 = 0 (asserted), PB3 = 1
@@ -128,6 +129,38 @@ TEST(test_write_read_roundtrip) {
     lisa_profile_delete(pf);
 }
 
+// A block the image holds and cannot read (here, the host file cut short
+// under the open image, so the read fails as a host I/O error does) comes
+// back with status byte 0 $09 -- the CRC error on read -- not as a good
+// block of zeros; the blocks the file still holds read normally.
+TEST(test_unreadable_block_reports_crc_error) {
+    char path[] = "/tmp/gs-profile-read-error-XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_TRUE(fd >= 0);
+    const uint32_t blocks = 9728;
+    uint8_t blk[PRO_BLOCK];
+    for (uint32_t b = 0; b < blocks; b++) {
+        memset(blk, (int)(b & 0xFF), sizeof blk);
+        ASSERT_TRUE(write(fd, blk, sizeof blk) == (ssize_t)sizeof blk);
+    }
+    close(fd);
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
+    ASSERT_TRUE(lisa_profile_attach(pf, path, false));
+    ASSERT_TRUE(truncate(path, 50 * PRO_BLOCK) == 0);
+
+    uint8_t in[PRO_RDLEN];
+    read_block(pf, 100, in, PRO_RDLEN);
+    ASSERT_EQ_INT(in[0], 0x09);
+
+    read_block(pf, 10, in, PRO_RDLEN);
+    for (int i = 0; i < 4; i++)
+        ASSERT_EQ_INT(in[i], 0);
+    ASSERT_EQ_INT(in[4], 10);
+    ASSERT_EQ_INT(in[4 + PRO_BLOCK - 1], 10);
+    lisa_profile_delete(pf);
+    unlink(path);
+}
+
 TEST(test_decline_aborts) {
     // A handshake reply other than $55 (e.g. the boot ROM's $00 "probe") must
     // abort the transaction, leaving the controller idle for the next command.
@@ -145,6 +178,7 @@ int main(void) {
     RUN(test_attach_detection);
     RUN(test_device_info_block);
     RUN(test_write_read_roundtrip);
+    RUN(test_unreadable_block_reports_crc_error);
     RUN(test_decline_aborts);
     printf("[PASS] All ProFile tests passed\n");
     return 0;

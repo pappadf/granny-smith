@@ -14,6 +14,8 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "parse.h" // object_is_reserved_word, object_keyword*
+#include "status.h"
 #include "value.h"
 
 #ifdef __cplusplus
@@ -29,8 +31,8 @@ struct class_desc;
 // Prefixed `OBJ_ARG_*` for a clear namespace on the typed object-model
 // argument declarations.
 #define OBJ_ARG_OPTIONAL    0x0001u // trailing optional argument
-#define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a V_LIST
-#define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty
+#define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a VK_LIST
+#define OBJ_ARG_NONEMPTY    0x0004u // VK_STRING value must be non-NULL and non-empty
 #define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
 // OBJ_ARG_TEMPLATE — deferred-eval string slot: the
 // command parser stores the raw, uninterpolated string body; the owning
@@ -41,7 +43,7 @@ struct class_desc;
 // that the method body checks by argument count (screen.match's exclude
 // rectangles: one reference, or a reference plus all four edges, or plus all
 // eight).  An optional argument with no default that a caller skips reaches
-// the body as V_NONE; a grouped one may not be skipped alone -- naming a later
+// the body as VK_NONE; a grouped one may not be skipped alone -- naming a later
 // argument past it is an error -- so the grouping lives in the declaration and
 // not only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
 #define OBJ_ARG_GROUPED 0x0040u
@@ -50,7 +52,7 @@ struct class_desc;
 // `none` while it is not, so its setter accepts `none` to clear it and its
 // getter may answer `none`.  Any other kind still has to match the slot.
 #define OBJ_ARG_NONE_OK 0x0080u
-// OBJ_ARG_POLY — a V_ANY / V_NONE argument that is intentionally
+// OBJ_ARG_POLY — a VK_ANY / VK_NONE argument that is intentionally
 // polymorphic (a size given as a string or a count, say).  The doc lint
 // (shell.lint_members) flags an untyped argument without it.
 #define OBJ_ARG_POLY 0x0100u
@@ -83,18 +85,18 @@ struct class_desc;
 //
 // Two flag fields:
 //   `validation_flags` change what the validator does (OBJ_ARG_*).
-//   `presentation_flags` steer formatters and inspectors (VAL_HEX,
-//      VAL_DEC, VAL_BIN, VAL_VOLATILE, VAL_SENSITIVE) — no effect at
+//   `presentation_flags` steer formatters and inspectors (VFLAG_HEX,
+//      VFLAG_DEC, VFLAG_BIN, VFLAG_VOLATILE, VFLAG_SENSITIVE) — no effect at
 //      call time on a method-arg slot, but propagated to help text.
 typedef struct arg_decl {
     const char *name;
-    // Declared kind. V_ANY (or, historically, V_NONE — the two are
+    // Declared kind. VK_ANY (or, historically, VK_NONE — the two are
     // equivalent here) accepts a value of any kind without coercion.
     value_kind_t kind;
-    uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
+    uint8_t width; // 1/2/4/8 for VK_INT/VK_UINT range check; 0 = unconstrained
     uint16_t validation_flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
-    uint16_t presentation_flags; // VAL_HEX | VAL_DEC | VAL_BIN | ...
-    const char *const *enum_values; // NULL-terminated table for V_ENUM
+    uint16_t presentation_flags; // VFLAG_HEX | VFLAG_DEC | VFLAG_BIN | ...
+    const char *const *enum_values; // NULL-terminated table for VK_ENUM
     const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL slots
     const char *doc;
     // What an omitted optional argument means when that is computed rather
@@ -116,7 +118,7 @@ void arg_doc_text(const arg_decl_t *a, char *buf, size_t size);
 
 // A required string argument naming a VFS path.
 #define ARG_PATH(arg_name, arg_doc)                                                                                    \
-    {.name = (arg_name), .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = (arg_doc)}
+    {.name = (arg_name), .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = (arg_doc)}
 
 // === Function pointer types ==================================================
 //
@@ -191,9 +193,9 @@ typedef struct collection_desc {
 // === Member descriptor =======================================================
 
 typedef enum {
-    M_ATTR = 1,
-    M_METHOD,
-    M_CHILD,
+    MK_ATTR = 1,
+    MK_METHOD,
+    MK_CHILD,
 } member_kind_t;
 
 // One member of a class. Member tables are static const; the framework
@@ -218,10 +220,10 @@ typedef struct member {
     union {
         struct {
             value_kind_t type;
-            uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
+            uint8_t width; // 1/2/4/8 for VK_INT/VK_UINT range check; 0 = unconstrained
             uint16_t validation_flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND | OBJ_ARG_NONE_OK
-            uint16_t presentation_flags; // VAL_HEX | VAL_DEC | VAL_BIN | VAL_VOLATILE | VAL_SENSITIVE
-            const char *const *enum_values; // NULL-terminated table for V_ENUM
+            uint16_t presentation_flags; // VFLAG_HEX | VFLAG_DEC | VFLAG_BIN | VFLAG_VOLATILE | VFLAG_SENSITIVE
+            const char *const *enum_values; // NULL-terminated table for VK_ENUM
             attr_get_fn get;
             attr_set_fn set; // NULL → read-only
             const void *user_data; // borrowed; passed back via the `m` arg
@@ -230,12 +232,12 @@ typedef struct member {
             const arg_decl_t *args;
             int nargs;
             // Declared result kind, checked by node_call in debug builds:
-            //   V_NONE — the method returns nothing (only V_NONE/V_ERROR).
-            //   V_ANY  — polymorphic: the kind depends on the arguments or
+            //   VK_NONE — the method returns nothing (only VK_NONE/VK_ERROR).
+            //   VK_ANY  — polymorphic: the kind depends on the arguments or
             //            on machine state (debug.mac.globals.read returns a
             //            uint for a 1/2/4-byte global, bytes for a wider
             //            one). Nothing is asserted about the kind.
-            //   others — the result must carry exactly that kind (V_ERROR
+            //   others — the result must carry exactly that kind (VK_ERROR
             //            is always allowed, as the in-band error path).
             value_kind_t result;
             method_fn fn;
@@ -245,7 +247,7 @@ typedef struct member {
             // the method name ("export"). NULL = use the method name.
             const char *verb_label;
             // Optional one-line description of the result, for a method
-            // whose result kind alone says little (V_ANY, V_MAP, V_LIST).
+            // whose result kind alone says little (VK_ANY, VK_MAP, VK_LIST).
             const char *result_doc;
         } method;
         struct {
@@ -373,6 +375,12 @@ const char *object_logical_key(struct object *o); // entry key, or NULL
 // Room for any canonical path (object_compute_path truncates past it).
 #define OBJ_PATH_MAX 512
 
+// Compute the dotted path of `obj` (e.g. `"machine.cpu"`,
+// `"machine.cpu.meta"`, `"machine.floppy.drive[0]"`). The root produces an
+// empty string. Meta nodes recurse into their inspected target and append
+// `.meta`. Output is NUL-terminated and truncated to `buf_size - 1`.
+void object_compute_path(struct object *obj, char *buf, size_t buf_size);
+
 // Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
 #define OBJ_KEY_MAX 63
 bool object_valid_key(const char *key);
@@ -382,12 +390,12 @@ bool object_valid_key(const char *key);
 // A container's `entries` member over collection descriptor `coll`.
 #define OBJ_ENTRIES(coll, doc_text)                                                                                    \
     {                                                                                                                  \
-        .kind = M_CHILD, .name = "entries", .doc = (doc_text), .child = {.collection = (coll) }                        \
+        .kind = MK_CHILD, .name = "entries", .doc = (doc_text), .child = {.collection = (coll) }                       \
     }
 
 // True if `m` is a collection's entries member.
 static inline bool member_is_collection(const member_t *m) {
-    return m && m->kind == M_CHILD && m->child.collection;
+    return m && m->kind == MK_CHILD && m->child.collection;
 }
 
 // The collection member of a class (its one `entries` member), or NULL: what
@@ -461,8 +469,8 @@ value_t obj_u64_field_get(struct object *self, const member_t *m);
 
 #define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .attr = {                                                     \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = #field, .doc = doc_text, .attr = {                                                    \
+            .type = VK_UINT,                                                                                           \
             .width = 8,                                                                                                \
             .get = getter,                                                                                             \
             .user_data = (const void *)(uintptr_t)offsetof(block_type, field)                                          \
@@ -531,18 +539,18 @@ const member_t *class_find_member(const class_desc_t *cls, const char *name);
 
 // Read-only: an attribute with no setter.
 static inline bool member_is_readonly(const member_t *m) {
-    return m->kind == M_ATTR && !m->attr.set;
+    return m->kind == MK_ATTR && !m->attr.set;
 }
 
 // Shown in the basic tier: category basic, and not a hidden method.
 static inline bool member_is_basic(const member_t *m) {
-    return (m->flags & M_CAT_MASK) == M_CAT_BASIC && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+    return (m->flags & M_CAT_MASK) == M_CAT_BASIC && !(m->kind == MK_METHOD && (m->method.ui_flags & MM_HIDDEN));
 }
 
 // Listed on its node (help's member lists): not internal, and not a hidden
 // method.
 static inline bool member_is_listed(const member_t *m) {
-    return (m->flags & M_CAT_MASK) != M_CAT_INTERNAL && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+    return (m->flags & M_CAT_MASK) != M_CAT_INTERNAL && !(m->kind == MK_METHOD && (m->method.ui_flags & MM_HIDDEN));
 }
 
 // === Tree walk ===============================================================
@@ -587,9 +595,9 @@ static inline bool node_valid(node_t n) {
 // method's member in `member` so the caller can node_call it.
 node_t object_resolve(struct object *root, const char *path);
 
-// Read / write / call by node. node_get on an M_CHILD member returns
-// V_OBJECT pointing at the child; on M_METHOD returns V_ERROR (use
-// node_call). node_set on a read-only attribute returns V_ERROR.
+// Read / write / call by node. node_get on an MK_CHILD member returns
+// VK_OBJECT pointing at the child; on MK_METHOD returns VK_ERROR (use
+// node_call). node_set on a read-only attribute returns VK_ERROR.
 // node_set consumes `v`: it frees the value when it rejects the write, and
 // otherwise hands ownership to the attribute's setter (see attr_set_fn).
 // Callers must not free `v` afterwards.
@@ -605,8 +613,14 @@ typedef struct {
     value_t value; // owned by the caller (binder aliases, never copies)
 } named_arg_t;
 
-// Maximum total bound arguments (mirrors the validator's scratch capacity).
-#define OBJ_BIND_MAX_ARGS 16
+// Most arguments one validated method call takes, declared slots and a rest
+// tail together: node_call validates into a stack scratch array of this many
+// value_t, and a call passing more is refused with an error. Raise with care
+// -- every node_call frame carries the array.
+#define OBJ_VALIDATE_MAX_ARGS 16
+
+// Maximum total bound arguments (the validator's scratch capacity).
+#define OBJ_BIND_MAX_ARGS OBJ_VALIDATE_MAX_ARGS
 
 // Bind a (positional list, named list) pair against a method's declared
 // args[] table, producing the purely positional argv that node_call /
@@ -614,18 +628,23 @@ typedef struct {
 // positionals fill slots left to right; named args target declared fixed
 // slots by name in any order; duplicates and unknown names are errors;
 // OBJ_ARG_REST slots are positional-tail only. Unfilled interior slots are
-// emitted as V_NONE holes, which the validator treats exactly like missing
+// emitted as VK_NONE holes, which the validator treats exactly like missing
 // trailing arguments (default-fill, or "missing argument" error).
 //
 // out_argv must have capacity OBJ_BIND_MAX_ARGS. Bound values alias the
 // caller's pos_argv/named values (holes own nothing), so the caller frees
-// its originals as usual and must not free out_argv slots. Returns V_NONE
-// on success, V_ERROR on a binding error.
+// its originals as usual and must not free out_argv slots. Returns VK_NONE
+// on success, VK_ERROR on a binding error.
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
 
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
+
+// The same descent for an integer segment the caller already holds
+// (`devices[N]`, `bucket.N`), without a round trip through text. An index
+// outside the int range resolves to an invalid node.
+node_t node_child_index(node_t n, int64_t index);
 
 // Key descent into a collection: `volumes["Shared"]`. Routed to the
 // collection's by_key lookup, which maps a stable name onto whatever entry
@@ -635,24 +654,12 @@ node_t node_child_key(node_t n, const char *key);
 
 // === Reserved-word check =====================================================
 
-// Reserved words may not be used as member names, alias names, or any
-// future user-bindable identifier. Members: boolean-literal spellings +
-// script-grammar keywords.
-//
-// Returns true if `name` collides with a reserved word.
-bool object_is_reserved_word(const char *name);
+// The reserved-word and keyword queries (object_is_reserved_word,
+// object_keyword*) live with the lexical layer: parse.h.
 
-// The shell's keywords, in table order, each with a one-line syntax: the
-// reserved words plus contextual ones (`command`, a keyword only in its
-// statement shape).  `is_statement`: it heads a statement.
-size_t object_keyword_count(void);
-const char *object_keyword(size_t i);
-const char *object_keyword_syntax(size_t i);
-bool object_keyword_is_statement(size_t i);
-
-// Validate a candidate member/alias name. Returns true if acceptable.
-// Diagnostic messages are written to err_buf (may be NULL).
-bool object_validate_name(const char *name, char *err_buf, size_t err_size);
+// Validate a candidate member/alias name: STATUS_OK if acceptable, else
+// STATUS_E_INVAL with a diagnostic in err_buf (may be NULL).
+status_t object_validate_name(const char *name, char *err_buf, size_t err_size);
 
 // === Per-object invalidation hooks ==========================================
 //
@@ -683,13 +690,13 @@ void object_fire_invalidators(struct object *o);
 
 // Verify class definition at registration time: every member name must
 // be a valid identifier, must not collide with a reserved word, and
-// must be unique within the class. Returns true on success; on failure
-// writes a one-line message into err_buf (may be NULL).
-bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
+// must be unique within the class. STATUS_OK on success; on failure
+// STATUS_E_INVAL with a one-line message in err_buf (may be NULL).
+status_t object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
 
 // Documentation gaps a member declares, beside the hard errors above: a
-// basic-tier method argument with no doc, an untyped (V_ANY / V_NONE)
-// argument without OBJ_ARG_POLY, a V_ANY result without result_doc.  Calls
+// basic-tier method argument with no doc, an untyped (VK_ANY / VK_NONE)
+// argument without OBJ_ARG_POLY, a VK_ANY result without result_doc.  Calls
 // report once per gap; `a` is the argument, or NULL for a member rule.
 typedef void (*object_doc_gap_fn)(const member_t *m, const arg_decl_t *a, const char *rule, void *ud);
 void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud);

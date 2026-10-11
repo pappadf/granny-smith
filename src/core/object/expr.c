@@ -118,7 +118,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub);
 //   int + uint    → int (if either is int)
 //   int|uint + f  → float
 //
-// Returns the kind both operands should be promoted to, or V_ERROR if
+// Returns the kind both operands should be promoted to, or VK_ERROR if
 // the combination is unsupported here. Caller is responsible for
 // applying the conversion.
 
@@ -133,14 +133,14 @@ static num_kind_t classify_numeric(const value_t *v) {
     if (!v)
         return NK_NONE;
     switch (v->kind) {
-    case V_BOOL:
-    case V_UINT:
+    case VK_BOOL:
+    case VK_UINT:
         return NK_UINT;
-    case V_INT:
+    case VK_INT:
         return NK_INT;
-    case V_FLOAT:
+    case VK_FLOAT:
         return NK_FLOAT;
-    case V_ENUM:
+    case VK_ENUM:
         return NK_UINT;
     default:
         return NK_NONE;
@@ -157,7 +157,7 @@ static num_kind_t promote_pair(num_kind_t a, num_kind_t b) {
     return NK_UINT;
 }
 
-// Coerce a value into the requested numeric kind. Returns V_ERROR on
+// Coerce a value into the requested numeric kind. Returns VK_ERROR on
 // non-numeric inputs. Does NOT free the input.
 static value_t coerce_to(num_kind_t k, const value_t *v) {
     bool ok = false;
@@ -184,8 +184,8 @@ static void carry_flags(value_t *r, const value_t *a, const value_t *b) {
     uint8_t wa = a ? a->width : 0;
     uint8_t wb = b ? b->width : 0;
     r->width = wa > wb ? wa : wb;
-    if ((a && (a->flags & VAL_HEX)) || (b && (b->flags & VAL_HEX)))
-        r->flags |= VAL_HEX;
+    if ((a && (a->flags & VFLAG_HEX)) || (b && (b->flags & VFLAG_HEX)))
+        r->flags |= VFLAG_HEX;
 }
 
 // === Equality across kinds ==================================================
@@ -194,35 +194,35 @@ static bool same_kind_equal(const value_t *a, const value_t *b) {
     if (a->kind != b->kind)
         return false;
     switch (a->kind) {
-    case V_BOOL:
+    case VK_BOOL:
         return a->b == b->b;
-    case V_INT:
+    case VK_INT:
         return a->i == b->i;
-    case V_UINT:
+    case VK_UINT:
         return a->u == b->u;
-    case V_FLOAT:
+    case VK_FLOAT:
         return a->f == b->f;
-    case V_STRING:
+    case VK_STRING:
         return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
-    case V_BYTES:
+    case VK_BYTES:
         return a->bytes.n == b->bytes.n && (a->bytes.n == 0 || memcmp(a->bytes.p, b->bytes.p, a->bytes.n) == 0);
-    case V_ENUM:
+    case VK_ENUM:
         return a->enm.idx == b->enm.idx;
-    case V_NONE:
+    case VK_NONE:
         return true;
-    case V_OBJECT:
+    case VK_OBJECT:
         return a->obj == b->obj;
-    case V_RANGE:
+    case VK_RANGE:
         return a->range.start == b->range.start && a->range.stop == b->range.stop && a->range.step == b->range.step;
-    case V_REF:
+    case VK_REF:
         return strcmp(a->ref ? a->ref : "", b->ref ? b->ref : "") == 0;
     default:
         return false;
     }
 }
 
-// True if a == b under cross-kind numeric promotion. V_ENUM compares
-// against V_STRING by label so `scsi.devices[0].type == "hd"` matches
+// True if a == b under cross-kind numeric promotion. VK_ENUM compares
+// against VK_STRING by label so `scsi.devices[0].type == "hd"` matches
 // the enum's spelling rather than forcing the test to know the index.
 static value_t value_equal(const value_t *a, const value_t *b) {
     num_kind_t ka = classify_numeric(a);
@@ -236,23 +236,23 @@ static value_t value_equal(const value_t *a, const value_t *b) {
         value_free(&pb);
         return val_bool(eq);
     }
-    if ((a->kind == V_ENUM && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_ENUM)) {
-        const value_t *e = a->kind == V_ENUM ? a : b;
-        const value_t *s = a->kind == V_STRING ? a : b;
+    if ((a->kind == VK_ENUM && b->kind == VK_STRING) || (a->kind == VK_STRING && b->kind == VK_ENUM)) {
+        const value_t *e = a->kind == VK_ENUM ? a : b;
+        const value_t *s = a->kind == VK_STRING ? a : b;
         const char *label = NULL;
         if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table)
             label = e->enm.table[e->enm.idx];
         const char *str = s->s ? s->s : "";
         return val_bool(label && strcmp(label, str) == 0);
     }
-    // V_LIST compares against V_STRING by its canonical "[a, b, c]"
+    // VK_LIST compares against VK_STRING by its canonical "[a, b, c]"
     // formatting (same text ${...} interpolation renders), so scripts can
     // assert on list-returning methods — e.g.
     // `shell.complete("machine.cpu.p", 13) == "[machine.cpu.pc]"` — without
     // the expression layer needing list literals or indexing.
-    if ((a->kind == V_LIST && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_LIST)) {
-        const value_t *l = a->kind == V_LIST ? a : b;
-        const value_t *s = a->kind == V_STRING ? a : b;
+    if ((a->kind == VK_LIST && b->kind == VK_STRING) || (a->kind == VK_STRING && b->kind == VK_LIST)) {
+        const value_t *l = a->kind == VK_LIST ? a : b;
+        const value_t *s = a->kind == VK_STRING ? a : b;
         char *buf = NULL;
         size_t len = 0, cap = 0;
         format_value_default(l, &buf, &len, &cap);
@@ -260,11 +260,11 @@ static value_t value_equal(const value_t *a, const value_t *b) {
         free(buf);
         return val_bool(eq);
     }
-    // V_MAP compares against V_STRING by its canonical JSON text (the same
-    // form ${...} interpolation renders), mirroring the V_LIST rule above.
-    if ((a->kind == V_MAP && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_MAP)) {
-        const value_t *m = a->kind == V_MAP ? a : b;
-        const value_t *s = a->kind == V_STRING ? a : b;
+    // VK_MAP compares against VK_STRING by its canonical JSON text (the same
+    // form ${...} interpolation renders), mirroring the VK_LIST rule above.
+    if ((a->kind == VK_MAP && b->kind == VK_STRING) || (a->kind == VK_STRING && b->kind == VK_MAP)) {
+        const value_t *m = a->kind == VK_MAP ? a : b;
+        const value_t *s = a->kind == VK_STRING ? a : b;
         char *buf = NULL;
         size_t len = 0, cap = 0;
         format_value_json_text(m, &buf, &len, &cap);
@@ -284,7 +284,7 @@ static value_t value_equal(const value_t *a, const value_t *b) {
 static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size, size_t *pi, char *err_buf,
                                  size_t err_size) {
     int n;
-    if (idx->kind == V_STRING) {
+    if (idx->kind == VK_STRING) {
         const char *k = idx->s ? idx->s : "";
         if (strpbrk(k, "\"\\")) {
             snprintf(err_buf, err_size, "map key may not contain '\"' or '\\'");
@@ -296,6 +296,12 @@ static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size,
         int64_t iv = val_as_i64(idx, &ok);
         if (!ok) {
             snprintf(err_buf, err_size, "index must be numeric or a string key");
+            return false;
+        }
+        // The segment text is signed: an unsigned index past INT64_MAX would
+        // wrap negative and name a different slot, so it is refused.
+        if (idx->kind == VK_UINT && idx->u > (uint64_t)INT64_MAX) {
+            snprintf(err_buf, err_size, "index out of range");
             return false;
         }
         n = snprintf(buf + *pi, buf_size - *pi, "[%lld]", (long long)iv);
@@ -348,7 +354,7 @@ static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
 // ONE implementation.  script.c had its own -- scan_path_continuation plus
 // resolve_path_head_ex -- reimplementing identifier scanning, `.seg` and
 // `[expr]` appending, the `"`/`\` rejection for map keys and the
-// V_REF/V_OBJECT binding dance.  Any grammar change had to land twice, and
+// VK_REF/VK_OBJECT binding dance.  Any grammar change had to land twice, and
 // they had already drifted: this one accepts a numeric `.N` segment and
 // script.c's required ident_char after the dot, which agreed only because
 // isalnum happens to include digits.  Buffer sizes differed too, so the
@@ -414,7 +420,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 // so the caller can parse the comma-separated arguments.
 //
 // path_buf must be at least 256 bytes.
-static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
+static bool parse_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
     char ident[64];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
@@ -605,7 +611,7 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
 
 // Read optional `.ident` / `[expr]` continuation segments into sub_buf
 // (leading '.' included for non-empty paths) and detect an opening `(`.
-// Mirrors read_path_segments but produces a *relative* path.
+// Mirrors parse_path_segments but produces a *relative* path.
 static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, size_t sub_size, bool *call_open) {
     sub_buf[0] = '\0';
     char err[160];
@@ -616,7 +622,7 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
     return false;
 }
 
-// === Structured-value path access (V_MAP / V_LIST, shell v2) ================
+// === Structured-value path access (VK_MAP / VK_LIST, shell v2) ================
 
 // Walk continuation-segment text (`.key`, `[N]`, `["key"]` — the textual
 // form the segment lexers build) into a structured value, borrowing all
@@ -642,7 +648,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
                 return val_err("map key too long");
             memcpy(key, k, kn);
             key[kn] = '\0';
-            if (cur->kind != V_MAP)
+            if (cur->kind != VK_MAP)
                 return val_err("cannot index a non-map with [\"%s\"]", key);
             const value_t *hit = value_map_get(cur, key);
             if (!hit)
@@ -657,7 +663,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
             // A range indexes like the list it replaced: range(10)[3] and
             // (0..10)[3] both answer 3.  Without this the lazy form would
             // lose a capability the materialised one had.
-            if (cur->kind == V_RANGE) {
+            if (cur->kind == VK_RANGE) {
                 uint64_t n = val_range_count(cur);
                 if (idx < 0 || (uint64_t)idx >= n)
                     return val_err("index %lld out of range (len %llu)", idx, (unsigned long long)n);
@@ -666,9 +672,9 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
                 s = endp + 1;
                 continue;
             }
-            if (cur->kind != V_LIST)
+            if (cur->kind != VK_LIST)
                 return val_err("cannot index a %s with [%lld]",
-                               cur->kind == V_MAP ? "map (keys are strings)" : "non-list", idx);
+                               cur->kind == VK_MAP ? "map (keys are strings)" : "non-list", idx);
             if (idx < 0 || (size_t)idx >= cur->list.len)
                 return val_err("index %lld out of range (len %zu)", idx, cur->list.len);
             cur = &cur->list.items[idx];
@@ -682,7 +688,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
             seg[sn] = '\0';
             if (sn == 0)
                 return val_err("bad segment in '%s'", sub);
-            if (cur->kind == V_LIST) {
+            if (cur->kind == VK_LIST) {
                 // `.N` — numeric segment as list index (object-tree spelling).
                 char *endp = NULL;
                 long long idx = strtoll(seg, &endp, 10);
@@ -691,7 +697,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
                 if (idx < 0 || (size_t)idx >= cur->list.len)
                     return val_err("index %lld out of range (len %zu)", idx, cur->list.len);
                 cur = &cur->list.items[idx];
-            } else if (cur->kind == V_MAP) {
+            } else if (cur->kind == VK_MAP) {
                 const value_t *hit = value_map_get(cur, seg);
                 if (!hit)
                     return val_err("no key '%s' in map", seg);
@@ -754,7 +760,7 @@ value_t expr_object_path_read(struct object *root, const char *path) {
         // Only structured values admit segment descent. An object or
         // scalar prefix means the tail is a plain typo — keep scanning
         // shorter prefixes so the error stays "did not resolve".
-        if (base.kind != V_MAP && base.kind != V_LIST)
+        if (base.kind != VK_MAP && base.kind != VK_LIST)
             continue;
         return value_subpath_read(&base, path + plen);
     }
@@ -762,8 +768,8 @@ value_t expr_object_path_read(struct object *root, const char *path) {
 }
 
 // `$name` primary: look the binding up via ctx->binding, then apply
-// continuation segments. A V_REF binding re-resolves its stored path on
-// every access (reference semantics); a V_OBJECT binding resolves
+// continuation segments. A VK_REF binding re-resolves its stored path on
+// every access (reference semantics); a VK_OBJECT binding resolves
 // segments relative to the captured object (snapshot semantics); any
 // other kind is a plain value and admits no continuation.
 static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
@@ -798,7 +804,7 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
     }
     bool has_sub = sub[0] != '\0';
 
-    if (base.kind == V_REF) {
+    if (base.kind == VK_REF) {
         // Re-resolve stored path (+ continuation) against the root.
         char full[512];
         int n = snprintf(full, sizeof(full), "%s%s", base.ref ? base.ref : "", sub);
@@ -818,9 +824,9 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
         return expr_object_path_read(ctx->root, full);
     }
 
-    // V_RANGE joins the indexable kinds: range(4) is a lazy range now rather
+    // VK_RANGE joins the indexable kinds: range(4) is a lazy range now rather
     // than a materialised list, and `$hits[3]` has to keep working.
-    if ((base.kind == V_LIST || base.kind == V_MAP || base.kind == V_RANGE) && has_sub && !call_open) {
+    if ((base.kind == VK_LIST || base.kind == VK_MAP || base.kind == VK_RANGE) && has_sub && !call_open) {
         // Structured-value access: `$hits[0]`, `$m[1][2]`, `$info.name`,
         // `$info["name"]` — descend the continuation segments.
         value_t r = value_subpath_read(&base, sub);
@@ -828,7 +834,7 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
         return r;
     }
 
-    if (base.kind == V_OBJECT && (has_sub || call_open)) {
+    if (base.kind == VK_OBJECT && (has_sub || call_open)) {
         struct object *obj = base.obj;
         value_free(&base);
         if (!obj)
@@ -878,7 +884,7 @@ static value_t eval_builtin_range(int argc, const value_t *argv) {
     if (step == 0)
         return val_err("range: step must not be zero");
     // Lazy: three integers, no allocation, however many values it denotes.
-    // This used to build a V_LIST capped at 2^20 entries, which at
+    // This used to build a VK_LIST capped at 2^20 entries, which at
     // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
     // heap -- to run a loop.  `range(a,b)` and `a..b` are now the SAME value,
     // so two spellings of one loop no longer have opposite safety
@@ -892,15 +898,15 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
         return val_err("len: expected one argument");
     const value_t *v = &argv[0];
     switch (v->kind) {
-    case V_STRING:
+    case VK_STRING:
         return val_int((int64_t)(v->s ? strlen(v->s) : 0));
-    case V_LIST:
+    case VK_LIST:
         return val_int((int64_t)v->list.len);
-    case V_MAP:
+    case VK_MAP:
         return val_int((int64_t)v->map.len);
-    case V_BYTES:
+    case VK_BYTES:
         return val_int((int64_t)v->bytes.n);
-    case V_RANGE:
+    case VK_RANGE:
         return val_int((int64_t)val_range_count(v));
     default:
         return val_err("len: takes a string, list, map, bytes, or range");
@@ -922,7 +928,7 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
 static value_t eval_builtin_contains(int argc, const value_t *argv) {
     if (argc != 2)
         return val_err("contains: expected (haystack, needle)");
-    if (argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+    if (argv[0].kind != VK_STRING || argv[1].kind != VK_STRING)
         return val_err("contains: both arguments must be strings");
     const char *hay = argv[0].s ? argv[0].s : "";
     const char *needle = argv[1].s ? argv[1].s : "";
@@ -930,12 +936,12 @@ static value_t eval_builtin_contains(int argc, const value_t *argv) {
 }
 
 static value_t eval_builtin_error(int argc, const value_t *argv) {
-    if (argc != 1 || argv[0].kind != V_STRING)
+    if (argc != 1 || argv[0].kind != VK_STRING)
         return val_err("error: expected (message)");
     return val_err("%s", argv[0].s ? argv[0].s : "");
 }
 
-// try(EXPR, FALLBACK): evaluate EXPR; on any error (runtime V_ERROR or
+// try(EXPR, FALLBACK): evaluate EXPR; on any error (runtime VK_ERROR or
 // an evaluation error flagged on the lexer), evaluate and return
 // FALLBACK instead. The cursor sits just past `try(`. Note that in this
 // evaluate-while-parsing design the fallback is always evaluated (like
@@ -1014,7 +1020,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
     // here: `[` in POSTFIX position is indexing (`slot[9]`) and is consumed by
     // the path parser, so a `[` where a primary is expected can only start a
     // list. `for x in [...]` then works with no change to the loop, which
-    // already iterates V_LIST.
+    // already iterates VK_LIST.
     if (c == '[') {
         L->p++;
         value_t *items = NULL;
@@ -1082,8 +1088,8 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
     }
 
     // `$name` binding read, with path continuation (`$d.present`,
-    // `$bp[0]`) and call form (`$d.insert(...)`) through V_REF and
-    // V_OBJECT bindings.
+    // `$bp[0]`) and call form (`$d.insert(...)`) through VK_REF and
+    // VK_OBJECT bindings.
     if (c == '$') {
         L->p++;
         return eval_binding_expr(L, ctx);
@@ -1096,12 +1102,12 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         const char *save = L->p;
         // Try literals (true/false/none).
         value_t lit = parse_literal(&L->p, NULL, 0);
-        if (lit.kind == V_BOOL)
+        if (lit.kind == VK_BOOL)
             return lit;
-        if (lit.kind == V_NONE)
+        if (lit.kind == VK_NONE)
             return lit; // the `none` literal
-        // Other literal kinds returned by parse_literal: V_STRING (bare
-        // ident — handled below as path) or V_ERROR. Discard and parse
+        // Other literal kinds returned by parse_literal: VK_STRING (bare
+        // ident — handled below as path) or VK_ERROR. Discard and parse
         // as a path-or-call.
         value_free(&lit);
         L->p = save;
@@ -1109,7 +1115,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         // Path-or-call.
         char path_buf[256];
         bool call_open = false;
-        if (!read_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
+        if (!parse_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
         // Builtins: recognised by name in call form, before
         // object-tree lookup. `try` is a special form (lazy w.r.t.
@@ -1141,7 +1147,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         }
         if (!ctx || !ctx->root) {
             // No root bound — path resolution is a runtime error (not a
-            // syntax error), so it propagates as V_ERROR through operators
+            // syntax error), so it propagates as VK_ERROR through operators
             // and is short-circuited by `&&` / `||`.
             if (call_open) {
                 // Drain any args to keep the cursor advancing.
@@ -1192,7 +1198,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
             // A constructive method returns the object it made, so the same
             // segments descend into the tree instead:
             //   appletalk.afp.volumes.add("Shared", "/opfs/shared").vol_id
-            if (!val_is_error(&r) && r.kind == V_OBJECT && (*L->p == '.' || *L->p == '[')) {
+            if (!val_is_error(&r) && r.kind == VK_OBJECT && (*L->p == '.' || *L->p == '[')) {
                 char sub[256];
                 bool sub_call = false;
                 if (!read_sub_segments(L, ctx, sub, sizeof(sub), &sub_call)) {
@@ -1214,7 +1220,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                     return val_err("path '%s' did not resolve on the returned object", rel);
                 return node_get(sub_node);
             }
-            if (!val_is_error(&r) && (r.kind == V_MAP || r.kind == V_LIST) && (*L->p == '.' || *L->p == '[')) {
+            if (!val_is_error(&r) && (r.kind == VK_MAP || r.kind == VK_LIST) && (*L->p == '.' || *L->p == '[')) {
                 char sub[256];
                 bool sub_call = false;
                 if (!read_sub_segments(L, ctx, sub, sizeof(sub), &sub_call)) {
@@ -1270,9 +1276,10 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set)
             return v;
-        // V_ERROR is falsy, so `!error` is true.
-        // This is what makes `assert $(!cpu.broken)` clean for "either
-        // the attribute does not exist, or it is false".
+        // VK_ERROR is falsy, so `!error` is true -- the one operator that
+        // consumes an error instead of propagating it (contract: expr.h,
+        // expr_eval). This is what makes `assert !machine.cpu.broken`
+        // clean for "either the attribute does not exist, or it is false".
         bool t = val_as_bool(&v);
         value_free(&v);
         return val_bool(!t);
@@ -1295,25 +1302,25 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set || val_is_error(&v))
             return v;
-        if (v.kind == V_FLOAT) {
+        if (v.kind == VK_FLOAT) {
             double d = -v.f;
             value_free(&v);
             return val_float(d);
         }
-        if (v.kind == V_INT) {
+        if (v.kind == VK_INT) {
             // Negating INT64_MIN overflows signed int (UB); produce the
             // two's-complement bit pattern via uint and reinterpret.
             int64_t i = (int64_t)(-(uint64_t)v.i);
             value_free(&v);
             return val_int(i);
         }
-        if (v.kind == V_UINT) {
+        if (v.kind == VK_UINT) {
             // -uint produces signed (mirrors C semantics enough for our purposes).
             int64_t i = (int64_t)(-v.u);
             value_free(&v);
             return val_int(i);
         }
-        if (v.kind == V_BOOL) {
+        if (v.kind == VK_BOOL) {
             int64_t i = v.b ? -1 : 0;
             value_free(&v);
             return val_int(i);
@@ -1330,7 +1337,7 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Mul / Add / Shift / Bitwise ============================================
 
-// numeric_op reports a failure twice: as the returned V_ERROR, and through
+// numeric_op reports a failure twice: as the returned VK_ERROR, and through
 // the caller's `err` buffer, which the lexer turns into a position-tagged
 // diagnostic.  Only the non-numeric path used to write the buffer; the other
 // fourteen returns left it untouched, and all six callers then read
@@ -1344,10 +1351,39 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         return val_err("%s", (msg));                                                                                   \
     } while (0)
 
-static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err, size_t err_size) {
+// The source spelling of a numeric_op operator, for diagnostics: '<' and
+// '>' there are the shifts.
+static const char *numeric_op_token(char op) {
+    switch (op) {
+    case '<':
+        return "<<";
+    case '>':
+        return ">>";
+    case '+':
+        return "+";
+    case '-':
+        return "-";
+    case '*':
+        return "*";
+    case '/':
+        return "/";
+    case '%':
+        return "%";
+    case '&':
+        return "&";
+    case '|':
+        return "|";
+    case '^':
+        return "^";
+    default:
+        return "?";
+    }
+}
+
+static value_t numeric_op(const value_t *a, const value_t *b, char op, char *err, size_t err_size) {
     num_kind_t k = promote_pair(classify_numeric(a), classify_numeric(b));
     if (k == NK_NONE) {
-        snprintf(err, err_size, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
+        snprintf(err, err_size, "non-numeric operand to '%s'", numeric_op_token(op));
         return val_err("non-numeric");
     }
     value_t pa = coerce_to(k, a);
@@ -1537,7 +1573,7 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1551,7 +1587,7 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
 
 // String / list / bytes concat helper for '+'.
 static value_t plus_concat(const value_t *a, const value_t *b) {
-    if (a->kind == V_STRING && b->kind == V_STRING) {
+    if (a->kind == VK_STRING && b->kind == VK_STRING) {
         size_t la = a->s ? strlen(a->s) : 0;
         size_t lb = b->s ? strlen(b->s) : 0;
         char *r = (char *)malloc(la + lb + 1);
@@ -1566,7 +1602,7 @@ static value_t plus_concat(const value_t *a, const value_t *b) {
         free(r);
         return v;
     }
-    if (a->kind == V_BYTES && b->kind == V_BYTES) {
+    if (a->kind == VK_BYTES && b->kind == VK_BYTES) {
         size_t n = a->bytes.n + b->bytes.n;
         uint8_t *r = (uint8_t *)malloc(n ? n : 1);
         if (!r)
@@ -1598,7 +1634,7 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         // String/bytes concat with '+'.
-        if (op == '+' && (a.kind == V_STRING || a.kind == V_BYTES)) {
+        if (op == '+' && (a.kind == VK_STRING || a.kind == VK_BYTES)) {
             value_t r = plus_concat(&a, &b);
             value_free(&a);
             value_free(&b);
@@ -1610,7 +1646,7 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             continue;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1641,7 +1677,7 @@ static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, op, op, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1669,7 +1705,7 @@ static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '&', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '&', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1696,7 +1732,7 @@ static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '^', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '^', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1724,7 +1760,7 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
             return b;
         }
         char err[64] = "";
-        value_t r = numeric_op(&a, &b, '|', 0, err, sizeof(err));
+        value_t r = numeric_op(&a, &b, '|', err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1740,7 +1776,7 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
 //
 // Binds looser than arithmetic/bitwise, tighter than comparison:
 // `$base..$base+4` is `$base..($base+4)`. Half-open; `a >= b` yields an
-// empty range. Endpoints must be integral (V_INT / V_UINT).
+// empty range. Endpoints must be integral (VK_INT / VK_UINT).
 
 static value_t parse_range_level(lex_t *L, const expr_ctx_t *ctx) {
     value_t a = parse_bitor(L, ctx);
@@ -1755,7 +1791,7 @@ static value_t parse_range_level(lex_t *L, const expr_ctx_t *ctx) {
         value_free(&a);
         return b;
     }
-    if ((a.kind != V_INT && a.kind != V_UINT) || (b.kind != V_INT && b.kind != V_UINT)) {
+    if ((a.kind != VK_INT && a.kind != VK_UINT) || (b.kind != VK_INT && b.kind != VK_UINT)) {
         value_free(&a);
         value_free(&b);
         lex_error(L, "range endpoints must be integers");
@@ -1776,7 +1812,7 @@ static int compare_numeric(const value_t *a, const value_t *b, bool *ok) {
     num_kind_t k = promote_pair(classify_numeric(a), classify_numeric(b));
     if (k == NK_NONE) {
         // Strings compare lexicographically.
-        if (a->kind == V_STRING && b->kind == V_STRING)
+        if (a->kind == VK_STRING && b->kind == VK_STRING)
             return strcmp(a->s ? a->s : "", b->s ? b->s : "");
         *ok = false;
         return 0;
@@ -1863,36 +1899,38 @@ static value_t parse_equality(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Logical short-circuit ==================================================
 //
-// Errors propagate. A V_ERROR encountered anywhere
+// Errors propagate. A VK_ERROR encountered anywhere
 // in the chain becomes the result, with the original message preserved,
 // **except** that short-circuit short-cuts skip evaluation entirely.
 // `false && X` returns false even if evaluating X would have errored;
 // `true || X` returns true similarly.
 
-// Skip one equality-level expression for short-circuit purposes,
-// suppressing any lex errors and discarding the value.
-static void skip_equality(lex_t *L, const expr_ctx_t *ctx) {
+// One grammar level of the recursive-descent ladder (parse_equality, ...).
+typedef value_t (*parse_level_fn)(lex_t *L, const expr_ctx_t *ctx);
+
+// Skip one expression at the given level for short-circuit purposes,
+// suppressing any lex errors and discarding the value. The one body behind
+// skip_equality / skip_logand / skip_ternary.
+static void skip_level(lex_t *L, const expr_ctx_t *ctx, parse_level_fn parse) {
     bool saved = L->err_set;
     char saved_msg[sizeof(L->err)];
     memcpy(saved_msg, L->err, sizeof(L->err));
     L->err_set = false;
     L->err[0] = '\0';
-    value_t v = parse_equality(L, ctx);
+    value_t v = parse(L, ctx);
     value_free(&v);
     L->err_set = saved;
     memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
+// Skip the right side of `&&`.
+static void skip_equality(lex_t *L, const expr_ctx_t *ctx) {
+    skip_level(L, ctx, parse_equality);
+}
+
+// Skip the right side of `||`.
 static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_logand(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_logand);
 }
 
 // The ternary's counterparts to skip_equality / skip_logand.
@@ -1910,15 +1948,7 @@ static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
 static void skip_expr(lex_t *L, const expr_ctx_t *ctx);
 
 static void skip_ternary(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_ternary(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_ternary);
 }
 
 static value_t parse_logand(lex_t *L, const expr_ctx_t *ctx) {
@@ -2030,15 +2060,7 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
 }
 
 static void skip_expr(lex_t *L, const expr_ctx_t *ctx) {
-    bool saved = L->err_set;
-    char saved_msg[sizeof(L->err)];
-    memcpy(saved_msg, L->err, sizeof(L->err));
-    L->err_set = false;
-    L->err[0] = '\0';
-    value_t v = parse_expr(L, ctx);
-    value_free(&v);
-    L->err_set = saved;
-    memcpy(L->err, saved_msg, sizeof(L->err));
+    skip_level(L, ctx, parse_expr);
 }
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx) {
@@ -2080,7 +2102,7 @@ value_t expr_eval(const char *src, const expr_ctx_t *ctx) {
 //
 // Replaces ${expr} regions with their default-formatted values. The
 // formatter is intentionally minimal: integers render as hex when
-// VAL_HEX is set, decimal otherwise; strings copy as-is.
+// VFLAG_HEX is set, decimal otherwise; strings copy as-is.
 
 static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
     if (*len + n + 1 > *cap) {
@@ -2311,7 +2333,7 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
         break;
     }
     case 's': {
-        if (v->kind != V_STRING) {
+        if (v->kind != VK_STRING) {
             format_value_default(v, buf, len, cap);
             return;
         }
@@ -2382,10 +2404,10 @@ static int find_format_colon(const char *body, size_t blen) {
     return last;
 }
 
-// Dereference a V_REF value through the context root; other kinds pass
+// Dereference a VK_REF value through the context root; other kinds pass
 // through unchanged. Consumes `v`.
 static value_t deref_if_ref(value_t v, const expr_ctx_t *ctx) {
-    if (v.kind != V_REF)
+    if (v.kind != VK_REF)
         return v;
     char path[512];
     snprintf(path, sizeof(path), "%s", v.ref ? v.ref : "");

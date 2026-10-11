@@ -24,7 +24,7 @@
 #
 # The package's receive buffer `rxbfr` is mapped only while an instance is
 # open; the row receives into a dictionary buffer of its own instead.
-# Commands go in a few characters at a time (lib/gossamer.script).
+# Commands go in a line at a time, paced by the serial line (lib/gossamer.script).
 
 include "../lib/mac.script"
 include "../lib/gossamer.script"
@@ -35,26 +35,18 @@ let p = ""
 # --- B1: the station address -------------------------------------------------
 gos_send("dev enet")
 $p = gos_go()
-gos_send(".proper")
-gos_send("ties")
+gos_send(".properties")
 $p = gos_go()
 assert machine.bmac.mac == "00:05:02:47:53:01" "B1: the EEPROM's station address"
 assert contains($p, "local-mac-address       00050247 5301") "B1: local-mac-address is the EEPROM's address"
 assert contains($p, "cell-id                 000000B1") "B1: cell-id $B1"
 
 # --- B2: receive ---------------------------------------------------------------
-gos_send("init-bm")
-gos_send("ac")
+gos_send("init-bmac")
 $p = gos_go()
-gos_send("create ")
-gos_send("fb 600 ")
-gos_send("allot")
+gos_send("create fb 600 allot")
 $p = gos_go()
-gos_send("fb 600 ")
-gos_send("setrxdm")
-gos_send("a enabl")
-gos_send("e-enet-")
-gos_send("rx")
+gos_send("fb 600 setrxdma enable-enet-rx")
 $p = gos_go()
 gos_send("poll? .")
 $p = gos_go()
@@ -69,58 +61,40 @@ gos_send("rxfcs .")
 $p = gos_go()
 # The FCS, stored least significant byte first, read big-endian by the package.
 assert contains($p, "-3B476B06") "B2: the FCS after the frame is its CRC-32"
-gos_send("fb 20 d")
-gos_send("ump")
+gos_send("fb 20 dump")
 $p = gos_go()
 assert contains($p, "FF FF FF FF FF FF 00 11 22 33 44 55 08 00 45 00") "B2: the frame's header in the buffer"
 assert contains($p, "01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 00") "B2: its payload, then the pad"
 
 # --- B3: transmit --------------------------------------------------------------
-gos_send("fb 3c x")
-gos_send("mt1")
+gos_send("fb 3c xmt1")
 $p = gos_go()
 assert !contains($p, "timeout") "B3: xmt1 saw FrameSent"
 assert machine.bmac.tx_frames == 1 "B3: one frame sent"
 assert machine.bmac.last_tx == "ffffffffffff001122334455080045000102030405060708090a0b0c0d0e0f0000000000000000000000000000000000000000000000000000000000" "B3: the wire saw the received frame"
 
 # --- B4: loopback ---------------------------------------------------------------
-gos_send("fb 600 ")
-gos_send("setrxdm")
-gos_send("a enabl")
-gos_send("e-enet-")
-gos_send("rx")
+gos_send("fb 600 setrxdma enable-enet-rx")
 $p = gos_go()
-gos_send("bmac-ba")
-gos_send("se rl@-")
-gos_send("flip 2 ")
-gos_send("or bmac")
-gos_send("-base r")
-gos_send("l!-flip")
+gos_send("bmac-base rl@-flip 2 or bmac-base rl!-flip")
 $p = gos_go()
-gos_send("fb fb 1")
-gos_send("00 + 3c")
-gos_send(" move")
+gos_send("fb fb 100 + 3c move")
 $p = gos_go()
-gos_send("fb 40 e")
-gos_send("rase")
+gos_send("fb 40 erase")
 $p = gos_go()
-gos_send("fb 100 ")
-gos_send("+ 3c xm")
-gos_send("t1")
+gos_send("fb 100 + 3c xmt1")
 $p = gos_go()
 assert !contains($p, "timeout") "B4: xmt1 saw FrameSent"
 gos_send("poll? .")
 $p = gos_go()
 assert contains($p, " 3C  ok") "B4: the looped-back frame was received"
 assert machine.bmac.tx_frames == 2 && machine.bmac.rx_frames == 2 "B4: one more frame each way"
-gos_send("fb 20 d")
-gos_send("ump")
+gos_send("fb 20 dump")
 $p = gos_go()
 assert contains($p, "FF FF FF FF FF FF 00 11 22 33 44 55 08 00 45 00") "B4: the looped-back frame in the erased buffer"
 
 # --- B5: boot enet ---------------------------------------------------------------
-gos_send("boot en")
-gos_send("et")
+gos_send("boot enet")
 machine.scc.a.receive("\r")
 let n = 0
 while machine.bmac.tx_frames < 3 && $n < 40 {

@@ -11,8 +11,9 @@ emulator), and browser-based end-to-end tests (Playwright).
 | Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests` and `third-party/powerpc-test` submodules must be initialised |
 | Integration, unit tier | `make integration-test TIER=unit -j$(nproc)` | 1 min | Yes |
 | Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
-| Integration, extended tier | `make integration-test TIER=extended` | 33 min, serial | Yes |
-| E2E | `make e2e-test` | 16 min, one worker | Yes |
+| Integration, extended tier | `make integration-test TIER=extended -j$(nproc)` | 31 min of CPU (8 min at -j4) | Yes |
+| Integration, all tiers as CI runs them | `make integration-test TIER="unit matrix extended" SHARD=1/3 -j$(nproc)` | one third of the work per shard | Yes |
+| E2E | `make e2e-test` | 21 min, one worker (CI splits it over three runners) | Yes |
 | Unit + every integration tier | `make test` | the sum of the rows above | Yes, for the integration part |
 
 The times are CI step times on GitHub's 4-core `ubuntu-24.04` runner
@@ -97,7 +98,21 @@ make integration-test -j$(nproc)    # Parallel (safe: per-test storage cache)
 make integration-test-valgrind      # Under Valgrind (scope to TIER=unit)
 make -C tests/integration test-suite-plus    # Run a single test/suite
 make -C tests/integration list      # List available tests (with tiers)
+make integration-test TIER="matrix extended" -j$(nproc)   # several tiers, one pool
+make integration-test SHARD=2/3 -j$(nproc)                # one of CI's shards
 ```
+
+**Order and shards.** Tests start longest first: `scripts/order-tests.py`
+sorts them by the wall seconds recorded in
+`tests/integration/test-weights.json`, so the long suites start at once
+instead of whenever the alphabet reaches them, and a test with no recorded
+weight starts first of all.  `SHARD=K/N` keeps one of N shards, bin-packed
+from the same weights, which is how CI splits the run across runners.  The
+runner prints each test's seconds on its result line and appends a record
+to `test-results/durations.jsonl`; `scripts/gen-test-weights.py` turns
+those (CI uploads them per shard) into a new `test-weights.json`.  Only the
+order depends on the weights, never a result, so they are refreshed when
+they drift far enough to unbalance the shards, not on every change.
 
 Every test runs with a private `GS_STORAGE_CACHE` under its work
 directory: the emulator routes all delta/journal sidecars and scratch
@@ -157,8 +172,32 @@ Two rules suite rows must follow, both learned from real failures:
 harness functions live in `tests/integration/lib/mac.script`, pulled
 in with the shell's `include` statement. The library provides
 condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
-`wait_global` — a wait states its condition; ceilings are hang
-detectors), guest-tick choreography (`run_ticks`, `double_click`,
+`wait_global`, `wait_desktop` — a wait states its condition; ceilings are
+hang detectors), budgets that end early on their golden
+(`run_until_match`, `run_until_match_ex`: for the screens a stability
+wait cannot find, they poll the golden; under `REGEN=1` they poll an
+existing golden the same way, so the goldens after it are captured on the
+timeline verify mode runs, and run the whole budget only for a golden not
+captured yet), input waits that run until the guest has taken the input or
+answered it (`serial_type`: a line typed on a serial port, which the
+emulated line delivers one character time apart, run until the guest has
+read it; `run_until_sent`: run until a serial port has transmitted a
+marker such as a prompt, in slices that start small and double;
+`wait_mouse_taken`: run until `machine.adb.mouse.pending` clears, which
+on ADB includes a press and release queued behind each other;
+`wait_keys_taken`: the same for `machine.adb.keyboard.pending`;
+`wait_cursor`: run until the guest's cursor task has taken a `"global"`
+move), budgets that end once the guest has reacted (`settle`: a fixed
+budget that ends early once the screen has held still for a third of a
+second, sampled in guest ticks, never failing at its ceiling;
+`settle_steps` and `type_settle`, the same sampled in instructions for a
+guest without Mac OS `Ticks`, such as an Open Firmware or Linux console;
+`reach`: a head start and a stability wait that end on a golden in
+verify mode, while REGEN still runs the head start and settles as the golden
+was captured), `skip_test` for a test whose media is absent (the runner then prints
+`=== SKIP: <test> (<why>) ===` instead of PASS and records `SKIP` in
+`durations.jsonl`), guest-tick choreography (`run_ticks`, `click` and `double_click`, which
+press and release back to back and run until the guest has taken the click,
 `about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
 milestone rows), addressing-mode asserts (`assert_addr`), and
 machine-read coverage records (`@@COV` lines).
@@ -170,7 +209,8 @@ screen, and two things about that machine are awkward exactly once and
 identical in every row — its console is the *monitor* until the firmware is
 told otherwise (`ans_boot_serial`, which types Apple's documented `setenv`
 pair on the machine's own ADB keyboard and cold-boots), and its console
-drops characters from a long input burst (`ans_send` feeds it in chunks).
+drops characters from an input burst, which the paced serial line avoids
+(`ans_send` types a whole command and runs until the firmware has read it).
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
 
@@ -182,6 +222,7 @@ Suite variables are passed via `TEST_VARS`:
 
 ```bash
 make -C tests/integration test-suite-quadra TEST_VARS="ROW=q700-chime"   # one row
+make -C tests/integration test-suite-av TEST_VARS="ROW_SET=*"           # every row of a split suite
 make -C tests/integration test-suite-quadra TEST_VARS="KEEP_GOING=1"     # nightly: run past red rows
 make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recapture goldens (review the diff!)
 ```
@@ -243,11 +284,44 @@ screen; the absolute value alone would have been merely suggestive.
 Neither script changes how goldens are compared. Matching is byte-exact via
 `machine.screen.match`, with no tolerance and no fuzzy comparison anywhere.
 
+### Checkpoint fixtures
+
+Some tests start where another test has already been: `gossamer-checkpoint`
+restores the 6 G mid-boot point `suite-gossamer`'s g3dt row passes through.
+Instead of booting there again, the consumer restores the producer's
+checkpoint:
+
+- The producer's `config.mk` says `TEST_PROVIDES := <name>` and its script
+  calls `fixture_save("<name>")` at that point; the consumer says
+  `TEST_NEEDS := <name>` and calls `fixture_load("<name>")`, which returns
+  false when there is no fixture to load.
+- Only the aggregate `make test` provides fixtures.  It clears
+  `build/integration/fixtures/`, makes each consumer wait for its producer
+  (an order-only prerequisite), and passes the directory to every test as
+  `$FIXTURES`.  `scripts/order-tests.py` bin-packs a producer and its
+  consumers as one item, so they always share a CI shard.
+  `make test TESTS="a b"` runs a chosen set the same way.
+- A test run on its own (`make test-<name>`) gets no fixtures, so a consumer
+  always has its own way to the same state (`if !fixture_load(...) { ... }`).
+  That way must reach the fixture's state byte for byte, or the consumer's
+  goldens would depend on how it ran.  A restored run is deterministic but
+  is not always the straight run's timeline (`tnt-voodoo2-glide-sw`'s Quake
+  demo is a few frames elsewhere after a restore), so a consumer that plays
+  on from a restore does a save and a load itself when it boots inline.
+- A producer that fails leaves no fixture; its consumers then boot inline
+  rather than fail with it.  Fixtures never cross runs or builds.
+- A consumer starts only when its producer has **finished**, not when it
+  saved.  Use a fixture when the producer is short after the save, or the
+  consumer is: two long tests chained this way run back to back where they
+  used to run side by side.  (`tnt-voodoo2-glide-sw` was a consumer of its
+  sibling's Quake launch until CI showed exactly that: ~460 + ~260 s on one
+  shard set the run's floor.  It now saves and restores the launch itself.)
+
 ### What CI runs
 
 | Trigger | Runs |
 |---|---|
-| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| PR / push (`tests.yml`) | `static` (headless build, core layering, tier check, golden distinctness), `unit` (native and wasm32 unit suites) and four `integration` shards run in parallel; each shard runs its quarter of **all three tiers** as one longest-first `-j` pool (a fixture producer and its consumers always share a shard; the extended tier is on the PR gate while the integration-test rework settles; in the pool it costs CPU on whichever shard it lands rather than a serial half hour). `contracts` then checks coverage (both tiers) and the perf baselines over the union of the shard logs, and puts coverage, milestone rows, skipped tests, per-row spends and the slowest tests into the step summary. The web2 frontend runs beside them as `ui` (svelte-check, lint, Vite and WASM builds, Vitest, prod-smoke), `ui-gallery` (component screenshots) and three `ui-e2e` jobs, each running the spec files `scripts/e2e-shard.py` assigns it (a duration-weighted split from `tests/e2e/e2e-weights.json`, regenerated with `scripts/gen-e2e-weights.py` from the JSON reports CI uploads) in two passes: the `parallel` project with three workers, then the `serial` project (pacing, jitter and real-time media specs) alone. Integration shards print each test's output as one block (`--output-sync=target`), and each e2e shard uploads a JSON report with per-test durations. |
 | Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier, one short run per PowerPC family the unit tier does not boot (`pdm-rom-ladder`, `tnt-pci-slots`) and one 68k boot, with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
@@ -356,11 +430,18 @@ live in the headless integration tests, not here.
 ### Writing a New E2E Spec
 
 1. Add `tests/e2e/web2-specs/foo.spec.ts`.
-2. Import Playwright + the web2 helpers:
+2. Import `test` from `helpers/test.ts` (Playwright's, with every
+   `page.goto()` at max speed: it appends `speed=turbo` unless the URL
+   names a speed) and the web2 helpers:
    ```typescript
-   import { test, expect } from '@playwright/test';
+   import { test, expect } from '../helpers/test';
    import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
    ```
+   A spec whose point is pacing, or that feeds real-time media into the
+   guest, keeps web2's default with `test.use({ gsSpeed: null })`, and goes
+   in the config's `SERIAL` list if it must not share the machine with
+   another running emulator (the `parallel` project runs
+   `GS_E2E_WORKERS` specs at once; the default is 1).
 3. Drive through the shipped UI (dialog, drag-and-drop); read or call the
    object model with `gsEvalInPage` / `gsCallInPage` (`helpers/web2-eval.ts`,
    see `tests/e2e/README.md`), not by typing into the Terminal.

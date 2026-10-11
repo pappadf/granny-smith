@@ -7,7 +7,7 @@
 // selecting a method both writes its path into the prompt and shows the
 // usage text the core renders (shell.usage).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { CONSOLE_INPUT, focusTerminal } from "../helpers/terminal";

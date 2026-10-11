@@ -8,6 +8,7 @@
 #define MEMORY_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "machine_build_opts.h" // rom_image_t
 
@@ -112,8 +113,8 @@ typedef struct memory_bus_err_window {
 // rom: the ROM to build the region with (copied in; NULL or empty leaves it
 //      zero), or nothing on a restore
 // checkpoint: if non-NULL, restore RAM and ROM from checkpoint
-extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size,
-                                     memory_bus_err_window_t bus_err, const rom_image_t *rom, checkpoint_t *checkpoint);
+memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, memory_bus_err_window_t bus_err,
+                              const rom_image_t *rom, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
 
@@ -146,23 +147,21 @@ void memory_map_set_host_fill(memory_map_t *mem, void (*fill)(uint32_t page_inde
 void memory_map_set_pmmu(memory_map_t *mem, struct mmu_state *mmu);
 void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu);
 
-// The map's host-fill region table (mmu.c's, opaque here), owned by the map.
-void *memory_map_host_fill_regions(memory_map_t *mem);
-
 void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint);
 
 // === Operations ===
 
-extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                           void *device);
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+                    void *device);
 
 // Register a host-backed region on the physical bus map.  `writable`
 // distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
 // regions.  The NuBus bus controller calls this once per card region
-// during nubus_init().  The name is deliberate: the storage still lives in
-// mmu_state_t (4-slot fixed layout in v1) but the call-site lie ("the MMU
-// manages mappings") is fixed by exposing the API on the memory map.  No
-// fast-path change.
+// during nubus_init().  Defined in memory.c: on a machine whose page table
+// no 68k MMU manages (the PowerPC families) the map fills the pages itself
+// through its page-fill hook and keeps the window in its own table; on a 68k
+// machine the region joins the PMMU's host-region list (mmu_state_t), which
+// its table walks resolve through.  No fast-path change.
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable);
 
@@ -215,11 +214,17 @@ extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writ
 // is a BUS property, so it applies with the MMU on or off -- see memory.c.
 bool memory_addr_faults_when_unmapped(uint32_t addr);
 
-extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
-                              memory_interface_t *iface, void *device);
+// Remove `device`'s mapping that starts at `addr` (the mapping's own size is
+// used); no-op when there is none.
+void memory_map_remove(memory_map_t *mem, uint32_t addr, void *device);
 
-extern void memory_map_print(memory_map_t *mem);
+void memory_map_print(memory_map_t *mem);
 
+// Host pointer to guest RAM byte `addr`: exactly mem->image + addr.  Never
+// NULL for a live map; no bounds check and no address folding (the caller
+// keeps addr inside installed RAM).  The image is heap-aligned, so the
+// pointer has addr's alignment -- an even addr may be read as uint16_t.
+// The bytes are guest (big-endian) order.
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
 // Installed RAM size in bytes (e.g. 0x100000 for a 1 MB Plus).
@@ -242,7 +247,7 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value);
 // ROM pages in [rom_start_addr, rom_region_end) are populated with page-table
 // mirroring: guest addresses wrap at rom_size so the ROM content repeats.
 // Called from machine-specific layout callbacks (e.g. plus_memory_layout_init).
-extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
+void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
 
 // Populate page table entries for a RAM-mirror region.  Each guest address in
 // [mirror_start, mirror_end) aliases the corresponding RAM byte at
@@ -252,13 +257,13 @@ extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, ui
 // RAM — the ROM's exception save area at $3FFC80 relies on this.  Call this
 // from the machine layout callback for any machine that needs that
 // behaviour (Plus does; explicitly-decoded machines like the SE/30 do not).
-extern void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end);
+void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end);
 
 // === Page Table ===
 
-#define PAGE_SHIFT    12
-#define MEM_PAGE_SIZE (1 << PAGE_SHIFT) // 4096
-#define PAGE_MASK     (MEM_PAGE_SIZE - 1) // 0xFFF
+#define MEM_PAGE_SHIFT 12
+#define MEM_PAGE_SIZE  (1 << MEM_PAGE_SHIFT) // 4096
+#define MEM_PAGE_MASK  (MEM_PAGE_SIZE - 1) // 0xFFF
 
 // Each page maps to either a direct host pointer or a device handler
 typedef struct page_entry {
@@ -283,7 +288,19 @@ extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only
 extern uintptr_t *g_user_read; // user-mode read mapping
 extern uintptr_t *g_user_write; // user-mode write mapping
 
-// Active pointers switched per sprint based on SR.S bit
+// SoA population tracking: the selected map lists the page indices written
+// into the SoA arrays since the last invalidation.  Every writer of a
+// fast-path entry outside a plain layout fill calls tlb_track_page (after the
+// store); memory_soa_invalidate -- the PMMU's TLB flush -- then zeroes just
+// those entries, or all four arrays when the list outgrew its capacity.
+void tlb_track_page(uint32_t page_index);
+void memory_soa_invalidate(void);
+
+// Active pointers switched per sprint based on SR.S bit.  The pair is the
+// function code of the access in flight, not just the CPU's mode: MOVES
+// points it at the SFC/DFC's arrays for the duration of its one access
+// (cpu_ops.h).  That is why the slow paths take "supervisor" from which pair
+// is active rather than from SR.S -- it is the access's own FC.
 extern uintptr_t *g_active_read;
 extern uintptr_t *g_active_write;
 
@@ -298,22 +315,38 @@ extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=sup
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
+// The running sprint's state shared with the slow paths: the one channel
+// between the scheduler, which owns its contents -- it sets them up at each
+// sprint's start and harvests them at its end -- and the memory slow paths
+// and CPU exception paths that charge the sprint from inside it.  Nothing
+// outside a sprint may rely on it (burndown is NULL there).  The storage is
+// in memory.c.
+//
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
 // Penalty cycles are converted to phantom instructions that burn sprint burndown,
 // causing I/O-heavy sprints to end sooner and keeping event timing accurate.
 // The CPI is the scheduler's *effective* CPI in x256 fixed point (cpi << 8
 // unless accelerated mode lowered it), so penalties convert at the same rate
-// the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
-extern uint32_t g_io_penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
-extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
-extern uint32_t g_io_stall_owed; // sprint-time alias of the scheduler's io_stall_slots
-extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
-extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
-// Slots the running sprint planned but will not spend: something ended it
-// at this instruction boundary (an exception, a STOP, a trace step).  The
-// scheduler takes them off the sprint, so neither the clock nor the
-// instruction count advances for them -- time the CPU did not run.
-extern uint32_t g_sprint_unrun_slots;
+// the sprint accounts cycles. cpi_x256 == 0 disables the mechanism.
+typedef struct sprint_io {
+    uint32_t *burndown; // points to the scheduler's sprint_burndown during a sprint, else NULL
+    uint32_t cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
+    uint32_t penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
+    uint32_t phantom_instructions; // phantom instructions consumed this sprint
+    uint32_t stall_owed; // sprint-time alias of the scheduler's io_stall_slots
+    // Slots the running sprint planned but will not spend: something ended it
+    // at this instruction boundary (an exception, a STOP, a trace step).  The
+    // scheduler takes them off the sprint, so neither the clock nor the
+    // instruction count advances for them -- time the CPU did not run.
+    uint32_t unrun_slots;
+    // E-sync timebase (see "VIA E-clock synchronization" below)
+    uint64_t base_cycles; // scheduler cpu_cycles at sprint start
+    uint32_t frac_x256; // sub-cycle remainder at sprint start (x256)
+    uint32_t total_slots; // sprint slot budget at sprint start
+    uint32_t esync_period_x256; // E period in CPU cycles x256 (0 = unset)
+} sprint_io_t;
+
+extern sprint_io_t g_sprint_io;
 
 // End the running sprint at the current instruction boundary.  Always this,
 // never a bare `*instructions = 0`: the bare store left the slots in the
@@ -322,7 +355,7 @@ extern uint32_t g_sprint_unrun_slots;
 // as the gap to whatever event came next.
 static inline void memory_end_sprint(uint32_t *instructions) {
     if (instructions) {
-        g_sprint_unrun_slots += *instructions;
+        g_sprint_io.unrun_slots += *instructions;
         *instructions = 0;
     }
 }
@@ -335,12 +368,8 @@ static inline void memory_end_sprint(uint32_t *instructions) {
 // (1.2766 us) independent of CPU speed — the ROMs' pre-calibration timebase
 // (1-E "pipelined" model, settled against a real IIsi chime recording).
 // Ranges flagged `esync` charge this phase-accurate penalty instead of a
-// fixed cycle count.
-
-extern uint64_t g_sprint_base_cycles; // scheduler cpu_cycles at sprint start
-extern uint32_t g_sprint_frac_x256; // sub-cycle remainder at sprint start (x256)
-extern uint32_t g_sprint_total_slots; // sprint slot budget at sprint start
-extern uint32_t g_esync_period_x256; // E period in CPU cycles x256 (0 = unset)
+// fixed cycle count.  The timebase it needs is in g_sprint_io (base_cycles,
+// frac_x256, total_slots, esync_period_x256).
 
 // Pure math: cycles from `now_cycles` to the next E boundary, in (0, E].
 // Fixed-point x256 grid keeps the boundary sequence exact for non-integer
@@ -355,26 +384,34 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
     return (pen_x256 + 255) >> 8; // ceil to whole cycles
 }
 
+// Largest penalty one access may charge, in cycles (see memory_io_penalty).
+#define MEMORY_IO_PENALTY_MAX ((UINT32_MAX >> 8) - 0x10000u)
+
 // Apply an I/O bus cycle penalty (extra_cycles beyond the CPI baseline).
 // Called from machine I/O dispatchers (e.g. SE/30) in the slow path only.
 // The remainder accumulates x256 cycles so fractional effective CPIs
 // (accelerated mode) convert without losing sub-slot penalty time.
 static inline void memory_io_penalty(uint32_t extra_cycles) {
-    if (__builtin_expect(g_io_cpi_x256 == 0, 0))
+    if (__builtin_expect(g_sprint_io.cpi_x256 == 0, 0))
         return; // penalties disabled
-    if (__builtin_expect(g_sprint_burndown_ptr == NULL, 0))
+    if (__builtin_expect(g_sprint_io.burndown == NULL, 0))
         return; // outside a sprint (an inspection access): never touches guest timing
-    g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
-    uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
+    // Saturate so the x256 shift and the add stay inside 32 bits (the
+    // remainder is already under one CPI, < 2^16).  Real penalties are tens
+    // of cycles; the cap is ~16M.
+    if (__builtin_expect(extra_cycles > MEMORY_IO_PENALTY_MAX, 0))
+        extra_cycles = MEMORY_IO_PENALTY_MAX;
+    g_sprint_io.penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
+    uint32_t burn = g_sprint_io.penalty_remainder / g_sprint_io.cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
-        g_io_penalty_remainder -= burn * g_io_cpi_x256;
-        uint32_t *bp = g_sprint_burndown_ptr;
+        g_sprint_io.penalty_remainder -= burn * g_sprint_io.cpi_x256;
+        uint32_t *bp = g_sprint_io.burndown;
         // A stall longer than what is left of the sprint runs on past the
         // sprint's end (the event there fires on time, the CPU is still
         // stalled): the slots past it are owed to the next sprint, not lost.
         uint32_t take = (*bp > burn) ? burn : *bp;
-        g_io_phantom_instructions += take;
-        g_io_stall_owed += burn - take;
+        g_sprint_io.phantom_instructions += take;
+        g_sprint_io.stall_owed += burn - take;
         *bp -= take;
     }
 }
@@ -388,14 +425,20 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
 // CPI slot) is inherent to the slot quantization and irrelevant against the
 // >=20-cycle E period; the long-run rate is exact.
 static inline void memory_io_esync_penalty(void) {
-    if (__builtin_expect(g_io_cpi_x256 == 0, 0) || g_esync_period_x256 == 0)
+    if (__builtin_expect(g_sprint_io.cpi_x256 == 0, 0) || g_sprint_io.esync_period_x256 == 0)
         return; // penalties disabled / E grid not configured
-    uint64_t now = g_sprint_base_cycles;
-    uint32_t *bp = g_sprint_burndown_ptr;
+    uint64_t now = g_sprint_io.base_cycles;
+    uint32_t *bp = g_sprint_io.burndown;
     if (bp)
-        now += ((uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi_x256 + g_sprint_frac_x256) >> 8;
-    memory_io_penalty(memory_esync_penalty_cycles(now, g_esync_period_x256));
+        now += ((uint64_t)(g_sprint_io.total_slots - *bp) * g_sprint_io.cpi_x256 + g_sprint_io.frac_x256) >> 8;
+    memory_io_penalty(memory_esync_penalty_cycles(now, g_sprint_io.esync_period_x256));
 }
+
+// Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses
+// taken through the slow path since process start, and a histogram of them by
+// address bucket (memory.c's MEM_SLOWPATH_BUCKET).
+extern uint64_t g_mem_slowpath_count;
+extern uint64_t g_mem_slowpath_hist[32];
 
 // Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
 uint8_t memory_read_uint8_slow(uint32_t addr);
@@ -502,24 +545,6 @@ extern void (*g_mem_map_changed)(void);
 extern uint32_t (*g_mem_logical_xlate)(void *ctx, uint32_t addr, bool *ok);
 extern void *g_mem_logical_xlate_ctx;
 
-// === Value Trap (fast-path needle search) ===
-// Catches writes of a specific (PA, size, value) combination without forcing
-// the page to slow path.  Controlled by `value-trap` shell command.  When
-// disabled (value_trap_active=0), the inline check is one cmovne and one
-// branch-not-taken — sub-1% overhead on the fast path.  When fired, the hook
-// is called with the access details; the hook can then disarm itself or stop.
-// Multiple writes across an instruction may all match; the hook is called for
-// each.  Use to find rare needles in haystacks (e.g. "the write that placed
-// these 4 specific bytes at this physical address").
-extern uint32_t g_value_trap_active; // 0 = disabled, nonzero = enabled
-extern uint32_t g_value_trap_pa; // physical address to match
-extern uint32_t g_value_trap_value; // value to match
-extern uint32_t g_value_trap_size; // 1, 2, or 4 (byte/word/long)
-typedef void (*value_trap_hook_t)(uint32_t logical_addr, uint32_t phys_addr, uint32_t value, unsigned size);
-extern value_trap_hook_t g_value_trap_hook;
-// Called by the fast path when the value matches; resolves PA and invokes hook.
-void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size);
-
 // Force/unforce the slow path for a page range (caller in debug.c).
 // Each page in [start_page, end_page] (inclusive) has its reference count
 // adjusted; if the count becomes non-zero the SoA entries are zeroed, and if
@@ -540,7 +565,7 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
 
 static inline uint8_t memory_read_uint8(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
         return LOAD_BE8((uint8_t *)(base + masked));
     return memory_read_uint8_slow(masked);
@@ -548,18 +573,18 @@ static inline uint8_t memory_read_uint8(uint32_t addr) {
 
 static inline uint16_t memory_read_uint16(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
         return LOAD_BE16((uint8_t *)(base + masked));
     return memory_read_uint16_slow(masked);
 }
 
 static inline uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         return LOAD_BE32((uint8_t *)(base + masked));
     }
     return memory_read_uint32_slow(masked);
@@ -590,8 +615,8 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
 // the whole decoder body.
 static inline uint32_t memory_read_prefetch32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         return LOAD_BE32((uint8_t *)(base + masked));
     }
     // Out of page (or no SoA entry): take the opcode word only.
@@ -600,10 +625,7 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
 
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 1 && (uint8_t)value == (uint8_t)g_value_trap_value,
-                         0))
-        value_trap_check(masked, value, 1);
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1)) {
         STORE_BE8((uint8_t *)(base + masked), value);
         return;
@@ -613,12 +635,9 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
 
 static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(
-            g_value_trap_active && g_value_trap_size == 2 && (uint16_t)value == (uint16_t)g_value_trap_value, 0))
-        value_trap_check(masked, value, 2);
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
         STORE_BE16((uint8_t *)(base + masked), value);
         return;
     }
@@ -627,11 +646,9 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
 
 static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
-    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 4 && value == g_value_trap_value, 0))
-        value_trap_check(masked, value, 4);
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         STORE_BE32((uint8_t *)(base + masked), value);
         return;
     }

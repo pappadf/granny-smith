@@ -7,6 +7,7 @@
 #include "cpu_internal.h"
 
 #include "alias.h"
+#include "checkpoint.h"
 #include "debug.h"
 #include "debug_mmu.h"
 #include "fpu.h"
@@ -15,9 +16,13 @@
 #include "mmu040.h"
 #include "object.h"
 #include "scheduler.h"
+#include "status.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
+
+#include <stddef.h>
+#include <stdio.h>
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // cpu_init / cpu_delete reference them.
@@ -213,7 +218,7 @@ bool cpu_is_supervisor(cpu_t *restrict cpu) {
 
 static void register_alias_or_warn(const char *name, const char *path) {
     char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
+    if (alias_register_builtin(name, path, err, sizeof(err)) != STATUS_OK)
         LOG(0, "cpu: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
 }
 
@@ -252,7 +257,7 @@ static void register_fpu_aliases(void) {
 // === Lifecycle ===
 
 // Create and initialize a CPU instance for the specified model.
-extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
+cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     cpu_t *cpu = (cpu_t *)malloc(sizeof(cpu_t));
     if (!cpu)
@@ -501,8 +506,8 @@ static void cpu_dbgif_regs(void *ctx, struct value_map_builder *regs) {
 // human-readable display; tests/tools that need bit-exact bytes can
 // consume the hex form instead.
 static double fp80_to_display_double(float80_reg_t f) {
-    int sign = FP80_SIGN(f);
-    uint16_t exp = FP80_EXP(f);
+    int sign = fp80_sign(f);
+    uint16_t exp = fp80_exp(f);
     if (exp == 0 && f.mantissa == 0)
         return sign ? -0.0 : 0.0;
     if (exp == 0x7FFF) {
@@ -552,8 +557,8 @@ static bool cpu_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
         val_map_put(fpb, "hex", val_str(hexbuf));
         // Decimal display — handle special values explicitly and keep the
         // value a string (Inf/NaN aren't legal JSON numbers).
-        uint16_t e = FP80_EXP(fpu->fp[i]);
-        int sign = FP80_SIGN(fpu->fp[i]);
+        uint16_t e = fp80_exp(fpu->fp[i]);
+        int sign = fp80_sign(fpu->fp[i]);
         if (e == 0 && fpu->fp[i].mantissa == 0)
             snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
         else if (e == 0x7FFF)
@@ -610,197 +615,137 @@ void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
 // instance_data on the cpu node is the cpu_t* itself; lifetime is tied
 // to cpu_init / cpu_delete.
 
+// The cpu node is only ever created by cpu_init with a live cpu_t as its
+// instance data, so the accessors below take it as given rather than each
+// re-checking for NULL.
 static cpu_t *cpu_from(struct object *self) {
-    return (cpu_t *)object_data(self);
+    cpu_t *cpu = (cpu_t *)object_data(self);
+    assert(cpu != NULL);
+    return cpu;
 }
 
 // === CPU class ==============================================================
 
 static DEF_GETTER(attr_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_pc(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(2, cpu_get_sr(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(1, cpu_get_sr(cpu) & 0xFFu);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_ssp(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_usp(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_msp(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_vbr(cpu));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 static DEF_GETTER(attr_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     value_t v = val_uint(4, cpu_get_an(cpu, 7));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
-#define CPU_DREG_RW(N)                                                                                                 \
-    static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        value_t v = val_uint(4, cpu_get_dn(cpu, N));                                                                   \
-        v.flags |= VAL_HEX;                                                                                            \
-        return v;                                                                                                      \
-    }                                                                                                                  \
-    static value_t set_cpu_d##N(struct object *self, const member_t *m, value_t in) {                                  \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        cpu_set_dn(cpu, N, (uint32_t)in.u);                                                                            \
-        return val_none();                                                                                             \
-    }
-#define CPU_AREG_RW(N)                                                                                                 \
-    static value_t attr_cpu_a##N(struct object *self, const member_t *m) {                                             \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        value_t v = val_uint(4, cpu_get_an(cpu, N));                                                                   \
-        v.flags |= VAL_HEX;                                                                                            \
-        return v;                                                                                                      \
-    }                                                                                                                  \
-    static value_t set_cpu_a##N(struct object *self, const member_t *m, value_t in) {                                  \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        cpu_set_an(cpu, N, (uint32_t)in.u);                                                                            \
-        return val_none();                                                                                             \
-    }
+// D0-D7 and A0-A7 share one getter/setter pair: the member's user_data holds
+// the register number, with A registers offset by 8 (see CPU_DREG_MEMBER).
+static DEF_GETTER(attr_cpu_reg) {
+    cpu_t *cpu = cpu_from(self);
+    int n = (int)(uintptr_t)m->attr.user_data;
+    value_t v = val_uint(4, n < 8 ? cpu_get_dn(cpu, n) : cpu_get_an(cpu, n - 8));
+    v.flags |= VFLAG_HEX;
+    return v;
+}
 
-// clang-format off — these macros expand to function definitions
-// without a trailing `;`, which clang-format mis-parses as expressions.
-CPU_DREG_RW(0)
-CPU_DREG_RW(1)
-CPU_DREG_RW(2)
-CPU_DREG_RW(3)
-CPU_DREG_RW(4)
-CPU_DREG_RW(5)
-CPU_DREG_RW(6)
-CPU_DREG_RW(7)
-CPU_AREG_RW(0)
-CPU_AREG_RW(1)
-CPU_AREG_RW(2)
-CPU_AREG_RW(3)
-CPU_AREG_RW(4)
-CPU_AREG_RW(5)
-CPU_AREG_RW(6)
-CPU_AREG_RW(7)
-// clang-format on
+static DEF_SETTER(set_cpu_reg) {
+    cpu_t *cpu = cpu_from(self);
+    int n = (int)(uintptr_t)m->attr.user_data;
+    if (n < 8)
+        cpu_set_dn(cpu, n, (uint32_t)in.u);
+    else
+        cpu_set_an(cpu, n - 8, (uint32_t)in.u);
+    return val_none();
+}
 
 // === Setters for the named registers and CCR-bit attributes ===
 
 static DEF_SETTER(set_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_pc(cpu, (uint32_t)in.u);
     return val_none();
 }
 
+// The member's width (2) makes the object layer reject a value wider than SR.
 static DEF_SETTER(set_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_sr(cpu, (uint16_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     uint16_t sr = cpu_get_sr(cpu);
-    sr = (sr & (uint16_t)~cpu_ccr_mask) | (uint16_t)(in.u & cpu_ccr_mask);
+    // Bits 5-7 of the CCR byte are unimplemented and read as zero
+    sr = (sr & (uint16_t)~CPU_CCR_MASK) | (uint16_t)(in.u & CPU_CCR_MASK);
     cpu_set_sr(cpu, sr);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_ssp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_usp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_msp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static DEF_SETTER(set_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_vbr(cpu, (uint32_t)in.u);
     return val_none();
 }
@@ -808,8 +753,6 @@ static DEF_SETTER(set_cpu_vbr) {
 // `cpu.sp` aliases A7 (the active stack pointer).
 static DEF_SETTER(set_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_set_an(cpu, 7, (uint32_t)in.u);
     return val_none();
 }
@@ -826,87 +769,82 @@ static DEF_GETTER(attr_cpu_instr_count) {
 // is the same call).
 static DEF_METHOD(cpu_method_frame) {
     cpu_t *cpu = cpu_from(self);
-    if (!cpu)
-        return val_err("cpu not initialised");
     cpu_debug_if_t dif = cpu_debug_if(cpu);
     return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
 }
 
 // CCR-bit attributes (cpu.c / cpu.v / cpu.z / cpu.n / cpu.x). 1-bit reads
 // and writes that round-trip through SR — the legacy `set z 1` interface
-// in typed form.
-#define CPU_CCR_BIT_RW(letter, mask_const)                                                                             \
-    static value_t attr_cpu_cc_##letter(struct object *self, const member_t *m) {                                      \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        return val_uint(1, (cpu_get_sr(cpu) & (mask_const)) ? 1u : 0u);                                                \
-    }                                                                                                                  \
-    static value_t set_cpu_cc_##letter(struct object *self, const member_t *m, value_t in) {                           \
-        (void)m;                                                                                                       \
-        cpu_t *cpu = cpu_from(self);                                                                                   \
-        if (!cpu)                                                                                                      \
-            return val_err("cpu not initialised");                                                                     \
-        uint16_t sr = cpu_get_sr(cpu);                                                                                 \
-        if (in.u & 1u)                                                                                                 \
-            sr |= (mask_const);                                                                                        \
-        else                                                                                                           \
-            sr &= (uint16_t) ~(mask_const);                                                                            \
-        cpu_set_sr(cpu, sr);                                                                                           \
-        return val_none();                                                                                             \
-    }
+// in typed form.  The member's user_data holds the bit's CPU_CCR_* mask.
+static DEF_GETTER(attr_cpu_cc_bit) {
+    uint16_t mask = (uint16_t)(uintptr_t)m->attr.user_data;
+    return val_uint(1, (cpu_get_sr(cpu_from(self)) & mask) ? 1u : 0u);
+}
 
-// clang-format off
-CPU_CCR_BIT_RW(c, cpu_ccr_c)
-CPU_CCR_BIT_RW(v, cpu_ccr_v)
-CPU_CCR_BIT_RW(z, cpu_ccr_z)
-CPU_CCR_BIT_RW(n, cpu_ccr_n)
-CPU_CCR_BIT_RW(x, cpu_ccr_x)
-// clang-format on
+static DEF_SETTER(set_cpu_cc_bit) {
+    cpu_t *cpu = cpu_from(self);
+    uint16_t mask = (uint16_t)(uintptr_t)m->attr.user_data;
+    uint16_t sr = cpu_get_sr(cpu);
+    if (in.u & 1u)
+        sr |= mask;
+    else
+        sr &= (uint16_t)~mask;
+    cpu_set_sr(cpu, sr);
+    return val_none();
+}
 
-#define ATTR_RW_HEX_F(name_, get_, set_, doc_, flags_)                                                                 \
+// A hex register attribute.  `width_` (bytes) makes the object layer reject a
+// write that does not fit instead of the setter silently truncating it; 0
+// leaves the value unconstrained (the setter takes the low 32 bits).
+#define ATTR_RW_HEX_FW(name_, get_, set_, doc_, flags_, width_, user_)                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = flags_, .attr = {                                         \
-            .type = V_UINT,                                                                                            \
-            .presentation_flags = VAL_HEX,                                                                             \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .flags = flags_, .attr = {                                        \
+            .type = VK_UINT,                                                                                           \
+            .width = width_,                                                                                           \
+            .presentation_flags = VFLAG_HEX,                                                                           \
             .get = get_,                                                                                               \
-            .set = set_                                                                                                \
+            .set = set_,                                                                                               \
+            .user_data = (const void *)(uintptr_t)(user_)                                                              \
         }                                                                                                              \
     }
-#define ATTR_RW_HEX(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, 0)
+#define ATTR_RW_HEX_F(name_, get_, set_, doc_, flags_) ATTR_RW_HEX_FW(name_, get_, set_, doc_, flags_, 0, 0)
+#define ATTR_RW_HEX(name_, get_, set_, doc_)           ATTR_RW_HEX_F(name_, get_, set_, doc_, 0)
 // The same, shown only under the Advanced toggle.
 #define ATTR_RW_HEX_ADV(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, M_CAT_ADVANCED)
 // A read-only counter, shown only under the Advanced toggle.
 #define ATTR_RO_ADV(name_, get_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = M_CAT_ADVANCED, .doc = doc_, .attr = {                                 \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = name_, .flags = M_CAT_ADVANCED, .doc = doc_, .attr = {                                \
+            .type = VK_UINT,                                                                                           \
             .get = get_,                                                                                               \
             .set = NULL                                                                                                \
         }                                                                                                              \
     }
 // A condition-code bit: one of the five CCR flags, readable and writable as 0/1
 // (Advanced: SR and CCR already show them).
-#define ATTR_RW_BIT(name_, get_, set_, doc_)                                                                           \
+#define ATTR_RW_BIT(name_, mask_, doc_)                                                                                \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                 \
-            .type = V_UINT,                                                                                            \
-            .get = get_,                                                                                               \
-            .set = set_                                                                                                \
+        .kind = MK_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                \
+            .type = VK_UINT,                                                                                           \
+            .get = attr_cpu_cc_bit,                                                                                    \
+            .set = set_cpu_cc_bit,                                                                                     \
+            .user_data = (const void *)(uintptr_t)(mask_)                                                              \
         }                                                                                                              \
     }
 // D0..D7 and A0..A7 differ only by number, so generate their doc text too --
 // sixteen hand-written strings saying "data register 3" would be sixteen
 // chances to write "register 2".
-#define CPU_DREG_MEMBER(N) ATTR_RW_HEX("d" #N, attr_cpu_d##N, set_cpu_d##N, "Data register D" #N " (32-bit)")
-#define CPU_AREG_MEMBER(N) ATTR_RW_HEX("a" #N, attr_cpu_a##N, set_cpu_a##N, "Address register A" #N " (32-bit)")
+#define CPU_DREG_MEMBER(N) ATTR_RW_HEX_FW("d" #N, attr_cpu_reg, set_cpu_reg, "Data register D" #N " (32-bit)", 0, 0, N)
+#define CPU_AREG_MEMBER(N)                                                                                             \
+    ATTR_RW_HEX_FW("a" #N, attr_cpu_reg, set_cpu_reg, "Address register A" #N " (32-bit)", 0, 0, 8 + N)
 
+// Static members only: the `fpu` child (and, on the 68040, `mmu`) is attached
+// at runtime by cpu_init, and the 030 PMMU's `mmu` by cpu_attach_mmu.
 // clang-format off
 static const member_t cpu_members[] = {
     ATTR_RW_HEX("pc",  attr_cpu_pc,  set_cpu_pc,  "Program counter — address of the next instruction to execute"),
-    ATTR_RW_HEX("sr",  attr_cpu_sr,  set_cpu_sr,  "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask"),
-    ATTR_RW_HEX_ADV("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)"),
+    ATTR_RW_HEX_FW("sr", attr_cpu_sr, set_cpu_sr, "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask", 0, 2, 0),
+    ATTR_RW_HEX_FW("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)", M_CAT_ADVANCED, 1, 0),
     ATTR_RW_HEX_ADV("ssp", attr_cpu_ssp, set_cpu_ssp, "Supervisor stack pointer, the A7 seen in supervisor mode"),
     ATTR_RW_HEX_ADV("usp", attr_cpu_usp, set_cpu_usp, "User stack pointer, the A7 seen in user mode"),
     ATTR_RW_HEX_ADV("msp", attr_cpu_msp, set_cpu_msp, "Master stack pointer (68020+); used instead of SSP when SR's M bit is set"),
@@ -916,15 +854,15 @@ static const member_t cpu_members[] = {
     CPU_DREG_MEMBER(4), CPU_DREG_MEMBER(5), CPU_DREG_MEMBER(6), CPU_DREG_MEMBER(7),
     CPU_AREG_MEMBER(0), CPU_AREG_MEMBER(1), CPU_AREG_MEMBER(2), CPU_AREG_MEMBER(3),
     CPU_AREG_MEMBER(4), CPU_AREG_MEMBER(5), CPU_AREG_MEMBER(6), CPU_AREG_MEMBER(7),
-    ATTR_RW_BIT("c", attr_cpu_cc_c, set_cpu_cc_c, "Carry flag"),
-    ATTR_RW_BIT("v", attr_cpu_cc_v, set_cpu_cc_v, "Overflow flag"),
-    ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z, "Zero flag"),
-    ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
-    ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
+    ATTR_RW_BIT("c", CPU_CCR_CARRY, "Carry flag"),
+    ATTR_RW_BIT("v", CPU_CCR_OVERFLOW, "Overflow flag"),
+    ATTR_RW_BIT("z", CPU_CCR_ZERO, "Zero flag"),
+    ATTR_RW_BIT("n", CPU_CCR_NEGATIVE, "Negative flag"),
+    ATTR_RW_BIT("x", CPU_CCR_EXTEND, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
-    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0x40800000 16"),
+    {.kind = MK_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0x40800000 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
-     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = VK_MAP, .fn = cpu_method_frame}},
 };
 // clang-format on
 
@@ -949,7 +887,7 @@ static DEF_GETTER(attr_fpu_fpcr) {
     if (!fpu)
         return val_err("fpu not present");
     value_t v = val_uint(4, fpu->fpcr);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -958,7 +896,7 @@ static DEF_GETTER(attr_fpu_fpsr) {
     if (!fpu)
         return val_err("fpu not present");
     value_t v = val_uint(4, fpu->fpsr);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -967,12 +905,12 @@ static DEF_GETTER(attr_fpu_fpiar) {
     if (!fpu)
         return val_err("fpu not present");
     value_t v = val_uint(4, fpu->fpiar);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 // FP0..FP7: 80-bit extended precision. Expose the raw register bytes
-// as V_BYTES (10 bytes) so the formatter can hex-dump it and tests
+// as VK_BYTES (10 bytes) so the formatter can hex-dump it and tests
 // can compare bit-for-bit. Conversion to a host double is lossy and
 // belongs in a future helper; this keeps the raw payload visible.
 static DEF_GETTER(attr_fpu_fpN) {
@@ -987,9 +925,9 @@ static DEF_GETTER(attr_fpu_fpN) {
 
 #define FP_REG(idx)                                                                                                    \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = "fp" #idx,                                                                             \
+        .kind = MK_ATTR, .name = "fp" #idx,                                                                            \
         .doc = "Floating-point data register FP" #idx " — 80-bit extended precision, as raw bytes", .attr = {          \
-            .type = V_BYTES,                                                                                           \
+            .type = VK_BYTES,                                                                                          \
             .get = attr_fpu_fpN,                                                                                       \
             .set = NULL,                                                                                               \
             .user_data = (const void *)(uintptr_t)idx                                                                  \
@@ -1005,21 +943,21 @@ static const member_t fpu_members[] = {
     FP_REG(5),
     FP_REG(6),
     FP_REG(7),
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
          .name = "fpcr",
          .flags = M_CAT_ADVANCED,
          .doc = "Floating-point control register: rounding mode, rounding precision, and the exception enables",
-         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpcr, .set = NULL}                                                                                                                   },
-    {.kind = M_ATTR,
+         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpcr, .set = NULL}                                                                                                                   },
+    {.kind = MK_ATTR,
          .name = "fpsr",
          .flags = M_CAT_ADVANCED,
          .doc = "Floating-point status register: condition codes, quotient byte, and the accrued/current exception bytes",
-         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpsr, .set = NULL}                                                                                                                   },
-    {.kind = M_ATTR,
+         .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpsr, .set = NULL}                                                                                                                   },
+    {.kind = MK_ATTR,
          .name = "fpiar",
          .flags = M_CAT_ADVANCED,
          .doc =
-         "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
+         "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_fpu_fpiar, .set = NULL}},
 };
 
 static const class_desc_t fpu_class = {
@@ -1045,7 +983,7 @@ static DEF_GETTER(attr_mmu_tc) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, mmu->tc);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1054,7 +992,7 @@ static DEF_GETTER(attr_mmu_crp_hi) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, (uint32_t)(mmu->crp >> 32));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1063,7 +1001,7 @@ static DEF_GETTER(attr_mmu_crp_lo) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, (uint32_t)(mmu->crp & 0xFFFFFFFF));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1072,7 +1010,7 @@ static DEF_GETTER(attr_mmu_srp_hi) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, (uint32_t)(mmu->srp >> 32));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1081,7 +1019,7 @@ static DEF_GETTER(attr_mmu_srp_lo) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, (uint32_t)(mmu->srp & 0xFFFFFFFF));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1090,7 +1028,7 @@ static DEF_GETTER(attr_mmu_tt0) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, mmu->tt0);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1099,7 +1037,7 @@ static DEF_GETTER(attr_mmu_tt1) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, mmu->tt1);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1108,7 +1046,7 @@ static DEF_GETTER(attr_mmu_mmusr) {
     if (!mmu)
         return val_err("mmu not present");
     value_t v = val_uint(4, mmu->mmusr);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
@@ -1160,9 +1098,9 @@ static const char *const mmu040_desc_formats[] = {"root", "pointer", "page", NUL
 static int desc_format(int argc, const value_t *argv, const char *const *table, int dflt) {
     if (argc <= 2)
         return dflt;
-    if (argv[2].kind == V_ENUM)
+    if (argv[2].kind == VK_ENUM)
         return argv[2].enm.idx;
-    if (argv[2].kind == V_STRING && argv[2].s)
+    if (argv[2].kind == VK_STRING && argv[2].s)
         for (int i = 0; table[i]; i++)
             if (strcmp(argv[2].s, table[i]) == 0)
                 return i;
@@ -1269,7 +1207,7 @@ static DEF_METHOD(mmu040_method_descriptor) {
 // physical address directly.
 static DEF_METHOD(mmu68k_method_peek) {
     uint32_t addr = (uint32_t)argv[0].u;
-    unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
+    unsigned size = (argc >= 2 && argv[1].kind == VK_UINT) ? (unsigned)argv[1].u : 4;
     bool physical;
     if (!debug_parse_space(argc, argv, 2, &physical))
         return val_err("peek: space must be \"logical\" or \"physical\"");
@@ -1287,46 +1225,52 @@ static DEF_METHOD(mmu68k_method_peek) {
 }
 
 // peek's default size.
-static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+static const value_t k_peek_size4 = {.kind = VK_UINT, .u = 4};
 
 // descriptor's arguments, one table per descriptor-format vocabulary.
 static const arg_decl_t mmu030_desc_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first descriptor"},
+    {.name = "addr",
+     .kind = VK_UINT,
+     .presentation_flags = VFLAG_HEX,
+     .doc = "physical address of the first descriptor"},
     {.name = "count",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &debug_mmu_desc_count_default,
      .doc = "how many consecutive descriptors (at most 256)"},
     {.name = "format",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = mmu030_desc_formats,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"short\" (4-byte) or \"long\" (8-byte) descriptors",
      .default_doc = "short"},
 };
 static const arg_decl_t mmu040_desc_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first descriptor"},
+    {.name = "addr",
+     .kind = VK_UINT,
+     .presentation_flags = VFLAG_HEX,
+     .doc = "physical address of the first descriptor"},
     {.name = "count",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &debug_mmu_desc_count_default,
      .doc = "how many consecutive descriptors (at most 256)"},
     {.name = "format",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = mmu040_desc_formats,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "the table level the descriptors sit at: \"root\", \"pointer\" or \"page\"",
      .default_doc = "page"},
 };
 static const arg_decl_t mmu68k_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "address"},
     {.name = "size",
-     .kind = V_UINT,
+     .kind = VK_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_ENUM,
+     .kind = VK_ENUM,
      .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"logical\" or \"physical\"",
@@ -1337,88 +1281,88 @@ static const arg_decl_t mmu68k_peek_args[] = {
 // table adds its own after this).
 // clang-format off
 #define MMU68K_METHODS                                                                                                 \
-    {.kind = M_METHOD,                                                                                                 \
+    {.kind = MK_METHOD,                                                                                                 \
      .name = "translate",                                                                                              \
      .examples = EXAMPLES("machine.cpu.mmu.translate 0x40800000", "machine.cpu.mmu.translate 0x2000 supervisor=false"),                     \
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",                                   \
      .method = {.result_doc = "{phys, valid, via, access}",                                                            \
-                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = V_MAP,                        \
+                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = VK_MAP,                        \
                 .fn = mmu68k_method_translate}},                                                                       \
-    {.kind = M_METHOD,                                                                                                 \
+    {.kind = MK_METHOD,                                                                                                 \
      .name = "walk",                                                                                                   \
      .examples = EXAMPLES("machine.cpu.mmu.walk 0x40800000", "machine.cpu.mmu.walk 0x2000 supervisor=false"),             \
      .doc = "Translate an address and show every step: TT registers, root pointer, each table level read",           \
      .method = {.result_doc = "{phys, valid, via, access, steps: [{step, outcome, ...}]}",                              \
-                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = V_MAP,                        \
+                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = VK_MAP,                        \
                 .fn = mmu68k_method_walk}},                                                                            \
-    {.kind = M_METHOD,                                                                                                 \
+    {.kind = MK_METHOD,                                                                                                 \
      .name = "map",                                                                                                    \
      .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map 0 0x10000000 supervisor=false"),                 \
      .doc = "List the mapped address ranges: runs that translate linearly with the same via and access",            \
      .method = {.result_doc = "[{start, size, phys, via, access}]",                                             \
-                .args = debug_mmu_map_args, .nargs = DEBUG_MMU_MAP_NARGS, .result = V_LIST,                           \
+                .args = debug_mmu_map_args, .nargs = DEBUG_MMU_MAP_NARGS, .result = VK_LIST,                           \
                 .fn = mmu68k_method_map}},                                                                             \
-    {.kind = M_METHOD,                                                                                                 \
+    {.kind = MK_METHOD,                                                                                                 \
      .name = "peek",                                                                                                   \
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical"),                                                                          \
      .doc = "Read memory, logical (through the MMU) or physical; side-effect-free",                                    \
-     .method = {.args = mmu68k_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu68k_method_peek}}
+     .method = {.args = mmu68k_peek_args, .nargs = 3, .result = VK_UINT, .fn = mmu68k_method_peek}}
 // clang-format on
 
 static const member_t mmu_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "tc",
      .flags = M_CAT_ADVANCED,
      .doc = "Translation control: the enable bit, page size, and the initial-shift/table-index split",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tc, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tc, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "crp_hi",
      .flags = M_CAT_ADVANCED,
      .doc = "CPU root pointer, high longword — descriptor type and limit for the user-space table",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_hi, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_crp_hi, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "crp_lo",
      .flags = M_CAT_ADVANCED,
      .doc = "CPU root pointer, low longword — physical address of the user-space root table",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_lo, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_crp_lo, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "srp_hi",
      .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer, high longword; used only when TC selects a separate supervisor tree",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_hi, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_srp_hi, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "srp_lo",
      .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer, low longword — physical address of the supervisor root table",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_lo, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_srp_lo, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "tt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 0 — an address range that bypasses the page tables entirely",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt0, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tt0, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "tt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 1 — the second such range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt1, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_tt1, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "mmusr",
      .flags = M_CAT_ADVANCED,
      .doc = "Status of the last PTEST: bus error, resident, write-protected, and the level reached",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_mmusr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu_mmusr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
-     .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}},
+     .attr = {.type = VK_UINT, .get = attr_mmu_enabled, .set = NULL}},
     MMU68K_METHODS,
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "descriptor",
      .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x3000 4", "machine.cpu.mmu.descriptor 0x3000 2 long"),
      .doc = "Decode raw PMMU descriptors at a physical address",
      .method = {.result_doc = "[{addr, desc, desc_lo?, dt, type, ...}]",
                 .args = mmu030_desc_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = mmu030_method_descriptor}},
 };
 
@@ -1449,7 +1393,7 @@ static mmu040_state_t *mmu040_from(struct object *self) {
         if (!mmu)                                                                                                      \
             return val_err("mmu not present");                                                                         \
         value_t v = val_uint(4, mmu->field);                                                                           \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -1470,59 +1414,59 @@ static DEF_GETTER(attr_mmu040_enabled) {
 }
 
 static const member_t mmu040_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "tc",
      .flags = M_CAT_ADVANCED,
      .doc = "Translation control: enable bit and page size (4K or 8K); the 68040 has no configurable table split",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_tc, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "itt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 0 — an instruction-fetch range that bypasses the tables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_itt0, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "itt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 1",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_itt1, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "dtt0",
      .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 0 — a data-access range that bypasses the tables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_dtt0, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "dtt1",
      .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 1",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_dtt1, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "urp",
      .flags = M_CAT_ADVANCED,
      .doc = "User root pointer — physical address of the root table used in user mode",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_urp, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "srp",
      .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer — physical address of the root table used in supervisor mode",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_srp, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "mmusr",
      .flags = M_CAT_ADVANCED,
      .doc = "Status of the last PTEST: physical address plus the resident, write-protected and transparent bits",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "enabled",
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
-     .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}},
+     .attr = {.type = VK_UINT, .get = attr_mmu040_enabled, .set = NULL}},
     MMU68K_METHODS,
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "descriptor",
      .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x3000 4 root", "machine.cpu.mmu.descriptor 0x3400 8"),
      .doc = "Decode raw 68040 table descriptors at a physical address",
      .method = {.result_doc = "[{addr, desc, dt, type, ...}]",
                 .args = mmu040_desc_args,
                 .nargs = 3,
-                .result = V_LIST,
+                .result = VK_LIST,
                 .fn = mmu040_method_descriptor}},
 };
 

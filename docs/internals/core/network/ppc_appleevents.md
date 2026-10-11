@@ -382,7 +382,7 @@ capture always re-encodes byte for byte.
 
 ## 6. In-tree representations
 
-### 6.1 `V_MAP` form
+### 6.1 `VK_MAP` form
 
 An event decodes to an ordered map:
 
@@ -458,7 +458,7 @@ captured from the guest.
   when the guest has retired the requested number of instructions without
   replying.
 * **Untrusted input.** Everything arriving from the guest is bounds-checked
-  before use; a malformed stream produces a `V_ERROR` with a reason, never a
+  before use; a malformed stream produces a `VK_ERROR` with a reason, never a
   crash and never a partial write into the tree.
 * **Not implemented:** authenticated sessions, store-and-forward (the IPM
   variant of the session layer), alias-record construction, and any host-side
@@ -601,7 +601,7 @@ Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
 `mode=` — not a `name:` spelling.
 
 Event objects are append-only for the life of the machine's connection to
-the network, so the `V_OBJECT` a `send` returns stays valid in a `let`
+the network, so the `VK_OBJECT` a `send` returns stays valid in a `let`
 binding.
 
 **Limits.** A connection holds **256 events** and an inbox of **32**.

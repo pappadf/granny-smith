@@ -31,6 +31,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "debug.h"
 #include "floppy.h"
@@ -68,7 +69,7 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the user
     // arrays belong to the PPC MMU front end and are only cleared here.
@@ -108,11 +109,11 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // ROM: the 4 MB image at $FFC00000, and its alias at $FF800000 — "any
     // system ROM space that is not physically implemented in a bank will be
     // aliased to the physical device(s) within that bank" (MPC106UM §6.5).
-    uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
+    uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++) {
-        gos_fill_page((GOS_ROM_BASE >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
-        gos_fill_page((GOS_ROM_BANK0 >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BANK0 >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // PCI: the root, then the bridge (config ports, the bus, Grackle's own
@@ -134,7 +135,7 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
 static void gos_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(buf, ram_native_pointer(cfg->mem_map, 0) + phys, len);
+        memcpy(buf, ram_native_pointer(cfg->memory_map, 0) + phys, len);
         return;
     }
     for (uint32_t i = 0; i < len; i++)
@@ -144,7 +145,7 @@ static void gos_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t 
 static void gos_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        memcpy(ram_native_pointer(cfg->memory_map, 0) + phys, buf, len);
         return;
     }
     for (uint32_t i = 0; i < len; i++)
@@ -351,16 +352,16 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
     // scheduler on the PPC seam.
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map =
+    cfg->memory_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
-    memory_map_set_host_fill(cfg->mem_map, gos_fill_page);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
+    memory_map_set_host_fill(cfg->memory_map, gos_fill_page);
     machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     if (cfg->ppc) {
         memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
     }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
@@ -432,7 +433,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);

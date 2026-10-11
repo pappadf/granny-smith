@@ -37,9 +37,10 @@
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1064,18 +1065,18 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     card->priv = p;
 
     // --- Standard slot space: VRAM, framebuffer alias, declrom, display regs.
-    memory_map_host_region(cfg->mem_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
-    memory_map_host_region(cfg->mem_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
+    memory_map_host_region(cfg->memory_map, "gc824_vram", p->vram, p->slot_base, GC824_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region_alias(cfg->memory_map, p->slot_base + GC824_FB_ALIAS_OFFSET, p->slot_base);
+    memory_map_host_region(cfg->memory_map, "gc824_declrom", p->vrom, p->slot_base + GC824_DECLROM_BUS_OFFSET,
                            GC824_DECLROM_BUS_SIZE, /*writable*/ false);
     p->ctx_jmfb = (gc_reg_ctx_t){.p = p, .region_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET};
-    memory_map_add(cfg->mem_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
+    memory_map_add(cfg->memory_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
                    &s_gc824_mem_iface, &p->ctx_jmfb);
     // GCQD command-block window (standard slot, card+$16C+$8C00) — a device
     // region so CB writes fire the trigger engine; added after the FB alias so
     // its page-table entries win over the alias for the (unused) pages it spans.
     p->ctx_gcp = (gc_reg_ctx_t){.p = p, .region_base = p->gcp_base};
-    memory_map_add(cfg->mem_map, p->gcp_base, GC824_GCP_WINDOW, "gc824_gcp", &s_gc824_mem_iface, &p->ctx_gcp);
+    memory_map_add(cfg->memory_map, p->gcp_base, GC824_GCP_WINDOW, "gc824_gcp", &s_gc824_mem_iface, &p->ctx_gcp);
 
     // --- Super-slot space: one catch-all device region over the whole
     // 256 MB slot super-space.  The driver reaches the accelerator (SRAM,
@@ -1087,7 +1088,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // writes are observed; SRAM/DRAM are backed by real buffers so the guest
     // dereferences card addresses faithfully.
     p->ctx_super = (gc_reg_ctx_t){.p = p, .region_base = p->super_base};
-    memory_map_add(cfg->mem_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
+    memory_map_add(cfg->memory_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
 
     return 0;
 }
@@ -1386,7 +1387,7 @@ static DEF_GETTER(gc_attr_force_decline_get) {
     return val_bool(display_card_824gc_force_decline(node_card(self)));
 }
 static DEF_SETTER(gc_attr_force_decline_set) {
-    if (in.kind != V_BOOL) {
+    if (in.kind != VK_BOOL) {
         value_free(&in);
         return val_err("gc.force_decline: expected a boolean");
     }
@@ -1395,42 +1396,42 @@ static DEF_SETTER(gc_attr_force_decline_set) {
     return val_none();
 }
 static const member_t gc_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "state",
      .doc = "Bring-up state: reset / booted / armed / gc-on / error",
-     .attr = {.type = V_STRING, .get = gc_attr_state}                                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = gc_attr_state}                                            },
+    {.kind = MK_ATTR,
      .name = "cb",
      .doc = "Published NuBus address of the command block (0 until booted)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_cb}                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = gc_attr_cb}                },
+    {.kind = MK_ATTR,
      .name = "seq",
      .doc = "Next expected RPC sequence word",
-     .attr = {.type = V_UINT, .get = gc_attr_seq}                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_seq}                                                },
+    {.kind = MK_ATTR,
      .name = "lastfunc",
      .doc = "Last dispatched RPC func code",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_lastfunc}            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = gc_attr_lastfunc}          },
+    {.kind = MK_ATTR,
      .name = "rpc_count",
      .doc = "Total RPCs (Transport A doorbell) serviced",
-     .attr = {.type = V_UINT, .get = gc_attr_rpc_count}                                          },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_rpc_count}                                          },
+    {.kind = MK_ATTR,
      .name = "queue_bytes",
      .doc = "Total Transport-B (DrawMultiObject queue) bytes drained",
-     .attr = {.type = V_UINT, .get = gc_attr_queue_bytes}                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = gc_attr_queue_bytes}                                        },
+    {.kind = MK_ATTR,
      .name = "on",
      .doc = "Acceleration turned ON (Control $0D firmware kick observed)",
-     .attr = {.type = V_BOOL, .get = gc_attr_on}                                                 },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = gc_attr_on}                                                 },
+    {.kind = MK_ATTR,
      .name = "error",
      .doc = "Last posted accelerator error code (0 = none)",
-     .attr = {.type = V_INT, .get = gc_attr_error}                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = gc_attr_error}                                               },
+    {.kind = MK_ATTR,
      .name = "force_decline",
      .doc = "Decline the drawing funcs ($2D/$15/$30) so the ROM path renders everything (the differential oracle)",
-     .attr = {.type = V_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
+     .attr = {.type = VK_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
 };
 static const class_desc_t display_card_824gc_gc_class = {.name = "gc",
                                                          .doc = "The 8*24 GC card's accelerator: RPC state and queue",

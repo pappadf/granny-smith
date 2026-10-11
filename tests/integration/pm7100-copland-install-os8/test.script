@@ -162,7 +162,7 @@ if have_media($target) && have_media($ddk_cd) && have_media($host_hd) {
     export_volume()
     report_row("7.5+D11E4", "ariel", "copland-install-phase4 os8-ddk-cd-install")
 } else {
-    echo "skip: pm7100-copland-install-os8 (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("pm7100-copland-install-os8 (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

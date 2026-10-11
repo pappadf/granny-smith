@@ -7,7 +7,7 @@
 // collects the ones they send us.
 //
 // Coding reference: docs/internals/core/network/ppc_appleevents.md — §5.2 for the
-// flattened stream, §5.4 for lists and records, §6.1 for the V_MAP form and
+// flattened stream, §5.4 for lists and records, §6.1 for the VK_MAP form and
 // §6.2 for the text grammar.  Nothing here reaches for an outside source.
 //
 // The codec half is pure: bytes and values in, values and bytes out, no
@@ -43,7 +43,7 @@ struct object;
 
 // Decode an AETF stream into the event map of §6.1.  The class and ID are not
 // in the stream (§5.3) — they come from the message framing.  Returns a
-// V_ERROR describing the first inconsistency if the stream is malformed;
+// VK_ERROR describing the first inconsistency if the stream is malformed;
 // guest data is untrusted, so this never reads past `len`.
 value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, int len);
 
@@ -53,7 +53,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
 // their `hex` form, so decode→encode of a captured event is byte-exact.
 int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size_t err_len);
 
-// Parse the text grammar of §6.2 into an event map.  Returns V_ERROR on a
+// Parse the text grammar of §6.2 into an event map.  Returns VK_ERROR on a
 // syntax error, with the offset and what was expected.
 value_t aevt_parse_text(const char *text, char *err, size_t err_len);
 

@@ -19,7 +19,7 @@ describe('bridgeMock', () => {
     ]);
   });
 
-  it('answers an unknown path the way gs_eval does', async () => {
+  it('answers an unknown path the way object_eval does', async () => {
     const r = await gsEval('machine.cpu.d0 = 0x1');
     expect(r).toEqual({ error: "path 'machine.cpu.d0 = 0x1' did not resolve" });
     // The real gsErrorText is kept, so tests see the real message handling.

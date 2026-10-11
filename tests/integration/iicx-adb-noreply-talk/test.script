@@ -49,4 +49,32 @@ click_and_check("keyboard-checkbox", 130, 305, 5000000, 100000000)
 click_and_check("mouse-checkbox", 130, 325, 5000000, 100000000)
 click_and_check("ok-button", 560, 385, 5000000, 100000000)
 
+# A click quicker than the ADB poll: press and release with no instruction
+# in between.  The mouse queues the release behind the unreported press
+# (adb.c, mouse_queue), so the guest sees a press report and then a release
+# report -- MBState goes $00 and back to $80 -- and `pending` clears once
+# both are taken.  With a single button state the release overwrote the
+# press and the click never happened.  Aimed at the empty right end of the
+# menu bar, where a click does nothing.
+machine.adb.mouse.move 600 10 "global"
+scheduler.run 5000000
+let presses = debug.logpoints.add(addr=0x172, width="b", mode="write", value=0x00, level=9)
+let releases = debug.logpoints.add(addr=0x172, width="b", mode="write", value=0x80, level=9)
+machine.adb.mouse.click true
+machine.adb.mouse.click false
+assert machine.adb.mouse.pending "quick click: nothing pending right after the press and release"
+let spent = 0
+while machine.adb.mouse.pending {
+    assert $spent < 20000000 "quick click: the guest never took the queued press and release"
+    scheduler.run 250000
+    $spent = $spent + 250000
+}
+scheduler.run 2000000
+assert $presses.hit_count >= 1 "quick click: the press never reached MBState"
+assert $releases.hit_count >= 1 "quick click: the release never reached MBState"
+assert debug.mac.globals.read("MBState") == 0x80 "quick click: MBState != $80 after the release"
+echo "quick-click: ok, taken within ${$spent} instructions"
+$presses.remove
+$releases.remove
+
 quit

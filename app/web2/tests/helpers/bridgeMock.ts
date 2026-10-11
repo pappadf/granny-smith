@@ -5,7 +5,7 @@
 // them.  Bus tests use this instead: the real bus module runs, and only the
 // bridge underneath it is replaced, so a test asserts the exact (path, args)
 // the frontend sends and sees how the bus reacts to the core's real answer
-// shapes — a value, `null` (a V_NONE success), or `{ error }`.
+// shapes — a value, `null` (a VK_NONE success), or `{ error }`.
 //
 // Usage:
 //   import { bridge } from '../helpers/bridgeMock';
@@ -25,7 +25,7 @@ export interface BridgeCall {
 // A canned reply: a fixed value, or a function of the request.
 type Reply = unknown | ((args: unknown[] | undefined) => unknown);
 
-// The core's answer to a path nobody taught the mock: what gs_eval really says.
+// The core's answer to a path nobody taught the mock: what object_eval really says.
 function unresolved(path: string): { error: string } {
   return { error: `path '${path}' did not resolve` };
 }

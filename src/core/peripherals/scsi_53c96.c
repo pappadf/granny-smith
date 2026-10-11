@@ -9,6 +9,7 @@
 #include "scsi_53c96.h"
 
 #include "byte_fifo.h"
+#include "checkpoint.h"
 #include "log.h"
 #include "scheduler.h"
 #include "scsi.h"

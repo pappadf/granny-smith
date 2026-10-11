@@ -6,6 +6,8 @@
 
 #include "sound.h"
 #include "audio_out.h"
+#include "checkpoint.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -13,7 +15,7 @@
 #include "scheduler.h"
 #include "sound_surface.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 LOG_USE_CATEGORY_NAME("sound");

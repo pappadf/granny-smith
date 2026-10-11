@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // appletalk_aevt_codec.c
-// The Apple event codec: AETF byte stream ⇄ V_MAP ⇄ text form.
+// The Apple event codec: AETF byte stream ⇄ VK_MAP ⇄ text form.
 //
 // Coding reference: docs/internals/core/network/ppc_appleevents.md §5.2 (stream
 // layout), §5.4 (lists, records and factoring), §5.6 (descriptor types),
@@ -10,7 +10,7 @@
 // comments below refer to that document.
 //
 // Everything here is pure and defensive: a decode never reads past the
-// buffer it was handed, and a malformed stream yields a V_ERROR naming the
+// buffer it was handed, and a malformed stream yields a VK_ERROR naming the
 // problem rather than a partial value.  Guest data is untrusted input.
 
 // ============================================================================
@@ -354,7 +354,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
 }
 
 bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
-    if (!event || event->kind != V_MAP || !key) {
+    if (!event || event->kind != VK_MAP || !key) {
         value_free(&leaf);
         return false;
     }
@@ -369,7 +369,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
         if (!strcmp(k, "attrs")) {
             had_attrs = true;
             const value_t *existing = &event->map.entries[i].val;
-            if (existing->kind == V_MAP) {
+            if (existing->kind == VK_MAP) {
                 for (size_t j = 0; j < existing->map.len; j++)
                     val_map_put(attrs, existing->map.entries[j].key, value_dup(&existing->map.entries[j].val));
             }
@@ -503,9 +503,9 @@ static void encode_desc(wr_t *w, const value_t *leaf, int depth) {
 static void encode_collection(wr_t *w, const value_t *v, bool keyed, int depth) {
     size_t count = 0;
     if (keyed)
-        count = (v && v->kind == V_MAP) ? v->map.len : 0;
+        count = (v && v->kind == VK_MAP) ? v->map.len : 0;
     else
-        count = (v && v->kind == V_LIST) ? v->list.len : 0;
+        count = (v && v->kind == VK_LIST) ? v->list.len : 0;
 
     uint8_t hdr[8];
     WR_BE32(&hdr[0], (uint32_t)count);
@@ -588,13 +588,13 @@ static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth) {
                !strcmp(type, "keyw")) {
         wr_fourcc(w, val_as_str(data));
     } else if (!strcmp(type, "list")) {
-        if (data->kind != V_LIST) {
+        if (data->kind != VK_LIST) {
             wr_fail(w, "a 'list' descriptor needs a list body");
             return;
         }
         encode_collection(w, data, false, depth);
     } else if (!strcmp(type, "reco") || !strcmp(type, "obj ") || !strcmp(type, "rang") || !strcmp(type, "insl")) {
-        if (data->kind != V_MAP) {
+        if (data->kind != VK_MAP) {
             wr_fail(w, "a '%s' descriptor needs a record body", type);
             return;
         }
@@ -605,7 +605,7 @@ static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth) {
 }
 
 int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size_t err_len) {
-    if (!event || event->kind != V_MAP || !out) {
+    if (!event || event->kind != VK_MAP || !out) {
         if (err)
             snprintf(err, err_len, "an event must be a map with class, id and parameters");
         return -1;
@@ -618,7 +618,7 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
 
     // Meta section first, then the terminator, then the parameters (§5.2).
     const value_t *attrs = value_map_get(event, "attrs");
-    if (attrs && attrs->kind == V_MAP) {
+    if (attrs && attrs->kind == VK_MAP) {
         for (size_t i = 0; i < attrs->map.len && !w.bad; i++) {
             wr_fourcc(&w, attrs->map.entries[i].key);
             encode_desc(&w, &attrs->map.entries[i].val, 0);
@@ -633,7 +633,7 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
         if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs"))
             continue;
         const value_t *leaf = &event->map.entries[i].val;
-        if (leaf->kind != V_MAP) {
+        if (leaf->kind != VK_MAP) {
             wr_fail(&w, "parameter '%s' is not a descriptor", key);
             break;
         }
@@ -650,7 +650,7 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
 }
 
 bool aevt_event_codes(const value_t *event, char class4[5], char id4[5]) {
-    if (!event || event->kind != V_MAP)
+    if (!event || event->kind != VK_MAP)
         return false;
     const value_t *c = value_map_get(event, "class");
     const value_t *i = value_map_get(event, "id");
@@ -1017,7 +1017,7 @@ value_t aevt_parse_text(const char *text, char *err, size_t err_len) {
         return val_err("%s", t.why);
     }
     // Parameters sit at the top level of the event map (§6.1).
-    if (body.kind == V_MAP) {
+    if (body.kind == VK_MAP) {
         for (size_t i = 0; i < body.map.len; i++)
             val_map_put(ev, body.map.entries[i].key, value_dup(&body.map.entries[i].val));
     }
@@ -1141,7 +1141,7 @@ static void sb_desc(sb_t *s, const value_t *leaf) {
         sb_add(s, ")");
         return;
     }
-    if (!strcmp(type, "list") && data && data->kind == V_LIST) {
+    if (!strcmp(type, "list") && data && data->kind == VK_LIST) {
         sb_add(s, "[");
         for (size_t i = 0; i < data->list.len; i++) {
             if (i)
@@ -1151,7 +1151,7 @@ static void sb_desc(sb_t *s, const value_t *leaf) {
         sb_add(s, "]");
         return;
     }
-    if (data && data->kind == V_MAP) {
+    if (data && data->kind == VK_MAP) {
         sb_add(s, "%s{", !strcmp(type, "obj ") ? "obj" : "rec");
         sb_params(s, data);
         sb_add(s, "}");

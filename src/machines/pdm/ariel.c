@@ -219,8 +219,8 @@ void pdm_video_update(config_t *cfg) {
     // store rather than asserted over it.
     bool blanked = (a->vid_mode & 0x80u) || !timed;
     uint32_t base = (st->hmc.cfg_hi & 0x2u) ? 0u : 0x100000u;
-    display_set_scanout(&v->display, blanked ? NULL : ram_native_pointer(cfg->mem_map, 0),
-                        memory_ram_size(cfg->mem_map), base, stride, w, h, v->blank, PDM_VIDEO_MAX_BYTES);
+    display_set_scanout(&v->display, blanked ? NULL : ram_native_pointer(cfg->memory_map, 0),
+                        memory_ram_size(cfg->memory_map), base, stride, w, h, v->blank, PDM_VIDEO_MAX_BYTES);
 
     if (f == PIXEL_16BPP_555) {
         v->display.clut = NULL;
@@ -244,7 +244,7 @@ static uint64_t ariel_fb_base(void *owner) {
     pdm_state_t *st = cfg ? pdm_st(cfg) : NULL;
     if (!st || !st->video.display.bits || st->video.display.bits == st->video.blank)
         return 0;
-    const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
 }
 

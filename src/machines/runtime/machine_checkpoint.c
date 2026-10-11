@@ -9,6 +9,7 @@
 #include "adb.h"
 #include "appletalk.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "cpu.h"
 #include "cuda.h"
@@ -32,7 +33,7 @@
 #include "sonic.h"
 #include "sound.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "via.h"
 
 void part_save_memory(void *obj, checkpoint_t *cp) {
@@ -160,13 +161,13 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
 
 static void part_save_irq(void *obj, checkpoint_t *cp) {
     const config_t *cfg = obj;
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    system_write_checkpoint_data(cp, &cfg->rt.irq, sizeof(cfg->rt.irq));
 }
 
 void machine_part_irq(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "irq");
     if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+        system_read_checkpoint_data(cp, &cfg->rt.irq, sizeof(cfg->rt.irq));
     machine_part(cfg, cp, "irq", part_save_irq, cfg);
 }
 

@@ -15,10 +15,11 @@
 #include "mac_host_io.h"
 #include "machine.h"
 #include "slot_tables.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu — the CPU-owned 040 MMU register file
@@ -166,7 +167,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
@@ -178,21 +179,19 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // aperture — RAM-sizing probes above installed memory read $FF rather
     // than bus-erroring (flat functional model).
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
                            desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
+    memory_map_set_pmmu(cfg->memory_map, st->bus_mmu);
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
     // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
-
-    setup_images(cfg);
 
     // Bind the I/O island + DAFB apertures + overlay, then arm the overlay.
     mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);

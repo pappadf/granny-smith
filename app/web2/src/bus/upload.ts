@@ -30,7 +30,7 @@
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
 // through the worker (files.mv/files.rm).
 
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
 import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -715,9 +715,15 @@ async function loadCheckpointFile(file: File): Promise<void> {
 export async function pickAndLoadCheckpoint(): Promise<void> {
   const [file] = await openFilePicker('', false);
   if (!file) return;
+  // The button shows before the core is up (right after a page load), and
+  // the user has already picked the file: wait for the core rather than drop
+  // the pick.  A core that failed to start has said so on the page.
   if (!isModuleReady()) {
-    showNotification('Emulator still starting; please retry', 'warning');
-    return;
+    try {
+      await whenModuleReady();
+    } catch {
+      return;
+    }
   }
   if (!(await fileHasCheckpointSignature(file))) {
     showNotification(`'${file.name}' is not a Granny Smith checkpoint`, 'error');

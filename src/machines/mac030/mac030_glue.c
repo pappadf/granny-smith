@@ -15,6 +15,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
@@ -34,7 +35,7 @@
 #include <assert.h>
 #include <stdlib.h>
 
-LOG_USE_CATEGORY_NAME("setup");
+LOG_USE_CATEGORY_NAME("system");
 
 // Construct the GLUE peripheral set in canonical order — see header.
 int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
@@ -53,7 +54,6 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     scsi_5380_attach(cfg->scsi, cp);
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_via(cfg->scsi, cfg->via2);
-    setup_images(cfg);
 
     machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp);
@@ -62,7 +62,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
@@ -72,16 +72,18 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
 
 // Create + attach the 68030 PMMU over a board's ROM window — see header.
 struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end) {
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
     mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
     if (!mmu) {
         LOG(0, "Error: out of memory constructing the PMMU");
         return NULL; // mac030_build_mmu returns the MMU, not a status
     }
-    memory_map_set_pmmu(cfg->mem_map, mmu);
+    // Set both, always together: the fault hook runs on the map's PMMU and
+    // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+    memory_map_set_pmmu(cfg->memory_map, mmu);
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
 }
@@ -103,8 +105,8 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 
     uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size); // ROM follows RAM in the flat buffer
+    uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->memory_map, ram_size); // ROM follows RAM in the flat buffer
 
     // --- RAM, with the SIMM address-line wrap the ROM's test depends on ---
     //
@@ -118,24 +120,24 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     // expect NO aliasing, and non-BMI rows that expect the wrap.  BMI rows are
     // 1, 4 and 16 MB; every other total (2, 5, 8, 32, 64 …) expects the wrap,
     // so those get one extra mirror.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
+    uint32_t ram_pages = ram_size >> MEM_PAGE_SHIFT;
     bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
     uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
     for (uint32_t p = 0; p < map_end_page && p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(p, ram_base + ((p % ram_pages) << MEM_PAGE_SHIFT), true);
 
     // --- ROM, mirrored across the board's window (read-only) ---
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t rom_end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = desc->rom_base >> MEM_PAGE_SHIFT;
+    uint32_t rom_end_page = desc->rom_end >> MEM_PAGE_SHIFT;
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++)
-            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << MEM_PAGE_SHIFT), false);
     }
 
     // --- I/O dispatcher, the window directly above the ROM window ---
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
+    memory_map_add(cfg->memory_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
 }
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
@@ -171,7 +173,7 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) 
     mac030_io_validate(io, cfg->machine->id);
     cfg->debugger = debug_init();
     if (!cp) {
-        cfg->irq = 0;
+        cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
 }
@@ -188,7 +190,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         return -1;
     }
     cfg->machine_context = st;
-    st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
 
     mac030_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
@@ -222,7 +223,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
+    st->mmu->tt1 = st->mmu->tt1_board = MAC030_TT1_NUBUS_SUPER;
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (board->post_nubus)
@@ -238,7 +239,9 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
     if (cp) {
         mmu_invalidate_tlb(st->mmu);
-        memory_map_set_pmmu(cfg->mem_map, st->mmu);
+        // Set both, always together: the fault hook runs on the map's PMMU and
+        // the 68030 bus-error path reads cpu->mmu (asserted equal there).
+        memory_map_set_pmmu(cfg->memory_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
         via_redrive_outputs(cfg->via2);
@@ -254,9 +257,9 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     // The board's NuBus bus-error window is part of the bus it builds.
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
-                                   &cfg->build_opts.rom, cp);
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    cfg->memory_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
+                                      &cfg->build_opts.rom, cp);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
     machine_part_begin(cfg, cp, "cpu");
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
@@ -273,7 +276,7 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
     if (size_pages == 0)
         return; // a bank smaller than one page decodes nothing
     for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
-        fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
+        fill(start_page + i, host + ((i % size_pages) << MEM_PAGE_SHIFT), writable);
 }
 
 void mac030_clear_page(uint32_t page_index) {
@@ -302,7 +305,7 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
@@ -334,15 +337,15 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
         return;
     *overlay_flag = on;
     uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = rom_start >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> MEM_PAGE_SHIFT;
+    uint32_t rom_start_page = rom_start >> MEM_PAGE_SHIFT;
     if (on) {
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+        uint8_t *ram_base = ram_native_pointer(cfg->memory_map, 0);
         for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
-            mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+            mac030_fill_page(p, ram_base + (p << MEM_PAGE_SHIFT), true);
     }
 }
 
@@ -361,6 +364,19 @@ void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start
     system_reset_common_devices(cfg);
 }
 
+// A VIA output the board does not observe.
+void mac030_glue_via_output_ignored(void *context, uint8_t port, uint8_t output) {
+    (void)context;
+    (void)port;
+    (void)output;
+}
+
+// A VIA shift-out the board does not observe.
+void mac030_glue_via_shift_out_ignored(void *context, uint8_t byte) {
+    (void)context;
+    (void)byte;
+}
+
 // Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.
 void mac030_glue_scc_irq(void *context, bool active) {
     mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_SCC, active);
@@ -376,18 +392,18 @@ void mac030_glue_via2_irq(void *context, bool active) {
 // is the data-driven glue_irq_routes table + mac030_irq_resolve_ipl engine
 // (both in mac030_glue_io.c — the GLUE family's dispatch tables).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
-    int old_irq = cfg->irq;
+    int old_irq = cfg->rt.irq;
     if (active)
-        cfg->irq |= source;
+        cfg->rt.irq |= source;
     else
-        cfg->irq &= ~source;
+        cfg->rt.irq &= ~source;
 
     // Highest-priority active source wins (table ordered high→low IPL).
-    int new_ipl = mac030_irq_resolve_ipl(mac030_glue_irq_routes(), (uint32_t)cfg->irq);
+    int new_ipl = mac030_irq_resolve_ipl(mac030_glue_irq_routes(), (uint32_t)cfg->rt.irq);
 
     cpu_set_ipl(cfg->cpu, new_ipl);
-    LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq, cfg->irq,
-        new_ipl);
+    LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq,
+        cfg->rt.irq, new_ipl);
     cpu_reschedule(cfg->scheduler);
 }
 

@@ -30,7 +30,7 @@
 #define ISO_MAX_DEPTH   64
 
 struct iso_volume {
-    gs_source_t *src; // retained
+    source_t *src; // retained
     uint64_t off, size;
     uint32_t block; // logical block size (2048 on every disc we have seen)
     uint32_t root_extent;
@@ -98,8 +98,7 @@ static void slash_to_colon(char *s) {
 
 bool iso_probe_source(struct peel_source *src, uint64_t off, uint64_t size) {
     uint8_t vd[8];
-    if (!src || size < ISO9660_VD_OFF + ISO_SECTOR ||
-        gs_source_read_exact(src, off + ISO9660_VD_OFF, vd, sizeof(vd)) != 0)
+    if (!src || size < ISO9660_VD_OFF + ISO_SECTOR || source_read_exact(src, off + ISO9660_VD_OFF, vd, sizeof(vd)) != 0)
         return false;
     return vd[0] == ISO_VD_PRIMARY && memcmp(vd + 1, ISO9660_ID, 5) == 0 && vd[6] == 1;
 }
@@ -207,14 +206,14 @@ iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t si
     iso_volume_t *v = calloc(1, sizeof(*v));
     if (!v)
         return NULL;
-    v->src = gs_source_retain(src);
+    v->src = source_retain(src);
     v->off = off;
     v->size = size;
     uint8_t vd[ISO_SECTOR];
     bool have_primary = false;
     for (int i = 0; i < ISO_VD_MAX; i++) {
         uint64_t at = off + ISO9660_VD_OFF + (uint64_t)i * ISO_SECTOR;
-        if (at + ISO_SECTOR > off + size || gs_source_read_exact(src, at, vd, ISO_SECTOR) != 0)
+        if (at + ISO_SECTOR > off + size || source_read_exact(src, at, vd, ISO_SECTOR) != 0)
             break;
         if (memcmp(vd + 1, ISO9660_ID, 5) != 0 || vd[0] == ISO_VD_END)
             break;
@@ -250,7 +249,7 @@ iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t si
     if (!v->joliet) {
         uint8_t dot[255];
         uint64_t at = off + (uint64_t)v->root_extent * v->block;
-        if (at + sizeof(dot) <= off + size && gs_source_read_exact(src, at, dot, sizeof(dot)) == 0) {
+        if (at + sizeof(dot) <= off + size && source_read_exact(src, at, dot, sizeof(dot)) == 0) {
             size_t rlen = dot[0], su = 34; // "." has a 1-byte identifier
             if (rlen >= su + 7 && dot[su] == 'S' && dot[su + 1] == 'P' && dot[su + 4] == 0xBE && dot[su + 5] == 0xEF) {
                 v->rock_ridge = true;
@@ -264,7 +263,7 @@ iso_volume_t *iso_open_source(struct peel_source *src, uint64_t off, uint64_t si
 void iso_close(iso_volume_t *vol) {
     if (!vol)
         return;
-    gs_source_release(vol->src);
+    source_release(vol->src);
     free(vol);
 }
 
@@ -288,7 +287,7 @@ iso_dir_iter_t *iso_opendir(iso_volume_t *vol, uint32_t extent, uint64_t size) {
     it->vol = vol;
     it->len = (size_t)size;
     it->data = malloc(it->len ? it->len : 1);
-    if (!it->data || (it->len && gs_source_read_exact(vol->src, vol->off + at, it->data, it->len) != 0)) {
+    if (!it->data || (it->len && source_read_exact(vol->src, vol->off + at, it->data, it->len) != 0)) {
         iso_closedir(it);
         return NULL;
     }
@@ -415,7 +414,7 @@ int iso_read(iso_volume_t *vol, uint32_t extent, uint64_t size, uint64_t off, vo
     uint64_t at = (uint64_t)extent * vol->block + off;
     if (at > vol->size || n > vol->size - at)
         return -EIO; // an extent past the volume's end
-    int rc = gs_source_read_exact(vol->src, vol->off + at, buf, n);
+    int rc = source_read_exact(vol->src, vol->off + at, buf, n);
     if (rc != 0)
         return rc;
     *nread = n;

@@ -77,7 +77,7 @@ A device declares **what** backs each BAR; the bus decides **where and
 when** it appears (`pci_bar_backing_iface`, and `pci_device_regions_changed`
 as the single transition point). This is the region-registration helper
 NuBus never had — no card repeats `base + offset` arithmetic against
-`cfg->mem_map`.
+`cfg->memory_map`.
 
 v1 offers **one** backing kind: the device's own `memory_interface_t`,
 dispatched by the owning bridge window. That costs a short linear probe
