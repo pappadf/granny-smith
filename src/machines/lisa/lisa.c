@@ -14,6 +14,7 @@
 #include "machine_teardown.h"
 #include "system_internal.h"
 
+#include "appletalk.h"
 #include "checkpoint.h"
 #include "cops.h"
 #include "cpu.h"
@@ -1117,8 +1118,9 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Fig. 2-5), and only A1 (A/B) and A2 (D/C) reach the chip, so every
     // 8-byte mirror is the same four registers: the boot ROM uses
     // $00D241/43/45/47, the OS's RS-232 driver $00D201/03/05/07
-    // (docs/reference/machines/lisa/lisa.md §15).  PCLK 4 MHz (chan A) / 3.6864 MHz
-    // (chan B).  Autovectored at IPL 6.
+    // (docs/reference/machines/lisa/lisa.md §15).  PCLK is 4 MHz; a 3.6864 MHz
+    // oscillator drives channel B's RTxC (the model has one RTxC for both
+    // channels; nothing drives RTxCA).  Autovectored at IPL 6.
     machine_part_begin(cfg, checkpoint, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
@@ -1133,6 +1135,14 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Port B (AppleBus, and the boot ROM's loopback self-test) is left as
     // it was.
     scc_set_port_ready_line(cfg->scc, 0, SCC_PIN_SYNC, true);
+    // The AppleTalk cable on Serial B, the port built for AppleBus: RS-422
+    // drivers, and the 3.6864 MHz RTxC whose x1 clock with TC = 6 is
+    // 230.4 kbit/s.  The SCC hands channel B's SDLC frames to the network.
+    // The Lisa has no parameter memory to seed AppleTalk's on/off state
+    // into, so the profile has no AppleTalk option: the cable is always in.
+    machine_part_begin(cfg, checkpoint, "appletalk");
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, checkpoint);
+    machine_part(cfg, checkpoint, "appletalk", part_save_atalk, cfg->atalk);
     // The ImageWriter the Office System prints to, on Serial A or B
     machine_part_imagewriter(cfg, checkpoint, true);
 

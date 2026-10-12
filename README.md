@@ -7,7 +7,7 @@
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
-> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
+> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/v0.9.3/)
 > Use Chromium browser (Safari and Firefox have known issues)
 
 [![Live webcam video digitized by the emulated 840AV](https://i.ytimg.com/vi/zUiRTOQy7RM/hq720.jpg)](https://www.youtube.com/watch?v=zUiRTOQy7RM)
@@ -85,7 +85,7 @@ Keeping it simple means for users that the emulator runs in the browser with no 
 
 You will need a ROM image and a bootable system disk image for the machine you want to run.
 
-1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
+1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/v0.9.3/)** in any modern browser
 2. On first launch, upload a ROM for your chosen model (any of the models above); it is verified against a checksum table of every known ROM and persisted in the browser's OPFS storage, so you only need to do this once
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state

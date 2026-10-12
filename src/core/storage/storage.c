@@ -180,6 +180,10 @@ static inline void bitmap_set(uint8_t *bm, uint32_t bit) {
     bm[bit >> 3] |= (uint8_t)(1u << (bit & 7));
 }
 
+static inline void bitmap_clear(uint8_t *bm, uint32_t bit) {
+    bm[bit >> 3] &= (uint8_t) ~(1u << (bit & 7));
+}
+
 // ============================================================================
 // Byte order
 // ============================================================================
@@ -1355,7 +1359,32 @@ status_t storage_load_state(storage_t *storage, void *context, storage_read_call
     status_t rc = STATUS_OK;
     uint64_t run = 0; // blocks staged in buffer
     off_t run_pos = 0; // delta position of the run's first block
+    uint8_t incoming[STORAGE_MAX_BLOCK_SIZE];
+    uint8_t original[STORAGE_MAX_BLOCK_SIZE];
     for (uint64_t block = 0; block < storage->block_count; block++) {
+        if (read_exact(read_cb, context, incoming, storage->block_size) != STATUS_OK) {
+            rc = STATUS_ERROR;
+            break;
+        }
+
+        // A block that reads the same from the base (zeros where there is
+        // none, as storage_read_block reads it) stays unmodified: only what
+        // differs goes into the delta.  Every block used to be written, so
+        // opening a Save State made a delta as large as the whole disk -- a
+        // 500 MB disk took 500 MB of the browser's storage per restore, and
+        // the second restore of a big machine ran out of quota and failed.
+        if (storage->base) {
+            if (source_read_exact(storage->base, block_pos(0, block, storage->block_size), original,
+                                  storage->block_size) != 0)
+                memset(original, 0, storage->block_size);
+        } else {
+            memset(original, 0, storage->block_size);
+        }
+        if (memcmp(incoming, original, storage->block_size) == 0) {
+            bitmap_clear(storage->bitmap, (uint32_t)block);
+            continue;
+        }
+
         // Where this block goes (a v2 delta gives each cluster a slot as it goes)
         delta_layout_t l = layout_of(storage);
         off_t pos = delta_pos(&l, block);
@@ -1376,11 +1405,7 @@ status_t storage_load_state(storage_t *storage, void *context, storage_read_call
         if (!run)
             run_pos = pos;
 
-        if (read_exact(read_cb, context, buffer + (size_t)run * storage->block_size, storage->block_size) !=
-            STATUS_OK) {
-            rc = STATUS_ERROR;
-            break;
-        }
+        memcpy(buffer + (size_t)run * storage->block_size, incoming, storage->block_size);
         run++;
         bitmap_set(storage->bitmap, (uint32_t)block);
     }

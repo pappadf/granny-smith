@@ -67,18 +67,22 @@ function statusLabel(page: Page) {
   return page.locator('.gs-statusbar .sb-state .label');
 }
 
-// Save a checkpoint through the Checkpoints panel's header button. The
-// gsEval('checkpoint.snapshot') behind it completes before the toast shows,
-// so state.checkpoint is durably in OPFS when this returns.
+// Save a checkpoint through the Checkpoints panel's header button. It
+// refreshes the machine's own (autosave) checkpoint -- a
+// gsEval('checkpoint.snapshot') that completes before the toast shows, so
+// state.checkpoint is durably in OPFS when this returns -- and keeps a
+// named, self-contained copy beside it.
 async function createCheckpoint(page: Page): Promise<void> {
   await page.locator('button.ptab[data-tab="checkpoints"]').click();
   await page.getByRole('button', { name: 'Create Checkpoint' }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: /Checkpoint '.*' created/ })).toBeVisible(
     { timeout: 30_000 },
   );
-  // The view rescans OPFS after the snapshot — the machine's checkpoint row
-  // must be listed (pins CheckpointsView against real OPFS, not the mock).
-  await expect(page.locator('.checkpoints-view .tbody .tr')).toHaveCount(1, { timeout: 10_000 });
+  // The view rescans OPFS after the snapshot — the machine's autosave row
+  // and the created checkpoint must both be listed (pins CheckpointsView
+  // against real OPFS, not the mock).
+  await expect(page.locator('.checkpoints-view .tbody .tr')).toHaveCount(2, { timeout: 10_000 });
+  await expect(page.locator('.checkpoints-view .tbody .tr').filter({ hasText: /^\s*Autosave/ })).toHaveCount(1);
 }
 
 // Reload the app and wait for the module bridge to come back.

@@ -235,6 +235,11 @@ for (const skin of SKINS) {
           timeout: 60_000,
         },
       );
+      // The zoom the snapshot was taken at: left alone, the page fits the
+      // screen to the display area, which depends on the window.
+      const zoom = page.getByRole("textbox", { name: "Zoom level" });
+      await zoom.fill("200%");
+      await zoom.press("Enter");
       await gsEvalInPage(page, "scheduler.stop");
       await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
         "Paused",
