@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { crc32, zipEntries, sniffContainer, sniffDisk, ZipStreamError } from '@/lib/zipStream';
-import { storedDmgName } from '@/bus/importImage';
+import { storedDmgName, isQcow2Head } from '@/bus/importImage';
 
 // A stream of `bytes` in pieces of `piece` bytes (network-chunk-sized).
 function streamOf(bytes: Uint8Array, piece = 777): ReadableStream<Uint8Array> {
@@ -141,5 +141,19 @@ describe('storedDmgName', () => {
     expect(storedDmgName('dir/quake.img.gz')).toBe('quake.dmg');
     expect(storedDmgName('Already.dmg')).toBe('Already.dmg');
     expect(storedDmgName('noext')).toBe('noext.dmg');
+    expect(storedDmgName('MacOSPuma.qcow2')).toBe('MacOSPuma.dmg');
+  });
+});
+
+describe('isQcow2Head', () => {
+  const head = (version: number) => new Uint8Array([0x51, 0x46, 0x49, 0xfb, 0, 0, 0, version]);
+  it('knows QCOW2 versions 2 and 3 by their magic, whatever the name', () => {
+    expect(isQcow2Head(head(2))).toBe(true);
+    expect(isQcow2Head(head(3))).toBe(true);
+  });
+  it('refuses other versions, other magics and short heads', () => {
+    expect(isQcow2Head(head(1))).toBe(false);
+    expect(isQcow2Head(new Uint8Array([0x45, 0x52, 2, 0, 0, 0, 0, 3]))).toBe(false);
+    expect(isQcow2Head(head(3).subarray(0, 4))).toBe(false);
   });
 });

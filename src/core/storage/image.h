@@ -95,7 +95,7 @@ void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t 
 // Every opener takes a path the VFS resolves: a host file, or a file inside
 // an image or archive (outer.img/partition1/inner.img, disks.zip/a.dsk).
 // Wrapper formats are peeled through the format registry -- UDIF, NDIF,
-// DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
+// QCOW2, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
 // engine reads the innermost source directly: nothing is decoded to a file.
 image_t *image_open_readonly(const char *base_path);
 

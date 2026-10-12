@@ -305,7 +305,7 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // ============================================================================
 //
 // Every opener comes down to image_open_source: the caller's forks go
-// through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2,
+// through the format registry's wrapper loop (UDIF, NDIF, QCOW2, DiskCopy 4.2,
 // MacBinary, BinHex, gzip -- any depth), and the innermost source is the
 // storage's base.  The path openers first open the path's forks through the
 // installed path opener, so a path may continue through an image or an
@@ -327,14 +327,21 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     uint32_t block_size = geometry_block_size(geom);
     format_unwrapped_t u;
     format_unwrap(data, rsrc, &u);
-    // A UDIF or NDIF image that would not open is no disk: read raw it is
-    // its compressed payload, which no guest should see.  (DiskCopy 4.2 and
+    // A UDIF, NDIF or QCOW2 image that would not open is no disk: read raw
+    // it is its container, which no guest should see.  (DiskCopy 4.2 and
     // peeler's wrappers detect from content that a raw disk can also carry,
     // so their failure leaves the bytes as they are.)
-    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0)) {
+    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0 ||
+                            strcmp(u.failed_format, "qcow2") == 0)) {
+        bool qcow2 = strcmp(u.failed_format, "qcow2") == 0;
         out_printf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
-                   strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
-                   u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                   strcmp(u.failed_format, "udif") == 0   ? "UDIF"
+                   : strcmp(u.failed_format, "ndif") == 0 ? "NDIF"
+                                                          : "QCOW2",
+                   qcow2 && u.failed_rc == -ENOTSUP
+                       ? "it uses a backing file, encryption, an external data file or zstd compression"
+                   : qcow2 && u.failed_rc == -EFBIG ? "its cluster map is too fragmented"
+                   : u.failed_rc == -EFBIG   ? "a chunk is too large to decode on demand; import it to re-chunk it"
                    : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
                                              : strerror(-u.failed_rc));
         int frc = u.failed_rc;

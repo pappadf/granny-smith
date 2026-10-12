@@ -1086,7 +1086,9 @@ from in the image (`gs-origin`; `files.udif_open`, `files.convert` and
 the streamed import; a small disk (staged, then converted); a `.dmg` stored
 as downloaded (rewritten to carry it); and a Mac-archive member the
 streamed import refuses (a Disk Copy 6 / NDIF image), unpacked, then
-converted.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
+converted; and a QCOW2 image, which cannot be written as it arrives (its
+clusters need not be in disk order), staged as it is, then converted by the
+core (`files.convert`) and the staged copy removed.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
 that category's store and, when one's `origin` is the value exactly, attaches
 it instead: nothing is downloaded, and the progress view shows "Already
 stored".  A stored image is never written to (a machine's writes go to a

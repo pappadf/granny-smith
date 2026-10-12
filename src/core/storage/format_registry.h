@@ -8,8 +8,8 @@
 //
 // Two kinds of format:
 //   - a wrapper turns a source into another source (plus, for the two-fork
-//     ones, a resource fork): UDIF, NDIF, DiskCopy 4.2, and peeler's BinHex,
-//     MacBinary and gzip.  Wrappers are tried first and unwrapped in a loop,
+//     ones, a resource fork): UDIF, NDIF, QCOW2, DiskCopy 4.2, and
+//     peeler's BinHex, MacBinary and gzip.  Wrappers are tried first and unwrapped in a loop,
 //     so foo.img.bin, foo.img.hqx and foo.dmg all come out as the disk;
 //   - a namespace format opens a source as a tree (namespace.h): a
 //     partitioned or bare disk, and peeler's archives.  These register at

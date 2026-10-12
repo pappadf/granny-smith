@@ -48,7 +48,7 @@ import {
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
 import { opfsSafeName } from './fsOps';
-import { importImage, type DiskCategory } from './importImage';
+import { importImage, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -239,8 +239,9 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
 async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   // A large file is a disk image (or an archive holding one): streamed into
   // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
-  // there; it falls through to the staged flow below.
-  if (file.size > LARGE_IMPORT_BYTES) {
+  // there; it falls through to the staged flow below.  A QCOW2 image of any
+  // size is converted there too.
+  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file))) {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],
@@ -306,7 +307,10 @@ export async function acceptFilesAsCategory(
   const file = files[0];
   startActivity(file.name);
   try {
-    if ((category === 'hd' || category === 'cdrom') && file.size > LARGE_IMPORT_BYTES) {
+    if (
+      (category === 'hd' || category === 'cdrom') &&
+      (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)))
+    ) {
       const out = await importDiskFile(file, category, autoMount);
       if (out !== undefined) return out;
     }
@@ -350,7 +354,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
   const dir = targetDir.replace(/\/+$/, '');
   const category: DiskCategory | null = dir === HD_DIR ? 'hd' : dir === CD_DIR ? 'cdrom' : null;
   for (const file of files) {
-    if (category && file.size > LARGE_IMPORT_BYTES) {
+    if (category && (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)))) {
       startActivity(file.name, 'Importing');
       try {
         const out = await importDiskFile(file, category);

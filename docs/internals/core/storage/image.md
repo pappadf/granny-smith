@@ -40,7 +40,7 @@ After construction the caller queries the instance stem with **`image_path(const
 
 Common steps (shared by all three openers):
 
-1. The path's forks go through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip — any nesting); the innermost byte source is the disk. Its size must be a whole number of blocks.
+1. The path's forks go through the format registry's wrapper loop (UDIF, NDIF, QCOW2, DiskCopy 4.2, MacBinary, BinHex, gzip — any nesting); the innermost byte source is the disk. Its size must be a whole number of blocks.
 2. A `storage_config_t` is built with that source as `base` (a DiskCopy image's base is a view past its header, so no offset is needed), `delta_path` and `journal_path`.
 3. `storage_new()` takes its own reference on the base, opens or creates the delta and journal, and reads existing bitmaps when the delta already exists.
 
@@ -66,15 +66,15 @@ static const char *pick_delta_dir(const char *path) {
 
 **Image formats** — the format registry
 
-Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2 (and the LisaEm ProFile variant, read for compatibility with existing images), MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, a LisaEm ProFile image a view that interleaves each block's 20-byte tag with its data in drive order, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the image cache (`chunk_cache_images()`, memory only — the default chunk cache spills to scratch files, which for a compressed disk would rebuild the expanded image on disk; `files.cache.image_mb`, default 16 MiB). `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row. <!-- lint-allow: LisaEm -->
+Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, QCOW2, DiskCopy 4.2 (and the LisaEm ProFile variant, read for compatibility with existing images), MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, a LisaEm ProFile image a view that interleaves each block's 20-byte tag with its data in drive order, and an NDIF, UDIF or QCOW2 image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the image cache (`chunk_cache_images()`, memory only — the default chunk cache spills to scratch files, which for a compressed disk would rebuild the expanded image on disk; `files.cache.image_mb`, default 16 MiB). `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row. <!-- lint-allow: LisaEm -->
 
-| | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
-|---|---|---|
-| Block map | `'bcem'` resource, 12-byte descriptors | `'mish'` tables, 40-byte entries |
-| Where it lives | the **resource fork** — needs an AppleDouble sidecar or a containing HFS volume | a **plist inside the file**, found via the 512-byte `'koly'` trailer at EOF |
-| Compressors | zero-fill, raw, ADC | zero-fill, ignored, raw, ADC, zlib |
-| Parser | `image_ndif.c` | `image_udif.c` |
-| Source | `ndif_source_open()` | `udif_source_open()` |
+| | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) | QCOW2 |
+|---|---|---|---|
+| Block map | `'bcem'` resource, 12-byte descriptors | `'mish'` tables, 40-byte entries | L1 table → L2 tables, one entry per cluster |
+| Where it lives | the **resource fork** — needs an AppleDouble sidecar or a containing HFS volume | a **plist inside the file**, found via the 512-byte `'koly'` trailer at EOF | tables in the file, found from the header at offset 0 |
+| Compressors | zero-fill, raw, ADC | zero-fill, ignored, raw, ADC, zlib | unallocated / zero flag, raw, raw DEFLATE |
+| Parser | `image_ndif.c` | `image_udif.c` | `image_qcow2.c` |
+| Source | `ndif_source_open()` | `udif_source_open()` | `qcow2_source_open()` |
 
 UDIF specifics worth knowing before touching `image_udif.c`:
 
@@ -83,7 +83,8 @@ UDIF specifics worth knowing before touching `image_udif.c`:
 - **`SectorCount` lives at trailer offset 0x1EC**, not where a naive walk of the published struct puts it — the 128-byte checksum blobs shift several fields. Static assertions in `image_udif.c` keep every offset inside the 512-byte trailer.
 - **The u32 at `mish` offset 0x24 is the blkx resource ID, not a descriptor count.** The count is at 0xC8.
 - **Each block table carries a CRC-32 over its decoded bytes**, and chunks of type `UDIF_CHUNK_IGNORE` are excluded from it. The chunk-mapped source decodes chunk by chunk as the guest reads, so the per-table checksum is not verified; every run is validated against the map when the source opens (inside the image, inside the data fork, a supported codec, under 64 MiB compressed) instead.
-- Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded. A UDIF or NDIF that detects but will not open is refused by the image opener with the reason; it is never read as a raw disk.
+- Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded. A UDIF, NDIF or QCOW2 that detects but will not open is refused by the image opener with the reason; it is never read as a raw disk.
+- **QCOW2** is read for compatibility with existing images (the format of the QEMU virtualiser) and is converted to UDIF on import, so a stored image is never one. The source walks the L1 and L2 tables once at open: every allocated cluster becomes a raw run (adjacent host clusters merge), every compressed cluster a run decoded on first touch, and unallocated and zero-flagged clusters, which read as zeros, no run at all. Extended L2 entries map each 1/32 subcluster separately. A raw cluster that runs past the end of the file reads as zeros past it. A backing file, encryption, an external data file, zstd-compressed clusters and unknown incompatible feature bits are refused (`-ENOTSUP`, the reason logged), as is a map of more than 4 Mi runs (`-EFBIG`). See [qcow2.md](../../../reference/formats/qcow2.md). <!-- lint-allow: QEMU -->
 - **Chunk size bound.** A cache miss decodes a whole chunk, so a foreign UDIF whose compressed chunks decode past 4 MiB (`files.udif_max_chunk_kb`) is refused in place (`-EFBIG`, "import it to re-chunk it"). Images this emulator wrote carry a `gs-profile` key in the property list and are bounded by construction. `files.convert` passes every chunk once and opens with no bound, which is how a large-chunked image is re-chunked.
 
 **Writing UDIF** — `udif_writer.h`

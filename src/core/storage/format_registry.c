@@ -215,7 +215,7 @@ static int lisaem_unwrap(const format_probe_t *p, source_t **data, source_t **rs
 }
 
 // ============================================================================
-// UDIF and NDIF
+// UDIF, NDIF and QCOW2
 // ============================================================================
 
 static bool udif_detect_probe(const format_probe_t *p) {
@@ -237,6 +237,17 @@ static int ndif_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc
     int err = 0;
     *data = ndif_source_open(p->data, p->rsrc, &err);
     *rsrc = NULL; // the decoded disk has no forks of its own
+    return *data ? 0 : (err ? err : -EINVAL);
+}
+
+static bool qcow2_detect_probe(const format_probe_t *p) {
+    return qcow2_source_detect(p->p.head, p->p.head_len);
+}
+
+static int qcow2_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
+    int err = 0;
+    *data = qcow2_source_open(p->data, &err);
+    *rsrc = NULL;
     return *data ? 0 : (err ? err : -EINVAL);
 }
 
@@ -309,15 +320,17 @@ static int gz_unwrap(const format_probe_t *p, source_t **d, source_t **r) {
 
 // Order: the trailer-identified container first (a UDIF's payload may
 // begin with anything), then the fork-identified one, then header formats
-// -- the LisaEm ProFile image before the plain DiskCopy 4.2 it refines.
+// -- QCOW2 by its magic, and the LisaEm ProFile image before the plain
+// DiskCopy 4.2 it refines.
 static const format_t g_wrappers[] = {
-    {"udif",   GS_FMT_WRAPPER, "UDIF (.dmg) disk image",        udif_detect_probe, udif_unwrap,   NULL},
-    {"ndif",   GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image", ndif_detect_probe, ndif_unwrap,   NULL},
-    {"lisaem", GS_FMT_WRAPPER, "LisaEm ProFile disk image",     lisaem_detect,     lisaem_unwrap, NULL},
-    {"dc42",   GS_FMT_WRAPPER, "Disk Copy 4.2 disk image",      dc42_detect,       dc42_unwrap,   NULL},
-    {"hqx",    GS_FMT_WRAPPER, "BinHex 4.0",                    hqx_detect_probe,  hqx_unwrap,    NULL},
-    {"bin",    GS_FMT_WRAPPER, "MacBinary",                     bin_detect_probe,  bin_unwrap,    NULL},
-    {"gz",     GS_FMT_WRAPPER, "gzip",                          gz_detect_probe,   gz_unwrap,     NULL},
+    {"udif",   GS_FMT_WRAPPER, "UDIF (.dmg) disk image",        udif_detect_probe,  udif_unwrap,   NULL},
+    {"ndif",   GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image", ndif_detect_probe,  ndif_unwrap,   NULL},
+    {"qcow2",  GS_FMT_WRAPPER, "QEMU QCOW2 disk image",         qcow2_detect_probe, qcow2_unwrap,  NULL},
+    {"lisaem", GS_FMT_WRAPPER, "LisaEm ProFile disk image",     lisaem_detect,      lisaem_unwrap, NULL},
+    {"dc42",   GS_FMT_WRAPPER, "Disk Copy 4.2 disk image",      dc42_detect,        dc42_unwrap,   NULL},
+    {"hqx",    GS_FMT_WRAPPER, "BinHex 4.0",                    hqx_detect_probe,   hqx_unwrap,    NULL},
+    {"bin",    GS_FMT_WRAPPER, "MacBinary",                     bin_detect_probe,   bin_unwrap,    NULL},
+    {"gz",     GS_FMT_WRAPPER, "gzip",                          gz_detect_probe,    gz_unwrap,     NULL},
 };
 #define N_WRAPPERS (sizeof(g_wrappers) / sizeof(g_wrappers[0]))
 
@@ -475,7 +488,7 @@ bool format_is_namespace(source_t *data, source_t *rsrc) {
     if (format_probe_init(&p, data, rsrc) != 0)
         return false;
     // A peeler wrapper always opens as at least its one file; a disk
-    // wrapper (dc42, udif, ndif) is a tree when its disk is.  Checking the
+    // wrapper (dc42, udif, ndif, qcow2) is a tree when its disk is.  Checking the
     // outermost layer keeps this cheap: no wrapper is decoded to answer.
     const format_t *w = format_detect(&p, GS_FMT_WRAPPER);
     bool yes = false;
