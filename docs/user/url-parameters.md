@@ -86,7 +86,7 @@ spaces.
 
 | Parameter | Example | Meaning |
 |---|---|---|
-| `model=` | `model=q900` | Which model to boot when the ROM serves several (here the Quadra 900 rather than the 700). Ids are in [Supported machines](machines.md). |
+| `model=` | `model=q900` | Which model to boot when the ROM serves several (here the Quadra 900 rather than the 700). Ids are in [Supported machines](machines.md). A model the ROM cannot boot is ignored, with a notice naming the models it can. |
 | `memory=` (or `ram=`) | `memory=32MB`, `memory=32768` | RAM size (MB with a unit, or KB as a number). |
 | `addressing=` | `addressing=32` | 24- or 32-bit addressing on 68K Macs that have the choice. Use `32` for Mac OS 7.6 and later, `24` for System 6 – 7.5. |
 | `appletalk=` | `appletalk=inactive` | Connect to the simulated AppleTalk network or not. |
@@ -112,7 +112,7 @@ instruction, on a 21″ monitor at 1152 × 870 in 256 colours:
 
 | Parameter | Values | Meaning |
 |---|---|---|
-| `speed=` | `paced`, `accelerated`, `turbo` | Start in **Real**, **Faster** or **Max** speed (see [The interface](interface.md) §2). |
+| `speed=` | `paced`, `accelerated`, `turbo` | Start in **Real**, **Faster** or **Max** speed (see [The interface](interface.md) §2). Any other value is ignored, with a notice. |
 | `skin=` | `midnight`, `starlight`, `platinum`, `aqua`, `workbench`, `workbench-light` | Show this visit in another appearance. Not saved; an unknown name is ignored. |
 
 ## 5. Writing links that work
@@ -166,5 +166,6 @@ size (a 2 GB disk is several minutes on a fast connection).
   ![A link whose ROM could not be downloaded](images/boot-error.png)
 
 - **A disk** cannot be downloaded or is not valid for its slot (an 800K
-  floppy image given as `hd0=`): a notice gives the reason and the machine
-  boots without it.
+  floppy image given as `hd0=`): the machine boots without it, and says so
+  — "Booted plus without Hard disk 1: … not found" — in a notice and in the
+  terminal.

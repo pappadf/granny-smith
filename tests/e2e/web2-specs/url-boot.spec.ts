@@ -184,8 +184,10 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
   await expect(
     page.locator('.toast .msg').filter({ hasText: /HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/ }),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
-    .toBeVisible({ timeout: 60_000 });
+  // The boot's own message names the disk it went without.
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: /Booted plus without Hard disk 1: 'hd0_[\d_-]+'/ }),
+  ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
     timeout: 15_000,
   });
@@ -255,7 +257,7 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
   await expect(
     page.locator('.toast .msg').filter({ hasText: "Booting plus without the URL's video ROM" }),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+  await expect(page.locator('.toast .msg').filter({ hasText: /Booted plus without .*'vrom_[\d_-]+'/ }))
     .toBeVisible({ timeout: 60_000 });
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
 });

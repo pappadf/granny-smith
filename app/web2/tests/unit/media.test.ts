@@ -131,3 +131,52 @@ describe('fd media descriptor', () => {
       expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(false);
   });
 });
+
+// catalog.proms.identify payloads (src/core/memory/prom.c).  A structurally
+// valid expansion ROM the emulator cannot use is refused with its reason
+// instead of falling through to the permissive hard-disk probe, which stored
+// two 128 KB Rage 128 ROMs as "hard disks".
+describe('prom media descriptor', () => {
+  const promIdentify =
+    (payload: object): GsEval =>
+    async (evalPath: string) => {
+      expect(evalPath).toBe('catalog.proms.identify');
+      return payload;
+    };
+
+  it('refuses a valid ROM of a card it does not emulate', async () => {
+    const result = await MEDIA_TYPES.prom.validate(
+      '/opfs/upload/rage128.prom',
+      promIdentify({
+        recognised: false,
+        id: '1002-5245-7935',
+        intact: true,
+        size: 131072,
+        reason: 'a valid Open Firmware expansion ROM, but no catalog row claims it',
+      }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reject).toBe(
+      'is a PCI expansion ROM (1002-5245-7935) for a card Granny Smith does not emulate',
+    );
+  });
+
+  it('refuses a PC option ROM with the reason', async () => {
+    const reason =
+      'an expansion ROM, but its code type is not Open Firmware (a PC/x86 option ROM cannot drive a Macintosh card)';
+    const result = await MEDIA_TYPES.prom.validate(
+      '/opfs/upload/pc.rom',
+      promIdentify({ recognised: false, size: 32768, reason }),
+    );
+    expect(result.reject).toBe(`is ${reason}`);
+  });
+
+  it('lets anything else go on to the other probes', async () => {
+    const result = await MEDIA_TYPES.prom.validate(
+      '/opfs/upload/disk.img',
+      promIdentify({ recognised: false, size: 131072, reason: 'not a PCI expansion ROM' }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reject).toBeUndefined();
+  });
+});

@@ -13,7 +13,7 @@ and so on. [Supported machines](machines.md) lists what each model offers.
 
 ## 1. Machine
 
-1. **Model** — every model whose ROM you have loaded. If the list is empty
+1. **Model** — every model whose ROM you have loaded, oldest first. If the list is empty
    ("No ROMs in storage"), go **Back** and use **Load ROM...** first.
 2. **Memory** — the RAM installed. The default is a typical configuration
    for the model.
@@ -63,7 +63,8 @@ loaded.
 Each drive has a menu:
 
 - **(no disk)** — leave it empty.
-- A disk you have loaded before.
+- A disk you have loaded before that the drive can read (an 800K drive does
+  not list 1.4 MB disks).
 - **Load image...** — pick a floppy image from your computer; it is stored
   and selected.
 - **Create blank image...** — a new, empty 800K or 1.4 MB floppy.

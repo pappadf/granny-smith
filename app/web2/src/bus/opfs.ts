@@ -3,7 +3,7 @@
 // like any object; tests swap the backend via setOpfsBackend().
 
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RomInfo } from './types';
-import { CHECKPOINT_DIR, ROMS_DIR, FDHD_DIR } from '@/lib/opfsPaths';
+import { CHECKPOINT_DIR, SAVED_CHECKPOINT_DIR, ROMS_DIR, FDHD_DIR } from '@/lib/opfsPaths';
 import {
   parseCheckpointDirName,
   formatCheckpointLabel,
@@ -174,8 +174,15 @@ export class BrowserOpfs implements OpfsBackend {
     }
   }
 
+  // The machines' own background checkpoints and the ones the user created.
   async scanCheckpoints(): Promise<CheckpointEntry[]> {
-    const entries = await this.list(CHECKPOINT_DIR);
+    const own = await this.scanCheckpointDir(CHECKPOINT_DIR, false);
+    const saved = await this.scanCheckpointDir(SAVED_CHECKPOINT_DIR, true).catch(() => []);
+    return [...own, ...saved];
+  }
+
+  private async scanCheckpointDir(root: string, saved: boolean): Promise<CheckpointEntry[]> {
+    const entries = await this.list(root);
     const out: CheckpointEntry[] = [];
     for (const e of entries) {
       if (e.kind !== 'directory') continue;
@@ -203,10 +210,17 @@ export class BrowserOpfs implements OpfsBackend {
         dirName: e.name,
         id: parsed.id,
         created: parsed.created,
-        label: manifest?.label ?? formatCheckpointLabel(parsed.created),
+        // A machine's own background checkpoint is its autosave; the ones the
+        // user created carry the label they were given.
+        label:
+          manifest?.label ??
+          (saved
+            ? formatCheckpointLabel(parsed.created)
+            : formatCheckpointLabel(parsed.created).replace(/^Checkpoint/, 'Autosave')),
         model: m?.model ?? null,
         ramBytes: m?.ramBytes ?? 0,
         sizeBytes,
+        saved,
       });
     }
     return out;

@@ -18,10 +18,10 @@
   } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
-  import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+  import { LARGE_IMPORT_BYTES, identifyRom, identifyCardRom, type MediaTypeId } from '@/lib/media';
   import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
   import { storedDmgName } from '@/bus/importImage';
-  import { gsEval, gsErrorText } from '@/bus/emulator';
+  import { gsEval, gsErrorText, gsEvalWithProgress } from '@/bus/emulator';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
   import {
@@ -47,6 +47,10 @@
   let { cat, open, onToggle, onMountedChange }: Props = $props();
 
   let entries = $state<OpfsEntry[]>([]);
+  // Rows an operation is working on (Compact), with what to show: their
+  // menu is closed until it finishes, so nothing renames, mounts or
+  // deletes the file the operation is reading.
+  let busy = $state<Record<string, string>>({});
   let loading = $state(false);
 
   async function refresh() {
@@ -56,15 +60,39 @@
     } finally {
       loading = false;
     }
+    void describeRoms();
+  }
+
+  // What each stored ROM is ("Macintosh IIci", "mdc_8_24"): ROMs are stored
+  // under their checksum, which was all the list showed.  Asked once per
+  // file and kept.
+  let romDesc = $state<Record<string, string>>({});
+  async function describeRoms() {
+    if (cat !== 'rom' && cat !== 'vrom' && cat !== 'prom') return;
+    for (const e of entries) {
+      if (e.path in romDesc) continue;
+      let desc = '';
+      if (cat === 'rom') {
+        const r = await identifyRom(gsEval, e.path).catch(() => null);
+        if (r) desc = r.name; // the ROM's name already carries its revision
+      } else {
+        const r = await identifyCardRom(gsEval, cat, e.path).catch(() => null);
+        if (r) desc = r.cardId;
+      }
+      romDesc[e.path] = desc;
+    }
   }
 
   // Re-scan when the section opens and whenever anything changes the image
   // store (images.revision): an upload from the Welcome page, the New
   // Machine dialog or the Filesystem tab would otherwise leave an open
-  // section showing its old listing.
+  // section showing its old listing.  Closed sections are scanned too (one
+  // directory listing): their header shows the count, which read 0 for a
+  // section with images until it was opened.
   $effect(() => {
     void images.revision;
-    if (open) void refresh();
+    void open;
+    void refresh();
   });
 
   // Mounted-state mirror, kept in state/images.svelte.ts. This view's own
@@ -128,6 +156,14 @@
 
   async function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
     ev.preventDefault();
+    if (busy[entry.path]) {
+      openContextMenu(
+        [{ label: busy[entry.path], disabled: true, action: () => {} }],
+        ev.clientX,
+        ev.clientY,
+      );
+      return;
+    }
     const mounted = isMounted(entry);
     const items: ContextMenuItem[] = [];
     if (cat === 'fd' || cat === 'hd' || cat === 'cd') {
@@ -240,8 +276,14 @@
     for (let i = 2; (await gsEval('files.path_exists', [dest])) === true; i++)
       dest = `${dir}/${storedDmgName(entry.name).replace(/\.dmg$/, `_${i}.dmg`)}`;
     startActivity(entry.name, 'Compacting');
+    busy[entry.path] = 'Compacting…';
     try {
-      const r = await gsEval('files.convert', [entry.path, dest]);
+      const r = await gsEvalWithProgress('files.convert', [entry.path, dest], (done, total) => {
+        if (total <= 0) return;
+        const pct = `${Math.round((100 * done) / total)} %`;
+        busy[entry.path] = `Compacting · ${pct}`;
+        setActivityDetail(pct);
+      });
       if (!r || typeof r !== 'object' || 'error' in (r as object)) {
         showNotification(`Could not compact '${entry.name}': ${gsErrorText(r)}`, 'error');
         return;
@@ -255,6 +297,7 @@
       bumpImagesRevision();
       await refresh();
     } finally {
+      delete busy[entry.path];
       endActivity();
     }
   }
@@ -328,8 +371,9 @@
       {#each entries as entry (entry.path)}
         <ImageRow
           name={entry.name}
+          desc={romDesc[entry.path] || undefined}
           icon={iconForCategory(cat)}
-          badge={mountBadge(entry.path)}
+          badge={busy[entry.path] ?? mountBadge(entry.path)}
           onContextMenu={(ev) => onRowContext(entry, ev)}
         />
       {/each}
