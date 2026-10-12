@@ -245,6 +245,45 @@ cd tests/e2e && PERF_BASE_DIST=$PWD/../../tmp/bench-base-dist \
   npx playwright test --config=playwright.web2.config.ts --project=serial perf-headbase.spec.ts
 ```
 
+## The WebAssembly engine without a browser
+
+`make -f Makefile.headless TARGET=node` builds the same headless program
+with emcc into `build/headless[-fast]-node/`: a `gs-headless.js` run by
+Node with the host filesystem, and a `gs-headless` launcher beside it, so
+`run.py` takes it as `--head` or `--base` unchanged.  It is
+single-threaded (the harness's `--jobs=inline --io=sync`), and it is the
+browser's CPU cores on the browser's engine: its turbo MIPS on the
+PowerPC rows match the browser's.  Paired against the native build,
+metric B's ratio is the cost of WebAssembly:
+
+```bash
+make -f Makefile.headless MODE=fast -j$(nproc)
+make -f Makefile.headless MODE=fast TARGET=node -j$(nproc)
+python3 scripts/bench/run.py --head build/headless-fast-node/gs-headless \
+    --base build/headless-fast/gs-headless --rows pm8500-finder,g3dt-boot \
+    --metrics B --pairing alternate
+```
+
+## Page heat
+
+A build with `EXTRA_CFLAGS=-DPD_PROFILE` gains `predecode.profile_reset()`
+and `predecode.profile(path)`: per code page, the instructions retired on
+the predecoded tier, the visits (runs of instructions inside one page,
+entry to exit or sprint end), the stores into it and the stores that reset
+decoded entries; with histograms of visit and sprint lengths and the
+slow-path accesses made from a predecoded page.  `page_heat.py` boots
+PowerPC rows on such a build and prints how few pages carry the window,
+how often they are written, and how many translations a page-granular
+translation tier would make at a given heat threshold.  The profiler costs
+a call per page transition, so the build is for these counts only, never
+for timing.
+
+```bash
+make -f Makefile.headless MODE=fast BUILD_DIR=build/headless-prof \
+    EXTRA_CFLAGS=-DPD_PROFILE -j$(nproc)
+python3 scripts/bench/page_heat.py --bin build/headless-prof/gs-headless
+```
+
 ## Adding a row
 
 1. Write `tests/bench/<row>.script` with `bench_boot()` and `bench_guard()`;

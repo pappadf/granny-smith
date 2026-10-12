@@ -79,10 +79,32 @@ void predecode_set_enabled(bool on);
 // entry to the block being left, which is what the thrash detector weighs
 // a page's stores against.
 extern struct pd_block *g_pd_current;
+#ifdef PD_PROFILE
+// Page-heat profiler (a measurement build: EXTRA_CFLAGS=-DPD_PROFILE).
+// Charges each visit (instructions retired from one page between entering
+// and leaving it) to the page; predecode.profile writes the result.  `n` is
+// budget slots, so it still includes the slots I/O penalties burned and
+// the slots an ended sprint left unrun; pd_prof_visit takes those off
+// (pd_prof_mark snapshots their counters at every transition).
+void pd_prof_visit(const struct pd_block *blk, uint32_t n);
+void pd_prof_mark(void);
+void pd_prof_entry(const struct pd_block *blk);
+void pd_prof_sprint(uint32_t budget);
+extern uint64_t g_pd_prof_slow_in_block;
+#endif
 static inline void predecode_enter(struct pd_block *blk, uint32_t budget) {
     struct pd_block *cur = g_pd_current;
-    if (cur)
+    if (cur) {
         cur->execs += cur->enter_budget - budget;
+#ifdef PD_PROFILE
+        pd_prof_visit(cur, cur->enter_budget - budget);
+#endif
+    }
+#ifdef PD_PROFILE
+    pd_prof_mark();
+    if (blk)
+        pd_prof_entry(blk);
+#endif
     g_pd_current = blk;
     if (blk)
         blk->enter_budget = budget;

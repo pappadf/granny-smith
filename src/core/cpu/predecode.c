@@ -13,6 +13,9 @@
 #include "memory.h"
 #include "object.h"
 #include "value.h"
+#ifdef PD_PROFILE
+#include "scheduler.h"
+#endif
 
 #include <assert.h>
 #include <stdio.h>
@@ -285,6 +288,212 @@ pd_block_t *predecode_lookup(uint8_t *host_page, uint32_t guest_lo, pd_arch_t ar
     return blk;
 }
 
+#ifdef PD_PROFILE
+// === Page-heat profiler (EXTRA_CFLAGS=-DPD_PROFILE; the JIT proposal's
+// Phase 0 measurements) ===
+//
+// Per host code page: instructions retired from it on the predecoded tier,
+// visits (a run of instructions from one page, entry to exit or sprint
+// end: what one call of a page translation would execute), stores into it
+// and the stores that reset decoded entries.  An "epoch" is the life of
+// one version of the page, between such resets: a translation made when
+// the page reaches a heat threshold covers the rest of its epoch, so for
+// each threshold the profiler counts the epochs that reach it (one
+// translation each) and the instructions they retire after reaching it.
+
+#define PD_PROF_SLOTS   (1u << 16)
+#define PD_PROF_NTHRESH 4
+static const uint64_t s_prof_thresh[PD_PROF_NTHRESH] = {16384, 65536, 262144, 1048576};
+
+typedef struct pd_prof_page {
+    const uint8_t *host;
+    uint32_t guest_lo;
+    uint32_t arch;
+    uint64_t instr;
+    uint64_t visits;
+    uint64_t stores;
+    uint64_t invals;
+    uint64_t epoch_instr;
+} pd_prof_page_t;
+
+static pd_prof_page_t *s_prof;
+static uint32_t s_prof_used;
+static uint64_t s_prof_trans[PD_PROF_NTHRESH], s_prof_covered[PD_PROF_NTHRESH];
+static uint64_t s_prof_visit_hist[33][2]; // log2(visit length): visits, instructions
+static uint64_t s_prof_sprint_hist[33][2]; // log2(sprint budget): sprints, budget
+static uint64_t s_prof_slow0, s_prof_generic0;
+// At the last transition: the instruction count and g_sprint_io's counters
+// of slots that were not instructions.
+static uint64_t s_prof_count;
+// Page entries that follow a visit of another page in the same sprint, and
+// how many of those stay within the same 64 KB and the same 1 MB of guest
+// address space (what a translation unit larger than a page would keep
+// inside one call).
+static uint32_t s_prof_last_guest = 1; // guest page of the last visit (odd: none this sprint)
+static uint64_t s_prof_hops, s_prof_hops_64k, s_prof_hops_1m;
+static uint32_t s_prof_phantom, s_prof_unrun;
+uint64_t g_pd_prof_slow_in_block;
+
+static inline uint32_t prof_log2(uint32_t n) {
+    return n ? 32u - (uint32_t)__builtin_clz(n) : 0u;
+}
+
+static pd_prof_page_t *prof_page(const pd_block_t *blk) {
+    if (!s_prof) {
+        s_prof = calloc(PD_PROF_SLOTS, sizeof *s_prof);
+        if (!s_prof)
+            return NULL;
+    }
+    uint32_t i = (uint32_t)(((uintptr_t)blk->host >> 12) * 2654435761u) & (PD_PROF_SLOTS - 1);
+    for (uint32_t probe = 0; probe < PD_PROF_SLOTS; probe++, i = (i + 1) & (PD_PROF_SLOTS - 1)) {
+        pd_prof_page_t *pp = &s_prof[i];
+        if (pp->host == blk->host)
+            return pp;
+        if (!pp->host) {
+            if (s_prof_used >= PD_PROF_SLOTS / 2)
+                return NULL; // full enough: stop adding pages
+            s_prof_used++;
+            pp->host = blk->host;
+            pp->guest_lo = blk->guest_lo;
+            pp->arch = blk->arch;
+            return pp;
+        }
+    }
+    return NULL;
+}
+
+void pd_prof_mark(void) {
+    s_prof_count = cpu_instr_count();
+    s_prof_phantom = g_sprint_io.phantom_instructions;
+    s_prof_unrun = g_sprint_io.unrun_slots;
+}
+
+// `slots` (the budget the visit consumed) also counts slots the scheduler
+// took off the sprint when an earlier event arrived (reconcile_sprint), so
+// the visit's length comes from the instruction count instead: slots
+// consumed, less the ones I/O stalls burned and the ones an ended sprint
+// left unrun.
+void pd_prof_entry(const pd_block_t *blk) {
+    if (s_prof_last_guest & 1)
+        return;
+    s_prof_hops++;
+    s_prof_hops_64k += ((blk->guest_lo ^ s_prof_last_guest) >> 16) == 0;
+    s_prof_hops_1m += ((blk->guest_lo ^ s_prof_last_guest) >> 20) == 0;
+}
+
+void pd_prof_visit(const pd_block_t *blk, uint32_t slots) {
+    (void)slots;
+    uint64_t consumed = cpu_instr_count() - s_prof_count;
+    uint32_t not_run = (g_sprint_io.phantom_instructions - s_prof_phantom) + (g_sprint_io.unrun_slots - s_prof_unrun);
+    uint32_t n = not_run < consumed ? (uint32_t)(consumed - not_run) : 0;
+    if (!n)
+        return;
+    pd_prof_page_t *pp = prof_page(blk);
+    if (!pp)
+        return;
+    pp->instr += n;
+    pp->epoch_instr += n;
+    pp->visits++;
+    s_prof_last_guest = blk->guest_lo;
+    uint32_t b = prof_log2(n);
+    s_prof_visit_hist[b][0]++;
+    s_prof_visit_hist[b][1] += n;
+}
+
+void pd_prof_sprint(uint32_t budget) {
+    pd_prof_mark(); // the sprint's counters start afresh
+    s_prof_last_guest = 1;
+    uint32_t b = prof_log2(budget);
+    s_prof_sprint_hist[b][0]++;
+    s_prof_sprint_hist[b][1] += budget;
+}
+
+static void prof_epoch_end(uint64_t epoch_instr, uint64_t *trans, uint64_t *covered) {
+    for (int t = 0; t < PD_PROF_NTHRESH; t++)
+        if (epoch_instr >= s_prof_thresh[t]) {
+            trans[t]++;
+            covered[t] += epoch_instr - s_prof_thresh[t];
+        }
+}
+
+static void prof_store(const pd_block_t *blk, bool reset) {
+    pd_prof_page_t *pp = prof_page(blk);
+    if (!pp)
+        return;
+    pp->stores++;
+    if (reset) {
+        pp->invals++;
+        prof_epoch_end(pp->epoch_instr, s_prof_trans, s_prof_covered);
+        pp->epoch_instr = 0;
+    }
+}
+
+static void prof_reset(void) {
+    if (s_prof)
+        memset(s_prof, 0, PD_PROF_SLOTS * sizeof *s_prof);
+    s_prof_used = 0;
+    memset(s_prof_trans, 0, sizeof s_prof_trans);
+    memset(s_prof_covered, 0, sizeof s_prof_covered);
+    memset(s_prof_visit_hist, 0, sizeof s_prof_visit_hist);
+    memset(s_prof_sprint_hist, 0, sizeof s_prof_sprint_hist);
+    g_pd_prof_slow_in_block = 0;
+    s_prof_hops = s_prof_hops_64k = s_prof_hops_1m = 0;
+    s_prof_slow0 = g_mem_slowpath_count;
+    s_prof_generic0 = g_pd_stats.generic_steps;
+}
+
+static int prof_cmp(const void *a, const void *b) {
+    const pd_prof_page_t *x = a, *y = b;
+    return x->instr < y->instr ? 1 : x->instr > y->instr ? -1 : 0;
+}
+
+// Write the profile as one JSON object.  The open epochs count as ended
+// here (without changing the live counters).
+static bool prof_write(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return false;
+    uint64_t trans[PD_PROF_NTHRESH], covered[PD_PROF_NTHRESH];
+    memcpy(trans, s_prof_trans, sizeof trans);
+    memcpy(covered, s_prof_covered, sizeof covered);
+    pd_prof_page_t *pages = calloc(s_prof_used ? s_prof_used : 1, sizeof *pages);
+    uint32_t n = 0;
+    for (uint32_t i = 0; s_prof && pages && i < PD_PROF_SLOTS; i++)
+        if (s_prof[i].host) {
+            prof_epoch_end(s_prof[i].epoch_instr, trans, covered);
+            pages[n++] = s_prof[i];
+        }
+    if (pages)
+        qsort(pages, n, sizeof *pages, prof_cmp);
+    fprintf(f, "{\"slowpath\":%llu,\"slowpath_in_block\":%llu,\"generic_steps\":%llu,",
+            (unsigned long long)(g_mem_slowpath_count - s_prof_slow0), (unsigned long long)g_pd_prof_slow_in_block,
+            (unsigned long long)(g_pd_stats.generic_steps - s_prof_generic0));
+    fprintf(f, "\"hops\":%llu,\"hops_64k\":%llu,\"hops_1m\":%llu,", (unsigned long long)s_prof_hops,
+            (unsigned long long)s_prof_hops_64k, (unsigned long long)s_prof_hops_1m);
+    fprintf(f, "\"thresholds\":[");
+    for (int t = 0; t < PD_PROF_NTHRESH; t++)
+        fprintf(f, "%s{\"heat\":%llu,\"translations\":%llu,\"covered\":%llu}", t ? "," : "",
+                (unsigned long long)s_prof_thresh[t], (unsigned long long)trans[t], (unsigned long long)covered[t]);
+    fprintf(f, "],\"visit_hist\":[");
+    for (int b = 0; b < 33; b++)
+        fprintf(f, "%s[%llu,%llu]", b ? "," : "", (unsigned long long)s_prof_visit_hist[b][0],
+                (unsigned long long)s_prof_visit_hist[b][1]);
+    fprintf(f, "],\"sprint_hist\":[");
+    for (int b = 0; b < 33; b++)
+        fprintf(f, "%s[%llu,%llu]", b ? "," : "", (unsigned long long)s_prof_sprint_hist[b][0],
+                (unsigned long long)s_prof_sprint_hist[b][1]);
+    fprintf(f, "],\"pages\":[");
+    for (uint32_t i = 0; i < n; i++)
+        fprintf(f, "%s\n{\"guest\":%u,\"arch\":%u,\"instr\":%llu,\"visits\":%llu,\"stores\":%llu,\"invals\":%llu}",
+                i ? "," : "", pages[i].guest_lo, pages[i].arch, (unsigned long long)pages[i].instr,
+                (unsigned long long)pages[i].visits, (unsigned long long)pages[i].stores,
+                (unsigned long long)pages[i].invals);
+    fprintf(f, "]}\n");
+    free(pages);
+    return fclose(f) == 0;
+}
+#endif // PD_PROFILE
+
 void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     if (len == 0)
         return;
@@ -321,6 +530,9 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     }
     if (any)
         g_pd_stats.invalidations++;
+#ifdef PD_PROFILE
+    prof_store(blk, any);
+#endif
     // Thrash detector: stores into this page within a window of page
     // transitions.  The page keeps its block until the CPU's next lookup
     // (its executor may be running from it right now).
@@ -539,6 +751,30 @@ static const arg_decl_t pd_hist_args[] = {
     {.name = "top", .kind = VK_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "entries to print (default 40)"},
 };
 
+#ifdef PD_PROFILE
+static value_t pd_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    if (!prof_write(argv[0].s))
+        return val_err("predecode.profile: cannot write %s", argv[0].s);
+    return val_none();
+}
+
+static value_t pd_method_profile_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    prof_reset();
+    return val_none();
+}
+
+static const arg_decl_t pd_profile_args[] = {
+    {.name = "path", .kind = VK_STRING, .doc = "file to write the JSON profile to"},
+};
+#endif
+
 static value_t pd_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -607,6 +843,16 @@ static const member_t predecode_members[] = {
      .name = "hist",
      .doc = "Print the most-decoded ids with their names (static shape histogram; consumes the counts)",
      .method = {.args = pd_hist_args, .nargs = 1, .result = VK_NONE, .fn = pd_method_hist}                },
+#ifdef PD_PROFILE
+    {.kind = MK_METHOD,
+     .name = "profile",
+     .doc = "Write the page-heat profile since profile_reset as JSON (PD_PROFILE builds)",
+     .method = {.args = pd_profile_args, .nargs = 1, .result = VK_NONE, .fn = pd_method_profile}          },
+    {.kind = MK_METHOD,
+     .name = "profile_reset",
+     .doc = "Zero the page-heat profile (PD_PROFILE builds)",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = pd_method_profile_reset}               },
+#endif
     {.kind = MK_METHOD,
      .name = "reset",
      .doc = "Drop every block and zero the counters",

@@ -184,6 +184,9 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 
 static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
+#ifdef PD_PROFILE
+    pd_prof_sprint(*instructions);
+#endif
     p->fold = 0;
     // The switch loop's bound on branches folded without a budget slot (two
     // branches folding to each other must not spin a sprint forever).

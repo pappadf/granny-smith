@@ -526,8 +526,23 @@ static inline __attribute__((always_inline)) uint32_t dev_read_n(const page_entr
     return size == 1 ? dev_read8(pe, addr, off) : size == 2 ? dev_read16(pe, addr, off) : dev_read32(pe, addr, off);
 }
 
+#ifdef PD_PROFILE
+// Slow-path accesses made while an executor runs from a predecoded block
+// (the page-heat profiler, predecode.c): each would leave a translation.
+extern uint64_t g_pd_prof_slow_in_block;
+extern struct pd_block *g_pd_current;
+#define PD_PROF_SLOW()                                                                                                 \
+    do {                                                                                                               \
+        if (g_pd_current)                                                                                              \
+            g_pd_prof_slow_in_block++;                                                                                 \
+    } while (0)
+#else
+#define PD_PROF_SLOW() ((void)0)
+#endif
+
 static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr, unsigned size) {
     g_mem_slowpath_count++;
+    PD_PROF_SLOW();
     g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
 
     const bool supervisor = g_active_read == g_supervisor_read;
@@ -961,6 +976,7 @@ static inline __attribute__((always_inline)) void dev_write_n(const page_entry_t
 
 static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, uint32_t value, unsigned size) {
     g_mem_slowpath_count++;
+    PD_PROF_SLOW();
     g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
 
     const bool supervisor = g_active_write == g_supervisor_write;
