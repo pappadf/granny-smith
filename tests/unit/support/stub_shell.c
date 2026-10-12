@@ -17,11 +17,6 @@ int shell_init(void) {
     return 0;
 }
 
-uint64_t shell_dispatch(char *line) {
-    (void)line;
-    return 0;
-}
-
 // memory.o references parse_address (memory.dump resolves symbol-string
 // addresses through it). The suites never dump memory, so a stub that
 // declines all input is enough to link.

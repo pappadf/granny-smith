@@ -35,7 +35,7 @@ Background checkpoints (quick checkpoints saved automatically) are serialised in
 
 Checkpoints the user creates (the Checkpoints panel's **Create Checkpoint**) are consolidated checkpoints in a directory each under `/opfs/checkpoints/saved/<machine_id>-<now>/` — `state.checkpoint` (written by `checkpoint.save`) and a `manifest.json` copied from the machine's own with a `label` and `"saved": true`. A subdirectory, because the startup sweep (`checkpoint_machine_sweep_others`) removes every `<16 hex>-<stamp>` directory in `/opfs/checkpoints/` but the running machine's own; it leaves other names alone. The panel lists both roots (`app/web2/src/bus/opfs.ts` `scanCheckpoints`).
 
-The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `gs_register_machine`, which calls `checkpoint_machine_set`.
+The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `system_register_machine`, which calls `checkpoint_machine_set`.
 
 `checkpoint_machine_set` is called **at most once per process lifetime**. Rotation is a JS-driven page reload; the C side does not support changing machine identity in-place.
 
@@ -83,10 +83,12 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 
 - **File format & signature:**
   - Two on-disk formats are used:
-    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually. The file is read and written through a 1 MB stdio buffer: a disk is one record per block, and with stdio's default ~1 KB buffer every couple of records was a filesystem call (a synchronous OPFS access-handle round trip in the browser).
+    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually. The file is read and written through a 1 MB stdio buffer: a disk is one record per block, and with stdio's default ~1 KB buffer every couple of records was a filesystem call (a synchronous OPFS access-handle round trip in the browser). The file is written as `<path>.tmp` and renamed over `<path>` when `checkpoint_close` finds no error (the partial file is removed otherwise), so a failed save never destroys the checkpoint it would have replaced.
     - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer behind a header-sized gap; at close the header is filled in and the whole buffer is one file the I/O worker writes and publishes. No RLE (the payload is mostly uncompressible RAM: `compressed_size == uncompressed_size` marks it raw) and no per-block metadata (filenames, line numbers).
   - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.  The header says nothing about the machine: what it is -- the model and the RAM size -- is the payload's first part, the board's (below).
-  - The reader auto-detects the format by inspecting the 8-byte magic signature.
+  - The 8-byte signature is the magic `GSCHKPT` and one ASCII version digit; the reader auto-detects the format from the digit, and a new format is a new digit (the web app recognises a checkpoint by the 7-byte magic).
+  - `checkpoint_check_build_id` tells a checkpoint saved by another build (`CHECKPOINT_BUILD_MISMATCH`) from a file that cannot be read or is not a checkpoint (`CHECKPOINT_BUILD_UNREADABLE`).
+  - The `checkpoint` object (methods and attributes) lives in `checkpoint_class.c`; `checkpoint.c` is the file format and I/O only.
 
 
 ## Image Persistence for Quick Checkpoints

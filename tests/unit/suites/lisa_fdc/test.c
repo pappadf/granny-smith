@@ -35,14 +35,19 @@
 
 #define CMD_EXEC    0x81
 #define CMD_CLRSTAT 0x85
-#define CMD_ENBLDRV 0x86
+#define CMD_ENBLDRV 0x86 // set interrupt mask
+#define CMD_DISDRV  0x87 // clear interrupt mask
+#define B_IMSK      44 // $C059: interrupt mask
+#define B_IST       47 // $C05F: latched interrupt events
 #define RWTS_READ   0x00
 #define DRIVE_UPPER 0x80 // built-in (upper) drive
 #define DRVERR      0x07 // "no disk in drive"
 
+static bool fdir; // the FDIR line as last driven by the controller
+
 static void fdir_cb(void *ctx, bool asserted) {
     (void)ctx;
-    (void)asserted;
+    fdir = asserted;
 }
 
 static lisa_fdc_t *make_fdc(void) {
@@ -111,11 +116,60 @@ TEST(test_initdisk_after_probe_reports_ok) {
     lisa_fdc_delete(fdc);
 }
 
+// ---- interrupt mask: FDIR = (IST AND IMsk) != 0 ---------------------------
+
+// Issue one of the mask commands with its mask byte.
+static void mask_cmd(lisa_fdc_t *fdc, uint8_t cmd, uint8_t mask) {
+    lisa_fdc_write8(fdc, OFF(B_RWTS), mask);
+    issue(fdc, cmd);
+}
+
+// Power-on: both drives' interrupts enabled.
+TEST(test_mask_starts_enabled) {
+    lisa_fdc_t *fdc = make_fdc();
+    ASSERT_EQ_INT(lisa_fdc_read8(fdc, OFF(B_IMSK)), 0x88);
+    lisa_fdc_delete(fdc);
+}
+
+// LOS's SONYINT disables floppy interrupts ($87 with $88) when one arrives
+// before the Sony driver is configured -- a diskette present at power-on.  FDIR
+// must drop although the event stays latched, or the level-1 handler re-enters
+// forever; re-enabling ($86, as the driver's INITDISK does) raises it again.
+TEST(test_disable_drops_fdir_and_enable_restores_it) {
+    lisa_fdc_t *fdc = make_fdc();
+    lisa_fdc_write8(fdc, OFF(B_IST), 0x90); // disk inserted on the $80 drive
+    mask_cmd(fdc, CMD_ENBLDRV, 0x80);
+    ASSERT_TRUE(fdir);
+    mask_cmd(fdc, CMD_DISDRV, 0x88);
+    ASSERT_TRUE(!fdir);
+    ASSERT_EQ_INT(lisa_fdc_read8(fdc, OFF(B_IMSK)), 0x00);
+    ASSERT_EQ_INT(lisa_fdc_read8(fdc, OFF(B_IST)), 0x90); // still latched
+    mask_cmd(fdc, CMD_ENBLDRV, 0x88);
+    ASSERT_TRUE(fdir);
+    lisa_fdc_delete(fdc);
+}
+
+// Each mask bit gates its own drive's nibble: bit 3 bits 0-3, bit 7 bits 4-7.
+TEST(test_mask_gates_per_drive) {
+    lisa_fdc_t *fdc = make_fdc();
+    lisa_fdc_write8(fdc, OFF(B_IST), 0x90); // event on the $80 drive (high nibble)
+    mask_cmd(fdc, CMD_DISDRV, 0x80); // disable that drive only
+    ASSERT_TRUE(!fdir);
+    mask_cmd(fdc, CMD_DISDRV, 0x08);
+    lisa_fdc_write8(fdc, OFF(B_IST), 0x0C); // event on the other drive (low nibble)
+    mask_cmd(fdc, CMD_ENBLDRV, 0x08); // enable the other drive
+    ASSERT_TRUE(fdir);
+    lisa_fdc_delete(fdc);
+}
+
 int main(void) {
     RUN(test_empty_drive_read_reports_no_disk);
     RUN(test_clrstat_clears_stale_read_error);
     RUN(test_enbldrv_clears_stale_read_error);
     RUN(test_initdisk_after_probe_reports_ok);
+    RUN(test_mask_starts_enabled);
+    RUN(test_disable_drops_fdir_and_enable_restores_it);
+    RUN(test_mask_gates_per_drive);
     printf("[PASS] All Lisa FDC status tests passed\n");
     return 0;
 }

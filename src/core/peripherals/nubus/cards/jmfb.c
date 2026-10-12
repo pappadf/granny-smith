@@ -23,6 +23,7 @@
 #include "jmfb.h"
 
 #include "jmfb_family.h"
+#include "jmfb_kong_crt.h" // the Kong CRT response table (data + provenance)
 
 #include "card.h"
 #include "checkpoint.h"
@@ -33,7 +34,7 @@
 #include "memory.h"
 #include "nubus.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -332,6 +333,138 @@ static bool load_vrom(jmfb_priv_t *p, const char *rom) {
     return true;
 }
 
+// Seat the card's declaration ROM in p->vrom: the generated substitute
+// (records from `gen_monitors`, which may carry a custom resolution) or
+// Apple's ROM through the content-driven loader.  A substitute that fails to
+// generate leaves a zero-filled ROM and the card up; an Apple ROM that cannot
+// be loaded fails the card (returns false) and the slot stays empty.
+//
+// Failures log at level 0, the always-on level (docs/internals/core/debug/
+// log.md): a display card that comes up without its ROM is something the user
+// must see without turning a category up.  They are filed under this file's
+// "video" category with the rest of the card's messages.
+static bool install_declrom(jmfb_priv_t *p, nubus_card_t *card, const slot_opts_t *opts,
+                            const nubus_monitor_t *gen_monitors) {
+    if (opts->substitute) {
+        // The substitute ROM: the GS declaration ROM generated here --
+        // records from the (possibly custom-overridden) monitor list, code
+        // fragments spliced, CRC stamped in C; the offer registry is never
+        // consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img && declrom_install_builtin(p->card, mdc_8_24_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
+            p->vrom_size = JMFB_DECLROM_BUS_SIZE;
+        else
+            LOG(0, "JMFB: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
+        return true;
+    }
+    if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
+        // The bus seats Apple's ROM only when it is offered (else the
+        // substitute), so this is a file that went away or a checkpoint whose
+        // ROM is not this card's: the slot stays empty.
+        LOG(0,
+            "JMFB: slot $%X: the 8\xe2\x80\xa2"
+            "24 declaration ROM could not be loaded",
+            card->slot);
+        return false;
+    }
+    return true;
+}
+
+// Put the card on the bus: VRAM (writable) and the declaration ROM
+// (read-only) as host-backed regions, the register window through a
+// memory_interface_t, and the 24-bit-mode VRAM mirror.
+static void map_regions(jmfb_priv_t *p, config_t *cfg) {
+    // Register host-backed regions on the bus map.  VRAM is writable;
+    // the declaration ROM is read-only.  The register window goes
+    // through memory_map_add with a memory_interface_t since it needs
+    // I/O dispatch on every access.
+    memory_map_host_region(cfg->memory_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region(cfg->memory_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
+                           JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
+    memory_map_add(cfg->memory_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs",
+                   &s_jmfb_mem_iface, p);
+
+    // VRAM mirror at slot+$900000 — the Mac IIcx ROM, when running in
+    // 24-bit Memory Manager Mode, builds framebuffer pointers with the
+    // high byte holding master-pointer flags ($F9_______ for slot $9).
+    // Apple QuickDraw inner loops dereference these pointers without
+    // first calling _StripAddress, so the access goes to the literal
+    // 32-bit address $F9900xxx.  Real Mac IIcx hardware: the card's
+    // 16 MB slot allocation is decoded such that VRAM is reachable from
+    // multiple base offsets; the slot $900000 region is one of those
+    // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
+    // unmapped memory and QuickDraw bus-errors.
+    memory_map_host_region_alias(cfg->memory_map, p->slot_base + 0x900000u, p->slot_base);
+}
+
+// The power-on picture: registers at PrimaryInit's starting point (1 bpp,
+// the sensed monitor's raster), the /RESET blank buffer, a black cold-boot
+// scanout, the CRT response and a grayscale starting CLUT.
+static void init_power_on_state(jmfb_priv_t *p, const nubus_monitor_t *monitor, uint32_t mon_w, uint32_t mon_h,
+                                bool substitute) {
+    // Default register state from PrimaryInit's expected starting point.
+    // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
+    // VRAM with the canonical $AAAAAAAA / $55555555 gray pattern in that
+    // mode, and the OS later switches depth via cscSetMode.  Defaulting
+    // to 8 bpp here makes that gray fill render as black/white stripes.
+    p->regs.csr = 0;
+    p->regs.video_base = 0xA00 / 32; // driver convention: $A00 byte offset
+    p->regs.row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
+    p->poweron_row_words = p->regs.row_words; // what a /RESET returns to
+
+    p->regs.raster_h = mon_h;
+    // The blank a /RESET scans out (card_reset): the power-on raster, 1 bpp.
+    // Too small a buffer only shortens the blanked raster (display_set_scanout).
+    p->bind.blank_size = (size_t)p->poweron_row_words * 4u * mon_h;
+    p->bind.blank = p->blank = calloc(1, p->bind.blank_size);
+    if (!p->blank)
+        p->bind.blank_size = 0;
+    p->display.format = PIXEL_1BPP_MSB;
+    // Derive the descriptor from the registers just set, the same way every
+    // later write does.  The old hard-coded `stride = 640/8` described a
+    // 640-wide raster no matter which monitor was sensed, so on the 1152-wide
+    // Kong the register said 36 row-words and the descriptor said 80 bytes
+    // until the driver first wrote RowWords: the blank below covered 80x870
+    // of a 144x870 raster (the rest stayed white at 1 bpp -- the exact cold
+    // boot flash this blank exists to prevent) and every consumer sheared its
+    // rows walking width=1152 over a stride-80 row.
+    jmfb_apply_scanout(&p->regs, &p->bind);
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    display_blank_raster(&p->display);
+    p->display.clut = p->clut;
+    p->display.clut_len = 256;
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    // CRT response for the attached monitor — see display_t::crt_response.
+    // NULL means "identity gamma", which is the right model for 12"/13"
+    // RGB and Portrait B&W (their gamma tables are near-identity in our
+    // CLUT trace, so a software display without monitor compensation
+    // renders neutral grays correctly).  Kong's CRT amplified blue more
+    // than R/G, so its non-NULL kong_crt_response table inverts Apple's
+    // gamma pre-correction at display time.
+    // The substitute ROM always uses identity response: the GS vROM ships
+    // identity gamma for every monitor, so there is no Apple gamma
+    // pre-correction to invert.  This is the ONLY place that distinction is
+    // made -- both ROMs drive mdc_8_24_monitors, so the decision is the ROM's,
+    // not a second table's.
+    p->display.crt_response = (!substitute && monitor) ? monitor->crt_response : NULL;
+    p->display.response_dirty = true;
+
+    // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
+    // before the OS programs a palette.  The driver's first cscSetEntries
+    // will overwrite this.
+    for (int i = 0; i < 256; i++) {
+        p->clut[i].r = (uint8_t)i;
+        p->clut[i].g = (uint8_t)i;
+        p->clut[i].b = (uint8_t)i;
+        p->clut[i].a = 255;
+    }
+}
+
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     // The monitor on the card's connector: its seat's sense (from the
     // document on a boot, from the bus's block on a restore).
@@ -397,27 +530,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         custom_active = true;
     }
 
-    if (substitute) {
-        // The substitute ROM: the GS declaration ROM generated here --
-        // records from the (possibly custom-overridden) monitor list, code
-        // fragments spliced, CRC stamped in C; the offer registry is never
-        // consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
-        size_t img_size = 0;
-        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(p->card, mdc_8_24_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
-            p->vrom_size = JMFB_DECLROM_BUS_SIZE;
-        else
-            LOG(0, "JMFB: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
-        declrom_builder_free(bld);
-    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's: the slot stays empty.
-        LOG(0,
-            "JMFB: slot $%X: the 8\xe2\x80\xa2"
-            "24 declaration ROM could not be loaded",
-            card->slot);
+    if (!install_declrom(p, card, opts, gen_monitors)) {
         free(p->vram);
         free(p->vrom);
         free(p);
@@ -446,88 +559,11 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         mon_h = custom_h;
     }
 
-    // Default register state from PrimaryInit's expected starting point.
-    // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
-    // VRAM with the canonical $AAAAAAAA / $55555555 gray pattern in that
-    // mode, and the OS later switches depth via cscSetMode.  Defaulting
-    // to 8 bpp here makes that gray fill render as black/white stripes.
-    p->regs.csr = 0;
-    p->regs.video_base = 0xA00 / 32; // driver convention: $A00 byte offset
-    p->regs.row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
-    p->poweron_row_words = p->regs.row_words; // what a /RESET returns to
-
-    p->regs.raster_h = mon_h;
-    // The blank a /RESET scans out (card_reset): the power-on raster, 1 bpp.
-    // Too small a buffer only shortens the blanked raster (display_set_scanout).
-    p->bind.blank_size = (size_t)p->poweron_row_words * 4u * mon_h;
-    p->bind.blank = p->blank = calloc(1, p->bind.blank_size);
-    if (!p->blank)
-        p->bind.blank_size = 0;
-    p->display.format = PIXEL_1BPP_MSB;
-    // Derive the descriptor from the registers just set, the same way every
-    // later write does.  The old hard-coded `stride = 640/8` described a
-    // 640-wide raster no matter which monitor was sensed, so on the 1152-wide
-    // Kong the register said 36 row-words and the descriptor said 80 bytes
-    // until the driver first wrote RowWords: the blank below covered 80x870
-    // of a 144x870 raster (the rest stayed white at 1 bpp -- the exact cold
-    // boot flash this blank exists to prevent) and every consumer sheared its
-    // rows walking width=1152 over a stride-80 row.
-    jmfb_apply_scanout(&p->regs, &p->bind);
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    display_blank_raster(&p->display);
-    p->display.clut = p->clut;
-    p->display.clut_len = 256;
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    // CRT response for the attached monitor — see display_t::crt_response.
-    // NULL means "identity gamma", which is the right model for 12"/13"
-    // RGB and Portrait B&W (their gamma tables are near-identity in our
-    // CLUT trace, so a software display without monitor compensation
-    // renders neutral grays correctly).  Kong's CRT amplified blue more
-    // than R/G, so its non-NULL kong_crt_response table inverts Apple's
-    // gamma pre-correction at display time.
-    // The substitute ROM always uses identity response: the GS vROM ships
-    // identity gamma for every monitor, so there is no Apple gamma
-    // pre-correction to invert.  This is the ONLY place that distinction is
-    // made -- both ROMs drive mdc_8_24_monitors, so the decision is the ROM's,
-    // not a second table's.
-    p->display.crt_response = (!substitute && monitor) ? monitor->crt_response : NULL;
-    p->display.response_dirty = true;
-
-    // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
-    // before the OS programs a palette.  The driver's first cscSetEntries
-    // will overwrite this.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
-    }
+    init_power_on_state(p, monitor, mon_w, mon_h, substitute);
 
     card->priv = p;
 
-    // Register host-backed regions on the bus map.  VRAM is writable;
-    // the declaration ROM is read-only.  The register window goes
-    // through memory_map_add with a memory_interface_t since it needs
-    // I/O dispatch on every access.
-    memory_map_host_region(cfg->mem_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
-                           JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
-    memory_map_add(cfg->mem_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs", &s_jmfb_mem_iface,
-                   p);
-
-    // VRAM mirror at slot+$900000 — the Mac IIcx ROM, when running in
-    // 24-bit Memory Manager Mode, builds framebuffer pointers with the
-    // high byte holding master-pointer flags ($F9_______ for slot $9).
-    // Apple QuickDraw inner loops dereference these pointers without
-    // first calling _StripAddress, so the access goes to the literal
-    // 32-bit address $F9900xxx.  Real Mac IIcx hardware: the card's
-    // 16 MB slot allocation is decoded such that VRAM is reachable from
-    // multiple base offsets; the slot $900000 region is one of those
-    // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
-    // unmapped memory and QuickDraw bus-errors.
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
+    map_regions(p, cfg);
 
     return 0;
 }
@@ -696,82 +732,6 @@ static const nubus_card_ops_t mdc_8_24_ops = {
 // chosen.  monitor_for_sense() looks up by sense_code, not list order.
 static const int mdc_8_24_4depths[] = {1, 2, 4, 8, 0};
 
-// CRT response curves for monitors whose JMFB gamma table is NOT
-// near-identity.  Mac System 7's JMFB driver gamma-pre-corrects CLUT
-// writes for each monitor via Apple's per-display 'gama' resource (six tables at
-// chip[$4A86..$502B] of the JMFB VROM).  On real hardware the CRT phosphor/electron-
-// gun gamma response cancels the pre-correction and the user sees a
-// neutral image.  In software we apply the inverse here.
-//
-// 13"/12" RGB and Portrait B&W happen to ship with near-identity
-// gamma tables — their CLUT entries come out as true grays in our
-// trace, so leaving `crt_response = NULL` (identity) renders the
-// emulated framebuffer correctly with no further work.
-//
-// 21" RGB Kong ships with a deliberately B-channel-attenuated gamma
-// table (Kong's blue phosphor was more efficient than R/G, so Apple
-// pre-multiplied B by ~0.84 to compensate; the CRT then boosts B
-// back by ~1.19 for a neutral display).  Without modelling the
-// Kong CRT here, the page shows a yellow-tinted screenshot.
-//
-// Provenance: the three tables below were derived offline by booting
-// the IIcx at sense=$0 (Kong) and sense=$6 (13" RGB) and capturing
-// the gamma-pre-corrected CLUTs Mac OS uploads via the JMFB driver.
-// Treating the 13" RGB CLUT as the perceptually-neutral ground truth
-// (its gamma is near-identity in our trace), the per-channel inverse
-// LUT for Kong is:
-//     kong_crt_response_R[kong_CLUT_R[i]] = rgb13_CLUT_R[i]
-//     (and same for G, B).
-// Round-trip self-check confirmed 256/256 sample indices recover the
-// 13"-RGB-equivalent neutral grays within ±1 byte.  See the offline
-// derivation in this commit's discussion thread.
-static const uint8_t kong_crt_response[3][256] = {
-    // R
-    {0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x15,
-     0x16, 0x17, 0x18, 0x19, 0x1A, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x24, 0x25, 0x26, 0x27, 0x28, 0x28, 0x29,
-     0x2A, 0x2B, 0x2B, 0x2C, 0x2D, 0x2D, 0x2E, 0x2F, 0x2F, 0x30, 0x31, 0x32, 0x32, 0x33, 0x34, 0x34, 0x35, 0x36, 0x37,
-     0x37, 0x38, 0x39, 0x39, 0x3A, 0x3B, 0x3B, 0x3C, 0x3D, 0x3E, 0x3E, 0x3F, 0x40, 0x42, 0x43, 0x44, 0x46, 0x47, 0x48,
-     0x4A, 0x4B, 0x4C, 0x4D, 0x4F, 0x50, 0x51, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F,
-     0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x70, 0x71, 0x72, 0x73,
-     0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86,
-     0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
-     0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
-     0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
-     0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2,
-     0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5,
-     0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
-     0xF8, 0xF9, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF},
-    // G
-    {0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-     0x11, 0x12, 0x13, 0x14, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21,
-     0x22, 0x23, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33,
-     0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x42, 0x43, 0x44, 0x46, 0x47, 0x48,
-     0x4A, 0x4B, 0x4C, 0x4D, 0x4F, 0x50, 0x51, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F,
-     0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x74,
-     0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-     0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9B, 0x9C,
-     0x9D, 0x9E, 0x9F, 0xA0, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1,
-     0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4,
-     0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
-     0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC,
-     0xED, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
-     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-    // B
-    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12,
-     0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
-     0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x3A,
-     0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x41, 0x42, 0x44, 0x45, 0x47, 0x49, 0x4A, 0x4C, 0x4E, 0x4F, 0x51, 0x52, 0x54, 0x55,
-     0x57, 0x58, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F, 0x60, 0x62, 0x63, 0x65, 0x66, 0x67, 0x68, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E,
-     0x70, 0x71, 0x72, 0x73, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7B, 0x7C, 0x7D, 0x7E, 0x80, 0x81, 0x82, 0x83, 0x85, 0x86,
-     0x87, 0x88, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x90, 0x91, 0x92, 0x94, 0x95, 0x96, 0x97, 0x98, 0x9A, 0x9B, 0x9C, 0x9E,
-     0x9F, 0xA0, 0xA1, 0xA2, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4,
-     0xB5, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCB,
-     0xCC, 0xCD, 0xCE, 0xD0, 0xD1, 0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2,
-     0xE3, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-     0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-};
 static const nubus_monitor_t mdc_8_24_monitors[] = {
     {.id = "13in_rgb",
      .monitor = "13in_rgb",

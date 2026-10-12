@@ -23,7 +23,7 @@
 // (web2 has no window.gsEval — that is a legacy-app global; web2 reaches the
 // core only through typed UI paths, so we don't probe the object model here.)
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 

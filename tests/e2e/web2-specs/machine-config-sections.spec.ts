@@ -6,7 +6,7 @@
 // display-card-config.)  Each test edits a section through the UI, starts
 // the machine, and reads back what the core built through the object model.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsEvalInPage } from '../helpers/web2-eval';

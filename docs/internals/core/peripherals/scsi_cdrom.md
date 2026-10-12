@@ -964,7 +964,8 @@ now live on `machine.scsi`:
 
 Validate a CD-ROM image file. Returns `true` if the file looks like a
 CD-ROM image (ISO 9660, HFS, or Apple Partition Map), `false` otherwise.
-Prints diagnostic information (size, detected filesystem) to the terminal.
+What it detected (size, filesystem), or why it refused, goes to the `scsi`
+log category at level 2 (`log.set scsi 2`); nothing is printed.
 
 ### 10.2 `machine.scsi.attach_cdrom(path, id)`
 
@@ -1009,5 +1010,5 @@ type, image size, current block size, and SCSI ID.
 | `src/core/peripherals/scsi.c` | NCR 5380 controller |
 | `src/core/peripherals/scsi_bus.c` | The shared bus: phase machine, target/device models, command dispatch, HD handling |
 | `src/core/peripherals/scsi_cdrom.c` | CD-ROM device: INQUIRY, MODE pages, READ TOC, sense, Apple quirks |
-| `src/core/system.c` | Typed attach helper (`add_scsi_cdrom`) behind `machine.attach_cdrom` / `machine.scsi.attach_cdrom` |
+| `src/core/system.c` | Typed attach helper (`system_attach_scsi_cdrom`) behind `machine.attach_cdrom` / `machine.scsi.attach_cdrom` |
 | `src/core/storage/image.h` | Image types including `image_cdrom` |

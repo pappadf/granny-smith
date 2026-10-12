@@ -39,16 +39,16 @@ static void write_file(const char *p, const char *text) {
 
 TEST(test_mkdir_p_and_parents) {
     fresh_root();
-    char *d = gs_str_printf("%s/a/b/c/", g_root);
-    ASSERT_EQ_INT(0, gs_mkdir_p(d));
-    ASSERT_EQ_INT(0, gs_mkdir_p(d)); // already there
+    char *d = str_printf("%s/a/b/c/", g_root);
+    ASSERT_EQ_INT(0, mkdir_p(d));
+    ASSERT_EQ_INT(0, mkdir_p(d)); // already there
     ASSERT_TRUE(is_dir(d));
-    char *f = gs_str_printf("%s/x/y/file.bin", g_root);
-    ASSERT_EQ_INT(0, gs_mkdir_parents(f));
-    char *parent = gs_str_printf("%s/x/y", g_root);
+    char *f = str_printf("%s/x/y/file.bin", g_root);
+    ASSERT_EQ_INT(0, mkdir_parents(f));
+    char *parent = str_printf("%s/x/y", g_root);
     ASSERT_TRUE(is_dir(parent));
     ASSERT_TRUE(!exists(f)); // the file itself is not created
-    ASSERT_EQ_INT(0, gs_rm_tree(g_root));
+    ASSERT_EQ_INT(0, rm_tree(g_root));
     ASSERT_TRUE(!exists(g_root));
     free(d);
     free(f);
@@ -60,28 +60,28 @@ TEST(test_mkdir_p_and_parents) {
 // open the link and empty the directory it pointed at.
 TEST(test_rm_tree_does_not_follow_symlinks) {
     fresh_root();
-    char *target = gs_str_printf("%s/target", g_root);
-    char *keep = gs_str_printf("%s/target/keep.txt", g_root);
-    char *tree = gs_str_printf("%s/tree/sub", g_root);
-    char *inner = gs_str_printf("%s/tree/sub/link", g_root);
-    char *top = gs_str_printf("%s/toplink", g_root);
-    ASSERT_EQ_INT(0, gs_mkdir_p(target));
+    char *target = str_printf("%s/target", g_root);
+    char *keep = str_printf("%s/target/keep.txt", g_root);
+    char *tree = str_printf("%s/tree/sub", g_root);
+    char *inner = str_printf("%s/tree/sub/link", g_root);
+    char *top = str_printf("%s/toplink", g_root);
+    ASSERT_EQ_INT(0, mkdir_p(target));
     write_file(keep, "keep");
-    ASSERT_EQ_INT(0, gs_mkdir_p(tree));
+    ASSERT_EQ_INT(0, mkdir_p(tree));
     ASSERT_EQ_INT(0, symlink(target, inner));
     ASSERT_EQ_INT(0, symlink(target, top));
 
-    ASSERT_EQ_INT(0, gs_rm_tree(top));
+    ASSERT_EQ_INT(0, rm_tree(top));
     ASSERT_TRUE(!exists(top));
     ASSERT_TRUE(exists(keep));
 
-    char *tree_root = gs_str_printf("%s/tree", g_root);
-    ASSERT_EQ_INT(0, gs_rm_tree(tree_root));
+    char *tree_root = str_printf("%s/tree", g_root);
+    ASSERT_EQ_INT(0, rm_tree(tree_root));
     ASSERT_TRUE(!exists(tree_root));
     ASSERT_TRUE(exists(keep));
 
-    ASSERT_EQ_INT(0, gs_rm_tree("/tmp/storage_util_test_no_such_path"));
-    ASSERT_EQ_INT(0, gs_rm_tree(g_root));
+    ASSERT_EQ_INT(0, rm_tree("/tmp/storage_util_test_no_such_path"));
+    ASSERT_EQ_INT(0, rm_tree(g_root));
     free(target);
     free(keep);
     free(tree);
@@ -94,81 +94,81 @@ TEST(test_rm_tree_does_not_follow_symlinks) {
 // is allocated for it.  An empty file reads as a non-NULL buffer.
 TEST(test_read_file_is_capped) {
     fresh_root();
-    char *p = gs_str_printf("%s/f", g_root);
+    char *p = str_printf("%s/f", g_root);
     write_file(p, "0123456789");
     uint8_t *buf = NULL;
     size_t len = 0;
-    ASSERT_EQ_INT(-EFBIG, gs_read_file(p, 9, &buf, &len));
+    ASSERT_EQ_INT(-EFBIG, read_file(p, 9, &buf, &len));
     ASSERT_TRUE(buf == NULL);
-    ASSERT_EQ_INT(0, gs_read_file(p, 10, &buf, &len));
+    ASSERT_EQ_INT(0, read_file(p, 10, &buf, &len));
     ASSERT_EQ_INT(10, (int)len);
     ASSERT_TRUE(memcmp(buf, "0123456789", 10) == 0);
     free(buf);
     write_file(p, "");
-    ASSERT_EQ_INT(0, gs_read_file(p, 10, &buf, &len));
+    ASSERT_EQ_INT(0, read_file(p, 10, &buf, &len));
     ASSERT_TRUE(buf != NULL && len == 0);
     free(buf);
-    ASSERT_EQ_INT(-ENOENT, gs_read_file("/tmp/storage_util_test_missing", 10, &buf, &len));
+    ASSERT_EQ_INT(-ENOENT, read_file("/tmp/storage_util_test_missing", 10, &buf, &len));
     free(p);
-    ASSERT_EQ_INT(0, gs_rm_tree(g_root));
+    ASSERT_EQ_INT(0, rm_tree(g_root));
 }
 
 // A file replaced whole or not at all: a commit that failed -- or was told
 // the writes failed -- leaves the old file and no temporary behind.
 TEST(test_atomic_write_replaces_whole_or_not_at_all) {
     fresh_root();
-    char *p = gs_str_printf("%s/f", g_root);
-    char *tmp = gs_str_printf("%s/f.tmp", g_root);
-    char *alt = gs_str_printf("%s/f.part", g_root);
+    char *p = str_printf("%s/f", g_root);
+    char *tmp = str_printf("%s/f.tmp", g_root);
+    char *alt = str_printf("%s/f.part", g_root);
     write_file(p, "old");
 
-    gs_atomic_t a;
-    FILE *f = gs_atomic_open(&a, p, NULL);
+    file_replace_t a;
+    FILE *f = file_replace_open(&a, p, NULL);
     ASSERT_TRUE(f != NULL && exists(tmp));
     fputs("half", f);
-    ASSERT_TRUE(gs_atomic_commit(&a, false) != 0);
+    ASSERT_TRUE(file_replace_commit(&a, false) != 0);
     ASSERT_TRUE(!exists(tmp));
     uint8_t *buf = NULL;
     size_t len = 0;
-    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_EQ_INT(0, read_file(p, 16, &buf, &len));
     ASSERT_TRUE(len == 3 && memcmp(buf, "old", 3) == 0);
     free(buf);
 
-    f = gs_atomic_open(&a, p, ".part");
+    f = file_replace_open(&a, p, ".part");
     ASSERT_TRUE(f != NULL && exists(alt));
     fputs("new", f);
-    ASSERT_EQ_INT(0, gs_atomic_commit(&a, true));
+    ASSERT_EQ_INT(0, file_replace_commit(&a, true));
     ASSERT_TRUE(!exists(alt));
-    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_EQ_INT(0, read_file(p, 16, &buf, &len));
     ASSERT_TRUE(len == 3 && memcmp(buf, "new", 3) == 0);
     free(buf);
 
-    ASSERT_EQ_INT(0, gs_write_atomic(p, "whole", 5));
-    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_EQ_INT(0, file_write_atomic(p, "whole", 5));
+    ASSERT_EQ_INT(0, read_file(p, 16, &buf, &len));
     ASSERT_TRUE(len == 5 && memcmp(buf, "whole", 5) == 0);
     free(buf);
-    char *nodir = gs_str_printf("%s/missing/f", g_root);
-    ASSERT_TRUE(gs_write_atomic(nodir, "x", 1) < 0);
+    char *nodir = str_printf("%s/missing/f", g_root);
+    ASSERT_TRUE(file_write_atomic(nodir, "x", 1) < 0);
     free(nodir);
     free(p);
     free(tmp);
     free(alt);
-    ASSERT_EQ_INT(0, gs_rm_tree(g_root));
+    ASSERT_EQ_INT(0, rm_tree(g_root));
 }
 
 // One escaper for both former copies' escape sets, and it refuses rather
 // than truncates.
 TEST(test_json_escape) {
     char out[64];
-    ASSERT_EQ_INT(21, gs_json_escape("a\"b\\c\n\t\b\f\x01", out, sizeof(out)));
+    ASSERT_EQ_INT(21, json_escape("a\"b\\c\n\t\b\f\x01", out, sizeof(out)));
     ASSERT_TRUE(strcmp(out, "a\\\"b\\\\c\\n\\t\\b\\f\\u0001") == 0);
-    ASSERT_EQ_INT(-EINVAL, gs_json_escape("abcd", out, 4)); // no room for the NUL
-    ASSERT_EQ_INT(3, gs_json_escape("abc", out, 4));
-    ASSERT_EQ_INT(-EINVAL, gs_json_escape("\x01", out, 6)); // \u0001 needs 7 with NUL
-    char *dup = gs_json_escape_dup("x\"y");
+    ASSERT_EQ_INT(-EINVAL, json_escape("abcd", out, 4)); // no room for the NUL
+    ASSERT_EQ_INT(3, json_escape("abc", out, 4));
+    ASSERT_EQ_INT(-EINVAL, json_escape("\x01", out, 6)); // \u0001 needs 7 with NUL
+    char *dup = json_escape_dup("x\"y");
     ASSERT_TRUE(dup && strcmp(dup, "x\\\"y") == 0);
     free(dup);
-    dup = gs_json_escape_dup(NULL);
+    dup = json_escape_dup(NULL);
     ASSERT_TRUE(dup && strcmp(dup, "") == 0);
     free(dup);
 }

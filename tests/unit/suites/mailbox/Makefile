@@ -1,6 +1,6 @@
 # The mailbox (src/core/mailbox/mailbox.c): a client in the same process
 # writes REQ_EVAL records and reads EVT_RESULT records while the drain
-# serves them through a stub evaluator, or through gs_eval for the result
+# serves them through a stub evaluator, or through object_eval for the result
 # limit.  Small rings force wraps and a held-back result.  See test.c.
 
 TEST_NAME    := mailbox
@@ -13,7 +13,7 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/io/io_worker.c \
                 ../../../../src/core/storage/io_leaf.c \
-                ../../../../src/core/mailbox/gs_out.c \
+                ../../../../src/core/mailbox/out.c \
                 ../../../../src/core/object/api.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/object.c \

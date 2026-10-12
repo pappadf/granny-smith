@@ -39,9 +39,7 @@
 #define SB_OFF_BSIZE    48
 #define SB_OFF_FSIZE    52
 #define SB_OFF_FRAG     56
-#define SB_OFF_FSBTODB  100
 #define SB_OFF_NINDIR   116
-#define SB_OFF_INOPB    120
 #define SB_OFF_IPG      184
 #define SB_OFF_FPG      188
 #define SB_OFF_MAGIC    1372
@@ -82,7 +80,7 @@
 // ---- Volume state --------------------------------------------------------
 
 struct ufs_volume {
-    gs_source_t *src; // the whole disk (retained)
+    source_t *src; // the whole disk (retained)
     uint64_t partition_off;
     uint64_t partition_size;
 
@@ -96,8 +94,6 @@ struct ufs_volume {
     int32_t cgoffset;
     int32_t cgmask;
     uint32_t nindir; // block pointers per indirect block
-    uint32_t inopb; // inodes per fs block (bsize / DI_SIZE)
-    uint32_t fsbtodb; // shift: frags to 512-byte sectors
 };
 
 struct ufs_dir_iter {
@@ -136,7 +132,7 @@ static int load_dinode(ufs_volume_t *vol, uint32_t ino, uint8_t *di) {
     // Compute the limit in 64-bit to dodge `ncg * ipg` int32 overflow on a
     // hostile / corrupted superblock that survived `ufs_open`'s sanity check.
     uint64_t inode_limit = (uint64_t)vol->ncg * (uint64_t)vol->ipg;
-    if (ino < UFS_ROOT_INO || (uint64_t)ino >= inode_limit)
+    if (ino < UFS_ROOT_ID || (uint64_t)ino >= inode_limit)
         return -ENOENT;
     return read_partition(vol, inode_byte_offset(vol, ino), di, DI_SIZE);
 }
@@ -267,49 +263,45 @@ static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t of
 // ---- Superblock probe + open --------------------------------------------
 
 bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     bool yes = ufs_probe_source(src, partition_byte_offset, partition_byte_size);
-    gs_source_release(src);
+    source_release(src);
     return yes;
 }
 
-bool ufs_probe_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+bool ufs_probe_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    // The size ufs_open needs, so a probe never passes what open refuses.
     if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return false;
-    uint8_t buf[2048];
-    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) != 0)
+    // Only the magic: big-endian, the order A/UX writes and ufs_open reads.
+    uint8_t magic[4];
+    if (source_read_exact(src, partition_byte_offset + UFS_SBOFF + SB_OFF_MAGIC, magic, sizeof(magic)) != 0)
         return false;
-    // Magic at offset 1372; accept either endianness.
-    uint32_t be = RD_BE32(buf + SB_OFF_MAGIC);
-    uint32_t le = (uint32_t)buf[SB_OFF_MAGIC] | ((uint32_t)buf[SB_OFF_MAGIC + 1] << 8) |
-                  ((uint32_t)buf[SB_OFF_MAGIC + 2] << 16) | ((uint32_t)buf[SB_OFF_MAGIC + 3] << 24);
-    return be == UFS_FS_MAGIC || le == UFS_FS_MAGIC;
+    return RD_BE32(magic) == UFS_FS_MAGIC;
 }
 
 ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    gs_source_t *src = image_source(img);
+    source_t *src = image_source(img);
     ufs_volume_t *vol = ufs_open_source(src, partition_byte_offset, partition_byte_size);
-    gs_source_release(src); // the volume holds its own reference
+    source_release(src); // the volume holds its own reference
     return vol;
 }
 
-ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+ufs_volume_t *ufs_open_source(source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return NULL;
     uint8_t sb[2048];
-    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
+    if (source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
         return NULL;
-    if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC) {
-        // A/UX always writes BE, but we tolerate LE-rewritten images — not
-        // yet implemented because no test fixture needs it.  Document and
-        // bail out for now.
+    // Big-endian only: A/UX writes BE, and a little-endian UFS (a PC BSD
+    // volume) is out of scope -- ufs_probe refuses it too.
+    if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC)
         return NULL;
-    }
 
     ufs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->src = gs_source_retain(src);
+    vol->src = source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
 
@@ -323,8 +315,6 @@ ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, 
     vol->cgoffset = (int32_t)RD_BE32(sb + SB_OFF_CGOFFSET);
     vol->cgmask = (int32_t)RD_BE32(sb + SB_OFF_CGMASK);
     vol->nindir = RD_BE32(sb + SB_OFF_NINDIR);
-    vol->inopb = RD_BE32(sb + SB_OFF_INOPB);
-    vol->fsbtodb = RD_BE32(sb + SB_OFF_FSBTODB);
 
     // Sanity checks.  Reject obviously-corrupt values rather than reading
     // random bytes on subsequent calls.  Block and fragment sizes are bounded
@@ -344,7 +334,7 @@ ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, 
 void ufs_close(ufs_volume_t *vol) {
     if (!vol)
         return;
-    gs_source_release(vol->src);
+    source_release(vol->src);
     free(vol);
 }
 
@@ -393,7 +383,10 @@ static int parse_direct(const uint8_t *buf, uint64_t bufsize, uint64_t off, uint
         return -1;
     uint32_t ino = RD_BE32(buf + off);
     uint16_t reclen = RD_BE16(buf + off + 4);
-    uint16_t namlen = RD_BE16(buf + off + 6);
+    // 4.2BSD made bytes 6-7 a 16-bit d_namlen; 4.4BSD split them into d_type
+    // and an 8-bit d_namlen.  A name is at most 255 bytes either way, so the
+    // low byte is the length in both layouts.
+    uint16_t namlen = RD_BE16(buf + off + 6) & 0xFF;
     if (reclen < 8 || reclen > bufsize - off || namlen > reclen - 8)
         return -1;
     *d_ino = ino;
@@ -464,9 +457,9 @@ int ufs_lookup(ufs_volume_t *vol, const char *const *components, size_t nc, ufs_
     if (!vol || !out)
         return -EINVAL;
     if (nc == 0) {
-        return fill_dirent_for_inode(vol, UFS_ROOT_INO, "/", out);
+        return fill_dirent_for_inode(vol, UFS_ROOT_ID, "/", out);
     }
-    uint32_t cur = UFS_ROOT_INO;
+    uint32_t cur = UFS_ROOT_ID;
     for (size_t i = 0; i < nc; i++) {
         uint32_t child = 0;
         int rc = lookup_child(vol, cur, components[i], &child);

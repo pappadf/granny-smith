@@ -505,8 +505,8 @@ contain linked-list pointers:
 3. **Folder entries** (flags bit 6 set):
    - If `data_uncomp_len == 0xFFFFFFFF`: skip (adjust count, advance past
      header 1).  Do not access header 2.
-   - Otherwise: parse header 2, record the folder in a directory map (up to
-     32 entries), storing its offset and computed path.  Add the folder's
+   - Otherwise: parse header 2, record the folder in a directory map,
+     storing its offset and computed path.  Add the folder's
      child count to the remaining entry count.  Advance cursor past **both**
      header 1 **and** header 2 (into the folder's children) and recurse.
 
@@ -520,7 +520,8 @@ contain linked-list pointers:
 5. Repeat until the remaining entry count reaches zero.
 
 **Path construction:** File paths are built by looking up `parent_offset` in
-the directory map (a linear scan of up to 32 previously seen folder entries).
+the directory map (a linear scan of every previously seen folder entry; a
+fixed-size map would lose deeper folders' paths in large archives).
 The folder's stored path is prepended to the entry name.
 
 **Encrypted entries:** Entries with flags bit 5 (0x20) set and non-zero

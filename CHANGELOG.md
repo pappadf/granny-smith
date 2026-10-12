@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.9.4] — 2026-10-11
+
+### Added
+- **Lisa: AppleTalk on Serial B** — the Lisa's AppleBus port (channel B of the SCC) is now on the emulated AppleTalk network, so LocalTalk software on a Lisa has something to talk to. Serial A and the ImageWriter on it are unchanged.
+
+### Fixed
+- **Lisa: LisaOS timing runs at the right speed** — the Lisa 2/5's VIAs are clocked at CPU/10, so the system tick is 20 ms; `DELAY_TIME` and the millisecond timer no longer run 2.5× fast against the clock.
+- **FPU accuracy** (checked against the MC68881/882 manual and the 68040 FPSP) — multiplication of packed operands, `FMOVECR $3F`, denormal trig functions, unnormals, `FSCALE` overflow, correctly rounded `FDIV`/`FSQRT`, and packed-decimal loads and stores (rounding, exponent digits, Inf/NaN).
+- **68K and PowerPC** — `LINK`/`UNLK`/`MOVEM` keep their registers on a faulting access; `FSAVE`/`FRESTORE` roll back on a fault; RTE frame formats depend on the CPU model; the 601 runs POWER `svc` forms. Disassembler fixes.
+- **Disks** — an unreadable block of a disk image is now the device's own read error (SCSI MEDIUM ERROR, bad floppy checksum, ProFile error, …) instead of zeros; exports and checkpoints fail rather than embed zeros. SWIM/ISM writes land on the right sector.
+- **Checkpoints** — restoring no longer double-arms video and Cuda timers (AV, TNT, MCU/DAFB machines); consolidated saves are written to a temporary file and renamed when complete; the Images panel shows the mounts of a restored machine.
+- **Debugger** — a breakpoint fires on every arrival, not every other one, and one on the current PC is stepped over on resume.
+- **Quieter terminal** — uploading ROMs and disks no longer fills it with `mkdir: … File exists`, image-validation and download lines; commands answer through their result.
+- Sound: ASC restore no longer doubles the FIFO drain, and its period no longer drifts. The IIcx soft power fires once.
+- Hardening against crafted input: guest- and checkpoint-supplied sizes are bounded in SCSI, Sonic and the video cards; over-long shell identifiers, deep expressions and oversize argument lists are refused.
+
+### Changed
+- Internal clean-up after two code reviews (~800 findings): `status_t` results, module prefixes in place of `gs_`, private globals. The WASM export `get_gs_mailbox` is now `get_mailbox`.
+- Headless: `--cycles` bounds the REPL and daemon loops; the daemon keeps a locked PID file.
+
+## [v0.9.3] — 2026-10-10
+
+### Fixed
+- **Lisa: boots with a diskette already inserted** — LOS no longer hangs at the hourglass when a floppy is in the drive at power-on (e.g. a URL boot with both `hd0=` and `fd0=`); the floppy controller's interrupt mask is now honoured.
+
+## [v0.9.2] — 2026-10-10
+
+### Added
+- **Lisa: save a diskette** — `export` on the floppy drive writes DiskCopy 4.2 with its sector tags, so a disk the Office System initialized or repaired comes out usable.
+- Floppy export for every Mac too (`.dc42`/`.image` = DiskCopy 4.2 with tags, else raw), in the web UI's Save As.
+- Release assets: the web build as a self-hostable zip, static `gs-headless` for Linux x86_64/arm64, and `SHA256SUMS`.
+- `machine.adb.mouse.pending` / `keyboard.pending` for scripts that wait for input to land.
+
+### Fixed
+- **Lisa: the clock now runs** — `GET_TIME` no longer stays at 1 January 1984.
+- Floppy sector tags are kept on raw-image disks and across checkpoints.
+- Quick mouse clicks are no longer lost (ADB and Plus); serial input arrives at the line rate.
+- Idle 604/750 PowerPC machines nap instead of spinning.
+
 ## [v0.9.1] — 2026-10-09
 
 ### Fixed

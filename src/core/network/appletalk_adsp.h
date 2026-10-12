@@ -150,6 +150,10 @@ adsp_conn_t *adsp_open(adsp_stack_t *s, const atalk_socket_addr_t *dest, uint8_t
 // the number of bytes queued, or -1 if the connection cannot take them.
 int adsp_write(adsp_stack_t *s, adsp_conn_t *c, const uint8_t *data, int len, bool eom);
 
+// Sequence numbers the send queue can still take (bytes plus EOM markers), so
+// a caller can check that a multi-part message fits before queueing any of it.
+int adsp_send_space(const adsp_conn_t *c);
+
 // Send an attention message (one outstanding at a time, 12-21).
 int adsp_send_attention(adsp_stack_t *s, adsp_conn_t *c, uint16_t code, const uint8_t *data, int len);
 

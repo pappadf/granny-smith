@@ -7,7 +7,7 @@
 // One namespace, one sigil: `$name` resolves through a stack of scopes
 // (function frame(s) → script top level → process globals) and then
 // falls back to the built-in/user alias table, whose entries surface as
-// V_REF reference values (path text, re-resolved per access).
+// VK_REF reference values (path text, re-resolved per access).
 // `let` creates in the top scope, `$x =` mutates the innermost holding
 // scope, and mutating an undeclared name is a loud error.
 
@@ -22,13 +22,17 @@
 #include <stddef.h>
 
 // Initialize the store (creates the global + top-level scopes and the
-// default TMP_DIR binding).
+// default TMP_DIR binding, "tmp" -- relative to the working directory:
+// the repository's tmp/ scratch directory for a headless run started at the
+// repository root (the project convention for scratch files), and /tmp --
+// the in-memory scratch directory em_main creates -- on WASM, whose working
+// directory is /).
 void shell_var_init(void);
 
 // `$name` lookup: walk scopes top-down, then the alias table (aliases
-// come back as V_REF). Returns an OWNED value; V_ERROR("no such
+// come back as VK_REF). Returns an OWNED value; VK_ERROR("no such
 // binding …") when the name is nowhere. A binding holding a destroyed
-// V_OBJECT reads as V_ERROR (snapshot semantics).
+// VK_OBJECT reads as VK_ERROR (snapshot semantics).
 value_t shell_binding_get(const char *name);
 
 // `let NAME = v` — create (or overwrite) in the current top scope.
@@ -55,18 +59,29 @@ shell_binding_kind_t shell_binding_classify(const char *name, const value_t **va
 int shell_binding_push_scope(void);
 void shell_binding_pop_scope(void);
 
-// Loop-variable support: save a duplicate of the top-scope
-// binding if present (returns true), and remove a name from the top
-// scope only.
-bool shell_binding_save_top(const char *name, value_t *saved_out);
+// Loop-variable support: detach the top-scope binding `name` (NULL when
+// there is none) so a loop variable can shadow it, and reattach it to the
+// top scope afterwards (replacing the loop variable).  A detached binding
+// keeps its object watch, so an object it holds that dies meanwhile comes
+// back stale -- a saved copy would not know.  remove_top removes a name
+// from the top scope only.
+struct binding *shell_binding_detach_top(const char *name);
+void shell_binding_reattach_top(struct binding *b);
 void shell_binding_remove_top(const char *name);
 
 // Legacy string API — process-start bindings (`--var FOO=BAR`) and
-// internal init code. Stores V_STRING in the global scope.
-int shell_var_set(const char *name, const char *value);
+// internal init code. Stores VK_STRING in the global scope.  Returns 0, or
+// -1 with a message in err_buf (may be NULL) when the name is not a valid
+// binding name (object_validate_name: an identifier, not reserved, at most
+// OBJ_IDENT_MAX characters).
+int shell_var_set(const char *name, const char *value, char *err_buf, size_t err_size);
 const char *shell_var_get(const char *name);
 
-// Walk every scope binding, innermost scope first. Used by `shell.vars`.
+// Walk every scope binding, innermost scope first and, within a scope, in
+// the order the bindings were created.  Used by `shell.vars`.  `fn` returns
+// false to stop the walk.  The walk holds the table lock, so `fn` must not
+// create, change or remove bindings (or call any other shell_binding_* /
+// shell_var_* entry): it only reads what it is handed.
 typedef bool (*shell_var_iter_fn)(const char *name, const value_t *v, void *ud);
 void shell_var_each(shell_var_iter_fn fn, void *ud);
 

@@ -24,11 +24,13 @@
 #include "shell_funcs.h"
 #include "shell_internal.h"
 #include "shell_var.h"
+#include "status.h"
 #include "syntax.h"
 #include "value.h"
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -349,6 +351,10 @@ static bool parse_block_header(parser_t *ps, const char *line, int line_no, char
     if (*after == '\0') {
         // Multi-line form: body is on the following lines.
         *out_head = dup_trim(line, brace);
+        if (!*out_head) {
+            parse_error(ps, line_no, "out of memory");
+            return false;
+        }
         script_block_t *b = parse_block_lines(ps, line_no);
         if (!b) {
             free(*out_head);
@@ -411,6 +417,11 @@ static bool parse_block_header(parser_t *ps, const char *line, int line_no, char
         return false;
     }
     *out_head = dup_trim(line, brace);
+    if (!*out_head) {
+        script_block_free(b);
+        parse_error(ps, line_no, "out of memory");
+        return false;
+    }
     *out_body = b;
     return true;
 }
@@ -438,10 +449,18 @@ static stmt_t *parse_if(parser_t *ps, const char *line, int line_no) {
         const char *cond = skip_sp(kw_match(head, "if"));
         st->conds = (char **)calloc(1, sizeof(char *));
         st->blocks = (script_block_t **)calloc(1, sizeof(script_block_t *));
-        st->conds[0] = strdup(cond);
+        char *cond_copy = strdup(cond);
+        free(head);
+        if (!st->conds || !st->blocks || !cond_copy) {
+            free(cond_copy);
+            script_block_free(body);
+            stmt_free(st);
+            parse_error(ps, line_no, "out of memory");
+            return NULL;
+        }
+        st->conds[0] = cond_copy;
         st->blocks[0] = body;
         st->n_conds = 1;
-        free(head);
         return st; // inline if: no elif/else chain
     }
 
@@ -560,6 +579,10 @@ static bool parse_def_params(parser_t *ps, const char *head, int line_no, char *
     while (ident_char(*p))
         p++;
     char *name = dup_trim(ns, p);
+    if (!name) {
+        parse_error(ps, line_no, "out of memory");
+        return false;
+    }
     p = skip_sp(p);
     if (*p != '(') {
         parse_error(ps, line_no, "def: expected '(' after function name");
@@ -579,7 +602,7 @@ static bool parse_def_params(parser_t *ps, const char *head, int line_no, char *
             while (ident_char(*p))
                 p++;
             char *param = dup_trim(s, p);
-            char **np = (char **)realloc(params, (size_t)(n + 1) * sizeof(char *));
+            char **np = param ? (char **)realloc(params, (size_t)(n + 1) * sizeof(char *)) : NULL;
             if (!np) {
                 free(param);
                 parse_error(ps, line_no, "out of memory");
@@ -696,6 +719,33 @@ static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
         if (kind == ST_ASSIGN)
             st->lvalue = dup_span(c.head, c.head_end);
     }
+    // dup_span answers NULL for an absent part; NULL for a present one is OOM
+    bool oom = (kind == ST_COMMAND || kind == ST_EXPR)
+                   ? (c.start && !st->text)
+                   : ((c.rest && !st->text) || (c.name && !st->name) || (kind == ST_ASSIGN && c.head && !st->lvalue));
+    if (oom) {
+        stmt_free(st);
+        parse_error(ps, line_no, "out of memory");
+        return NULL;
+    }
+    return st;
+}
+
+// Hand a block statement its name, text and body, all already allocated
+// (or NULL where an allocation failed): a failed statement or text frees
+// the lot and reports out of memory.  `name` may be NULL by design.
+static stmt_t *stmt_finish(parser_t *ps, stmt_t *st, char *name, char *text, script_block_t *body, int line_no) {
+    if (!st || !text) {
+        stmt_free(st);
+        free(name);
+        free(text);
+        script_block_free(body);
+        parse_error(ps, line_no, "out of memory");
+        return NULL;
+    }
+    st->name = name;
+    st->text = text;
+    st->body = body;
     return st;
 }
 
@@ -726,10 +776,9 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_WHILE, line_no);
-        st->text = strdup(cond);
-        st->body = body;
+        char *text = strdup(cond);
         free(head);
-        return st;
+        return stmt_finish(ps, st, NULL, text, body, line_no);
     }
     if (c.kind == SCRIPT_STMT_FOR) {
         char *head = NULL;
@@ -748,6 +797,12 @@ static stmt_t *parse_stmt(parser_t *ps) {
         while (ident_char(*q))
             q++;
         char *name = dup_trim(ns, q);
+        if (!name) {
+            parse_error(ps, line_no, "out of memory");
+            free(head);
+            script_block_free(body);
+            return NULL;
+        }
         const char *after_in = kw_match(skip_sp(q), "in");
         if (!after_in) {
             parse_error(ps, line_no, "for: expected 'in'");
@@ -765,11 +820,9 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_FOR, line_no);
-        st->name = name;
-        st->text = strdup(iter);
-        st->body = body;
+        char *text = strdup(iter);
         free(head);
-        return st;
+        return stmt_finish(ps, st, name, text, body, line_no);
     }
     if (c.kind == SCRIPT_STMT_DEF) {
         char *head = NULL;
@@ -785,13 +838,17 @@ static stmt_t *parse_stmt(parser_t *ps) {
             return NULL;
         }
         stmt_t *st = stmt_new(ST_DEF, line_no);
-        st->name = name;
-        st->params = params;
-        st->n_params = n_params;
-        st->body = body;
-        st->text = strdup(head);
+        char *text = strdup(head);
         free(head);
-        return st;
+        if (st) {
+            st->params = params;
+            st->n_params = n_params;
+        } else {
+            for (int i = 0; i < n_params; i++)
+                free(params[i]);
+            free(params);
+        }
+        return stmt_finish(ps, st, name, text, body, line_no);
     }
     return parse_stmt_text(ps, line, line_no);
 }
@@ -909,7 +966,7 @@ typedef enum {
 } exec_sig_t;
 
 typedef struct exec_ctx {
-    bool interactive; // REPL prints non-V_NONE results
+    bool interactive; // REPL prints non-VK_NONE results
     int loop_depth;
     bool in_function;
     exec_sig_t sig;
@@ -1189,7 +1246,7 @@ static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char 
 }
 
 // Resolve a command/lvalue head at *p into a node. Handles both bare
-// object paths and `$binding` heads (V_REF re-resolution, V_OBJECT
+// object paths and `$binding` heads (VK_REF re-resolution, VK_OBJECT
 // relative resolution). On success advances *p past the path text.
 // When out_path/out_base are non-NULL they receive the normalized path
 // text and the object it resolves against even when node resolution
@@ -1204,15 +1261,19 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
         *out_base = NULL;
     if (**p == '$') {
         (*p)++;
-        char name[64];
+        char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         if (!ident_start(**p)) {
             *errv = val_err("expected binding name after '$'");
             return false;
         }
         while (ident_char(**p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = **p;
+            // Fail rather than look up a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                *errv = val_err("identifier too long (max %zu)", sizeof(name) - 1);
+                return false;
+            }
+            name[i++] = **p;
             (*p)++;
         }
         name[i] = '\0';
@@ -1228,7 +1289,7 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             return false;
         }
         *p = q;
-        if (base.kind == V_REF) {
+        if (base.kind == VK_REF) {
             snprintf(path, sizeof(path), "%s%s", base.ref ? base.ref : "", sub);
             value_free(&base);
             if (out_path && out_path_size)
@@ -1243,7 +1304,7 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
             *out_node = n;
             return true;
         }
-        if (base.kind == V_OBJECT) {
+        if (base.kind == VK_OBJECT) {
             struct object *obj = base.obj;
             value_free(&base);
             if (!obj) {
@@ -1274,8 +1335,11 @@ static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t 
     }
     size_t i = 0;
     while (ident_char(**p)) {
-        if (i + 1 < sizeof(path))
-            path[i++] = **p;
+        if (i + 1 >= sizeof(path)) {
+            *errv = val_err("identifier too long (max %zu)", sizeof(path) - 1);
+            return false;
+        }
+        path[i++] = **p;
         (*p)++;
     }
     path[i] = '\0';
@@ -1334,7 +1398,7 @@ static char *scan_bare_word(const char **p) {
     return buf ? buf : strdup("");
 }
 
-// Parse one argument-mode value at *p. Returns V_ERROR on
+// Parse one argument-mode value at *p. Returns VK_ERROR on
 // failure. Advances *p. `raw_template` marks a template-typed slot: a
 // double-quoted value is captured as its raw body — no escape decoding, no
 // interpolation — for the subsystem to evaluate at fire time.
@@ -1450,8 +1514,8 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
     else if (strcmp(word, "none") == 0)
         v = val_none();
     else if (word[0] == '+' || word[0] == '-' || isdigit((unsigned char)word[0])) {
-        v = parse_literal_full(word, NULL, 0);
-        if (val_is_error(&v) || v.kind == V_STRING) {
+        v = parse_literal_whole_string(word, NULL, 0);
+        if (val_is_error(&v) || v.kind == VK_STRING) {
             // Not a clean numeric literal — the whole word is a string.
             value_free(&v);
             v = val_str(word);
@@ -1467,7 +1531,7 @@ static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_
 // dispatch. `fn` selects a user function instead of a tree node.
 static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t node, script_func_t *fn) {
     value_t vals[CMD_MAX_ARGS_V2];
-    char named_names[CMD_MAX_ARGS_V2][64];
+    char named_names[CMD_MAX_ARGS_V2][OBJ_IDENT_MAX + 1];
     named_arg_t named[CMD_MAX_ARGS_V2];
     int pos_n = 0, named_n = 0, total = 0;
     value_t result = val_none();
@@ -1486,7 +1550,12 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             const char *q = p;
             while (ident_char(*q))
                 q++;
-            if (*q == '=' && q[1] != '=' && (size_t)(q - p) < sizeof(named_names[0])) {
+            if (*q == '=' && q[1] != '=') {
+                // A name too long to hold is an error, not a positional word
+                if ((size_t)(q - p) >= sizeof(named_names[0])) {
+                    result = val_err("argument name '%.*s...' too long (max %zu)", 16, p, sizeof(named_names[0]) - 1);
+                    goto out;
+                }
                 memcpy(named_names[named_n], p, (size_t)(q - p));
                 named_names[named_n][q - p] = '\0';
                 name = named_names[named_n];
@@ -1524,7 +1593,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
 
     if (fn) {
         result = shell_func_call(fn, pos_n, vals, named_n, named);
-    } else if (node.member && node.member->kind == M_METHOD) {
+    } else if (node.member && node.member->kind == MK_METHOD) {
         if (named_n > 0) {
             value_t bound[OBJ_BIND_MAX_ARGS];
             int bound_n = 0;
@@ -1640,11 +1709,16 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
     const char *p = st->lvalue;
     if (*p == '$') {
         p++;
-        char name[64];
+        char name[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         while (ident_char(*p)) {
-            if (i + 1 < sizeof(name))
-                name[i++] = *p;
+            // Fail rather than assign to a truncated (other) binding
+            if (i + 1 >= sizeof(name)) {
+                exec_error(cx, st->line, "identifier too long (max %zu)", sizeof(name) - 1);
+                value_free(&rhs);
+                return;
+            }
+            name[i++] = *p;
             p++;
         }
         name[i] = '\0';
@@ -1659,7 +1733,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
                 return;
             }
             const char *ref_path = NULL;
-            if (k == SHELL_BINDING_VALUE && cur && cur->kind == V_REF)
+            if (k == SHELL_BINDING_VALUE && cur && cur->kind == VK_REF)
                 ref_path = cur->ref;
             else if (k == SHELL_BINDING_ALIAS)
                 ref_path = alias_path;
@@ -1680,7 +1754,9 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
                 value_free(&r);
                 return;
             }
-            shell_binding_mutate(name, rhs);
+            // The binding exists (classified above), so a failure is out-of-memory
+            if (shell_binding_mutate(name, rhs) < 0)
+                exec_error(cx, st->line, "$%s: out of memory", name);
             return;
         }
         // `$name.path = …` — write through the binding.
@@ -1702,11 +1778,11 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
             return;
         }
         node_t n = {0};
-        if (base.kind == V_REF) {
+        if (base.kind == VK_REF) {
             char full[512];
             snprintf(full, sizeof(full), "%s%s", base.ref ? base.ref : "", sub);
             n = object_resolve(object_root(), full);
-        } else if (base.kind == V_OBJECT && base.obj) {
+        } else if (base.kind == VK_OBJECT && base.obj) {
             n = object_resolve(base.obj, sub[0] == '.' ? sub + 1 : sub);
         }
         value_free(&base);
@@ -1735,7 +1811,7 @@ static void exec_assign(stmt_t *st, exec_ctx_t *cx) {
         value_free(&rhs);
         return;
     }
-    if (!n.member || n.member->kind != M_ATTR) {
+    if (!n.member || n.member->kind != MK_ATTR) {
         exec_error(cx, st->line, "'%s' is not a settable attribute", st->lvalue);
         value_free(&rhs);
         return;
@@ -1817,17 +1893,12 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_free(&iter);
         return;
     }
-    if (iter.kind != V_LIST && iter.kind != V_RANGE && iter.kind != V_BYTES && iter.kind != V_MAP) {
+    if (iter.kind != VK_LIST && iter.kind != VK_RANGE && iter.kind != VK_BYTES && iter.kind != VK_MAP) {
         exec_error(cx, st->line, "for: cannot iterate a %s (use a list, map, a..b range, or bytes)",
-                   iter.kind == V_INT || iter.kind == V_UINT ? "plain integer" : "value of this kind");
+                   iter.kind == VK_INT || iter.kind == VK_UINT ? "plain integer" : "value of this kind");
         value_free(&iter);
         return;
     }
-
-    // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route.
-    value_t saved = val_none();
-    bool had = shell_binding_save_top(st->name, &saved);
 
     // The one cap, and it bounds TIME rather than memory: a range denotes its
     // values without allocating, so what needs limiting is how many times the
@@ -1839,11 +1910,11 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     // data that already exists, and its size is whatever the machine already
     // holds.
     size_t count = 0;
-    if (iter.kind == V_LIST)
+    if (iter.kind == VK_LIST)
         count = iter.list.len;
-    else if (iter.kind == V_MAP)
+    else if (iter.kind == VK_MAP)
         count = iter.map.len;
-    else if (iter.kind == V_BYTES)
+    else if (iter.kind == VK_BYTES)
         count = iter.bytes.n;
     else {
         uint64_t n = val_range_count(&iter);
@@ -1856,19 +1927,47 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = (size_t)n;
     }
 
+    // A list holds raw object pointers, also inside nested lists and maps:
+    // watch each item's objects so an item the body destroys (machine.boot
+    // tears down the whole tree) is reported instead of bound (a dangling
+    // pointer, which the binding store would also register on).
+    object_watch_t *watches = NULL;
+    if (iter.kind == VK_LIST && count > 0) {
+        watches = (object_watch_t *)calloc(count, sizeof(*watches));
+        bool ok = watches != NULL;
+        for (size_t i = 0; ok && i < count; i++)
+            ok = object_watch_value(&watches[i], &iter.list.items[i]);
+        if (!ok) {
+            for (size_t i = 0; watches && i < count; i++)
+                object_unwatch(&watches[i]);
+            free(watches);
+            exec_error(cx, st->line, "for: out of memory");
+            value_free(&iter);
+            return;
+        }
+    }
+
+    // Detach any shadowed same-named binding in the current scope (it stays
+    // watched); the loop variable is removed at every exit route.
+    struct binding *saved = shell_binding_detach_top(st->name);
+
     for (size_t i = 0; i < count; i++) {
         if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             break;
         }
+        if (watches && watches[i].gone) {
+            exec_error(cx, st->line, "for: item %zu was destroyed (e.g. by machine.boot)", i);
+            break;
+        }
         value_t item;
-        if (iter.kind == V_LIST)
+        if (iter.kind == VK_LIST)
             item = value_dup(&iter.list.items[i]);
-        else if (iter.kind == V_MAP)
+        else if (iter.kind == VK_MAP)
             // Maps iterate their keys (dict idiom); `map[k]` fetches values.
             item = val_str(iter.map.entries[i].key);
-        else if (iter.kind == V_BYTES)
+        else if (iter.kind == VK_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else
             item = val_int(iter.range.start + (int64_t)i * iter.range.step);
@@ -1890,11 +1989,13 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             break;
     }
 
-    shell_binding_remove_top(st->name);
-    if (had) {
-        char err[SCRIPT_ERR_MAX];
-        shell_binding_let(st->name, saved, err, sizeof(err));
+    if (watches) {
+        for (size_t i = 0; i < count; i++)
+            object_unwatch(&watches[i]);
+        free(watches);
     }
+    shell_binding_remove_top(st->name);
+    shell_binding_reattach_top(saved);
     value_free(&iter);
 }
 
@@ -1926,7 +2027,7 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
         const char *mp = msg_at;
         m = expr_parse_dq_string(&mp, &ectx);
     }
-    const char *msg = m.kind == V_STRING && m.s && m.s[0] ? m.s : st->text;
+    const char *msg = m.kind == VK_STRING && m.s && m.s[0] ? m.s : st->text;
     // One report, with its predicate error.  These are one failure event and
     // used to go to two streams, so a test log could interleave them in
     // either order or split them across files -- and that output is exactly
@@ -1956,7 +2057,7 @@ static void exec_include(stmt_t *st, exec_ctx_t *cx) {
         value_free(&v);
         return;
     }
-    if (v.kind != V_STRING || !v.s || !v.s[0]) {
+    if (v.kind != VK_STRING || !v.s || !v.s[0]) {
         exec_error(cx, st->line, "include: expected a non-empty path string");
         value_free(&v);
         return;
@@ -1997,7 +2098,7 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
     case ST_ALIAS: {
         char err[SCRIPT_ERR_MAX];
-        if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
+        if (alias_add_user(st->name, st->text, err, sizeof(err)) != STATUS_OK)
             exec_error(cx, st->line, "alias: %s", err);
         return;
     }
@@ -2071,13 +2172,14 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
     case ST_DEF: {
         char err[SCRIPT_ERR_MAX];
-        if (shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err)) < 0) {
-            exec_error(cx, st->line, "def: %s", err);
-            return;
-        }
-        // Ownership of the body moved into the registry; detach it from
-        // the statement so re-running the def (e.g. in a loop) is safe.
+        int rc = shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err));
+        // Ownership of the body moved into the registry, which frees it
+        // itself on failure; detach it from the statement either way so
+        // re-running the def (e.g. in a loop) is safe and stmt_free does
+        // not free it a second time.
         st->body = NULL;
+        if (rc < 0)
+            exec_error(cx, st->line, "def: %s", err);
         // Params are duplicated by the registry; nothing to detach.
         return;
     }

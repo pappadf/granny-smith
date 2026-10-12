@@ -1,8 +1,37 @@
-# The tnt-voodoo2-glide flow on the normative synchronous walker: the
-# sibling's script verbatim with RASTER pinned to "sw", so every
-# assertion — the driver's self-tests, the counters, and the in-game
-# golden — is an equivalence check between the walker and the threaded
-# default.
+# The tnt-voodoo2-glide launch played on the normative synchronous walker.
+#
+# The row boots and launches Quake exactly as the sibling does (on the
+# worker thread, the build's default), saves the machine at the launch and
+# restores it, switches the card to the walker (regs.raster = "sw", which
+# fences the old backend and builds the new one on the same target) and
+# plays the detection and the game from there.  (It does not take the
+# sibling's launch as a checkpoint fixture: a consumer starts only once its
+# producer has finished, and the two runs back to back set the CI floor.)
+#
+# THE GOLDEN.  A restored run is deterministic but not the sibling's
+# straight timeline (the attract demo is a few frames elsewhere at the same
+# instruction count), so quake-ingame-restored.png is this row's own.  It
+# was captured on the THREAD backend from the restored launch, and the
+# walker must reproduce it byte for byte: the equivalence claim, from one
+# starting state.  Recapture it the same way, never on the walker:
+#
+#   make test-tnt-voodoo2-glide-sw TEST_VARS="REGEN=1 RASTER=thread"
 
-let RASTER = "sw"
-include "../tnt-voodoo2-glide/test.script"
+include "../lib/mac.script"
+include "../tnt-voodoo2-glide/glide.script"
+
+let RASTER = try($RASTER, "sw")
+
+let img = "${$WORK_DIR}/quake.img"
+if have_media($img) {
+    glide_to_launch("thread")
+    assert checkpoint.save("${$WORK_DIR}/glide-launch.gsc") "checkpoint at the Quake launch"
+    assert checkpoint.load("${$WORK_DIR}/glide-launch.gsc") "restore the Quake-launch checkpoint"
+    assert machine.pci.slot[1].card.regs.raster == "thread" "the launch was saved on the thread backend"
+    machine.pci.slot[1].card.regs.raster = $RASTER
+    assert machine.pci.slot[1].card.regs.raster == $RASTER "the ${$RASTER} backend is installed after the restore"
+    glide_play("quake-ingame-restored.png", $RASTER, "tnt-voodoo2-glide-sw/${$RASTER}")
+} else {
+    skip_test("tnt-voodoo2-glide-sw (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
+}
+quit

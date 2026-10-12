@@ -28,6 +28,7 @@
 # is bitwise. Mouse coordinates are Mac global (512x342).
 
 include "../lib/mac.script"
+include "../lib/afp.script"
 
 machine.rtc.time = "2026-04-26T21:30:36"
 
@@ -56,69 +57,12 @@ scheduler.run 30000000
 assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").name == "My Volume" "share not registered"
 assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds only the root"
 
-# Apple menu -> Chooser.
-machine.adb.mouse.move 25 10
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 4000000
-machine.adb.mouse.move 25 123
-scheduler.run 4000000
-machine.adb.mouse.click false
-scheduler.run 60000000
+# Apple menu → Chooser → AppleShare → the server → Guest: the volume list
+# (lib/afp.script).
+afp_chooser_to_volumes("", "")
 
-# AppleShare -> "requires AppleTalk" -> OK.
-machine.adb.mouse.move 95 90
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 20000000
-machine.adb.mouse.move 190 206
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-
-# Select the server, OK; then Guest -> OK.
-machine.adb.mouse.move 280 88
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 6000000
-machine.adb.mouse.move 333 178
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 40000000
-machine.adb.mouse.move 392 259
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 40000000
-
-# Select the volume, OK, close the Chooser.
-machine.adb.mouse.move 150 113
-scheduler.run 4000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 8000000
-machine.adb.mouse.move 333 259
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-machine.adb.mouse.move 72 47
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
-scheduler.run 40000000
+# Select "My Volume", then OK — the mount itself — and close the Chooser.
+afp_mount_and_close()
 check("e2e-mounted.png")
 
 assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
@@ -129,12 +73,12 @@ assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not 
 machine.adb.mouse.move 468 108
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 # The info bar carries the host filesystem's free space, which is not ours to
 # pin; the listing is.
@@ -150,8 +94,8 @@ assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the staged files were
 machine.adb.mouse.move 105 105
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 2000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 10000000
 machine.adb.mouse.move 47 10
 scheduler.run 2000000
@@ -160,7 +104,7 @@ scheduler.run 8000000
 machine.adb.mouse.move 60 139
 scheduler.run 6000000
 machine.adb.mouse.click false
-scheduler.run 80000000
+run_until_match_ex("e2e-duplicated.png", 58, 140, 80, 420, 80000000, 5000000)
 check_ex("e2e-duplicated.png", 58, 140, 80, 420)
 
 # The copy is an AppleDouble pair of exactly the same shape as the original.
@@ -184,13 +128,13 @@ assert appletalk.afp.stats.commands_served > 30 "the duplicate served no AFP com
 machine.adb.mouse.move 147 118
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000
 machine.adb.mouse.click true
-scheduler.run 80000
 machine.adb.mouse.click false
-scheduler.run 80000000
+wait_mouse_taken(100000000)
+run_until_match("e2e-app-running.png", 80000000, 5000000)
 check("e2e-app-running.png")
 
 quit

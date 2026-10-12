@@ -5,10 +5,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 
 const heap = { u8: new Uint8Array(1 << 16), i16: new Int16Array(1), i32: new Int32Array(1) };
+// The core's start-up: ready unless a test holds it back.
+const core = vi.hoisted(() => ({ ready: true, started: Promise.resolve() }));
 
 vi.mock('@/bus/emulator', async () => ({
   ...(await (await import('../helpers/bridgeMock')).emulatorModule()),
   getModuleHeap: () => heap,
+  isModuleReady: () => core.ready,
+  whenModuleReady: () => core.started,
 }));
 vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
@@ -54,6 +58,8 @@ beforeEach(() => {
   });
   bridge.reply('checkpoint.load', true);
   bridge.reply('files.rm', true);
+  core.ready = true;
+  core.started = Promise.resolve();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -70,6 +76,21 @@ describe('Open Checkpoint...', () => {
     expect(load?.args).toEqual([staged]);
     expect(bridge.calls.find((c) => c.path === 'files.rm')?.args).toEqual([staged]);
     expect(reconcileUiWithMachine).toHaveBeenCalledWith('restore');
+    expect(toasts.active.some((t) => /Checkpoint loaded/.test(t.msg))).toBe(true);
+  });
+
+  it('a file picked while the core is still starting loads once it is up', async () => {
+    let up!: () => void;
+    core.ready = false;
+    core.started = new Promise((resolve) => (up = resolve));
+    pickerAnswers(checkpoint());
+    const opening = pickAndLoadCheckpoint();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(bridge.paths()).toEqual([]);
+    core.ready = true;
+    up();
+    await opening;
+    expect(bridge.calls.some((c) => c.path === 'checkpoint.load')).toBe(true);
     expect(toasts.active.some((t) => /Checkpoint loaded/.test(t.msg))).toBe(true);
   });
 

@@ -22,6 +22,7 @@ tests/data/**/*.blocks/
 node_modules/
 playwright-report/
 test-results/
+e2e-report/
 
 # ── Native unit-test build artifacts ─────────────────────────────
 tests/unit/build/

@@ -6,6 +6,7 @@
 // and memory-mapped I/O interface for the SE/30.
 
 #include "floppy_internal.h"
+#include "gs_assert.h"
 #include "log.h"
 #include "memory.h"
 #include "system.h"
@@ -36,15 +37,34 @@ static void swim_ism_reset(floppy_t *floppy);
 // CRC-CCITT-16 Computation
 // ============================================================================
 
-// Updates CRC-CCITT-16 with one byte (polynomial 0x1021, MSB first)
+// CRC-CCITT-16 (polynomial 0x1021, MSB first) byte table: entry i is the
+// CRC register after shifting i through a zero register, so one lookup
+// replaces the eight-step bit loop.
+static const uint16_t crc_ccitt_table[256] = {
+    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7, 0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD,
+    0xE1CE, 0xF1EF, 0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6, 0x9339, 0x8318, 0xB37B, 0xA35A,
+    0xD3BD, 0xC39C, 0xF3FF, 0xE3DE, 0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485, 0xA56A, 0xB54B,
+    0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D, 0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
+    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC, 0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861,
+    0x2802, 0x3823, 0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B, 0x5AF5, 0x4AD4, 0x7AB7, 0x6A96,
+    0x1A71, 0x0A50, 0x3A33, 0x2A12, 0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A, 0x6CA6, 0x7C87,
+    0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41, 0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
+    0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70, 0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A,
+    0x9F59, 0x8F78, 0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F, 0x1080, 0x00A1, 0x30C2, 0x20E3,
+    0x5004, 0x4025, 0x7046, 0x6067, 0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E, 0x02B1, 0x1290,
+    0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256, 0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
+    0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405, 0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E,
+    0xC71D, 0xD73C, 0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634, 0xD94C, 0xC96D, 0xF90E, 0xE92F,
+    0x99C8, 0x89E9, 0xB98A, 0xA9AB, 0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3, 0xCB7D, 0xDB5C,
+    0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A, 0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
+    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9, 0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83,
+    0x1CE0, 0x0CC1, 0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8, 0x6E17, 0x7E36, 0x4E55, 0x5E74,
+    0x2E93, 0x3EB2, 0x0ED1, 0x1EF0,
+};
+
+// Updates CRC-CCITT-16 with one byte
 static uint16_t crc_ccitt_byte(uint16_t crc, uint8_t byte) {
-    for (int i = 7; i >= 0; i--) {
-        bool xor_bit = ((crc >> 15) ^ (byte >> i)) & 1;
-        crc <<= 1;
-        if (xor_bit)
-            crc ^= 0x1021;
-    }
-    return crc;
+    return (uint16_t)((crc << 8) ^ crc_ccitt_table[((crc >> 8) ^ byte) & 0xFF]);
 }
 
 // ============================================================================
@@ -66,7 +86,10 @@ static bool ism_fifo_push(floppy_t *floppy, uint8_t byte, bool is_mark) {
 // hardware which preloads CRC with 0xFFFF on each mark byte detection.
 static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
     if (floppy->ism_fifo_count == 0) {
-        // Underrun: set error if not already set
+        // Underrun: set error if not already set.  The guard is the chip's
+        // rule, not an oversight: "Once one error bit is set, no other bits
+        // can be set until the register is cleared" (SWIM Chip User's Ref.
+        // rev 1.5, ERROR register).  Every other error site follows it too.
         if (!floppy->ism_error)
             floppy->ism_error |= ISM_ERR_OVERRUN;
         if (is_mark_out)
@@ -192,11 +215,15 @@ static void mfm_build_sector(floppy_t *floppy) {
         return;
     }
 
+    // A sector the image cannot read is still laid down -- its header is
+    // intact -- but with a data CRC that does not match its data, as an
+    // unreadable sector on a damaged disk is: the ISM's CRC check fails the
+    // guest's read of it, rather than the sector going missing.
     uint8_t sector_data[512];
-    size_t read = disk_read_data(img, offset, sector_data, 512);
-    if (read != 512) {
-        floppy->mfm_buf_len = 0;
-        return;
+    bool unreadable = disk_read_data(img, offset, sector_data, 512) != 512;
+    if (unreadable) {
+        memset(sector_data, 0, sizeof sector_data);
+        LOG(1, "SWIM ISM: T=%d S=%d Sec=%d unreadable in the image; bad data CRC", track, side, sector);
     }
 
     // Fill the sector buffer from the one MFM layout (floppy_geometry.h).
@@ -204,9 +231,12 @@ static void mfm_build_sector(floppy_t *floppy) {
     // description of the same format as swim3_xfer.c's.
     mfm_buf_sink_t sink = {floppy->mfm_sector_buf, floppy->mfm_sector_mark, 0};
     memset(sink.marks, 0, MFM_SECTOR_BUF_SIZE);
-    floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, (sectors_per_track == 18) ? 101 : 80,
-                           true);
+    int gap3 = (sectors_per_track == 18) ? 101 : 80;
+    floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, gap3, true);
     int pos = sink.pos;
+    // The layout ends: data CRC (2 bytes), gap 3.
+    if (unreadable && pos >= gap3 + 2)
+        floppy->mfm_sector_buf[pos - gap3 - 1] ^= 0xFF;
 
     floppy->mfm_buf_len = (uint16_t)pos;
     floppy->mfm_buf_pos = 0;
@@ -388,6 +418,8 @@ static void ism_write_capture_reset(floppy_t *floppy) {
     floppy->ism_write_state = 0;
     floppy->ism_write_pos = 0;
     floppy->ism_write_a1_count = 0;
+    floppy->ism_write_id_pos = 0;
+    floppy->ism_write_id_valid = false;
 }
 
 // Flushes captured sector data to the disk image
@@ -414,6 +446,30 @@ static void ism_write_capture_flush(floppy_t *floppy) {
 
     int sectors_per_track = ism_mfm_spt(floppy, drv);
 
+    // An ID field written ahead of this data field in the same ACTION names the
+    // sector, as on the disk: a later read finds this data behind that header.
+    // A format, or any whole-track write, lays its sectors down in whatever
+    // order and interleave the driver chose, so taking the position the last
+    // read left behind put each field on the wrong block.  The latched
+    // position stays the target only for a data field written with no ID
+    // field before it -- rewriting one sector after reading its header.
+    if (floppy->ism_write_id_valid) {
+        const uint8_t *id = floppy->ism_write_id;
+        // The medium can hold only what its geometry has: like the GCR path's
+        // header check, a field naming anything else is dropped, never folded
+        // onto some other block.
+        if (id[0] >= NUM_TRACKS || id[1] >= m.sides || id[2] < 1 || id[2] > sectors_per_track) {
+            LOG(2, "ISM write: ID field C=%d H=%d R=%d N=%d outside the medium; data field dropped", id[0], id[1],
+                id[2], id[3]);
+            return;
+        }
+        if (id[0] != track || id[1] != side)
+            LOG(3, "ISM write: ID field C=%d H=%d written with the head at T=%d S=%d", id[0], id[1], track, side);
+        track = id[0];
+        side = id[1];
+        sector = id[2];
+    }
+
     if (sector < 1 || sector > sectors_per_track) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
         return;
@@ -436,6 +492,12 @@ static void ism_write_capture_flush(floppy_t *floppy) {
 
     size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
     LOG(3, "ISM write: flushed T=%d S=%d Sec=%d (%zu bytes written)", track, side, sector, written);
+
+    // The head has passed this sector: a following data field written in the
+    // same ACTION with no ID field of its own belongs to the next one, in the
+    // model's 1:1 rotation order (mfm_advance_sector).  Without this every
+    // such field of the track landed on the same image block.
+    floppy->mfm_cur_sector = (uint8_t)(sector >= sectors_per_track ? 1 : sector + 1);
 
     // Invalidate MFM read buffer so subsequent reads pick up the new data
     floppy->mfm_buf_len = 0;
@@ -749,18 +811,40 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
     }
 }
 
+// Latch head select into mfm_cur_side when ACTION rises: Setup bit 0 selects
+// the source.
+static void ism_latch_head(floppy_t *floppy) {
+    if (floppy->ism_setup & ISM_SETUP_HDSEL_EN)
+        floppy->mfm_cur_side = (floppy->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
+    else
+        floppy->mfm_cur_side = floppy->sel ? 1 : 0;
+}
+
 // Helper: handles ACTION-set logic for both wZeros and wOnes
 static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
+    // A write ACTION latches where the head is, exactly as a read one does:
+    // ism_write_capture_flush targets mfm_cur_track/side.  Skipping this when
+    // WRITE was already set let a driver that sets WRITE|ACTION in one store
+    // flush to whatever track a previous read left behind (0 on a fresh boot).
+    // The sector stays as the read path left it: the header just found.
+    if ((floppy->ism_mode & ISM_MODE_ACTION) && (floppy->ism_mode & ISM_MODE_WRITE) && !(old_mode & ISM_MODE_ACTION)) {
+        uint8_t buf_side = floppy->mfm_cur_side;
+        uint8_t buf_track = floppy->mfm_cur_track;
+        ism_latch_head(floppy);
+        int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+        floppy->mfm_cur_track = (uint8_t)floppy->drives[drv_idx].track;
+        // The read buffer describes the old position; drop it if that moved.
+        if (floppy->mfm_cur_side != buf_side || floppy->mfm_cur_track != buf_track)
+            floppy->mfm_buf_len = 0;
+        LOG(3, "ISM: ACTION set for write, track=%d side=%d sector=%d", floppy->mfm_cur_track, floppy->mfm_cur_side,
+            floppy->mfm_cur_sector);
+    }
     if ((floppy->ism_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_WRITE)) {
         if (!(old_mode & ISM_MODE_ACTION)) {
             // Save buffer's track/side before latching new values
             uint8_t buf_side = floppy->mfm_cur_side;
             uint8_t buf_track = floppy->mfm_cur_track;
-            // Latch head select: Setup bit 0 selects source
-            if (floppy->ism_setup & ISM_SETUP_HDSEL_EN)
-                floppy->mfm_cur_side = (floppy->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
-            else
-                floppy->mfm_cur_side = floppy->sel ? 1 : 0;
+            ism_latch_head(floppy);
             LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", floppy->mfm_cur_side, floppy->sel,
                 floppy->ism_setup);
             int drv_idx = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
@@ -812,13 +896,28 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
             if (floppy->ism_write_state == 0) {
-                // Scanning: check for data address mark ($FB) after $A1 marks
+                // Scanning: check for an ID ($FE) or data ($FB) address mark after $A1 marks
                 if (floppy->ism_write_a1_count >= 3 && byte == 0xFB) {
                     floppy->ism_write_state = 1;
                     floppy->ism_write_pos = 0;
                     LOG(4, "ISM write: data mark found, capturing sector data");
+                } else if (floppy->ism_write_a1_count >= 3 && byte == 0xFE) {
+                    // A new ID field supersedes any earlier one not yet used
+                    floppy->ism_write_state = 2;
+                    floppy->ism_write_id_pos = 0;
+                    floppy->ism_write_id_valid = false;
+                    LOG(4, "ISM write: ID mark found, capturing ID field");
                 }
                 floppy->ism_write_a1_count = 0; // non-mark byte resets count
+            } else if (floppy->ism_write_state == 2) {
+                // Capturing the ID field: track, side, sector, size code
+                floppy->ism_write_id[floppy->ism_write_id_pos++] = byte;
+                if (floppy->ism_write_id_pos == sizeof floppy->ism_write_id) {
+                    floppy->ism_write_id_valid = true;
+                    floppy->ism_write_state = 0; // its CRC follows; scan for the data mark
+                    LOG(4, "ISM write: ID field C=%d H=%d R=%d N=%d", floppy->ism_write_id[0], floppy->ism_write_id[1],
+                        floppy->ism_write_id[2], floppy->ism_write_id[3]);
+                }
             } else if (floppy->ism_write_state == 1) {
                 // Capturing: store data bytes
                 if (floppy->ism_write_pos < 512) {

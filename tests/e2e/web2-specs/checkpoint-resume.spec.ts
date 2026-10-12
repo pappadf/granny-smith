@@ -27,7 +27,7 @@
 // (tmp+rename) before its toast appears — so the reload always finds a
 // complete checkpoint, with no timing dependence.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';

@@ -97,8 +97,9 @@ export function createConsole(): Console {
           continue;
         }
         state.runningSince = performance.now();
-        await gsEvalLine(text);
+        const failed = await gsEvalLine(text);
         if (disposed) return;
+        if (failed) notice(`Command failed: ${failed}`);
         state.runningSince = null;
         refreshPrompt();
         // A line that may have changed the stored files (files.hd_create, cp,

@@ -46,6 +46,7 @@
 
 #include "gossamer.h"
 
+#include "checkpoint.h"
 #include "davbus.h"
 #include "dbdma.h"
 #include "irq_controller.h"
@@ -705,7 +706,7 @@ static const irq_controller_ops_t hr_irq_ops = {
         (void)m;                                                                                                       \
         const gos_heathrow_t *hr = hr_obj(object_data(self));                                                          \
         value_t v = val_uint(4, (EXPR));                                                                               \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -727,8 +728,8 @@ static value_t hr_attr_clear_mode(struct object *self, const member_t *m) {
 
 #define HR_RO_ATTR(NAME, DOC, FLAGS)                                                                                   \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                           \
-            .type = V_UINT,                                                                                            \
+        .kind = MK_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                          \
+            .type = VK_UINT,                                                                                           \
             .presentation_flags = (FLAGS),                                                                             \
             .get = hr_attr_##NAME,                                                                                     \
             .set = NULL                                                                                                \
@@ -737,23 +738,23 @@ static value_t hr_attr_clear_mode(struct object *self, const member_t *m) {
 
 static const member_t hr_members[] = {
     IRQ_CONTROLLER_MEMBERS(&hr_irq_ops)
-        HR_RO_ATTR(events, "Bank 1 edge-latched events (sources 0-31)", VAL_HEX | VAL_VOLATILE),
-    {.kind = M_ATTR,
-                                                                                   .name = "source_levels",
-                                                                                   .doc = "Bank 1 live source picture, never latched",
-                                                                                   .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = hr_attr_levels, .set = NULL}},
-    HR_RO_ATTR(mask, "Bank 1 per-source enables", VAL_HEX),
-    HR_RO_ATTR(latch, "Bank 1 mode-1 output latch", VAL_HEX | VAL_VOLATILE),
-    HR_RO_ATTR(events2, "Bank 2 edge-latched events (sources 32-63)", VAL_HEX | VAL_VOLATILE),
-    HR_RO_ATTR(levels2, "Bank 2 live source picture", VAL_HEX | VAL_VOLATILE),
-    HR_RO_ATTR(mask2, "Bank 2 per-source enables", VAL_HEX),
-    HR_RO_ATTR(latch2, "Bank 2 mode-1 output latch", VAL_HEX | VAL_VOLATILE),
-    HR_RO_ATTR(fcr, "Feature Control Register (+$38)", VAL_HEX),
-    HR_RO_ATTR(mbcr, "Media-bay control / ID register (+$34)", VAL_HEX),
-    {.kind = M_ATTR,
-                                                                                   .name = "clear_mode",
-                                                                                   .doc = "Bank 1: 0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
-                                                                                   .attr = {.type = V_UINT, .get = hr_attr_clear_mode, .set = NULL}                                          },
+        HR_RO_ATTR(events, "Bank 1 edge-latched events (sources 0-31)", VFLAG_HEX | VFLAG_VOLATILE),
+    {.kind = MK_ATTR,
+                                                                                       .name = "source_levels",
+                                                                                       .doc = "Bank 1 live source picture, never latched",
+                                                                                       .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX | VFLAG_VOLATILE, .get = hr_attr_levels, .set = NULL}},
+    HR_RO_ATTR(mask, "Bank 1 per-source enables", VFLAG_HEX),
+    HR_RO_ATTR(latch, "Bank 1 mode-1 output latch", VFLAG_HEX | VFLAG_VOLATILE),
+    HR_RO_ATTR(events2, "Bank 2 edge-latched events (sources 32-63)", VFLAG_HEX | VFLAG_VOLATILE),
+    HR_RO_ATTR(levels2, "Bank 2 live source picture", VFLAG_HEX | VFLAG_VOLATILE),
+    HR_RO_ATTR(mask2, "Bank 2 per-source enables", VFLAG_HEX),
+    HR_RO_ATTR(latch2, "Bank 2 mode-1 output latch", VFLAG_HEX | VFLAG_VOLATILE),
+    HR_RO_ATTR(fcr, "Feature Control Register (+$38)", VFLAG_HEX),
+    HR_RO_ATTR(mbcr, "Media-bay control / ID register (+$34)", VFLAG_HEX),
+    {.kind = MK_ATTR,
+                                                                                       .name = "clear_mode",
+                                                                                       .doc = "Bank 1: 0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
+                                                                                       .attr = {.type = VK_UINT, .get = hr_attr_clear_mode, .set = NULL}                                              },
 };
 
 static const class_desc_t hr_class = {
@@ -790,8 +791,8 @@ static value_t nvram_method_poke(struct object *self, const member_t *m, int arg
         return val_err("nvram not available");
     uint64_t addr = argv[0].u;
     const value_t *bytes = &argv[1];
-    if (bytes->kind != V_BYTES || !bytes->bytes.p || bytes->bytes.n == 0)
-        return val_err("nvram.poke: bytes argument must be non-empty V_BYTES (e.g. 0x80:1)");
+    if (bytes->kind != VK_BYTES || !bytes->bytes.p || bytes->bytes.n == 0)
+        return val_err("nvram.poke: bytes argument must be non-empty VK_BYTES (e.g. 0x80:1)");
     size_t n = bytes->bytes.n;
     if (addr >= GOS_NVRAM_SIZE || addr + n > GOS_NVRAM_SIZE)
         return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
@@ -830,8 +831,8 @@ static value_t nvram_method_restore(struct object *self, const member_t *m, int 
     if (!nv)
         return val_err("nvram not available");
     const value_t *bytes = &argv[0];
-    if (bytes->kind != V_BYTES || bytes->bytes.n != GOS_NVRAM_SIZE || !bytes->bytes.p)
-        return val_err("nvram.restore: expected V_BYTES of length %u", GOS_NVRAM_SIZE);
+    if (bytes->kind != VK_BYTES || bytes->bytes.n != GOS_NVRAM_SIZE || !bytes->bytes.p)
+        return val_err("nvram.restore: expected VK_BYTES of length %u", GOS_NVRAM_SIZE);
     memcpy(nv, bytes->bytes.p, GOS_NVRAM_SIZE);
     return val_none();
 }
@@ -849,11 +850,11 @@ static value_t nvram_method_clear(struct object *self, const member_t *m, int ar
 
 // The named fields (tnt's grand_central.c has the same set, plus depth).
 static const arg_decl_t nvram_getenv_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
+    {.name = "name", .kind = VK_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
 };
 static const arg_decl_t nvram_setenv_args[] = {
-    {.name = "name",  .kind = V_STRING, .doc = "Open Firmware variable"                 },
-    {.name = "value", .kind = V_STRING, .doc = "true/false, a hex number, or the string"},
+    {.name = "name",  .kind = VK_STRING, .doc = "Open Firmware variable"                 },
+    {.name = "value", .kind = VK_STRING, .doc = "true/false, a hex number, or the string"},
 };
 
 static value_t nvram_method_getenv(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -907,61 +908,61 @@ static value_t nvram_attr_size(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t nvram_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
 };
 static const arg_decl_t nvram_poke_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
-    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
 };
 static const arg_decl_t nvram_dump_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
-    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "n", .kind = VK_UINT, .doc = "byte count"},
 };
 static const arg_decl_t nvram_restore_args[] = {
-    {.name = "bytes", .kind = V_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
+    {.name = "bytes", .kind = VK_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
 };
 
 static const member_t nvram_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Store size in bytes",
-     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}                                   },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = nvram_attr_size, .set = NULL}                                   },
+    {.kind = MK_METHOD,
      .name = "peek",
      .doc = "Read one byte (XPRAM at $1300, Name Registry at $1400, Open Firmware at $1800)",
-     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}      },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = VK_UINT, .fn = nvram_method_peek}      },
+    {.kind = MK_METHOD,
      .name = "poke",
      .doc = "Write 1..N bytes at an offset",
-     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}      },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = VK_NONE, .fn = nvram_method_poke}      },
+    {.kind = MK_METHOD,
      .name = "dump",
      .doc = "Read N bytes starting at an offset",
-     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}     },
-    {.kind = M_METHOD,
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = VK_BYTES, .fn = nvram_method_dump}     },
+    {.kind = MK_METHOD,
      .name = "snapshot",
      .doc = "Read the whole 8 KB store",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}            },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BYTES, .fn = nvram_method_snapshot}            },
+    {.kind = MK_METHOD,
      .name = "restore",
      .doc = "Write the whole store from a snapshot",
-     .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
-    {.kind = M_METHOD,
+     .method = {.args = nvram_restore_args, .nargs = 1, .result = VK_NONE, .fn = nvram_method_restore}},
+    {.kind = MK_METHOD,
      .name = "clear",
      .doc = "Pull the battery: back to the store a new board carries",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
-    {.kind = M_METHOD,
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = nvram_method_clear}                },
+    {.kind = MK_METHOD,
      .name = "getenv",
      .doc = "Read an Open Firmware variable, as printenv shows it",
-     .method = {.args = nvram_getenv_args, .nargs = 1, .result = V_STRING, .fn = nvram_method_getenv}},
-    {.kind = M_METHOD,
+     .method = {.args = nvram_getenv_args, .nargs = 1, .result = VK_STRING, .fn = nvram_method_getenv}},
+    {.kind = MK_METHOD,
      .name = "setenv",
      .doc = "Set an Open Firmware variable, as setenv does (repacks, re-checksums)",
-     .method = {.args = nvram_setenv_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_setenv}  },
-    {.kind = M_ATTR,
+     .method = {.args = nvram_setenv_args, .nargs = 2, .result = VK_NONE, .fn = nvram_method_setenv}  },
+    {.kind = MK_ATTR,
      .name = "startup_disk",
      .doc = "Mac OS's default startup device as a SCSI ID (XPRAM $78-$7B); -1 = none",
-     .attr = {.type = V_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
+     .attr = {.type = VK_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
 };
 
 static const class_desc_t nvram_class = {

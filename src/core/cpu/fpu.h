@@ -26,28 +26,33 @@ typedef struct {
     uint64_t mantissa; // 64-bit mantissa (bit 63 = explicit integer/J bit)
 } float80_reg_t;
 
-// Sign bit is stored in bit 15 of the exponent field
-#define FP80_SIGN(f) (((f).exponent >> 15) & 1)
-#define FP80_EXP(f)  ((f).exponent & 0x7FFF)
+// Sign bit (stored in bit 15 of the exponent field)
+static inline int fp80_sign(float80_reg_t f) {
+    return (f.exponent >> 15) & 1;
+}
+// 15-bit biased exponent (sign stripped)
+static inline int fp80_exp(float80_reg_t f) {
+    return f.exponent & 0x7FFF;
+}
 
 // Predicate helpers for classifying float80 values
 static inline bool fp80_is_zero(float80_reg_t f) {
-    return FP80_EXP(f) == 0 && f.mantissa == 0;
+    return fp80_exp(f) == 0 && f.mantissa == 0;
 }
 static inline bool fp80_is_inf(float80_reg_t f) {
-    return FP80_EXP(f) == 0x7FFF && f.mantissa == 0;
+    return fp80_exp(f) == 0x7FFF && f.mantissa == 0;
 }
 static inline bool fp80_is_nan(float80_reg_t f) {
-    return FP80_EXP(f) == 0x7FFF && f.mantissa != 0;
+    return fp80_exp(f) == 0x7FFF && f.mantissa != 0;
 }
 static inline bool fp80_is_snan(float80_reg_t f) {
-    return FP80_EXP(f) == 0x7FFF && (f.mantissa & 0x4000000000000000ULL) == 0 && f.mantissa != 0;
+    return fp80_exp(f) == 0x7FFF && (f.mantissa & 0x4000000000000000ULL) == 0 && f.mantissa != 0;
 }
 static inline bool fp80_is_denormal(float80_reg_t f) {
-    return FP80_EXP(f) == 0 && f.mantissa != 0;
+    return fp80_exp(f) == 0 && f.mantissa != 0;
 }
 static inline bool fp80_is_negative(float80_reg_t f) {
-    return FP80_SIGN(f) && !fp80_is_nan(f);
+    return fp80_sign(f) && !fp80_is_nan(f);
 }
 
 // Construct a float80_reg_t from components
@@ -58,7 +63,8 @@ static inline float80_reg_t fp80_make(int sign, uint16_t exp, uint64_t mant) {
     return r;
 }
 
-// Common constants
+// Common constants (macros rather than functions so they stay usable as
+// compound-literal initialisers; the predicates above are inline functions)
 #define FP80_ZERO     ((float80_reg_t){0x0000, 0})
 #define FP80_NEG_ZERO ((float80_reg_t){0x8000, 0})
 #define FP80_INF      ((float80_reg_t){0x7FFF, 0})

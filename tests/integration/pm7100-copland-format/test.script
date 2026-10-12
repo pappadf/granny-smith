@@ -280,7 +280,7 @@ if have_media($ddk_cd) && have_media("${$ssw75}/Install Disk 1.img") && have_med
     phase2_export_formatted()
     report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount drive-setup-2.0d5c2")
 } else {
-    echo "skip: pm7100-copland-format (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("pm7100-copland-format (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

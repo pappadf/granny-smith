@@ -41,10 +41,18 @@ scheduler.run 1000000000
 assert !checkpoint.load("$TRUNCATED_FILE") "the truncated checkpoint loaded"
 assert machine.ata.devices == "hd - - -" "the running machine lost its ATA disk"
 let ata_reads = files.images[1].reads
-scheduler.run 11000000000
+# Up to 11 G more, sampled every 250 M: done once the Finder is the current
+# application (CurApName, \$910, reads "Finder") and the ATA disk has been
+# read since the failed restore.
+let spent = 0
+while \$spent < 11000000000 && !(try(machine.cpu.mmu.peek(0x910, 4), 0) == 0x0646696E && try(machine.cpu.mmu.peek(0x914, 2), 0) == 0x6465 && files.images[1].reads > \$ata_reads) {
+    scheduler.run 250000000
+    \$spent = \$spent + 250000000
+}
 assert files.images[1].reads > \$ata_reads "the running machine did no ATA I/O after the failed restore"
 assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive is not the SCSI volume"
 assert debug.mac.globals.read("DSErrCode") == 0 "a system error during startup"
+echo "@@PERF {\\"row\\":\\"gossamer-restore-fail/finder\\",\\"instr\\":\${scheduler.instr_count}}"
 quit
 EOF
 

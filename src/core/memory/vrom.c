@@ -15,8 +15,8 @@
 #include "vrom.h"
 #include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
-#include "gs_out.h"
 #include "offer_registry.h"
+#include "out.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -34,20 +34,24 @@ LOG_USE_CATEGORY_NAME("vrom");
 // File-level helpers
 // ============================================================================
 
-bool vrom_probe_file(const char *path, size_t *out_size) {
-    if (out_size)
-        *out_size = 0;
+// The declaration-ROM chip sizes the catalog holds: 32 KB (SE/30, JMFB, 24AC,
+// the 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  Facts of these
+// cards' chips, private to the identifier -- a card factory that loads a ROM
+// learns its size from the identification, not from a constant.
+#define VROM_CHIP_32K (32u * 1024u)
+#define VROM_CHIP_64K (64u * 1024u)
+
+// Size of the file at `path` in bytes; 0 when it is missing or unreadable.
+// Only a size: the content checks are vrom_identify_image's.
+static size_t vrom_file_size(const char *path) {
     if (!path || !*path)
-        return false;
+        return 0;
     // stat is portable for binary-file sizing; fseek(SEEK_END)+ftell on a
     // binary stream is implementation-defined per ISO C.
     struct stat st;
     if (stat(path, &st) != 0 || st.st_size <= 0)
-        return false;
-    size_t size = (size_t)st.st_size;
-    if (out_size)
-        *out_size = size;
-    return size == VROM_EXPECTED_SIZE;
+        return 0;
+    return (size_t)st.st_size;
 }
 
 // NuBus declaration-ROM Format Block CRC.  Every declaration ROM — the
@@ -117,7 +121,7 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
     // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
     // CRC live in the trailing bytes either way, so accept both.
-    if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
+    if (size != VROM_CHIP_32K && size != VROM_CHIP_64K)
         return VROM_ID_WRONG_SIZE;
     // Only the trailing Format Block matters for identity.
     const uint8_t *tail = img + size - VROM_CRC_OFF;
@@ -150,7 +154,7 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     static const struct {
         uint16_t board_id;
         const char *card_id;
-    } gs_boards[] = {
+    } vrom_boards[] = {
         {0x0027, "mdc_8_24"          },
         {0x05FA, "display_card_24ac" },
         {0x002C, "824gc"             },
@@ -158,12 +162,12 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
     };
     uint16_t board_id = 0;
     if (declrom_identify_vendor(img, size, "granny-smith", &board_id)) {
-        for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
-            if (gs_boards[i].board_id == board_id) {
+        for (size_t i = 0; i < sizeof(vrom_boards) / sizeof(vrom_boards[0]); i++) {
+            if (vrom_boards[i].board_id == board_id) {
                 if (out) {
                     out->crc = crc;
                     out->chip_size = size;
-                    out->card_id = gs_boards[i].card_id;
+                    out->card_id = vrom_boards[i].card_id;
                 }
                 return VROM_ID_KNOWN;
             }
@@ -174,15 +178,13 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
 
 // The file form: read the chip and identify it.
 static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
-    size_t size = 0;
-    vrom_probe_file(path, &size); // fills *size regardless of the 32 KB gate
+    size_t size = vrom_file_size(path);
     if (out_size)
         *out_size = size;
-    // vrom_probe_file leaves size == 0 only when stat failed (missing /
-    // unreadable).
+    // Zero only when stat failed (missing / unreadable).
     if (size == 0)
         return VROM_ID_UNREADABLE;
-    if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
+    if (size != VROM_CHIP_32K && size != VROM_CHIP_64K)
         return VROM_ID_WRONG_SIZE;
     uint8_t *img = malloc(size);
     if (!img)
@@ -276,7 +278,7 @@ bool vrom_card_resolvable(const char *card_id, const char *rom) {
 // ============================================================================
 
 static DEF_GETTER(vrom_attr_size) {
-    return val_uint(4, VROM_EXPECTED_SIZE);
+    return val_uint(4, VROM_CHIP_32K);
 }
 
 // catalog.vroms.offer(path) — platform/UI hook into the offer registry, e.g. web2's
@@ -314,7 +316,7 @@ static DEF_METHOD(vrom_method_identify) {
     switch (vrom_identify_core(path, &id, &size, &crc)) {
     case VROM_ID_UNREADABLE:
         // Distinguish "can't read the file" from "present, but not a vROM",
-        // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
+        // mirroring rom.identify: a missing/unreadable path is a VK_ERROR,
         // while a real file of the wrong size is simply unrecognised.
         return val_err("catalog.vroms.identify: cannot read '%s'", path);
     case VROM_ID_WRONG_SIZE: {
@@ -353,22 +355,22 @@ static DEF_METHOD(vrom_method_identify) {
 }
 
 static const arg_decl_t vrom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "VROM file path"},
+    {.name = "path", .kind = VK_STRING, .presentation_flags = VFLAG_PATH, .doc = "VROM file path"},
 };
 
 static const member_t vrom_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Expected VROM size in bytes (32 KB)",
-     .attr = {.type = V_UINT, .get = vrom_attr_size, .set = NULL}                              },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .get = vrom_attr_size, .set = NULL}                              },
+    {.kind = MK_METHOD,
      .name = "offer",
      .doc = "Offer a candidate VROM file; true iff recognised and registered",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_offer}  },
-    {.kind = M_METHOD,
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = VK_BOOL, .fn = vrom_method_offer}  },
+    {.kind = MK_METHOD,
      .name = "identify",
      .doc = "Typed map: {recognised, card_id?, compatible?, size, crc}.",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_MAP, .fn = vrom_method_identify}},
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = VK_MAP, .fn = vrom_method_identify}},
 };
 
 static const class_desc_t vrom_class = {

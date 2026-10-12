@@ -12,7 +12,7 @@ import {
   isModuleReady,
 } from '@/bus';
 import { machine } from '@/state/machine.svelte';
-import { _resetForTests } from '@/state/toasts.svelte';
+import { _resetForTests, toasts } from '@/state/toasts.svelte';
 
 beforeEach(() => {
   _resetForTests();
@@ -37,10 +37,10 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
   it('pause/resume/shutdown each resolve to undefined (no Module)', async () => {
     await expect(pauseEmulator()).resolves.toBeUndefined();
     await expect(resumeEmulator()).resolves.toBeUndefined();
-    // shutdownEmulator updates machine.status optimistically since the user
-    // expects the Welcome view to come back; the gsEval call inside is a
-    // no-op without a Module.
+    // Without a Module the stop fails ({error}); shutdownEmulator must say so
+    // rather than show a machine that is still running as stopped.
     await shutdownEmulator();
-    expect(machine.status).toBe('stopped');
+    expect(machine.status).toBe('no-machine');
+    expect(toasts.active.some((t) => /Stop failed: emulator not ready/.test(t.msg))).toBe(true);
   });
 });

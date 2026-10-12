@@ -13,7 +13,7 @@
 // media fetch with page.route() and fulfil it from the real ROM on disk —
 // only the transport is stubbed; the identify/boot pipeline runs for real.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gsEvalInPage } from '../helpers/web2-eval';

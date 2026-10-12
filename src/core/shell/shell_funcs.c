@@ -16,6 +16,7 @@
 #include "expr.h"
 #include "script.h"
 #include "shell_var.h"
+#include "status.h"
 #include "usage.h"
 #include "value.h"
 #include "job/job.h"
@@ -79,18 +80,18 @@ static DEF_METHOD(func_method_remove) {
 }
 
 static const member_t func_entry_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "name",
      .doc = "Function name",
-     .attr = {.type = V_STRING, .get = func_get_name, .set = NULL}                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = func_get_name, .set = NULL}                   },
+    {.kind = MK_ATTR,
      .name = "params",
      .doc = "Declared parameter list",
-     .attr = {.type = V_STRING, .get = func_get_params, .set = NULL}                 },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = func_get_params, .set = NULL}                 },
+    {.kind = MK_METHOD,
      .name = "remove",
      .doc = "Remove this function",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = func_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = func_method_remove}},
 };
 
 static const class_desc_t func_entry_class = {
@@ -183,14 +184,14 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
         snprintf(err_buf, err_size, "function body was already consumed (def re-executed?)");
         return -1;
     }
-    if (!object_validate_name(name, err, sizeof(err))) {
+    if (object_validate_name(name, err, sizeof(err)) != STATUS_OK) {
         snprintf(err_buf, err_size, "%s", err);
         script_block_free(body);
         return -1;
     }
     // Duplicate parameter names are a definition error.
     for (int i = 0; i < n_params; i++) {
-        if (!object_validate_name(params[i], err, sizeof(err))) {
+        if (object_validate_name(params[i], err, sizeof(err)) != STATUS_OK) {
             snprintf(err_buf, err_size, "parameter %d: %s", i + 1, err);
             script_block_free(body);
             return -1;

@@ -3,56 +3,16 @@
 
 // cpu_68000.c
 // Motorola 68000 instruction decoder instantiation.
-// This file defines the 68000-specific memory access macros and includes
-// the shared cpu_ops.h and cpu_decode.h templates to generate cpu_run_68000().
+// Supplies the 68000 prologue/epilogue around the shared macro set
+// (cpu_decoder_macros.h) and the cpu_ops.h / cpu_decode.h templates to
+// generate cpu_run_68000().
 
 #include "cpu_internal.h"
 
 #include "system.h"
 
-// 68000 memory access: direct (no MMU translation)
-#define D(n)                                         cpu->d[n]
-#define A(n)                                         cpu->a[n]
-#define PC                                           cpu->pc
-#define READ8(addr)                                  memory_read_uint8(addr)
-#define READ16(addr)                                 memory_read_uint16(addr)
-#define READ32(addr)                                 memory_read_uint32(addr)
-#define WRITE8(addr, x)                              memory_write_uint8(addr, x)
-#define WRITE16(addr, x)                             memory_write_uint16(addr, x)
-#define WRITE32(addr, x)                             memory_write_uint32(addr, x)
-#define FETCH8()                                     (uint8_t) fetch_16(cpu, true)
-#define FETCH16()                                    fetch_16(cpu, true)
-#define FETCH32()                                    fetch_32(cpu, true)
-#define FETCH16_NO_INC()                             fetch_16(cpu, false)
-#define FETCH32_NO_INC()                             fetch_32(cpu, false)
-#define CC_C                                         cpu->carry
-#define CC_X                                         cpu->extend
-#define CC_N                                         cpu->negative
-#define CC_V                                         cpu->overflow
-#define CC_Z                                         cpu->zero
-#define GET_USP()                                    (cpu->usp)
-#define SET_USP(value_)                              (cpu->usp = (value_))
-#define IS_SUPERVISOR()                              (cpu->supervisor != 0)
-#define GET_SR()                                     cpu_get_sr(cpu)
-#define SET_SR(value_)                               cpu_set_sr(cpu, (value_))
-#define READ_CCR()                                   read_ccr(cpu)
-#define WRITE_CCR(value_)                            write_ccr(cpu, (value_))
-#define SBCD(dst, src)                               sbcd(cpu, (dst), (src))
-#define ABCD(dst, src)                               abcd(cpu, (dst), (src))
-#define MOVEM_FROM_REGISTER(op, sz)                  movem_from_register(cpu, (op), (sz))
-#define MOVEM_TO_REGISTER(op, sz)                    movem_to_register(cpu, (op), (sz))
-#define READ_EA(bits, opcode_, increment_)           read_ea_##bits(cpu, (opcode_), (increment_))
-#define WRITE_EA(bits, mode_, reg_, value_)          write_ea_##bits(cpu, (mode_), (reg_), (value_))
-#define CALCULATE_EA(size_, mode_, reg_, increment_) calculate_ea(cpu, (size_), (mode_), (reg_), (increment_))
-#define CONDITIONAL_TEST(test_)                      conditional_test(cpu, (test_))
-#define EXC_TRAP(vector_)                            trap(cpu, (vector_))
-#define EXC_TRAPV()                                  trapv(cpu)
-#define EXC_ATRAP()                                  a_trap(cpu)
-#define EXC_FTRAP()                                  f_trap(cpu)
-#define EXC_DIVIDE_BY_ZERO()                         exception_divide_by_zero(cpu)
-#define EXC_CHK()                                    chk_exception(cpu)
-#define EXC_PRIVILEGE()                              privilege_violation(cpu)
-#define EXC_ILLEGAL()                                illegal_instruction(cpu)
+// Operand/memory/flag/exception macros shared by all three 68K decoders
+#include "cpu_decoder_macros.h"
 
 #include "cpu_ops.h"
 
@@ -60,12 +20,8 @@
 #define CPU_DECODER_NAME        cpu_run_68000
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
-/* Saturating decrement on the trailing (*instructions)--: memory_io_penalty
- * can clamp *instructions to 0 during the fetch (when the I/O penalty equals
- * or exceeds the remaining burndown), and an unconditional decrement would
- * wrap to UINT32_MAX, breaking the sprint_burndown <= sprint_total invariant
- * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
- * instruction on a slow I/O access. */
+// Saturating burn-down decrement at the end of the prologue: see
+// docs/internals/core/cpu/cores.md, "The 68K decoder prologue".
 #define CPU_DECODER_PROLOGUE                                                                                           \
     /* Double bus fault: the CPU halts, and on Mac hardware the halt line is                                           \
      * wired straight to the board's reset input, so the machine reboots.                                              \
@@ -87,7 +43,6 @@
         system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
         cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
      * error is delivered at the FAULTING instruction's epilogue.  The 68030 decoder                                   \
@@ -97,6 +52,7 @@
      * unrelated (supervisor / MMU-setup) code, where it was delivered with the wrong                                  \
      * context and vectored through the ROM, resetting the machine. */                                                 \
     g_bus_error_instr_ptr = instructions;                                                                              \
+    cpu_check_interrupt(cpu);                                                                                          \
     while (*instructions > 0) {                                                                                        \
         /* The MC68000 has a 24-bit address bus (A0-A23); bits 24-31 of the PC are                                     \
          * not driven.  Control transfers through a pointer whose high byte is a                                       \
@@ -153,12 +109,15 @@
         /* (savedPC-2) to detect the C stack-growth probe `TST.B d16(A7)` (opcode     */                               \
         /* 0x4A2F): with the next-instruction PC it read the displacement word, the   */                               \
         /* probe went undetected, and mkfs was SIGSEGV'd instead of the stack grown.  */                               \
-        cpu->pc = cpu->instruction_pc + 2;                                                                             \
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->instruction_pc + 2);                        \
+        cpu_select_soa(cpu->supervisor);                                                                               \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)
+
+// MOVES does not exist on the 68000: both direction arms are OP_UNDEFINED, so
+// don't let cpu_decode.h's live extension-word read issue a bus cycle the
+// real chip never makes.
+#define CPU_MOVES_DIR() 0
 
 #include "cpu_decode.h"

@@ -430,9 +430,10 @@ afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_rela
     if (!fk)
         return AFP_FORK_LOCK_ERR;
     uint32_t fork_len = afp_fork_length(fk);
-    int64_t abs_start = end_relative ? (int64_t)fork_len + start : (int64_t)(uint32_t)start;
+    // Offset is a signed long either way; only End makes a negative one useful
+    int64_t abs_start = end_relative ? (int64_t)fork_len + start : (int64_t)start;
     if (abs_start < 0)
-        return AFP_FORK_LOCK_ERR;
+        return AFP_FORK_PARAM_ERR; // starts before the 0th byte (Inside AppleTalk, FPByteRangeLock)
     if (abs_start > UINT32_MAX)
         return AFP_FORK_LOCK_ERR;
     lock_range_t want = {.start = (uint32_t)abs_start, .length = length};

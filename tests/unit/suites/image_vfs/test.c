@@ -19,6 +19,21 @@
 #include <string.h>
 #include <unistd.h>
 
+// ---- realpath(), failing on demand (native builds; see Makefile) ----------
+
+#ifdef TEST_WRAP_REALPATH
+// 0, or the errno every realpath() call fails with.
+static int g_realpath_errno;
+char *__real_realpath(const char *path, char *resolved);
+char *__wrap_realpath(const char *path, char *resolved) {
+    if (g_realpath_errno) {
+        errno = g_realpath_errno;
+        return NULL;
+    }
+    return __real_realpath(path, resolved);
+}
+#endif
+
 // ---- The volume on disk, and the image.c entry point image_vfs uses ------
 
 #define IMG_CAP (64u * HFSB_BLOCK)
@@ -30,7 +45,7 @@ static char g_writable[PATH_MAX + 64];
 
 // With image.c's own rule: the key itself, or anything inside it.
 bool image_key_is_open_writable(const char *key) {
-    return g_writable[0] && gs_key_within(key, g_writable);
+    return g_writable[0] && source_key_within(key, g_writable);
 }
 
 // The volume lives in a real host file, mounted like any other.
@@ -46,16 +61,16 @@ static void write_volume_file(const uint8_t *img, size_t len) {
     ASSERT_TRUE(write(fd, img, len) == (ssize_t)len);
     close(fd);
     ASSERT_TRUE(realpath(g_host, g_host_canon) != NULL);
-    gs_source_t *s = gs_source_host(g_host, NULL);
+    source_t *s = source_host(g_host, NULL);
     ASSERT_TRUE(s != NULL);
-    snprintf(g_host_key, sizeof(g_host_key), "%s", gs_source_key(s));
-    gs_source_release(s);
+    snprintf(g_host_key, sizeof(g_host_key), "%s", source_key(s));
+    source_release(s);
 }
 
 // Build the volume and its file, without mounting it.
 static void make_volume(const hfsb_file_t *files, int n) {
     g_writable[0] = 0;
-    gs_ns_register_formats();
+    ns_register_formats();
     g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
     ASSERT_TRUE(g_img_size > 0);
     write_volume_file(g_img, g_img_size);
@@ -343,7 +358,7 @@ TEST(test_overlong_path_is_refused_not_truncated) {
 
 // A file that is no disk and no archive is refused as not an image.
 TEST(test_non_image_is_refused_cleanly) {
-    gs_ns_register_formats();
+    ns_register_formats();
     static uint8_t junk[4096];
     memset(junk, 0x5A, sizeof(junk));
     write_volume_file(junk, sizeof(junk));
@@ -351,6 +366,33 @@ TEST(test_non_image_is_refused_cleanly) {
     ASSERT_EQ_INT(-ENOTDIR, image_vfs_acquire_mount(g_host, &m));
     unlink(g_host);
 }
+
+#ifdef TEST_WRAP_REALPATH
+// A realpath() that fails for a reason other than a missing file (a backend,
+// such as one under WasmFS, that cannot answer it) does not stop the mount:
+// the path is used as given, as image.c and source.c use it, and the mount
+// is found under that spelling.  A missing file is still refused.
+TEST(test_realpath_failure_falls_back_to_the_raw_path) {
+    make_volume(one_file, 1);
+    image_mount_t *m = NULL;
+    g_realpath_errno = EINVAL;
+    int rc = image_vfs_acquire_mount(g_host, &m);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_TRUE(m != NULL);
+    vfs_stat_t st;
+    rc = vfs_image_backend()->stat(m, "/partition1/A", &st);
+    ASSERT_EQ_INT(0, rc);
+    rc = image_vfs_unmount(g_host);
+    ASSERT_EQ_INT(0, rc);
+
+    g_realpath_errno = ENOENT;
+    m = NULL;
+    rc = image_vfs_acquire_mount(g_host, &m);
+    ASSERT_EQ_INT(-ENOENT, rc);
+    g_realpath_errno = 0;
+    unlink(g_host);
+}
+#endif
 
 // ---- Nesting ------------------------------------------------------------------
 
@@ -371,16 +413,16 @@ TEST(test_nested_volume_mounts_from_its_source) {
     image_mount_t *m = mount_volume(outer_files, 1);
 
     int err = 0;
-    gs_source_t *data = image_vfs_open_source(m, "/partition1/Inner.img", GS_FORK_DATA, &err);
+    source_t *data = image_vfs_open_source(m, "/partition1/Inner.img", GS_FORK_DATA, &err);
     ASSERT_TRUE(data != NULL);
-    ASSERT_EQ_INT((int)inner_len, (int)gs_source_size(data));
+    ASSERT_EQ_INT((int)inner_len, (int)source_size(data));
     char want_key[PATH_MAX + 128];
     snprintf(want_key, sizeof(want_key), "%s/partition1/Inner.img", g_host_key);
-    ASSERT_TRUE(strcmp(gs_source_key(data), want_key) == 0);
+    ASSERT_TRUE(strcmp(source_key(data), want_key) == 0);
 
     image_mount_t *nm = NULL;
     ASSERT_EQ_INT(0, image_vfs_acquire_mount_source("/x/Inner.img", data, NULL, &nm));
-    gs_source_release(data);
+    source_release(data);
     char buf[16] = {0};
     size_t got = 0;
     ASSERT_EQ_INT(0, read_all(vfs_image_backend(), nm, "/partition1/Deep", buf, sizeof(buf), &got));
@@ -416,6 +458,92 @@ size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
     return 0;
 }
 
+// ---- Names the VFS also synthesises ------------------------------------------
+
+// A file literally named "rsrc" or "finf" resolves as itself: those names
+// anchor a fork only after the name of an existing file.  At the volume root
+// the anchor's prefix is the partition, a directory, and the lookup used to
+// stop there with -ENOENT.  The partition name needs its digits: "partition 1"
+// is no partition.
+static const hfsb_file_t named_like_forks[] = {
+    {.name = "rsrc", .data = (const uint8_t *)"literal", .data_len = 7},
+    {.name = "finf", .data = (const uint8_t *)"also",    .data_len = 4},
+};
+
+TEST(test_fork_names_resolve_literally_where_no_file_precedes) {
+    image_mount_t *m = mount_volume(named_like_forks, 2);
+    const vfs_backend_t *be = vfs_image_backend();
+    char buf[16];
+    size_t got = 0;
+    ASSERT_EQ_INT(0, read_all(be, m, "/partition1/rsrc", buf, sizeof(buf), &got));
+    ASSERT_EQ_INT(7, (int)got);
+    ASSERT_TRUE(memcmp(buf, "literal", 7) == 0);
+    vfs_stat_t st;
+    ASSERT_EQ_INT(0, be->stat(m, "/partition1/finf", &st));
+    ASSERT_EQ_INT(VFS_MODE_FILE, (int)st.mode);
+    ASSERT_EQ_INT(4, (int)st.size);
+    ASSERT_EQ_INT(-ENOENT, be->stat(m, "/partition 1", &st));
+    // Read-only by flag: the writers are vfs.c's to refuse.
+    ASSERT_TRUE((be->flags & VFS_BE_RDONLY) != 0);
+    ASSERT_TRUE(be->mkdir == NULL && be->unlink == NULL && be->rename == NULL);
+    unmount_volume();
+}
+
+// ---- A file that changes under its mount ----------------------------------
+
+static int g_listed, g_listed_stale;
+
+static void count_mounts(const char *path, const char *format, uint32_t n_partitions, uint32_t refcount, bool busy,
+                         bool stale, void *user) {
+    (void)path;
+    (void)format;
+    (void)n_partitions;
+    (void)refcount;
+    (void)busy;
+    (void)user;
+    g_listed++;
+    g_listed_stale += stale;
+}
+
+// The image file changes while a handle is open on its mount: the next
+// descent gets a new mount, the old one is marked stale and keeps serving
+// that handle, and the handle's close drops it.  It used to stay in the
+// table, unmarked, until evicted.
+TEST(test_changed_file_supersedes_a_held_mount) {
+    image_mount_t *m = mount_volume(one_file, 1);
+    const vfs_backend_t *be = vfs_image_backend();
+    vfs_file_t *f = NULL;
+    ASSERT_EQ_INT(0, be->open(m, "/partition1/A", &f));
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL); // whatever earlier tests left, plus m
+    int before = g_listed, before_stale = g_listed_stale;
+
+    // Grow the file: its source key (size, mtime) changes.
+    FILE *fp = fopen(g_host, "ab");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_TRUE(fwrite("x", 1, 1, fp) == 1);
+    fclose(fp);
+    image_mount_t *fresh = NULL;
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &fresh));
+    ASSERT_TRUE(fresh != m);
+
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL);
+    ASSERT_EQ_INT(before + 1, g_listed);
+    ASSERT_EQ_INT(before_stale + 1, g_listed_stale);
+    char buf[8];
+    size_t got = 0;
+    ASSERT_EQ_INT(0, be->read(f, 0, buf, sizeof(buf), &got)); // the old mount still serves its handle
+    ASSERT_EQ_INT(4, (int)got);
+    be->close(f);
+
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL);
+    ASSERT_EQ_INT(before, g_listed);
+    ASSERT_EQ_INT(before_stale, g_listed_stale);
+    unmount_volume();
+}
+
 int main(void) {
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
@@ -427,7 +555,12 @@ int main(void) {
     RUN(test_pending_unmount_completes_on_last_close);
     RUN(test_overlong_path_is_refused_not_truncated);
     RUN(test_non_image_is_refused_cleanly);
+#ifdef TEST_WRAP_REALPATH
+    RUN(test_realpath_failure_falls_back_to_the_raw_path);
+#endif
     RUN(test_nested_volume_mounts_from_its_source);
+    RUN(test_fork_names_resolve_literally_where_no_file_precedes);
+    RUN(test_changed_file_supersedes_a_held_mount);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }

@@ -37,7 +37,7 @@
 #define PPC_MSR_IT  0x0020u // instruction translation (bit 26)
 #define PPC_MSR_DT  0x0010u // data translation (bit 27)
 // 604-only MSR bits (604UM Table 4-3).
-#define PPC_MSR_POW 0x00040000u // power management enable (bit 13; accepted as a no-op idle hint)
+#define PPC_MSR_POW 0x00040000u // power management enable (bit 13): ppc_check_power_mode
 // Little-endian mode (604UM Table 4-3 bits 15/31; PEM §3.2.2).  LE selects
 // the address munging below for every data access and instruction fetch;
 // ILE is copied into LE on exception entry.  Implemented on the 604 only:
@@ -159,7 +159,7 @@ struct ppc {
     uint32_t instruction_pc; // address of the instruction being executed
     uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
-    uint32_t reserve_addr;
+    uint32_t reserve_addr; // lwarx address (state only; stwcx. does not compare it)
     // 750 L2 global invalidate (750UM §9.1.5): scheduler cycle at which
     // L2IP drops back to 0 after L2I was set with L2E clear.  With no time
     // binding, l2_inval_reads counts the L2IP=1 reads still owed instead.
@@ -167,6 +167,12 @@ struct ppc {
     uint32_t l2_inval_reads;
     uint32_t ext_irq; // level of the external-interrupt line
     uint32_t dec_pending; // latched decrementer exception request
+    // Nap/doze: MSR[POW] (with a HID0 mode on the 750) stops instruction
+    // fetch until an interrupt -- Mac OS 9's idle loop does exactly this.
+    // The scheduler's is_stopped path then sleeps emulated time to the next
+    // event instead of running the idle loop, as the 68K core does for
+    // STOP.  Any exception entry clears it.
+    uint32_t dozing;
     int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750 (the model discriminator)
 
     // --- time derivation (exact-rational RTC/TB/DEC) ---
@@ -211,6 +217,8 @@ static inline bool ppc_is_604(const ppc_t *p) {
 
 // The MPC750: L2CR/ICTC/THRM, read-only HID1, its own performance-monitor
 // map (no SDA, user mirrors), no PIR (750UM Table 2-49).
+void ppc_check_power_mode(ppc_t *p);
+
 static inline bool ppc_is_750(const ppc_t *p) {
     return p->cpu_model == CPU_MODEL_PPC750;
 }
@@ -413,7 +421,7 @@ static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store)
         return ppc_dxlate_slow(p, iw, addr, store);
     }
     if (p->msr & PPC_MSR_PR) {
-        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> PAGE_SHIFT];
+        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> MEM_PAGE_SHIFT];
         if (__builtin_expect(e != 0, 1))
             return false;
     }

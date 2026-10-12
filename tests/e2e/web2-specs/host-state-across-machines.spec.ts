@@ -12,7 +12,7 @@
 //     each get the canvas their own screen needs -- nothing is remembered
 //     from the machine before.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 import { gsEvalInPage } from "../helpers/web2-eval";

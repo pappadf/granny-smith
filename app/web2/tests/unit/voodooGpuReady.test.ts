@@ -3,7 +3,8 @@
 // time counts as no adapter, and says so, rather than holding the page.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('@/bus/emulator', () => ({ getModule: () => null }));
+const setGpuUnavailable = vi.fn();
+vi.mock('@/bus/emulator', () => ({ getModule: () => null, setGpuUnavailable }));
 
 // The GPU worker: the test answers for it.
 class FakeWorker {
@@ -33,6 +34,7 @@ beforeEach(async () => {
   vi.resetModules();
   vi.useFakeTimers();
   FakeWorker.last = null;
+  setGpuUnavailable.mockClear();
   vi.stubGlobal('Worker', FakeWorker);
   Object.defineProperty(navigator, 'gpu', { value: {}, configurable: true });
   gpu = await import('@/gpu/voodoo2Gpu.svelte');
@@ -77,5 +79,19 @@ describe('whenVoodooGpuReady', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringMatching(/no WebGPU adapter answer within 2000 ms/),
     );
+  });
+});
+
+describe('device loss', () => {
+  // A card attached at the time reads the loss from the shared block; the
+  // page must stop offering the GPU to cards created later.
+  it('tells the core the GPU is gone and drops the overlay', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    void gpu.startVoodooGpu(overlayCanvas());
+    FakeWorker.last!.answer('ready');
+    gpu.gpuOverlay.visible = true;
+    FakeWorker.last!.answer('lost');
+    expect(setGpuUnavailable).toHaveBeenCalled();
+    expect(gpu.gpuOverlay.visible).toBe(false);
   });
 });

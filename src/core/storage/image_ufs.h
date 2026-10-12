@@ -31,7 +31,7 @@
 
 // Root inode per UFS convention.  Inode 0 is unused, 1 is reserved for bad
 // blocks, 2 is the root directory.
-#define UFS_ROOT_INO 2
+#define UFS_ROOT_ID 2
 
 // FS_MAGIC at superblock offset 1372 when the FS is valid.
 #define UFS_FS_MAGIC 0x011954
@@ -55,9 +55,8 @@ typedef struct ufs_dirent {
 } ufs_dirent_t;
 
 // Cheap probe: does byte offset `partition_byte_offset + UFS_SBOFF` look
-// like a UFS superblock?  Reads a single 512-byte sector.  Returns true on
-// a valid FS_MAGIC in either byte order (A/UX writes big-endian, but we
-// accept either — tolerating the occasional LE-rewritten image).
+// like a UFS superblock?  Reads only the 4-byte magic.  True on a
+// big-endian FS_MAGIC -- what A/UX writes and all ufs_open accepts.
 bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
 // Open a UFS volume.  Returns NULL on not-UFS / malformed superblock / OOM.
@@ -88,7 +87,9 @@ void ufs_closedir_iter(ufs_dir_iter_t *iter);
 
 // Read up to `n` bytes from inode `ino` starting at logical offset `off`.
 // Short reads past EOF are not errors; *nread receives the number of bytes
-// actually filled.  Returns 0 on success, negated errno on I/O failure.
+// actually filled.  Returns 0 on success, -EISDIR for a directory, negated
+// errno on I/O failure.  A symlink reads as its target path; a device node,
+// FIFO or socket (di_size 0) reads as an empty file.
 int ufs_read_file(ufs_volume_t *vol, uint32_t ino, uint64_t off, void *buf, size_t n, size_t *nread);
 
 #endif // IMAGE_UFS_H

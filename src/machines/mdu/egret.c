@@ -637,23 +637,21 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
     if (eg->via1)
         via_input(eg->via1, 1, 3, eg->xcvr_high);
 
-    // Register checkpointable event types, then arm the tick + autopoll timers.
+    // Register checkpointable event types, then arm the tick timer.
     if (eg->sched) {
         scheduler_new_event_type(eg->sched, "egret", eg, "tick", &egret_tick_event);
         scheduler_new_event_type(eg->sched, "egret", eg, "adb_talk", &egret_adb_talk_event);
         scheduler_new_event_type(eg->sched, "egret", eg, "sendto", &egret_send_timeout_event);
         scheduler_new_event_type(eg->sched, "egret", eg, "resend", &egret_resend_event);
-        scheduler_new_cpu_event(eg->sched, &egret_tick_event, eg, 0, 0, (uint64_t)EGRET_TICK_NS);
+        // The self-re-arming tick starts on a fresh machine only: on a
+        // restore it is in the scheduler's checkpointed queue, re-inserted
+        // by scheduler_restore_events, and arming it here too ran two chains.
+        if (!cp)
+            scheduler_new_cpu_event(eg->sched, &egret_tick_event, eg, 0, 0, (uint64_t)EGRET_TICK_NS);
         adb_set_data_hook(eg->adb, egret_adb_data, eg); // auto-poll runs on data
-        // (an auto-poll pending at checkpoint time is restored with the queue)
-        // A checkpoint taken with either watchdog in flight re-arms it here;
-        // the flags ride in the plain-data block above via1.  (Cuda re-arms
-        // send_timeout_pending but not resend_pending -- a gap on that side,
-        // left for an Egret/Cuda consolidation rather than changed here.)
-        if (eg->send_timeout_pending)
-            scheduler_new_cpu_event(eg->sched, &egret_send_timeout_event, eg, 0, 0, (uint64_t)EGRET_SEND_ABANDON_NS);
-        if (eg->resend_pending)
-            scheduler_new_cpu_event(eg->sched, &egret_resend_event, eg, 0, 0, (uint64_t)EGRET_RESEND_DELAY_NS);
+        // An auto-poll, abandonment watchdog or resend pending at checkpoint
+        // time is restored with the queue as well; re-arming it here would
+        // add a stale duplicate that could fire a later one early.
     }
 
     LOG(1, "Egret init (firmware Egret8)");
