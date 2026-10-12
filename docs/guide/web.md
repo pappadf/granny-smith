@@ -20,12 +20,25 @@ input, and compositing.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
   dispatch.
-- **Canvas:** transferred to the worker via `OffscreenCanvas` at boot —
-  `transferControlToOffscreen` is handled by Emscripten under
-  `OFFSCREENCANVASES_TO_PTHREAD='#screen'`. WebGL2 rendering happens on
-  the worker side. After the transfer, the main thread must NOT write
-  to the canvas's `width`/`height` attributes (Svelte reactive bindings
-  would throw `InvalidStateError`).
+- **Render thread:** a pthread of its own owns the canvas and the WebGL2
+  context (`em_video.c`).  Emscripten transfers the canvas to the emulator
+  thread at boot (`OFFSCREENCANVASES_TO_PTHREAD='#screen'`), and
+  `em_video_init` passes it on to the render thread (by element id,
+  `"screen"`: a pthread can only pass on a canvas it holds, keyed so).
+  The emulator thread publishes frames into a shared slot once per tick;
+  the render thread draws the newest one on every animation frame.  A
+  canvas drawn from a worker presents only when that worker returns to
+  its event loop, so the GL work and the presenting never hold up
+  emulation.  After the transfer, the main thread must NOT write to the
+  canvas's `width`/`height` attributes (Svelte reactive bindings would
+  throw `InvalidStateError`).
+- **Emulator thread's loop:** frame-locked (requestAnimationFrame) while
+  paced, accelerated or stopped; a running turbo machine re-enters at
+  once instead (`EM_TIMING_SETIMMEDIATE`, `scheduler.postTask` in a
+  worker) and fills each tick with a 16 ms slice
+  (`scheduler_set_turbo_slice`), so turbo uses nearly all of the thread.
+  Between ticks the thread still returns to its event loop, which runs the
+  proxied input events.
 - **Input:** mouse / keyboard events are picked up by Emscripten's
   built-in proxied callbacks on the worker side. The web2 UI does not
   install JS-side handlers on the canvas — each event would otherwise

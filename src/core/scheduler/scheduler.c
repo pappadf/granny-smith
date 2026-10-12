@@ -72,6 +72,13 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // returning ~40% more turbo speed.
 #define TURBO_HOST_HEADROOM 0.7
 
+// scheduler_set_turbo_slice: 0 = the TURBO_HOST_HEADROOM rule above.
+static double g_turbo_slice_secs = 0.0;
+
+void scheduler_set_turbo_slice(double secs) {
+    g_turbo_slice_secs = (isnan(secs) || secs < 0.0) ? 0.0 : secs;
+}
+
 // Adaptive governor (accelerated mode with scheduler.speed = auto). AIMD on a
 // quantized speed ladder: additive rung-up only after dwelling at the current
 // speed (the slew limit — instruction-counted guest delays calibrated at
@@ -1708,8 +1715,12 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
         // period. host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint
         // restore and mode switch); guard the first tick explicitly — a
         // float→int conversion of NaN is undefined behaviour.
+        // With a turbo slice set (the run loop re-enters at once), fill the
+        // slice instead.
         if (isnan(s->host_secs_per_vbl) || s->host_secs_per_vbl <= 0.0)
             vbls_to_execute = 1;
+        else if (g_turbo_slice_secs > 0.0)
+            vbls_to_execute = (int)(g_turbo_slice_secs / s->host_secs_per_vbl);
         else
             vbls_to_execute = (int)(s->host_secs_per_loop * TURBO_HOST_HEADROOM / s->host_secs_per_vbl);
         if (vbls_to_execute < 1)
