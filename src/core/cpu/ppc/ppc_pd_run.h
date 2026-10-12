@@ -286,7 +286,11 @@ dispatch:
             PPD_CASE(PPD_MFCTR, PPD_R(e.a) = p->ctr)
             PPD_CASE(PPD_MTCTR, p->ctr = PPD_R(e.a))
             PPD_CASE(PPD_MFXER, PPD_R(e.a) = p->xer)
-            PPD_CASE(PPD_MTXER, p->xer = PPD_R(e.a))
+            // The 601's XER reserved bits (3-15, 24) read as zero (MPC601UM
+            // 2.2.5.2); the 604 keeps what was written -- as ppc_mtspr.
+            PPD_CASE(PPD_MTXER, p->xer = ppc_is_604(p) ? PPD_R(e.a)
+                                                       : (PPD_R(e.a) & (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA |
+                                                                        PPC_XER_CMPBYTE | PPC_XER_BYTES)))
             PPD_CASE(PPD_MFCR, PPD_R(e.a) = p->cr)
             PPD_CASE(PPD_MTCRF, p->cr = (PPD_R(e.a) & e.c) | (p->cr & ~e.c))
             PPD_CROP(PPD_CRAND, a & b)

@@ -1097,19 +1097,27 @@ current block is `g_pd_current`.
    between sprints the pointer is stale.
 3. If `++writes > thrash_limit` **and** `writes * ratio > execs`, set
    `thrashed`.  `ratio` is per architecture: `thrash_ratio` (64) for 68K
-   blocks, `thrash_ratio_ppc` (8) for PowerPC blocks.
+   blocks, `thrash_ratio_ppc` for PowerPC blocks, which is 0 by default:
+   PowerPC pages are never demoted.
 
 The reasoning behind the rule: a suppressed store costs about `ratio`
 instructions' worth of predecode gain.  A hot loop that stores into its
 own page retires many instructions per store and is kept.  A data page
 that is executed occasionally is dropped quickly.
 
-The PowerPC ratio is lower because a predecoded PowerPC page is worth more
-over the generic tier.  On the 604 desktop bench row (pm8500, System 7.6)
-a ratio of 64 ran 30 % of the instructions on demoted pages (pages that mix
-code with written data); 8 ran 1.4 % there and cost 12 % fewer host
-instructions per guest instruction, with no PowerPC row worse.  The 68K
-rows prefer 64: at 8 the SE/30 Finder row costs 5 % more.
+PowerPC pages are not demoted at all.  The PowerPC code a Mac writes and
+runs is the DR (dynamic recompilation) 68K emulator's translation cache:
+System 7.6 on the PCI machines, and Mac OS 8 and 9.  Its pages take a burst
+of stores when a translation is written and are then executed many times,
+and the rule misreads them.  A page's executions are not counted while it is
+demoted, so when its hold ends the window holds the stores and few
+executions, and it is demoted again with a doubled hold.  On the pm8500 at
+the System 7.6 desktop, from about 4 G instructions on, the whole cache
+(some 26 pages at the top of RAM) ran generic: 53 % of all instructions,
+at a ratio of 8 as at 64.  With no demotion it runs 0 % generic and 20 %
+faster (native turbo, 72 -> 87 MIPS); the stores into the cache take the
+memory slow path either way, and no bench row is slower.  The 68K rows
+keep 64 (at 8 the SE/30 Finder row costs 5 % more than at 64).
 
 **Acting on it.**  The block stays in place until the next
 `predecode_lookup` of its page (the executor may be running from it
@@ -1128,7 +1136,7 @@ generic until the PC leaves the page, instead of asking the pool on every
 instruction.
 
 Defaults: `thrash_limit = 32`, `thrash_window = 4096` lookups,
-`thrash_ratio = 64`, `thrash_ratio_ppc = 8`, `demote_hold = 65536` lookups.
+`thrash_ratio = 64`, `thrash_ratio_ppc = 0`, `demote_hold = 65536` lookups.
 `predecode_set_thrash_ratio(0)` sets both ratios to 0, which disables the
 rule (the conformance suites use it, §6).
 
@@ -1210,7 +1218,7 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 | `predecode.thrash_limit` | RW | stores per window before the ratio rule applies (32) |
 | `predecode.thrash_window` | RW | the window, in pool lookups (4096) |
 | `predecode.thrash_ratio` | RW | 68K: demote when stores × ratio exceed the instructions retired in the window (64; 0 disables) |
-| `predecode.thrash_ratio_ppc` | RW | PowerPC: the same rule's ratio (8; 0 disables) |
+| `predecode.thrash_ratio_ppc` | RW | PowerPC: the same rule's ratio (0, the default, disables it) |
 | `predecode.demote_hold` | RW | base hold, in pool lookups, of a demoted page (65536; doubles per repeat demotion) |
 | `predecode.blocks` | RO | blocks currently holding a page |
 | `predecode.lookups` / `allocs` / `evictions` | RO | pool activity |

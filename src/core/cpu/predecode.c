@@ -28,13 +28,14 @@ static uint32_t g_pd_thrash_limit = 32; // stores into one page within the windo
 static uint32_t g_pd_thrash_window = 4096; // the window, in pool lookups (page transitions)
 static uint32_t g_pd_demote_hold = 65536; // pool lookups (page transitions) a demoted page stays on the generic tier
 static uint32_t g_pd_thrash_ratio = 64; // stores × ratio > instructions retired from the page → demote (68K)
-// The PowerPC ratio is lower: a predecoded PowerPC page is worth more over
-// the generic tier than a 68K page is, so it keeps its block through more
-// stores.  At 64 the 604 desktop row ran 30 % of its instructions generic
-// (pages mixing code and written data); at 8 it ran 1.4 %, 12 % fewer host
-// instructions per guest instruction, with no PowerPC row worse.  The 68K
-// rows prefer 64 (at 8 the SE/30 Finder row costs 5 % more).
-static uint32_t g_pd_thrash_ratio_ppc = 8;
+// PowerPC pages are never demoted (ratio 0).  The code a Mac writes and runs
+// on PowerPC is the DR 68K emulator's translation cache: bursts of stores,
+// then many executions.  Demoted, a page's executions go uncounted, so it is
+// demoted again on its return with a doubled hold: on the pm8500 at the
+// System 7.6 desktop the whole cache ended up generic (53 % of all
+// instructions).  Without demotion that machine runs 20 % faster and no
+// PowerPC bench row is slower (predecode.md section 3.13).
+static uint32_t g_pd_thrash_ratio_ppc = 0;
 pd_block_t *g_pd_current = NULL;
 
 // === Pool state ===
