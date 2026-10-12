@@ -1,0 +1,33 @@
+# iicx-marathon — an application workload: Marathon 1.2 on a IIcx with the
+# Display Card 8•24 GC at 640x480x8, at its main menu (iicx-marathon-music's
+# choreography).  The window runs from the menu into the self-running demo.
+# Drawing to the card's framebuffer is slow-path by design, so this row's
+# ceiling is above the default (rows.json).
+
+def bench_boot() {
+    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd "${$TEST_DATA}/apps/marathon_8_24gc.img" 0
+    scheduler.run 200000000
+    # Double-click Marathon in the folder window the image opens with.
+    machine.adb.mouse.move 237 157 "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    scheduler.run 1000000
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+    # Mid-window of the main menu: drawn by +75 M, demo from +100 M.
+    scheduler.run 85000000
+    machine.screen.match "${$BENCH_DIR}/../integration/iicx-marathon-music/marathon-menu-8bpp-640x480.png"
+    bench_guard()
+}
+
+# Marathon is the current application, still at 8 bpp.
+def bench_guard() {
+    assert !bench_app_is(0x0646696E, 0x6465) "iicx-marathon: back at the Finder"
+    assert machine.nubus.slot[9].card.framebuffer.depth == 8 "iicx-marathon: the GC left 8 bpp"
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "iicx-marathon: no application heap"
+}

@@ -556,6 +556,33 @@ void platform_machine_attached(void) {
 // The Emscripten main loop's callback: em_main_tick, timed.  Records the
 // whole tick, with the shell_poll share em_main_tick measured, into the
 // perf window (see tick_wall_ms).
+// Turbo's slice (scheduler_set_turbo_slice): host milliseconds of emulation
+// per tick while the loop runs back to back.  About one display frame, so
+// the screen, the mailbox and the proxied input events are still served at
+// least ~60 times a second.
+#define TURBO_SLICE_MS 16.0
+
+// The loop's timing follows what the machine is doing.  Paced and
+// accelerated runs, and a stopped machine, are frame-locked (RAF): their
+// pacing is wall-clock time.  A running turbo machine re-enters at once
+// (SETIMMEDIATE: scheduler.postTask in a worker), so the thread does not
+// wait out the rest of each frame -- the core has this worker to itself,
+// and returning to its event loop between ticks (input, presenting the
+// canvas) costs microseconds.  Changed only on a transition.
+static bool s_loop_immediate;
+
+static void em_update_loop_timing(void) {
+    scheduler_t *sched = system_scheduler();
+    bool want = sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled;
+    if (want == s_loop_immediate)
+        return;
+    s_loop_immediate = want;
+    if (want)
+        emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
+    else
+        emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
+}
+
 static void em_timed_tick(void) {
     double t0 = emscripten_get_now();
     tick_poll_ms_current = 0;
@@ -563,6 +590,7 @@ static void em_timed_tick(void) {
     int slot = tick_counter % PERF_UPDATE_INTERVAL;
     tick_wall_ms[slot] = emscripten_get_now() - t0;
     tick_poll_ms[slot] = tick_poll_ms_current;
+    em_update_loop_timing();
 }
 
 // Forward formatted log lines to the page as log events.
@@ -1070,6 +1098,7 @@ int main(void) {
 
     // RAF-driven; simulate_infinite_loop=1 unwinds main() here, so nothing
     // after this call runs (and main never returns).
+    scheduler_set_turbo_slice(TURBO_SLICE_MS / 1000.0); // used once the loop re-enters at once (em_update_loop_timing)
     emscripten_set_main_loop(em_timed_tick, 0, 1);
 }
 

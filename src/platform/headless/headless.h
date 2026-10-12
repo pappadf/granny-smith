@@ -69,4 +69,10 @@ int daemon_run(int port, bool kill_existing);
 // run.  A no-op unless a daemon client is connected.
 void daemon_watch_statement(uint32_t client, bool running);
 
+// === Calibration (calibrate.c) ===
+
+// gs-headless --calibrate: times the host-yardstick kernels and prints one
+// @@CALIB line.  Returns the process exit status.
+int hl_calibrate(void);
+
 #endif // HEADLESS_H

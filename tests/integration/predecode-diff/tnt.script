@@ -1,0 +1,17 @@
+# Power Macintosh 7500 ROM boot (PowerPC 604): Open Firmware, POST and the
+# 68K emulator's start-up, three checkpoints, no media.
+predecode.enabled = $PD
+predecode.elide = $ELIDE
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+machine.rtc.time = "2026-04-26T21:30:36"
+scheduler.run 20000000
+echo "cp1 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-1.gs") "save 1 failed"
+scheduler.run 80000000
+echo "cp2 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-2.gs") "save 2 failed"
+scheduler.run 200000000
+echo "cp3 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-3.gs") "save 3 failed"
+echo "stats blocks=${predecode.blocks} allocs=${predecode.allocs} decodes=${predecode.decodes} inval=${predecode.invalidations} demotions=${predecode.demotions} suppressed=${predecode.suppressed_writes} generic=${predecode.generic_steps}"
+quit

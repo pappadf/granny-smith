@@ -28,7 +28,11 @@ let ssw_32 = "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
 let sys_41 = "../../data/systems/System_4_1_0.dsk"
 let ssw_42 = "../../data/systems/SSW-4.2-800K/System Tools 1.image"
 let ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
-let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
+# The 7.1 image without the 8•24 GC extension: that INIT is 68020+ code
+# (BSR.L at $A5388) and a real 68000 takes an address error on it — the
+# 68000 core does too since 2026-09-02 — so the GC variant only boots on the
+# 020+ rows that use it.
+let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 
 # Boot the Plus at `ram` KB off `media`, wait for `golden`, and assert
 # the machine facts every floppy row shares. Returns the spend.

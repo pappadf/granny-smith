@@ -85,6 +85,9 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- Predecoded-core T1 headers (generated into build/gen/) --
+
+include src/core/cpu/pdgen.mk
 # -- GSDisk SCSI disk driver (bare-volume wrapper) --
 # Assembled into build/gsdisk/ like the vrom68k fragments; defines
 # GSDISK_HEADER, which image_wrap.c includes.
@@ -126,6 +129,7 @@ INCLUDES := $(CORE_INCLUDES) \
             -Isrc/platform \
             -I$(PLATFORM_DIR) \
             -I$(VROM68K_OUT) \
+            -I$(PDGEN_OUT) \
             -I$(GSDISK_OUT) \
             -I$(LASERWRITER_OUT)
 
@@ -277,6 +281,11 @@ $(BUILD_ID_OBJ): $(filter-out $(BUILD_ID_OBJ),$(OBJ)) $(LDFLAGS_STAMP)
 
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
+
+# The predecoded executors include the generated T1 headers.
+$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
+    $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
+$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc.o $(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
 
 # image_wrap.c embeds the generated GSDisk driver header.
 $(OBJ_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)

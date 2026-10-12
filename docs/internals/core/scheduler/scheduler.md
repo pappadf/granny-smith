@@ -797,9 +797,11 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   renderer) wants. By default the adaptive governor (§2.3) picks the speed from
   the measured per-frame host cost, evaluated right here in the main loop's
   timing-update tail.
-- **`schedule_unthrottled`** ("Fast-Forward"): as many frame-units as fit in
-  `TURBO_HOST_HEADROOM` (50%) of the smoothed host loop period, leaving the rest for
-  the browser. Emulated time outruns real time on a fast host. The first tick after
+- **`schedule_unthrottled`** ("Fast-Forward"): as many frame-units as fit in the
+  turbo slice set by `scheduler_set_turbo_slice` (web2: 16 ms; its loop re-enters
+  at once in turbo, with the canvas drawn on a render thread of its own), or,
+  with no slice set, in `TURBO_HOST_HEADROOM` (70%) of the smoothed host loop
+  period, leaving the rest for a run loop that shares its frame. Emulated time outruns real time on a fast host. The first tick after
   init / checkpoint restore / mode switch has no `host_secs_per_vbl` estimate yet
   (it's `NAN`) and is explicitly guarded to run exactly 1 frame-unit — a float→int
   conversion of NaN is undefined behaviour.

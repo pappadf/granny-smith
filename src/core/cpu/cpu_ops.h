@@ -599,10 +599,10 @@ static inline int quick_data(uint16_t op) {
     VALID_EA(ea_data);                                                                                                 \
     LOAD_EA_WITH_UPDATE(16, divisor);                                                                                  \
     UINT(32) dividend = DN;                                                                                            \
-    CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
-        EXC_DIVIDE_BY_ZERO();                                                                                          \
+        EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                     \
     } else {                                                                                                           \
+        CLEAR_NZVC();                                                                                                  \
         uint32_t quotient = dividend / (uint16_t)divisor;                                                              \
         if (quotient > UINT16_MAX) {                                                                                   \
             CC_V = CC_N = 1;                                                                                           \
@@ -618,15 +618,16 @@ static inline int quick_data(uint16_t op) {
     VALID_EA(ea_data);                                                                                                 \
     LOAD_EA_WITH_UPDATE(16, divisor);                                                                                  \
     INT(32) dividend = (INT(32))DN;                                                                                    \
-    CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
-        EXC_DIVIDE_BY_ZERO();                                                                                          \
+        EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                     \
     } else if ((int16_t)divisor == -1 && dividend == INT32_MIN) {                                                      \
         /* INT32_MIN / -1 has no representable quotient.  The C division is UB,                                        \
          * and the shipping wasm build's i32.div_s traps on it by specification,                                       \
          * so the test has to precede the divide rather than inspect its result. */                                    \
+        CLEAR_NZVC();                                                                                                  \
         CC_V = CC_N = 1;                                                                                               \
     } else {                                                                                                           \
+        CLEAR_NZVC();                                                                                                  \
         int32_t q = dividend / (int16_t)divisor;                                                                       \
         if (q > INT16_MAX || q < INT16_MIN) {                                                                          \
             CC_V = CC_N = 1;                                                                                           \
@@ -661,10 +662,10 @@ static inline int quick_data(uint16_t op) {
     VALID_EA(src_modes);                                                                                               \
     uint32_t move_src_an_save_ = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
+    UPDATE_NZ_CLEAR_CV(src); /* flags from the source, before the store: a faulting store leaves them set */           \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
     if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
-        cpu->a[EA_REG] = move_src_an_save_;                                                                            \
-    UPDATE_NZ_CLEAR_CV(src);
+        cpu->a[EA_REG] = move_src_an_save_;
 
 #define MOVEA(size)                                                                                                    \
     VALID_EA(ea_any);                                                                                                  \
@@ -672,9 +673,9 @@ static inline int quick_data(uint16_t op) {
     AN = (int32_t)(int##size##_t)src;
 
 #define CLR(size)                                                                                                      \
-    STORE_EA(size, 0);                                                                                                 \
-    CC_N = CC_V = CC_C = 0;                                                                                            \
-    CC_Z = 1;
+    CC_N = CC_V = CC_C = 0; /* flags first: a faulting store leaves them set */                                        \
+    CC_Z = 1;                                                                                                          \
+    STORE_EA(size, 0);
 
 #define DBCC_DN_LABEL                                                                                                  \
     if (CC)                                                                                                            \
@@ -1238,7 +1239,10 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         BF_DECODE_EXT_WITH_DN(off_, w_, dn_);                                                                          \
         uint32_t f_ = bf_extract_reg(DY, off_, w_);                                                                    \
         BF_UPDATE_CC(f_, w_);                                                                                          \
-        D(dn_) = (uint32_t)off_ + bf_first_set(f_, w_);                                                                \
+        /* A register field's offset counts modulo 32, and so does the       */                                        \
+        /* offset this instruction reports: `bfffo d7{d2:32},d4` with d2 =   */                                        \
+        /* 32 answers from bit 0, not bit 32.  The model and MAME agree.     */                                        \
+        D(dn_) = (uint32_t)(((off_ % 32) + 32) % 32) + bf_first_set(f_, w_);                                           \
     })
 #define OP_BFFFO_EA                                                                                                    \
     OP({                                                                                                               \
@@ -1503,10 +1507,10 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         int size64_ = (ext_ >> 10) & 1;                                                                                \
         VALID_EA(ea_data);                                                                                             \
         LOAD_EA_WITH_UPDATE(32, divisor_);                                                                             \
-        CLEAR_NZVC();                                                                                                  \
         if (!divisor_) {                                                                                               \
-            EXC_DIVIDE_BY_ZERO();                                                                                      \
+            EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                 \
         } else {                                                                                                       \
+            CLEAR_NZVC();                                                                                              \
             if (signed_) {                                                                                             \
                 int64_t dividend_ = size64_ ? (int64_t)(((uint64_t)D(dr_) << 32) | D(dq_)) : (int64_t)(int32_t)D(dq_); \
                 /* INT64_MIN / -1 has no representable quotient.  The C division is UB,                                \
@@ -1667,17 +1671,23 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         STORE_DN(8, opcode >> 9 & 7, ((src_ >> 4) & 0xF0) | ((src_) & 0x0F));                                          \
     })
 
-// PACK -(AY),-(AX),#adj: from memory.  Each predec mutates An before the
-// access that may fault; snapshot both An and roll back on bus error so the
-// Format-$B retry restarts with pre-instruction values.
+// PACK -(AY),-(AX),#adj: from memory.  The source word is two byte accesses
+// through -(AY) (low byte first, so a plain An reads the word at AY-2), and
+// a byte predecrement of A7 moves it by 2, so PACK -(A7) consumes four bytes
+// of stack.  Each predec mutates An before the access that may fault;
+// snapshot both An and roll back on bus error so the Format-$B retry
+// restarts with pre-instruction values.
 #define OP_PACK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t adj_ = FETCH16();                                                                                     \
         int dx_ = opcode >> 9 & 7;                                                                                     \
         uint32_t pack_ay_save_ = cpu->a[EA_REG];                                                                       \
         uint32_t pack_ax_save_ = cpu->a[dx_];                                                                          \
-        A(EA_REG) -= 2;                                                                                                \
-        uint16_t src_ = READ16(A(EA_REG));                                                                             \
+        uint32_t pack_ay_dec_ = (EA_REG == 7) ? 2 : 1;                                                                 \
+        A(EA_REG) -= pack_ay_dec_;                                                                                     \
+        uint16_t src_ = READ8(A(EA_REG));                                                                              \
+        A(EA_REG) -= pack_ay_dec_;                                                                                     \
+        src_ |= (uint16_t)READ8(A(EA_REG)) << 8;                                                                       \
         src_ = (uint16_t)(src_ + adj_);                                                                                \
         A(dx_) -= (dx_ == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         WRITE8(A(dx_), (uint8_t)(((src_ >> 4) & 0xF0) | ((src_) & 0x0F)));                                             \
@@ -1696,8 +1706,10 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         STORE_DN(16, opcode >> 9 & 7, res_);                                                                           \
     })
 
-// UNPK -(AY),-(AX),#adj: from/to memory.  Same restart-safety concern as
-// OP_PACK_AY_AX — snapshot both An and roll back on bus error.
+// UNPK -(AY),-(AX),#adj: from/to memory.  The result word is two byte
+// accesses through -(AX) (low byte first; A7 moves by 2 per byte, as in
+// PACK).  Same restart-safety concern as OP_PACK_AY_AX — snapshot both An
+// and roll back on bus error.
 #define OP_UNPK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t adj_ = FETCH16();                                                                                     \
@@ -1708,8 +1720,11 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         A(sy_) -= (sy_ == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         uint8_t b_ = READ8(A(sy_));                                                                                    \
         uint16_t res_ = (uint16_t)((((b_ >> 4) & 0xF) << 8) | ((b_) & 0xF)) + adj_;                                    \
-        A(dx_) -= 2;                                                                                                   \
-        WRITE16(A(dx_), res_);                                                                                         \
+        uint32_t unpk_ax_dec_ = (dx_ == 7) ? 2 : 1;                                                                    \
+        A(dx_) -= unpk_ax_dec_;                                                                                        \
+        WRITE8(A(dx_), (uint8_t)res_);                                                                                 \
+        A(dx_) -= unpk_ax_dec_;                                                                                        \
+        WRITE8(A(dx_), (uint8_t)(res_ >> 8));                                                                          \
         if (__builtin_expect(g_bus_error_pending, 0)) {                                                                \
             cpu->a[sy_] = unpk_ay_save_;                                                                               \
             cpu->a[dx_] = unpk_ax_save_;                                                                               \
@@ -2030,8 +2045,15 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             uint16_t ext_ = FETCH16();                                                                                 \
             unsigned cond_ = ext_ & 0x3F;                                                                              \
             fpu_->fpiar = cpu->instruction_pc;                                                                         \
+            bool bsun_ = (cond_ & 0x10) && (fpu_->fpsr & FPCC_NAN);                                                    \
             bool cc_ = fpu_test_condition(fpu_, cond_);                                                                \
-            if (mode_ == 1) {                                                                                          \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) with BSUN enabled:                                   \
+             * the exception replaces the operation, as in FBcc.  Nothing else a                                       \
+             * conditional can raise, so stale enabled EXC bits do not trap. */                                        \
+            if (bsun_ && (fpu_->fpcr & FPEXC_BSUN)) {                                                                  \
+                fpu_->fpsr |= FPACC_IOP;                                                                               \
+                fpu_check_exceptions(cpu, fpu_);                                                                       \
+            } else if (mode_ == 1) {                                                                                   \
                 /* FDBcc: decrement Dn, branch if !cc && Dn != -1 */                                                   \
                 int16_t disp_ = (int16_t)FETCH16();                                                                    \
                 if (!cc_) {                                                                                            \
@@ -2052,8 +2074,6 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
                 /* FScc: set byte at EA to $FF if cc, $00 otherwise */                                                 \
                 WRITE_EA(8, mode_, reg_, cc_ ? 0xFF : 0x00);                                                           \
             }                                                                                                          \
-            /* Check for BSUN exception after instruction completes */                                                 \
-            fpu_check_exceptions(cpu, fpu_);                                                                           \
         }                                                                                                              \
     })
 
@@ -2072,9 +2092,11 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             /* Pre-instruction exception check (MC68882UM §6.1.4) */                                                  \
             if (fpu_pre_instruction_check(cpu, fpu_, true))                                                            \
                 break;                                                                                                 \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) and enabled: the  */                                 \
+            /* exception replaces the branch; a stale BSUN bit does not re-trap.    */                                 \
+            bool bsun_ = (cond_ & 0x10) && (fpu_->fpsr & FPCC_NAN);                                                    \
             bool cc_ = fpu_test_condition(fpu_, cond_);                                                                \
-            /* If BSUN enabled and fired, take exception instead of branch */                                          \
-            if ((fpu_->fpsr & FPEXC_BSUN) && (fpu_->fpcr & FPEXC_BSUN)) {                                              \
+            if (bsun_ && (fpu_->fpcr & FPEXC_BSUN)) {                                                                  \
                 fpu_->fpsr |= FPACC_IOP;                                                                               \
                 fpu_check_exceptions(cpu, fpu_);                                                                       \
             } else if (cc_) {                                                                                          \
@@ -2095,9 +2117,11 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
             int32_t disp_ = (int32_t)FETCH32();                                                                        \
             unsigned cond_ = opcode & 0x3F;                                                                            \
             fpu_->fpiar = cpu->instruction_pc;                                                                         \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) and enabled: the  */                                 \
+            /* exception replaces the branch; a stale BSUN bit does not re-trap.    */                                 \
+            bool bsun_ = (cond_ & 0x10) && (fpu_->fpsr & FPCC_NAN);                                                    \
             bool cc_ = fpu_test_condition(fpu_, cond_);                                                                \
-            /* If BSUN enabled and fired, take exception instead of branch */                                          \
-            if ((fpu_->fpsr & FPEXC_BSUN) && (fpu_->fpcr & FPEXC_BSUN)) {                                              \
+            if (bsun_ && (fpu_->fpcr & FPEXC_BSUN)) {                                                                  \
                 fpu_->fpsr |= FPACC_IOP;                                                                               \
                 fpu_check_exceptions(cpu, fpu_);                                                                       \
             } else if (cc_) {                                                                                          \
@@ -2145,14 +2169,13 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
         } else                                                                                                         \
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 3) {                                                                                    \
-                    /* (An)+ postincrement */                                                                          \
-                    int sz_ = fpu_frestore(fpu_, AY);                                                                  \
-                    if (__builtin_expect(!g_bus_error_pending, 1))                                                     \
-                        AY += (uint32_t)sz_;                                                                           \
-                } else {                                                                                               \
-                    uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_frestore(fpu_, ea_);                                                                           \
+                uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
+                int sz_ = fpu_frestore(fpu_, ea_);                                                                     \
+                if (sz_ < 0) {                                                                                         \
+                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
+                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
+                } else if (EA_MODE == 3 && __builtin_expect(!g_bus_error_pending, 1)) {                                \
+                    AY += (uint32_t)sz_; /* (An)+ steps by the frame the format word declared */                       \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -2162,23 +2185,31 @@ static inline uint32_t bf_first_set(uint32_t f, uint32_t w) {
 // OP_UNDEFINED: exception handling
 #define OP_UNDEFINED OP(EXC_ILLEGAL(); continue)
 
+// Bcc/BSR with displacement byte 0xFF: the 68000 has no 32-bit form, so the
+// byte is an 8-bit displacement of -1 (the decode tree routes 0xFF to the
+// .L arm for every model; the 68020+ bodies read the long displacement).
+#undef OP_BCC_L_DISPLACEMENT
+#define OP_BCC_L_DISPLACEMENT OP_BCC_B_DISPLACEMENT
+#undef OP_BSR_L_LABEL
+#define OP_BSR_L_LABEL OP_BSR_B_LABEL
+
 // Bit-field instructions: undefined on 68000
-#define OP_BFTST_DN  OP_UNDEFINED
-#define OP_BFTST_EA  OP_UNDEFINED
-#define OP_BFCHG_DN  OP_UNDEFINED
-#define OP_BFCHG_EA  OP_UNDEFINED
-#define OP_BFCLR_DN  OP_UNDEFINED
-#define OP_BFCLR_EA  OP_UNDEFINED
-#define OP_BFEXTS_DN OP_UNDEFINED
-#define OP_BFEXTS_EA OP_UNDEFINED
-#define OP_BFEXTU_DN OP_UNDEFINED
-#define OP_BFEXTU_EA OP_UNDEFINED
-#define OP_BFINS_DN  OP_UNDEFINED
-#define OP_BFINS_EA  OP_UNDEFINED
-#define OP_BFFFO_DN  OP_UNDEFINED
-#define OP_BFFFO_EA  OP_UNDEFINED
-#define OP_BFSET_DN  OP_UNDEFINED
-#define OP_BFSET_EA  OP_UNDEFINED
+#define OP_BFTST_DN    OP_UNDEFINED
+#define OP_BFTST_EA    OP_UNDEFINED
+#define OP_BFCHG_DN    OP_UNDEFINED
+#define OP_BFCHG_EA    OP_UNDEFINED
+#define OP_BFCLR_DN    OP_UNDEFINED
+#define OP_BFCLR_EA    OP_UNDEFINED
+#define OP_BFEXTS_DN   OP_UNDEFINED
+#define OP_BFEXTS_EA   OP_UNDEFINED
+#define OP_BFEXTU_DN   OP_UNDEFINED
+#define OP_BFEXTU_EA   OP_UNDEFINED
+#define OP_BFINS_DN    OP_UNDEFINED
+#define OP_BFINS_EA    OP_UNDEFINED
+#define OP_BFFFO_DN    OP_UNDEFINED
+#define OP_BFFFO_EA    OP_UNDEFINED
+#define OP_BFSET_DN    OP_UNDEFINED
+#define OP_BFSET_EA    OP_UNDEFINED
 
 // CHK.W: 68000 version (no CHK.L on 68000).  Unlike the 68030 path above,
 // N is written only when the exception is taken and left alone in bounds --

@@ -3,9 +3,19 @@
 
 // em_video.c
 // WebGL2 renderer for the emulator's display: format-aware shader pipeline
-// + variable canvas.
-// Reads the active `display_t` from system_display() each frame and
-// consumes its dirty flags:
+// + variable canvas, on a thread of its own.
+//
+// Two sides.  The core thread (em_video_update, once per tick) reads the
+// active `display_t` from system_display(), decides whether anything
+// changed and PUBLISHES the frame into a shared slot: geometry, the pixel
+// bytes, the CLUT and the response table.  The render thread owns the
+// `#screen` OffscreenCanvas and the WebGL context; on every animation frame
+// it takes the newest published frame, uploads it and draws.  So the GL
+// work, and the browser presenting the canvas (which happens only when the
+// owning thread returns to its event loop), never hold up the emulator:
+// the core's thread can run back to back in turbo.
+//
+// The publish consumes the display's dirty flags:
 //
 //   * shape_dirty: rebind the fragment-shader program for the current
 //     format, reallocate the framebuffer texture, resize the canvas,
@@ -24,6 +34,10 @@
 #include <GLES3/gl3.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
+#include <emscripten/threading.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,10 +104,9 @@ typedef struct prog_uniforms {
 
 static prog_uniforms_t s_uniforms[NUM_FORMATS] = {0};
 
-// Scratch upload buffer for the framebuffer texture: MAX_FB_BYTES, allocated
-// by init_gl once the context exists (NULL without WebGL: nothing renders).
-// It always holds the last frame uploaded -- em_video_update compares
-// against it.
+// The render thread's copy of the frame it is uploading: MAX_FB_BYTES,
+// allocated by init_gl once the context exists.  Filled from the slot under
+// its lock, uploaded outside it.
 static uint8_t *s_upload_scratch;
 
 // The canvas's intrinsic size as last set (resize_canvas), 0 before the first
@@ -463,39 +476,69 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// (Re)upload the live framebuffer bytes into the existing texture.  Caller
-// must have called allocate_fb_texture first if the shape changed.
-//
-// Explicitly selects texture unit 0 before binding so this routine doesn't
-// clobber the s_clut_tex / s_response_tex bindings on units 1 / 2 by
-// rebinding s_fb_tex on whichever unit happened to be active.  Same fix
-// applies to upload_clut (unit 1) and upload_response (unit 2).
-static void upload_fb(const display_t *d) {
-    GLenum src_fmt = (d->format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
-    uint32_t tex_width = (d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride;
+// ============================================================================
+// The frame slot (core thread -> render thread)
+// ============================================================================
 
-    memcpy(s_upload_scratch, d->bits, (size_t)d->stride * d->height);
+// The newest published frame.  The core thread is the only writer of
+// everything but the consumed flags; it writes under `lock`, and it may read
+// `pixels` without the lock (nobody else writes them).  The render thread
+// reads under the lock.  The change flags accumulate across publishes the
+// renderer has not taken yet (it draws the newest frame, not every one) and
+// are cleared by the renderer when it takes them.
+typedef struct frame_slot {
+    pthread_mutex_t lock;
+    uint32_t seq; // bumped by every publish
+    // The frame
+    bool blank; // show black (no display or no framebuffer)
+    pixel_format_t format;
+    uint32_t width, height, stride;
+    uint8_t *pixels; // MAX_FB_BYTES; stride * height valid
+    uint8_t clut[256 * 4]; // RGBA, unused entries black
+    uint8_t response[3 * 256]; // the composed per-channel response LUT
+    // Accumulated changes since the renderer last took the slot
+    bool shape, clut_changed, response_changed;
+    bool hide_overlay; // hide the Voodoo2 overlay once the canvas shows this frame
+} frame_slot_t;
 
+static frame_slot_t s_slot = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+// Core-thread state of the publisher.
+static bool s_published_any; // the slot's pixels hold a real frame
+static bool s_overlay_up; // the Voodoo2 overlay is (or may be) shown
+static bool s_blanked; // the last publish was a blank: the next frame goes in full
+
+// Formats the renderer has no program for (bit per pixel_format_t), set by
+// the render thread and logged once by the core thread (the log is the
+// core's).
+static _Atomic uint32_t s_refused_formats;
+static uint32_t s_refused_logged;
+
+// The render thread is up and owns the canvas (0 until init_gl ran there).
+static _Atomic int s_renderer_up;
+
+// ---- render thread: GL uploads -------------------------------------------
+
+static void upload_fb(pixel_format_t format, uint32_t stride, uint32_t height) {
+    GLenum src_fmt = (format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
+    uint32_t tex_width = (format == PIXEL_32BPP_XRGB) ? stride / 4 : stride;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_width, d->height, src_fmt, GL_UNSIGNED_BYTE, s_upload_scratch);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_width, height, src_fmt, GL_UNSIGNED_BYTE, s_upload_scratch);
 }
 
-// Upload `clut` (clut_len entries) into the 256x1 CLUT texture.  Pads
-// unused entries with black so an out-of-range pixel index doesn't sample
-// stale colour from a previous palette.
-static void upload_clut(const display_t *d) {
-    uint8_t buf[256 * 4] = {0};
-    uint32_t n = d->clut_len > 256 ? 256 : d->clut_len;
-    for (uint32_t i = 0; i < n; i++) {
-        buf[i * 4 + 0] = d->clut[i].r;
-        buf[i * 4 + 1] = d->clut[i].g;
-        buf[i * 4 + 2] = d->clut[i].b;
-        buf[i * 4 + 3] = 255;
-    }
+// Unit 1 / unit 2 explicitly, so these never clobber the framebuffer
+// texture's binding on unit 0.
+static void upload_clut(const uint8_t *rgba) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, s_clut_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+}
+
+static void upload_response(const uint8_t *table) {
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, s_response_tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, table);
 }
 
 // Resize the canvas element + viewport to match the live display.  The
@@ -513,7 +556,7 @@ static void resize_canvas(uint32_t width, uint32_t height) {
     glViewport(0, 0, (int)width, (int)height);
 }
 
-// Announce the display's geometry to the page (a `screen` state event):
+// (core thread) Announce the display's geometry to the page (a `screen` state event):
 // the framebuffer size and the monitor's pixel aspect ratio, so the page can
 // reflow its screen wrapper and show non-square pixels (the Lisa's 720x364
 // raster is 2:3).  Sent where a shape change is consumed and once when a
@@ -524,7 +567,7 @@ static void announce_geometry(const display_t *d) {
 }
 
 // ============================================================================
-// Lifecycle
+// Lifecycle (render thread)
 // ============================================================================
 
 // Create the WebGL2 context and everything the renderer keeps for its
@@ -591,185 +634,264 @@ static void init_gl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// Upload the per-channel response LUT: the card's direct-colour DAC table
-// (dac_lut) followed by the monitor's CRT response (crt_response), composed
-// into one 3x256 table.  With neither, the identity table makes the response
-// pass a no-op (12"/13" RGB, Portrait B&W).
-static void upload_response(const display_t *d) {
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, s_response_tex);
-    const uint8_t *table = d->crt_response ? &d->crt_response[0][0] : s_identity_response;
-    static uint8_t composed[3][256];
-    if (d->dac_lut) {
-        for (int c = 0; c < 3; c++)
-            for (int v = 0; v < 256; v++)
-                composed[c][v] = table[c * 256 + d->dac_lut[c][v]];
-        table = &composed[0][0];
-    }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, table);
-}
-
-// Consume the display's dirty flags and re-bind / re-upload exactly what
-// the producer marked changed.  Returns false if nothing to draw (no
-// display).  shape_dirty implies the framebuffer texture must be
-// reallocated and its pixels re-uploaded, so we treat it as fb-implying.
-static bool refresh_from_display(display_t *d, bool force_full) {
-    if (!d || !d->bits)
-        return false;
-
-    // Refuse a format this build has no shader for, rather than rendering it
-    // through another format's program.
-    //
-    // program_for() and uniforms_for() fall back to the 1 bpp program when a
-    // slot is 0 (a shader that failed to compile -- a driver quirk or a WebGL2
-    // precision difference), but allocate_fb_texture(), the u_stride uniform
-    // and upload_fb()'s src_fmt / tex_width all keep using the REAL format.
-    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths.
-    // Agreeing on 1 bpp instead would only make the garbage self-consistent;
-    // refusing says which format is missing, which is the same call
-    // display_set_scanout and the 8*24 GC blitter make -- and it also covers
-    // the case where the 1 bpp program is itself the one that failed and
-    // glUseProgram(0) silently unbinds everything.
-    if (d->format < 0 || (int)d->format >= NUM_FORMATS || !s_progs[d->format]) {
-        static bool warned[NUM_FORMATS + 1];
-        int slot = (d->format >= 0 && (int)d->format < NUM_FORMATS) ? (int)d->format : NUM_FORMATS;
-        if (!warned[slot]) {
-            warned[slot] = true;
-            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
-                display_format_name(d->format));
-        }
+// Bind the program for `format` and point its uniforms at the geometry and
+// the three texture units, (re)allocate the framebuffer texture and size the
+// canvas.  False when this build has no program for the format: refused
+// rather than rendered through another format's program (program_for's 1 bpp
+// fallback would sample an RGBA8 texture with byte-index maths).
+static bool apply_shape(pixel_format_t format, uint32_t width, uint32_t height, uint32_t stride) {
+    if (format < 0 || (int)format >= NUM_FORMATS || !s_progs[format]) {
+        int slot = (format >= 0 && (int)format < NUM_FORMATS) ? (int)format : NUM_FORMATS;
+        atomic_fetch_or(&s_refused_formats, 1u << slot);
         return false;
     }
-
-    bool shape = force_full || d->shape_dirty;
-    bool fb = force_full || d->fb_dirty || shape;
-    bool clut = force_full || d->clut_dirty;
-    bool response = force_full || d->response_dirty;
-
-    if (shape) {
-        glUseProgram(program_for(d->format));
-        const prog_uniforms_t *u = uniforms_for(d->format);
-        if (u->u_fb_size >= 0)
-            glUniform2f(u->u_fb_size, (float)d->width, (float)d->height);
-        if (u->u_stride >= 0)
-            glUniform1f(u->u_stride, (float)((d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride));
-        if (u->u_texture >= 0) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, s_fb_tex);
-            glUniform1i(u->u_texture, 0);
-        }
-        if (u->u_clut >= 0) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, s_clut_tex);
-            glUniform1i(u->u_clut, 1);
-        }
-        if (u->u_response >= 0) {
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, s_response_tex);
-            glUniform1i(u->u_response, 2);
-        }
-        allocate_fb_texture(d->format, d->stride, d->height);
-        resize_canvas(d->width, d->height);
-        // A producer changed the shape: tell the page (a forced full redraw
-        // alone changed nothing it shows).
-        if (d->shape_dirty)
-            announce_geometry(d);
+    glUseProgram(program_for(format));
+    const prog_uniforms_t *u = uniforms_for(format);
+    if (u->u_fb_size >= 0)
+        glUniform2f(u->u_fb_size, (float)width, (float)height);
+    if (u->u_stride >= 0)
+        glUniform1f(u->u_stride, (float)((format == PIXEL_32BPP_XRGB) ? stride / 4 : stride));
+    if (u->u_texture >= 0) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_fb_tex);
+        glUniform1i(u->u_texture, 0);
     }
-
-    if (fb)
-        upload_fb(d);
-
-    if (clut && d->clut && d->clut_len > 0)
-        upload_clut(d);
-
-    if (response)
-        upload_response(d);
-
-    // Consumer-cleared, plain bools: the producers (the machine's video
-    // hardware) and this renderer both run on the emulator thread.  A
-    // producer on another thread would need these to become atomics.
-    d->fb_dirty = false;
-    d->shape_dirty = false;
-    d->clut_dirty = false;
-    d->response_dirty = false;
+    if (u->u_clut >= 0) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_clut_tex);
+        glUniform1i(u->u_clut, 1);
+    }
+    if (u->u_response >= 0) {
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_response_tex);
+        glUniform1i(u->u_response, 2);
+    }
+    allocate_fb_texture(format, stride, height);
+    resize_canvas(width, height);
     return true;
 }
 
-// Draw the quad.  glGetError is a pipeline sync point, so it is asked only
-// while `log.set video 1` (or higher) wants its answer.
+// Draw the quad.  (glGetError, a pipeline sync point, is not asked here:
+// the log belongs to the core thread.)
 static void draw(void) {
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    if (log_would_log(log_local_category(), 1)) {
-        GLenum err = glGetError();
-        if (err != GL_NO_ERROR)
-            LOG(1, "GL error: %d", err);
-    }
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
-
-// Bring the renderer up; a second call is a no-op (a re-init would leak the
-// context's programs, textures and buffer).
-void em_video_init(void) {
-    if (s_ctx)
-        return;
-    init_gl();
-}
-
-// The Voodoo2 WebGPU overlay sits over this canvas while the takeover
-// presents.  It is HIDDEN from here — after this canvas has drawn a
-// frame that is not the takeover's — never from the GPU worker at the
-// moment it stops presenting: at that moment the canvas underneath
-// still holds whatever was last uploaded before the takeover engaged,
-// a frame from a second or more ago, and hiding the overlay first
-// flashed it (the background checkpoint's disengage made it visible
-// every 15 s).  Shown the same way on the other side: the worker posts
-// the overlay visible only after its first present.
-static bool s_overlay_up;
-
-static void overlay_hide_if_up(void) {
-    if (!s_overlay_up)
-        return;
-    s_overlay_up = false;
+static void hide_overlay(void) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM({ if (typeof Module.onVoodooGpuOverlay === 'function') Module.onVoodooGpuOverlay(0); });
     // clang-format on
 }
 
-// The canvas was blanked because the display had no framebuffer: the next
-// framebuffer is drawn in full, whatever its dirty flags say.
-static bool s_blanked;
+// One animation frame of the render thread: take the newest published
+// frame, if there is one it has not drawn, and draw it.
+static uint32_t s_drawn_seq;
+static bool s_shape_ok; // the current shape has a program (apply_shape succeeded)
 
-// No picture (no display, or one without a framebuffer -- the ANS between
-// a restart and Open Firmware reprogramming the Cirrus): show black, as a
-// monitor with no signal would, instead of the last frame.  Once per
+static void render_frame(void) {
+    static uint8_t clut[256 * 4], response[3 * 256];
+    pthread_mutex_lock(&s_slot.lock);
+    bool fresh = s_slot.seq != s_drawn_seq;
+    bool hide = s_slot.hide_overlay;
+    s_slot.hide_overlay = false;
+    bool blank = s_slot.blank, shape = false, clut_new = false, response_new = false;
+    pixel_format_t format = s_slot.format;
+    uint32_t width = s_slot.width, height = s_slot.height, stride = s_slot.stride;
+    if (fresh) {
+        s_drawn_seq = s_slot.seq;
+        shape = s_slot.shape;
+        clut_new = s_slot.clut_changed;
+        response_new = s_slot.response_changed;
+        s_slot.shape = s_slot.clut_changed = s_slot.response_changed = false;
+        if (!blank) {
+            memcpy(s_upload_scratch, s_slot.pixels, (size_t)stride * height);
+            if (clut_new)
+                memcpy(clut, s_slot.clut, sizeof clut);
+            if (response_new)
+                memcpy(response, s_slot.response, sizeof response);
+        }
+    }
+    pthread_mutex_unlock(&s_slot.lock);
+
+    if (fresh) {
+        if (blank) {
+            // No signal: black, as a monitor would show, not the last frame.
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
+        } else {
+            if (shape)
+                s_shape_ok = apply_shape(format, width, height, stride);
+            if (s_shape_ok) {
+                upload_fb(format, stride, height);
+                if (clut_new)
+                    upload_clut(clut);
+                if (response_new)
+                    upload_response(response);
+                draw();
+            }
+        }
+    }
+    // The canvas shows the newest frame now (or already did): the overlay
+    // may go.
+    if (hide)
+        hide_overlay();
+}
+
+// The render thread: bring WebGL up on the transferred canvas, then draw on
+// every animation frame (a worker's requestAnimationFrame) for good.
+static void *render_thread_main(void *arg) {
+    (void)arg;
+    init_gl();
+    if (!s_upload_scratch)
+        return NULL; // no WebGL: nothing renders (init_gl said why)
+    atomic_store(&s_renderer_up, 1);
+    emscripten_set_main_loop(render_frame, 0, 1); // does not return
+    return NULL;
+}
+
+// ============================================================================
+// The core thread: publishing
+// ============================================================================
+
+// Publish a blank (no display, or one without a framebuffer -- the ANS
+// between a restart and Open Firmware reprogramming the Cirrus).  Once per
 // transition.
-static void blank_canvas(void) {
-    if (s_blanked || s_ctx == 0)
+static void publish_blank(void) {
+    if (s_blanked)
         return;
     s_blanked = true;
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
+    pthread_mutex_lock(&s_slot.lock);
+    s_slot.blank = true;
+    s_slot.hide_overlay = s_slot.hide_overlay || s_overlay_up;
+    s_slot.seq++;
+    pthread_mutex_unlock(&s_slot.lock);
+    s_overlay_up = false;
+}
+
+// Publish `d` in full or in the parts its dirty flags (and `full`) name,
+// then clear the flags.  The pixels are always copied whole: the renderer
+// draws whatever the slot holds.  `hide` asks the renderer to hide the
+// overlay once this frame is on the canvas.
+static void publish(display_t *d, bool full, bool hide) {
+    bool shape = full || d->shape_dirty || !s_published_any;
+    bool clut = (full || d->clut_dirty || shape) && d->clut && d->clut_len > 0;
+    bool response = full || d->response_dirty || shape;
+    pthread_mutex_lock(&s_slot.lock);
+    s_slot.blank = false;
+    if (shape) {
+        s_slot.format = d->format;
+        s_slot.width = d->width;
+        s_slot.height = d->height;
+        s_slot.stride = d->stride;
+        s_slot.shape = true;
+    }
+    memcpy(s_slot.pixels, d->bits, (size_t)d->stride * d->height);
+    if (clut) {
+        // Unused entries black, so an out-of-range index samples no stale colour.
+        memset(s_slot.clut, 0, sizeof s_slot.clut);
+        uint32_t n = d->clut_len > 256 ? 256 : d->clut_len;
+        for (uint32_t i = 0; i < n; i++) {
+            s_slot.clut[i * 4 + 0] = d->clut[i].r;
+            s_slot.clut[i * 4 + 1] = d->clut[i].g;
+            s_slot.clut[i * 4 + 2] = d->clut[i].b;
+            s_slot.clut[i * 4 + 3] = 255;
+        }
+        s_slot.clut_changed = true;
+    }
+    if (response) {
+        // The card's direct-colour DAC table (dac_lut) followed by the
+        // monitor's CRT response (crt_response), composed into one 3x256
+        // table; with neither, the identity.
+        for (int c = 0; c < 3; c++)
+            for (int v = 0; v < 256; v++) {
+                int in = d->dac_lut ? d->dac_lut[c][v] : v;
+                s_slot.response[c * 256 + v] = d->crt_response ? d->crt_response[c][in] : (uint8_t)in;
+            }
+        s_slot.response_changed = true;
+    }
+    if (hide)
+        s_slot.hide_overlay = true;
+    s_slot.seq++;
+    pthread_mutex_unlock(&s_slot.lock);
+    if (d->shape_dirty)
+        announce_geometry(d); // a producer changed the shape: tell the page
+    s_published_any = true;
+    s_blanked = false;
+    // Consumer-cleared, plain bools: the producers (the machine's video
+    // hardware) and the publisher both run on the emulator thread.
+    d->fb_dirty = false;
+    d->shape_dirty = false;
+    d->clut_dirty = false;
+    d->response_dirty = false;
+}
+
+// Ask the renderer to hide the overlay without a new frame (the canvas
+// already shows the newest one, or will once the renderer takes it).
+static void request_overlay_hide(void) {
+    if (!s_overlay_up)
+        return;
+    s_overlay_up = false;
+    pthread_mutex_lock(&s_slot.lock);
+    s_slot.hide_overlay = true;
+    pthread_mutex_unlock(&s_slot.lock);
+}
+
+static void log_refused_formats(void) {
+    uint32_t refused = atomic_load(&s_refused_formats) & ~s_refused_logged;
+    for (int f = 0; refused; f++, refused >>= 1)
+        if (refused & 1u) {
+            s_refused_logged |= 1u << f;
+            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
+                f < NUM_FORMATS ? display_format_name((pixel_format_t)f) : "an unknown format");
+        }
+}
+
+// ============================================================================
+// Public API (core thread)
+// ============================================================================
+
+// Start the render thread and hand it the canvas; a second call is a no-op.
+// The canvas goes by its element id ("screen", no '#'): that is the key
+// under which this thread holds it (-sOFFSCREENCANVASES_TO_PTHREAD gave it
+// to the core's thread), and a pthread can pass on only a canvas it holds.
+void em_video_init(void) {
+    static bool started;
+    if (started)
+        return;
+    started = true;
+    s_slot.pixels = calloc(1, MAX_FB_BYTES);
+    if (!s_slot.pixels) {
+        LOG(0, "renderer: cannot allocate the %u-byte frame slot - cannot run", (unsigned)MAX_FB_BYTES);
+        return;
+    }
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    emscripten_pthread_attr_settransferredcanvases(&attr, "screen");
+    pthread_t thread;
+    int rc = pthread_create(&thread, &attr, render_thread_main, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0)
+        LOG(0, "renderer: the render thread could not be started (%d) - nothing will be drawn", rc);
+    else
+        pthread_detach(thread);
 }
 
 void em_video_update(void) {
-    if (!s_upload_scratch)
-        return; // no renderer (WebGL failed to come up)
+    if (!s_slot.pixels)
+        return; // no frame slot (allocation failed)
+    log_refused_formats();
     display_t *d = system_display();
     if (!d || !d->bits) {
-        overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
-        blank_canvas();
+        publish_blank(); // ...and hide the overlay: nothing for it to cover
         return;
     }
     if (!fb_fits_scratch(d)) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen", d->width,
+            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte frame buffer; screen frozen", d->width,
                 d->height, d->stride, (unsigned)MAX_FB_BYTES);
         }
         return;
@@ -777,60 +899,41 @@ void em_video_update(void) {
 
     // A frame presented by someone else (the Voodoo2's WebGPU overlay):
     // keep the canvas at the card's geometry so the page lays out the
-    // overlay over it, but never touch the pixels — the stale scanout
-    // underneath is hidden, and comparing it per frame would be wasted
-    // work.
+    // overlay over it, but never send the pixels' changes -- the stale
+    // scanout underneath is hidden.
     if (d->presented_externally) {
         s_overlay_up = true;
-        if (d->shape_dirty && refresh_from_display(d, /*force_full*/ false))
-            draw();
+        if (d->shape_dirty)
+            publish(d, false, false);
         return;
     }
 
-    // The producer-side dirty flags (fb_dirty / clut_dirty / response_dirty)
-    // are undercomplete: pixel writes that come straight from emulated
-    // CPU code (the ROM's RAM test, the OS painting between vsyncs,
-    // any direct framebuffer poke) bypass the producer entirely and
-    // never trip fb_dirty. Conversely, plus_use_video_buffer sets the
-    // flag on every VIA1 port-A write whether pixels moved or not.
-    // Either way, fb_dirty is a hint, not authority.
-    //
-    // We re-derive content change here by memcmp'ing the framebuffer
-    // against s_upload_scratch — which always holds the last contents
-    // we uploaded (upload_fb memcpy's into it on its way to the GPU).
-    // This recovers the pre-IIcx-refactor behaviour: render rate is
-    // coupled to actual byte-level change, never to producer signaling
-    // quirks. memcmp is well under a millisecond even at the largest
-    // mode (1152x870 @ 8 bpp = 1 MB) and is cache-friendly.
-    bool content_changed = memcmp(s_upload_scratch, d->bits, (size_t)d->stride * d->height) != 0;
-
-    // shape_dirty signals a texture-allocation change (resolution /
-    // format / stride) — must always be honoured. clut_dirty /
-    // response_dirty change pixel mapping without changing fb bytes,
-    // so we trust those flags directly.
+    // The producer-side dirty flags are undercomplete: pixel writes from
+    // emulated CPU code (the ROM's RAM test, the OS painting between
+    // vsyncs, any direct framebuffer poke) never trip fb_dirty, and
+    // plus_use_video_buffer sets it on every VIA1 port-A write whether
+    // pixels moved or not.  So fb_dirty is a hint: content change is
+    // re-derived by comparing the framebuffer with the slot's pixels, the
+    // last frame published (only this thread writes them, so no lock).
+    bool content_changed = !s_published_any || s_slot.stride != d->stride || s_slot.height != d->height ||
+                           memcmp(s_slot.pixels, d->bits, (size_t)d->stride * d->height) != 0;
     if (!s_blanked && !content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty) {
-        overlay_hide_if_up(); // the canvas already shows this frame
+        request_overlay_hide(); // the canvas already shows this frame
         return;
     }
-
-    if (content_changed)
-        d->fb_dirty = true;
-
-    if (refresh_from_display(d, /*force_full*/ s_blanked)) {
-        s_blanked = false;
-        draw();
-    }
-    overlay_hide_if_up(); // ...and now it shows a fresh one
+    bool hide = s_overlay_up;
+    s_overlay_up = false;
+    publish(d, /*full*/ s_blanked, hide);
 }
 
+// Everything again, whatever the dirty flags say (a forced redraw).
 void em_video_force_redraw(void) {
-    if (!s_upload_scratch)
-        return; // no renderer (WebGL failed to come up)
-    display_t *d = system_display();
-    if (d && d->bits && !fb_fits_scratch(d))
+    if (!s_slot.pixels)
         return;
-    if (refresh_from_display(d, /*force_full*/ true))
-        draw();
+    display_t *d = system_display();
+    if (!d || !d->bits || !fb_fits_scratch(d))
+        return;
+    publish(d, /*full*/ true, false);
 }
 
 void platform_force_redraw(void) {

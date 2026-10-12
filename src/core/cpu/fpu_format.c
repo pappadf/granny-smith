@@ -42,8 +42,10 @@ float80_reg_t fpu_from_single(uint32_t bits) {
     if (exp == 0xFF) {
         if (frac == 0)
             return fp80_make(sign, 0x7FFF, 0);
-        // NaN: place fraction bits into extended mantissa (J-bit stays 0)
-        uint64_t mant = (uint64_t)frac << 40;
+        // NaN: place fraction bits into extended mantissa with the integer
+        // bit set (a don't-care for NaNs, MC68881UM §3.2.5; the FPU's own
+        // NaNs carry it, and so do m68k-test's and softfloat's conversions)
+        uint64_t mant = 0x8000000000000000ULL | ((uint64_t)frac << 40);
         return fp80_make(sign, 0x7FFF, mant);
     }
     if (exp == 0) {
@@ -176,8 +178,9 @@ float80_reg_t fpu_from_double(uint64_t bits) {
     if (exp == 0x7FF) {
         if (frac == 0)
             return fp80_make(sign, 0x7FFF, 0);
-        // NaN: place fraction bits into extended mantissa (J-bit stays 0)
-        uint64_t mant = frac << 11;
+        // NaN: fraction bits into the extended mantissa, integer bit set (as
+        // in fpu_from_single)
+        uint64_t mant = 0x8000000000000000ULL | (frac << 11);
         return fp80_make(sign, 0x7FFF, mant);
     }
     if (exp == 0) {
@@ -227,11 +230,14 @@ float80_reg_t fpu_from_int8(int8_t v) {
     return fpu_from_int32((int32_t)v);
 }
 
-// Convert float80_reg_t to int32, clamping on overflow
+// Convert float80_reg_t to int32, clamping on overflow.  A NaN delivers the
+// top bits of its own mantissa (verified against the model: FMOVE.L of the
+// QNaN $7FFF_C000000000000000 stores $C0000000, FMOVE.W stores $C000 and
+// FMOVE.B stores $C0), with OPERR set as for any unrepresentable source.
 int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
     if (fp80_is_nan(val)) {
         fpu->fpsr |= FPEXC_OPERR;
-        return 0;
+        return (int32_t)(uint32_t)(val.mantissa >> 32);
     }
     if (fp80_is_zero(val))
         return 0;
@@ -332,6 +338,10 @@ int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
 
 // Convert float80_reg_t to int16, clamping on overflow
 int16_t fpu_to_int16(fpu_state_t *fpu, float80_reg_t val) {
+    if (fp80_is_nan(val)) {
+        fpu->fpsr |= FPEXC_OPERR;
+        return (int16_t)(uint16_t)(val.mantissa >> 48);
+    }
     int32_t v = fpu_to_int32(fpu, val);
     if (v > INT16_MAX) {
         fpu->fpsr = (fpu->fpsr & ~FPEXC_INEX2) | FPEXC_OPERR;
@@ -346,6 +356,10 @@ int16_t fpu_to_int16(fpu_state_t *fpu, float80_reg_t val) {
 
 // Convert float80_reg_t to int8, clamping on overflow
 int8_t fpu_to_int8(fpu_state_t *fpu, float80_reg_t val) {
+    if (fp80_is_nan(val)) {
+        fpu->fpsr |= FPEXC_OPERR;
+        return (int8_t)(uint8_t)(val.mantissa >> 56);
+    }
     int32_t v = fpu_to_int32(fpu, val);
     if (v > INT8_MAX) {
         fpu->fpsr = (fpu->fpsr & ~FPEXC_INEX2) | FPEXC_OPERR;

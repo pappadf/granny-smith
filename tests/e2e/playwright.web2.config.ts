@@ -25,6 +25,7 @@ const SERIAL = [
   'iifx-aux3-realtime.spec.ts',
   'scheduler-accelerated.spec.ts',
   'perf-bench.spec.ts',
+  'perf-headbase.spec.ts',
   'av-camera.spec.ts',
   'av-microphone.spec.ts',
   'av-sound-record.spec.ts',

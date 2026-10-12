@@ -333,9 +333,56 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
 typedef struct ppc_fetch_window {
     uint32_t lo, span;
     uintptr_t host_adjust;
+    struct pd_block *blk; // the predecoded block of the window's page (NULL: not looked up / none)
     uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
+    struct ppc_ftlb_entry *fe; // the fetch-TLB entry the window came from (NULL: real mode, a device window)
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
+
+// The fetch TLB behind the window: direct-mapped, logical page and
+// privilege to host page, for MSR[IT] set.  Each entry also remembers the
+// predecoded block last found for its page, so a page transition to a page
+// seen before needs neither ppc_fetch_fill nor a pool lookup (the block is
+// re-validated with predecode_block_ok before use).  Invalidated by
+// ppc_mmu_flush_fetch and, per congruence class, by tlbie.
+#define PPC_FTLB_SIZE 256
+typedef struct ppc_ftlb_entry {
+    uint32_t tag; // (pc & 0xFFFFF000) | user<<1 | valid
+    uintptr_t host_adjust; // host_base - page_base
+    struct pd_block *blk; // the predecoded block last found for this page (NULL: none yet)
+} ppc_ftlb_entry_t;
+extern ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE];
+
+// Refill the window from a fetch-TLB hit, inline: the common page
+// transition.  False on a miss (or with MSR[IT] clear): ppc_fetch_fill
+// then translates and fills.
+static inline bool ppc_fetch_window_hit(uint32_t msr, uint32_t pc) {
+    if (!(msr & PPC_MSR_IT))
+        return false;
+    uint32_t page = pc & ~(uint32_t)MEM_PAGE_MASK;
+    ppc_ftlb_entry_t *fe = &g_ppc_ftlb[(pc >> MEM_PAGE_SHIFT) & (PPC_FTLB_SIZE - 1)];
+    if (fe->tag != (page | ((msr & PPC_MSR_PR) ? 2u : 0u) | 1u))
+        return false;
+    g_ppc_fetch.lo = page;
+    g_ppc_fetch.span = MEM_PAGE_SIZE;
+    g_ppc_fetch.host_adjust = fe->host_adjust;
+    g_ppc_fetch.le_xor = (msr & PPC_MSR_LE) ? 4u : 0u;
+    g_ppc_fetch.blk = fe->blk;
+    g_ppc_fetch.fe = fe;
+    return true;
+}
+
+// An MSR write drops only the one-page window: it carries no privilege or
+// translation mode.  The fetch TLB's tag holds MSR[PR] and it is used only
+// with MSR[IT] set, and nothing else in the MSR changes an instruction
+// translation, so its entries stay valid.  (Wiping it on every exception
+// and rfi cost the 68K emulator a full translation on 15 % of its page
+// transitions.)
+static inline void ppc_mmu_flush_fetch_window(void) {
+    g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
+    g_ppc_fetch.fe = NULL;
+}
 
 // Refill the fetch window for pc (and return the word there via *iw).
 // Returns false when the fetch raised ISI.
@@ -356,8 +403,8 @@ void ppc_recompute_sr_t_mask(ppc_t *p);
 
 // Invalidation entry points.  invalidate_all: address-space change (SR/
 // BAT/SDR1 value change, bank remap, checkpoint restore).  tlbie:
-// congruence-class invalidation.  flush_fetch: MSR change (privilege or
-// translation bits — fetch permissions are mode-dependent).
+// congruence-class invalidation.  flush_fetch: the fetch window and the
+// fetch TLB (BAT change at a context synchronization, logpoints).
 void ppc_mmu_invalidate_all(ppc_t *p);
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea);
 void ppc_mmu_flush_fetch(void);
@@ -397,7 +444,7 @@ uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 // (supervisor-translated accesses rewrite their address in ppc_dxlate_slow
 // before touching memory).
 static inline void ppc_update_active_maps(ppc_t *p) {
-    ppc_mmu_flush_fetch();
+    ppc_mmu_flush_fetch_window();
     if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
         g_active_read = g_user_read;
         g_active_write = g_user_write;
@@ -503,6 +550,16 @@ static inline bool ppc_fp_check(ppc_t *p) {
 // hardware-split page-crossing case (604UM §4.5.6): loads deliver the raw
 // big-endian value via *val, stores consumed it.
 int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val);
+
+// The gate's common case, inline at every load and store: a naturally
+// aligned access with MSR[LE] clear.  It cannot cross a page or segment,
+// and no model's alignment rule applies to it, so only the translation
+// remains (the inline ppc_dxlate).  Everything else takes the full gate.
+static inline int ppc_scalar_gate_inl(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val) {
+    if (__builtin_expect(((*addr & (size - 1u)) | (p->msr & PPC_MSR_LE)) == 0, 1))
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    return ppc_scalar_gate(p, iw, addr, size, store, val);
+}
 
 // Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
 // one-liner table: branches, divides with their deterministic-undefined

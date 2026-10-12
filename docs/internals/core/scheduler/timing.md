@@ -312,7 +312,7 @@ target — the headless target ignores host time entirely (see
 | Mode | Behaviour (WASM target) |
 |------|-------------------------|
 | `schedule_paced` (default; "Real-Time") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. |
-| `schedule_unthrottled` ("Fast-Forward") | As many frame-units as fit in `TURBO_HOST_HEADROOM` (50%) of the host loop period — as fast as the host allows. |
+| `schedule_unthrottled` ("Fast-Forward") | As many frame-units as fit in the turbo slice (`scheduler_set_turbo_slice`: 16 ms in web2, whose loop re-enters at once in turbo), or, without one, in `TURBO_HOST_HEADROOM` (70%) of the host loop period — as fast as the host allows. |
 
 Both modes use the same sprint and event machinery, the same per-machine CPI,
 and the same I/O penalties. The mode affects **only** how many frame-units a

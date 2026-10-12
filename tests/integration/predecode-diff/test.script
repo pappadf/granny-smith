@@ -1,0 +1,4 @@
+# Placeholder: this row runs through run.sh (config.mk TEST_RUNNER), which
+# drives plus.script, iicx.script and pdm.script twice each and compares the
+# checkpoints.  The runner requires a test.script to exist; nothing runs it.
+quit
