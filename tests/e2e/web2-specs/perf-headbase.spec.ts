@@ -15,7 +15,10 @@
 //   pm6100  the 601: a media-free ROM boot 200 M instructions in, the ROM's
 //           68K emulator running the Start Manager (pm6100-68kemu)
 //   pm8500  the 604: the System 7.6 desktop 4 G instructions after power-on
-//           (pm8500-finder)
+//           (pm8500-finder), with Apple's DR 68K emulator (PowerPC code
+//           it generates into RAM)
+//   pm6100desk  the 601 at the same System 7.6 desktop, from the same image
+//           (the ROM's interpretive 68K emulator): pm8500's like-for-like
 // The PowerPC rows are reached by instruction count, as the native rows
 // are, with the browser's clock (the native rows pin the RTC).  The windows
 // run on from there (turbo, seconds each), so they measure a later stretch
@@ -55,6 +58,7 @@ type Row = {
   hd?: string; // none: a media-free ROM boot
   settle: 'finder' | 'marathon' | 'instr';
   instr?: number; // settle 'instr': run to this instruction count
+  model?: string; // the machine to configure (default: the row's name)
   vrom?: string;
   card?: string;
   monitor?: string;
@@ -83,6 +87,14 @@ const ROWS: Record<string, Row> = {
     ram: '24 MB',
     settle: 'instr',
     instr: 200_000_000,
+  },
+  pm6100desk: {
+    model: 'pm6100',
+    rom: 'pm6100-pm7100-pm8100-9feb69b3.rom',
+    ram: '24 MB',
+    hd: 'systems/system_7_6_170mb_24ac.img',
+    settle: 'instr',
+    instr: 4_000_000_000,
   },
   pm8500: {
     rom: 'pm7500-pm8500-pm9500-96cd923d.rom',
@@ -189,8 +201,8 @@ async function bootRow(page: Page, url: string, machine: string, row: Row): Prom
 
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');
-  await expect(model.locator(`option[value="${machine}"]`)).toHaveCount(1, { timeout: 30_000 });
-  await model.selectOption(machine);
+  await expect(model.locator(`option[value="${row.model ?? machine}"]`)).toHaveCount(1, { timeout: 30_000 });
+  await model.selectOption(row.model ?? machine);
   await page.locator('#cfg-opt-memory').selectOption({ label: row.ram });
   if (row.card) {
     await page.getByTestId('cfg-add-card').click({ timeout: 30_000 });
