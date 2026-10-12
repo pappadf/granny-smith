@@ -147,3 +147,10 @@ Notes:
   **Addressing** to 32-bit (see §3).
 - MacWorks XL starts from its loader floppy, then asks for the MacWorks
   system disk.
+- Mac OS X 10.1 has booted to the Finder on the Power Mac G3 (Rev C ROM)
+  from an ATA disk, but not out of the box: like a real beige G3, the
+  machine's Open Firmware needs Apple's Mac OS X patch in NVRAM. A disk
+  that was set up on a real beige G3 installs the patch itself when Mac OS
+  starts from it; a disk installed on another machine (for example a
+  converted QCOW2 image) does not, and the patch has to be entered by hand
+  at the Open Firmware prompt.

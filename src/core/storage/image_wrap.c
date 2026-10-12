@@ -46,6 +46,7 @@ LOG_USE_CATEGORY_NAME("image")
 #define PM_BOOT_ENTRY   108
 #define PM_BOOT_CKSUM   116
 #define PM_PROCESSOR    120
+#define PM_PROCESSOR_SZ 16
 
 // pmPartStatus bits.
 #define PM_VALID     0x01u
@@ -74,6 +75,11 @@ static void put32(uint8_t *p, uint32_t v) {
     p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);
     p[3] = (uint8_t)v;
+}
+
+// Load a big-endian 32-bit value.
+static uint32_t get32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
 // Copy a NUL-padded string into a fixed field (never overflows it).
@@ -106,6 +112,11 @@ static void put_entry(uint8_t *e, uint32_t map_entries, uint32_t start, uint32_t
 }
 
 void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *build_id) {
+    image_wrap_build_prefix_boot(out, volume_blocks, build_id, NULL);
+}
+
+void image_wrap_build_prefix_boot(uint8_t *out, uint64_t volume_blocks, const char *build_id,
+                                  const uint8_t *hfs_entry) {
     const uint32_t prefix = IMAGE_WRAP_PREFIX_BLOCKS;
     const uint32_t vol = volume_blocks > 0xFFFFFFFFu - prefix ? 0xFFFFFFFFu - prefix : (uint32_t)volume_blocks;
     const uint32_t drv_len = (uint32_t)sizeof(gsdisk_drvr);
@@ -154,6 +165,27 @@ void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *b
     put_str(e + PM_PROCESSOR, 16, "68000");
     e += BLK;
     put_entry(e, n, prefix, vol, "MacOS", "Apple_HFS", PM_VALID | PM_ALLOCATED | PM_IN_USE | PM_READABLE | PM_WRITABLE);
+    // The volume's own boot fields, when its map had them: Mac OS X keeps
+    // the XCOFF BootX of an Old World Mac in the HFS+ startup file and
+    // points the partition entry's boot fields at it (block relative to the
+    // partition, so the same volume behind the new map keeps them valid).
+    if (hfs_entry) {
+        put32(e + PM_STATUS, get32(e + PM_STATUS) | get32(hfs_entry + PM_STATUS));
+        memcpy(e + PM_LG_BOOT, hfs_entry + PM_LG_BOOT, PM_PROCESSOR + PM_PROCESSOR_SZ - PM_LG_BOOT);
+    }
+}
+
+// The map entry of the Apple_HFS partition at `start` in `head` (`len`
+// bytes from block 0), or NULL.
+static const uint8_t *find_hfs_entry(const uint8_t *head, size_t len, uint64_t start) {
+    for (size_t b = IMAGE_WRAP_MAP_START; (b + 1) * BLK <= len && b < SNIFF_BLOCKS; b++) {
+        const uint8_t *e = head + b * BLK;
+        if (e[PM_SIG] != 'P' || e[PM_SIG + 1] != 'M')
+            break;
+        if (get32(e + PM_PY_START) == start && memcmp(e + PM_PAR_TYPE, "Apple_HFS", 10) == 0)
+            return e;
+    }
+    return NULL;
 }
 
 // Read `size` bytes at `offset` of the image without counting it as guest
@@ -175,11 +207,18 @@ int image_wrap_volume(image_t *image) {
         return -1;
     int kind = IMAGE_WRAP_NONE;
     uint64_t start = 0, blocks = 0;
+    uint8_t hfs_entry[BLK];
+    bool have_entry = false;
     if (sniff(image, 0, head, head_len)) {
         if (image_wrap_is_bare_volume(head, head_len)) {
             kind = IMAGE_WRAP_BARE;
             blocks = total_blocks;
         } else if (image_wrap_find_driverless_hfs(head, head_len, &start, &blocks) && start < total_blocks) {
+            const uint8_t *e = find_hfs_entry(head, head_len, start);
+            if (e) {
+                memcpy(hfs_entry, e, BLK);
+                have_entry = true;
+            }
             // The partition must hold an HFS volume where the map says, and
             // is clipped to the file (an image cut short of its map's claim).
             if (blocks > total_blocks - start)
@@ -195,7 +234,7 @@ int image_wrap_volume(image_t *image) {
     uint8_t *prefix = (uint8_t *)malloc((size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK);
     if (!prefix)
         return -1;
-    image_wrap_build_prefix(prefix, blocks, build_id_get());
+    image_wrap_build_prefix_boot(prefix, blocks, build_id_get(), have_entry ? hfs_entry : NULL);
     image->wrap_prefix = prefix;
     image->wrap_blocks = IMAGE_WRAP_PREFIX_BLOCKS;
     image->wrap_base = (size_t)start * BLK;
