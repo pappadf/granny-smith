@@ -324,8 +324,8 @@ static bool hd_io(ata_channel_t *ch, int unit, bool write, uint64_t lba, uint32_
     if (!img)
         return false;
     size_t bytes = (size_t)n * SECTOR;
-    size_t got = write ? disk_write_data(img, (size_t)lba * SECTOR, ch->buf, bytes)
-                       : disk_read_data(img, (size_t)lba * SECTOR, ch->buf, bytes);
+    size_t got =
+        write ? disk_write_data(img, lba * SECTOR, ch->buf, bytes) : disk_read_data(img, lba * SECTOR, ch->buf, bytes);
     return got == bytes;
 }
 

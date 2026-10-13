@@ -479,7 +479,7 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);
     size_t offset = block * 512;
     if (offset + 512 > disk_size(img)) {
-        LOG(2, "ISM write: offset %zu + 512 > disk size %zu", offset, disk_size(img));
+        LOG(2, "ISM write: offset %zu + 512 > disk size %llu", offset, (unsigned long long)disk_size(img));
         return;
     }
 

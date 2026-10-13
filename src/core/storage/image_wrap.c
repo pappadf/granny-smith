@@ -190,7 +190,7 @@ static const uint8_t *find_hfs_entry(const uint8_t *head, size_t len, uint64_t s
 
 // Read `size` bytes at `offset` of the image without counting it as guest
 // activity (the sniff is not).
-static bool sniff(image_t *image, size_t offset, uint8_t *buf, size_t size) {
+static bool sniff(image_t *image, uint64_t offset, uint8_t *buf, size_t size) {
     uint64_t reads = image->reads;
     size_t got = disk_read_data(image, offset, buf, size);
     image->reads = reads;
@@ -200,8 +200,8 @@ static bool sniff(image_t *image, size_t offset, uint8_t *buf, size_t size) {
 int image_wrap_volume(image_t *image) {
     if (!image || image->wrap_prefix || image->block_size != BLK || image->raw_size < 3 * BLK)
         return IMAGE_WRAP_NONE;
-    size_t total_blocks = image->raw_size / BLK;
-    size_t head_len = (total_blocks < SNIFF_BLOCKS ? total_blocks : SNIFF_BLOCKS) * BLK;
+    uint64_t total_blocks = image->raw_size / BLK;
+    size_t head_len = (size_t)(total_blocks < SNIFF_BLOCKS ? total_blocks : SNIFF_BLOCKS) * BLK;
     uint8_t *head = (uint8_t *)malloc(head_len);
     if (!head)
         return -1;
@@ -223,7 +223,7 @@ int image_wrap_volume(image_t *image) {
             // is clipped to the file (an image cut short of its map's claim).
             if (blocks > total_blocks - start)
                 blocks = total_blocks - start;
-            if (blocks >= 3 && sniff(image, (size_t)start * BLK, head, 3 * BLK) &&
+            if (blocks >= 3 && sniff(image, (uint64_t)start * BLK, head, 3 * BLK) &&
                 image_wrap_is_bare_volume(head, 3 * BLK))
                 kind = IMAGE_WRAP_DRIVERLESS;
         }
@@ -237,9 +237,9 @@ int image_wrap_volume(image_t *image) {
     image_wrap_build_prefix_boot(prefix, blocks, build_id_get(), have_entry ? hfs_entry : NULL);
     image->wrap_prefix = prefix;
     image->wrap_blocks = IMAGE_WRAP_PREFIX_BLOCKS;
-    image->wrap_base = (size_t)start * BLK;
+    image->wrap_base = (uint64_t)start * BLK;
     image->wrap_storage_size = image->raw_size;
-    image->raw_size = (size_t)(IMAGE_WRAP_PREFIX_BLOCKS + blocks) * BLK;
+    image->raw_size = (uint64_t)(IMAGE_WRAP_PREFIX_BLOCKS + blocks) * BLK;
     image->type = image_hd;
     if (kind == IMAGE_WRAP_BARE)
         LOG(1, "wrapped bare volume %s: %u-block partition map + GSDisk driver in front of %llu blocks",

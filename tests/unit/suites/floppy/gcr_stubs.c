@@ -24,7 +24,7 @@ size_t stub_last_write_offset;
 // what reached each block and not just where the last write went.
 uint8_t *stub_disk_buf;
 
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     (void)offset;
     (void)buf;
@@ -32,7 +32,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     return 0;
 }
 
-size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     stub_write_count++;
     stub_last_write_offset = offset;
@@ -57,7 +57,7 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
     return 0;
 }
 
-size_t disk_size(image_t *disk) {
+uint64_t disk_size(image_t *disk) {
     (void)disk;
     return stub_disk_size;
 }

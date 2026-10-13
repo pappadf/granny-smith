@@ -50,7 +50,7 @@ static uint8_t *medium(image_t *img, size_t *size) {
 // or -1 for none: a read touching it comes back short, as image.c returns it.
 static long s_bad_sector = -1;
 
-size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_read_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     size_t size;
     uint8_t *m = medium(img, &size);
     if (!m || off > size || len > size - off)
@@ -61,7 +61,7 @@ size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
     memcpy(buf, m + off, len);
     return len;
 }
-size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_write_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     size_t size;
     uint8_t *m = medium(img, &size);
     if (!m || off > size || len > size - off)
@@ -69,7 +69,7 @@ size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
     memcpy(m + off, buf, len);
     return len;
 }
-size_t disk_size(image_t *img) {
+uint64_t disk_size(image_t *img) {
     size_t size;
     (void)medium(img, &size);
     return size;

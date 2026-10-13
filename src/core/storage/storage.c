@@ -677,7 +677,7 @@ status_t storage_delete(storage_t *storage) {
 // Public API: Block I/O
 // ============================================================================
 
-status_t storage_read_block(storage_t *storage, size_t offset, void *buffer) {
+status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer) {
     if (!storage || !buffer)
         return STATUS_E_INVAL;
     if (offset % storage->block_size != 0)
@@ -717,7 +717,7 @@ status_t storage_read_block(storage_t *storage, size_t offset, void *buffer) {
     return STATUS_OK;
 }
 
-status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, size_t count) {
+status_t storage_read_blocks(storage_t *storage, uint64_t offset, void *buffer, size_t count) {
     if (!storage || (!buffer && count))
         return STATUS_E_INVAL;
     if (offset % storage->block_size != 0)
@@ -733,7 +733,7 @@ status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, si
         uint32_t lba = (uint32_t)(first + i);
         if (!storage->base || bitmap_test(storage->bitmap, lba)) {
             // A modified block (the delta), or a blank disk's zeros.
-            if (storage_read_block(storage, (size_t)lba * bs, out + i * bs) != STATUS_OK)
+            if (storage_read_block(storage, (uint64_t)lba * bs, out + i * bs) != STATUS_OK)
                 return STATUS_E_IO;
             i++;
             continue;
@@ -747,7 +747,7 @@ status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, si
             run++;
         if (source_read_exact(storage->base, block_pos(0, lba, bs), out + i * bs, run * bs) != 0) {
             for (size_t k = 0; k < run; k++)
-                if (storage_read_block(storage, (size_t)(lba + k) * bs, out + (i + k) * bs) != STATUS_OK)
+                if (storage_read_block(storage, (uint64_t)(lba + k) * bs, out + (i + k) * bs) != STATUS_OK)
                     return STATUS_E_IO;
         }
         i += run;
@@ -755,7 +755,7 @@ status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, si
     return STATUS_OK;
 }
 
-status_t storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
+status_t storage_write_block(storage_t *storage, uint64_t offset, const void *buffer) {
     if (!storage || !buffer)
         return STATUS_E_INVAL;
     if (offset % storage->block_size != 0)

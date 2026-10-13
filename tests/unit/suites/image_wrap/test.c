@@ -22,7 +22,7 @@ const char *build_id_get(void) {
 // past its end, or when there is none).
 static const uint8_t *g_disk;
 static size_t g_disk_len;
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     memset(buf, 0, size);
     if (g_disk && offset < g_disk_len)
