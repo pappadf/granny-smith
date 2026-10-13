@@ -2176,11 +2176,12 @@ typedef int32_t (*jit_fn_t)(ppc_t *p, int32_t budget, int32_t entry, int32_t fol
 // keeps its chunk from one translation to the next, so a translation
 // regenerates only the chunks whose pages changed.  A branch into another
 // chunk leaves, and the dispatcher enters that chunk.
-#define JIT_MAX_CHUNKS 255 // (owner[] is a byte, NONE8 the last value)
-#define JIT_ENTRY_HOT  8 // entries at a word before it leads a block
-#define JIT_POOR_RUN   8 // a run that consumes fewer slots is poor ...
-#define JIT_POOR_MAX   32 // ... and an entry with this many more poor than good is left alone
-#define NONE8          0xFFu
+#define JIT_MAX_CHUNKS       255 // (owner[] is a byte, NONE8 the last value)
+#define JIT_ENTRY_HOT        8 // entries at a word before it leads a block
+#define JIT_VOLATILE_LOOKUPS 2000000ull // a volatile page is tried again after this many lookups, doubling
+#define JIT_POOR_RUN         8 // a run that consumes fewer slots is poor ...
+#define JIT_POOR_MAX         32 // ... and an entry with this many more poor than good is left alone
+#define NONE8                0xFFu
 
 // A member page of a region: what was translated and from where
 typedef struct jit_slot {
@@ -2192,7 +2193,9 @@ typedef struct jit_slot {
     uint8_t owner[JIT_PAGE_INSNS]; // per word: the chunk that translated it (NONE8)
     uint32_t hits; // stores that invalidated its blocks since the region's last translation
     uint32_t churn; // translations after which it had been invalidated again
-    bool volatile_; // written too often: no longer translated (the predecoded tier runs it)
+    bool volatile_; // written too often: not translated for now (the predecoded tier runs it)
+    uint32_t vol_count; // times it turned volatile
+    uint64_t vol_until; // when it is tried again (g_st.lookups)
     uint16_t ids[JIT_PAGE_INSNS]; // words[] classified (jit_classify)
     pd_entry_t ents[JIT_PAGE_INSNS];
     bool classified;
@@ -2211,6 +2214,9 @@ typedef struct jit_chunk {
     uint32_t bcap; // bvalid's size
     uint32_t nb; // blocks
     uint64_t sig; // what it was translated from (its pages' words, leaders, mappings)
+    uint64_t sigw; // the same without the leaders
+    uint32_t regens; // translations of it
+    uint32_t last_regen; // the region's translation count at the last one
 } jit_chunk_t;
 
 typedef struct jit_region {
@@ -2218,6 +2224,7 @@ typedef struct jit_region {
     jit_slot_t *slot[JIT_REGION_PAGES];
     jit_chunk_t chunk[JIT_MAX_CHUNKS];
     uint32_t nchunks;
+    uint32_t ncompiles; // translations of the region
     uint32_t heat[JIT_REGION_PAGES]; // instructions run on pages that are not (validly) members
     uint32_t since; // entries since the last compile
     uint32_t cool; // entries required between compiles: doubles with every compile (backoff)
@@ -2381,6 +2388,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             continue;
         if (s->hits && ++s->churn >= JIT_CHURN_MAX) {
             s->volatile_ = true;
+            s->vol_until = g_st.lookups + (JIT_VOLATILE_LOOKUPS << (s->vol_count < 12 ? s->vol_count : 12));
+            s->vol_count++;
             if (g_trace)
                 printf("jit: volatile %08x (last write at word %u: %08x)\n", s->lpage, s->last_hit,
                        LOAD_BE32(s->host + 4 * s->last_hit));
@@ -2547,12 +2556,13 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     // What each chunk translates, in one pass: its words, leaders and
     // mappings (a word reached for the first time is never one its blocks
     // ran into: they reached every word they cover), and its pages
-    static uint64_t sigs[JIT_MAX_CHUNKS];
+    static uint64_t sigs[JIT_MAX_CHUNKS], sigws[JIT_MAX_CHUNKS];
     static uint32_t nwords[JIT_MAX_CHUNKS], lastu[JIT_MAX_CHUNKS];
     static uint8_t cpages[JIT_MAX_CHUNKS][JIT_REGION_PAGES / 8];
-#define MIX(c_, v_) (sigs[c_] = (sigs[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
+#define MIX(c_, v_)  (sigs[c_] = (sigs[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
+#define MIXW(c_, v_) (sigws[c_] = (sigws[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
     for (uint32_t ci = 0; ci < nchunks; ci++) {
-        sigs[ci] = 1469598103934665603ull;
+        sigs[ci] = sigws[ci] = 1469598103934665603ull;
         nwords[ci] = 0;
         lastu[ci] = ~0u;
         memset(cpages[ci], 0, sizeof cpages[ci]);
@@ -2568,12 +2578,17 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 cpages[o][u >> 3] |= (uint8_t)(1u << (u & 7));
                 MIX(o, slot_page[u]);
                 MIX(o, s->host_adjust);
+                MIXW(o, slot_page[u]);
+                MIXW(o, s->host_adjust);
             }
             MIX(o, ((uint64_t)i << 40) | ((uint64_t)leader[u][i] << 32) | s->words[i]);
+            MIXW(o, ((uint64_t)i << 40) | s->words[i]);
             nwords[o]++;
         }
     }
 #undef MIX
+#undef MIXW
+    R->ncompiles++;
     for (uint32_t ci = 0; ci < nchunks; ci++) {
         jit_chunk_t *ch = &R->chunk[ci];
         uint64_t sig = sigs[ci];
@@ -2586,12 +2601,21 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             memset(ch->refs, 0, sizeof ch->refs);
             continue;
         }
-        if (ch->fn && ch->sig == sig) {
-            // Unchanged: keep the function; the words are the ones it was
-            // translated from, so every block is valid again
+        // Only new leaders inside it (new code branching into the middle of
+        // its blocks): the function is still right, the new entries just
+        // are not translated yet.  It is retranslated for them only every
+        // so often, the interval doubling with each of its translations.
+        bool split = ch->fn && ch->sigw == sigws[ci] &&
+                     R->ncompiles - ch->last_regen < (1u << (ch->regens < 10 ? ch->regens : 10));
+        if (ch->fn && (ch->sig == sig || split)) {
+            // Unchanged words: keep the function; the words are the ones it
+            // was translated from, so every block is valid again
             memset(ch->bvalid, 1, ch->nb + 1);
             continue;
         }
+        ch->sigw = sigws[ci];
+        ch->regens++;
+        ch->last_regen = R->ncompiles;
         g_regen++;
         g_regen_new += !ch->fn;
         release_fn(ch->fn);
@@ -2889,8 +2913,14 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     jit_slot_t *s = R->slot[k];
     R->since++;
     if (s && s->volatile_ && s->host_adjust == host_adjust) {
-        skip_word(pc, msr);
-        return false; // left to the predecoded tier
+        if (g_st.lookups < s->vol_until) {
+            skip_word(pc, msr);
+            return false; // left to the predecoded tier
+        }
+        s->volatile_ = false; // try it again (its writes may have settled)
+        s->churn = 0;
+        s->classified = false;
+        R->want = true;
     }
     bool member = s && s->host_adjust == host_adjust;
     jit_chunk_t *ch = NULL;

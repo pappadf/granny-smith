@@ -60,6 +60,7 @@ tests/e2e/
 │   ├── pdm-double-boot.spec.ts          # pm6100 + Mac OS 8.1 boots exactly once (PRAM seeding), also on a reused image
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
 │   ├── perf-headbase.spec.ts            # Head vs base WASM build, alternated (CPU benchmarks; needs PERF_BASE_DIST)
+│   ├── perf-jit.spec.ts                 # PowerPC translation tier vs predecoded, alternated in one session (tracked numbers)
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab

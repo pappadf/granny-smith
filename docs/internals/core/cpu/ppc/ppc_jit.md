@@ -91,7 +91,12 @@ instructions each (when a region's 255 chunks run out, everything is
 assigned afresh).  Each chunk records a signature of what it was
 translated from (its words, leaders and mappings), and a translation
 regenerates only the chunks whose signature changed: new code costs a new
-small function, not the retranslation of what was there.  The
+small function, not the retranslation of what was there.  A chunk whose
+words and ownership are unchanged and that only gained leaders (new code
+branching into the middle of its blocks) keeps its function too, unless
+enough translations of the region have passed since its last one (an
+interval doubling with each of its translations): the function is still
+right, the new entries are only not translated yet.  The
 optimizing compile of a function grows faster than linearly with its size
 and its live locals (emu-core-bench measured 11 s in V8's TurboFan for a
 660 KB function; here a 4096-instruction cap ran slower than 1024 and took
@@ -195,8 +200,11 @@ translator's leader value 2).  Member words keep their classification
 between translations; only changed words are classified again.
 
 A member page whose blocks are invalidated again after `JIT_CHURN_MAX`
-translations is code being written while it runs: it becomes volatile, is
-no longer translated, and loses the tier's code-page mark.
+translations is code being written while it runs (the 68K dynamic
+recompiler's cache, patched as it links blocks): it becomes volatile, is
+not translated, and loses the tier's code-page mark.  It is tried again
+after `JIT_VOLATILE_LOOKUPS` dispatcher calls, an interval doubling every
+time it turns volatile again.
 
 ### 3.3 Translation
 
