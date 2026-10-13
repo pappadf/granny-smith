@@ -107,6 +107,9 @@ enum {
     JX_BCLR = PPD_END,
     JX_BCCTR,
     JX_BC,
+    JX_MCRXR, // a = crfD
+    JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR)
+    JX_MTSPR, // a = rS offset, c = the ppc_t field
     JX_LWZX,
     JX_LWZUX,
     JX_LHZX,
@@ -190,6 +193,37 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
                               .c = PPD_GOFF(rb) | (uint32_t)kind << 8 | ((iw >> 10) & 1u) << 16 | (iw & 1u) << 17};
             return JX_ADDX;
         }
+    }
+    if (op == 31 && xo == 512 && !(iw & 0x007FF800u & ~0x03800000u)) { // mcrxr
+        *e = (pd_entry_t){.a = (uint8_t)((iw >> 23) & 7u)};
+        return JX_MCRXR;
+    }
+    if (op == 31 && (xo == 339 || xo == 467)) { // mfspr / mtspr of a plain supervisor SPR
+        uint32_t n = ra | rb << 5, off;
+        switch (n) {
+        case 18:
+            off = offsetof(ppc_t, dsisr);
+            break;
+        case 19:
+            off = offsetof(ppc_t, dar);
+            break;
+        case 26:
+            off = offsetof(ppc_t, srr0);
+            break;
+        case 27:
+            off = offsetof(ppc_t, srr1);
+            break;
+        case 272:
+        case 273:
+        case 274:
+        case 275:
+            off = offsetof(ppc_t, sprg) + 4 * (n - 272);
+            break;
+        default:
+            return id;
+        }
+        *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = off};
+        return xo == 339 ? JX_MFSPR : JX_MTSPR;
     }
     if (op != 31 || (iw & 1u))
         return id;
@@ -1053,6 +1087,8 @@ static void emit_cr_bit(uint32_t n) {
 // whose context synchronization stays in C, and minus branches to
 // themselves, which take a slot instead of folding.)
 static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
+    if (id == JX_MFSPR || id == JX_MTSPR)
+        return !U.pr; // (in user mode they raise the privilege exception)
     if (id == PPD_ISYNC)
         return true; // (a no-op unless BATs were written since: then it leaves)
     if (id == JX_BC) { // not to itself (a slot, not a fold)
@@ -1103,6 +1139,10 @@ static uint32_t branch_target(uint16_t id, uint32_t iw, uint32_t ipc) {
 
 // GPRs an entry names (a superset of the ones it reads or writes)
 static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
+    if (id == JX_MCRXR)
+        return 0;
+    if (id == JX_MFSPR || id == JX_MTSPR)
+        return 1u << (e->a >> 2);
     if (id == JX_ADDX)
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
     if (id >= JX_LWZX && id < JX_END)
@@ -1124,6 +1164,11 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
 // GPRs an entry may write (a subset of entry_regs)
 static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
     switch (id) {
+    case JX_MCRXR:
+    case JX_MTSPR:
+        return 0;
+    case JX_MFSPR:
+        return 1u << (e->a >> 2);
     case JX_ADDX:
         return 1u << (e->a >> 2);
     case JX_LWZUX:
@@ -1609,6 +1654,34 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         op(W_END);
         g_depth--;
         emit_goto_npc();
+        return;
+    case JX_MCRXR: { // CR field a = XER[0:3]; those XER bits clear (OP_MCRXR)
+        uint32_t sh = 28 - 4 * a;
+        lget(L_CR);
+        iconst(~(0xFu << sh));
+        op(W_AND);
+        lget(L_XER);
+        iconst(28);
+        op(W_SHR_U);
+        iconst(sh);
+        op(W_SHL);
+        op(W_OR);
+        lset(L_CR);
+        lget(L_XER);
+        iconst(0x0FFFFFFFu);
+        op(W_AND);
+        lset(L_XER);
+        return;
+    }
+    case JX_MFSPR:
+        lget(L_P);
+        mem(W_LOAD, 2, c);
+        lset(RD(a));
+        return;
+    case JX_MTSPR:
+        lget(L_P);
+        lget(RD(a));
+        mem(W_STORE, 2, c);
         return;
     case PPD_ISYNC: {
         // ppc_context_sync publishes BAT writes to the fetch side: with none
@@ -2569,6 +2642,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     static const pd_entry_t *ran[JIT_REGION_PAGES]; // per unit page: the predecoded entries, or NULL
     double t0 = emscripten_get_now();
     uint32_t lbase = R->key & ~(uint32_t)((1u << JIT_REGION_SHIFT) - 1);
+    U.pr = (R->key & 1u) != 0; // (translatable() asks, during reachability)
     // A page invalidated again after each of several translations is code
     // being written while it runs (the DR emulator's cache): leave it to
     // the predecoded tier rather than retranslate it for every write
@@ -3092,6 +3166,42 @@ static void exit_hist_dump(ppc_t *p) {
         }
         printf("\n");
     }
+    // The untranslated instructions translations stopped at, by opcode
+    // (primary << 10 | extended for 19/31/59/63): what to translate next
+    static struct {
+        uint32_t key, n, word;
+    } agg[256];
+    uint32_t na = 0;
+    for (uint32_t j = 0; j < JIT_XH_SIZE; j++) {
+        if (!g_xh[j].n || g_xh[j].deopt)
+            continue;
+        uint32_t pc = g_xh[j].pc;
+        jit_slot_t *s = NULL; // (whichever fetch mode has the page)
+        for (uint32_t m = 0; m < 4 && !s; m++) {
+            jit_region_t *R = region_find((pc & ~(uint32_t)((1u << JIT_REGION_SHIFT) - 1)) | m);
+            s = R ? R->slot[(pc >> MEM_PAGE_SHIFT) & (JIT_REGION_PAGES - 1)] : NULL;
+        }
+        if (!s)
+            continue;
+        uint32_t i = (pc & MEM_PAGE_MASK) >> 2, w = LOAD_BE32(s->host + 4 * i);
+        if (translatable(s->ids[i], w, pc) && !s->unstable[i])
+            continue;
+        uint32_t op = w >> 26, k = op << 10;
+        if (op == 19 || op == 31 || op == 59 || op == 63)
+            k |= (w >> 1) & 0x3FFu;
+        uint32_t a = 0;
+        while (a < na && agg[a].key != k)
+            a++;
+        if (a == na) {
+            if (na == 256)
+                continue;
+            agg[na++] = (typeof(agg[0])){k, 0, w};
+        }
+        agg[a].n += g_xh[j].n;
+    }
+    for (uint32_t a = 0; a < na; a++)
+        printf("  untranslated op %2u xo %4u: %9u exits (e.g. %08x)\n", agg[a].key >> 10, agg[a].key & 0x3FFu, agg[a].n,
+               agg[a].word);
     memset(g_xh, 0, sizeof g_xh);
 }
 

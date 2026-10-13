@@ -230,8 +230,12 @@ time it turns volatile again.
 classifier, plus the translator's own shapes (`jit_classify`): every
 `bc` form the T0 ids leave out (linking, decrementing with a condition),
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
-stores, the XO-form carrying, extended and OE add/subtract family, and the
-D-form accesses with rA = 0.  It emits each block's instructions from the
+stores, the XO-form carrying, extended and OE add/subtract family, the
+D-form accesses with rA = 0, `mcrxr`, and `mfspr`/`mtspr` of the plain
+supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3: fields of `ppc_t` with no
+side effect; in a user-mode region they raise a program interrupt, so
+they stay in C there).  Mode changes (`rfi`, `sc`, traps), the
+time-dependent SPRs (DEC, TB) and the reservation pair stay in C.  It emits each block's instructions from the
 entry fields: registers as wasm locals, immediates and masks as
 constants, CR0 records and compares with XER[SO], XER[CA] and XER[OV] as
 bits of the XER local, the 601's `mtxer` mask.  A branch to a block of
@@ -349,7 +353,7 @@ Two runs compare only when they split the run into the same
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `chunk_cap` | the most instructions one function translates (1024) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation and what it regenerated; 7 where translation time goes |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation and what it regenerated; 7 where translation time goes |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
