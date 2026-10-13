@@ -436,6 +436,14 @@ void ppc_mmu_debug_translate(ppc_t *p, uint32_t ea, bool data, bool user, mmu_xl
 // debug.mac — stable across supervisor/user stop contexts.
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 
+// Per logical page, the write entry the last user SoA fill would have
+// planted had the page not been a code page (0: the fill left it
+// read-only).  It describes the current mapping only while it equals the
+// page's g_user_read entry: every fill sets both, every invalidation of a
+// fill zeroes both.  The translation tier completes a store into a code
+// page through it (ppc_jit_code_store).
+extern uintptr_t *g_ppc_user_wok;
+
 // Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair — the
 // one global obligation of a main CPU.  Called on every MSR write, exception
 // entry, and rfi.  The user arrays hold the MMU's LOGICAL fills, so they are
