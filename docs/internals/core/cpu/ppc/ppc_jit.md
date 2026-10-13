@@ -136,11 +136,22 @@ branches there, and one tail per block gives the slots back and leaves.
 
 One module per function, importing the emulator's memory (shared in the
 pthreads build), its function table and `ppc_jit_code_store`; the export
-goes into the table (a freed slot, or a new one: `-sALLOW_TABLE_GROWTH`),
-and its index is the function pointer the dispatcher calls.  After
-instantiation the dispatcher calls it once with a zero budget on a scratch
-state, so the engine compiles it now and not at its first real entry (V8
-compiles wasm functions lazily, at their first call).
+goes into the table (a freed slot, or a new one: `-sALLOW_TABLE_GROWTH`,
+64 at a time), and its index is the function pointer the dispatcher
+calls.  After instantiation the dispatcher calls it once with a zero
+budget on a scratch state, so the engine compiles it now and not at its
+first real entry (V8 compiles wasm functions lazily, at their first call).
+
+**Asynchronous compiles** (`jit.async`, the default except under Node).
+`compile_region` hands each module to `WebAssembly.compile` and records
+the chunk as pending (a token).  The promise resolves on the core thread
+between its ticks — the browser build's main loop returns to the event
+loop — and `ppc_jit_ready` installs the function if the chunk still
+waits for that token (a chunk retranslated or dropped meanwhile drops
+it).  A pending chunk's code runs predecoded, and its entries are not
+counted.  Under Node a script's `scheduler.run` never returns to the
+event loop, so the headless builds and the differential compile
+synchronously.
 
 ## 3. Behaviour & algorithms
 
@@ -194,9 +205,16 @@ that never ran is not translated.  The continuation after a
 call, after an untranslated instruction and off the end of a page is not
 followed: the 68K emulator keeps operands after its calls, and data
 translated as code turns every store to it into an invalidation.  Those
-continuations become leaders once execution enters them (§3.1).  Then it
-assigns words to chunks (§2.1).  A word of another chunk ends a block (the
-translator's leader value 2).  Member words keep their classification
+continuations become leaders once execution enters them (§3.1).  A word
+already translated counts as run (its predecoded entry may never be
+decoded again).  A word the guest keeps rewriting — stored into
+`JIT_UNSTABLE_WRITES` times between two translations of its region; the
+68K emulator toggles some of its own branches — is not translated from
+then on: the walk continues after it, and the predecoded loop runs it.
+Then it assigns words to chunks (§2.1); new words that continue a run of
+a chunk join that chunk.  A word of another chunk, or one not reached,
+ends a block (the translator's leader value 2): a block covers only words
+its chunk owns, or a store into the others would not invalidate it.  Member words keep their classification
 between translations; only changed words are classified again.
 
 A member page whose blocks are invalidated again after `JIT_CHURN_MAX`
@@ -323,7 +341,7 @@ Two runs compare only when they split the run into the same
 | `enabled` | 1 = run translations (wasm builds) |
 | `available` | 1 when the build can generate code |
 | `threshold` | instructions the predecoded tier runs in a page before it joins its region (100000) |
-| `budget` | the share of wall time, in percent, translating may take (10; 100: no limit) |
+| `budget` | the share of wall time, in percent, translating may take (3; 100: no limit) |
 | `cooldown` | entries between two translations of a region, doubling per translation (64) |
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `chunk_cap` | the most instructions one function translates (1024) |

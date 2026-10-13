@@ -59,7 +59,7 @@ static uint32_t g_threshold = 100000; // instructions run in a page (predecoded)
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
-static uint32_t g_budget_pct = 10; // jit.budget: the share of time translating may take
+static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
 static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
 #define JIT_CHURN_MAX 3 // translations a member page may be invalidated after before it is left to the predecoded tier
@@ -2155,6 +2155,36 @@ EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), 
     table.set(idx, inst.exports.f);
     return idx;
 });
+// The asynchronous path (jit.async): compile off the core thread, install
+// from the promise's callback, which runs on the core thread between its
+// ticks (the browser build's main loop returns to the event loop)
+EM_JS(void, jit_compile_async, (const uint8_t *p, uint32_t n, uint32_t token), {
+    var mods = globalThis.__gsJitMods || (globalThis.__gsJitMods = new Map());
+    WebAssembly.compile(HEAPU8.slice(p, p + n)).then(function(mod) {
+        mods.set(token, mod);
+        wasmExports['ppc_jit_ready'](token);
+    }, function(e) {
+        wasmExports['ppc_jit_ready'](token);
+    });
+});
+EM_JS(uint32_t, jit_install_async, (uint32_t token, uint32_t slot), {
+    var mods = globalThis.__gsJitMods;
+    var mod = mods && mods.get(token);
+    if (!mod)
+        return 0;
+    mods.delete(token);
+    var table = wasmExports['__indirect_function_table'];
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], t: table } });
+    table.set(slot, inst.exports.f);
+    return slot;
+});
+EM_JS(void, jit_drop_async, (uint32_t token), {
+    if (globalThis.__gsJitMods)
+        globalThis.__gsJitMods.delete(token);
+});
+EM_JS(int, jit_host_is_node, (void), {
+    return (typeof process !== 'undefined' && process.versions && process.versions.node) ? 1 : 0;
+});
 EM_JS(uint32_t, jit_table_grow, (uint32_t n), {
     return wasmExports['__indirect_function_table'].grow(n);
 });
@@ -2179,6 +2209,8 @@ typedef int32_t (*jit_fn_t)(ppc_t *p, int32_t budget, int32_t entry, int32_t fol
 #define JIT_MAX_CHUNKS       255 // (owner[] is a byte, NONE8 the last value)
 #define JIT_ENTRY_HOT        8 // entries at a word before it leads a block
 #define JIT_VOLATILE_LOOKUPS 2000000ull // a volatile page is tried again after this many lookups, doubling
+#define JIT_SPLIT_COMPILES   16u // translations of its region before a chunk is retranslated for new leaders, doubling
+#define JIT_UNSTABLE_WRITES  4 // a word stored into this often between translations is not translated
 #define JIT_POOR_RUN         8 // a run that consumes fewer slots is poor ...
 #define JIT_POOR_MAX         32 // ... and an entry with this many more poor than good is left alone
 #define NONE8                0xFFu
@@ -2196,6 +2228,8 @@ typedef struct jit_slot {
     bool volatile_; // written too often: not translated for now (the predecoded tier runs it)
     uint32_t vol_count; // times it turned volatile
     uint64_t vol_until; // when it is tried again (g_st.lookups)
+    uint8_t writes[JIT_PAGE_INSNS]; // stores into each word, halved at each translation of the region
+    bool unstable[JIT_PAGE_INSNS]; // once written JIT_UNSTABLE_WRITES times between translations: not translated
     uint16_t ids[JIT_PAGE_INSNS]; // words[] classified (jit_classify)
     pd_entry_t ents[JIT_PAGE_INSNS];
     bool classified;
@@ -2216,6 +2250,9 @@ typedef struct jit_chunk {
     uint64_t sig; // what it was translated from (its pages' words, leaders, mappings)
     uint64_t sigw; // the same without the leaders
     uint32_t regens; // translations of it
+    uint32_t nwords; // words it translated (jit.trace)
+    bool empty; // translated to no block
+    uint32_t pending; // the token of its translation being compiled asynchronously (0: none)
     uint32_t last_regen; // the region's translation count at the last one
 } jit_chunk_t;
 
@@ -2247,6 +2284,17 @@ static jit_region_t *g_hot_R; // the declined page g_ppc_jit_cold describes
 static uint32_t g_hot_k;
 ppc_jit_cold_t g_ppc_jit_cold;
 uint32_t g_ppc_jit_skip[PPC_JIT_SKIP];
+
+// Compiles in flight (jit.async): the chunk each one is for
+#define JIT_PENDING 512
+static struct {
+    uint32_t token, msr;
+    jit_region_t *R;
+    uint32_t ci;
+} g_pending[JIT_PENDING];
+static uint32_t g_token;
+static uint32_t g_async; // jit.async: 1 = compile off the core thread
+static bool g_async_set; // jit.async was set explicitly
 static void skip_word(uint32_t pc, uint32_t msr) {
     g_ppc_jit_skip[(pc >> 2) & (PPC_JIT_SKIP - 1)] = PPC_JIT_SKIP_TAG(pc, msr);
 }
@@ -2280,8 +2328,10 @@ static void region_drop_code(jit_region_t *R) {
         jit_chunk_t *ch = &R->chunk[c];
         release_fn(ch->fn);
         ch->fn = 0;
+        ch->pending = 0;
         ch->nb = 0;
         ch->sig = 0;
+        ch->empty = false;
         memset(ch->refs, 0, sizeof ch->refs);
     }
     R->nchunks = 0;
@@ -2331,6 +2381,7 @@ void ppc_jit_reset(void) {
         g_regions[h] = NULL;
     }
     memset(g_rcache, 0, sizeof g_rcache);
+    memset(g_pending, 0, sizeof g_pending); // (compiles in flight are dropped when they land)
     g_hot_R = NULL;
     g_ppc_jit_cold.key = 0;
     memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip);
@@ -2362,6 +2413,60 @@ static jit_region_t *region_get(uint32_t key) {
 // Translate the region's member pages: the code reachable from the entry
 // points seen so far, in chunks.  A branch to an unreached address leaves;
 // its next entry makes it an entry point.
+// A function slot of the table (grown 64 at a time), filled with the module
+// just translated (token 0: g_buf, compiled now) or the asynchronous
+// compile `token` has finished; then the lazy-compile mitigation (Phase 0):
+// one call with a zero budget has the engine compile the function now, not
+// at its first real entry (every block's guard leaves at once on a scratch
+// state).  0 if the module is gone.
+static uint32_t install_fn(uint32_t token, uint32_t msr) {
+    if (!g_nfree) {
+        uint32_t base = jit_table_grow(64);
+        for (uint32_t t = 64; t-- > 0;)
+            release_fn(base + t);
+    }
+    uint32_t slot = g_free_slots[--g_nfree];
+    uint32_t fn = token ? jit_install_async(token, slot) : jit_instantiate(g_buf, g_len, slot);
+    if (!fn) {
+        g_free_slots[g_nfree++] = slot;
+        return 0;
+    }
+    static ppc_t scratch;
+    scratch.msr = msr;
+    ((jit_fn_t)(uintptr_t)fn)(&scratch, 0, 0, 0);
+    return fn;
+}
+
+static void pending_add(uint32_t token, jit_region_t *R, uint32_t ci, uint32_t msr) {
+    uint32_t i = token % JIT_PENDING; // a slot reused before its compile lands drops that one
+    g_pending[i].token = token;
+    g_pending[i].R = R;
+    g_pending[i].ci = ci;
+    g_pending[i].msr = msr;
+}
+
+// An asynchronous compile landed (on the core thread, between ticks):
+// install it if its chunk still waits for it
+EMSCRIPTEN_KEEPALIVE void ppc_jit_ready(uint32_t token);
+void ppc_jit_ready(uint32_t token) {
+    uint32_t i = token % JIT_PENDING;
+    if (g_pending[i].token != token) {
+        jit_drop_async(token);
+        return;
+    }
+    g_pending[i].token = 0;
+    jit_chunk_t *ch = &g_pending[i].R->chunk[g_pending[i].ci];
+    if (ch->pending != token) {
+        jit_drop_async(token);
+        return;
+    }
+    double t0 = emscripten_get_now();
+    ch->pending = 0;
+    ch->fn = install_fn(token, g_pending[i].msr);
+    g_st.compile_ms += emscripten_get_now() - t0;
+    memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip); // its entries are open now
+}
+
 static double g_t_start; // when translation began (the governor's clock)
 static double g_prof[6]; // jit.trace = 7: where compile_region's time goes
 static uint32_t g_regen, g_regen_new; // jit.trace = 6
@@ -2426,6 +2531,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
         s->classified = true;
         memset(s->poor, 0, sizeof s->poor); // the code may differ now
+        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) { // written often: for good (no flapping)
+            s->unstable[i] |= s->writes[i] >= JIT_UNSTABLE_WRITES;
+            s->writes[i] >>= 1;
+        }
         memset(leader[n], 0, JIT_PAGE_INSNS);
         memset(reached[n], 0, JIT_PAGE_INSNS);
         // What the predecoded tier has run on the page: a word it never
@@ -2464,8 +2573,17 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         uint32_t x = stack[--sp], u = x / JIT_PAGE_INSNS, i = x % JIT_PAGE_INSNS;
         jit_slot_t *s = R->slot[slot_page[u]];
         for (; i < JIT_PAGE_INSNS; i++) {
-            if (reached[u][i] || (ran[u] && ran[u][i].id == PD_UNDECODED))
+            // (a word a chunk translated has run: once translated, the
+            // predecoded entry may never be decoded again)
+            // (nor is a word the guest keeps rewriting -- the 68K emulator
+            // toggles some of its own branches -- or every rewrite would
+            // retranslate its chunk: the predecoded loop runs it)
+            if (reached[u][i] || (ran[u] && ran[u][i].id == PD_UNDECODED && s->owner[i] == NONE8))
                 break;
+            if (s->unstable[i]) {
+                PUSH(s->lpage + 4 * i + 4); // (code: it runs; the predecoded loop comes back after it)
+                break;
+            }
             reached[u][i] = 1;
             uint32_t w = s->words[i], a = s->lpage + 4 * i;
             pd_entry_t e;
@@ -2517,6 +2635,14 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
                 if (!reached[u][i] || s->owner[i] != NONE8)
                     continue;
+                if (!leader[u][i] && i > 0 && reached[u][i - 1] && s->owner[i - 1] != NONE8) {
+                    // a run that goes on past its chunk's words (code after a word
+                    // it stopped at before): it stays in that chunk, or the new
+                    // words would form a chunk with no block start
+                    s->owner[i] = s->owner[i - 1];
+                    total[s->owner[i]]++;
+                    continue;
+                }
                 if (c == NONE8 || (leader[u][i] && total[c] >= g_chunk_cap)) {
                     for (c = 0; c < JIT_MAX_CHUNKS && (used[c] || (c < R->nchunks && R->chunk[c].fn && !fresh)); c++)
                         ;
@@ -2596,6 +2722,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         if (!used[ci]) { // no pages any more
             release_fn(ch->fn);
             ch->fn = 0;
+            ch->pending = 0;
+            ch->empty = false;
             ch->nb = 0;
             ch->sig = 0;
             memset(ch->refs, 0, sizeof ch->refs);
@@ -2605,21 +2733,37 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         // its blocks): the function is still right, the new entries just
         // are not translated yet.  It is retranslated for them only every
         // so often, the interval doubling with each of its translations.
-        bool split = ch->fn && ch->sigw == sigws[ci] &&
-                     R->ncompiles - ch->last_regen < (1u << (ch->regens < 10 ? ch->regens : 10));
-        if (ch->fn && (ch->sig == sig || split)) {
+        bool built = ch->fn || ch->pending || ch->empty;
+        bool split = built && ch->sigw == sigws[ci] &&
+                     R->ncompiles - ch->last_regen < (JIT_SPLIT_COMPILES << (ch->regens < 10 ? ch->regens : 10));
+        if (built && (ch->sig == sig || split)) {
             // Unchanged words: keep the function; the words are the ones it
             // was translated from, so every block is valid again
             memset(ch->bvalid, 1, ch->nb + 1);
             continue;
         }
+        if (g_trace == 6) {
+            uint32_t first = 0;
+            for (uint32_t u = 0; u < n && !first; u++)
+                if ((cpages[ci][u >> 3] >> (u & 7)) & 1u)
+                    for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
+                        if (R->slot[slot_page[u]]->owner[i] == ci) {
+                            first = R->slot[slot_page[u]]->lpage + 4 * i;
+                            break;
+                        }
+            printf("jit:   chunk %u at %08x, %u words (was %u), %s\n", ci, first, words, ch->nwords,
+                   ch->fn ? (ch->sigw == sigws[ci] ? "split" : "changed") : "new");
+        }
+        ch->nwords = words;
+        ch->empty = false;
         ch->sigw = sigws[ci];
         ch->regens++;
         ch->last_regen = R->ncompiles;
         g_regen++;
-        g_regen_new += !ch->fn;
+        g_regen_new += !ch->fn && !ch->pending;
         release_fn(ch->fn);
         ch->fn = 0;
+        ch->pending = 0; // (a compile in flight is dropped when it lands)
         ch->nb = 0;
         ch->sig = sig;
         memset(ch->refs, 0, sizeof ch->refs);
@@ -2629,8 +2773,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             bool own = (cpages[ci][u >> 3] >> (u & 7)) & 1u;
             if (own)
                 for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
-                    // 1: leads a block of this chunk; 2: another chunk's word (a block stops there)
-                    cleader[u][i] = !reached[u][i] ? 0 : s->owner[i] != ci ? 2 : leader[u][i] ? 1 : 0;
+                    // 1: leads a block of this chunk; 2: a block stops there (another
+                    // chunk's word, or one not reached: a block must cover only words
+                    // its chunk owns, or a store into them would not invalidate it)
+                    cleader[u][i] = !reached[u][i] || s->owner[i] != ci ? 2 : leader[u][i] ? 1 : 0;
                     ccov[u][i] = NONE16;
                 }
             if (own && !ch->maps[k])
@@ -2663,8 +2809,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 if (s->owner[i] == ci)
                     s->cov[i] = ccov[u][i];
         }
-        if (!nb)
+        if (!nb) {
+            ch->empty = true; // (nothing to translate: not again until it changes)
             continue;
+        }
         ch->nb = nb;
         if (g_trace == 5) { // the size per translated instruction (debugging)
             uint32_t ni = 0;
@@ -2682,20 +2830,15 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 fclose(f);
             }
         }
-        if (!g_nfree) { // grow the table 64 functions at a time
-            uint32_t base = jit_table_grow(64);
-            for (uint32_t t = 64; t-- > 0;)
-                release_fn(base + t);
-        }
         g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
-        ch->fn = jit_instantiate(g_buf, g_len, g_free_slots[--g_nfree]);
+        if (g_async) {
+            ch->pending = ++g_token ? g_token : ++g_token;
+            pending_add(ch->pending, R, ci, p->msr);
+            jit_compile_async(g_buf, g_len, ch->pending);
+        } else {
+            ch->fn = install_fn(0, p->msr);
+        }
         g_prof[5] += emscripten_get_now() - tp, tp = emscripten_get_now();
-        // The lazy-compile mitigation (Phase 0): one call with a zero budget
-        // has the engine compile the function now, not at its first real
-        // entry.  Every block's guard leaves at once on a scratch state.
-        static ppc_t scratch;
-        scratch.msr = p->msr;
-        ((jit_fn_t)(uintptr_t)ch->fn)(&scratch, 0, 0, 0);
         g_st.functions++;
         g_st.bytes += g_len;
         for (uint32_t u = 0; u < n; u++) {
@@ -2892,6 +3035,8 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     if (!g_inited) {
         g_inited = true;
         g_mapgen = g_mem_map_generation;
+        if (!g_async_set) // a script under Node never returns to the event loop
+            g_async = !jit_host_is_node();
     }
     if (g_mapgen != g_mem_map_generation || g_model != (uint32_t)p->cpu_model) {
         ppc_jit_reset(); // real-mode translations follow the memory map; ids follow the model
@@ -2925,6 +3070,10 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     bool member = s && s->host_adjust == host_adjust;
     jit_chunk_t *ch = NULL;
     uint16_t b = NONE16;
+    if (member && s->owner[idx] < R->nchunks && R->chunk[s->owner[idx]].pending) {
+        skip_word(pc, msr); // its translation is being compiled
+        return false;
+    }
     if (!member || !region_entry(R, s, k, idx, &ch, &b)) {
         // Not translated here (yet): count it, and translate when the page
         // is hot and the region has not just been compiled
@@ -3045,6 +3194,12 @@ int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
 void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     if (!len)
         return;
+    if (g_trace == 9) {
+        uint32_t pg_;
+        int r_ = memory_code_region_of(host, &pg_);
+        printf("jit: hook host+%u len %u region %d\n", r_ >= 0 ? (uint32_t)(host - g_mem_code_regions[r_].base) : 0,
+               len, r_);
+    }
     // The page holding `host`, as a member records it: pages are relative to
     // their code region (the RAM image is not 4 KB-aligned on the host)
     uint32_t pg;
@@ -3062,9 +3217,19 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
         for (uint32_t w = off >> 2; w <= (end - 1) >> 2; w++) {
             uint8_t c = s->owner[w];
             uint16_t b = s->cov[w];
+            if (s->writes[w] < 255)
+                s->writes[w]++;
+            if (g_trace == 9)
+                printf("jit: write %08x owner=%u cov=%u nchunks=%u valid=%d vol=%d\n", s->lpage + 4 * w, c, b,
+                       R->nchunks,
+                       (c != NONE8 && b != NONE16 && c < R->nchunks && R->chunk[c].bvalid) ? R->chunk[c].bvalid[b] : -1,
+                       s->volatile_);
             if (c == NONE8 || b == NONE16 || c >= R->nchunks || !R->chunk[c].bvalid)
                 continue;
             if (R->chunk[c].bvalid[b]) {
+                if (g_trace == 8)
+                    printf("jit: inval %08x old %08x new %08x\n", s->lpage + 4 * w, s->words[w],
+                           LOAD_BE32(s->host + 4 * w));
                 s->last_hit = (uint16_t)w;
                 R->chunk[c].bvalid[b] = 0;
                 R->stale++;
@@ -3118,6 +3283,7 @@ enum {
     JA_INSNS,
     JA_LOOKUPS,
     JA_DEFERRED,
+    JA_ASYNC,
     JA_BUDGET,
     JA_REGS
 };
@@ -3166,6 +3332,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_st.lookups);
     case JA_DEFERRED:
         return val_uint(8, g_st.deferred);
+    case JA_ASYNC:
+        return val_uint(4, g_async);
 #endif
     default:
         return val_uint(1, 0);
@@ -3199,6 +3367,12 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         if (in.u < 64 || in.u > 65536)
             return val_err("chunk_cap must be 64..65536 instructions");
         g_chunk_cap = (uint32_t)in.u;
+        return val_none();
+    case JA_ASYNC:
+#ifdef __EMSCRIPTEN__
+        g_async = in.u ? 1 : 0;
+        g_async_set = true;
+#endif
         return val_none();
     case JA_BUDGET:
         if (in.u > 100)
@@ -3265,6 +3439,8 @@ static const member_t jit_members[] = {
     JIT_ATTR("instructions", JA_INSNS, "budget slots consumed inside translated code", NULL),
     JIT_ATTR("lookups", JA_LOOKUPS, "times the predecoded loop asked for a translation", NULL),
     JIT_ATTR("deferred", JA_DEFERRED, "translations the governor put off (jit.budget)", NULL),
+    JIT_ATTR("async", JA_ASYNC, "1 = compile off the core thread, install between ticks (default except under Node)",
+             jit_attr_set),
     JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),
     JIT_ATTR("regs", JA_REGS, "0 = guest registers in locals per block, 1 = per function", jit_attr_set),
     {.kind = MK_METHOD,
