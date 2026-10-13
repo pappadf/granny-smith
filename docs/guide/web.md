@@ -924,7 +924,11 @@ view; errors still toast.
   neither the download nor the expanded disk is ever stored whole), attached to the
   model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
   boot bay, on whatever bus it is — SCSI, a Network Server's second
-  channel, the Lisa's ProFile).  `hd0` is also named the startup device, as
+  channel, the Lisa's ProFile).  With a `config=`, the N-th hard disk is
+  that configuration's instead (`machine.storage`, its startup device
+  first, attached with `machine.attach_media`), so a link that moves the
+  disk to another bus — a G3's ATA, not its default SCSI ID 0 — gets it
+  there.  `hd0` is also named the startup device, as
   the New Machine dialog and Restart do (`bus/boot.ts::setStartupDisk`): on
   SCSI, PRAM's default device; on a Lisa's ProFile, `BootVol = 2` with the
   parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
@@ -980,6 +984,14 @@ view; errors still toast.
 - `config=<document>` — the whole configuration document, as the dialog
   holds it, base64url-encoded JSON; absent, the model's default
   configuration.  A node it leaves out means that node's default.
+- `nvram.<variable>=<value>` — an Open Firmware variable, set with
+  `machine.nvram.setenv` after the machine is built and its media attached,
+  before `scheduler.run` (`bus/urlMedia.ts::applyUrlNvram`): the firmware
+  reads its variables at power-on.  The core validates each (a variable
+  the firmware has, a value of its kind); one it refuses, or a model with
+  no Open Firmware NVRAM, is a warning and the boot goes ahead.  This is
+  how a link installs the NVRAM script a Mac OS X boot on an Old World
+  machine needs ([g3.md](../reference/machines/g3/g3.md) §2.8).
 - **Configuration edits by name** — every other parameter (not media, not
   one the page reads for something else) edits the configuration document
   the boot uses (`config=` if given, else the model's default), through the

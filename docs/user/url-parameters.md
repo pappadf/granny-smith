@@ -31,7 +31,7 @@ https://<emulator page>/?rom=https://example.com/roms/MacIIci.rom&hd0=https://ex
 | `rom=<url>` | The machine's ROM. Required: a link without `rom=` opens the Home screen. |
 | `rom=<url>&rom=<url>` | A ROM dumped as two chip halves (the Lisa's and the Macintosh XL's boot ROMs). Order does not matter; the page tries both and keeps the one whose checksum is correct. |
 | `fd0=<url>`, `fd1=<url>` | Floppy for the first or second floppy drive (when the model has that drive). |
-| `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. |
+| `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. With `config=` (§3), the positions are that configuration's hard disks, its startup disk first — so a configuration that puts the disk on another bus gets it there. |
 | `cd=<url>` | CD image for the CD-ROM drive, on a model that has one. |
 | `vrom=<url>` | A display card's declaration ROM, used for this boot ahead of any other stored revision (SE/30, IIcx, IIfx and other NuBus machines). |
 
@@ -96,6 +96,7 @@ spaces.
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |
 | model options | `keyswitch=service`, `power_supplies=two` | Any other option the model has. |
 | `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. |
+| `nvram.<variable>=` | `nvram.boot-command=0%20bootr` | An Open Firmware variable, set in the machine's NVRAM before it first runs — on the Open Firmware machines (Power Mac 7500/8500/9500, the G3, the Network Servers). Any variable `printenv` lists: booleans take `true`/`false`, numbers hex, strings as typed (`nvramrc` may span lines, encoded as `%0A`). One the firmware does not have is shown in a notice and left out. |
 
 A value the model does not offer is shown in a notice and left out — the
 machine boots without that change. An option the model does not have at
