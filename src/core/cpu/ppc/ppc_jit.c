@@ -55,10 +55,12 @@
 bool g_ppc_jit_on;
 
 // Tunables (the `jit` node; settable in every build so scripts run anywhere)
-static uint32_t g_threshold = 16; // entries into a page before it joins its region
+static uint32_t g_threshold = 100000; // instructions run in a page (predecoded) before it joins its region
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
+static uint32_t g_budget_pct = 10; // jit.budget: the share of time translating may take
+#define JIT_BUDGET_START_MS 50.0
 static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
 #define JIT_CHURN_MAX 3 // translations a member page may be invalidated after before it is left to the predecoded tier
 #define JIT_COOL_MAX  65536u // the compile backoff's ceiling, in entries
@@ -384,6 +386,8 @@ typedef struct jt_page {
     uint16_t *map; // out: per word, the block that starts there (NONE16)
     uint16_t *cov; // out: per word, the block that translated it (NONE16)
     uint32_t host_adjust; // the fetch mapping the page was translated under
+    const uint16_t *ids; // the words' classification (jit_classify)
+    const pd_entry_t *ents;
 } jt_page_t;
 
 // Per region page, read by the translated code: the page's map and its
@@ -478,7 +482,7 @@ static uint16_t block_at(uint32_t target, int *slot_out) {
     if (k < 0)
         return NONE16;
     *slot_out = k;
-    return U.pages[k].map[(off & MEM_PAGE_MASK) >> 2];
+    return U.pages[k].map ? U.pages[k].map[(off & MEM_PAGE_MASK) >> 2] : NONE16;
 }
 
 // The fetch-TLB check of a crossing into the page of `target` (in
@@ -813,8 +817,7 @@ static void emit_bswap16(void) { // low 16 bits, upper zero
 }
 
 // The fast-path test of the access at L_EA: on the stack, nonzero when it
-// must leave (misaligned on the 601, crossing a page on the 604, a 601 T=1
-// segment, or no SoA entry); leaves the
+// must leave (crossing a page, a 601 T=1 segment, or no SoA entry); leaves the
 // masked address in L_T0 and the entry in L_T1.
 static void emit_access_test(uint32_t size, bool store) {
     lget(L_EA);
@@ -839,12 +842,8 @@ static void emit_access_test(uint32_t size, bool store) {
     iconst(1);
     op(W_AND);
     op(W_OR);
-    if (size > 1 && U.is601) { // the 601's alignment rules: only natural alignment is fast
-        lget(L_EA);
-        iconst(size - 1);
-        op(W_AND);
-        op(W_OR);
-    } else if (size > 1) { // the 604 (big-endian): misaligned is fast unless it crosses a page
+    if (size > 1) { // misaligned is an ordinary access unless it crosses a page (big-endian;
+                    // ppc_check_align_scalar, the 604's scalar gate)
         lget(L_EA);
         iconst(MEM_PAGE_MASK);
         op(W_AND);
@@ -1837,7 +1836,9 @@ static uint32_t translate(void) {
     uint32_t nb = 0;
     for (uint32_t k = 0; k < U.n; k++) {
         jt_page_t *pg = &U.pages[k];
-        bool own = false; // a page of this chunk (it leads blocks here)
+        if (!pg->map)
+            continue; // not a page of this chunk
+        bool own = false; // it leads blocks here
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
             pg->map[i] = NONE16;
             pg->cov[i] = NONE16;
@@ -1847,7 +1848,8 @@ static uint32_t translate(void) {
             continue;
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
             uint32_t x = k * JIT_PAGE_INSNS + i;
-            g_ids[x] = jit_classify(pg->words[i], pg->lpage + 4 * i, pg->lpage, &g_ents[x]);
+            g_ids[x] = pg->ids[i];
+            g_ents[x] = pg->ents[i];
         }
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
             if (pg->leader[i] != 1)
@@ -2149,9 +2151,12 @@ EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), 
     var table = wasmExports['__indirect_function_table'];
     var mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
     var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], t: table } });
-    var idx = slot ? slot : table.grow(1);
+    var idx = slot;
     table.set(idx, inst.exports.f);
     return idx;
+});
+EM_JS(uint32_t, jit_table_grow, (uint32_t n), {
+    return wasmExports['__indirect_function_table'].grow(n);
 });
 EM_JS(void, jit_release_slot, (uint32_t slot), {
     wasmExports['__indirect_function_table'].set(slot, null);
@@ -2171,8 +2176,10 @@ typedef int32_t (*jit_fn_t)(ppc_t *p, int32_t budget, int32_t entry, int32_t fol
 // keeps its chunk from one translation to the next, so a translation
 // regenerates only the chunks whose pages changed.  A branch into another
 // chunk leaves, and the dispatcher enters that chunk.
-#define JIT_MAX_CHUNKS 64
+#define JIT_MAX_CHUNKS 255 // (owner[] is a byte, NONE8 the last value)
 #define JIT_ENTRY_HOT  8 // entries at a word before it leads a block
+#define JIT_POOR_RUN   8 // a run that consumes fewer slots is poor ...
+#define JIT_POOR_MAX   32 // ... and an entry with this many more poor than good is left alone
 #define NONE8          0xFFu
 
 // A member page of a region: what was translated and from where
@@ -2186,8 +2193,11 @@ typedef struct jit_slot {
     uint32_t hits; // stores that invalidated its blocks since the region's last translation
     uint32_t churn; // translations after which it had been invalidated again
     bool volatile_; // written too often: no longer translated (the predecoded tier runs it)
+    uint16_t ids[JIT_PAGE_INSNS]; // words[] classified (jit_classify)
+    pd_entry_t ents[JIT_PAGE_INSNS];
+    bool classified;
+    uint8_t poor[JIT_PAGE_INSNS]; // per entry word: recent runs that ended early (JIT_POOR_MAX: not entered)
     uint16_t last_hit; // the last word whose write invalidated a block (jit.trace)
-    uint8_t chunk; // the chunk that translates this page (NONE8: none yet)
     uint16_t cov[JIT_PAGE_INSNS]; // per word: its block in that chunk (NONE16)
     struct jit_region *region;
     struct jit_slot *next_host; // the host-page chain
@@ -2198,6 +2208,7 @@ typedef struct jit_chunk {
     jt_ref_t refs[JIT_REGION_PAGES]; // read by the function: its maps of the member pages
     uint16_t *maps[JIT_REGION_PAGES]; // per member page: block per leader word (NONE16)
     uint8_t *bvalid; // per block, 1 = valid
+    uint32_t bcap; // bvalid's size
     uint32_t nb; // blocks
     uint64_t sig; // what it was translated from (its pages' words, leaders, mappings)
 } jit_chunk_t;
@@ -2207,7 +2218,7 @@ typedef struct jit_region {
     jit_slot_t *slot[JIT_REGION_PAGES];
     jit_chunk_t chunk[JIT_MAX_CHUNKS];
     uint32_t nchunks;
-    uint32_t heat[JIT_REGION_PAGES]; // entries seen on pages that are not (validly) members
+    uint32_t heat[JIT_REGION_PAGES]; // instructions run on pages that are not (validly) members
     uint32_t since; // entries since the last compile
     uint32_t cool; // entries required between compiles: doubles with every compile (backoff)
     uint32_t stale; // blocks invalidated since the last compile
@@ -2222,10 +2233,20 @@ static jit_slot_t *g_by_host[JIT_HOST_HASH];
 static uint32_t g_mapgen; // the memory map the translations belong to
 static uint32_t g_model = ~0u; // the CPU model they were made for
 static bool g_inited;
+// The region lookup's cache, and the page whose heat the next entry settles
+#define JIT_RCACHE 64
+static jit_region_t *g_rcache[JIT_RCACHE];
+static jit_region_t *g_hot_R; // the declined page g_ppc_jit_cold describes
+static uint32_t g_hot_k;
+ppc_jit_cold_t g_ppc_jit_cold;
+uint32_t g_ppc_jit_skip[PPC_JIT_SKIP];
+static void skip_word(uint32_t pc, uint32_t msr) {
+    g_ppc_jit_skip[(pc >> 2) & (PPC_JIT_SKIP - 1)] = PPC_JIT_SKIP_TAG(pc, msr);
+}
 
 // Counters (the `jit` node)
 static struct {
-    uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns;
+    uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns, lookups, deferred;
     double compile_ms;
 } g_st;
 
@@ -2264,7 +2285,6 @@ static void region_drop_code(jit_region_t *R) {
         memset(s->owner, NONE8, sizeof s->owner);
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
             s->cov[i] = NONE16;
-        s->chunk = NONE8;
     }
 }
 
@@ -2303,6 +2323,10 @@ void ppc_jit_reset(void) {
         }
         g_regions[h] = NULL;
     }
+    memset(g_rcache, 0, sizeof g_rcache);
+    g_hot_R = NULL;
+    g_ppc_jit_cold.key = 0;
+    memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip);
     g_mapgen = g_mem_map_generation;
 }
 
@@ -2331,7 +2355,13 @@ static jit_region_t *region_get(uint32_t key) {
 // Translate the region's member pages: the code reachable from the entry
 // points seen so far, in chunks.  A branch to an unreached address leaves;
 // its next entry makes it an entry point.
+static double g_t_start; // when translation began (the governor's clock)
+static double g_prof[6]; // jit.trace = 7: where compile_region's time goes
+static uint32_t g_regen, g_regen_new; // jit.trace = 6
 static void compile_region(jit_region_t *R, ppc_t *p) {
+    uint64_t bytes0 = g_st.bytes;
+    memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip); // new blocks, new entries
+    g_regen = g_regen_new = 0;
     static jt_page_t pages[JIT_REGION_PAGES];
     static uint32_t slot_page[JIT_REGION_PAGES]; // unit index -> region page
     static uint8_t leader[JIT_REGION_PAGES][JIT_PAGE_INSNS];
@@ -2339,7 +2369,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     static uint8_t cleader[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's leaders
     static uint16_t ccov[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's coverage
     static uint32_t stack[2 * JIT_REGION_PAGES * JIT_PAGE_INSNS];
-    static uint32_t count[JIT_REGION_PAGES]; // reached words per unit page
+    static const pd_entry_t *ran[JIT_REGION_PAGES]; // per unit page: the predecoded entries, or NULL
     double t0 = emscripten_get_now();
     uint32_t lbase = R->key & ~(uint32_t)((1u << JIT_REGION_SHIFT) - 1);
     // A page invalidated again after each of several translations is code
@@ -2374,19 +2404,33 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         jit_slot_t *s = R->slot[k];
         if (!s)
             continue;
-        memset(s->owner, NONE8, sizeof s->owner);
         if (s->volatile_) {
-            s->chunk = NONE8;
+            memset(s->owner, NONE8, sizeof s->owner);
             continue;
         }
-        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) // the page as it is now
-            s->words[i] = LOAD_BE32(s->host + 4 * i);
+        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) { // the page as it is now, classified
+            uint32_t w = LOAD_BE32(s->host + 4 * i);
+            if (w != s->words[i] || !s->classified) {
+                s->words[i] = w;
+                s->ids[i] = jit_classify(w, s->lpage + 4 * i, s->lpage, &s->ents[i]);
+            }
+        }
+        s->classified = true;
+        memset(s->poor, 0, sizeof s->poor); // the code may differ now
         memset(leader[n], 0, JIT_PAGE_INSNS);
         memset(reached[n], 0, JIT_PAGE_INSNS);
+        // What the predecoded tier has run on the page: a word it never
+        // decoded never executed (the pool decodes at dispatch), and code
+        // that never ran is not worth a translation.  (A peek at the pool's
+        // cache, not a lookup: no pool state changes.)
+        pd_block_t *pb = g_pd_tcache[predecode_tcache_slot(s->host)];
+        ran[n] = predecode_block_ok(pb, s->host, s->lpage) && pb->arch == PD_ARCH_PPC ? pb->e : NULL;
         U.slot[k] = (int16_t)n;
         slot_page[n] = k;
         n++;
     }
+    double tp = emscripten_get_now();
+    g_prof[0] += tp - t0;
     // Reachability from the entry points over the direct control flow:
     // every entry point, branch target and fall-through leads a block
     uint32_t sp = 0;
@@ -2411,12 +2455,13 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         uint32_t x = stack[--sp], u = x / JIT_PAGE_INSNS, i = x % JIT_PAGE_INSNS;
         jit_slot_t *s = R->slot[slot_page[u]];
         for (; i < JIT_PAGE_INSNS; i++) {
-            if (reached[u][i])
+            if (reached[u][i] || (ran[u] && ran[u][i].id == PD_UNDECODED))
                 break;
             reached[u][i] = 1;
             uint32_t w = s->words[i], a = s->lpage + 4 * i;
             pd_entry_t e;
-            uint16_t id = jit_classify(w, a, s->lpage, &e);
+            uint16_t id = s->ids[i];
+            e = s->ents[i];
             // (After an untranslated instruction, a call or the page's
             // last word the code may well be data -- the 68K emulator puts
             // operands after its calls: those continuations become leaders
@@ -2434,58 +2479,50 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
     }
 #undef PUSH
-    // Chunks: sets of whole pages.  A page keeps its chunk while the chunk
-    // stays within the cap; a chunk grown past it gives its pages up, and
-    // pages without one join their predecessor's chunk in address order
-    // while it fits, else a new one.
-    uint32_t total[JIT_MAX_CHUNKS] = {0};
-    for (uint32_t u = 0; u < n; u++) {
-        jit_slot_t *s = R->slot[slot_page[u]];
-        count[u] = 0;
-        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
-            count[u] += reached[u][i];
-        if (s->chunk != NONE8)
-            total[s->chunk] += count[u];
-    }
-    for (uint32_t u = 0; u < n; u++) {
-        jit_slot_t *s = R->slot[slot_page[u]];
-        if (s->chunk != NONE8 && total[s->chunk] > g_chunk_cap)
-            s->chunk = NONE8;
-    }
-    bool used[JIT_MAX_CHUNKS] = {false};
-    memset(total, 0, sizeof total);
-    for (uint32_t u = 0; u < n; u++) {
-        jit_slot_t *s = R->slot[slot_page[u]];
-        if (s->chunk != NONE8) {
-            used[s->chunk] = true;
-            total[s->chunk] += count[u];
-        }
-    }
-    uint32_t prev = NONE8; // the chunk of the last page with code, in address order
-    for (uint32_t u = 0; u < n; u++) {
-        jit_slot_t *s = R->slot[slot_page[u]];
-        if (s->chunk == NONE8 && count[u]) {
-            uint32_t c = prev;
-            if (c == NONE8 || total[c] + count[u] > g_chunk_cap) {
-                for (c = 0; c < JIT_MAX_CHUNKS && used[c]; c++)
-                    ;
-                if (c == JIT_MAX_CHUNKS)
-                    continue; // no chunk left: the page stays untranslated
-                used[c] = true;
+    g_prof[1] += emscripten_get_now() - tp, tp = emscripten_get_now();
+    // Chunks: a reached word keeps its chunk from one translation to the
+    // next, so code that did not change keeps its function; code reached
+    // for the first time goes into new chunks, whole blocks in address
+    // order, up to the cap each.  When the chunks run out, everything is
+    // assigned afresh.
+    uint32_t total[JIT_MAX_CHUNKS];
+    bool used[JIT_MAX_CHUNKS];
+    for (int fresh = 0; fresh < 2; fresh++) {
+        memset(total, 0, sizeof total);
+        memset(used, 0, sizeof used);
+        for (uint32_t u = 0; u < n; u++) {
+            jit_slot_t *s = R->slot[slot_page[u]];
+            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
+                if (!reached[u][i] || fresh)
+                    s->owner[i] = NONE8;
+                else if (s->owner[i] != NONE8) {
+                    used[s->owner[i]] = true;
+                    total[s->owner[i]]++;
+                }
             }
-            s->chunk = (uint8_t)c;
-            total[c] += count[u];
         }
-        if (s->chunk != NONE8 && count[u])
-            prev = s->chunk;
-    }
-    for (uint32_t u = 0; u < n; u++) {
-        jit_slot_t *s = R->slot[slot_page[u]];
-        if (s->chunk == NONE8)
-            continue;
-        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
-            if (reached[u][i])
-                s->owner[i] = s->chunk;
+        uint32_t c = NONE8;
+        bool out = false;
+        for (uint32_t u = 0; u < n && !out; u++) {
+            jit_slot_t *s = R->slot[slot_page[u]];
+            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
+                if (!reached[u][i] || s->owner[i] != NONE8)
+                    continue;
+                if (c == NONE8 || (leader[u][i] && total[c] >= g_chunk_cap)) {
+                    for (c = 0; c < JIT_MAX_CHUNKS && (used[c] || (c < R->nchunks && R->chunk[c].fn && !fresh)); c++)
+                        ;
+                    if (c == JIT_MAX_CHUNKS) {
+                        out = true;
+                        break;
+                    }
+                    used[c] = true;
+                }
+                s->owner[i] = (uint8_t)c;
+                total[c]++;
+            }
+        }
+        if (!out)
+            break;
     }
     U.lbase = lbase;
     U.it = (R->key & 2u) != 0;
@@ -2506,22 +2543,41 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         if (used[ci] || (ci < R->nchunks && R->chunk[ci].fn))
             nchunks = ci + 1;
     R->nchunks = nchunks;
+    g_prof[2] += emscripten_get_now() - tp, tp = emscripten_get_now();
+    // What each chunk translates, in one pass: its words, leaders and
+    // mappings (a word reached for the first time is never one its blocks
+    // ran into: they reached every word they cover), and its pages
+    static uint64_t sigs[JIT_MAX_CHUNKS];
+    static uint32_t nwords[JIT_MAX_CHUNKS], lastu[JIT_MAX_CHUNKS];
+    static uint8_t cpages[JIT_MAX_CHUNKS][JIT_REGION_PAGES / 8];
+#define MIX(c_, v_) (sigs[c_] = (sigs[c_] ^ (uint64_t)(v_)) * 1099511628211ull)
+    for (uint32_t ci = 0; ci < nchunks; ci++) {
+        sigs[ci] = 1469598103934665603ull;
+        nwords[ci] = 0;
+        lastu[ci] = ~0u;
+        memset(cpages[ci], 0, sizeof cpages[ci]);
+    }
+    for (uint32_t u = 0; u < n; u++) {
+        jit_slot_t *s = R->slot[slot_page[u]];
+        for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
+            uint32_t o = s->owner[i];
+            if (o == NONE8 || o >= nchunks)
+                continue;
+            if (lastu[o] != u) {
+                lastu[o] = u;
+                cpages[o][u >> 3] |= (uint8_t)(1u << (u & 7));
+                MIX(o, slot_page[u]);
+                MIX(o, s->host_adjust);
+            }
+            MIX(o, ((uint64_t)i << 40) | ((uint64_t)leader[u][i] << 32) | s->words[i]);
+            nwords[o]++;
+        }
+    }
+#undef MIX
     for (uint32_t ci = 0; ci < nchunks; ci++) {
         jit_chunk_t *ch = &R->chunk[ci];
-        // What this chunk translates: its pages' words, leaders and mappings
-        uint64_t sig = 1469598103934665603ull;
-#define MIX(v_) (sig = (sig ^ (uint64_t)(v_)) * 1099511628211ull)
-        for (uint32_t u = 0; u < n; u++) {
-            jit_slot_t *s = R->slot[slot_page[u]];
-            if (s->chunk != ci)
-                continue;
-            MIX(slot_page[u]);
-            MIX(s->host_adjust);
-            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
-                if (reached[u][i])
-                    MIX(((uint64_t)i << 40) | ((uint64_t)leader[u][i] << 32) | s->words[i]);
-        }
-#undef MIX
+        uint64_t sig = sigs[ci];
+        uint32_t words = nwords[ci];
         if (!used[ci]) { // no pages any more
             release_fn(ch->fn);
             ch->fn = 0;
@@ -2536,6 +2592,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             memset(ch->bvalid, 1, ch->nb + 1);
             continue;
         }
+        g_regen++;
+        g_regen_new += !ch->fn;
         release_fn(ch->fn);
         ch->fn = 0;
         ch->nb = 0;
@@ -2544,29 +2602,41 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         for (uint32_t u = 0; u < n; u++) {
             uint32_t k = slot_page[u];
             jit_slot_t *s = R->slot[k];
-            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
-                // 1: leads a block of this chunk; 2: leads another chunk's (a block stops there)
-                cleader[u][i] = (leader[u][i] && reached[u][i]) ? (s->owner[i] == ci ? 1 : 2) : 0;
-                ccov[u][i] = NONE16;
-            }
-            if (!ch->maps[k])
+            bool own = (cpages[ci][u >> 3] >> (u & 7)) & 1u;
+            if (own)
+                for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++) {
+                    // 1: leads a block of this chunk; 2: another chunk's word (a block stops there)
+                    cleader[u][i] = !reached[u][i] ? 0 : s->owner[i] != ci ? 2 : leader[u][i] ? 1 : 0;
+                    ccov[u][i] = NONE16;
+                }
+            if (own && !ch->maps[k])
                 ch->maps[k] = malloc(JIT_PAGE_INSNS * sizeof(uint16_t));
-            if (!ch->maps[k])
+            if (own && !ch->maps[k])
                 return;
-            pages[u] = (jt_page_t){s->lpage, s->words, cleader[u], ch->maps[k], ccov[u], s->host_adjust};
+            pages[u] = (jt_page_t){s->lpage, s->words,       cleader[u], own ? ch->maps[k] : NULL,
+                                   ccov[u],  s->host_adjust, s->ids,     s->ents};
         }
-        if (!ch->bvalid)
-            ch->bvalid = malloc(JIT_REGION_PAGES * JIT_PAGE_INSNS + 1);
-        if (!ch->bvalid)
-            return;
-        memset(ch->bvalid, 1, (size_t)n * JIT_PAGE_INSNS + 1);
+        if (words + 1 > ch->bcap) { // at most one block per word
+            free(ch->bvalid);
+            ch->bcap = words + 1;
+            ch->bvalid = malloc(ch->bcap);
+            if (!ch->bvalid) {
+                ch->bcap = 0;
+                return;
+            }
+        }
+        memset(ch->bvalid, 1, words + 1);
         U.refs = ch->refs;
         U.bvalid = ch->bvalid;
+        g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
         uint32_t nb = translate();
+        g_prof[4] += emscripten_get_now() - tp, tp = emscripten_get_now();
         for (uint32_t u = 0; u < n; u++) {
+            if (!pages[u].map)
+                continue;
             jit_slot_t *s = R->slot[slot_page[u]];
-            if (s->chunk == ci)
-                for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
+            for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
+                if (s->owner[i] == ci)
                     s->cov[i] = ccov[u][i];
         }
         if (!nb)
@@ -2588,7 +2658,14 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 fclose(f);
             }
         }
-        ch->fn = jit_instantiate(g_buf, g_len, g_nfree ? g_free_slots[--g_nfree] : 0);
+        if (!g_nfree) { // grow the table 64 functions at a time
+            uint32_t base = jit_table_grow(64);
+            for (uint32_t t = 64; t-- > 0;)
+                release_fn(base + t);
+        }
+        g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
+        ch->fn = jit_instantiate(g_buf, g_len, g_free_slots[--g_nfree]);
+        g_prof[5] += emscripten_get_now() - tp, tp = emscripten_get_now();
         // The lazy-compile mitigation (Phase 0): one call with a zero budget
         // has the engine compile the function now, not at its first real
         // entry.  Every block's guard leaves at once on a scratch state.
@@ -2599,13 +2676,23 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         g_st.bytes += g_len;
         for (uint32_t u = 0; u < n; u++) {
             uint32_t k = slot_page[u];
+            if (!pages[u].map)
+                continue; // (no block there)
             ch->refs[k].map = addr_of(ch->maps[k]);
             ch->refs[k].host_adjust = R->slot[k]->host_adjust;
         }
     }
     for (uint32_t u = 0; u < n; u++)
         memory_code_page_mark_owner(R->slot[slot_page[u]]->host, MEM_CODE_JIT);
+    g_prof[3] += emscripten_get_now() - tp;
+    if (g_trace == 6)
+        printf("jit:   -> %u chunks regenerated (%u new), %llu bytes\n", g_regen, g_regen_new,
+               (unsigned long long)(g_st.bytes - bytes0));
     g_st.compiles++;
+    if (g_trace == 7)
+        printf("jit: compile split ms: prep %.0f reach %.0f assign %.0f chunks %.0f translate %.0f instantiate %.0f "
+               "(n=%u)\n",
+               g_prof[0], g_prof[1], g_prof[2], g_prof[3], g_prof[4], g_prof[5], n);
     g_st.compile_ms += emscripten_get_now() - t0;
 }
 
@@ -2629,7 +2716,6 @@ static jit_slot_t *slot_make(jit_region_t *R, uint32_t k, uint32_t lpage, uint32
         memset(s->owner, NONE8, sizeof s->owner);
         for (uint32_t i = 0; i < JIT_PAGE_INSNS; i++)
             s->cov[i] = NONE16;
-        s->chunk = NONE8;
         uint32_t h = host_hash(s->host);
         s->next_host = g_by_host[h];
         g_by_host[h] = s;
@@ -2758,6 +2844,8 @@ static void exit_hist_dump(ppc_t *p) {
 
 bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *exit) {
     uint32_t msr = p->msr;
+    if ((++g_st.lookups & 4095) == 0) // skipped words are asked about again now and then
+        memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip);
     // Not translated: little-endian mode; supervisor data translation (every
     // access takes the slow path there); a deliverable interrupt (the
     // predecoded loop takes it first); the sprint's tail
@@ -2766,6 +2854,15 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     if ((p->ext_irq | p->dec_pending) && (msr & PPC_MSR_EE))
         return false;
     uint32_t budget = *instructions;
+    // The page the last entry declined: what the predecoded loop ran there
+    // since (within the sprint) is its heat
+    if (g_hot_R) {
+        if (budget < g_ppc_jit_cold.budget)
+            g_ppc_jit_cold.heat += g_ppc_jit_cold.budget - budget;
+        g_hot_R->heat[g_hot_k] = g_ppc_jit_cold.heat;
+        g_hot_R = NULL;
+        g_ppc_jit_cold.key = 0;
+    }
     if (budget < 3)
         return false;
     if (!g_inited) {
@@ -2779,28 +2876,40 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     uint32_t pc = p->pc;
     uint32_t key = (pc & ~(uint32_t)((1u << JIT_REGION_SHIFT) - 1)) | ((msr & PPC_MSR_IT) ? 2u : 0u) |
                    ((msr & PPC_MSR_PR) ? 1u : 0u);
-    jit_region_t *R = region_get(key);
-    if (!R)
-        return false;
+    jit_region_t *R = g_rcache[(key >> JIT_REGION_SHIFT) & (JIT_RCACHE - 1)];
+    if (!R || R->key != key) {
+        R = region_get(key);
+        if (!R)
+            return false;
+        g_rcache[(key >> JIT_REGION_SHIFT) & (JIT_RCACHE - 1)] = R;
+    }
     uint32_t k = (pc >> MEM_PAGE_SHIFT) & (JIT_REGION_PAGES - 1);
     uint32_t idx = (pc & MEM_PAGE_MASK) >> 2;
     uint32_t host_adjust = (uint32_t)g_ppc_fetch.host_adjust;
     jit_slot_t *s = R->slot[k];
     R->since++;
-    if (s && s->volatile_ && s->host_adjust == host_adjust)
+    if (s && s->volatile_ && s->host_adjust == host_adjust) {
+        skip_word(pc, msr);
         return false; // left to the predecoded tier
+    }
     bool member = s && s->host_adjust == host_adjust;
     jit_chunk_t *ch = NULL;
     uint16_t b = NONE16;
     if (!member || !region_entry(R, s, k, idx, &ch, &b)) {
         // Not translated here (yet): count it, and translate when the page
         // is hot and the region has not just been compiled
-        if (!member && ++R->heat[k] < g_threshold)
+        if (!member && R->heat[k] < g_threshold) {
+            g_hot_R = R, g_hot_k = k;
+            g_ppc_jit_cold =
+                (ppc_jit_cold_t){(pc & ~(uint32_t)MEM_PAGE_MASK) | 4u | (key & 3u), budget, R->heat[k], g_threshold};
             return false;
+        }
         if (member && s->extra[idx] < JIT_ENTRY_HOT && ++s->extra[idx] == JIT_ENTRY_HOT) {
             // a new entry point (one entered rarely is not worth a translation)
             R->want = true;
         }
+        if (member && s->extra[idx] >= JIT_ENTRY_HOT && R->cool)
+            skip_word(pc, msr); // counted: nothing more until the region is translated
         if (!member) {
             s = slot_make(R, k, pc & ~(uint32_t)MEM_PAGE_MASK, host_adjust);
             if (!s)
@@ -2814,12 +2923,30 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
                    !R->cool; // never translated
         if (!due)
             return false;
+        // The governor: translating may take at most jit.budget percent of
+        // the time since translation began (plus a start allowance), so
+        // code that keeps changing (a boot) cannot cost more than that
+        double now = emscripten_get_now();
+        if (!g_t_start)
+            g_t_start = now;
+        if (g_budget_pct < 100 && g_st.compile_ms > JIT_BUDGET_START_MS + (now - g_t_start) * g_budget_pct / 100.0) {
+            g_st.deferred++;
+            R->since = 0; // ask again after another cooldown
+            return false;
+        }
         if (g_trace == 6)
             printf("jit: compile %08x want=%d stale=%u since=%u cool=%u at pc %08x (%s)\n", R->key, R->want, R->stale,
                    R->since, R->cool, pc, member ? "new entry" : "new member");
         compile_region(R, p);
         if (!region_entry(R, s, k, idx, &ch, &b))
             return false;
+    }
+    // An entry whose runs keep ending after a few instructions (a short
+    // loop around an untranslated instruction, an access that always
+    // misses) costs more to enter than it saves: the predecoded loop keeps it
+    if (s->poor[idx] >= JIT_POOR_MAX) {
+        skip_word(pc, msr);
+        return false;
     }
     // Run it (the predecoded block being left is charged first, as at any
     // page transition)
@@ -2847,6 +2974,10 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     *exit = (int)g_ppc_jit_exit;
     g_st.calls++;
     g_st.insns += budget - (uint32_t)left;
+    if (budget - (uint32_t)left < JIT_POOR_RUN)
+        s->poor[idx]++;
+    else if (s->poor[idx])
+        s->poor[idx]--;
     if (*exit == PPC_JIT_EXIT_DEOPT)
         g_st.deopts++;
     return true;
@@ -2955,6 +3086,9 @@ enum {
     JA_BLOCK_INVALS,
     JA_COMPILE_US,
     JA_INSNS,
+    JA_LOOKUPS,
+    JA_DEFERRED,
+    JA_BUDGET,
     JA_REGS
 };
 
@@ -2973,6 +3107,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(4, g_chunk_cap);
     case JA_TRACE:
         return val_uint(4, g_trace);
+    case JA_BUDGET:
+        return val_uint(4, g_budget_pct);
 #ifdef __EMSCRIPTEN__
     case JA_AVAILABLE:
         return val_uint(1, 1);
@@ -2996,6 +3132,10 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_st.insns);
     case JA_REGS:
         return val_uint(4, g_fn_regs);
+    case JA_LOOKUPS:
+        return val_uint(8, g_st.lookups);
+    case JA_DEFERRED:
+        return val_uint(8, g_st.deferred);
 #endif
     default:
         return val_uint(1, 0);
@@ -3029,6 +3169,11 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         if (in.u < 64 || in.u > 65536)
             return val_err("chunk_cap must be 64..65536 instructions");
         g_chunk_cap = (uint32_t)in.u;
+        return val_none();
+    case JA_BUDGET:
+        if (in.u > 100)
+            return val_err("budget is a percentage (100: no limit)");
+        g_budget_pct = (uint32_t)in.u;
         return val_none();
     case JA_REGS:
 #ifdef __EMSCRIPTEN__
@@ -3073,7 +3218,8 @@ static const member_t jit_members[] = {
     JIT_ATTR("enabled", JA_ENABLED, "1 = hot PowerPC code runs as generated WebAssembly (wasm builds only)",
              jit_attr_set),
     JIT_ATTR("available", JA_AVAILABLE, "1 when this build can generate code", NULL),
-    JIT_ATTR("threshold", JA_THRESHOLD, "entries into a page before it joins its region's translation", jit_attr_set),
+    JIT_ATTR("threshold", JA_THRESHOLD,
+             "instructions the predecoded tier runs in a page before it joins its region's translation", jit_attr_set),
     JIT_ATTR("cooldown", JA_COOLDOWN, "entries between two translations of one region (0: none)", jit_attr_set),
     JIT_ATTR("quiet", JA_QUIET, "entries after a code write before its region is retranslated", jit_attr_set),
     JIT_ATTR("regions", JA_REGIONS, "regions created", NULL),
@@ -3087,6 +3233,9 @@ static const member_t jit_members[] = {
     JIT_ATTR("block_invals", JA_BLOCK_INVALS, "translated blocks invalidated by code writes", NULL),
     JIT_ATTR("compile_us", JA_COMPILE_US, "time spent translating and compiling, microseconds", NULL),
     JIT_ATTR("instructions", JA_INSNS, "budget slots consumed inside translated code", NULL),
+    JIT_ATTR("lookups", JA_LOOKUPS, "times the predecoded loop asked for a translation", NULL),
+    JIT_ATTR("deferred", JA_DEFERRED, "translations the governor put off (jit.budget)", NULL),
+    JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),
     JIT_ATTR("regs", JA_REGS, "0 = guest registers in locals per block, 1 = per function", jit_attr_set),
     {.kind = MK_METHOD,
                                                                                                   .name = "reset",

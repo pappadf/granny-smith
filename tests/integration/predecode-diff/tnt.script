@@ -7,6 +7,7 @@ predecode.elide = $ELIDE
 jit.enabled = $JIT
 jit.threshold = 1
 jit.cooldown = 16
+jit.budget = 100
 machine.boot model="pm7500" ram=32768 rom="${$ROM}"
 machine.rtc.time = "2026-04-26T21:30:36"
 scheduler.run 20000000

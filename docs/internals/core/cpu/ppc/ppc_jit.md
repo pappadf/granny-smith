@@ -77,19 +77,21 @@ entered while an interrupt is deliverable.
 
 A **region** (`jit_region_t`) is one megabyte of logical address space
 under one fetch mode: the key is the base, MSR[IT] and MSR[PR].  Its
-**members** (`jit_slot_t`, one per page) are the pages entered often
-enough (`jit.threshold`), each recorded with the host page it was
+**members** (`jit_slot_t`, one per page) are the pages the predecoded tier
+has run `jit.threshold` instructions in, each recorded with the host page it was
 translated from (`host_adjust`, the fetch window's) and a snapshot of its
 words.  The run-time **entry points** seen on a member (`extra[]`, counted
 up to `JIT_ENTRY_HOT`) seed the translation.
 
 The region's reachable code is split into **chunks** (`jit_chunk_t`), one
-generated function each.  A chunk is a set of whole member pages holding
-at most `jit.chunk_cap` reachable instructions, filled in address order.
-A page keeps its chunk from one translation to the next (`slot->chunk`)
-while the chunk stays within the cap, and each chunk records a signature
-of what it was translated from (its pages' words, leaders and mappings):
-a translation regenerates only the chunks whose signature changed.  The
+generated function each.  A reached word keeps its chunk (`owner[]`) from
+one translation to the next; code reached for the first time goes into
+new chunks, whole blocks in address order, at most `jit.chunk_cap`
+instructions each (when a region's 255 chunks run out, everything is
+assigned afresh).  Each chunk records a signature of what it was
+translated from (its words, leaders and mappings), and a translation
+regenerates only the chunks whose signature changed: new code costs a new
+small function, not the retranslation of what was there.  The
 optimizing compile of a function grows faster than linearly with its size
 and its live locals (emu-core-bench measured 11 s in V8's TurboFan for a
 660 KB function; here a 4096-instruction cap ran slower than 1024 and took
@@ -141,16 +143,36 @@ compiles wasm functions lazily, at their first call).
 
 `PPD_JIT_TRY` runs where the predecoded loop looks a page up, when the
 fetch window maps p->pc's page: at the start of `relookup`, and after the
-window was refilled there.  `ppc_jit_enter` finds the region and the
-member; when the member's fetch mapping is the window's and its chunk has
-a valid block at the pc, it calls the chunk's function.  Otherwise it
-counts the entry: a page becomes a member after `jit.threshold` entries; a
-word that leads no block becomes an entry point after `JIT_ENTRY_HOT`
-entries (one entered rarely is not worth a translation).  The region is
-retranslated when entry points were added, or invalidated blocks have
-been quiet for `jit.quiet` entries, and the region's cooldown has passed:
-`jit.cooldown` entries, doubling with every translation of the region up
-to `JIT_COOL_MAX`.
+window was refilled there (after a page change, and after every generic
+step: about one lookup per three instructions on firmware code).  Two
+caches keep the declined lookups cheap, checked inline: the page the
+dispatcher last declined (`g_ppc_jit_cold`: the hook adds the budget spent
+since to its heat until the heat reaches the threshold) and a
+direct-mapped set of declined member words (`g_ppc_jit_skip`: no block
+there yet, an entry that runs too short, a volatile page), cleared by
+every translation and every 4096 dispatcher calls.
+
+`ppc_jit_enter` finds the region and the member; when the member's fetch
+mapping is the window's and its chunk has a valid block at the pc, it
+calls the chunk's function.  Otherwise it counts: a page becomes a member
+once the predecoded tier has run `jit.threshold` instructions in it (the
+budget spent between a declined lookup and the next one); a word that
+leads no block becomes an entry point after `JIT_ENTRY_HOT` entries (one
+entered rarely is not worth a translation).  The region is retranslated
+when entry points were added, or invalidated blocks have been quiet for
+`jit.quiet` entries, and the region's cooldown has passed: `jit.cooldown`
+entries, doubling with every translation of the region up to
+`JIT_COOL_MAX`.  An entry whose runs keep ending within `JIT_POOR_RUN`
+slots (a short loop around an untranslated instruction) is not entered
+again before the next translation.
+
+**The governor.**  Translating and compiling may take at most
+`jit.budget` percent of the wall time since translation began (plus a
+start allowance); a translation due beyond that is deferred by another
+cooldown.  Code that keeps changing — a boot — then costs at most that
+share, and a working set that settles is translated soon after.  Which
+translations exist is invisible to the guest, so a host-time decision is
+safe.
 
 An exit that made no progress (the entry block cannot fit the budget, or
 was invalidated) is not retried before the predecoded loop has run an
@@ -160,13 +182,17 @@ instruction (`jit_skip_pc`).
 
 `compile_region` walks the direct control flow from the entry points over
 the member pages: a block leader is an entry point, a branch target, or
-the instruction after a conditional branch.  The continuation after a
+the instruction after a conditional branch, as far as the predecoded tier
+has run it: a word whose predecoded entry was never decoded never executed
+(the pool decodes at dispatch; a peek at its cache, no lookup), and code
+that never ran is not translated.  The continuation after a
 call, after an untranslated instruction and off the end of a page is not
 followed: the 68K emulator keeps operands after its calls, and data
 translated as code turns every store to it into an invalidation.  Those
 continuations become leaders once execution enters them (§3.1).  Then it
-assigns pages to chunks (§2.1).  A leader in another chunk's page still
-ends a block (the translator's leader value 2).
+assigns words to chunks (§2.1).  A word of another chunk ends a block (the
+translator's leader value 2).  Member words keep their classification
+between translations; only changed words are classified again.
 
 A member page whose blocks are invalidated again after `JIT_CHURN_MAX`
 translations is code being written while it runs: it becomes volatile, is
@@ -204,10 +230,9 @@ than one block) runs predecoded.
 ### 3.5 Memory accesses and exits
 
 A load or store is inlined when the active SoA table has an entry for its
-page, it is outside a 601 T=1 segment (MSR[DT] clear), and it is
-naturally aligned on the 601, or does not cross a page on the 604 (whose
-big-endian misaligned accesses within a page are ordinary accesses: the
-scalar gate passes them).  The masked address, the entry, the big-endian
+page, it is outside a 601 T=1 segment (MSR[DT] clear), and it does not
+cross a page (a big-endian misaligned access within a page is an ordinary
+access on both models: `ppc_check_align_scalar`, the 604's scalar gate).  The masked address, the entry, the big-endian
 access.  Otherwise the function leaves **at** the access
 (`PPC_JIT_EXIT_DEOPT`): it gives back the block's unspent slots and fold,
 stores the registers, and the predecoded loop runs that one instruction
@@ -275,7 +300,7 @@ Safari 18.2, Node 20).
 
 The predecode differential (`tests/integration/predecode-diff`) runs each
 PowerPC row a third time with the tier on, eagerly (`jit.threshold = 1`,
-`jit.cooldown = 16`), when the build has it (`jit.available`), and
+`jit.cooldown = 16`, `jit.budget = 100`), when the build has it (`jit.available`), and
 compares the checkpoints with the switch core's.  Build the Node wasm
 build (`make -f Makefile.headless TARGET=node`) and run the test with it;
 the build is single-threaded, so it needs `--jobs=inline --io=sync`.
@@ -289,12 +314,14 @@ Two runs compare only when they split the run into the same
 |---|---|
 | `enabled` | 1 = run translations (wasm builds) |
 | `available` | 1 when the build can generate code |
-| `threshold` | entries into a page before it joins its region (16) |
+| `threshold` | instructions the predecoded tier runs in a page before it joins its region (100000) |
+| `budget` | the share of wall time, in percent, translating may take (10; 100: no limit) |
 | `cooldown` | entries between two translations of a region, doubling per translation (64) |
 | `quiet` | entries after a code write before its region is retranslated (64) |
 | `chunk_cap` | the most instructions one function translates (1024) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation and what it regenerated; 7 where translation time goes |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
+| `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
 | `reset()` | drop every translation |

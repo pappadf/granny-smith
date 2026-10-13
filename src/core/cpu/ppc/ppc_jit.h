@@ -35,6 +35,23 @@ enum { PPC_JIT_EXIT_PC = 0, PPC_JIT_EXIT_DEOPT = 1 };
 // Set at run time by the shell (`jit.enabled`); never in native builds.
 extern bool g_ppc_jit_on;
 
+// The page the dispatcher last declined, for PPD_JIT_TRY to decline again
+// without the call: its key (page | 4 | MSR[IT] << 1 | MSR[PR]), the budget
+// at the last lookup, the instructions the predecoded loop ran there since
+// it was declined (its heat), and the heat at which the dispatcher wants it.
+typedef struct {
+    uint32_t key, budget, heat, limit;
+} ppc_jit_cold_t;
+extern ppc_jit_cold_t g_ppc_jit_cold;
+
+// Words of member pages the dispatcher declines until the next translation
+// (no block there yet, an entry that runs too short, a volatile page),
+// direct-mapped by word: pc | MSR[IT] << 1 | MSR[PR].  A stale entry costs
+// only a missed translation.
+#define PPC_JIT_SKIP 4096
+extern uint32_t g_ppc_jit_skip[PPC_JIT_SKIP];
+#define PPC_JIT_SKIP_TAG(pc, msr) ((pc) | (((msr) & PPC_MSR_IT) ? 2u : 0u) | (((msr) & PPC_MSR_PR) ? 1u : 0u))
+
 // Try to run translated code at p->pc, whose page the fetch window maps.
 // Returns false when nothing ran (no translation for this entry; it may
 // have been counted towards one).  Otherwise the translation ran: the

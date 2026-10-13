@@ -180,8 +180,16 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 // budget, or it was invalidated) is not retried before the loop has run
 // an instruction.
 #ifdef __EMSCRIPTEN__
+// (A page the dispatcher declined is declined again here, its heat counted,
+// until the heat reaches the dispatcher's limit.)
+#define PPD_JIT_COLD()                                                                                                 \
+    (((pc & ~(uint32_t)MEM_PAGE_MASK) | 4u | ((p->msr & PPC_MSR_IT) ? 2u : 0u) | ((p->msr & PPC_MSR_PR) ? 1u : 0u)) == \
+         g_ppc_jit_cold.key &&                                                                                         \
+     (g_ppc_jit_cold.heat += g_ppc_jit_cold.budget > *instructions ? g_ppc_jit_cold.budget - *instructions : 0,        \
+      g_ppc_jit_cold.budget = *instructions, g_ppc_jit_cold.heat < g_ppc_jit_cold.limit))
 #define PPD_JIT_TRY()                                                                                                  \
-    if (g_ppc_jit_on && !(pc == jit_skip_pc && *instructions == jit_skip_budget)) {                                    \
+    if (g_ppc_jit_on && !(pc == jit_skip_pc && *instructions == jit_skip_budget) &&                                    \
+        g_ppc_jit_skip[(pc >> 2) & (PPC_JIT_SKIP - 1)] != PPC_JIT_SKIP_TAG(pc, p->msr) && !PPD_JIT_COLD()) {           \
         int jexit_;                                                                                                    \
         uint32_t before_ = *instructions;                                                                              \
         if (ppc_jit_enter(p, instructions, &folds_left, &jexit_)) {                                                    \

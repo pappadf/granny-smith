@@ -127,6 +127,12 @@ that left the CPU code alone, where concurrent pairing never came within
 siblings), which is fair to both sides of the ratio but makes the MIPS of a
 concurrent run useless as absolute numbers: C only uses head-only runs.
 
+B's clock is the process's user CPU time by default. `--clock wall` uses
+the window's wall time instead (`bench_window` reports both): the one that
+is fair to a wasm build whose engine compiles on background threads, such
+as the PowerPC translation tier's `jit` executor, where user CPU time
+would charge it for the optimizing compiles running beside the emulator.
+
 B also sees what A cannot, including effects nobody wrote: two builds whose
 CPU code is identical differed by up to 4 % on single rows (the PowerPC rows
 2 % slower on every runner; `iici-aux` 4–7 % on the EPYC 7763 alone), which
