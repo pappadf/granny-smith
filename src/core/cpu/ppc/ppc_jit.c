@@ -1053,13 +1053,15 @@ static void emit_cr_bit(uint32_t n) {
 // whose context synchronization stays in C, and minus branches to
 // themselves, which take a slot instead of folding.)
 static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
+    if (id == PPD_ISYNC)
+        return true; // (a no-op unless BATs were written since: then it leaves)
     if (id == JX_BC) { // not to itself (a slot, not a fold)
         int32_t bd = (int32_t)(int16_t)(iw & 0xFFFCu);
         return ((iw & 2u) ? (uint32_t)bd : ipc + (uint32_t)bd) != ipc;
     }
     if (id >= JX_BCLR && id < JX_END)
         return true;
-    if (id <= PPD_FIRST || id >= PPD_END || id == PPD_ISYNC)
+    if (id <= PPD_FIRST || id >= PPD_END)
         return false;
     switch (id) {
     case PPD_B_IN:
@@ -1608,6 +1610,33 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         g_depth--;
         emit_goto_npc();
         return;
+    case PPD_ISYNC: {
+        // ppc_context_sync publishes BAT writes to the fetch side: with none
+        // pending (the copies equal the BATs) it changes nothing; otherwise
+        // the predecoded loop runs it
+        for (uint32_t i = 0; i < 4; i++) {
+            lget(L_P);
+            mem(W_LOAD, 2, offsetof(ppc_t, ibatu_cs) + 4 * i);
+            lget(L_P);
+            mem(W_LOAD, 2, offsetof(ppc_t, batu) + 4 * i);
+            op(W_XOR);
+            lget(L_P);
+            mem(W_LOAD, 2, offsetof(ppc_t, ibatl_cs) + 4 * i);
+            lget(L_P);
+            mem(W_LOAD, 2, offsetof(ppc_t, batl) + 4 * i);
+            op(W_XOR);
+            op(W_OR);
+            if (i)
+                op(W_OR);
+        }
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_deopt();
+        op(W_END);
+        g_depth--;
+        return;
+    }
     case JX_BC: { // a = BO, b = BI, c = the raw word (ppc_do_bc)
         bool test = false;
         if (!(a & 4u)) { // decrement CTR, test it
@@ -2122,7 +2151,7 @@ static uint32_t translate(void) {
                 g_block_defs |= entry_defs(g_ids[x], &g_ents[x]);
             }
             uint16_t id = g_ids[x];
-            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX);
+            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == PPD_ISYNC;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))

@@ -47,8 +47,8 @@ The guest timeline is identical with and without it (§5).
 It is not a tier for every build: native builds have no runtime code
 generation (`jit.available` is 0 there).  It is not a tier for every
 instruction: it translates the shapes the predecoded loop specializes
-(T0) minus `isync` (its context synchronization stays in C) and branches
-to themselves (they take a slot instead of folding), plus a few the
+(T0) minus branches to themselves (they take a slot instead of folding;
+`isync` is a no-op there unless BAT writes are pending, when it leaves), plus a few the
 predecoded loop leaves generic (T1) that it decodes from the raw word
 (§3.3).  It does not run in little-endian mode or with supervisor data
 translation (every access takes the slow path there), and it is never
