@@ -95,13 +95,39 @@ static int g_fill_track_count;
 static bool g_fill_track_overflow = true; // conservative until first inval
 
 // The write entry each user fill would plant were the page not a code page
-// (ppc_internal.h): set by every fill, zeroed with the fills.
+// (ppc_internal.h): set by every fill, zeroed with the fills.  Only the
+// translation tier reads it, so builds without one keep it NULL and skip
+// the upkeep.
 uintptr_t *g_ppc_user_wok;
+#ifdef __EMSCRIPTEN__
 static uint32_t g_ppc_user_wok_pages;
 static void user_wok_clear_all(void) {
     if (g_ppc_user_wok)
         memset(g_ppc_user_wok, 0, (size_t)g_ppc_user_wok_pages * sizeof(uintptr_t));
 }
+static inline void user_wok_zero(uint32_t pg) {
+    if (pg < g_ppc_user_wok_pages)
+        g_ppc_user_wok[pg] = 0;
+}
+static inline void user_wok_set(uint32_t pg, uintptr_t adjusted) {
+    if (g_ppc_user_wok_pages != g_page_count) {
+        free(g_ppc_user_wok);
+        g_ppc_user_wok = calloc(g_page_count, sizeof(uintptr_t));
+        g_ppc_user_wok_pages = g_ppc_user_wok ? g_page_count : 0;
+    }
+    if (pg < g_ppc_user_wok_pages)
+        g_ppc_user_wok[pg] = adjusted;
+}
+#else
+static inline void user_wok_clear_all(void) {}
+static inline void user_wok_zero(uint32_t pg) {
+    (void)pg;
+}
+static inline void user_wok_set(uint32_t pg, uintptr_t adjusted) {
+    (void)pg;
+    (void)adjusted;
+}
+#endif
 
 // tlbie congruence class: 601 EA[13-19] = 128 classes (601UM Figure 6-15);
 // 604 EA[14-19] = 64 classes (604UM §5.4.3.2).
@@ -136,8 +162,7 @@ static void user_soa_invalidate_all(void) {
                 continue;
             g_user_read[pg] = 0;
             g_user_write[pg] = 0;
-            if (pg < g_ppc_user_wok_pages)
-                g_ppc_user_wok[pg] = 0;
+            user_wok_zero(pg);
         }
     }
     g_fill_track_count = 0;
@@ -191,8 +216,7 @@ void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
                 continue;
             g_user_read[pg] = 0;
             g_user_write[pg] = 0;
-            if (pg < g_ppc_user_wok_pages)
-                g_ppc_user_wok[pg] = 0;
+            user_wok_zero(pg);
         }
     }
     for (int i = 0; i < XTLB_SIZE; i++)
@@ -633,13 +657,7 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
         g_fill_track[g_fill_track_count++] = lpage;
     uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
-    if (g_ppc_user_wok_pages != g_page_count) {
-        free(g_ppc_user_wok);
-        g_ppc_user_wok = calloc(g_page_count, sizeof(uintptr_t));
-        g_ppc_user_wok_pages = g_ppc_user_wok ? g_page_count : 0;
-    }
-    if (lpage < g_ppc_user_wok_pages)
-        g_ppc_user_wok[lpage] = (write_ok && pe->writable) ? adjusted : 0;
+    user_wok_set(lpage, (write_ok && pe->writable) ? adjusted : 0);
     if (write_ok && pe->writable) // refused on a predecoded code page (memory.h)
         g_user_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted, MEM_WT_USER);
 }
@@ -660,8 +678,7 @@ static void user_phys_fallback(uint32_t pa, bool store) {
         g_user_write[ppage] = 0;
     else {
         g_user_read[ppage] = 0;
-        if (ppage < g_ppc_user_wok_pages)
-            g_ppc_user_wok[ppage] = 0;
+        user_wok_zero(ppage);
     }
 }
 

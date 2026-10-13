@@ -3669,8 +3669,10 @@ static struct object *s_jit_object;
 void ppc_jit_object_install(void) {
     if (s_jit_object)
         return;
+#ifdef __EMSCRIPTEN__ // (no tier to tell about code writes otherwise)
     g_pd_tier_written_hook = ppc_jit_code_written;
     g_pd_tier_reset_hook = ppc_jit_reset;
+#endif
     s_jit_object = object_new(&jit_class, NULL, "jit");
     if (s_jit_object) {
         object_set_label(s_jit_object, "JIT");

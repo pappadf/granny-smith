@@ -205,8 +205,6 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
             goto relookup;                                                                                             \
         }                                                                                                              \
     }
-#else
-#define PPD_JIT_TRY() (void)0
 #endif
 
 // The T1 case body: bind the word, materialize PC, run the leaf.
@@ -525,8 +523,10 @@ relookup:
     // whether that page is decoded.
     {
         uint32_t pc = p->pc;
+#ifdef __EMSCRIPTEN__
         if (!(pc & 3u) && g_ppc_fetch.span == MEM_PAGE_SIZE && (pc - g_ppc_fetch.lo) < MEM_PAGE_SIZE)
             PPD_JIT_TRY();
+#endif
         // Same logical page: reuse the block only while the fetch window
         // still stands behind it.  An rfi or mtmsr that changes IR/PR, or a
         // TLB invalidation, flushes the window (ppc_mmu_flush_fetch) because
@@ -589,8 +589,10 @@ relookup:
                 } else if (refilled) {
                     g_pd_stats.lookups++;
                 }
+#ifdef __EMSCRIPTEN__
                 if (refilled) // (with the window already in place, the relookup's start tried)
                     PPD_JIT_TRY();
+#endif
                 blk = g_ppc_fetch.blk;
                 page_lo = g_ppc_fetch.lo;
                 if (blk) {

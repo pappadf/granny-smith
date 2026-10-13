@@ -540,8 +540,10 @@ static bool prof_write(const char *path) {
 void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     if (len == 0)
         return;
+#ifdef __EMSCRIPTEN__ // (a tier above the pool exists only there)
     if (g_pd_tier_written_hook)
         g_pd_tier_written_hook(host, len);
+#endif
     uint32_t page;
     int r = memory_code_region_of(host, &page);
     if (r < 0 || !g_pd_slots[r] || page >= g_pd_slot_pages[r])
