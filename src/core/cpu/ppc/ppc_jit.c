@@ -75,6 +75,9 @@ uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_en
 
 // Shapes the predecoded loop leaves generic (T1) but the translator handles
 // from the raw word, with ids of its own above the T0 range:
+//   JX_BC               every bc form the T0 ids are not (linking,
+//                       decrementing with a condition): a = BO, b = BI,
+//                       c = the raw word
 //   JX_BCLR, JX_BCCTR   every bclr/bcctr form the T0 BLR/BCTR are not
 //                       (conditional, decrementing, linking): a = BO, b = BI,
 //                       c = LK
@@ -103,6 +106,7 @@ enum { // JX_ADDX kinds: rT = (subf ? ~rA : rA) + operand + carry-in
 enum {
     JX_BCLR = PPD_END,
     JX_BCCTR,
+    JX_BC,
     JX_LWZX,
     JX_LWZUX,
     JX_LHZX,
@@ -129,6 +133,10 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
         return id;
     uint32_t op = iw >> 26, xo = (iw >> 1) & 0x3FFu;
     uint32_t rt = (iw >> 21) & 31u, ra = (iw >> 16) & 31u, rb = (iw >> 11) & 31u;
+    if (op == 16) {
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = (uint8_t)ra, .c = iw};
+        return JX_BC;
+    }
     if (op == 19 && (xo == 16 || xo == 528)) {
         *e = (pd_entry_t){.a = (uint8_t)rt, .b = (uint8_t)ra, .c = iw & 1u};
         return xo == 16 ? JX_BCLR : JX_BCCTR;
@@ -899,8 +907,9 @@ static void emit_exit_after(void) {
 // Store: EA on the stack, value in L_T3.  `helper`: a store that misses the
 // fast path may still complete through ppc_jit_code_store (a code page,
 // user mode, the 604), and the function goes on -- or leaves right after it
-// when the store invalidated translated code.
-static void emit_store(uint32_t size, bool helper) {
+// when the store invalidated translated code (an update form's rA, upd_reg,
+// updated first; -1: none).
+static void emit_store(uint32_t size, bool helper, int upd_reg) {
     lset(L_EA);
     emit_access_test(size, true);
     op(W_IF);
@@ -925,6 +934,10 @@ static void emit_store(uint32_t size, bool helper) {
         emit_deopt();
         op(W_END);
         g_depth--;
+        if (upd_reg >= 0) { // the update form completes before it leaves
+            lget(L_EA);
+            lset(GPR(upd_reg));
+        }
         emit_exit_after();
         op(W_END);
         g_depth--;
@@ -1040,6 +1053,10 @@ static void emit_cr_bit(uint32_t n) {
 // whose context synchronization stays in C, and minus branches to
 // themselves, which take a slot instead of folding.)
 static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
+    if (id == JX_BC) { // not to itself (a slot, not a fold)
+        int32_t bd = (int32_t)(int16_t)(iw & 0xFFFCu);
+        return ((iw & 2u) ? (uint32_t)bd : ipc + (uint32_t)bd) != ipc;
+    }
     if (id >= JX_BCLR && id < JX_END)
         return true;
     if (id <= PPD_FIRST || id >= PPD_END || id == PPD_ISYNC)
@@ -1069,7 +1086,7 @@ static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
 }
 
 static bool is_branch_id(uint16_t id) {
-    return (id >= PPD_B_IN && id <= PPD_BCTR) || id == JX_BCLR || id == JX_BCCTR;
+    return (id >= PPD_B_IN && id <= PPD_BCTR) || id == JX_BCLR || id == JX_BCCTR || id == JX_BC;
 }
 
 // A direct branch's target, from the raw word
@@ -1516,7 +1533,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             iconst(c);
             op(W_ADD);
         }
-        emit_store(size, !upd);
+        emit_store(size, true, upd ? (int)(b >> 2) : -1);
         if (upd) { // after the store: rS == rA stores the old value
             lget(L_EA);
             lset(RD(b));
@@ -1591,6 +1608,45 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         g_depth--;
         emit_goto_npc();
         return;
+    case JX_BC: { // a = BO, b = BI, c = the raw word (ppc_do_bc)
+        bool test = false;
+        if (!(a & 4u)) { // decrement CTR, test it
+            lget(L_CTR);
+            iconst(1);
+            op(W_SUB);
+            ltee(L_CTR);
+            if (a & 2u)
+                op(W_EQZ);
+            else {
+                iconst(0);
+                op(W_NE);
+            }
+            test = true;
+        }
+        if (!(a & 16u)) { // the CR bit
+            emit_cr_bit(b);
+            if (!(a & 8u))
+                op(W_EQZ);
+            if (test)
+                op(W_AND);
+            test = true;
+        }
+        if (c & 1u) {
+            iconst(ipc + 4);
+            lset(L_LR);
+        }
+        if (test) {
+            op(W_IF);
+            put(BT_VOID);
+            g_depth++;
+        }
+        emit_goto(branch_target(id, c, ipc));
+        if (test) {
+            op(W_END);
+            g_depth--;
+        }
+        return; // not taken: falls through (still folded)
+    }
     case JX_BCLR:
     case JX_BCCTR: { // a = BO, b = BI, c = LK (ppc_do_bclr / ppc_do_bcctr)
         // the target before anything changes (bcctr's invalid decrementing
@@ -1791,7 +1847,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             lget(RD(b));
         lget(RD(c));
         op(W_ADD);
-        emit_store(size, !upd);
+        emit_store(size, true, upd ? (int)(b >> 2) : -1);
         if (upd) { // after the store: rS == rA stores the old value
             lget(L_EA);
             lset(RD(b));
@@ -2599,7 +2655,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                 if (id != PPD_BLR && id != PPD_BCTR && id != JX_BCLR && id != JX_BCCTR)
                     PUSH(branch_target(id, w, a));
                 if (id == PPD_BDNZ_IN || id == PPD_BDNZ_OUT || id == PPD_BC_T_IN || id == PPD_BC_T_OUT ||
-                    id == PPD_BC_F_IN || id == PPD_BC_F_OUT || ((id == JX_BCLR || id == JX_BCCTR) && !e.c))
+                    id == PPD_BC_F_IN || id == PPD_BC_F_OUT || ((id == JX_BCLR || id == JX_BCCTR) && !e.c) ||
+                    (id == JX_BC && (e.a & 0x14u) != 0x14u))
                     PUSH(a + 4); // a conditional branch falls through
                 break;
             }
@@ -3175,14 +3232,26 @@ static bool g_jit_wrote; // ppc_jit_code_written invalidated a block
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);
 int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     uint32_t page = ea >> MEM_PAGE_SHIFT;
+    static uint32_t why[6];
+    if (g_trace == 10 && (++why[5] & 0xFFFF) == 0)
+        printf("jit: code_store declines: tables %u, read %u, wok %u, cross %u, uncode %u\n", why[0], why[1], why[2],
+               why[3], why[4]);
     if (g_active_write != g_user_write || !g_ppc_user_wok || page >= g_page_count)
-        return 1;
+        return why[0]++, 1;
+    if ((ea & MEM_PAGE_MASK) > MEM_PAGE_SIZE - size)
+        return why[3]++, 1;
     uintptr_t rd = g_user_read[page];
-    if (!rd || g_ppc_user_wok[page] != rd || (ea & MEM_PAGE_MASK) > MEM_PAGE_SIZE - size)
-        return 1;
-    uint8_t *host = (uint8_t *)(rd + ea);
+    uint8_t *host;
+    if (!rd) { // the entries are gone; the translation TLB may still serve it
+        host = ppc_mmu_user_store_host(ea);
+        if (!host)
+            return why[1]++, 1;
+    } else if (g_ppc_user_wok[page] != rd)
+        return why[2]++, 1;
+    else
+        host = (uint8_t *)(rd + ea);
     if (!memory_host_is_code(host))
-        return 1; // unmarked since: the slow path brings the write entry back
+        return why[4]++, 1; // unmarked since: the slow path brings the write entry back
     g_jit_wrote = false;
     memory_host_written(host, size);
     for (uint32_t i = 0; i < size; i++)

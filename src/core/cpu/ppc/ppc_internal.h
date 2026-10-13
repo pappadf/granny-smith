@@ -443,6 +443,9 @@ uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 // fill zeroes both.  The translation tier completes a store into a code
 // page through it (ppc_jit_code_store).
 extern uintptr_t *g_ppc_user_wok;
+// The same store served from the translation TLB (ppc_mmu.c): the host bytes
+// a user store to ea reaches without a walk, or NULL.
+uint8_t *ppc_mmu_user_store_host(uint32_t ea);
 
 // Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair — the
 // one global obligation of a main CPU.  Called on every MSR write, exception

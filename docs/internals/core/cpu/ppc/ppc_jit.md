@@ -227,7 +227,8 @@ time it turns volatile again.
 ### 3.3 Translation
 
 `translate()` classifies the chunk's words with the predecoded tier's
-classifier, plus the translator's own shapes (`jit_classify`):
+classifier, plus the translator's own shapes (`jit_classify`): every
+`bc` form the T0 ids leave out (linking, decrementing with a condition),
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
 stores, the XO-form carrying, extended and OE add/subtract family, and the
 D-form accesses with rA = 0.  It emits each block's instructions from the
@@ -271,9 +272,11 @@ variables sit next to its code).  `ppc_jit_code_store` completes it when
 the active tables are the user tables, the page's read entry is set and
 `g_ppc_user_wok` (the write entry the fill that planted it would have
 planted, kept in step with the user fills by `ppc_mmu.c`) equals it, the
-page is still a code page, and on the 604 only: the coherence hooks, then
-the bytes.  When the store invalidated translated code the function
-leaves right after it.  Update forms leave as before.
+page is still a code page, and on the 604 and 750 only: the coherence
+hooks, then the bytes.  When the page's user entries are gone it asks the
+translation TLB (`ppc_mmu_user_store_host`), as `ppc_dxlate_slow` would
+without a walk.  When the store invalidated translated code the function
+leaves right after it (an update form's rA updated first).
 
 ### 3.6 Fetch mapping and chaining
 

@@ -806,6 +806,31 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     return false;
 }
 
+// The translation tier's store into a code page whose user SoA entries are
+// gone (ppc_jit_code_store): when the translation TLB holds a store-capable
+// user entry for ea -- the case ppc_dxlate_slow serves from it without a
+// walk -- return the host bytes, as that path would reach them, with its
+// side effect on the user write array.  NULL otherwise.
+uint8_t *ppc_mmu_user_store_host(uint32_t ea) {
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[ea >> MEM_PAGE_SHIFT])
+        return NULL;
+    uint32_t tag = (ea & 0xFFFFF000u) | 2u | 1u;
+    const xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
+    if (te->tag != tag || !te->w_ok)
+        return NULL;
+    uint32_t pa = te->pa_page | (ea & 0xFFFu);
+    uint32_t ppage = pa >> MEM_PAGE_SHIFT;
+    if (ppage >= g_page_count)
+        return NULL;
+    page_entry_t *pe = &g_page_table[ppage];
+    if (!pe->host_base || pe->dev || !pe->writable)
+        return NULL;
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[ppage])
+        return NULL;
+    user_phys_fallback(pa, true);
+    return pe->host_base + (pa & MEM_PAGE_MASK);
+}
+
 // dcbz's translated form (601UM Table 6-3; 604UM §4.5.6): a W=1 or I=1
 // mapping takes the alignment exception (R already updated by the walk);
 // a non-memory-forced T=1 segment makes it a no-op (§6.10.6 / PEM "cache
