@@ -218,6 +218,7 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -lopfs.js \
            -pthread \
            -sPROXY_TO_PTHREAD \
+           -sALLOW_TABLE_GROWTH \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \

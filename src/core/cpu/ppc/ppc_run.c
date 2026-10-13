@@ -718,3 +718,9 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
 #define PPC_PD_TREE_NAME     ppc_pd_tree
 #define PPC_PD_CLASSIFY_NAME ppc_pd_classify
 #include "ppc_pd_run.h"
+
+// The classifier for the translation tier (ppc_jit.c): it translates
+// exactly the shapes the predecoded loop specializes.
+uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e) {
+    return ppc_pd_classify(iw, ipc, page_lo, e);
+}

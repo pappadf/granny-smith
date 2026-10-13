@@ -117,21 +117,27 @@ class Binary:
         os.makedirs(d, exist_ok=True)
         script = os.path.join(d, "probe.script")
         with open(script, "w") as f:
-            f.write('echo "@@PROBE {\\"predecode\\":${try(predecode.enabled, -1)}}"\nquit\n')
+            f.write('echo "@@PROBE {\\"predecode\\":${try(predecode.enabled, -1)},\\"jit\\":${try(jit.available, 0)}}"\nquit\n')
         p = subprocess.run(
             [self.path, "rom=" + os.path.join(test_data, rom), "script=" + script] + EMU_FLAGS,
             cwd=d, capture_output=True, text=True, timeout=120,
         )
         probes = parse_tagged(p.stdout, "@@PROBE")
         self.has_predecode = bool(probes) and probes[0].get("predecode", -1) >= 0
+        self.has_jit = bool(probes) and probes[0].get("jit", 0) == 1
         self.executors = ["switch", "predecode"] if self.has_predecode else ["switch"]
+        if self.has_jit:
+            self.executors.append("jit")  # the translation tier (wasm builds): metric B only
 
 
 def exec_setup(binary, executor):
     """Driver lines that select `executor` on `binary`."""
     if not binary.has_predecode:
         return ""
-    return "predecode.enabled = %d\n" % (1 if executor == "predecode" else 0)
+    lines = "predecode.enabled = %d\n" % (0 if executor == "switch" else 1)
+    if getattr(binary, "has_jit", False):
+        lines += "jit.enabled = %d\n" % (1 if executor == "jit" else 0)
+    return lines
 
 
 def driver_prologue(row):

@@ -89,6 +89,7 @@ extern struct pd_block *g_pd_current;
 void pd_prof_visit(const struct pd_block *blk, uint32_t n);
 void pd_prof_mark(void);
 void pd_prof_entry(const struct pd_block *blk);
+extern uint64_t *g_pd_prof_exec; // executions per id (PowerPC), NULL until the first profile_reset
 void pd_prof_sprint(uint32_t budget);
 extern uint64_t g_pd_prof_slow_in_block;
 #endif
@@ -149,11 +150,17 @@ void predecode_reset(void);
 // preceding ones an instruction could start in) and count toward demotion.
 void predecode_invalidate_host(const uint8_t *host, uint32_t len);
 
+// A translation tier above the pool (the PowerPC JIT): told about every
+// code write before the pool is, and reset with it.
+extern void (*g_pd_tier_written_hook)(const uint8_t *host, uint32_t len);
+extern void (*g_pd_tier_reset_hook)(void);
+
 // Decode histogram: decodes per id, per architecture (predecode.hist prints
 // the top entries with names).  Reset with the pool.
 void predecode_count_decode(pd_arch_t arch, uint16_t id);
 // Name hooks, installed by the cores (cpu.c / ppc.c): id → handler name.
 extern const char *(*g_pd_id_name[2])(uint16_t id);
+extern uint16_t g_pd_t0_first[2]; // ids above this are T0 (specialized), set by the cores with the name hooks
 
 // Statistics (predecode.stats); plain counters, reset with the pool.
 typedef struct pd_stats {

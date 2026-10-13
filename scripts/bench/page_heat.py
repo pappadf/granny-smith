@@ -145,6 +145,8 @@ def summarize(name, prof):
         "hot_invals": sum(p["invals"] for p in hot),
         "hot_invals_per_minstr": 1e6 * sum(p["invals"] for p in hot) / total if total else 0,
         "all_invals": sum(p["invals"] for p in pages),
+        "hot_exact": sum(p.get("exact", 0) for p in hot),
+        "exact_never_share": sum(p["instr"] for p in pages if p.get("exact", 0) == 0) / total if total else 0,
         "code_page_stores": sum(p["stores"] for p in pages),
         "slowpath_per_kinstr": 1e3 * prof["slowpath"] / total if total else 0,
         "slowpath_in_block_per_kinstr": 1e3 * prof["slowpath_in_block"] / total if total else 0,
@@ -160,6 +162,14 @@ def summarize(name, prof):
              "covered_share": t["covered"] / total if total else 0}
             for t in prof["thresholds"]
         ],
+        "thresholds_exact": [
+            {"heat": t["heat"], "translations": t["translations"],
+             "covered_share": t["covered"] / total if total else 0}
+            for t in prof.get("thresholds_exact", [])
+        ],
+        "t0_share": sum(e[2] for e in prof.get("exec", []) if e[3]) / max(1, sum(e[2] for e in prof.get("exec", []))),
+        "top_t1": [{"name": e[1], "per_kinstr": 1e3 * e[2] / total}
+                   for e in sorted((e for e in prof.get("exec", []) if not e[3]), key=lambda e: -e[2])[:12]],
         "top_pages": [
             {"guest": "%08x" % p["guest"], "share": p["instr"] / total, "invals": p["invals"],
              "instr_per_visit": p["instr"] / p["visits"] if p["visits"] else 0}
@@ -184,9 +194,14 @@ def print_summary(s):
         s["hops_per_kinstr"], 100 * s["hops_64k_share"], 100 * s["hops_1m_share"]))
     print("  sprints: %.1f per M instructions; instruction-weighted median budget %s" % (
         s["sprints_per_minstr"], s["sprint_median_bucket"]))
-    for t in s["thresholds"]:
-        print("  heat %7d: %6d translations, %.1f %% of instructions after translation" % (
-            t["heat"], t["translations"], 100 * t["covered_share"]))
+    print("  stores that rewrote decoded words themselves: %d in the hot set; %.1f %% of instructions on pages never so written" % (
+        s["hot_exact"], 100 * s["exact_never_share"]))
+    for t, x in zip(s["thresholds"], s["thresholds_exact"] or s["thresholds"]):
+        print("  heat %7d: %6d translations, %.1f %% covered (invalidated by exact stores only: %d, %.1f %%)" % (
+            t["heat"], t["translations"], 100 * t["covered_share"], x["translations"], 100 * x["covered_share"]))
+    print("  executed entries on the specialized (T0) set: %.1f %%; the most frequent others, per 1000 instructions:" % (
+        100 * s["t0_share"]))
+    print("    " + ", ".join("%s %.1f" % (t["name"], t["per_kinstr"]) for t in s["top_t1"]))
     for p in s["top_pages"]:
         print("    page %s  %5.1f %%  invals %d  %.0f instr/visit" % (
             p["guest"], 100 * p["share"], p["invals"], p["instr_per_visit"]))

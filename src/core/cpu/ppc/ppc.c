@@ -987,6 +987,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     if (!p)
         return NULL;
     g_pd_id_name[PD_ARCH_PPC] = ppc_pd_id_name;
+    g_pd_t0_first[PD_ARCH_PPC] = PPD_FIRST;
     assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750);
 
     if (checkpoint) {

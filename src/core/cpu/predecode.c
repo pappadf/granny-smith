@@ -46,6 +46,7 @@ pd_block_t *g_pd_current = NULL;
 pd_stats_t g_pd_stats;
 uint32_t g_pd_blocks_live = 0;
 const char *(*g_pd_id_name[2])(uint16_t id) = {NULL, NULL};
+uint16_t g_pd_t0_first[2];
 
 // Decodes per id and architecture (256 KB each; the histogram behind the
 // specialization order of the T0 shapes).
@@ -156,7 +157,12 @@ void predecode_release(pd_block_t *blk) {
         block_detach(blk);
 }
 
+void (*g_pd_tier_written_hook)(const uint8_t *host, uint32_t len);
+void (*g_pd_tier_reset_hook)(void);
+
 void predecode_reset(void) {
+    if (g_pd_tier_reset_hook)
+        g_pd_tier_reset_hook();
     for (uint32_t i = 0; i < g_pd_pool_count; i++)
         block_detach(g_pd_pool[i]);
     slots_reset();
@@ -313,12 +319,15 @@ typedef struct pd_prof_page {
     uint64_t visits;
     uint64_t stores;
     uint64_t invals;
+    uint64_t exact; // ...of which the stored words themselves were decoded
     uint64_t epoch_instr;
+    uint64_t epoch_exact_instr; // the epoch when only exact stores end it
 } pd_prof_page_t;
 
 static pd_prof_page_t *s_prof;
 static uint32_t s_prof_used;
 static uint64_t s_prof_trans[PD_PROF_NTHRESH], s_prof_covered[PD_PROF_NTHRESH];
+static uint64_t s_prof_trans_x[PD_PROF_NTHRESH], s_prof_covered_x[PD_PROF_NTHRESH]; // epochs ended by exact stores
 static uint64_t s_prof_visit_hist[33][2]; // log2(visit length): visits, instructions
 static uint64_t s_prof_sprint_hist[33][2]; // log2(sprint budget): sprints, budget
 static uint64_t s_prof_slow0, s_prof_generic0;
@@ -333,6 +342,7 @@ static uint32_t s_prof_last_guest = 1; // guest page of the last visit (odd: non
 static uint64_t s_prof_hops, s_prof_hops_64k, s_prof_hops_1m;
 static uint32_t s_prof_phantom, s_prof_unrun;
 uint64_t g_pd_prof_slow_in_block;
+uint64_t *g_pd_prof_exec;
 
 static inline uint32_t prof_log2(uint32_t n) {
     return n ? 32u - (uint32_t)__builtin_clz(n) : 0u;
@@ -393,6 +403,7 @@ void pd_prof_visit(const pd_block_t *blk, uint32_t slots) {
         return;
     pp->instr += n;
     pp->epoch_instr += n;
+    pp->epoch_exact_instr += n;
     pp->visits++;
     s_prof_last_guest = blk->guest_lo;
     uint32_t b = prof_log2(n);
@@ -416,7 +427,7 @@ static void prof_epoch_end(uint64_t epoch_instr, uint64_t *trans, uint64_t *cove
         }
 }
 
-static void prof_store(const pd_block_t *blk, bool reset) {
+static void prof_store(const pd_block_t *blk, bool reset, bool exact) {
     pd_prof_page_t *pp = prof_page(blk);
     if (!pp)
         return;
@@ -426,6 +437,11 @@ static void prof_store(const pd_block_t *blk, bool reset) {
         prof_epoch_end(pp->epoch_instr, s_prof_trans, s_prof_covered);
         pp->epoch_instr = 0;
     }
+    if (exact) {
+        pp->exact++;
+        prof_epoch_end(pp->epoch_exact_instr, s_prof_trans_x, s_prof_covered_x);
+        pp->epoch_exact_instr = 0;
+    }
 }
 
 static void prof_reset(void) {
@@ -434,9 +450,15 @@ static void prof_reset(void) {
     s_prof_used = 0;
     memset(s_prof_trans, 0, sizeof s_prof_trans);
     memset(s_prof_covered, 0, sizeof s_prof_covered);
+    memset(s_prof_trans_x, 0, sizeof s_prof_trans_x);
+    memset(s_prof_covered_x, 0, sizeof s_prof_covered_x);
     memset(s_prof_visit_hist, 0, sizeof s_prof_visit_hist);
     memset(s_prof_sprint_hist, 0, sizeof s_prof_sprint_hist);
     g_pd_prof_slow_in_block = 0;
+    if (!g_pd_prof_exec)
+        g_pd_prof_exec = calloc(65536, sizeof *g_pd_prof_exec);
+    else
+        memset(g_pd_prof_exec, 0, 65536 * sizeof *g_pd_prof_exec);
     s_prof_hops = s_prof_hops_64k = s_prof_hops_1m = 0;
     s_prof_slow0 = g_mem_slowpath_count;
     s_prof_generic0 = g_pd_stats.generic_steps;
@@ -453,14 +475,17 @@ static bool prof_write(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f)
         return false;
-    uint64_t trans[PD_PROF_NTHRESH], covered[PD_PROF_NTHRESH];
+    uint64_t trans[PD_PROF_NTHRESH], covered[PD_PROF_NTHRESH], trans_x[PD_PROF_NTHRESH], covered_x[PD_PROF_NTHRESH];
     memcpy(trans, s_prof_trans, sizeof trans);
     memcpy(covered, s_prof_covered, sizeof covered);
+    memcpy(trans_x, s_prof_trans_x, sizeof trans_x);
+    memcpy(covered_x, s_prof_covered_x, sizeof covered_x);
     pd_prof_page_t *pages = calloc(s_prof_used ? s_prof_used : 1, sizeof *pages);
     uint32_t n = 0;
     for (uint32_t i = 0; s_prof && pages && i < PD_PROF_SLOTS; i++)
         if (s_prof[i].host) {
             prof_epoch_end(s_prof[i].epoch_instr, trans, covered);
+            prof_epoch_end(s_prof[i].epoch_exact_instr, trans_x, covered_x);
             pages[n++] = s_prof[i];
         }
     if (pages)
@@ -474,6 +499,10 @@ static bool prof_write(const char *path) {
     for (int t = 0; t < PD_PROF_NTHRESH; t++)
         fprintf(f, "%s{\"heat\":%llu,\"translations\":%llu,\"covered\":%llu}", t ? "," : "",
                 (unsigned long long)s_prof_thresh[t], (unsigned long long)trans[t], (unsigned long long)covered[t]);
+    fprintf(f, "],\"thresholds_exact\":[");
+    for (int t = 0; t < PD_PROF_NTHRESH; t++)
+        fprintf(f, "%s{\"heat\":%llu,\"translations\":%llu,\"covered\":%llu}", t ? "," : "",
+                (unsigned long long)s_prof_thresh[t], (unsigned long long)trans_x[t], (unsigned long long)covered_x[t]);
     fprintf(f, "],\"visit_hist\":[");
     for (int b = 0; b < 33; b++)
         fprintf(f, "%s[%llu,%llu]", b ? "," : "", (unsigned long long)s_prof_visit_hist[b][0],
@@ -482,12 +511,26 @@ static bool prof_write(const char *path) {
     for (int b = 0; b < 33; b++)
         fprintf(f, "%s[%llu,%llu]", b ? "," : "", (unsigned long long)s_prof_sprint_hist[b][0],
                 (unsigned long long)s_prof_sprint_hist[b][1]);
+    // Executed entries per id (PowerPC), with the id's name: which shapes
+    // the code spends its instructions on, T0 and T1 alike
+    fprintf(f, "],\"exec\":[");
+    bool first = true;
+    for (uint32_t id = 0; g_pd_prof_exec && id < 65536; id++) {
+        if (!g_pd_prof_exec[id])
+            continue;
+        const char *name = g_pd_id_name[PD_ARCH_PPC] ? g_pd_id_name[PD_ARCH_PPC]((uint16_t)id) : NULL;
+        fprintf(f, "%s[%u,\"%s\",%llu,%d]", first ? "" : ",", id, name ? name : "?",
+                (unsigned long long)g_pd_prof_exec[id], id > g_pd_t0_first[PD_ARCH_PPC]);
+        first = false;
+    }
     fprintf(f, "],\"pages\":[");
     for (uint32_t i = 0; i < n; i++)
-        fprintf(f, "%s\n{\"guest\":%u,\"arch\":%u,\"instr\":%llu,\"visits\":%llu,\"stores\":%llu,\"invals\":%llu}",
+        fprintf(f,
+                "%s\n{\"guest\":%u,\"arch\":%u,\"instr\":%llu,\"visits\":%llu,\"stores\":%llu,\"invals\":%llu,"
+                "\"exact\":%llu}",
                 i ? "," : "", pages[i].guest_lo, pages[i].arch, (unsigned long long)pages[i].instr,
                 (unsigned long long)pages[i].visits, (unsigned long long)pages[i].stores,
-                (unsigned long long)pages[i].invals);
+                (unsigned long long)pages[i].invals, (unsigned long long)pages[i].exact);
     fprintf(f, "]}\n");
     free(pages);
     return fclose(f) == 0;
@@ -497,6 +540,8 @@ static bool prof_write(const char *path) {
 void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     if (len == 0)
         return;
+    if (g_pd_tier_written_hook)
+        g_pd_tier_written_hook(host, len);
     uint32_t page;
     int r = memory_code_region_of(host, &page);
     if (r < 0 || !g_pd_slots[r] || page >= g_pd_slot_pages[r])
@@ -522,6 +567,15 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
         first = first >= PD_INVALIDATE_BACK_68K ? first - PD_INVALIDATE_BACK_68K : 0;
     }
     bool any = false;
+#ifdef PD_PROFILE
+    // Whether a word the store itself wrote was decoded (rather than only
+    // the entry before it, which the reset also covers): a translation of
+    // the decoded words needs to change only then.
+    bool exact = false;
+    if (blk->arch == PD_ARCH_PPC)
+        for (uint32_t i = off >> 2; i <= last; i++)
+            exact |= blk->e[i].id != PD_UNDECODED;
+#endif
     for (uint32_t i = first; i <= last; i++) {
         if (blk->e[i].id != PD_UNDECODED) {
             blk->e[i].id = PD_UNDECODED;
@@ -531,7 +585,7 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     if (any)
         g_pd_stats.invalidations++;
 #ifdef PD_PROFILE
-    prof_store(blk, any);
+    prof_store(blk, any, exact);
 #endif
     // Thrash detector: stores into this page within a window of page
     // transitions.  The page keeps its block until the CPU's next lookup

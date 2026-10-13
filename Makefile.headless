@@ -133,7 +133,9 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 ifeq ($(TARGET),node)
-LDFLAGS := $(LDFLAGS_MODE) -lm -sENVIRONMENT=node -sNODERAWFS=1 \
+# ALLOW_TABLE_GROWTH: the PowerPC translation tier installs its functions
+# in the function table (ppc_jit.c).
+LDFLAGS := $(LDFLAGS_MODE) -lm -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_TABLE_GROWTH \
            -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=5MB \
            -sEXIT_RUNTIME=1
 endif

@@ -1480,23 +1480,26 @@ static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *ho
     }
 }
 
-void memory_code_page_mark(const uint8_t *host_page) {
+void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
-    if (r < 0 || g_mem_code_regions[r].marks[page])
-        return; // outside every region, or already marked
-    g_mem_code_regions[r].marks[page] = 1;
+    if (r < 0)
+        return; // outside every region
+    uint8_t was = g_mem_code_regions[r].marks[page];
+    g_mem_code_regions[r].marks[page] = was | owner;
+    if (was)
+        return; // already a code page: its write entries are gone
     // Every logical alias currently holding a write entry for these bytes
     // loses it; refills consult the mark (memory_write_fill).
     zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
     zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
 }
 
-void memory_code_page_unmark(const uint8_t *host_page) {
+void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
     if (r >= 0)
-        g_mem_code_regions[r].marks[page] = 0; // write entries refill lazily
+        g_mem_code_regions[r].marks[page] &= (uint8_t)~owner; // write entries refill lazily once unmarked
 }
 
 void memory_host_written(const uint8_t *host, uint32_t len) {

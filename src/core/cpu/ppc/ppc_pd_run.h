@@ -11,6 +11,7 @@
 // and helpers, so the T1 cases run ppc_ops.h's bodies and the branch
 // handlers use the same folding helpers as the switch loop.
 
+#include "ppc_jit.h"
 #include "ppc_pd_ids.h"
 #include "predecode.h"
 
@@ -171,6 +172,35 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
         PPD_R(e.b) = ea;                                                                                               \
     PPD_LS_END()
 
+// The translation tier (ppc_jit.h), tried where the loop looks a page up
+// and the fetch window maps p->pc's page.  When translated code ran, the
+// state is committed at p->pc: a deopt exit runs that one instruction on
+// the generic step (as the predecoded handler would), any other exit looks
+// p->pc up again.  An exit that made no progress (the block cannot fit the
+// budget, or it was invalidated) is not retried before the loop has run
+// an instruction.
+#ifdef __EMSCRIPTEN__
+#define PPD_JIT_TRY()                                                                                                  \
+    if (g_ppc_jit_on && !(pc == jit_skip_pc && *instructions == jit_skip_budget)) {                                    \
+        int jexit_;                                                                                                    \
+        uint32_t before_ = *instructions;                                                                              \
+        if (ppc_jit_enter(p, instructions, &folds_left, &jexit_)) {                                                    \
+            blk = NULL;                                                                                                \
+            page_lo = 1;                                                                                               \
+            held_lo = 1;                                                                                               \
+            if (jexit_ == PPC_JIT_EXIT_DEOPT)                                                                          \
+                goto t2_step;                                                                                          \
+            if (*instructions == before_) {                                                                            \
+                jit_skip_pc = p->pc;                                                                                   \
+                jit_skip_budget = before_;                                                                             \
+            }                                                                                                          \
+            goto relookup;                                                                                             \
+        }                                                                                                              \
+    }
+#else
+#define PPD_JIT_TRY() (void)0
+#endif
+
 // The T1 case body: bind the word, materialize PC, run the leaf.
 #define PD_T1_BODY(OPX)                                                                                                \
     do {                                                                                                               \
@@ -206,6 +236,9 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
     // straight to the generic step instead of asking the pool again (the
     // 68K loop's pd_held).  Odd: none.
     uint32_t held_lo = 1;
+#ifdef __EMSCRIPTEN__
+    uint32_t jit_skip_pc = 1, jit_skip_budget = 0; // PPD_JIT_TRY's no-progress latch (odd: none)
+#endif
     g_ppc_fetch.blk = NULL; // re-validate the window's block once per sprint (demotions, logpoints)
     goto relookup;
 
@@ -225,6 +258,10 @@ dispatch:
         pd_entry_t e = *cur;
         uint16_t id = e.id;
     redispatch:
+#ifdef PD_PROFILE
+        if (g_pd_prof_exec && id != PD_UNDECODED)
+            g_pd_prof_exec[id]++;
+#endif
         switch (id) {
         case PD_UNDECODED:
             ppc_pd_decode(blk, (uint32_t)(cur - blk->e), page_lo);
@@ -480,6 +517,8 @@ relookup:
     // whether that page is decoded.
     {
         uint32_t pc = p->pc;
+        if (!(pc & 3u) && g_ppc_fetch.span == MEM_PAGE_SIZE && (pc - g_ppc_fetch.lo) < MEM_PAGE_SIZE)
+            PPD_JIT_TRY();
         // Same logical page: reuse the block only while the fetch window
         // still stands behind it.  An rfi or mtmsr that changes IR/PR, or a
         // TLB invalidation, flushes the window (ppc_mmu_flush_fetch) because
@@ -542,6 +581,8 @@ relookup:
                 } else if (refilled) {
                     g_pd_stats.lookups++;
                 }
+                if (refilled) // (with the window already in place, the relookup's start tried)
+                    PPD_JIT_TRY();
                 blk = g_ppc_fetch.blk;
                 page_lo = g_ppc_fetch.lo;
                 if (blk) {
