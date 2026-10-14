@@ -681,19 +681,18 @@ const storage_device_decl_t gossamer_default_storage[] = {
     {0},
 };
 
-// The ATI Rage Pro on the board, the machine's built-in video.  Its monitor
-// is strapped at the 13" today; the rest of its list waits on a monitor
-// option for the chip.
-static bool gossamer_monitor_at(size_t i, const char **id, const char **monitor) {
-    if (i != 0)
-        return false;
-    *id = *monitor = "13in_rgb";
-    return true;
-}
+// The ATI Rage Pro on the board, the machine's built-in video.  Its monitors
+// are the card's (mach64gx.c): the 13" (Apple's 14" RGB sense), the 15", 17"
+// and 20" multiple-scan displays and the 21".  The sense code decides the
+// modes the ATI driver offers: Mac OS X 10.0 runs the 17" at 640 x 480
+// through 1024 x 768.
+bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor); // mach64gx.c
+bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense);
 
 const builtin_video_desc_t gossamer_builtin_video = {
     .detail = "ATI Rage Pro",
-    .monitor_at = gossamer_monitor_at,
+    .monitor_at = mach64_ragepro_monitor_at,
+    .monitor_sense = mach64_ragepro_monitor_sense,
     .default_monitor = "13in_rgb",
 };
 

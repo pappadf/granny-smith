@@ -73,6 +73,14 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   aperture: the accelerator streams its host data through the second copy
   of the register blocks there, and without it every alert, button and
   menu title drew blank.
+- **The Rage Pro's monitor** is the built-in port's choice
+  (`displays.builtin.monitor`): the 13" (Apple's 14" RGB sense, the
+  default), the 15", 17" and 20" multiple-scan displays or the 21", the
+  rows the Mach64 GX's sense table already answers through `GP_IO`.  The
+  multiple-scan rows must assemble Apple's extended codes $03/$0B/$23
+  (MSB1/2/3, "BC AC AB"): with them the ATI driver in Mac OS X 10.0 offers
+  640 x 480 through 1024 x 768 on the 17" and starts at 832 x 624; with any
+  other code it sees an unknown display and offers 640 x 480 alone.
 - **DBDMA CommandPtr on a parked channel.**  The ATA driver rewrites it
   with RUN set to continue a long transfer.
 - **ATA DMA must take time.**  With the device ready at the command write,
@@ -120,7 +128,7 @@ shortly after boot.
 - `gossamer-rom-ladder` — both ROMs from reset to the Start Manager: the
   Grackle and Heathrow programming, the board register, the SPD-sized RAM
   decode, the boot beep against a golden capture, the tick chain, the
-  Rage Pro gray desktop.
+  Rage Pro gray desktop, and the multiple-scan displays' extended sense.
 - `gossamer-device-tree` — the Open Firmware prompt reached from the
   keyboard, and the device tree checked property by property.
 - `gossamer-pci-slots` — the three slots and the on-board ATI: empty
