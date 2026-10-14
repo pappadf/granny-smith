@@ -543,7 +543,8 @@ static DEF_METHOD(files_method_partmap) {
         return val_err("files.partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
     }
     // disk_size is whole 512-byte blocks: image_apm_parse refuses any other geometry.
-    out_printf("format: APM (%uB blocks, %zu total)\n", (unsigned)APM_BLOCK_SIZE, disk_size(img) / APM_BLOCK_SIZE);
+    out_printf("format: APM (%uB blocks, %llu total)\n", (unsigned)APM_BLOCK_SIZE,
+               (unsigned long long)(disk_size(img) / APM_BLOCK_SIZE));
     // The index column is as wide as the largest index (at least 2), so a
     // map with 100+ entries keeps its columns.
     int iw = 2;
@@ -566,7 +567,7 @@ static DEF_METHOD(files_method_partmap) {
 }
 
 // The filesystem a partition's volume header names, or NULL.
-static const char *partition_volume_kind(image_t *img, size_t size, const apm_partition_t *p) {
+static const char *partition_volume_kind(image_t *img, uint64_t size, const apm_partition_t *p) {
     uint64_t at = p->start_block * APM_BLOCK_SIZE + 1024;
     uint8_t hdr[2];
     if (p->size_blocks * APM_BLOCK_SIZE < 1024 + sizeof(hdr) || at + sizeof(hdr) > size ||
@@ -585,7 +586,7 @@ static const char *partition_volume_kind(image_t *img, size_t size, const apm_pa
 }
 
 // files.probe's lines for an APM disk's filesystem partitions.
-static void probe_report_partitions(image_t *img, size_t size) {
+static void probe_report_partitions(image_t *img, uint64_t size) {
     apm_table_t *table = image_apm_parse(img, NULL);
     if (!table)
         return;
@@ -610,7 +611,7 @@ static DEF_METHOD(files_method_probe) {
         out_printf("cannot open image '%s'\n", path);
         return val_bool(false);
     }
-    size_t size = disk_size(img);
+    uint64_t size = disk_size(img);
     uint8_t block[512];
     bool apm = false;
     if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
@@ -630,17 +631,17 @@ static DEF_METHOD(files_method_probe) {
             hfs = "HFS+";
     }
     if (apm && iso)
-        out_printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
+        out_printf("format: APM + ISO 9660 hybrid (%llu bytes)\n", (unsigned long long)size);
     else if (apm)
-        out_printf("format: APM (%zu bytes)\n", size);
+        out_printf("format: APM (%llu bytes)\n", (unsigned long long)size);
     else if (hfs && iso)
-        out_printf("format: %s + ISO 9660 hybrid (bare, %zu bytes)\n", hfs, size);
+        out_printf("format: %s + ISO 9660 hybrid (bare, %llu bytes)\n", hfs, (unsigned long long)size);
     else if (iso)
-        out_printf("format: ISO 9660 (%zu bytes)\n", size);
+        out_printf("format: ISO 9660 (%llu bytes)\n", (unsigned long long)size);
     else if (hfs)
-        out_printf("format: %s (bare, %zu bytes)\n", hfs, size);
+        out_printf("format: %s (bare, %llu bytes)\n", hfs, (unsigned long long)size);
     else
-        out_printf("format: unrecognised / raw (%zu bytes)\n", size);
+        out_printf("format: unrecognised / raw (%llu bytes)\n", (unsigned long long)size);
     // A partitioned disk's volumes: each partition the map names as a
     // filesystem, and what its own header says it is (an HFS volume's
     // MDB sits 1024 bytes into its partition, as on a bare disk).

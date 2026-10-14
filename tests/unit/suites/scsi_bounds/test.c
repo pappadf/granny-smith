@@ -159,7 +159,7 @@ static uint8_t read6_status(scsi_t *scsi, uint32_t lba, uint8_t tl) {
 static void peek(scsi_t *scsi, uint32_t lba, uint8_t out[BLK]) {
     image_t *img = scsi_device_image(scsi, TARGET);
     ASSERT_TRUE(img != NULL);
-    ASSERT_TRUE(disk_read_data(img, (size_t)lba * BLK, out, BLK) == BLK);
+    ASSERT_TRUE(disk_read_data(img, (uint64_t)lba * BLK, out, BLK) == BLK);
 }
 
 // An in-range WRITE must succeed and the bytes must land where it said.
@@ -966,6 +966,66 @@ TEST(a_medium_smaller_than_a_block_does_not_underflow) {
     unlink(tiny);
 }
 
+// A disk past 4 GB is read and written where the guest asked, on every host.
+// Byte offsets into an image are 64-bit all the way down (scsi_bus.c, image.c,
+// storage.c); on wasm32, where size_t is 32 bits, an offset narrowed anywhere
+// on that path lands the block 4 GB too low -- and such a disk used not to
+// open at all there.  The file is sparse: 5 GiB of hole plus one stamped block
+// past 4 GiB.
+TEST(a_disk_past_4gb_is_addressed_in_full) {
+    const uint64_t size = 5ull << 30;
+    const uint32_t lba = (uint32_t)((4ull << 30) / BLK) + 7; // 4 GiB + 3.5 KB
+    char big[] = "/tmp/gs-scsi-4gb-XXXXXX";
+    int fd = mkstemp(big);
+    ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(ftruncate(fd, (off_t)size) == 0);
+    uint8_t stamp[BLK];
+    memset(stamp, 0x5A, sizeof stamp);
+    memcpy(stamp, "past 4 GB", 9);
+    ASSERT_TRUE(pwrite(fd, stamp, BLK, (off_t)lba * BLK) == (ssize_t)BLK);
+    close(fd);
+
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_create(big, NULL);
+    ASSERT_TRUE(img != NULL);
+    ASSERT_TRUE(disk_size(img) == size);
+    scsi_add_device(scsi, TARGET, "GS", "SCRATCH", "1.0", img, scsi_dev_hd, BLK, false);
+
+    // READ(10) of the stamped block.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t rd[10] = {
+        0x28, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba, 0, 0, 1, 0};
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, rd[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    uint8_t got[BLK];
+    size_t n = 0;
+    while (n < BLK && scsi_pop_data_in_byte(scsi, &got[n]))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_TRUE(n == BLK);
+    ASSERT_TRUE(memcmp(got, stamp, BLK) == 0);
+
+    // WRITE(10) of the next block lands there, and not 4 GB lower.
+    uint8_t blk[BLK];
+    memset(blk, 0xC3, sizeof blk);
+    ASSERT_EQ_INT(write10(scsi, lba + 1, 1, blk), STATUS_GOOD);
+    uint8_t back[BLK];
+    peek(scsi, lba + 1, back);
+    ASSERT_TRUE(memcmp(back, blk, BLK) == 0);
+    peek(scsi, lba + 1 - (uint32_t)((4ull << 30) / BLK), back);
+    ASSERT_TRUE(back[0] == 0);
+
+    // The last block is in range; one past it is not.
+    const uint32_t last = (uint32_t)(size / BLK) - 1;
+    ASSERT_EQ_INT(read10_status(scsi, last + 1, 1), STATUS_CHECK_CONDITION);
+    peek(scsi, last, back);
+    scsi_delete(scsi);
+    unlink(big);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -998,6 +1058,7 @@ int main(void) {
     RUN(an_emptied_hard_disk_is_not_ready);
     RUN(test_unit_ready_says_no_when_there_is_no_medium);
     RUN(an_empty_cd_bay_still_speaks_sony);
+    RUN(a_disk_past_4gb_is_addressed_in_full);
     RUN(a_medium_smaller_than_a_block_does_not_underflow);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");

@@ -49,7 +49,7 @@ therefore a source the storage engine can mount with no adapter.
 | `source_scratch_sink` | `source_cache.c` | where peeler's compressed forks decode to |
 | `chunk_cache_t` | `chunk_cache.c` | LRU of decoded chunks with coalescing and spill |
 | `format_t`, `format_unwrap` | `format_registry.c` | the one table of formats |
-| `ndif_source_open`, `udif_source_open` | `image_chunkmap.c` | NDIF / UDIF as chunk-mapped sources |
+| `ndif_source_open`, `udif_source_open`, `qcow2_source_open` | `image_chunkmap.c` | NDIF / UDIF / QCOW2 as chunk-mapped sources |
 
 ## 3. Behaviour/algorithms
 
@@ -100,7 +100,7 @@ Finder info come from an AppleDouble companion (`._NAME`, or the legacy
 One table replaces the image opener's, the VFS mount probe's and SCSI media
 validation's probe orders. Wrappers (source → source) are built in and tried
 first, in a loop, so any nesting unwraps: UDIF (by its trailer), NDIF (by the
-resource fork's `bcem` map), DiskCopy 4.2 (by its header; a LisaEm ProFile image <!-- lint-allow: LisaEm -->
+resource fork's `bcem` map), QCOW2 (by its `QFI\xfb` header), DiskCopy 4.2 (by its header; a LisaEm ProFile image <!-- lint-allow: LisaEm -->
 — 20 tag bytes per block — is its own row, `lisaem`, tried first: it <!-- lint-allow: LisaEm -->
 re-orders the blocks and folds the tags back in), and peeler's
 BinHex, MacBinary and gzip. Namespace formats (a disk, an archive) register
@@ -111,9 +111,9 @@ at start-up from the VFS. Detection reads a bounded probe: 64 KiB of head,
 when the payload of a peeler wrapper is no tree (an application in a `.bin`),
 the wrapper itself is shown as a one-file namespace.
 
-### 3.5 NDIF and UDIF
+### 3.5 NDIF, UDIF and QCOW2
 
-Both formats describe the decoded disk as runs of sectors: zero-fill, a raw
+All three formats describe the decoded disk as runs of sectors: zero-fill, a raw
 copy of a data-fork range, or a compressed range (ADC; zlib for UDIF). The
 chunk-mapped source validates every run when it opens (inside the image,
 inside the data fork, a codec we implement, under 64 MiB), then serves a
@@ -121,7 +121,10 @@ read run by run: zeros, a direct read, or a decode on first touch into the
 chunk cache. Nothing is written to a scratch file and the decoded disk never
 exists whole. The UDIF per-table CRC-32 is not checked (it covers a whole
 table, and tables are decoded piecemeal); zlib chunks carry their own
-integrity through the deflate stream's structure.
+integrity through the deflate stream's structure. A QCOW2 map is built from
+its cluster tables: one run per allocated or compressed cluster, adjacent raw
+clusters merged, nothing for an unallocated or zero cluster (a gap reads as
+zeros) — see [image.md](image.md).
 
 ### 3.6 The chunk cache
 

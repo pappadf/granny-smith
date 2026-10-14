@@ -8,6 +8,7 @@
 // processor bus at 3:1 (Apple, "Power Macintosh 7500 and 8500 Computers"
 // Developer Note, 1995).
 
+#include "of_nvram.h"
 #include "slot_tables.h"
 #include "tnt.h"
 
@@ -111,5 +112,6 @@ const hw_profile_t machine_pm8500 = {
     .builtin_video = &tnt_builtin_video,
 
     .substrate = &tnt_substrate,
+    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm8500_board,
 };

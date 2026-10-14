@@ -627,7 +627,8 @@ int system_probe_floppy(const char *path) {
     }
 
     if (!image_is_floppy(image_get_type(disk))) {
-        out_printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, image_get_raw_size(disk));
+        out_printf("%s: Valid disk image but not a floppy (size: %llu bytes)\n", path,
+                   (unsigned long long)image_get_raw_size(disk));
         image_close(disk);
         return 1;
     }
@@ -1467,8 +1468,8 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
         snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
         snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
-        out_printf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
-                   drive->product, disk_size(slot->img), slot->block_size);
+        out_printf("Attaching SCSI CD-ROM: %s as %s %s (size: %llu bytes, %u-byte blocks)\n", path, drive->vendor,
+                   drive->product, (unsigned long long)disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));
@@ -1493,7 +1494,7 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         out_printf("%s: partitioned disk without a driver — its HFS partition wrapped with a partition map and the "
                    "GSDisk driver\n",
                    path);
-    size_t sz = disk_size(slot->img);
+    uint64_t sz = disk_size(slot->img);
     // Find the closest drive model from the catalog
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (!best) {
@@ -1502,7 +1503,8 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         slot->img = NULL;
         return false;
     }
-    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes)", path, best->vendor, best->product, sz);
+    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %llu bytes)", path, best->vendor, best->product,
+        (unsigned long long)sz);
     slot->scsi_type = scsi_dev_hd;
     slot->block_size = 512;
     slot->read_only = false;

@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // image_chunkmap.h
-// Chunk-mapped byte sources: the decoded image of a Disk Copy 6 (NDIF) or
-// UDIF (.dmg) file, read on demand.
+// Chunk-mapped byte sources: the decoded image of a Disk Copy 6 (NDIF),
+// UDIF (.dmg) or QEMU QCOW2 file, read on demand.
 //
 // Both formats describe the decoded disk as runs of sectors, each zero-fill,
 // a raw copy of a range of the data fork, or a compressed range (ADC, zlib).
@@ -54,5 +54,15 @@ bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len);
 
 // True when the last 512 bytes (`tail`, `len` of them) are a UDIF trailer.
 bool udif_source_detect(const uint8_t *tail, size_t len);
+
+// The guest disk of a QEMU QCOW2 image (image_qcow2.h): its L1 and L2 tables
+// are read once, into runs -- raw host ranges, deflated clusters decoded
+// through the chunk cache, and zeros for what is unallocated.  NULL with
+// *err (-ENOTSUP for a backing file, encryption, an external data file or
+// zstd clusters; -EINVAL for a damaged map).
+source_t *qcow2_source_open(source_t *data, int *err);
+
+// True when `head` (`len` bytes, the start of a file) is a QCOW2 header.
+bool qcow2_source_detect(const uint8_t *head, size_t len);
 
 #endif // GS_IMAGE_CHUNKMAP_H

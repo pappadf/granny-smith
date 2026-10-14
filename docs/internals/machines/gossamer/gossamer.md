@@ -37,10 +37,16 @@ channels), `davbus.c` in its Screamer face, `scsi_mesh.c`, `scc.c`,
 ### 1.1 The interrupt controller
 
 Two banks of Events / Mask / Clear / Levels.  Before the NanoKernel's first
-mode acknowledge (a Clear write with bit 31) a bank's output is
-combinational, `(events | levels) & mask`; after it, the bank drives a
-latch set by any change of an enabled source and dropped by the
-acknowledge — the TNT law.  DBDMA completions are held levels until their
+mode acknowledge (a Clear write with bit 31) a bank requests the CPU
+interrupt for an enabled source whose event is latched, or an enabled
+level-type source that is high (bank 1's sources 20–28; bank 2 has none):
+`(events | (levels & level_sources)) & mask` (`hr_request`).  An edge-type
+source held high — an unserviced ATA `INTRQ` — requests nothing once its
+event is cleared; Mac OS X's Heathrow driver depends on it, and stalls in
+an interrupt storm after `Starting Up` without it
+([g3.md](../../../reference/machines/g3/g3.md) §5.1).  After the
+acknowledge, the bank drives a latch set by any change of an enabled source
+and dropped by the acknowledge — the TNT law.  DBDMA completions are held levels until their
 Clear bit is written.  The DBDMA channel number and the interrupt source
 decouple on Heathrow: ATA 0/1's channels 11/12 complete on sources 2/3,
 BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).

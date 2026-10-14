@@ -78,8 +78,8 @@ Before overwriting a committed block in the delta, the storage engine appends th
 ```c
 int storage_new(const storage_config_t*, storage_t**);
 int storage_delete(storage_t*);
-int storage_read_block(storage_t*, size_t byte_offset, void* out_block);  // block_size bytes
-int storage_write_block(storage_t*, size_t byte_offset, const void* in_block);
+int storage_read_block(storage_t*, uint64_t byte_offset, void* out_block);  // block_size bytes
+int storage_write_block(storage_t*, uint64_t byte_offset, const void* in_block);
 int storage_tick(storage_t*);          // no-op
 int storage_checkpoint(storage_t*, checkpoint_t*);
 int storage_restore_from_checkpoint(storage_t*, checkpoint_t*);

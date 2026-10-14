@@ -125,7 +125,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             // raw file of the full size under that name.
             size_t nl = strlen(name);
             int rc = (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0) ? image_create_empty_udif(name, raw_size)
-                                                                         : image_create_empty(name, (size_t)raw_size);
+                                                                         : image_create_empty(name, raw_size);
             // The open below then fails and flags the checkpoint; this says why.
             if (rc != 0)
                 out_printf("Error: cannot recreate the missing base %s while restoring checkpoint\n", name);

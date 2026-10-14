@@ -473,7 +473,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         size_t sector_count = (size_t)iwm_sectors_per_track(drive->track);
         size_t track_bytes = sector_count * 512u;
         size_t track_offset = iwm_disk_image_offset(drive->track, sel, num_sides);
-        size_t disk_sz = disk_size(img);
+        size_t disk_sz = (size_t)disk_size(img); // a floppy: far under 4 GB
 
         // Clamp to disk size for single-sided images
         if (track_offset + track_bytes > disk_sz) {

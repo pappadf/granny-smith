@@ -141,15 +141,15 @@ void scheduler_forget_source(struct scheduler *sch, void *source) {
 // The medium itself is out of scope here: these tests stage the state AROUND a
 // device, not its contents, and images_find() returns NULL so
 // no image is ever opened.
-size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_read_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_write_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_size(image_t *img) {
+uint64_t disk_size(image_t *img) {
     (void)img;
     return 0;
 }

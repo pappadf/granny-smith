@@ -79,7 +79,7 @@ void floppy_media_set_format(struct floppy *f, unsigned d, floppy_format_t fmt) 
     (void)d;
     (void)fmt;
 }
-size_t disk_size(image_t *disk) {
+uint64_t disk_size(image_t *disk) {
     (void)disk;
     return sizeof s_disk;
 }
@@ -87,14 +87,14 @@ size_t disk_size(image_t *disk) {
 // touching it comes back short, as image.c returns it.
 static long s_bad_sector = -1;
 
-size_t disk_read_data(image_t *disk, size_t off, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t off, uint8_t *buf, size_t size) {
     (void)disk;
     if (s_bad_sector >= 0 && off <= (size_t)s_bad_sector * 512 && off + size > (size_t)s_bad_sector * 512)
         return 0;
     memcpy(buf, s_disk + off, size);
     return size;
 }
-size_t disk_write_data(image_t *disk, size_t off, uint8_t *buf, size_t size) {
+size_t disk_write_data(image_t *disk, uint64_t off, uint8_t *buf, size_t size) {
     (void)disk;
     memcpy(s_disk + off, buf, size);
     return size;

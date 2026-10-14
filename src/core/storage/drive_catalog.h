@@ -12,6 +12,7 @@
 #define DRIVE_CATALOG_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 // a known SCSI hard disk model
 struct drive_model {
@@ -30,7 +31,7 @@ const struct drive_model *drive_catalog_get(int i);
 
 // find the closest model whose size >= the given size.
 // falls back to the largest model if size exceeds all entries.
-const struct drive_model *drive_catalog_find_closest(size_t size);
+const struct drive_model *drive_catalog_find_closest(uint64_t size);
 
 // parse a human-friendly size string into exact model bytes.
 //   "20mb" / "40mb"     -> closest model with size >= N megabytes

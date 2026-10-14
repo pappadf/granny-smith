@@ -37,7 +37,7 @@ static uint8_t g_img[IMG_SIZE];
 
 // Stub the one storage entry point image_hfs.c uses.  disk_read_data wants a
 // 512-aligned offset+length; our fixture only ever issues such reads.
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     if (offset + size > IMG_SIZE)
         return 0; // short read
@@ -46,7 +46,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 }
 
 // The image's size: the whole fixture.
-size_t disk_size(image_t *disk) {
+uint64_t disk_size(image_t *disk) {
     (void)disk;
     return IMG_SIZE;
 }

@@ -53,6 +53,13 @@ uint64_t image_wrap_volume_blocks(const uint8_t *vol, size_t len);
 // is stamped into the driver.  Pure: exposed for the unit suite.
 void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *build_id);
 
+// As image_wrap_build_prefix, carrying the boot fields (pmLgBootStart
+// through pmProcessor, and the status bits) of the volume's own map entry
+// `hfs_entry` (a 512-byte 'PM' block; NULL for none) into the synthesised
+// Apple_HFS entry: an Old World Mac's Open Firmware loads Mac OS X's
+// BootX from the partition those fields describe.
+void image_wrap_build_prefix_boot(uint8_t *out, uint64_t volume_blocks, const char *build_id, const uint8_t *hfs_entry);
+
 // The driver-partition boot checksum the ROM verifies (pmBootCksum): add
 // each byte into a 16-bit sum and rotate it left one bit; 0 becomes 0xFFFF.
 uint32_t image_wrap_boot_checksum(const uint8_t *code, size_t len);
