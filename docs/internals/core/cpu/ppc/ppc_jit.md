@@ -217,12 +217,27 @@ ends a block (the translator's leader value 2): a block covers only words
 its chunk owns, or a store into the others would not invalidate it.  Member words keep their classification
 between translations; only changed words are classified again.
 
-A member page whose blocks are invalidated again after `JIT_CHURN_MAX`
-translations is code being written while it runs (the 68K dynamic
-recompiler's cache, patched as it links blocks): it becomes volatile, is
+A member page whose blocks are invalidated after `JIT_CHURN_MAX` (1)
+translation is code being written while it runs: it becomes volatile, is
 not translated, and loses the tier's code-page mark.  It is tried again
 after `JIT_VOLATILE_LOOKUPS` dispatcher calls, an interval doubling every
 time it turns volatile again.
+
+The case that sets the limit at one is the PCI Power Macs' 68K emulator,
+the DR (dynamic recompilation) emulator: its translation cache
+(`0x69019000` up to `0x6903D060`, 144 KB) is rewritten in bursts -- new
+translations at a bump pointer, `bl dispatcher` patched into `b target`
+as it chains blocks, evicted blocks unlinked -- and flushed whole when it
+fills.  On the System 7.6 desktop with Energy Saver in front that is
+every 5 seconds (Energy Saver's `WaitNextEvent` sleep of 300 ticks runs
+the Process Manager's `'scod'` code, whose translations overflow the
+cache).  Retranslating the cache after each flush cost more than its
+translations saved before the next one (Node and browser, measured
+against a limit of 3 and against a policy that retranslated sooner); the
+predecoded tier runs the cache and the tier the emulator's runtime and
+the ROM (PM8500 desktop, 600 M instructions: 53 -> 60 MIPS in Node,
+`main` 46; in the browser +0.4 % -> +6 % over the predecoded tier).  The
+PM6100's emulator, which does not translate, is unaffected.
 
 ### 3.3 Translation
 

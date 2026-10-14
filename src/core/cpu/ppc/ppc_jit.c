@@ -64,7 +64,7 @@ static uint32_t g_chunk_cap = 1024; // instructions per translated function (a r
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
 static uint32_t g_trace; // jit.trace: print every entry and exit (debugging)
-#define JIT_CHURN_MAX 3 // translations a member page may be invalidated after before it is left to the predecoded tier
+#define JIT_CHURN_MAX 1 // translations a member page may be invalidated after before it is left to the predecoded tier
 #define JIT_COOL_MAX  65536u // the compile backoff's ceiling, in entries
 
 #ifdef __EMSCRIPTEN__
