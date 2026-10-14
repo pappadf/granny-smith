@@ -61,15 +61,26 @@ bus-side MMU), the 601 core splits the two array pairs by ROLE:
 - the **supervisor arrays always hold the machine's eager physical
   identity view** (filled by the family's page layout, e.g. `pdm_fill_page`);
 - the **user arrays belong to the MMU front end**, which fills them with
-  LOGICAL page mappings as translated user-mode accesses succeed.
+  LOGICAL page mappings as translated user-mode accesses succeed;
+- a third pair, the **supervisor-translated arrays** (`g_ppc_sv_read/write`,
+  private to `ppc_mmu.c`), holds the same kind of LOGICAL fills for
+  supervisor accesses with translation on -- a kernel that runs with
+  MSR[DR] set (Mac OS X, Linux, the BSDs, AIX, NT).
 
-`ppc_update_active_maps` therefore selects the user arrays only when
-**both** MSR[PR] and MSR[DT] are set; every other mode combination runs on
-the identity view, with supervisor translated accesses (the nanokernel's
-MemRetry paths) rewritten to physical addresses per access through a small
-translation TLB in `ppc_mmu.c`.  This is what makes exception entry and
-`rfi` free: the dominant mode transition (user-translated 68k world ↔
-untranslated kernel handler) is a pointer swap, not an invalidation.
+`ppc_update_active_maps` selects the user arrays when **both** MSR[PR] and
+MSR[DT] are set, the supervisor-translated arrays for MSR[DT] alone (once
+they exist), and the identity view in real mode.  Exception entry and `rfi`
+stay free: every mode transition is a pointer swap, not an invalidation.  An
+access the logical arrays cannot serve (a device page, a watched page, a
+store that still owes the PTE's C bit, a refused code page) goes through a
+small translation TLB and is handed back physical, with the colliding entry
+at that physical page index cleared first (`user_phys_fallback`,
+`sv_phys_fallback` -- the logical arrays are indexed by the physical page
+number on that path).  A code-page mark strips the supervisor-translated
+write entries through `g_mem_extra_write` (memory.h), like the SoA arrays'.
+Supervisor-translated accesses were the out-of-line path for every access
+before the third pair: about 19 % of Mac OS X 10.1's instructions, and its
+boot to the Finder ran 1.5x slower.
 `g_user_soa_reserved` (memory.h) tells the generic identity-restore paths
 in memory.c to keep their hands off the user arrays.
 
@@ -109,8 +120,10 @@ in memory.c to keep their hands off the user arrays.
   Figure 6-15) — exactly the granularity the kernel's FlushTLB loop
   assumes.  `dcbz` takes the alignment exception on W=1/I=1 mappings and
   is a no-op in non-memory-forced T=1 segments.
-- **Caches**: the user-SoA fills (tracked, so invalidation is
-  proportional to fills), a 256-entry direct-mapped translation TLB for
+- **Caches**: the user and supervisor-translated SoA fills (tracked per
+  256 MB segment, so invalidation is proportional to fills and a
+  segment-register write drops only its own segment's -- Mac OS X switches
+  SR0-3 on every trap), a 256-entry direct-mapped translation TLB for
   the non-SoA paths, and a fetch window + 64-entry fetch TLB holding
   instruction-page host pointers.  All of it lives in file statics — NOT
   in the checkpointed `ppc_t` blob (host pointers in the stream would

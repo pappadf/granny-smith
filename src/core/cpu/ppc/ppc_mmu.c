@@ -10,10 +10,13 @@
 //      maps are g_user_read/write, which hold LOGICAL page fills made
 //      here (the supervisor arrays keep the machine's eager physical
 //      identity view, so exception entry/rfi cost nothing);
-//   2. a small direct-mapped translation TLB serving supervisor
-//      translated accesses (the nanokernel's MemRetry paths) and user
-//      pages that cannot be SoA-filled (device I/O);
-//   3. a fetch window + fetch TLB caching instruction-page host pointers.
+//   2. the supervisor-translated SoA — with MSR[PR]=0 and MSR[DT]=1 the
+//      active maps are g_ppc_sv_read/write, LOGICAL fills kept like the
+//      user ones (a kernel that runs translated: Mac OS X, Linux, AIX);
+//      both kinds are tracked per 256 MB segment;
+//   3. a small direct-mapped translation TLB serving the pages the SoA
+//      arrays cannot hold (device I/O, watched pages, stores owing C);
+//   4. a fetch window + fetch TLB caching instruction-page host pointers.
 //
 // All cache state lives in file statics, NOT in ppc_t: entries embed host
 // pointers and are derived state — putting them in the checkpointed blob
@@ -85,14 +88,28 @@ static xtlb_entry_t g_xtlb[XTLB_SIZE];
 ppc_fetch_window_t g_ppc_fetch; // the inline-checked window
 ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE]; // the fetch TLB (ppc_internal.h)
 
-// Pages filled into the user SoA arrays since the last full invalidation.
-// Same shape as mmu.c's tracker but user-arrays-only: on PDM the
-// supervisor arrays hold the machine's eager identity map and must
-// survive MMU invalidations.
-#define PPC_FILL_TRACK_MAX 16384
-static uint32_t g_fill_track[PPC_FILL_TRACK_MAX];
-static int g_fill_track_count;
-static bool g_fill_track_overflow = true; // conservative until first inval
+// Pages filled into the logical SoA arrays -- the user ones and the
+// supervisor-translated ones -- since their last invalidation, one list per
+// 256 MB segment: a segment-register write visits only its own segment's
+// fills.  (On PDM the supervisor arrays hold the machine's eager identity
+// map and must survive MMU invalidations: they are never tracked here.)  A
+// segment whose list overflowed is zeroed whole.
+#define PPC_SEG_TRACK_MAX 2048
+typedef struct {
+    uint32_t page[16][PPC_SEG_TRACK_MAX];
+    uint16_t n[16];
+    uint32_t over; // segments whose list overflowed
+} fill_track_t;
+static fill_track_t g_ut = {.over = 0xFFFFu}; // the user fills (conservative until the first invalidation)
+static fill_track_t g_svt = {.over = 0xFFFFu}; // the supervisor-translated fills
+
+static inline void track_add(fill_track_t *t, uint32_t pg) {
+    uint32_t sg = pg >> 16;
+    if (t->n[sg] < PPC_SEG_TRACK_MAX)
+        t->page[sg][t->n[sg]++] = pg;
+    else
+        t->over |= 1u << sg;
+}
 
 // The write entry each user fill would plant were the page not a code page
 // (ppc_internal.h): set by every fill, zeroed with the fills.  Only the
@@ -109,6 +126,12 @@ static inline void user_wok_zero(uint32_t pg) {
     if (pg < g_ppc_user_wok_pages)
         g_ppc_user_wok[pg] = 0;
 }
+static void user_wok_zero_range(uint32_t lo, uint32_t hi) {
+    if (hi > g_ppc_user_wok_pages)
+        hi = g_ppc_user_wok_pages;
+    if (lo < hi)
+        memset(g_ppc_user_wok + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+}
 static inline void user_wok_set(uint32_t pg, uintptr_t adjusted) {
     if (g_ppc_user_wok_pages != g_page_count) {
         free(g_ppc_user_wok);
@@ -123,11 +146,108 @@ static inline void user_wok_clear_all(void) {}
 static inline void user_wok_zero(uint32_t pg) {
     (void)pg;
 }
+static inline void user_wok_zero_range(uint32_t lo, uint32_t hi) {
+    (void)lo;
+    (void)hi;
+}
 static inline void user_wok_set(uint32_t pg, uintptr_t adjusted) {
     (void)pg;
     (void)adjusted;
 }
 #endif
+
+// The supervisor-translated SoA (ppc_internal.h): logical fills for data
+// accesses with MSR[PR]=0, MSR[DT]=1, tracked like the user fills.  The
+// arrays are sized to the page table and reallocated when it changes; a
+// code-page mark strips their write entries through g_mem_extra_write.
+uintptr_t *g_ppc_sv_read;
+uintptr_t *g_ppc_sv_write;
+static uint32_t g_sv_pages;
+
+// Zero one segment's tracked fills (all of it when its list overflowed).
+static void user_zero_seg(uint32_t sg) {
+    fill_track_t *t = &g_ut;
+    uint32_t lo = sg << 16, hi = lo + 0x10000u;
+    if (hi > g_page_count)
+        hi = g_page_count;
+    if (t->over & (1u << sg)) {
+        if (lo < hi) {
+            if (g_user_read)
+                memset(g_user_read + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+            if (g_user_write)
+                memset(g_user_write + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+            user_wok_zero_range(lo, hi);
+        }
+    } else {
+        for (uint32_t i = 0; i < t->n[sg]; i++) {
+            uint32_t pg = t->page[sg][i];
+            if (pg >= g_page_count)
+                continue;
+            g_user_read[pg] = 0;
+            g_user_write[pg] = 0;
+            user_wok_zero(pg);
+        }
+    }
+    t->n[sg] = 0;
+    t->over &= ~(1u << sg);
+}
+static void sv_zero_seg(uint32_t sg) {
+    fill_track_t *t = &g_svt;
+    if (g_ppc_sv_read) {
+        uint32_t lo = sg << 16, hi = lo + 0x10000u;
+        if (hi > g_sv_pages)
+            hi = g_sv_pages;
+        if (t->over & (1u << sg)) {
+            if (lo < hi) {
+                memset(g_ppc_sv_read + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+                memset(g_ppc_sv_write + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+            }
+        } else {
+            for (uint32_t i = 0; i < t->n[sg]; i++) {
+                uint32_t pg = t->page[sg][i];
+                if (pg < g_sv_pages)
+                    g_ppc_sv_read[pg] = g_ppc_sv_write[pg] = 0;
+            }
+        }
+    }
+    t->n[sg] = 0;
+    t->over &= ~(1u << sg);
+}
+static void user_soa_invalidate_all(void) {
+    for (uint32_t sg = 0; sg < 16; sg++)
+        if (g_ut.n[sg] || (g_ut.over & (1u << sg)))
+            user_zero_seg(sg);
+}
+static void sv_soa_invalidate_all(void) {
+    for (uint32_t sg = 0; sg < 16; sg++)
+        if (g_svt.n[sg] || (g_svt.over & (1u << sg)))
+            sv_zero_seg(sg);
+}
+
+// The arrays for the current page table (false: none could be had).  A
+// reallocation makes the old ones unreachable before the maps switch back.
+static bool sv_soa_ready(ppc_t *p) {
+    if (g_ppc_sv_read && g_sv_pages == g_page_count)
+        return true;
+    uintptr_t *r = calloc(g_page_count, sizeof(uintptr_t));
+    uintptr_t *w = calloc(g_page_count, sizeof(uintptr_t));
+    if (!r || !w) {
+        free(r);
+        free(w);
+        return false;
+    }
+    uintptr_t *old_r = g_ppc_sv_read, *old_w = g_ppc_sv_write;
+    g_ppc_sv_read = r;
+    g_ppc_sv_write = w;
+    g_mem_extra_write = w;
+    g_sv_pages = g_page_count;
+    memset(g_svt.n, 0, sizeof g_svt.n);
+    g_svt.over = 0;
+    ppc_update_active_maps(p); // the supervisor-translated mode now runs on them
+    free(old_r);
+    free(old_w);
+    return true;
+}
 
 // tlbie congruence class: 601 EA[13-19] = 128 classes (601UM Figure 6-15);
 // 604 EA[14-19] = 64 classes (604UM §5.4.3.2).
@@ -146,36 +266,16 @@ void ppc_mmu_flush_fetch(void) {
     memset(g_ppc_ftlb, 0, sizeof(g_ppc_ftlb));
 }
 
-// Zero every tracked user-SoA fill (or everything on tracker overflow).
-static void user_soa_invalidate_all(void) {
-    if (g_fill_track_overflow) {
-        size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
-        if (g_user_read)
-            memset(g_user_read, 0, sz);
-        if (g_user_write)
-            memset(g_user_write, 0, sz);
-        user_wok_clear_all();
-    } else {
-        for (int i = 0; i < g_fill_track_count; i++) {
-            uint32_t pg = g_fill_track[i];
-            if (pg >= g_page_count)
-                continue;
-            g_user_read[pg] = 0;
-            g_user_write[pg] = 0;
-            user_wok_zero(pg);
-        }
-    }
-    g_fill_track_count = 0;
-    g_fill_track_overflow = false;
-}
-
 // The machine's memory map was selected: the translation caches and the fill
-// tracker describe whichever map was selected before, so the tracker goes
-// back to its conservative state (the next invalidation zeroes everything)
-// and the caches refill.
+// tracker describe whichever map was selected before, so the user tracker
+// goes back to its conservative state (the next invalidation zeroes
+// everything) and the caches refill.  The supervisor-translated arrays are
+// this file's own: their host pointers belong to the old map, so they go now.
 void ppc_mmu_caches_unknown(void) {
-    g_fill_track_count = 0;
-    g_fill_track_overflow = true;
+    memset(g_ut.n, 0, sizeof g_ut.n);
+    g_ut.over = 0xFFFFu;
+    g_svt.over = 0xFFFFu;
+    sv_soa_invalidate_all();
     user_wok_clear_all();
     memset(g_xtlb, 0, sizeof(g_xtlb));
     ppc_mmu_flush_fetch();
@@ -184,19 +284,52 @@ void ppc_mmu_caches_unknown(void) {
 // Memory-logpoint install/uninstall reshaped the watch arrays: drop the
 // translation TLB too — a stale entry would keep rewriting a now-watched
 // EA to physical before ppc_dxlate_slow's keep-logical check can run.
-// (The user SoA arrays are zeroed by the installer itself.)
+// (The installer zeroes the four SoA arrays itself; the supervisor-
+// translated ones go whole here.)
 void ppc_mmu_logpoints_changed(void) {
+    g_svt.over = 0xFFFFu;
+    sv_soa_invalidate_all();
     memset(g_xtlb, 0, sizeof(g_xtlb));
     ppc_mmu_flush_fetch();
 }
 
-// Full invalidation: context change (mtsr/BAT/SDR1 value change, HMC
-// bank remap, checkpoint restore).
+// Full invalidation: context change (BAT/SDR1 value change, HMC bank
+// remap, checkpoint restore).
 void ppc_mmu_invalidate_all(ppc_t *p) {
     (void)p;
     user_soa_invalidate_all();
+    sv_soa_invalidate_all();
     memset(g_xtlb, 0, sizeof(g_xtlb));
     ppc_mmu_flush_fetch();
+}
+
+// Drop a tracker's fills in tlbie's congruence class, keeping the rest
+// listed.
+static void track_tlbie(fill_track_t *t, uintptr_t *r, uintptr_t *w, uint32_t pages, bool user, uint32_t mask,
+                        uint32_t cls) {
+    for (uint32_t sg = 0; sg < 16; sg++) {
+        if (t->over & (1u << sg)) {
+            if (user)
+                user_zero_seg(sg);
+            else
+                sv_zero_seg(sg);
+            continue;
+        }
+        uint32_t k = 0;
+        for (uint32_t i = 0; i < t->n[sg]; i++) {
+            uint32_t pg = t->page[sg][i];
+            if ((pg & mask) != cls) {
+                t->page[sg][k++] = pg;
+                continue;
+            }
+            if (pg < pages) {
+                r[pg] = w[pg] = 0;
+                if (user)
+                    user_wok_zero(pg);
+            }
+        }
+        t->n[sg] = (uint16_t)k;
+    }
 }
 
 // tlbie: invalidate the EA's congruence class — every cached translation
@@ -207,18 +340,10 @@ void ppc_mmu_invalidate_all(ppc_t *p) {
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
     uint32_t mask = tlbie_class_mask(p);
     uint32_t cls = (ea >> MEM_PAGE_SHIFT) & mask;
-    if (g_fill_track_overflow) {
-        user_soa_invalidate_all();
-    } else {
-        for (int i = 0; i < g_fill_track_count; i++) {
-            uint32_t pg = g_fill_track[i];
-            if ((pg & mask) != cls || pg >= g_page_count)
-                continue;
-            g_user_read[pg] = 0;
-            g_user_write[pg] = 0;
-            user_wok_zero(pg);
-        }
-    }
+    if (g_user_read)
+        track_tlbie(&g_ut, g_user_read, g_user_write, g_page_count, true, mask, cls);
+    if (g_ppc_sv_read)
+        track_tlbie(&g_svt, g_ppc_sv_read, g_ppc_sv_write, g_sv_pages, false, mask, cls);
     for (int i = 0; i < XTLB_SIZE; i++)
         if (((g_xtlb[i].tag >> MEM_PAGE_SHIFT) & mask) == cls)
             g_xtlb[i].tag = 0;
@@ -245,12 +370,27 @@ void ppc_recompute_sr_t_mask(ppc_t *p) {
 // Segment-register write with the invalidation the 601 requires; a
 // rewrite of the same value is free — the nanokernel reloads all 16 SRs
 // with identical values on every address-space touch (SetSpace).
+//
+// A segment register translates only the effective addresses of its own
+// 256 MB segment, so only the cached translations there go: the user and
+// supervisor-translated fills, the translation and fetch TLBs.  (A kernel
+// that keeps its own mappings in some segments and switches the user's in
+// others on every trap -- Mac OS X 10.1 rewrites SR0-3 about every 13 K
+// instructions -- keeps the rest.)
 void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v) {
     if (p->sr[n] == v)
         return;
     p->sr[n] = v;
     ppc_recompute_sr_t_mask(p);
-    ppc_mmu_invalidate_all(p);
+    user_zero_seg(n);
+    sv_zero_seg(n);
+    for (int i = 0; i < XTLB_SIZE; i++)
+        if ((g_xtlb[i].tag >> 28) == n)
+            g_xtlb[i].tag = 0;
+    for (int i = 0; i < PPC_FTLB_SIZE; i++)
+        if ((g_ppc_ftlb[i].tag >> 28) == n)
+            g_ppc_ftlb[i].tag = 0;
+    ppc_mmu_flush_fetch_window();
 }
 
 // ============================================================
@@ -651,10 +791,7 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
     // the fast path — through the WRONG host mapping — so keep it empty.
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[lpage])
         return;
-    if (g_fill_track_count >= PPC_FILL_TRACK_MAX)
-        g_fill_track_overflow = true;
-    else
-        g_fill_track[g_fill_track_count++] = lpage;
+    track_add(&g_ut, lpage);
     uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
     user_wok_set(lpage, (write_ok && pe->writable) ? adjusted : 0);
@@ -680,6 +817,40 @@ static void user_phys_fallback(uint32_t pa, bool store) {
         g_user_read[ppage] = 0;
         user_wok_zero(ppage);
     }
+}
+
+// The supervisor-translated fill and fallback: user_soa_fill's and
+// user_phys_fallback's rules, on the supervisor-translated arrays.
+static void sv_soa_fill(ppc_t *p, uint32_t ea, uint32_t pa, bool write_ok) {
+    uint32_t lpage = ea >> MEM_PAGE_SHIFT;
+    uint32_t ppage = pa >> MEM_PAGE_SHIFT;
+    if (lpage >= g_page_count || ppage >= g_page_count)
+        return;
+    page_entry_t *pe = &g_page_table[ppage];
+    if (!pe->host_base || pe->dev)
+        return;
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[lpage])
+        return;
+    if (g_mem_logpoint_phys_page_count &&
+        (g_mem_logpoint_phys_page_count[ppage] || g_mem_logpoint_phys_page_count[lpage]))
+        return;
+    if (!sv_soa_ready(p))
+        return;
+    track_add(&g_svt, lpage);
+    uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
+    g_ppc_sv_read[lpage] = adjusted;
+    if (write_ok && pe->writable) // refused on a code page (memory.h)
+        g_ppc_sv_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted, 0);
+}
+
+static void sv_phys_fallback(uint32_t pa, bool store) {
+    uint32_t ppage = pa >> MEM_PAGE_SHIFT;
+    if (ppage >= g_sv_pages)
+        return;
+    if (store)
+        g_ppc_sv_write[ppage] = 0;
+    else
+        g_ppc_sv_read[ppage] = 0;
 }
 
 // ============================================================
@@ -754,6 +925,8 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
         *addr = te->pa_page | (ea & 0xFFFu);
         if (user && dt)
             user_phys_fallback(*addr, store); // the slot may have refilled since the miss
+        else if (dt)
+            sv_phys_fallback(*addr, store);
         return false;
     }
 
@@ -813,8 +986,18 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
             return false;
         }
         user_phys_fallback(out.pa, store);
+    } else if (dt) {
+        sv_soa_fill(p, ea, out.pa, out.w_ok);
+        uintptr_t *tab = store ? g_ppc_sv_write : g_ppc_sv_read;
+        // (the EA only while these arrays are the active ones: an MSR poked
+        // without ppc_update_active_maps leaves the identity view in place)
+        if (tab && g_active_read == g_ppc_sv_read && tab[ea >> MEM_PAGE_SHIFT]) {
+            *addr = ea;
+            return false;
+        }
+        sv_phys_fallback(out.pa, store);
     }
-    // Not SoA-fillable (device page, logpointed, supervisor mode):
+    // Not SoA-fillable (device page, logpointed, a store owing C):
     // cache in the translation TLB and access physically.
     te->tag = tag;
     te->pa_page = out.pa & 0xFFFFF000u;
@@ -901,6 +1084,13 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
             return 0;
         }
         user_phys_fallback(out.pa, true);
+    } else if (dt) {
+        sv_soa_fill(p, ea, out.pa, out.w_ok);
+        if (g_ppc_sv_write && g_active_write == g_ppc_sv_write && g_ppc_sv_write[ea >> MEM_PAGE_SHIFT]) {
+            *addr = ea;
+            return 0;
+        }
+        sv_phys_fallback(out.pa, true);
     }
     *addr = out.pa;
     return 0;

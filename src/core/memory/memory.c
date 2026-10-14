@@ -76,6 +76,7 @@ uintptr_t *g_supervisor_read = NULL;
 uintptr_t *g_supervisor_write = NULL;
 uintptr_t *g_user_read = NULL;
 uintptr_t *g_user_write = NULL;
+uintptr_t *g_mem_extra_write = NULL;
 
 // Active pointers (switched per sprint based on SR.S bit)
 uintptr_t *g_active_read = NULL;
@@ -1493,6 +1494,7 @@ void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     // loses it; refills consult the mark (memory_write_fill).
     zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
     zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
+    zero_write_aliases(g_mem_extra_write, 0, host_page);
 }
 
 void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {

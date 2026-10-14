@@ -447,18 +447,30 @@ extern uintptr_t *g_ppc_user_wok;
 // a user store to ea reaches without a walk, or NULL.
 uint8_t *ppc_mmu_user_store_host(uint32_t ea);
 
+// The supervisor-translated SoA (ppc_mmu.c): LOGICAL fills for data
+// accesses with MSR[PR]=0 and MSR[DT]=1 -- a kernel that runs with
+// translation on (Mac OS X, Linux, the BSDs, AIX) -- kept like the user
+// arrays' fills.  NULL until the first such access allocates them.
+extern uintptr_t *g_ppc_sv_read;
+extern uintptr_t *g_ppc_sv_write;
+
 // Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair — the
 // one global obligation of a main CPU.  Called on every MSR write, exception
-// entry, and rfi.  The user arrays hold the MMU's LOGICAL fills, so they are
-// active only for translated user-mode data; every other mode runs on the
-// machine's eager physical identity view in the supervisor arrays
-// (supervisor-translated accesses rewrite their address in ppc_dxlate_slow
-// before touching memory).
+// entry, and rfi.  The user arrays hold the MMU's LOGICAL fills for
+// translated user-mode data, the supervisor-translated arrays the same for
+// translated supervisor data; real mode runs on the machine's eager
+// physical identity view in the supervisor arrays.  (Accesses the logical
+// arrays cannot serve rewrite their address to physical in ppc_dxlate_slow
+// before touching memory.)
 static inline void ppc_update_active_maps(ppc_t *p) {
     ppc_mmu_flush_fetch_window();
-    if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
+    uint32_t m = p->msr & (PPC_MSR_PR | PPC_MSR_DT);
+    if (m == (PPC_MSR_PR | PPC_MSR_DT)) {
         g_active_read = g_user_read;
         g_active_write = g_user_write;
+    } else if (m == PPC_MSR_DT && g_ppc_sv_read) {
+        g_active_read = g_ppc_sv_read;
+        g_active_write = g_ppc_sv_write;
     } else {
         g_active_read = g_supervisor_read;
         g_active_write = g_supervisor_write;
@@ -470,15 +482,15 @@ static inline void ppc_update_active_maps(ppc_t *p) {
 // abandoned with no side effects — the update forms depend on this).
 // Fast paths: with translation off, only T=1 segments need the slow
 // half (601UM §6.5.2 — SR[T] is consulted independent of MSR[DT]); with
-// translation on in user mode the active maps hold logical fills, so a
-// covered page needs no address rewrite at all.
+// translation on the active maps hold logical fills (user, or supervisor
+// once its arrays exist), so a covered page needs no address rewrite.
 static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     if (!(p->msr & PPC_MSR_DT)) {
         if (__builtin_expect(!(p->sr_t_mask & (1u << (*addr >> 28))), 1))
             return false;
         return ppc_dxlate_slow(p, iw, addr, store);
     }
-    if (p->msr & PPC_MSR_PR) {
+    if (g_active_read != g_supervisor_read) { // logical maps (never the physical view)
         uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> MEM_PAGE_SHIFT];
         if (__builtin_expect(e != 0, 1))
             return false;

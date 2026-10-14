@@ -308,7 +308,9 @@ without a check on the fast path.
   another) and zeroes the
   page's write entries in every SoA table it has aliases in.  Aliases are
   found by a reverse scan over the 256-page chunks flagged in
-  `g_mem_soa_chunk` (the selected map's chunk table).  `memory_code_page_unmark` clears the mark; the
+  `g_mem_soa_chunk` (the selected map's chunk table), and in the CPU's
+  extra logical write table when it has one (`g_mem_extra_write`, the
+  PowerPC MMU's supervisor-translated fills).  `memory_code_page_unmark` clears the mark; the
   entries come back on the next refill.
 - **One planter.** Every site that plants a write entry —
   `rebuild_soa_page`, `memory_populate_pages`, `memory_populate_ram_mirror`,

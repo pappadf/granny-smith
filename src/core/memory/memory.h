@@ -287,6 +287,10 @@ extern uintptr_t *g_supervisor_read; // supervisor-mode read mapping
 extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only)
 extern uintptr_t *g_user_read; // user-mode read mapping
 extern uintptr_t *g_user_write; // user-mode write mapping
+// A CPU-private logical write table outside the four SoA arrays (the
+// PowerPC MMU's supervisor-translated fills), NULL when there is none: a
+// code-page mark strips its entries for the page like theirs.
+extern uintptr_t *g_mem_extra_write;
 
 // SoA population tracking: the selected map lists the page indices written
 // into the SoA arrays since the last invalidation.  Every writer of a
