@@ -83,6 +83,8 @@ uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_en
 //   JX_BCLR, JX_BCCTR   every bclr/bcctr form the T0 BLR/BCTR are not
 //                       (conditional, decrementing, linking): a = BO, b = BI,
 //                       c = LK
+//   JX_LMW, JX_STMW     load/store multiple word: a = rT/rS (the number),
+//                       b = rA offset (JX_RA0: rA = 0), c = the displacement
 //   JX_LWZX ..          the X-form loads and stores: a = rT/rS offset,
 //                       b = rA offset (JX_RA0: rA = 0, the non-update forms
 //                       only), c = rB offset
@@ -112,6 +114,8 @@ enum {
     JX_MCRXR, // a = crfD
     JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR)
     JX_MTSPR, // a = rS offset, c = the ppc_t field
+    JX_LMW,
+    JX_STMW,
     JX_LWZX,
     JX_LWZUX,
     JX_LHZX,
@@ -226,6 +230,10 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
         }
         *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = off};
         return xo == 339 ? JX_MFSPR : JX_MTSPR;
+    }
+    if (op == 46 || op == 47) { // lmw / stmw
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
+        return op == 46 ? JX_LMW : JX_STMW;
     }
     if (op != 31 || (iw & 1u))
         return id;
@@ -1145,6 +1153,8 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
         return 0;
     if (id == JX_MFSPR || id == JX_MTSPR)
         return 1u << (e->a >> 2);
+    if (id == JX_LMW || id == JX_STMW) // rT..r31 and rA
+        return (~0u << e->a) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_ADDX)
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
     if (id >= JX_LWZX && id < JX_END)
@@ -1171,6 +1181,10 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
         return 0;
     case JX_MFSPR:
         return 1u << (e->a >> 2);
+    case JX_LMW: // (rA in range is not loaded: it stays the base)
+        return (~0u << e->a) & ~(e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
+    case JX_STMW:
+        return 0;
     case JX_ADDX:
         return 1u << (e->a >> 2);
     case JX_LWZUX:
@@ -1685,6 +1699,60 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         lget(RD(a));
         mem(W_STORE, 2, c);
         return;
+    case JX_LMW:
+    case JX_STMW: {
+        // One test for the whole transfer: word-aligned, inside one page,
+        // the page's SoA entry present (a code page has no write entry, a
+        // watched page none at all).  Anything else -- unaligned (the 604's
+        // alignment exception, the 601's split forms), a page crossing, a
+        // fault partway -- leaves at the instruction for ppc_do_lmw/stmw.
+        bool store = id == JX_STMW;
+        uint32_t n = 32 - a;
+        if (b == JX_RA0)
+            iconst(c);
+        else {
+            lget(RD(b));
+            iconst(c);
+            op(W_ADD);
+        }
+        lset(L_EA);
+        emit_access_test(4, store);
+        lget(L_EA);
+        iconst(3);
+        op(W_AND);
+        op(W_OR);
+        lget(L_EA);
+        iconst(MEM_PAGE_MASK);
+        op(W_AND);
+        iconst(MEM_PAGE_SIZE - 4 * n);
+        op(W_GT_U);
+        op(W_OR);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_deopt();
+        op(W_END);
+        g_depth--;
+        lget(L_T1);
+        lget(L_T0);
+        op(W_ADD);
+        lset(L_EA); // the host address of the first word
+        for (uint32_t k = 0; k < n; k++) {
+            uint32_t reg = a + k;
+            if (store) {
+                lget(L_EA);
+                lget(GPR(reg));
+                emit_bswap32();
+                mem(W_STORE, 0, 4 * k);
+            } else if (b == JX_RA0 || reg != (b >> 2u)) { // rA in range is skipped (ppc_do_lmw)
+                lget(L_EA);
+                mem(W_LOAD, 0, 4 * k);
+                emit_bswap32();
+                lset(GPR(reg));
+            }
+        }
+        return;
+    }
     case PPD_ISYNC: {
         // ppc_context_sync publishes BAT writes to the fetch side: with none
         // pending (the copies equal the BATs) it changes nothing; otherwise
@@ -2226,7 +2294,8 @@ static uint32_t translate(void) {
                 g_block_defs |= entry_defs(g_ids[x], &g_ents[x]);
             }
             uint16_t id = g_ids[x];
-            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == PPD_ISYNC;
+            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
+                      id == JX_STMW || id == PPD_ISYNC;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))

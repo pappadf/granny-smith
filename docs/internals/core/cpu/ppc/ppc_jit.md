@@ -246,7 +246,7 @@ classifier, plus the translator's own shapes (`jit_classify`): every
 `bc` form the T0 ids leave out (linking, decrementing with a condition),
 conditional, decrementing and linking `bclr`/`bcctr`, the X-form loads and
 stores, the XO-form carrying, extended and OE add/subtract family, the
-D-form accesses with rA = 0, `mcrxr`, and `mfspr`/`mtspr` of the plain
+D-form accesses with rA = 0, `lmw`/`stmw` (one test for the whole transfer: word-aligned, inside one page, the page's SoA entry present -- anything else leaves at the instruction for the C forms), `mcrxr`, and `mfspr`/`mtspr` of the plain
 supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3: fields of `ppc_t` with no
 side effect; in a user-mode region they raise a program interrupt, so
 they stay in C there).  Mode changes (`rfi`, `sc`, traps), the
