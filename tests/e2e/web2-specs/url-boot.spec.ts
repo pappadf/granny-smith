@@ -263,30 +263,26 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
 });
 
-// ?nvram.<variable>= sets an Open Firmware variable before the machine's
-// first instruction (bus/urlMedia.ts applyUrlNvram): a multi-line nvramrc
-// keeps its lines, booleans and strings land as typed, and a variable the
-// firmware does not have is reported and left out, the boot going ahead.
-test('?nvram.* sets Open Firmware variables before a G3 first runs', async ({ page }) => {
+// A config= document's "nvram" sets Open Firmware variables, seeded by the
+// core when it builds the machine (machine_config.c, V10): a multi-line
+// nvramrc keeps its lines, booleans and strings land as given.  memory=
+// beside it edits the document (lib/urlConfig.ts), which must keep them.
+test('config= nvram sets Open Firmware variables before a G3 first runs', async ({ page }) => {
   test.setTimeout(120_000);
   await routeRom(page, 'url-g3.rom', G3_ROM);
   const rc = 'hex\n: gs-url-test ;\nunselect-dev';
-  const q = new URLSearchParams([
-    ['rom', 'url-g3.rom'],
-    ['model', 'pmg3dt'],
-    ['nvram.auto-boot?', 'false'],
-    ['nvram.use-nvramrc?', 'true'],
-    ['nvram.boot-command', '0 bootr -v'],
-    ['nvram.nvramrc', rc],
-    ['nvram.no-such-variable', '1'],
-  ]);
-  await page.goto(`/index.html?${q.toString()}`);
+  const config = Buffer.from(
+    JSON.stringify({
+      model: 'pmg3dt',
+      nvram: { 'auto-boot?': false, 'use-nvramrc?': true, 'boot-command': '0 bootr -v', nvramrc: rc },
+    }),
+  ).toString('base64url');
+  await page.goto(`/index.html?rom=url-g3.rom&model=pmg3dt&memory=128MB&config=${config}`);
   await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
     timeout: 60_000,
   });
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted pmg3dt from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'nvram.no-such-variable=' })).toBeVisible();
   const env = async (name: string) => gsEvalInPage(page, 'machine.nvram.getenv', [name]);
   expect(await env('auto-boot?')).toBe('false');
   expect(await env('use-nvramrc?')).toBe('true');

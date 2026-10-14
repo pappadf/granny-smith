@@ -125,14 +125,7 @@ export interface UrlMediaParams {
   // The configuration edits by name (lib/urlConfig.ts): every parameter
   // that is not one of the above or another the page reads.
   settings: UrlConfigParams;
-  // Open Firmware NVRAM variables to set before the machine first runs
-  // (?nvram.<variable>=<value>), in the order given: the variable names
-  // lower case, the values as typed.
-  nvram: Array<{ name: string; value: string }>;
 }
-
-// The prefix of an Open Firmware NVRAM parameter.
-const NVRAM_PREFIX = 'nvram.';
 
 // Parse a URLSearchParams (or compatible) into structured params.  Names
 // match case-insensitively (`ROM`, `Rom`, `rom` are one parameter; `HD` is
@@ -143,16 +136,8 @@ const NVRAM_PREFIX = 'nvram.';
 export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
   const seen = new Map<string, string>();
   const settings = emptyUrlConfigParams();
-  const nvram: Array<{ name: string; value: string }> = [];
   let romPair: string | null = null;
   for (const [k, v] of params.entries()) {
-    if (k.toLowerCase().startsWith(NVRAM_PREFIX) && k.length > NVRAM_PREFIX.length) {
-      const variable = k.slice(NVRAM_PREFIX.length).toLowerCase();
-      if (nvram.some((e) => e.name === variable))
-        console.warn(`[urlMedia] ignoring ${k}=: ${variable} is already set`);
-      else nvram.push({ name: variable, value: v });
-      continue;
-    }
     const name = canonicalParamName(k);
     if (!name) {
       if (isUrlConfigParam(k.toLowerCase())) addUrlConfigParam(settings, k, v);
@@ -180,7 +165,6 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
     hardDisks: [],
     cd: seen.get('cd') ?? null,
     settings,
-    nvram,
   };
   const config = seen.get('config');
   if (config !== undefined) {
@@ -382,7 +366,6 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
-  await applyUrlNvram(params.nvram);
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
@@ -413,18 +396,6 @@ async function configuredHardDisks(config: Record<string, unknown>): Promise<Mac
   const i = start ? devs.findIndex((d) => d.bus === start.bus && d.unit === start.unit) : -1;
   if (i > 0) devs.unshift(...devs.splice(i, 1));
   return devs;
-}
-
-// Set the URL's Open Firmware NVRAM variables on the machine just booted,
-// before its first instruction: the firmware reads them at power-on.  The
-// core validates each (a known variable, a value of its kind); one it
-// refuses, or a model with no Open Firmware NVRAM, is said and left out.
-async function applyUrlNvram(vars: UrlMediaParams['nvram']): Promise<void> {
-  for (const { name, value } of vars) {
-    const r = await gsEval('machine.nvram.setenv', [name, value]);
-    if (!gsOk(r))
-      showNotification(`nvram.${name}=: ${gsErrorText(r)}; booting without it`, 'warning');
-  }
 }
 
 // The URL's media parameters as [canonical name, value] pairs, in a fixed

@@ -537,7 +537,7 @@ static value_t boot_read_config(boot_config_t *doc, value_t *out) {
         return val_err("machine.boot: config must be a JSON object");
     }
     static const char *const keys[] = {"model",   "rom",   "options",  "floppies", "storage",
-                                       "startup", "cards", "displays", NULL};
+                                       "startup", "cards", "displays", "nvram",    NULL};
     for (size_t i = 0; i < v.map.len; i++) {
         bool ok = false;
         for (const char *const *k = keys; *k; k++)

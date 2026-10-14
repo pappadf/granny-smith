@@ -30,30 +30,6 @@ describe('parseUrlMediaParams', () => {
     expect(p.floppies.map((f) => f.url)).toEqual(['/a', '/b', '/c']);
   });
 
-  it('collects Open Firmware NVRAM variables, in order, outside the configuration edits', () => {
-    const rc = 'hex\n: decode-unit parse-1hex ;\nunselect-dev';
-    const p = parseUrlMediaParams(
-      new URLSearchParams([
-        ['rom', '/r'],
-        ['NVRAM.boot-command', '0 bootr -v'],
-        ['nvram.use-nvramrc?', 'true'],
-        ['nvram.nvramrc', rc],
-        ['nvram.Boot-Command', 'boot'], // a second spelling: ignored
-        ['nvram.', 'x'], // no variable: not an NVRAM parameter
-      ]),
-    );
-    expect(p.nvram).toEqual([
-      { name: 'boot-command', value: '0 bootr -v' },
-      { name: 'use-nvramrc?', value: 'true' },
-      { name: 'nvramrc', value: rc },
-    ]);
-    expect(p.settings.options.map((o) => o.id)).toEqual(['nvram.']);
-  });
-
-  it('has no NVRAM variables without nvram.* parameters', () => {
-    expect(parseUrlMediaParams(make('rom=/r&memory=64MB')).nvram).toEqual([]);
-  });
-
   it('collects hard disks hd0..hdN', () => {
     const p = parseUrlMediaParams(make('hd0=/a&hd2=/c&hd1=/b'));
     expect(p.hardDisks.map((h) => h.slot).sort()).toEqual(['hd0', 'hd1', 'hd2']);

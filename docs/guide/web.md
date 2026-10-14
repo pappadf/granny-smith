@@ -983,15 +983,13 @@ view; errors still toast.
   also offers it to the core's ROM catalog, for later boots.
 - `config=<document>` — the whole configuration document, as the dialog
   holds it, base64url-encoded JSON; absent, the model's default
-  configuration.  A node it leaves out means that node's default.
-- `nvram.<variable>=<value>` — an Open Firmware variable, set with
-  `machine.nvram.setenv` after the machine is built and its media attached,
-  before `scheduler.run` (`bus/urlMedia.ts::applyUrlNvram`): the firmware
-  reads its variables at power-on.  The core validates each (a variable
-  the firmware has, a value of its kind); one it refuses, or a model with
-  no Open Firmware NVRAM, is a warning and the boot goes ahead.  This is
-  how a link installs the NVRAM script a Mac OS X boot on an Old World
-  machine needs ([g3.md](../reference/machines/g3/g3.md) §2.8).
+  configuration.  A node it leaves out means that node's default.  The
+  page passes the document through as it is: its `nvram` member (Open
+  Firmware variables) is the core's, which seeds them when it builds the
+  machine -- the page never writes PRAM or NVRAM itself
+  (`tests/lint/no-model-name-matching.test.ts`).  This is how a link
+  carries the NVRAM script a Mac OS X boot on an Old World machine needs
+  ([g3.md](../reference/machines/g3/g3.md) §2.8).
 - **Configuration edits by name** — every other parameter (not media, not
   one the page reads for something else) edits the configuration document
   the boot uses (`config=` if given, else the model's default), through the

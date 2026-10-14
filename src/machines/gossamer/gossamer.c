@@ -750,6 +750,13 @@ static void gossamer_seed(config_t *cfg) {
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);
+    // The configuration's own Open Firmware variables ("nvram"), last, so
+    // its boot-device wins over the record above.  machine_config_resolve
+    // set each on a factory store already; a failure here is a bug.
+    const char *bad = NULL;
+    const char *err = of_nvram_setenv_packed(st->hr.nvram, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
+    if (err)
+        LOG(0, "configuration nvram %s: %s", bad, err);
 }
 
 const machine_substrate_t gossamer_substrate = {

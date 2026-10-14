@@ -263,6 +263,40 @@ const char *of_nvram_setenv(uint8_t nv[OF_NVRAM_SIZE], const char *name, const c
     return err;
 }
 
+const char *of_nvram_setenv_packed(uint8_t nv[OF_NVRAM_SIZE], int n, const char *packed, const char **bad) {
+    const char *at = packed;
+    for (int i = 0; i < n; i++) {
+        const char *name = at;
+        const char *value = name + strlen(name) + 1;
+        at = value + strlen(value) + 1;
+        const char *err = of_nvram_setenv(nv, name, value);
+        if (err) {
+            if (bad)
+                *bad = name;
+            return err;
+        }
+    }
+    return NULL;
+}
+
+static const char *check_on_factory(const of_nvram_defaults_t *d, int n, const char *packed, const char **bad) {
+    uint8_t *nv = malloc(OF_NVRAM_SIZE);
+    if (!nv)
+        return "out of memory";
+    of_nvram_factory(nv, d);
+    const char *err = of_nvram_setenv_packed(nv, n, packed, bad);
+    free(nv);
+    return err;
+}
+
+const char *of_nvram_check_tnt(int n, const char *packed, const char **bad) {
+    return check_on_factory(&of_nvram_defaults_tnt, n, packed, bad);
+}
+
+const char *of_nvram_check_g3(int n, const char *packed, const char **bad) {
+    return check_on_factory(&of_nvram_defaults_g3, n, packed, bad);
+}
+
 // === Mac OS settings in the store ============================================
 
 #define XP_STARTUP (OF_NVRAM_XPRAM + 0x78u)

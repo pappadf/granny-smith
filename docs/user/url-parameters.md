@@ -95,8 +95,7 @@ spaces.
 | `mode=` | `mode=1152x870x8` | Startup video mode: width × height × bits per pixel; `1152x870` alone picks the deepest mode at that size. |
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |
 | model options | `keyswitch=service`, `power_supplies=two` | Any other option the model has. |
-| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. |
-| `nvram.<variable>=` | `nvram.boot-command=0%20bootr` | An Open Firmware variable, set in the machine's NVRAM before it first runs — on the Open Firmware machines (Power Mac 7500/8500/9500, the G3, the Network Servers). Any variable `printenv` lists: booleans take `true`/`false`, numbers hex, strings as typed (`nvramrc` may span lines, encoded as `%0A`). One the firmware does not have is shown in a notice and left out. |
+| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. On the Open Firmware Macs (Power Mac 7500/8500/9500, the G3) its `nvram` member sets Open Firmware variables before the machine first runs — `{"nvram": {"boot-command": "0 bootr", "use-nvramrc?": true}}`: any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given (`nvramrc` may span lines). One the firmware does not have stops the boot with a message naming it. |
 
 A value the model does not offer is shown in a notice and left out — the
 machine boots without that change. An option the model does not have at
