@@ -50,9 +50,10 @@ instruction: it translates the shapes the predecoded loop specializes
 (T0) minus branches to themselves (they take a slot instead of folding;
 `isync` is a no-op there unless BAT writes are pending, when it leaves), plus a few the
 predecoded loop leaves generic (T1) that it decodes from the raw word
-(§3.3).  It does not run in little-endian mode or with supervisor data
-translation (every access takes the slow path there), and it is never
-entered while an interrupt is deliverable.
+(§3.3).  It does not run in little-endian mode, or with supervisor data
+translation unless `jit.supervisor` is set (and then not before the
+supervisor-translated SoA exists: every access would take the slow
+path), and it is never entered while an interrupt is deliverable.
 
 ### 1.2 Design rules
 
@@ -135,7 +136,7 @@ an access that misses the fast path sets the instruction's index and
 branches there, and one tail per block gives the slots back and leaves.
 
 One module per function, importing the emulator's memory (shared in the
-pthreads build), its function table and `ppc_jit_code_store`; the export
+pthreads build), its function table, `ppc_jit_code_store` and `ppc_jit_tb`; the export
 goes into the table (a freed slot, or a new one: `-sALLOW_TABLE_GROWTH`,
 64 at a time), and its index is the function pointer the dispatcher
 calls.  After instantiation the dispatcher calls it once with a zero
@@ -249,8 +250,26 @@ stores, the XO-form carrying, extended and OE add/subtract family, the
 D-form accesses with rA = 0, `lmw`/`stmw` (one test for the whole transfer: word-aligned, inside one page, the page's SoA entry present -- anything else leaves at the instruction for the C forms), `mcrxr`, and `mfspr`/`mtspr` of the plain
 supervisor SPRs (DSISR, DAR, SRR0/1, SPRG0-3: fields of `ppc_t` with no
 side effect; in a user-mode region they raise a program interrupt, so
-they stay in C there).  Mode changes (`rfi`, `sc`, traps), the
-time-dependent SPRs (DEC, TB) and the reservation pair stay in C.  It emits each block's instructions from the
+they stay in C there).  For a kernel that runs translated (Mac OS X):
+`mfmsr`; `mtmsr` when only bits nothing translated depends on change
+(EE, RI, FP, ME, FE0/FE1, PM) and no BAT write is pending -- any other
+change, or POW, leaves for C, and setting EE with an interrupt pending
+leaves after it so the predecoded loop takes the interrupt; `mftb`
+(TBL/TBU) through an imported helper (`ppc_jit_tb`) that
+brings the scheduler's burndown up to the instruction and reads
+`ppc_tb_now`; `lwarx`/`stwcx.` on the word-aligned fast path (the
+reservation flag and `reserve_addr`, the EA, as C keeps them; unaligned
+or missing accesses leave); the non-OE `divw`/`divwu` (zero for a zero
+divisor and for `0x80000000 / -1`, as C), `mulhw`/`mulhwu`, `eqv` and
+`sraw` (CA as `ppc_do_sraw`).  Mode changes (`rfi`, `sc`, traps), DEC
+and the segment registers stay in C.  The kernel runs translated only
+with `jit.supervisor` set: on the Mac OS X 10.1 boot to the Finder
+(Node, 6.1 G instructions) 89 % of instructions then run translated,
+but the boot takes 92 s against 86 s user-only and 82 s with the JIT
+off -- the kernel leaves translated code every 60-85 instructions in
+its busiest stretches (exits to pages that have not joined a region,
+and to other regions), so entry and exit cost more than translation
+saves.  It emits each block's instructions from the
 entry fields: registers as wasm locals, immediates and masks as
 constants, CR0 records and compares with XER[SO], XER[CA] and XER[OV] as
 bits of the XER local, the 601's `mtxer` mask.  A branch to a block of
@@ -366,6 +385,7 @@ Two runs compare only when they split the run into the same
 | `budget` | the share of wall time, in percent, translating may take (3; 100: no limit) |
 | `cooldown` | entries between two translations of a region, doubling per translation (64) |
 | `quiet` | entries after a code write before its region is retranslated (64) |
+| `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (0: Mac OS X's kernel is a net loss translated, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function |
 | `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |

@@ -60,6 +60,7 @@ bool g_ppc_jit_on;
 static uint32_t g_threshold = 100000; // instructions run in a page (predecoded) before it joins its region
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
+static uint32_t g_supervisor; // jit.supervisor: translate supervisor code that runs with data translation on
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
@@ -83,6 +84,10 @@ uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_en
 //   JX_BCLR, JX_BCCTR   every bclr/bcctr form the T0 BLR/BCTR are not
 //                       (conditional, decrementing, linking): a = BO, b = BI,
 //                       c = LK
+//   JX_MFMSR .. JX_ARITH  the MSR and time base moves, lwarx/stwcx., and
+//                       the divides, high multiplies, eqv and sraw (the
+//                       Mac OS X kernel's untranslated core; fields at
+//                       their enum entries)
 //   JX_LMW, JX_STMW     load/store multiple word: a = rT/rS (the number),
 //                       b = rA offset (JX_RA0: rA = 0), c = the displacement
 //   JX_LWZX ..          the X-form loads and stores: a = rT/rS offset,
@@ -107,6 +112,14 @@ enum { // JX_ADDX kinds: rT = (subf ? ~rA : rA) + operand + carry-in
     AK_SUBFZE, // 0, CA, sets CA
     AK_NEG, // 0 - rA
 };
+enum { // JX_ARITH kinds (OE clear)
+    XK_DIVW, // rT = rA / rB (signed; 0 on division by zero or overflow, ppc_do_divw)
+    XK_DIVWU, // rT = rA / rB (unsigned; 0 on division by zero)
+    XK_MULHW, // rT = high word of rA * rB (signed)
+    XK_MULHWU, // the same, unsigned
+    XK_EQV, // rA = ~(rS ^ rB)
+    XK_SRAW, // rA = rS >> rB (algebraic), sets CA (ppc_do_sraw)
+};
 enum {
     JX_BCLR = PPD_END,
     JX_BCCTR,
@@ -114,6 +127,12 @@ enum {
     JX_MCRXR, // a = crfD
     JX_MFSPR, // a = rT offset, c = the ppc_t field (a plain supervisor SPR)
     JX_MTSPR, // a = rS offset, c = the ppc_t field
+    JX_MFMSR, // a = rT offset
+    JX_MTMSR, // a = rS offset
+    JX_MFTB, // a = rT offset, c = 1 for TBU
+    JX_LWARX, // a = rT offset, b = rA offset (JX_RA0: rA = 0), c = rB offset
+    JX_STWCX, // a = rS offset, b and c as lwarx
+    JX_ARITH, // a = dest offset, b and c & 0xFF the sources' offsets, c >> 8 the kind, c >> 16 Rc
     JX_LMW,
     JX_STMW,
     JX_LWZX,
@@ -231,6 +250,31 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
         *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = off};
         return xo == 339 ? JX_MFSPR : JX_MTSPR;
     }
+    if (id == T1_MFMSR || id == T1_MTMSR) {
+        *e = (pd_entry_t){.a = PPD_GOFF(rt)};
+        return id == T1_MFMSR ? JX_MFMSR : JX_MTMSR;
+    }
+    if (id == T1_MFTB) { // TBL or TBU (any other number is illegal: left to C)
+        uint32_t n = ra | rb << 5;
+        if (n != 268 && n != 269)
+            return id;
+        *e = (pd_entry_t){.a = PPD_GOFF(rt), .c = n - 268};
+        return JX_MFTB;
+    }
+    if (id == T1_LWARX || id == T1_STWCX_DOT) {
+        *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
+        return id == T1_LWARX ? JX_LWARX : JX_STWCX;
+    }
+    if ((id == T1_DIVW || id == T1_DIVWU || id == T1_MULHW || id == T1_MULHWU) && !(iw & 0x400u)) {
+        uint32_t k = id == T1_DIVW ? XK_DIVW : id == T1_DIVWU ? XK_DIVWU : id == T1_MULHW ? XK_MULHW : XK_MULHWU;
+        *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = PPD_GOFF(ra), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
+        return JX_ARITH;
+    }
+    if (id == T1_EQV || id == T1_SRAW) {
+        uint32_t k = id == T1_EQV ? XK_EQV : XK_SRAW;
+        *e = (pd_entry_t){.a = PPD_GOFF(ra), .b = PPD_GOFF(rt), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
+        return JX_ARITH;
+    }
     if (op == 46 || op == 47) { // lmw / stmw
         *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
         return op == 46 ? JX_LMW : JX_STMW;
@@ -335,7 +379,8 @@ enum {
     W_STORE16 = 0x3B, W_CONST = 0x41, W_EQZ = 0x45, W_EQ = 0x46, W_NE = 0x47, W_LT_S = 0x48, W_LT_U = 0x49,
     W_GT_S = 0x4A, W_GT_U = 0x4B, W_LE_U = 0x4D, W_GE_U = 0x4F, W_CLZ = 0x67, W_ADD = 0x6A, W_SUB = 0x6B,
     W_MUL = 0x6C, W_AND = 0x71, W_OR = 0x72, W_XOR = 0x73, W_SHL = 0x74, W_SHR_S = 0x75, W_SHR_U = 0x76,
-    W_ROTL = 0x77, W_ROTR = 0x78, W_I64_ADD = 0x7C, W_I64_SHR_U = 0x88, W_WRAP = 0xA7, W_EXTEND_U = 0xAD,
+    W_DIV_S = 0x6D, W_DIV_U = 0x6E, W_ROTL = 0x77, W_ROTR = 0x78, W_I64_ADD = 0x7C, W_I64_MUL = 0x7E,
+    W_I64_SHR_U = 0x88, W_WRAP = 0xA7, W_EXTEND_S = 0xAC, W_EXTEND_U = 0xAD,
     W_EXT8_S = 0xC0, W_EXT16_S = 0xC1,
 };
 // clang-format on
@@ -457,7 +502,8 @@ static struct {
     bool it, pr; // the fetch mode it runs under (MSR[IT], MSR[PR])
     const jt_ref_t *refs; // the region's refs (indirect branches)
     uint8_t *bvalid; // the region's per-block valid flags
-    bool is601; // mtxer keeps only the 601's implemented XER bits
+    bool is601; // mtxer keeps only the 601's implemented XER bits; no time base
+    uint32_t msr_mask; // the MSR bits mtmsr writes (ppc_msr_mask)
     bool shared; // the module's memory is shared (pthreads build)
     // The region's tables, for chaining into its other chunks (§3.6): the
     // address of its slot pointers and of its chunk array, the chunk size,
@@ -1093,12 +1139,34 @@ static void emit_cr_bit(uint32_t n) {
 
 #define RD(off) GPR((off) >> 2) // an entry's register byte offset -> its local
 
+// Nonzero on the stack when a BAT was written since the last context
+// synchronization (the copies ppc_context_sync publishes differ)
+static void emit_bat_pending(void) {
+    for (uint32_t i = 0; i < 4; i++) {
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, ibatu_cs) + 4 * i);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, batu) + 4 * i);
+        op(W_XOR);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, ibatl_cs) + 4 * i);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, batl) + 4 * i);
+        op(W_XOR);
+        op(W_OR);
+        if (i)
+            op(W_OR);
+    }
+}
+
 // Is this entry one the translator handles?  (The T0 set, minus isync,
 // whose context synchronization stays in C, and minus branches to
 // themselves, which take a slot instead of folding.)
 static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
-    if (id == JX_MFSPR || id == JX_MTSPR)
+    if (id == JX_MFSPR || id == JX_MTSPR || id == JX_MFMSR || id == JX_MTMSR)
         return !U.pr; // (in user mode they raise the privilege exception)
+    if (id == JX_MFTB)
+        return !U.is601; // (the 601 has no time base: illegal)
     if (id == PPD_ISYNC)
         return true; // (a no-op unless BATs were written since: then it leaves)
     if (id == JX_BC) { // not to itself (a slot, not a fold)
@@ -1151,8 +1219,12 @@ static uint32_t branch_target(uint16_t id, uint32_t iw, uint32_t ipc) {
 static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
     if (id == JX_MCRXR)
         return 0;
-    if (id == JX_MFSPR || id == JX_MTSPR)
+    if (id == JX_MFSPR || id == JX_MTSPR || id == JX_MFMSR || id == JX_MTMSR || id == JX_MFTB)
         return 1u << (e->a >> 2);
+    if (id == JX_ARITH)
+        return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
+    if (id == JX_LWARX || id == JX_STWCX)
+        return (1u << (e->a >> 2)) | (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_LMW || id == JX_STMW) // rT..r31 and rA
         return (~0u << e->a) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_ADDX)
@@ -1179,7 +1251,14 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
     case JX_MCRXR:
     case JX_MTSPR:
         return 0;
+    case JX_MTMSR:
+    case JX_STWCX:
+        return 0;
     case JX_MFSPR:
+    case JX_MFMSR:
+    case JX_MFTB:
+    case JX_LWARX:
+    case JX_ARITH:
         return 1u << (e->a >> 2);
     case JX_LMW: // (rA in range is not loaded: it stays the base)
         return (~0u << e->a) & ~(e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
@@ -1699,6 +1778,239 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         lget(RD(a));
         mem(W_STORE, 2, c);
         return;
+    case JX_MFMSR:
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        lset(RD(a));
+        return;
+    case JX_MTMSR: {
+        // OP_MTMSR in place when only bits nothing translated depends on
+        // change (EE, RI, FP, ME, FE0/FE1, PM): the maps, the fetch mode and
+        // the region stay.  Any other change (IR, DR, PR, LE, SE, ...), POW
+        // (doze) or a pending BAT write (the context synchronization) leaves
+        // for the predecoded loop.
+        const uint32_t free_bits =
+            PPC_MSR_EE | PPC_MSR_RI | PPC_MSR_FP | PPC_MSR_ME | PPC_MSR_FE0 | PPC_MSR_FE1 | PPC_MSR_PM;
+        lget(RD(a));
+        iconst(U.msr_mask);
+        op(W_AND);
+        lset(L_T3); // the new MSR
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        lget(L_T3);
+        op(W_XOR);
+        iconst(~free_bits);
+        op(W_AND);
+        lget(L_T3);
+        iconst(PPC_MSR_POW);
+        op(W_AND);
+        op(W_OR);
+        emit_bat_pending();
+        op(W_OR);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_deopt();
+        op(W_END);
+        g_depth--;
+        // EE set with an interrupt pending (the inputs change only between
+        // sprints): leave after it, for the predecoded loop to take it
+        lget(L_T3);
+        iconst(PPC_MSR_EE);
+        op(W_AND);
+        iconst(0);
+        op(W_NE);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, ext_irq));
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, dec_pending));
+        op(W_OR);
+        iconst(0);
+        op(W_NE);
+        op(W_AND);
+        lget(L_P);
+        lget(L_T3);
+        mem(W_STORE, 2, offsetof(ppc_t, msr));
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_exit_after();
+        op(W_END);
+        g_depth--;
+        return;
+    }
+    case JX_MFTB: // ppc_do_mftb, with the scheduler's burndown brought up to this instruction
+        lget(L_BUDGET);
+        iconst(g_left_slots);
+        op(W_ADD);
+        iconst(c);
+        iconst(0);
+        op(W_CALL);
+        uleb(1);
+        lset(RD(a));
+        return;
+    case JX_LWARX:
+    case JX_STWCX: {
+        // A word-aligned access on the fast path (an unaligned one -- the
+        // 604's alignment exception, the 601's ordinary access -- leaves for
+        // C, as does a miss).  The reservation: stwcx. stores only while it
+        // is held and always drops it (ppc_do_stwcx); reserve_addr records
+        // the EA (OP_LWARX).
+        bool st = id == JX_STWCX;
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        lset(L_EA);
+        emit_access_test(4, st);
+        lget(L_EA);
+        iconst(3);
+        op(W_AND);
+        op(W_OR);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_deopt();
+        op(W_END);
+        g_depth--;
+        if (!st) {
+            lget(L_T1);
+            lget(L_T0);
+            op(W_ADD);
+            mem(W_LOAD, 0, 0);
+            emit_bswap32();
+            lset(L_T3);
+            lget(L_P);
+            iconst(1);
+            mem(W_STORE, 2, offsetof(ppc_t, reserve));
+            lget(L_P);
+            lget(L_EA);
+            mem(W_STORE, 2, offsetof(ppc_t, reserve_addr));
+            lget(L_T3);
+            lset(RD(a));
+            return;
+        }
+        lget(L_CR);
+        iconst(0x0FFFFFFFu);
+        op(W_AND);
+        lget(L_XER);
+        iconst(31);
+        op(W_SHR_U);
+        iconst(28);
+        op(W_SHL);
+        op(W_OR);
+        lset(L_T3); // CR0 = SO
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, reserve));
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        lget(L_T1);
+        lget(L_T0);
+        op(W_ADD);
+        lget(RD(a));
+        emit_bswap32();
+        mem(W_STORE, 0, 0);
+        lget(L_T3);
+        iconst(0x20000000u); // EQ: stored
+        op(W_OR);
+        lset(L_T3);
+        op(W_END);
+        g_depth--;
+        lget(L_T3);
+        lset(L_CR);
+        lget(L_P);
+        iconst(0);
+        mem(W_STORE, 2, offsetof(ppc_t, reserve));
+        return;
+    }
+    case JX_ARITH: {
+        uint32_t src = (c & 0xFFu), kind = (c >> 8) & 0xFFu;
+        switch (kind) {
+        case XK_DIVW: // 0 for b == 0 and for 0x80000000 / -1 (ppc_do_divw)
+        case XK_DIVWU: // 0 for b == 0 (ppc_do_divwu)
+            iconst(0);
+            lget(RD(b));
+            iconst(1);
+            lget(RD(src));
+            lget(RD(src));
+            op(W_EQZ);
+            if (kind == XK_DIVW) {
+                lget(RD(b));
+                iconst(0x80000000u);
+                op(W_EQ);
+                lget(RD(src));
+                iconst(~0u);
+                op(W_EQ);
+                op(W_AND);
+                op(W_OR);
+            }
+            ltee(L_T0);
+            op(W_SELECT); // the divisor, or 1 where the result is 0
+            op(kind == XK_DIVW ? W_DIV_S : W_DIV_U);
+            lget(L_T0);
+            op(W_SELECT);
+            break;
+        case XK_MULHW:
+        case XK_MULHWU:
+            lget(RD(b));
+            op(kind == XK_MULHW ? W_EXTEND_S : W_EXTEND_U);
+            lget(RD(src));
+            op(kind == XK_MULHW ? W_EXTEND_S : W_EXTEND_U);
+            op(W_I64_MUL);
+            put(0x42); // i64.const
+            sleb(32);
+            op(W_I64_SHR_U);
+            op(W_WRAP);
+            break;
+        case XK_EQV:
+            lget(RD(b));
+            lget(RD(src));
+            op(W_XOR);
+            iconst(~0u);
+            op(W_XOR);
+            break;
+        case XK_SRAW: // ppc_do_sraw: a shift of 32 or more gives the sign
+            // CA = negative and any 1 bit shifted out; from 32 on, as C has
+            // it, negative and not -1
+            lget(RD(b));
+            iconst(0);
+            op(W_LT_S);
+            lget(RD(b));
+            iconst(~0u);
+            op(W_XOR);
+            lget(RD(b));
+            iconst(~0u);
+            lget(RD(src));
+            op(W_SHL);
+            iconst(~0u);
+            op(W_XOR);
+            op(W_AND); // the bits shifted out
+            lget(RD(src));
+            iconst(0x20);
+            op(W_AND);
+            op(W_SELECT);
+            iconst(0);
+            op(W_NE);
+            op(W_AND);
+            emit_set_ca();
+            lget(RD(b));
+            iconst(31);
+            lget(RD(src));
+            lget(RD(src));
+            iconst(0x20);
+            op(W_AND);
+            op(W_SELECT);
+            op(W_SHR_S);
+            break;
+        }
+        lset(RD(a));
+        if (c >> 16)
+            emit_record(RD(a));
+        return;
+    }
     case JX_LMW:
     case JX_STMW: {
         // One test for the whole transfer: word-aligned, inside one page,
@@ -1757,21 +2069,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         // ppc_context_sync publishes BAT writes to the fetch side: with none
         // pending (the copies equal the BATs) it changes nothing; otherwise
         // the predecoded loop runs it
-        for (uint32_t i = 0; i < 4; i++) {
-            lget(L_P);
-            mem(W_LOAD, 2, offsetof(ppc_t, ibatu_cs) + 4 * i);
-            lget(L_P);
-            mem(W_LOAD, 2, offsetof(ppc_t, batu) + 4 * i);
-            op(W_XOR);
-            lget(L_P);
-            mem(W_LOAD, 2, offsetof(ppc_t, ibatl_cs) + 4 * i);
-            lget(L_P);
-            mem(W_LOAD, 2, offsetof(ppc_t, batl) + 4 * i);
-            op(W_XOR);
-            op(W_OR);
-            if (i)
-                op(W_OR);
-        }
+        emit_bat_pending();
         op(W_IF);
         put(BT_VOID);
         g_depth++;
@@ -2123,8 +2421,8 @@ static uint32_t translate(void) {
     static const uint8_t hdr[8] = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
     for (int i = 0; i < 8; i++)
         put(hdr[i]);
-    // Types: the function, (i32 i32 i32 i32) -> i32; the code-store
-    // helper, (i32 i32 i32) -> i32
+    // Types: the function, (i32 i32 i32 i32) -> i32; the helpers,
+    // (i32 i32 i32) -> i32
     uint32_t s = open_section(1);
     uleb(2);
     put(0x60);
@@ -2140,12 +2438,17 @@ static uint32_t translate(void) {
     uleb(1);
     put(BT_I32);
     close_sized(s);
-    // Imports: the code-store helper (function 0); the memory (shared in
-    // the pthreads build); the emulator's function table (chaining)
+    // Imports: the code-store helper (function 0); the time-base helper
+    // (function 1); the memory (shared in the pthreads build); the
+    // emulator's function table (chaining)
     s = open_section(2);
-    uleb(3);
+    uleb(4);
     put_name("e");
     put_name("s");
+    put(0x00);
+    uleb(1);
+    put_name("e");
+    put_name("b");
     put(0x00);
     uleb(1);
     put_name("e");
@@ -2174,7 +2477,7 @@ static uint32_t translate(void) {
     uleb(1);
     put_name("f");
     put(0x00);
-    uleb(1);
+    uleb(2); // after the two imported helpers
     close_sized(s);
     s = open_section(10);
     uleb(1);
@@ -2295,7 +2598,7 @@ static uint32_t translate(void) {
             }
             uint16_t id = g_ids[x];
             access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
-                      id == JX_STMW || id == PPD_ISYNC;
+                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))
@@ -2379,7 +2682,7 @@ static uint32_t translate(void) {
 EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), {
     var table = wasmExports['__indirect_function_table'];
     var mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
     var idx = slot;
     table.set(idx, inst.exports.f);
     return idx;
@@ -2403,7 +2706,7 @@ EM_JS(uint32_t, jit_install_async, (uint32_t token, uint32_t slot), {
         return 0;
     mods.delete(token);
     var table = wasmExports['__indirect_function_table'];
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
     table.set(slot, inst.exports.f);
     return slot;
 });
@@ -2714,6 +3017,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     double t0 = emscripten_get_now();
     uint32_t lbase = R->key & ~(uint32_t)((1u << JIT_REGION_SHIFT) - 1);
     U.pr = (R->key & 1u) != 0; // (translatable() asks, during reachability)
+    U.is601 = !ppc_is_604(p);
     // A page invalidated again after each of several translations is code
     // being written while it runs (the DR emulator's cache): leave it to
     // the predecoded tier rather than retranslate it for every write
@@ -2894,6 +3198,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     U.it = (R->key & 2u) != 0;
     U.pr = (R->key & 1u) != 0;
     U.is601 = !ppc_is_604(p);
+    U.msr_mask = ppc_msr_mask(p);
     U.shared = jit_memory_shared() != 0;
     U.rslot = addr_of(&R->slot[0]);
     U.rchunk = addr_of(&R->chunk[0]);
@@ -3282,10 +3587,16 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
     g_wa_p = p;
     if ((++g_st.lookups & 4095) == 0) // skipped words are asked about again now and then
         memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip);
-    // Not translated: little-endian mode; supervisor data translation (every
-    // access takes the slow path there); a deliverable interrupt (the
-    // predecoded loop takes it first); the sprint's tail
-    if ((msr & PPC_MSR_LE) || (msr & (PPC_MSR_DT | PPC_MSR_PR)) == PPC_MSR_DT)
+    // Not translated: little-endian mode; supervisor data translation unless
+    // jit.supervisor is set (a net loss so far: Mac OS X's kernel leaves
+    // translated code every few dozen instructions), and even then before
+    // its logical SoA exists (every access would take the slow path); a
+    // deliverable interrupt (the predecoded loop takes it first); the
+    // sprint's tail.  (Translated code reads whichever maps are active at
+    // each function's entry, and leaves at every MSR change that touches
+    // them or the fetch mode, and at every segment change.)
+    if ((msr & PPC_MSR_LE) ||
+        ((msr & (PPC_MSR_DT | PPC_MSR_PR)) == PPC_MSR_DT && (!g_supervisor || g_active_read == g_supervisor_read)))
         return false;
     if ((p->ext_irq | p->dec_pending) && (msr & PPC_MSR_EE))
         return false;
@@ -3442,6 +3753,17 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
 // store), 0 when it completed.
 static bool g_jit_wrote; // ppc_jit_code_written invalidated a block
 static int g_wa_src; // 1 while ppc_jit_code_store writes (jit.trace = 11)
+// mftb from translated code: the time base at the instruction, whose
+// budget (the predecoded loop's count before it retires) the scheduler
+// reads as the sprint's burndown
+EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_tb(uint32_t budget, uint32_t upper, uint32_t unused);
+int32_t ppc_jit_tb(uint32_t budget, uint32_t upper, uint32_t unused) {
+    (void)unused;
+    *g_bus_error_instr_ptr = budget;
+    uint64_t tb = ppc_tb_now(g_wa_p);
+    return (int32_t)(upper ? (uint32_t)(tb >> 32) : (uint32_t)tb);
+}
+
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);
 int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     uint32_t page = ea >> MEM_PAGE_SHIFT;
@@ -3792,6 +4114,7 @@ enum {
     JA_THRESHOLD,
     JA_COOLDOWN,
     JA_QUIET,
+    JA_SUPERVISOR,
     JA_REGIONS,
     JA_COMPILES,
     JA_FUNCTIONS,
@@ -3821,6 +4144,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(4, g_cooldown);
     case JA_QUIET:
         return val_uint(4, g_quiet);
+    case JA_SUPERVISOR:
+        return val_uint(1, g_supervisor);
     case JA_CHUNK_CAP:
         return val_uint(4, g_chunk_cap);
     case JA_TRACE:
@@ -3884,6 +4209,9 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         return val_none();
     case JA_QUIET:
         g_quiet = (uint32_t)in.u;
+        return val_none();
+    case JA_SUPERVISOR:
+        g_supervisor = in.u ? 1 : 0;
         return val_none();
     case JA_CHUNK_CAP:
         if (in.u < 64 || in.u > 65536)
@@ -3956,6 +4284,8 @@ static const member_t jit_members[] = {
              "instructions the predecoded tier runs in a page before it joins its region's translation", jit_attr_set),
     JIT_ATTR("cooldown", JA_COOLDOWN, "entries between two translations of one region (0: none)", jit_attr_set),
     JIT_ATTR("quiet", JA_QUIET, "entries after a code write before its region is retranslated", jit_attr_set),
+    JIT_ATTR("supervisor", JA_SUPERVISOR,
+             "1 = also translate supervisor code running with data translation on (Mac OS X's kernel)", jit_attr_set),
     JIT_ATTR("regions", JA_REGIONS, "regions created", NULL),
     JIT_ATTR("compiles", JA_COMPILES, "region translations", NULL),
     JIT_ATTR("functions", JA_FUNCTIONS, "functions generated (a region translates into chunks of chunk_cap)", NULL),
