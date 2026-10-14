@@ -38,6 +38,7 @@
 // last slot: *instructions reaches zero only in the predecoded loop.
 
 #include "ppc_jit.h"
+#include "ppc_disasm.h"
 
 #include "ppc_internal.h"
 #include "ppc_pd_ids.h"
@@ -45,6 +46,7 @@
 #include "memory.h"
 #include "object.h"
 #include "predecode.h"
+#include "scheduler.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -3071,6 +3073,7 @@ static bool region_entry(jit_region_t *R, jit_slot_t *s, uint32_t k, uint32_t id
 // prints it and clears it), to see why translated runs end
 #define JIT_XH_SIZE 4096
 static ppc_t *g_last_p;
+static ppc_t *g_wa_p; // the CPU, for jit.trace = 11's writer pcs
 static uint64_t g_xh_tail, g_xh_budget_sum, g_xh_calls;
 static uint64_t g_xh_kind[5]; // exits: deopt, same chunk, other chunk, other region, other // exits with < 32 slots
                               // left; entry budgets
@@ -3207,6 +3210,7 @@ static void exit_hist_dump(ppc_t *p) {
 
 bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *exit) {
     uint32_t msr = p->msr;
+    g_wa_p = p;
     if ((++g_st.lookups & 4095) == 0) // skipped words are asked about again now and then
         memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip);
     // Not translated: little-endian mode; supervisor data translation (every
@@ -3342,7 +3346,7 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
         exit_hist_add(p->pc, g_ppc_jit_exit == PPC_JIT_EXIT_DEOPT,
                       g_ppc_jit_exit == PPC_JIT_EXIT_DEOPT ? deopt_ea(p) : 0),
             g_last_p = p, g_xh_tail += left < 32, g_xh_budget_sum += budget, g_xh_calls++, exit_kind(p, R, ch);
-    else if (g_trace)
+    else if (g_trace == 1)
         printf("jit: exit  pc=%08x left=%d reason=%u\n", p->pc, left, g_ppc_jit_exit);
     *instructions = (uint32_t)left;
     *folds_left -= (uint64_t)(uint32_t)(fin - g_ppc_jit_folds);
@@ -3368,6 +3372,7 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
 // when it completed and invalidated translated code (it leaves after the
 // store), 0 when it completed.
 static bool g_jit_wrote; // ppc_jit_code_written invalidated a block
+static int g_wa_src; // 1 while ppc_jit_code_store writes (jit.trace = 11)
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);
 int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     uint32_t page = ea >> MEM_PAGE_SHIFT;
@@ -3392,16 +3397,252 @@ int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     if (!memory_host_is_code(host))
         return why[4]++, 1; // unmarked since: the slow path brings the write entry back
     g_jit_wrote = false;
+    g_wa_src = 1;
     memory_host_written(host, size);
+    g_wa_src = 0;
     for (uint32_t i = 0; i < size; i++)
         host[i] = (uint8_t)(value >> (8 * (size - 1 - i)));
     return g_jit_wrote ? 2 : 0;
 }
 
 // The coherence hook: invalidate the blocks that translated the written words
+// jit.trace = 11: what writes reach translated pages (debugging).  Per
+// written guest word: the writes, the ones that invalidated a valid block,
+// whether the value changed (read back at the next write to any code
+// page), who wrote it (the predecoded loop's store pc, a store from
+// translated code, or a host-side writer -- DMA -- by length); per writer pc
+// the same.  jit.trace = 12 prints the tables.
+#define WA_SIZE 65536u
+typedef struct {
+    uint32_t addr; // guest logical word address | 1 when user mode (0: empty)
+    uint32_t writes, invals, changed, same;
+    uint32_t src[3]; // cpu, translated code, host-side (len >= 8)
+    uint32_t pc[4], pcn[4]; // the writers seen most
+    uint32_t page_writes; // (pc table: distinct words, roughly)
+    const uint8_t *host; // (word table) the word's bytes
+} wa_ent_t;
+static wa_ent_t *g_wa_words, *g_wa_pcs;
+static struct {
+    wa_ent_t *e;
+    const uint8_t *host;
+    uint32_t before;
+} g_wa_pend[64];
+static uint32_t g_wa_npend;
+static uint64_t g_wa_hooks, g_wa_hook_bytes, g_wa_len[4];
+// Invalidating writes per million guest instructions since jit.trace = 11
+#define WA_TL 4096u
+static uint64_t g_wa_t0 = UINT64_MAX;
+static struct {
+    uint32_t invals, lo, hi;
+} g_wa_tl[WA_TL];
+
+static wa_ent_t *wa_find(wa_ent_t *t, uint32_t key) {
+    uint32_t i = (key * 2654435761u) >> 16;
+    for (uint32_t n = 0; n < WA_SIZE; n++, i = (i + 1) & (WA_SIZE - 1)) {
+        if (t[i].addr == key)
+            return &t[i];
+        if (!t[i].addr) {
+            t[i].addr = key;
+            return &t[i];
+        }
+    }
+    return NULL;
+}
+static void wa_pc(wa_ent_t *e, uint32_t pc) {
+    int lo = 0;
+    for (int k = 0; k < 4; k++) {
+        if (e->pc[k] == pc) {
+            e->pcn[k]++;
+            return;
+        }
+        if (e->pcn[k] < e->pcn[lo])
+            lo = k;
+    }
+    e->pc[lo] = pc; // (a replaced entry's count carries over: a rough top 4)
+    e->pcn[lo]++;
+}
+static void wa_resolve(void) {
+    for (uint32_t i = 0; i < g_wa_npend; i++) {
+        if (LOAD_BE32(g_wa_pend[i].host) != g_wa_pend[i].before)
+            g_wa_pend[i].e->changed++;
+        else
+            g_wa_pend[i].e->same++;
+    }
+    g_wa_npend = 0;
+}
+static void wa_note(uint32_t laddr, bool user, const uint8_t *word_host, bool inval, uint32_t len) {
+    if (!g_wa_words) {
+        g_wa_words = calloc(WA_SIZE, sizeof *g_wa_words);
+        g_wa_pcs = calloc(WA_SIZE, sizeof *g_wa_pcs);
+        if (!g_wa_words || !g_wa_pcs)
+            return;
+    }
+    wa_ent_t *e = wa_find(g_wa_words, (laddr & ~3u) | (user ? 1u : 0u) | 2u);
+    if (!e)
+        return;
+    int src = len >= 8 ? 2 : g_wa_src ? 1 : 0;
+    uint32_t pc = src == 0 && g_wa_p ? g_wa_p->pc - 4 : src == 1 ? 1u : 3u;
+    if (inval) {
+        uint64_t now = cpu_instr_count();
+        if (g_wa_t0 == UINT64_MAX)
+            g_wa_t0 = now;
+        uint64_t m = (now - g_wa_t0) / 1000000u;
+        if (m < WA_TL) {
+            if (!g_wa_tl[m].invals || laddr < g_wa_tl[m].lo)
+                g_wa_tl[m].lo = laddr;
+            if (laddr > g_wa_tl[m].hi)
+                g_wa_tl[m].hi = laddr;
+            g_wa_tl[m].invals++;
+        }
+    }
+    e->writes++;
+    e->invals += inval;
+    e->src[src]++;
+    e->host = word_host;
+    wa_pc(e, pc);
+    wa_ent_t *w = wa_find(g_wa_pcs, pc | 2u);
+    if (w) {
+        w->writes++;
+        w->invals += inval;
+        w->src[src]++;
+        wa_pc(w, laddr & ~3u);
+    }
+    if (g_wa_npend < 64) {
+        g_wa_pend[g_wa_npend].e = e;
+        g_wa_pend[g_wa_npend].host = word_host;
+        g_wa_pend[g_wa_npend].before = LOAD_BE32(word_host);
+        g_wa_npend++;
+    }
+}
+static int wa_cmp(const void *a, const void *b) {
+    const wa_ent_t *x = a, *y = b;
+    if (x->invals != y->invals)
+        return x->invals < y->invals ? 1 : -1;
+    return x->writes < y->writes ? 1 : x->writes > y->writes ? -1 : 0;
+}
+// jit.trace = 13: append every translated page's words to jitsnap.bin
+// (per snapshot: "SNAP", the instruction count, the slot count; per slot:
+// region key, logical page, volatile flag, 4 KB of the page as it is now)
+static void wa_snapshot(void) {
+    FILE *f = fopen("jitsnap.bin", "ab");
+    if (!f)
+        return;
+    uint32_t nslots = 0;
+    for (uint32_t h = 0; h < JIT_HASH; h++)
+        for (jit_region_t *R = g_regions[h]; R; R = R->next)
+            for (uint32_t k = 0; k < JIT_REGION_PAGES; k++)
+                nslots += R->slot[k] != NULL;
+    uint64_t now = cpu_instr_count();
+    fwrite("SNAP", 1, 4, f);
+    fwrite(&now, 8, 1, f);
+    fwrite(&nslots, 4, 1, f);
+    for (uint32_t h = 0; h < JIT_HASH; h++)
+        for (jit_region_t *R = g_regions[h]; R; R = R->next)
+            for (uint32_t k = 0; k < JIT_REGION_PAGES; k++) {
+                jit_slot_t *sl = R->slot[k];
+                if (!sl)
+                    continue;
+                uint32_t hdr[3] = {R->key, sl->lpage, (uint32_t)sl->volatile_ | ((uint32_t)sl->vol_count << 8)};
+                fwrite(hdr, 4, 3, f);
+                fwrite(sl->host, 1, MEM_PAGE_SIZE, f);
+            }
+    fclose(f);
+}
+
+static void wa_dump(void) {
+    wa_resolve();
+    if (!g_wa_words)
+        return;
+    printf("timeline (invalidating writes per million instructions, lowest and highest word):\n");
+    for (uint32_t m = 0; m < WA_TL; m++)
+        if (g_wa_tl[m].invals)
+            printf("  t=%4uM %6u  %08x-%08x\n", m, g_wa_tl[m].invals, g_wa_tl[m].lo, g_wa_tl[m].hi);
+    printf("jit writes: %llu hook calls, %llu bytes; lengths 1-4: %llu, 8-31: %llu, 32: %llu, >32: %llu\n",
+           (unsigned long long)g_wa_hooks, (unsigned long long)g_wa_hook_bytes, (unsigned long long)g_wa_len[0],
+           (unsigned long long)g_wa_len[1], (unsigned long long)g_wa_len[2], (unsigned long long)g_wa_len[3]);
+    for (int t = 0; t < 2; t++) {
+        wa_ent_t *tab = t ? g_wa_pcs : g_wa_words;
+        qsort(tab, WA_SIZE, sizeof *tab, wa_cmp);
+        uint64_t W = 0, I = 0, C = 0, S = 0, n = 0;
+        for (uint32_t i = 0; i < WA_SIZE && tab[i].addr; i++)
+            W += tab[i].writes, I += tab[i].invals, C += tab[i].changed, S += tab[i].same, n++;
+        printf("%s: %llu entries, %llu writes, %llu invalidating, %llu changed the word, %llu wrote the same value\n",
+               t ? "by writer pc" : "by word", (unsigned long long)n, (unsigned long long)W, (unsigned long long)I,
+               (unsigned long long)C, (unsigned long long)S);
+        for (uint32_t i = 0; i < 60 && i < WA_SIZE && tab[i].addr; i++) {
+            wa_ent_t *e = &tab[i];
+            printf("  %08x%s writes %6u inval %6u chg %6u same %6u cpu/jit/dma %u/%u/%u  top: %08x:%u %08x:%u %08x:%u "
+                   "%08x:%u\n",
+                   e->addr & ~3u,
+                   t               ? "  "
+                   : (e->addr & 1) ? " U"
+                                   : " S",
+                   e->writes, e->invals, e->changed, e->same, e->src[0], e->src[1], e->src[2], e->pc[0], e->pcn[0],
+                   e->pc[1], e->pcn[1], e->pc[2], e->pcn[2], e->pc[3], e->pcn[3]);
+        }
+        if (t)
+            continue;
+        // Per 4 KB page: the words written, the writes and the invalidating
+        // ones (the word table, sorted by invalidations, is still in place)
+        static struct {
+            uint32_t page, words, iwords, writes, invals, chg;
+        } pg[512];
+        uint32_t npg = 0;
+        for (uint32_t i = 0; i < WA_SIZE && tab[i].addr; i++) {
+            uint32_t a = tab[i].addr & ~0xFFFu, k;
+            for (k = 0; k < npg && pg[k].page != a; k++)
+                ;
+            if (k == npg) {
+                if (npg == 512)
+                    continue;
+                memset(&pg[npg], 0, sizeof pg[0]);
+                pg[npg++].page = a;
+            }
+            pg[k].words++;
+            pg[k].iwords += tab[i].invals != 0;
+            pg[k].writes += tab[i].writes;
+            pg[k].invals += tab[i].invals;
+            pg[k].chg += tab[i].changed;
+        }
+        printf("by page (%u pages):\n", npg);
+        for (uint32_t k = 0; k < npg; k++)
+            printf("  %08x %s words %4u (%4u invalidated) writes %9u invals %6u changed %9u\n", pg[k].page & ~3u,
+                   (pg[k].page & 1) ? "U" : "S", pg[k].words, pg[k].iwords, pg[k].writes, pg[k].invals, pg[k].chg);
+        // What the most invalidated word and the most written word hold now
+        for (int which = 0; which < 2; which++) {
+            wa_ent_t *e = &tab[0];
+            if (which)
+                for (uint32_t i = 0; i < WA_SIZE && tab[i].addr; i++)
+                    if (tab[i].writes > e->writes)
+                        e = &tab[i];
+            if (!e->host)
+                continue;
+            printf("%s %08x, now:\n", which ? "most written" : "most invalidated", e->addr & ~3u);
+            for (int d = -24; d <= 24; d++) {
+                const uint8_t *h = e->host + 4 * d;
+                uint32_t a = (e->addr & ~3u) + 4 * d;
+                if (((uintptr_t)(e->host) & ~(uintptr_t)0xFFF) != ((uintptr_t)h & ~(uintptr_t)0xFFF) &&
+                    ((a ^ (e->addr & ~3u)) & ~0xFFFu))
+                    continue; // stay on the page
+                ppc_insn ins;
+                uint32_t w = LOAD_BE32(h);
+                ppc_disassemble(w, a, &ins);
+                printf("  %08x%s %08x  %s\n", a, d ? " " : "*", w, ins.text);
+            }
+        }
+    }
+    fflush(stdout);
+}
+
 void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     if (!len)
         return;
+    if (g_trace == 11) {
+        wa_resolve();
+        g_wa_hooks++;
+        g_wa_hook_bytes += len;
+        g_wa_len[len <= 4 ? 0 : len < 32 ? 1 : len == 32 ? 2 : 3]++;
+    }
     if (g_trace == 9) {
         uint32_t pg_;
         int r_ = memory_code_region_of(host, &pg_);
@@ -3427,6 +3668,10 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
             uint16_t b = s->cov[w];
             if (s->writes[w] < 255)
                 s->writes[w]++;
+            if (g_trace == 11)
+                wa_note(s->lpage + 4 * w, (R->key & 1u) != 0, s->host + 4 * w,
+                        c != NONE8 && b != NONE16 && c < R->nchunks && R->chunk[c].bvalid && R->chunk[c].bvalid[b],
+                        len);
             if (g_trace == 9)
                 printf("jit: write %08x owner=%u cov=%u nchunks=%u valid=%d vol=%d\n", s->lpage + 4 * w, c, b,
                        R->nchunks,
@@ -3597,6 +3842,14 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
 #ifdef __EMSCRIPTEN__
         if (in.u == 3 && g_last_p) {
             exit_hist_dump(g_last_p);
+            return val_none();
+        }
+        if (in.u == 12) {
+            wa_dump();
+            return val_none();
+        }
+        if (in.u == 13) {
+            wa_snapshot();
             return val_none();
         }
 #endif
