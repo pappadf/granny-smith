@@ -143,6 +143,10 @@ shortly after boot.
   DBDMA, loopback set from Forth, the BOOTP request of `boot enet`.
 - `gossamer-checkpoint` — a mid-boot save, a restore in a fresh process
   and the same desktop frame.
+- `g3-osx-10-0-finder` — Mac OS X 10.0.3 from the minimal ATA disk in
+  the test data (a UDIF, its NVRAM patch and 17" monitor in the sidecar
+  configuration): BootX, the kernel, automatic login and the Finder at
+  1024 x 768, a golden frame.
 - Media-gated on the retail Mac OS 9.2.1 CD under `GS_EXTRA_MEDIA_DIR`
   (they skip without it): `g3-cd-boot` (the CD to the Finder as a SCSI
   CD-ROM and as an ATAPI one), `g3-install-scsi` (Drive Setup and the

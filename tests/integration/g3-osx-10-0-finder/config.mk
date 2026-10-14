@@ -1,0 +1,20 @@
+# Integration test: Mac OS X 10.0.3 boots a beige G3 to the Finder from a
+# UDIF disk on the ATA bus.
+#
+# The disk is gs-test-data `systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg`, a
+# minimal install with automatic login; its sidecar .json is the machine
+# configuration it boots with (Apple's Gossamer nvramrc patch, the ATA
+# boot-device, the 17" multiple-scan monitor).
+
+TEST_NAME := G3 Mac OS X 10.0.3 to the Finder
+TEST_DESC := Boots the minimal Mac OS X 10.0.3 disk (UDIF, ATA) on a beige G3 through BootX and the kernel to the logged-in Finder at 1024 x 768
+
+TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
+
+TEST_ARGS := model=pmg3dt ram=262144 config=$(TEST_DATA)/systems/mac_os_x_10_0_3_2gb_g3_minimal.json
+
+# One boot: the Finder is up after 10 G of scheduler time.
+TEST_TIMEOUT := 1800
+
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+TEST_TIER := matrix

@@ -54,6 +54,7 @@
     "g3-cd-boot": 0,
     "g3-install-ata": 0,
     "g3-install-scsi": 0,
+    "g3-osx-10-0-finder": 56,
     "gossamer-bmac": 18,
     "gossamer-checkpoint": 5,
     "gossamer-device-tree": 16,
