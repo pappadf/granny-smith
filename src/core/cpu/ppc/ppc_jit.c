@@ -2361,8 +2361,11 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
     case JX_STFDU: { // a = frT/frS, b = rA, c = displacement; the FPRs live in the ppc_t
         bool upd = id == JX_LFDU || id == JX_STFDU, store = id == JX_STFD || id == JX_STFDU;
         uint32_t fo = (uint32_t)offsetof(ppc_t, fpr) + 8u * a; // the low word, then the high word
-        // FP unavailable, or not doubleword-aligned (the models' alignment
-        // rules, the 604's split): C.  Aligned, the access is in one page.
+        // FP unavailable, or not word-aligned (the 604's and 750's alignment
+        // exception for FP accesses): C.  A word-aligned double is an
+        // ordinary access unless it crosses a page (Darwin aligns a double in
+        // a structure to 4): the access test and the store helper leave
+        // then, and C splits it.
         if (b == JX_RA0)
             iconst(c);
         else {
@@ -2377,7 +2380,7 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         op(W_AND);
         op(W_EQZ);
         lget(L_EA);
-        iconst(7);
+        iconst(3);
         op(W_AND);
         op(W_OR);
         op(W_IF);
