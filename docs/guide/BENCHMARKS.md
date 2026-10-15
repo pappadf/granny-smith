@@ -270,6 +270,48 @@ python3 scripts/bench/run.py --head build/headless-fast-node/gs-headless \
     --metrics B --pairing alternate
 ```
 
+## Interactive scenarios
+
+The rows above are CPU-bound windows.  Interactive use is not: a menu
+opening or a window's genie into the Dock is a burst of work between idle
+stretches, and what matters is how long the user waits for the burst.
+`scripts/bench/scenario.py` times such bursts.  A scenario is a script in
+`tests/bench/` that boots to a state and saves a checkpoint (`MODE=boot`),
+then loads it and plays scripted input, each interaction a fixed stretch of
+scheduler slots, printing one `@@SCEN` line with the stretch's host wall
+time and the guest instructions it retired (`MODE=run`).  Guards in the
+script (framebuffer checksums of the regions an interaction changes) fail
+the run if an interaction stopped doing what it claims.
+
+`osx-interactive` is Mac OS X 10.0.3 with the Aqua look (gs-test-data
+`systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg`) on the beige G3 at the
+Finder: open and close the File menu, minimize the Finder window into the
+Dock, restore it from the Dock.  It plays them twice in one process, round
+1 cold and round 2 warm (the translation tier compiles in round 1).  OS X
+has no Toolbox cursor globals, so the script points with relative ADB moves
+from the top-left corner (2-count steps, where OS X 10.0's acceleration is
+a flat 2.26 pixels per count).
+
+The runner boots each binary once (a checkpoint refuses another build),
+then runs every configuration `--runs` times in separate processes, the
+configurations interleaved, and prints the median milliseconds per
+interaction with cold and warm totals.  The configurations are
+`predecode`, `switch`, and on a wasm build `jit` (the translation tier on
+user code) and `jit-sup` (`jit.supervisor`: kernel code too).  Every run
+must retire the same guest instructions in each interaction whatever the
+executor; a difference is reported as a correctness bug and fails the run.
+
+```bash
+python3 scripts/bench/scenario.py --bin native=build/headless-fast/gs-headless \
+    --bin node=build/headless-fast-node/gs-headless --runs 3
+```
+
+The scale: the G3 runs at 267 MHz with a CPI of 2, so a fully busy guest
+retires 134 M instructions a second, and the genie's minimize and restore
+each carry 120–160 M instructions of work.  Node's compiles are
+synchronous, so the cold round charges the translation tier for compiling
+in a way the browser, which compiles on other threads, does not.
+
 ## Page heat
 
 A build with `EXTRA_CFLAGS=-DPD_PROFILE` gains `predecode.profile_reset()`
