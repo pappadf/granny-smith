@@ -908,6 +908,10 @@ void em_video_update(void) {
         return;
     }
 
+    // A card that builds its frame on demand (the Mach64's hardware-cursor
+    // composite) builds it now
+    display_sync_pixels(d);
+
     // The producer-side dirty flags are undercomplete: pixel writes from
     // emulated CPU code (the ROM's RAM test, the OS painting between
     // vsyncs, any direct framebuffer poke) never trip fb_dirty, and
@@ -933,6 +937,8 @@ void em_video_force_redraw(void) {
     display_t *d = system_display();
     if (!d || !d->bits || !fb_fits_scratch(d))
         return;
+    if (!d->presented_externally)
+        display_sync_pixels(d);
     publish(d, /*full*/ true, false);
 }
 

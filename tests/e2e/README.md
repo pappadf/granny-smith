@@ -61,6 +61,7 @@ tests/e2e/
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
 │   ├── perf-headbase.spec.ts            # Head vs base WASM build, alternated (CPU benchmarks; needs PERF_BASE_DIST)
 │   ├── perf-jit.spec.ts                 # PowerPC translation tier vs predecoded, alternated in one session (tracked numbers)
+│   ├── perf-osx-interactive.spec.ts     # Mac OS X menu, minimize and restore per executor (opt-in: PERF_OSX_INTERACTIVE=1)
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
 │   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
