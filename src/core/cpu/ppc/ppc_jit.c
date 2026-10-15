@@ -96,6 +96,9 @@ uint16_t ppc_pd_classify_word(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_en
 //   JX_ADDX             the XO-form add/subtract family the T0 ids leave
 //                       out (carrying, extended, OE): a = rT offset, b = rA
 //                       offset, c = rB offset | kind << 8 | OE << 16 | Rc << 17
+//   JX_LFD .. JX_STFDU  the D-form double loads and stores (604 and 750):
+//                       a = frT/frS (the number), b = rA offset (JX_RA0:
+//                       rA = 0, the non-update forms only), c = displacement
 // and the D-form loads and stores with rA = 0 keep their T0 ids with
 // b = JX_RA0.
 #define JX_RA0 0xFFu
@@ -150,6 +153,10 @@ enum {
     JX_STBX,
     JX_STBUX,
     JX_ADDX,
+    JX_LFD,
+    JX_LFDU,
+    JX_STFD,
+    JX_STFDU,
     JX_END
 };
 _Static_assert(JX_END < 65536, "translator id space overflow");
@@ -174,6 +181,13 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
                                            0,       PPD_LHZ, 0,       PPD_LHA, 0,       PPD_STH, 0};
         *e = (pd_entry_t){.a = PPD_GOFF(rt), .b = JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
         return dform[op - 32];
+    }
+    if (op == 50 || op == 51 || op == 54 || op == 55) { // lfd lfdu stfd stfdu
+        bool upd = op & 1u;
+        if (upd && ra == 0)
+            return id; // (an invalid form: the 601 keeps POWER's, left to C)
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
+        return op == 50 ? JX_LFD : op == 51 ? JX_LFDU : op == 54 ? JX_STFD : JX_STFDU;
     }
     if (op == 31) { // XO-form add/subtract
         int kind = -1;
@@ -1324,6 +1338,8 @@ static bool translatable(uint16_t id, uint32_t iw, uint32_t ipc) {
         int32_t bd = (int32_t)(int16_t)(iw & 0xFFFCu);
         return ((iw & 2u) ? (uint32_t)bd : ipc + (uint32_t)bd) != ipc;
     }
+    if (id >= JX_LFD && id <= JX_STFDU)
+        return !U.is601; // (the 601's stores have no helper)
     if (id >= JX_BCLR && id < JX_END)
         return true;
     if (id <= PPD_FIRST || id >= PPD_END)
@@ -1380,6 +1396,8 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
         return (~0u << e->a) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_ADDX)
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
+    if (id >= JX_LFD && id <= JX_STFDU) // only rA: the FPRs stay in the ppc_t
+        return e->b == JX_RA0 ? 0u : 1u << (e->b >> 2);
     if (id >= JX_LWZX && id < JX_END)
         return (1u << (e->a >> 2)) | (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= PPD_LWZ && id <= PPD_STHU && e->b == JX_RA0)
@@ -1417,6 +1435,12 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
         return 0;
     case JX_ADDX:
         return 1u << (e->a >> 2);
+    case JX_LFD:
+    case JX_STFD:
+        return 0;
+    case JX_LFDU:
+    case JX_STFDU:
+        return 1u << (e->b >> 2);
     case JX_LWZUX:
     case JX_LHZUX:
     case JX_LHAUX:
@@ -2331,6 +2355,109 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         }
         return; // not taken: falls through (still folded)
     }
+    case JX_LFD:
+    case JX_LFDU:
+    case JX_STFD:
+    case JX_STFDU: { // a = frT/frS, b = rA, c = displacement; the FPRs live in the ppc_t
+        bool upd = id == JX_LFDU || id == JX_STFDU, store = id == JX_STFD || id == JX_STFDU;
+        uint32_t fo = (uint32_t)offsetof(ppc_t, fpr) + 8u * a; // the low word, then the high word
+        // FP unavailable, or not doubleword-aligned (the models' alignment
+        // rules, the 604's split): C.  Aligned, the access is in one page.
+        if (b == JX_RA0)
+            iconst(c);
+        else {
+            lget(RD(b));
+            iconst(c);
+            op(W_ADD);
+        }
+        lset(L_EA);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        iconst(PPC_MSR_FP);
+        op(W_AND);
+        op(W_EQZ);
+        lget(L_EA);
+        iconst(7);
+        op(W_AND);
+        op(W_OR);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        emit_deopt();
+        op(W_END);
+        g_depth--;
+        if (!store) {
+            emit_access_test(8, false);
+            op(W_IF);
+            put(BT_VOID);
+            g_depth++;
+            emit_deopt();
+            op(W_END);
+            g_depth--;
+            for (uint32_t half = 0; half < 2; half++) { // big-endian: the high word first in memory
+                lget(L_P);
+                lget(L_T1);
+                lget(L_T0);
+                op(W_ADD);
+                mem(W_LOAD, 0, half ? 0 : 4);
+                emit_bswap32();
+                mem(W_STORE, 2, fo + 4u * half);
+            }
+            if (upd) {
+                lget(L_EA);
+                lset(RD(b));
+            }
+            return;
+        }
+        // Two word stores through the helper.  The first missing leaves at
+        // the instruction (C stores both, the first word again: the same
+        // value); the second as any store: at it, or after it when it wrote
+        // translated code (the update first).
+        for (uint32_t half = 0; half < 2; half++) {
+            lget(L_EA);
+            if (half) {
+                iconst(4);
+                op(W_ADD);
+            }
+            lget(L_P);
+            mem(W_LOAD, 2, fo + (half ? 0u : 4u));
+            lget(L_WTAB);
+            lget(L_AMASK);
+            op(W_CALL);
+            uleb(JH_FN(JH_ST32));
+            ltee(L_T2);
+            op(W_IF);
+            put(BT_VOID);
+            g_depth++;
+            if (!half) {
+                emit_deopt();
+            } else {
+                if (upd) {
+                    lget(L_T2);
+                    iconst(2);
+                    op(W_EQ);
+                    op(W_IF);
+                    put(BT_VOID);
+                    lget(L_EA);
+                    lset(RD(b));
+                    op(W_END);
+                }
+                lget(L_T2);
+                iconst(((g_cur_addr - g_block_addr) >> 2) - 1);
+                op(W_ADD);
+                lset(L_IDX);
+                op(W_BR);
+                uleb(g_depth - g_deopt_depth);
+            }
+            op(W_END);
+            g_depth--;
+        }
+        if (upd) {
+            lget(L_EA);
+            lset(RD(b));
+        }
+        return;
+    }
     case JX_ADDX: { // a = rT, b = rA, c = rB | kind << 8 | OE << 16 | Rc << 17 (ppc_add_body)
         uint32_t kind = (c >> 8) & 0xFFu, rb = c & 0xFFu;
         bool oe = (c >> 16) & 1u, rc = (c >> 17) & 1u;
@@ -2755,8 +2882,9 @@ static uint32_t translate(void) {
                 g_block_defs |= entry_defs(g_ids[x], &g_ents[x]);
             }
             uint16_t id = g_ids[x];
-            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
-                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX;
+            access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) ||
+                      (id >= JX_LFD && id <= JX_STFDU) || id == JX_LMW || id == JX_STMW || id == PPD_ISYNC ||
+                      id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))
