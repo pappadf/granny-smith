@@ -143,6 +143,25 @@ calls.  After instantiation the dispatcher calls it once with a zero
 budget on a scratch state, so the engine compiles it now and not at its
 first real entry (V8 compiles wasm functions lazily, at their first call).
 
+**Code size.**  That compile is V8's baseline tier at a fixed rate per
+byte, about 20 MB/s whatever the function's size (measured on the Mac OS
+X scenario, `docs/guide/BENCHMARKS.md`), and it is most of what a
+translation costs: generating the module is a tenth of it.  So the
+translator keeps bytes down where that costs no run time.  Each module
+defines three store helpers after its function (8, 16 and 32 bits, on the
+604 and 750): the fast path of a store and, in a user-mode region, its
+slow path through `ppc_jit_code_store`, which inline was most of a
+store's code.  A helper returns that function's status; the call site
+leaves through its block's deopt tail at the store (not stored) or at the
+next instruction (stored into translated code).  Loads stay inline: the
+same treatment cost more at run time than their smaller code saved, as
+did keeping registers in locals for the whole function (`jit.regs = 1`,
+21 % fewer bytes, slower code).  The access test has no T=1 term on the
+604 and 750 (their mask is always zero).  `jit.trace = 5` prints the
+bytes per guest instruction by what they are for: on the Mac OS X
+scenario about 77, of which instruction bodies 43, block guards 12,
+deopt tails 9, register loads 7, ways out 4.5, prologue and epilogue 2.
+
 **Asynchronous compiles** (`jit.async`, the default except under Node).
 `compile_region` hands each module to `WebAssembly.compile` and records
 the chunk as pending (a token).  The promise resolves on the core thread
@@ -388,7 +407,7 @@ Two runs compare only when they split the run into the same
 | `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (0: Mac OS X's kernel is a net loss translated, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
