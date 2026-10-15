@@ -374,7 +374,7 @@ static void sleb(int32_t v) {
 // clang-format off
 enum {
     W_BLOCK = 0x02, W_LOOP = 0x03, W_IF = 0x04, W_ELSE = 0x05, W_END = 0x0B, W_BR = 0x0C, W_BR_IF = 0x0D,
-    W_BR_TABLE = 0x0E, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
+    W_BR_TABLE = 0x0E, W_RETURN = 0x0F, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
     W_LOAD = 0x28, W_LOAD8U = 0x2D, W_LOAD16S = 0x2E, W_LOAD16U = 0x2F, W_STORE = 0x36, W_STORE8 = 0x3A,
     W_STORE16 = 0x3B, W_CONST = 0x41, W_EQZ = 0x45, W_EQ = 0x46, W_NE = 0x47, W_LT_S = 0x48, W_LT_U = 0x49,
     W_GT_S = 0x4A, W_GT_U = 0x4B, W_LE_U = 0x4D, W_GE_U = 0x4F, W_CLZ = 0x67, W_ADD = 0x6A, W_SUB = 0x6B,
@@ -550,7 +550,12 @@ static void emit_store_regs(uint32_t defs) {
         mem(W_STORE, 2, offsetof(ppc_t, gpr) + 4u * r);
     }
 }
+// jit.trace = 5: the bytes generated, by what they are for (cumulative)
+enum { JB_PROLOGUE, JB_GUARD, JB_LOADS, JB_BODY, JB_FLUSH, JB_WAYOUT, JB_DEOPT, JB_N };
+static uint64_t g_jb[JB_N];
+// record/compare, other; [bytes, count]
 static void emit_flush(void) {
+    uint32_t len0 = g_len;
     for (uint32_t r = 0; r < 32; r++) {
         if (!(g_block_defs & (1u << r)))
             continue;
@@ -558,6 +563,7 @@ static void emit_flush(void) {
         lget(GPR(r));
         mem(W_STORE, 2, offsetof(ppc_t, gpr) + 4u * r);
     }
+    g_jb[JB_FLUSH] += g_len - len0; // (counted again inside whichever section emitted it)
 }
 
 // Leave to `npc` (the block's registers stored)
@@ -932,14 +938,16 @@ static void emit_access_test(uint32_t size, bool store) {
     mem(W_LOAD, 2, 0);
     ltee(L_T1);
     op(W_EQZ);
-    lget(L_TMASK); // T=1 segments (601, MSR[DT] clear); 0 otherwise
-    lget(L_EA);
-    iconst(28);
-    op(W_SHR_U);
-    op(W_SHR_U);
-    iconst(1);
-    op(W_AND);
-    op(W_OR);
+    if (U.is601) { // T=1 segments (601, MSR[DT] clear; the 604's mask is always 0)
+        lget(L_TMASK);
+        lget(L_EA);
+        iconst(28);
+        op(W_SHR_U);
+        op(W_SHR_U);
+        iconst(1);
+        op(W_AND);
+        op(W_OR);
+    }
     if (size > 1) { // misaligned is an ordinary access unless it crosses a page (big-endian;
                     // ppc_check_align_scalar, the 604's scalar gate)
         lget(L_EA);
@@ -949,6 +957,106 @@ static void emit_access_test(uint32_t size, bool store) {
         op(W_GT_U);
         op(W_OR);
     }
+}
+
+// The store helpers every module defines after its function (index 2,
+// after the two imported helpers): the fast path of a store, called from
+// each store instead of repeated at it, with the slow path a store from
+// user code needs -- ppc_jit_code_store, a store into a code page -- out of
+// line.  Inline, that path was most of a store's code, and the engine
+// compiles generated code at a fixed rate per byte.  (Loads stay inline: a
+// call per load costs more at run time than its smaller code saves.)  A
+// helper returns ppc_jit_code_store's status: 0 stored, 1 not stored (leave
+// at the store), 2 stored into translated code (leave after it); a miss in
+// a supervisor region is 1.  The 601 keeps its stores inline: its T=1 test
+// reads a local of the function.
+//   (ea, value, table, address mask) -> status
+enum { JH_ST8, JH_ST16, JH_ST32, JH_N };
+#define JH_FN(h) (3u + (h))
+static uint32_t jh_store(uint32_t size) {
+    return size == 4 ? JH_ST32 : size == 2 ? JH_ST16 : JH_ST8;
+}
+
+// One helper's code entry (locals: the parameters, then the masked
+// address, the table entry and a byte-swap temporary)
+static void emit_helper(uint32_t h) {
+    uint32_t size = h == JH_ST32 ? 4 : h == JH_ST16 ? 2 : 1;
+    enum { ea, val, tab, amask, t0, t1, t2 };
+    uint32_t at = g_len;
+    for (int i = 0; i < 5; i++)
+        put(0);
+    uleb(1);
+    uleb(3);
+    put(BT_I32);
+    lget(ea);
+    lget(amask);
+    op(W_AND);
+    lset(t0);
+    lget(tab);
+    lget(t0);
+    iconst(MEM_PAGE_SHIFT);
+    op(W_SHR_U);
+    iconst(2);
+    op(W_SHL);
+    op(W_ADD);
+    mem(W_LOAD, 2, 0);
+    ltee(t1);
+    op(W_EQZ);
+    if (size > 1) { // misaligned is an ordinary access unless it crosses a page
+        lget(ea);
+        iconst(MEM_PAGE_MASK);
+        op(W_AND);
+        iconst(MEM_PAGE_SIZE - size);
+        op(W_GT_U);
+        op(W_OR);
+    }
+    op(W_IF);
+    put(BT_VOID);
+    if (U.pr) { // a code page, the 604's alignment, ...: ppc_jit_code_store
+        lget(t0);
+        lget(val);
+        iconst(size);
+        op(W_CALL);
+        uleb(0);
+    } else {
+        iconst(1);
+    }
+    op(W_RETURN);
+    op(W_END);
+    lget(t1);
+    lget(t0);
+    op(W_ADD);
+    lget(val);
+    if (size == 4) {
+        ltee(t2);
+        iconst(8);
+        op(W_ROTL);
+        iconst(0x00FF00FFu);
+        op(W_AND);
+        lget(t2);
+        iconst(8);
+        op(W_ROTR);
+        iconst(0xFF00FF00u);
+        op(W_AND);
+        op(W_OR);
+        mem(W_STORE, 0, 0);
+    } else if (size == 2) {
+        ltee(t2);
+        iconst(8);
+        op(W_SHL);
+        lget(t2);
+        iconst(8);
+        op(W_SHR_U);
+        iconst(0xFF);
+        op(W_AND);
+        op(W_OR);
+        mem(W_STORE16, 0, 0);
+    } else {
+        mem(W_STORE8, 0, 0);
+    }
+    iconst(0);
+    op(W_END);
+    close_sized(at);
 }
 
 // Load: EA on the stack -> value on the stack (zero- or sign-extended)
@@ -1000,6 +1108,40 @@ static void emit_exit_after(void) {
 // when the store invalidated translated code (an update form's rA, upd_reg,
 // updated first; -1: none).
 static void emit_store(uint32_t size, bool helper, int upd_reg) {
+    if (!U.is601) {
+        // status 0: on; 1: leave at the store; 2: stored into translated
+        // code, leave after it -- the deopt tail at the next instruction
+        // (the update form completes first)
+        ltee(L_EA);
+        lget(L_T3);
+        lget(L_WTAB);
+        lget(L_AMASK);
+        op(W_CALL);
+        uleb(JH_FN(jh_store(size)));
+        ltee(L_T2);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        if (upd_reg >= 0) {
+            lget(L_T2);
+            iconst(2);
+            op(W_EQ);
+            op(W_IF);
+            put(BT_VOID);
+            lget(L_EA);
+            lset(GPR(upd_reg));
+            op(W_END);
+        }
+        lget(L_T2);
+        iconst(((g_cur_addr - g_block_addr) >> 2) - 1);
+        op(W_ADD);
+        lset(L_IDX);
+        op(W_BR);
+        uleb(g_depth - g_deopt_depth);
+        op(W_END);
+        g_depth--;
+        return;
+    }
     lset(L_EA);
     emit_access_test(size, true);
     op(W_IF);
@@ -2469,9 +2611,11 @@ static uint32_t translate(void) {
     put(0x00);
     uleb(0);
     close_sized(s);
+    // Functions: the translation, then the store helpers (all type 0)
     s = open_section(3);
-    uleb(1);
-    uleb(0);
+    uleb(1 + JH_N);
+    for (uint32_t h = 0; h <= JH_N; h++)
+        uleb(0);
     close_sized(s);
     s = open_section(7);
     uleb(1);
@@ -2480,7 +2624,7 @@ static uint32_t translate(void) {
     uleb(2); // after the two imported helpers
     close_sized(s);
     s = open_section(10);
-    uleb(1);
+    uleb(1 + JH_N);
     uint32_t body = g_len;
     for (int i = 0; i < 5; i++)
         put(0);
@@ -2519,15 +2663,17 @@ static uint32_t translate(void) {
     mem(W_LOAD, 2, 0);
     lset(L_AMASK);
     // 601 T=1 segments matter with MSR[DT] clear only (ppc_dxlate)
-    lget(L_P);
-    mem(W_LOAD, 2, offsetof(ppc_t, msr));
-    iconst(PPC_MSR_DT);
-    op(W_AND);
-    iconst(0);
-    lget(L_P);
-    mem(W_LOAD, 2, offsetof(ppc_t, sr_t_mask));
-    op(W_SELECT); // DT ? 0 : sr_t_mask
-    lset(L_TMASK);
+    if (U.is601) {
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        iconst(PPC_MSR_DT);
+        op(W_AND);
+        iconst(0);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, sr_t_mask));
+        op(W_SELECT); // DT ? 0 : sr_t_mask
+        lset(L_TMASK);
+    }
     lget(L_ENTRY);
     lset(L_IDX);
 
@@ -2547,7 +2693,9 @@ static uint32_t translate(void) {
     for (uint32_t b = 0; b < nb; b++)
         uleb(b);
     uleb(nb + 2); // default: $out (never taken)
+    g_jb[JB_PROLOGUE] += g_len - body;
     for (uint32_t b = 0; b < nb; b++) {
+        uint32_t len0 = g_len;
         op(W_END); // closes $b: block b's code follows
         g_cur_block = b;
         g_depth = 0;
@@ -2588,6 +2736,7 @@ static uint32_t translate(void) {
             lset(L_FOLDS);
         }
         g_block_branch = bl->branch;
+        g_jb[JB_GUARD] += g_len - len0, len0 = g_len;
         // The block's registers into their locals
         bool access = false; // a load or store: it may deopt
         for (uint32_t i = 0; i < bl->n; i++) {
@@ -2607,6 +2756,7 @@ static uint32_t translate(void) {
             mem(W_LOAD, 2, offsetof(ppc_t, gpr) + 4u * r);
             lset(GPR(r));
         }
+        g_jb[JB_LOADS] += g_len - len0, len0 = g_len;
         // The body, inside $end (its way on) and $deopt (its accesses
         // that miss the fast path leave through the block's deopt tail)
         if (access) {
@@ -2623,6 +2773,7 @@ static uint32_t translate(void) {
             g_left_slots = slots - i; // (only non-branches deopt: i < slots)
             emit_insn(g_ids[x], &g_ents[x], pg->words[bl->start + i], g_cur_addr);
         }
+        g_jb[JB_BODY] += g_len - len0, len0 = g_len;
         // Fall into the next block when it starts right here; otherwise
         // go there (a block of the region, or leave)
         uint32_t next = addr0 + 4u * bl->n;
@@ -2633,6 +2784,7 @@ static uint32_t translate(void) {
             op(W_BR);
             uleb(1); // $end
         }
+        g_jb[JB_WAYOUT] += g_len - len0, len0 = g_len;
         if (access) {
             op(W_END); // $deopt
             g_depth = 1;
@@ -2640,9 +2792,12 @@ static uint32_t translate(void) {
             op(W_END); // $end
             g_depth = 0;
         }
+        g_jb[JB_DEOPT] += g_len - len0, len0 = g_len;
         if (here)
             emit_flush(); // and fall into the next block
+        g_jb[JB_WAYOUT] += g_len - len0;
     }
+    uint32_t len_end = g_len;
     op(W_END); // $loop
     op(W_END); // $chain: perhaps another chunk's
     emit_chain_stub();
@@ -2668,7 +2823,12 @@ static uint32_t translate(void) {
     mem(W_STORE, 2, 0);
     lget(L_BUDGET);
     op(W_END);
+    g_jb[JB_PROLOGUE] += g_len - len_end;
     close_sized(body);
+    uint32_t len_h = g_len;
+    for (uint32_t h = 0; h < JH_N; h++)
+        emit_helper(h);
+    g_jb[JB_PROLOGUE] += g_len - len_h;
     close_sized(s);
     return nb;
 }
@@ -3354,8 +3514,15 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             uint32_t ni = 0;
             for (uint32_t bi = 0; bi < nb; bi++)
                 ni += g_blocks[bi].n;
+            static uint64_t tot_ni, tot_nb;
+            tot_ni += ni, tot_nb += nb;
             printf("jit: chunk %08x/%u: %u blocks, %u instructions, %u bytes (%.1f per instruction)\n", lbase, ci, nb,
                    ni, g_len, (double)g_len / (ni ? ni : 1));
+            printf("jit:   so far per instruction (%llu in %llu blocks): prologue+epilogue %.1f, block guards %.1f, "
+                   "register loads %.1f, bodies %.1f, ways out %.1f, deopt tails %.1f; register stores %.1f of those\n",
+                   (unsigned long long)tot_ni, (unsigned long long)tot_nb, (double)g_jb[JB_PROLOGUE] / tot_ni,
+                   (double)g_jb[JB_GUARD] / tot_ni, (double)g_jb[JB_LOADS] / tot_ni, (double)g_jb[JB_BODY] / tot_ni,
+                   (double)g_jb[JB_WAYOUT] / tot_ni, (double)g_jb[JB_DEOPT] / tot_ni, (double)g_jb[JB_FLUSH] / tot_ni);
         }
         if (g_trace == 4) { // keep the module for inspection (debugging)
             char name[64];
