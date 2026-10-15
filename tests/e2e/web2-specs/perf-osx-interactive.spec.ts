@@ -86,9 +86,16 @@ async function bootFromLink(page: Page): Promise<void> {
 // Wait for `marker` (or a failure) in the terminal; return the whole text
 // with the terminal's line wrapping undone
 async function waitFor(page: Page, marker: string, timeoutMs: number): Promise<string> {
-  await expect(page.locator(CONSOLE_OUTPUT)).toContainText(new RegExp(`${marker}|ASSERT FAILED|failed`), {
-    timeout: timeoutMs,
-  });
+  try {
+    await expect(page.locator(CONSOLE_OUTPUT)).toContainText(new RegExp(`${marker}|ASSERT FAILED|failed`), {
+      timeout: timeoutMs,
+    });
+  } catch (e) {
+    // Where it stopped: the terminal and the screen
+    console.log(`PERFSCEN timeout; terminal:\n${await page.locator(CONSOLE_OUTPUT).innerText()}`);
+    await page.screenshot({ path: test.info().outputPath("timeout.png") });
+    throw e;
+  }
   return (await page.locator(CONSOLE_OUTPUT).innerText()).replace(/\n/g, "");
 }
 
@@ -110,7 +117,7 @@ test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked 
       `scheduler.run 10000000000\nscheduler.run 15000000000\nassert machine.screen.width == 1024 "not at the Finder's 1024 x 768"\ncheckpoint.save "${CKPT}"\necho "osx-settled n=\${machine.cpu.instr_count}"\n`,
     );
     await terminalRun(page, 'include "/opfs/upload/osx-settle.script"');
-    const text = await waitFor(page, "osx-settled n=\\d+", 60 * 60 * 1000);
+    const text = await waitFor(page, "osx-settled n=\\d+", Number(process.env.PERF_SETTLE_SECS ?? 3600) * 1000);
     expect(text).not.toContain("ASSERT FAILED");
     console.log(`PERFSCEN label=${LABEL} ${text.match(/osx-settled n=\d+/)![0]}`);
     await page.close();
