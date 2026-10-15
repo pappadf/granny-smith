@@ -8,6 +8,15 @@
 ifeq ($(origin CC),default)
 CC := gcc
 endif
+
+# TARGET=node builds the same headless program with emcc into WebAssembly,
+# run by Node with the host filesystem (NODERAWFS): the CPU cores run on
+# the browser's engine, without the browser.  Single-threaded: use it with
+# --jobs=inline --io=sync, as the bench harness does.
+TARGET ?= native
+ifeq ($(TARGET),node)
+CC := emcc
+endif
 # -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
 # objects to positional initializers that stop before a struct's last
 # fields, and the I/O range and display timing tables are written that way
@@ -49,6 +58,9 @@ ifeq ($(MODE),fast)
 BUILD_DIR     := build/headless-fast
 else
 BUILD_DIR     := build/headless
+endif
+ifeq ($(TARGET),node)
+BUILD_DIR     := $(BUILD_DIR)-node
 endif
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
@@ -112,13 +124,21 @@ SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
 OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRC))
 DEP := $(OBJ:.o=.d)
 
-# Output binary
+# Output binary (TARGET=node: gs-headless.js plus a gs-headless launcher, so
+# scripts that run the binary run the wasm build unchanged)
 OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
 CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
+ifeq ($(TARGET),node)
+# ALLOW_TABLE_GROWTH: the PowerPC translation tier installs its functions
+# in the function table (ppc_jit.c).
+LDFLAGS := $(LDFLAGS_MODE) -lm -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_TABLE_GROWTH \
+           -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=5MB \
+           -sEXIT_RUNTIME=1
+endif
 
 # With PLATEN=1 the platen archive goes on the link line after the objects
 # (an archive resolves only what precedes it), followed by exactly the
@@ -181,10 +201,19 @@ $(FLAGS_STAMP):
 $(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the headless binary
+ifeq ($(TARGET),node)
+$(OUTPUT): $(OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(OBJ) -o $@.js $(PLATEN_LDLIBS) $(LDFLAGS)
+	@printf '#!/bin/sh\nexec node "$$(dirname "$$0")/gs-headless.js" "$$@"\n' > $@
+	@chmod +x $@
+	@echo "Built: $@ (wasm, run by node)"
+else
 $(OUTPUT): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJ) -o $@ $(PLATEN_LDLIBS) $(LDFLAGS)
 	@echo "Built: $@"
+endif
 
 # Include auto-generated header dependency files
 -include $(DEP)
@@ -201,7 +230,7 @@ sanitize:
 # build/laserwriter are shared with the WASM build; the top-level `make
 # clean` owns them.
 clean:
-	rm -rf build/headless build/headless-fast
+	rm -rf build/headless build/headless-fast build/headless-node build/headless-fast-node
 
 # Show build configuration
 info:

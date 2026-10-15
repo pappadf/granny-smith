@@ -440,7 +440,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // alignment exception handler will be invoked if the word loaded crosses a
 // page boundary, or the results may be undefined").  So these run the same
 // scalar check as every other word access.
-#define OP_LWARX      OP(EA_X(); CHKA_LD(ea, 4); p->reserve = 1; p->reserve_addr = xa; GPR(RT) = LDV(32))
+#define OP_LWARX      OP(EA_X(); CHKA_LD(ea, 4); p->reserve = 1; p->reserve_addr = ea; GPR(RT) = LDV(32))
 #define OP_STWCX_DOT  OP(ppc_do_stwcx(p, iw))
 
 // --- external control (EAR-gated, 601UM eciwx/ecowx pages; the 604 adds

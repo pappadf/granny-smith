@@ -127,6 +127,12 @@ that left the CPU code alone, where concurrent pairing never came within
 siblings), which is fair to both sides of the ratio but makes the MIPS of a
 concurrent run useless as absolute numbers: C only uses head-only runs.
 
+B's clock is the process's user CPU time by default. `--clock wall` uses
+the window's wall time instead (`bench_window` reports both): the one that
+is fair to a wasm build whose engine compiles on background threads, such
+as the PowerPC translation tier's `jit` executor, where user CPU time
+would charge it for the optimizing compiles running beside the emulator.
+
 B also sees what A cannot, including effects nobody wrote: two builds whose
 CPU code is identical differed by up to 4 % on single rows (the PowerPC rows
 2 % slower on every runner; `iici-aux` 4–7 % on the EPYC 7763 alone), which
@@ -243,6 +249,45 @@ against a copy of itself, three pairs of 4 s windows) read 1.039.
 scripts/bench/build-base.sh --wasm "$(git merge-base origin/main HEAD)" tmp/bench-base-dist
 cd tests/e2e && PERF_BASE_DIST=$PWD/../../tmp/bench-base-dist \
   npx playwright test --config=playwright.web2.config.ts --project=serial perf-headbase.spec.ts
+```
+
+## The WebAssembly engine without a browser
+
+`make -f Makefile.headless TARGET=node` builds the same headless program
+with emcc into `build/headless[-fast]-node/`: a `gs-headless.js` run by
+Node with the host filesystem, and a `gs-headless` launcher beside it, so
+`run.py` takes it as `--head` or `--base` unchanged.  It is
+single-threaded (the harness's `--jobs=inline --io=sync`), and it is the
+browser's CPU cores on the browser's engine: its turbo MIPS on the
+PowerPC rows match the browser's.  Paired against the native build,
+metric B's ratio is the cost of WebAssembly:
+
+```bash
+make -f Makefile.headless MODE=fast -j$(nproc)
+make -f Makefile.headless MODE=fast TARGET=node -j$(nproc)
+python3 scripts/bench/run.py --head build/headless-fast-node/gs-headless \
+    --base build/headless-fast/gs-headless --rows pm8500-finder,g3dt-boot \
+    --metrics B --pairing alternate
+```
+
+## Page heat
+
+A build with `EXTRA_CFLAGS=-DPD_PROFILE` gains `predecode.profile_reset()`
+and `predecode.profile(path)`: per code page, the instructions retired on
+the predecoded tier, the visits (runs of instructions inside one page,
+entry to exit or sprint end), the stores into it and the stores that reset
+decoded entries; with histograms of visit and sprint lengths and the
+slow-path accesses made from a predecoded page.  `page_heat.py` boots
+PowerPC rows on such a build and prints how few pages carry the window,
+how often they are written, and how many translations a page-granular
+translation tier would make at a given heat threshold.  The profiler costs
+a call per page transition, so the build is for these counts only, never
+for timing.
+
+```bash
+make -f Makefile.headless MODE=fast BUILD_DIR=build/headless-prof \
+    EXTRA_CFLAGS=-DPD_PROFILE -j$(nproc)
+python3 scripts/bench/page_heat.py --bin build/headless-prof/gs-headless
 ```
 
 ## Adding a row

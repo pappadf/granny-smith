@@ -26,6 +26,7 @@ const SERIAL = [
   'scheduler-accelerated.spec.ts',
   'perf-bench.spec.ts',
   'perf-headbase.spec.ts',
+  'perf-jit.spec.ts',
   'av-camera.spec.ts',
   'av-microphone.spec.ts',
   'av-sound-record.spec.ts',

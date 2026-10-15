@@ -76,6 +76,7 @@ uintptr_t *g_supervisor_read = NULL;
 uintptr_t *g_supervisor_write = NULL;
 uintptr_t *g_user_read = NULL;
 uintptr_t *g_user_write = NULL;
+uintptr_t *g_mem_extra_write = NULL;
 
 // Active pointers (switched per sprint based on SR.S bit)
 uintptr_t *g_active_read = NULL;
@@ -526,8 +527,23 @@ static inline __attribute__((always_inline)) uint32_t dev_read_n(const page_entr
     return size == 1 ? dev_read8(pe, addr, off) : size == 2 ? dev_read16(pe, addr, off) : dev_read32(pe, addr, off);
 }
 
+#ifdef PD_PROFILE
+// Slow-path accesses made while an executor runs from a predecoded block
+// (the page-heat profiler, predecode.c): each would leave a translation.
+extern uint64_t g_pd_prof_slow_in_block;
+extern struct pd_block *g_pd_current;
+#define PD_PROF_SLOW()                                                                                                 \
+    do {                                                                                                               \
+        if (g_pd_current)                                                                                              \
+            g_pd_prof_slow_in_block++;                                                                                 \
+    } while (0)
+#else
+#define PD_PROF_SLOW() ((void)0)
+#endif
+
 static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr, unsigned size) {
     g_mem_slowpath_count++;
+    PD_PROF_SLOW();
     g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
 
     const bool supervisor = g_active_read == g_supervisor_read;
@@ -961,6 +977,7 @@ static inline __attribute__((always_inline)) void dev_write_n(const page_entry_t
 
 static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, uint32_t value, unsigned size) {
     g_mem_slowpath_count++;
+    PD_PROF_SLOW();
     g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
 
     const bool supervisor = g_active_write == g_supervisor_write;
@@ -1464,23 +1481,27 @@ static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *ho
     }
 }
 
-void memory_code_page_mark(const uint8_t *host_page) {
+void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
-    if (r < 0 || g_mem_code_regions[r].marks[page])
-        return; // outside every region, or already marked
-    g_mem_code_regions[r].marks[page] = 1;
+    if (r < 0)
+        return; // outside every region
+    uint8_t was = g_mem_code_regions[r].marks[page];
+    g_mem_code_regions[r].marks[page] = was | owner;
+    if (was)
+        return; // already a code page: its write entries are gone
     // Every logical alias currently holding a write entry for these bytes
     // loses it; refills consult the mark (memory_write_fill).
     zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
     zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
+    zero_write_aliases(g_mem_extra_write, 0, host_page);
 }
 
-void memory_code_page_unmark(const uint8_t *host_page) {
+void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
     if (r >= 0)
-        g_mem_code_regions[r].marks[page] = 0; // write entries refill lazily
+        g_mem_code_regions[r].marks[page] &= (uint8_t)~owner; // write entries refill lazily once unmarked
 }
 
 void memory_host_written(const uint8_t *host, uint32_t len) {

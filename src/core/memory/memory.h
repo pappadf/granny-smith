@@ -287,6 +287,10 @@ extern uintptr_t *g_supervisor_read; // supervisor-mode read mapping
 extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only)
 extern uintptr_t *g_user_read; // user-mode read mapping
 extern uintptr_t *g_user_write; // user-mode write mapping
+// A CPU-private logical write table outside the four SoA arrays (the
+// PowerPC MMU's supervisor-translated fills), NULL when there is none: a
+// code-page mark strips its entries for the page like theirs.
+extern uintptr_t *g_mem_extra_write;
 
 // SoA population tracking: the selected map lists the page indices written
 // into the SoA arrays since the last invalidation.  Every writer of a
@@ -578,7 +582,7 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
 typedef struct mem_code_region {
     uint8_t *base; // host base of the region
     uintptr_t size; // bytes
-    uint8_t *marks; // per page: nonzero = code page (write entries suppressed)
+    uint8_t *marks; // per page: nonzero = code page (write entries suppressed); one bit per owner (MEM_CODE_*)
 } mem_code_region_t;
 extern mem_code_region_t g_mem_code_regions[MEM_CODE_REGIONS_MAX];
 extern int g_mem_code_region_count;
@@ -664,12 +668,25 @@ static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *ho
 // or -1 when the table is full.
 int memory_code_region_register(uint8_t *base, uintptr_t size);
 
-// Mark the host page as a code page: sets the mark and zeroes every write
-// SoA entry (supervisor and user) that currently maps to it.  Idempotent.
-void memory_code_page_mark(const uint8_t *host_page);
+// Who holds a code-page mark: the predecode pool (a block decoded from the
+// page) and the PowerPC translation tier (a translation of it).  A page is
+// a code page while either holds it; each drops only its own.
+#define MEM_CODE_PREDECODE 1u
+#define MEM_CODE_JIT       2u
 
-// Drop the mark (block evicted/demoted); write entries refill lazily.
-void memory_code_page_unmark(const uint8_t *host_page);
+// Mark the host page as a code page for `owner`: sets the owner's bit and,
+// on the page's first mark, zeroes every write SoA entry (supervisor and
+// user) that currently maps to it.  Idempotent.
+void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner);
+// Drop `owner`'s mark; the write entries refill lazily once no owner is left.
+void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner);
+// The predecode pool's marks (block decoded / evicted or demoted).
+static inline void memory_code_page_mark(const uint8_t *host_page) {
+    memory_code_page_mark_owner(host_page, MEM_CODE_PREDECODE);
+}
+static inline void memory_code_page_unmark(const uint8_t *host_page) {
+    memory_code_page_unmark_owner(host_page, MEM_CODE_PREDECODE);
+}
 
 // A host-side writer (DMA, debug poke, ROM install, page-table R/C update)
 // changed `len` bytes at `host`: invalidate any cached code covering them.

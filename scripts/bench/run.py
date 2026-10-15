@@ -51,6 +51,11 @@ EMU_FLAGS = ["--speed=turbo", "--jobs=inline", "--io=sync"]
 
 CALLGRIND = ["valgrind", "--tool=callgrind"]
 
+# Metric B's clock: the process's user CPU time (the default: insensitive to
+# a busy host) or the window's wall time (--clock wall: a wasm build whose
+# engine compiles on background threads, the translation tier's case).
+CLOCK = "user"
+
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
@@ -117,21 +122,27 @@ class Binary:
         os.makedirs(d, exist_ok=True)
         script = os.path.join(d, "probe.script")
         with open(script, "w") as f:
-            f.write('echo "@@PROBE {\\"predecode\\":${try(predecode.enabled, -1)}}"\nquit\n')
+            f.write('echo "@@PROBE {\\"predecode\\":${try(predecode.enabled, -1)},\\"jit\\":${try(jit.available, 0)}}"\nquit\n')
         p = subprocess.run(
             [self.path, "rom=" + os.path.join(test_data, rom), "script=" + script] + EMU_FLAGS,
             cwd=d, capture_output=True, text=True, timeout=120,
         )
         probes = parse_tagged(p.stdout, "@@PROBE")
         self.has_predecode = bool(probes) and probes[0].get("predecode", -1) >= 0
+        self.has_jit = bool(probes) and probes[0].get("jit", 0) == 1
         self.executors = ["switch", "predecode"] if self.has_predecode else ["switch"]
+        if self.has_jit:
+            self.executors.append("jit")  # the translation tier (wasm builds): metric B only
 
 
 def exec_setup(binary, executor):
     """Driver lines that select `executor` on `binary`."""
     if not binary.has_predecode:
         return ""
-    return "predecode.enabled = %d\n" % (1 if executor == "predecode" else 0)
+    lines = "predecode.enabled = %d\n" % (0 if executor == "switch" else 1)
+    if getattr(binary, "has_jit", False):
+        lines += "jit.enabled = %d\n" % (1 if executor == "jit" else 0)
+    return lines
 
 
 def driver_prologue(row):
@@ -331,8 +342,9 @@ def native_window(binary, row, executor, rnd, core, test_data):
     why = window_validity(row, w, row["b_window"])
     if w is None:
         return {"valid": False, "invalid": why}
-    mips = w["guest_instr"] * 1000.0 / max(w["host_ns"], 1)
-    rec = {"value": mips, "guest_instr": w["guest_instr"], "host_ns": w["host_ns"],
+    ns = w.get("wall_ns", w["host_ns"]) if CLOCK == "wall" else w["host_ns"]
+    mips = w["guest_instr"] * 1000.0 / max(ns, 1)
+    rec = {"value": mips, "guest_instr": w["guest_instr"], "host_ns": w["host_ns"], "wall_ns": w.get("wall_ns"),
            "slowpath_frac": round(w["slowpath"] / max(w["guest_instr"], 1), 5),
            "valid": why is None}
     if why:
@@ -396,11 +408,15 @@ def main():
     ap.add_argument("--out", help="raw JSON lines (default <work>/raw.jsonl)")
     ap.add_argument("--test-data", default=os.path.join(ROOT, "tests", "data"))
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel boots and callgrind runs")
+    ap.add_argument("--clock", choices=["user", "wall"], default="user",
+                    help="metric B: process user CPU time (default) or wall time")
     ap.add_argument("--rounds", type=int, default=5, help="metric B rounds per binary")
     ap.add_argument("--pairing", choices=["alternate", "concurrent"], default="concurrent",
                     help="metric B: head and base at once on two cores (default) or alternated on one")
     ap.add_argument("--core", type=int, default=0, help="first host core metric B pins to (-1: no pinning)")
     args = ap.parse_args()
+    global CLOCK
+    CLOCK = args.clock
 
     rows, _ = load_rows(os.path.join(BENCH_DIR, "rows.json"))
     names = select_rows(rows, args.rows)

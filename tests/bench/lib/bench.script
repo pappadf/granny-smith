@@ -20,16 +20,18 @@
 
 # Run `n` scheduler instructions and print what the window cost: guest
 # instructions retired, memory slow-path accesses, host CPU time of the
-# process, and where the PC ended.  One @@WIN line, read by run.py.
+# process, wall time, and where the PC ended.  One @@WIN line, read by run.py.
 def bench_window(n) {
     let i0 = scheduler.instr_count
     let s0 = machine.memory.slowpath_count
     let t0 = scheduler.host_user_ns
+    let w0 = scheduler.host_wall_ns
     scheduler.run $n
     let t1 = scheduler.host_user_ns
+    let w1 = scheduler.host_wall_ns
     let di = scheduler.instr_count - $i0
     let ds = machine.memory.slowpath_count - $s0
-    echo "@@WIN {\"planned\":${$n},\"guest_instr\":${$di},\"slowpath\":${$ds},\"host_ns\":${$t1 - $t0},\"pc\":\"${machine.cpu.pc:08x}\"}"
+    echo "@@WIN {\"planned\":${$n},\"guest_instr\":${$di},\"slowpath\":${$ds},\"host_ns\":${$t1 - $t0},\"wall_ns\":${$w1 - $w0},\"pc\":\"${machine.cpu.pc:08x}\"}"
 }
 
 # The row's state guard, reported rather than asserted: one @@GUARD line.
