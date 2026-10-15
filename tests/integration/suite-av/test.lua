@@ -914,7 +914,7 @@ end
 -- instruction budget across two fresh boots — a divergence in any burst
 -- budget, interrupt ordering or frame cadence shows up here.
 local function dsp_fingerprint()
-    return F"${machine.screen.checksum()}/${machine.dsp.instr_count}/${machine.dsp.pc:08x}/${machine.dsp.state}/${machine.sound.frames}"
+    return (F"${machine.screen.checksum()}/${machine.dsp.instr_count}/${machine.dsp.pc:08x}/${machine.dsp.state}/${machine.sound.frames}")
 end
 
 local function row_av_dsp_determinism()

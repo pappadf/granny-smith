@@ -132,11 +132,13 @@ Lua's own `string`, `table`, `math`, `utf8`, `coroutine`, `luadebug` and the
 | `gs.none`, `gs.is_none(v)` | the in-list spelling of none |
 | `gs.quit_signal`, `gs.interrupt_signal` | the values `quit()` and Ctrl-C raise; `gs.try` re-raises them, a plain `pcall` that swallows one is re-interrupted at the next hook |
 
-**One pitfall of `F`.**  It reads the caller's locals with `luadebug.getlocal`
+**Two pitfalls of `F`.**  It reads the caller's locals with `luadebug.getlocal`
 and the function's upvalues with `luadebug.getupvalue`; a module-level
 local that the function names *only inside the template* is not an upvalue
 of that function and reads as `nil`.  Name it in code too, or spell the
-message with `..`.
+message with `..`.  And `return F"…"` is a tail call: the caller's frame is
+gone when `F` runs, so its locals read as `nil`.  Write `return (F"…")`,
+which Lua does not tail-call (the converter emits that form).
 
 ## Interrupts and failures
 

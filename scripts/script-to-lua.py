@@ -1688,7 +1688,12 @@ class Converter:
                 if st["expr"] is None:
                     t = "return"
                 else:
-                    t = "return " + self.expr(st["expr"], scope)[0]
+                    et = self.expr(st["expr"], scope)[0]
+                    # `return F"..."` would be a tail call, and F reads the
+                    # caller's locals, which a tail call has discarded.
+                    if et.startswith('F"'):
+                        et = "(" + et + ")"
+                    t = "return " + et
                 if not last:
                     t = "do " + t + " end"
                 self.emit(self.with_comment(t, st), ind)

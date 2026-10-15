@@ -108,7 +108,7 @@ function nt_ldr(key, want, ceiling, rung) -- global: included file
         out = F"${out}${machine.scc.a.sent()}"
     end
     scheduler.run(100000000)
-    return F"${out}${machine.scc.a.sent()}"
+    return (F"${out}${machine.scc.a.sent()}")
 end
 
 -- --- NT, which draws only on the 54M30 ----------------------------------------
