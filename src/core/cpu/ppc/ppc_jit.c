@@ -505,10 +505,10 @@ static struct {
     bool is601; // mtxer keeps only the 601's implemented XER bits; no time base
     uint32_t msr_mask; // the MSR bits mtmsr writes (ppc_msr_mask)
     bool shared; // the module's memory is shared (pthreads build)
-    // The region's tables, for chaining into its other chunks (§3.6): the
-    // address of its slot pointers and of its chunk array, the chunk size,
-    // and the field offsets the generated lookup reads
-    uint32_t rslot, rchunk, chunk_size, chunk_fn, chunk_maps, slot_owner, slot_hadj;
+    // For chaining into other chunks (§3.6), of this region or any other of
+    // its mode: g_rdirect's row for the mode, where a region keeps its slots
+    // and chunks, the chunk size, and the field offsets the lookup reads
+    uint32_t rdirect, roff_slot, roff_chunk, chunk_size, chunk_fn, chunk_maps, slot_owner, slot_hadj;
 } U;
 
 // Translation state of the block being emitted
@@ -615,32 +615,39 @@ static void emit_fetch_check(uint32_t target, uint32_t host_adjust) {
 }
 
 // The function's chain stub, after $chain (the registers stored, the
-// guest address in L_NPC): go there through another chunk of the region --
-// look its block up in the region's tables (the slot, the word's owner, the
-// chunk's function and map; in instruction-translation mode the fetch TLB
-// must map the page to the slot's host page), store the registers and
-// tail-call that chunk's function; otherwise leave with L_NPC.  The
-// tables outlive the code: a remapped member or a reset drops the region's
-// functions first.
+// guest address in L_NPC): go there through another chunk -- of this
+// region or any other of the mode (g_rdirect) -- by looking its block up in
+// that region's tables (the slot, the word's owner, the chunk's function
+// and map; in instruction-translation mode the fetch TLB must map the page
+// to the slot's host page), store the registers and tail-call that chunk's
+// function; otherwise leave with L_NPC.  The tables outlive the code: a
+// remapped member or a reset drops the region's functions first.
 static void emit_chain_stub(void) {
     op(W_BLOCK); // $leave
     put(BT_VOID);
     lget(L_NPC);
-    iconst(U.lbase);
-    op(W_SUB);
-    ltee(L_T0); // offset in the region
-    iconst(JIT_REGION_PAGES << MEM_PAGE_SHIFT);
-    op(W_GE_U);
+    iconst(JIT_REGION_SHIFT);
+    op(W_SHR_U);
+    iconst(2);
+    op(W_SHL);
+    iconst(U.rdirect);
+    op(W_ADD);
+    mem(W_LOAD, 2, 0);
+    ltee(L_T3); // the region
+    op(W_EQZ);
     op(W_BR_IF);
     uleb(0);
-    lget(L_T0);
+    lget(L_NPC);
+    iconst((JIT_REGION_PAGES << MEM_PAGE_SHIFT) - 1);
+    op(W_AND);
+    ltee(L_T0); // offset in the region
     iconst(MEM_PAGE_SHIFT);
     op(W_SHR_U);
     iconst(2);
     op(W_SHL);
-    iconst(U.rslot);
+    lget(L_T3);
     op(W_ADD);
-    mem(W_LOAD, 2, 0);
+    mem(W_LOAD, 2, U.roff_slot);
     ltee(L_T1); // the slot
     op(W_EQZ);
     op(W_BR_IF);
@@ -661,7 +668,9 @@ static void emit_chain_stub(void) {
     lget(L_T2);
     iconst(U.chunk_size);
     op(W_MUL);
-    iconst(U.rchunk);
+    lget(L_T3);
+    op(W_ADD);
+    iconst(U.roff_chunk);
     op(W_ADD);
     ltee(L_T2); // the chunk
     mem(W_LOAD, 2, U.chunk_fn);
@@ -759,8 +768,8 @@ static void emit_goto(uint32_t target) {
     int k = -1;
     uint16_t b = block_at(target, &k);
     if (b == NONE16) {
-        if (!(target & 3) && target - U.lbase < (JIT_REGION_PAGES << MEM_PAGE_SHIFT)) {
-            iconst(target); // perhaps another chunk's
+        if (!(target & 3)) {
+            iconst(target); // perhaps another chunk's, of this region or another
             lset(L_NPC);
             emit_chain();
         } else
@@ -2964,6 +2973,11 @@ typedef struct jit_region {
 
 #define JIT_HASH 256
 static jit_region_t *g_regions[JIT_HASH];
+// Every region by its mode (MSR[IT] << 1 | MSR[PR]) and logical megabyte,
+// for the chain stub: translated code reaches any translated code, not only
+// its own region's.  Regions live until ppc_jit_reset, which clears this and
+// drops every function first.
+static jit_region_t *g_rdirect[4][1u << (32 - JIT_REGION_SHIFT)];
 #define JIT_HOST_HASH 1024
 static jit_slot_t *g_by_host[JIT_HOST_HASH];
 static uint32_t g_mapgen; // the memory map the translations belong to
@@ -3073,6 +3087,7 @@ void ppc_jit_reset(void) {
         g_regions[h] = NULL;
     }
     memset(g_rcache, 0, sizeof g_rcache);
+    memset(g_rdirect, 0, sizeof g_rdirect);
     memset(g_pending, 0, sizeof g_pending); // (compiles in flight are dropped when they land)
     g_hot_R = NULL;
     g_ppc_jit_cold.key = 0;
@@ -3098,6 +3113,7 @@ static jit_region_t *region_get(uint32_t key) {
     r->key = key;
     r->next = g_regions[h];
     g_regions[h] = r;
+    g_rdirect[key & 3u][key >> JIT_REGION_SHIFT] = r;
     g_st.regions++;
     return r;
 }
@@ -3360,8 +3376,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     U.is601 = !ppc_is_604(p);
     U.msr_mask = ppc_msr_mask(p);
     U.shared = jit_memory_shared() != 0;
-    U.rslot = addr_of(&R->slot[0]);
-    U.rchunk = addr_of(&R->chunk[0]);
+    U.rdirect = addr_of(&g_rdirect[R->key & 3u][0]);
+    U.roff_slot = offsetof(jit_region_t, slot);
+    U.roff_chunk = offsetof(jit_region_t, chunk);
     U.chunk_size = sizeof(jit_chunk_t);
     U.chunk_fn = offsetof(jit_chunk_t, fn);
     U.chunk_maps = offsetof(jit_chunk_t, maps);
