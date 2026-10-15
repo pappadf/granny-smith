@@ -17,6 +17,7 @@
 #define NUBUS_DISPLAY_H
 
 #include "common.h" // GS_UNIMPLEMENTED
+#include "gs_assert.h"
 #include <stdbool.h>
 #include <stddef.h>
 

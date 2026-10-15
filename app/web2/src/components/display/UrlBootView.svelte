@@ -33,13 +33,19 @@
   function fraction(f: UrlFile): number | null {
     if (f.status === 'done' || f.status === 'unpacking') return 1;
     if (f.status === 'queued' || f.status === 'skipped') return 0;
+    // Compressing: how far; past the last byte (checking, moving into the
+    // store) nothing is reported.
+    if (f.status === 'storing') {
+      const s = f.stored;
+      return s && s.total > 0 && s.done < s.total ? s.done / s.total : null;
+    }
     if (f.total && f.received <= f.total) return f.received / f.total;
     return null;
   }
 
   // The bar's look for a file's status.
   function barState(f: UrlFile): ProgressState {
-    return f.status === 'downloading' ? 'active' : f.status;
+    return f.status === 'downloading' || f.status === 'storing' ? 'active' : f.status;
   }
 
   function amount(f: UrlFile): string {
@@ -48,6 +54,10 @@
         return 'Waiting';
       case 'unpacking':
         return 'Unpacking…';
+      case 'storing': {
+        const fr = fraction(f);
+        return fr === null ? 'Storing…' : `Compressing · ${Math.floor(fr * 100)}%`;
+      }
       case 'done':
         // A blank disk's file is a few KB however large the disk: no size.
         if (f.blank) return f.reused ? 'Blank disk · already stored' : 'Blank disk · created';
@@ -91,7 +101,7 @@
   <div class="content">
     <Hero
       title="Granny Smith"
-      subtitle="A classic Macintosh emulator in the browser."
+      subtitle="A Macintosh emulator in the browser."
       titleClass="title"
       subtitleClass="subtitle"
     />

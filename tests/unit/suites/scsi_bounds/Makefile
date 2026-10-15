@@ -17,7 +17,7 @@ TEST_HARNESS := isolated
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
-                ../../../../src/core/event/gs_event.c \
+                ../../../../src/core/event/event.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/storage/image.c \
                 ../../../../src/core/storage/image_wrap_sniff.c \
@@ -44,4 +44,13 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
 EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
+# The image_t accessors (image.h)
+EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+# On wasm32 the suite's files live on the host filesystem (NODERAWFS), not
+# emscripten's in-memory one: the 4 GB test opens a sparse 5 GiB disk, which
+# MEMFS would have to allocate whole.  `override` because run-wasm32 passes
+# LDFLAGS on the command line.
+ifneq ($(filter emcc%,$(notdir $(firstword $(CC)))),)
+override LDFLAGS += -sNODERAWFS=1
+endif
 include ../../common.mk

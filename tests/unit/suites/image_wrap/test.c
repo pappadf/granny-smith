@@ -4,6 +4,7 @@
 // The volume wrapper's layout and sniffs.  See Makefile.
 
 #include "image_apm.h"
+#include "image_internal.h"
 #include "image_wrap.h"
 #include "test_assert.h"
 
@@ -13,16 +14,19 @@
 
 // --- stubs for what image_wrap.c reaches outside the layout code -------------
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return "test-build";
 }
 
-// image_wrap_volume's sniff reads through here; the tests call the pure
-// layout and sniff functions directly, so no test reaches it.
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+// image_wrap_volume's sniff reads through here: the bytes of g_disk (zeros
+// past its end, or when there is none).
+static const uint8_t *g_disk;
+static size_t g_disk_len;
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
-    (void)offset;
     memset(buf, 0, size);
+    if (g_disk && offset < g_disk_len)
+        memcpy(buf, g_disk + offset, size < g_disk_len - offset ? size : g_disk_len - offset);
     return size;
 }
 
@@ -362,6 +366,73 @@ TEST(test_extended_blocks_driverless) {
     free(img);
 }
 
+// --- Old World boot fields -------------------------------------------------------
+
+// Mac OS X's boot fields on its Apple_HFS map entry `e` (the 10.1 installer's,
+// as measured on an installed disk): the XCOFF BootX in the HFS+ startup file.
+static void put_boot_fields(uint8_t *e) {
+    wr32(e + 88, 0x4000003B); // pmPartStatus: valid, allocated, bootable, r/w
+    wr32(e + 92, 0x20E0); // pmLgBootStart, partition-relative
+    wr32(e + 96, 0xB4000); // pmBootSize
+    wr32(e + 100, 0x01C00000); // pmBootAddr
+    wr32(e + 108, 0x01C00510); // pmBootEntry
+    memcpy(e + 120, "powerpc", 7); // pmProcessor
+}
+
+static void check_boot_fields(const uint8_t *e) {
+    ASSERT_EQ_INT(0x20E0, (int)rd32(e + 92));
+    ASSERT_EQ_INT(0xB4000, (int)rd32(e + 96));
+    ASSERT_EQ_INT(0x01C00000, (int)rd32(e + 100));
+    ASSERT_EQ_INT(0x01C00510, (int)rd32(e + 108));
+    ASSERT_EQ_INT(0, memcmp(e + 120, "powerpc", 8));
+    ASSERT_TRUE((rd32(e + 88) & 0x08) != 0); // bootable
+    ASSERT_TRUE((rd32(e + 88) & 0x40000000u) != 0); // the volume's own bits kept
+    ASSERT_TRUE((rd32(e + 88) & 0x04) != 0); // and in use, as the wrapper marks it
+}
+
+// The volume's own boot fields ride into the synthesised Apple_HFS entry,
+// which otherwise keeps the wrapper's placement.
+TEST(test_boot_fields_are_carried) {
+    uint8_t entry[BLK] = {0};
+    entry[0] = 'P';
+    entry[1] = 'M';
+    put_boot_fields(entry);
+    uint8_t *buf = (uint8_t *)calloc(1, (size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK);
+    image_wrap_build_prefix_boot(buf, 20480, "test-build", entry);
+    const uint8_t *hfs = buf + 3 * BLK;
+    ASSERT_EQ_INT(0, memcmp(hfs + 48, "Apple_HFS", 10));
+    ASSERT_EQ_INT((int)IMAGE_WRAP_PREFIX_BLOCKS, (int)rd32(hfs + 8));
+    ASSERT_EQ_INT(20480, (int)rd32(hfs + 12));
+    check_boot_fields(hfs);
+    // Without an entry there is nothing to boot from the partition.
+    image_wrap_build_prefix(buf, 20480, "test-build");
+    ASSERT_EQ_INT(0, (int)rd32(hfs + 92));
+    ASSERT_EQ_INT(0, (int)rd32(hfs + 96));
+    ASSERT_TRUE((rd32(hfs + 88) & 0x08) == 0);
+    free(buf);
+}
+
+// Wrapping a driverless disk whose Apple_HFS entry has boot fields keeps them.
+TEST(test_wrap_volume_keeps_boot_fields) {
+    size_t blocks = 200;
+    uint8_t *disk = (uint8_t *)calloc(1, blocks * BLK);
+    driverless_head(disk);
+    put_boot_fields(disk + 2 * BLK); // entry 2: the Apple_HFS at 64
+    bare_head(disk + 64 * BLK);
+    g_disk = disk;
+    g_disk_len = blocks * BLK;
+    image_t img;
+    memset(&img, 0, sizeof img);
+    img.block_size = BLK;
+    img.raw_size = blocks * BLK;
+    ASSERT_EQ_INT(IMAGE_WRAP_DRIVERLESS, image_wrap_volume(&img));
+    ASSERT_TRUE(img.wrap_prefix != NULL);
+    check_boot_fields(img.wrap_prefix + 3 * BLK);
+    free(img.wrap_prefix);
+    g_disk = NULL;
+    free(disk);
+}
+
 int main(void) {
     RUN(test_ddm_names_one_68k_driver);
     RUN(test_partition_map_parses_to_three_entries);
@@ -374,6 +445,8 @@ int main(void) {
     RUN(test_volume_blocks);
     RUN(test_extended_blocks_bare);
     RUN(test_extended_blocks_driverless);
+    RUN(test_boot_fields_are_carried);
+    RUN(test_wrap_volume_keeps_boot_fields);
     fprintf(stderr, "All image_wrap tests passed\n");
     return 0;
 }

@@ -81,23 +81,23 @@ value_t irq_ctrl_attr_levels(struct object *self, const member_t *m);
 // user_data so instance_data stays the chip state pointer.
 #define IRQ_CONTROLLER_ATTR(NAME, TYPE, PFLAGS, GETTER, OPS, DOC)                                                      \
     {                                                                                                                  \
-        .kind = M_ATTR,                                                                                                \
+        .kind = MK_ATTR,                                                                                               \
         .name = (NAME),                                                                                                \
         .doc = (DOC),                                                                                                  \
         .attr = {.type = (TYPE), .presentation_flags = (PFLAGS), .get = (GETTER), .set = NULL, .user_data = (OPS)} \
 },
 
 #define IRQ_CONTROLLER_MEMBERS(OPS)                                                                                    \
-    IRQ_CONTROLLER_ATTR("chip", V_STRING, 0, irq_ctrl_attr_chip, (OPS), "The part this node models")                   \
-    IRQ_CONTROLLER_ATTR("pending", V_UINT, VAL_HEX | VAL_VOLATILE, irq_ctrl_attr_pending, (OPS),                       \
+    IRQ_CONTROLLER_ATTR("chip", VK_STRING, 0, irq_ctrl_attr_chip, (OPS), "The part this node models")                  \
+    IRQ_CONTROLLER_ATTR("pending", VK_UINT, VFLAG_HEX | VFLAG_VOLATILE, irq_ctrl_attr_pending, (OPS),                  \
                         "Interrupt request bits the chip is holding")                                                  \
-    IRQ_CONTROLLER_ATTR("enabled", V_UINT, VAL_HEX | VAL_VOLATILE, irq_ctrl_attr_enabled, (OPS),                       \
+    IRQ_CONTROLLER_ATTR("enabled", VK_UINT, VFLAG_HEX | VFLAG_VOLATILE, irq_ctrl_attr_enabled, (OPS),                  \
                         "Enable/mask bits, same bit numbering as pending")                                             \
-    IRQ_CONTROLLER_ATTR("active", V_UINT, VAL_HEX | VAL_VOLATILE, irq_ctrl_attr_active, (OPS),                         \
+    IRQ_CONTROLLER_ATTR("active", VK_UINT, VFLAG_HEX | VFLAG_VOLATILE, irq_ctrl_attr_active, (OPS),                    \
                         "Requests that survive masking and drive the CPU line")                                        \
-    IRQ_CONTROLLER_ATTR("ipl", V_UINT, VAL_VOLATILE, irq_ctrl_attr_ipl, (OPS),                                         \
+    IRQ_CONTROLLER_ATTR("ipl", VK_UINT, VFLAG_VOLATILE, irq_ctrl_attr_ipl, (OPS),                                      \
                         "CPU interrupt level asserted now (0 = none)")                                                 \
-    IRQ_CONTROLLER_ATTR("levels", V_LIST, VAL_VOLATILE, irq_ctrl_attr_levels, (OPS),                                   \
+    IRQ_CONTROLLER_ATTR("levels", VK_LIST, VFLAG_VOLATILE, irq_ctrl_attr_levels, (OPS),                                \
                         "Per-CPU-level source bits: [{ipl, sources}], empty if the chip has no level map")
 
 #ifdef __cplusplus

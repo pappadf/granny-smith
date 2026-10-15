@@ -18,7 +18,8 @@ export interface MountInfo {
 interface ImagesState {
   collapsed: Record<ImageCategory, boolean>;
   /** OPFS path → where it is mounted. Set by the Images-section insert/eject
-   *  (and the upload auto-insert); onFloppyDriveChange() removes floppy entries
+   *  (and the upload auto-insert), and read back from the machine's drives
+   *  after a checkpoint restore; onFloppyDriveChange() removes floppy entries
    *  the guest has ejected on its own. */
   mounted: Record<string, MountInfo>;
   /** Number of floppy drives the active machine exposes (-1 = not yet probed).
@@ -46,6 +47,12 @@ export function toggleCategory(cat: ImageCategory): void {
 export function setMounted(path: string, info: MountInfo | null): void {
   if (info) images.mounted[path] = info;
   else delete images.mounted[path];
+}
+
+// Forget every mount: the machine they were in is gone (a new boot, a
+// checkpoint restore), so its badges and eject targets are too.
+export function clearMounts(): void {
+  images.mounted = {};
 }
 
 export function isMounted(path: string): boolean {

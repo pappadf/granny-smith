@@ -64,8 +64,8 @@ def row_iifx_chime() {
 # distinct transport (cf. suite-plus's IWM row and suite-se30's direct
 # SWIM row).
 def row_iifx_608_fd() {
-    machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="mdc_8_24" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$ssw_608}"
     # Run past the early boot transient BEFORE waiting. The desktop pattern is
     # painted long before the Finder draws its menu bar and icons, and that bare
@@ -126,8 +126,8 @@ def row_iifx_701_fd() {
 # card's ROM/QuickDraw fallback rendering path under a System, which is
 # the half of the accel/decline oracle that does not need the GC driver.
 def row_iifx_71_824gc() {
-    machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="824gc" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     # Run past the early boot transient BEFORE waiting. The desktop pattern is
     # painted long before the Finder draws its menu bar and icons, and that bare
@@ -181,8 +181,8 @@ def row_iifx_24ac_seat() {
 # lines, so the vrom programmed the guest for a 1152x870 GDevice over an
 # 832x624 scanout.
 def row_iifx_75_24ac_832() {
-    machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="display_card_24ac" video_mode="rgb_832x624_8bpp" rom="${$ROM}"
+    machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 400000000
     wait_stable(1800000000)
@@ -207,8 +207,8 @@ def row_iifx_75_24ac_832() {
 # and A/UX owns the MMU outright so the addressing axis does not apply.
 # The RTC is pinned to the timestamp the golden was captured with.
 def row_iifx_aux3_login() {
-    machine.rtc.time = "2026-04-26T21:30:36"
     machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
+    machine.rtc.time = "2026-04-26T21:30:36"
     machine.scsi.attach_hd "${$hd_aux}" 0
     scheduler.run 1500000000
     assert machine.id == "iifx" "iifx-aux3-login: machine.id != iifx"
@@ -265,8 +265,7 @@ def row_iifx_8m() {
 def row_iifx_checkpoint() {
     machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
-    scheduler.run 200000000
-    wait_stable(900000000)
+    reach("goldens/iifx-7.0.1-640x480x1-finder.png", 200000000, 900000000, 20000000)
     check("goldens/iifx-7.0.1-640x480x1-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-iifx.gsc") "iifx-checkpoint: save failed"
     # A different RAM size, so a restore that quietly kept the old machine fails

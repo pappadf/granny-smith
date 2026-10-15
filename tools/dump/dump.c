@@ -62,7 +62,7 @@ static int dump_disasm(struct rfork *rf, const char *dst_dir);
 // any error, with errno set; the byte count goes to *out_len.
 static uint8_t *read_host_file(const char *path, size_t cap, size_t *out_len) {
     uint8_t *buf = NULL;
-    int rc = gs_read_file(path, cap, &buf, out_len);
+    int rc = read_file(path, cap, &buf, out_len);
     if (rc != 0) {
         errno = -rc;
         return NULL;
@@ -172,7 +172,7 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(dir, sizeof(dir), "%s/resources", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return -1;
-    if (gs_mkdir_p(dir) != 0) {
+    if (mkdir_p(dir) != 0) {
         fprintf(stderr, "re: cannot create '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -187,7 +187,7 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
         n = snprintf(type_dir, sizeof(type_dir), "%s/%s", dir, type_path);
         if (n < 0 || (size_t)n >= sizeof(type_dir))
             return -1;
-        if (gs_mkdir_p(type_dir) != 0) {
+        if (mkdir_p(type_dir) != 0) {
             fprintf(stderr, "re: cannot create '%s': %s\n", type_dir, strerror(errno));
             return -1;
         }
@@ -250,7 +250,7 @@ int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_byt
         return -EINVAL;
     if (!src_label)
         src_label = "(unnamed)";
-    if (gs_mkdir_p(dst_dir) != 0) {
+    if (mkdir_p(dst_dir) != 0) {
         fprintf(stderr, "dump: cannot create output directory '%s': %s\n", dst_dir, strerror(errno));
         return -EIO;
     }
@@ -541,7 +541,7 @@ static int dump_disasm(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(dir, sizeof(dir), "%s/disasm", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return -1;
-    if (gs_mkdir_p(dir) != 0) {
+    if (mkdir_p(dir) != 0) {
         fprintf(stderr, "re: cannot create '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -766,7 +766,7 @@ static int dump_decoded(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(base, sizeof(base), "%s/decoded", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(base))
         return -1;
-    if (gs_mkdir_p(base) != 0)
+    if (mkdir_p(base) != 0)
         return -1;
 
     int written = 0;
@@ -781,7 +781,7 @@ static int dump_decoded(rfork_t *rf, const char *dst_dir) {
         n = snprintf(type_dir, sizeof(type_dir), "%s/%s", base, type_path);
         if (n < 0 || (size_t)n >= sizeof(type_dir))
             return -1;
-        if (gs_mkdir_p(type_dir) != 0)
+        if (mkdir_p(type_dir) != 0)
             return -1;
 
         size_t n_res = rfork_num_resources(rf, type);
@@ -835,7 +835,6 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
 
     fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1\",\n");
     fprintf(fp, "  \"source\": {\n    \"label\": ");
-    extern void re_json_write_string(FILE *, const char *);
     re_json_write_string(fp, src_label);
     fprintf(fp, ",\n    \"data_fork\": {\"size\": %zu},\n", data_len);
     fprintf(fp, "    \"rsrc_fork\": {\"size\": %zu}", rsrc_len);

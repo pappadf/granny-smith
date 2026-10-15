@@ -5,6 +5,7 @@
 // Save/restore of the 68030 PMMU guest registers — see mmu_checkpoint.h.
 
 #include "mmu_checkpoint.h"
+#include "checkpoint.h"
 
 // Serialise the PMMU guest registers in canonical order.  Order matches the
 // block previously inlined verbatim in se30/iicx/iix/iici/iisi/iifx.

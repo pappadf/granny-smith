@@ -100,7 +100,7 @@ interface PromIdentifyResult {
 }
 
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
-  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
+  // rom.identify returns a native object (VK_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
   if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as RomIdentifyResult;
@@ -111,7 +111,7 @@ async function parseCardRomIdentify(
   what: 'vrom' | 'prom',
   path: string,
 ): Promise<PromIdentifyResult | null> {
-  // catalog.vroms.identify / catalog.proms.identify return a native object (V_MAP).
+  // catalog.vroms.identify / catalog.proms.identify return a native object (VK_MAP).
   const r = await gsEval(`catalog.${what}s.identify`, [path]); // catalog.vroms / catalog.proms
   if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as PromIdentifyResult;
@@ -235,7 +235,20 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     persistDir: PROMS_DIR,
     async validate(path, gsEval) {
       const parsed = await parseCardRomIdentify(gsEval, 'prom', path);
-      if (!parsed?.recognised) return { valid: false };
+      if (!parsed?.recognised) {
+        // A real PCI expansion ROM the emulator cannot use -- a card it does
+        // not emulate, a damaged dump, a PC/x86 option ROM -- is refused with
+        // the reason.  It used to fall through to the permissive hard-disk
+        // probe and be stored as a 128 KB "hard disk".
+        if (parsed?.id || parsed?.reason?.startsWith('an expansion ROM'))
+          return {
+            valid: false,
+            reject: parsed.reason?.includes('no catalog row')
+              ? `is a PCI expansion ROM (${parsed.id}) for a card Granny Smith does not emulate`
+              : `is ${parsed.reason}`,
+          };
+        return { valid: false };
+      }
       return {
         valid: true,
         info: {

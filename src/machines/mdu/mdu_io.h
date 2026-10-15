@@ -17,7 +17,7 @@
 
 #include "mac030_glue_io.h" // the shared engine (mac030_io_t + mac030_io_*)
 #include "memory.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -48,8 +48,8 @@ extern const mac030_io_range_t mdu_io_ranges_tbl[];
 const mac030_io_range_t *mdu_io_ranges(void);
 
 // Unified MDU+RBV machine state — the single struct shared by the IIci and
-// IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret +
-// last_port_a; the IIci leaves egret NULL.
+// IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret;
+// the IIci leaves egret NULL.
 typedef struct mac030_mdu_state {
     struct adb *adb;
     struct asc *asc;
@@ -62,8 +62,6 @@ typedef struct mac030_mdu_state {
     struct mmu_state *mmu;
 
     mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
-
-    uint8_t last_port_a; // IIsi: floppy/overlay filtering on VIA1 PA
 
     memory_interface_t io_interface; // registered at the $50000000 I/O region
 } mac030_mdu_state_t;

@@ -26,10 +26,10 @@ extern "C" {
 // message is also serialised into `out_buf`).
 //
 // Introspection and completion are reached through the same call:
-// `gs_eval("cpu.meta")`, `gs_eval("cpu.meta.attributes")`, and
-// `gs_eval("meta.complete", "[\"cpu.d\", 5]")` replace the former
+// `object_eval("cpu.meta")`, `object_eval("cpu.meta.attributes")`, and
+// `object_eval("meta.complete", "[\"cpu.d\", 5]")` replace the former
 // gs_inspect / gs_complete entry points.
-int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size);
+int object_eval(const char *path, const char *args_json, char *out_buf, size_t out_size);
 
 #ifdef __cplusplus
 }

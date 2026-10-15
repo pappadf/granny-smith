@@ -56,6 +56,10 @@ void platform_audio_set_rate(uint32_t src_rate_hz);
 // feedback for the accelerated-mode governor.
 double platform_audio_ring_fill(void);
 
+// Redraw the whole screen from the active display now, whatever its dirty
+// flags say (a restored checkpoint's framebuffer).  A no-op headless.
+void platform_force_redraw(void);
+
 // Print the host's callstack, for the failure handler.
 void platform_print_host_callstack(void);
 
@@ -67,7 +71,7 @@ void platform_print_host_callstack(void);
 // has nothing to do, its card ROMs live in OPFS and are offered on upload.
 void platform_offer_sibling_card_roms(const char *rom_path);
 
-// The target's clock: host_time() (seconds) and host_time_ms().
+// The target's clock: host_time_ms().
 #include "platform_clock.h"
 
 #endif // PLATFORM_H

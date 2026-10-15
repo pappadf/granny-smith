@@ -114,8 +114,8 @@ static void mp_update_cpu1_irq(config_t *cfg) {
 // image.  CPU 1 returns into it and spins until the burst ends, where the
 // glue sees it and parks the core.  $FFF00100 (the reset vector) if none.
 static uint32_t mp_find_park_pc(config_t *cfg) {
-    const uint8_t *rom = memory_rom_bytes(cfg->mem_map);
-    uint32_t size = memory_rom_size(cfg->mem_map);
+    const uint8_t *rom = memory_rom_bytes(cfg->memory_map);
+    uint32_t size = memory_rom_size(cfg->memory_map);
     if (rom && size >= 0x100000u) {
         uint32_t base = 0u - size; // the ROM ends at $FFFFFFFF
         for (uint32_t off = size - 0x100000u; off + 4 <= size; off += 4)
@@ -151,10 +151,9 @@ static void mp_burst_event(void *source, uint64_t data) {
     // Enter CPU 1: its translation context, no sprint penalty channel, and
     // a bus-error counter of its own.
     uint32_t *saved_bus_err = g_bus_error_instr_ptr;
-    uint32_t saved_cpi = g_io_cpi_x256;
-    uint32_t *saved_burn = g_sprint_burndown_ptr;
-    g_io_cpi_x256 = 0;
-    g_sprint_burndown_ptr = NULL;
+    sprint_io_t saved_io = g_sprint_io;
+    g_sprint_io.cpi_x256 = 0;
+    g_sprint_io.burndown = NULL;
     mp->in_cpu1 = 1;
     ppc_mmu_activate(st->cpu1);
     ppc_clear_reservation(st->cpu1); // CPU 0 ran since this core last did
@@ -162,8 +161,7 @@ static void mp_burst_event(void *source, uint64_t data) {
     ppc_mmu_activate(cfg->ppc);
     ppc_clear_reservation(cfg->ppc); // and CPU 1 has now run since CPU 0 did
     mp->in_cpu1 = 0;
-    g_sprint_burndown_ptr = saved_burn;
-    g_io_cpi_x256 = saved_cpi;
+    g_sprint_io = saved_io;
     g_bus_error_instr_ptr = saved_bus_err;
     // ppc_run leaves *instructions at 0; it ran the whole plan unless a
     // fault ended it early, which is rare enough to count as the plan.
@@ -255,17 +253,17 @@ static DEF_GETTER(mp_attr_calls) {
 }
 static DEF_GETTER(mp_attr_mailbox) {
     value_t v = val_uint(4, mp_obj(self)->mailbox);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(mp_attr_entry) {
     value_t v = val_uint(4, mp_obj(self)->entry);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(mp_attr_park_pc) {
     value_t v = val_uint(4, mp_obj(self)->park_pc);
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 static DEF_GETTER(mp_attr_bursts) {
@@ -276,34 +274,34 @@ static DEF_GETTER(mp_attr_cpu1_instr) {
 }
 
 static const member_t mp_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "running",
      .doc = "CPU 1 is executing (called at the mailbox and not parked again)",
-     .attr = {.type = V_BOOL, .get = mp_attr_running, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = mp_attr_running, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "calls",
      .doc = "Times the start doorbell called the parked CPU 1",
-     .attr = {.type = V_UINT, .get = mp_attr_calls, .set = NULL}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mp_attr_calls, .set = NULL}     },
+    {.kind = MK_ATTR,
      .name = "mailbox",
      .doc = "The $F2800000 latch now (Bandit 1's config address: PCI accesses overwrite it)",
-     .attr = {.type = V_UINT, .get = mp_attr_mailbox, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mp_attr_mailbox, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "entry",
      .doc = "The start vector the last call used",
-     .attr = {.type = V_UINT, .get = mp_attr_entry, .set = NULL}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mp_attr_entry, .set = NULL}     },
+    {.kind = MK_ATTR,
      .name = "park_pc",
      .doc = "The parking spin CPU 1 returns into",
-     .attr = {.type = V_UINT, .get = mp_attr_park_pc, .set = NULL}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mp_attr_park_pc, .set = NULL}   },
+    {.kind = MK_ATTR,
      .name = "bursts",
      .doc = "CPU 1 bursts run",
-     .attr = {.type = V_UINT, .get = mp_attr_bursts, .set = NULL}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mp_attr_bursts, .set = NULL}    },
+    {.kind = MK_ATTR,
      .name = "cpu1_instr",
      .doc = "Instructions CPU 1 has retired (= machine.cpu1.instr_count)",
-     .attr = {.type = V_UINT, .get = mp_attr_cpu1_instr, .set = NULL}},
+     .attr = {.type = VK_UINT, .get = mp_attr_cpu1_instr, .set = NULL}},
 };
 
 static const class_desc_t mp_class = {

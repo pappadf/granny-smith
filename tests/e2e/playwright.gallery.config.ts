@@ -27,7 +27,8 @@ export default defineConfig({
     toHaveScreenshot: { maxDiffPixels: 0, threshold: 0, animations: 'disabled', caret: 'hide', scale: 'css' },
   },
   fullyParallel: true,
-  workers: process.env.CI ? 2 : 4,
+  // Hosted runners have 4 vCPUs; the stories are independent pages.
+  workers: 4,
   forbidOnly: !!process.env.CI,
   retries: 0,
   reporter: process.env.CI ? 'github' : 'list',

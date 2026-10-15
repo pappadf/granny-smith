@@ -108,14 +108,14 @@ static void build(void) {
     dir_entry(dir, p, "Second", 18, 0, 0, 0, 0, "APPL", "????");
 }
 
-static gs_source_t *src(void) {
-    return gs_source_memory(vol, sizeof(vol), false, "mfs-test");
+static source_t *src(void) {
+    return source_memory(vol, sizeof(vol), false, "mfs-test");
 }
 
 // The volume opens, lists its two files, and names a Mac '/' as ':'.
 TEST(test_mfs_lists_files_and_finder_info) {
     build();
-    gs_source_t *s = src();
+    source_t *s = src();
     ASSERT_TRUE(mfs_probe_source(s, 0, sizeof(vol)));
     mfs_volume_t *v = mfs_open_source(s, 0, sizeof(vol));
     ASSERT_TRUE(v != NULL);
@@ -132,13 +132,13 @@ TEST(test_mfs_lists_files_and_finder_info) {
     ASSERT_EQ_INT(0, mfs_lookup(v, "READ/ME", &f));
     ASSERT_EQ_INT(-ENOENT, mfs_lookup(v, "Nope", &f));
     mfs_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // Forks follow their allocation chains, out of order, across block edges.
 TEST(test_mfs_reads_forks_through_the_chain) {
     build();
-    gs_source_t *s = src();
+    source_t *s = src();
     mfs_volume_t *v = mfs_open_source(s, 0, sizeof(vol));
     mfs_dirent_t f;
     ASSERT_EQ_INT(0, mfs_lookup(v, "Read:Me", &f));
@@ -156,7 +156,7 @@ TEST(test_mfs_reads_forks_through_the_chain) {
     ASSERT_EQ_INT(100, (int)got);
     ASSERT_EQ_INT(0xA0 ^ 99, buf[99]);
     mfs_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // A cycle in the allocation map, or a chain ending before the fork does,
@@ -166,7 +166,7 @@ TEST(test_mfs_broken_chains_are_refused) {
     map_set(3, 2); // 2 -> 5 -> 3 -> 2 -> ...
     uint8_t *dir = vol + DIR_ST * 512;
     put32(dir + 24, 40000); // and a fork longer than the volume
-    gs_source_t *s = src();
+    source_t *s = src();
     mfs_volume_t *v = mfs_open_source(s, 0, sizeof(vol));
     ASSERT_TRUE(v != NULL);
     mfs_dirent_t f;
@@ -176,7 +176,7 @@ TEST(test_mfs_broken_chains_are_refused) {
     ASSERT_EQ_INT(-EIO, mfs_read_fork(v, &f, false, 0, buf, sizeof(buf), &got));
     ASSERT_EQ_INT(-EIO, mfs_read_fork(v, &f, false, 39000, buf, 10, &got));
     mfs_close(v);
-    gs_source_release(s);
+    source_release(s);
 
     build();
     map_set(5, 1); // the chain ends after two blocks of a three-block fork
@@ -185,7 +185,7 @@ TEST(test_mfs_broken_chains_are_refused) {
     ASSERT_EQ_INT(0, mfs_lookup(v, "Read:Me", &f));
     ASSERT_EQ_INT(-EIO, mfs_read_fork(v, &f, false, 0, buf, 2500, &got));
     mfs_close(v);
-    gs_source_release(s);
+    source_release(s);
 }
 
 // A volume whose geometry does not fit, or whose directory entry spans a
@@ -193,9 +193,9 @@ TEST(test_mfs_broken_chains_are_refused) {
 TEST(test_mfs_bad_volumes_do_not_open) {
     build();
     put16(vol + 1024 + 18, 4000); // more allocation blocks than the volume holds
-    gs_source_t *s = src();
+    source_t *s = src();
     ASSERT_TRUE(mfs_open_source(s, 0, sizeof(vol)) == NULL);
-    gs_source_release(s);
+    source_release(s);
 
     build();
     uint8_t *dir = vol + DIR_ST * 512;
@@ -207,14 +207,14 @@ TEST(test_mfs_bad_volumes_do_not_open) {
     dir_entry(dir, p, longname, 18, 0, 0, 0, 0, "APPL", "????"); // 251 more: past the block
     s = src();
     ASSERT_TRUE(mfs_open_source(s, 0, sizeof(vol)) == NULL);
-    gs_source_release(s);
+    source_release(s);
 
     build();
     vol[1024] = 0; // no signature
     s = src();
     ASSERT_TRUE(!mfs_probe_source(s, 0, sizeof(vol)));
     ASSERT_TRUE(mfs_open_source(s, 0, sizeof(vol)) == NULL);
-    gs_source_release(s);
+    source_release(s);
 }
 
 int main(void) {

@@ -13,7 +13,7 @@
 #include "nubus.h"
 #include "object.h"
 #include "root.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Every registered card-driver id, as V_LIST<V_STRING> (catalog.nubus_cards).
+// Every registered card-driver id, as VK_LIST<VK_STRING> (catalog.nubus_cards).
 // The config dialog populates the per-slot card-type dropdown from it
 // without baking the list into the JS.
 value_t nubus_cards_list(void) {
@@ -131,22 +131,22 @@ static DEF_GETTER(declrom_attr_crc) {
     return val_uint(4, c ? c->rom_crc : 0);
 }
 static const member_t declrom_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "path",
      .doc = "The file the declaration ROM was loaded from; \"builtin:<card>\" for a generated one",
-     .attr = {.type = V_STRING, .get = declrom_attr_path}                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = declrom_attr_path}                              },
+    {.kind = MK_ATTR,
      .name = "crc",
      .doc = "The declaration ROM's Format-Block CRC: which revision the card runs",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = declrom_attr_crc}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = declrom_attr_crc}},
+    {.kind = MK_ATTR,
      .name = "size",
      .doc = "Declaration ROM size in bytes (bus-space, byte-lane expanded)",
-     .attr = {.type = V_UINT, .get = declrom_attr_size}                              },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = declrom_attr_size}                                },
+    {.kind = MK_ATTR,
      .name = "present",
      .doc = "True if a declaration ROM is loaded",
-     .attr = {.type = V_BOOL, .get = declrom_attr_present}                           },
+     .attr = {.type = VK_BOOL, .get = declrom_attr_present}                             },
 };
 static const class_desc_t nubus_declrom_class = {
     .name = "declrom", .members = declrom_members, .n_members = sizeof(declrom_members) / sizeof(declrom_members[0])};
@@ -157,7 +157,10 @@ static DEF_GETTER(clut_attr_len) {
     return val_int(d ? (int)d->clut_len : 0);
 }
 static const member_t clut_members[] = {
-    {.kind = M_ATTR, .name = "len", .doc = "Number of palette entries", .attr = {.type = V_INT, .get = clut_attr_len}},
+    {.kind = MK_ATTR,
+     .name = "len",
+     .doc = "Number of palette entries",
+     .attr = {.type = VK_INT, .get = clut_attr_len}},
 };
 static const class_desc_t nubus_clut_class = {
     .name = "clut", .members = clut_members, .n_members = sizeof(clut_members) / sizeof(clut_members[0])};
@@ -183,22 +186,22 @@ static DEF_GETTER(mode_attr_format) {
     return val_str(d ? display_format_name(d->format) : "");
 }
 static const member_t mode_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "width",
      .doc = "Current monitor width in pixels",
-     .attr = {.type = V_INT, .get = mode_attr_width}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = mode_attr_width}    },
+    {.kind = MK_ATTR,
      .name = "height",
      .doc = "Current monitor height in pixels",
-     .attr = {.type = V_INT, .get = mode_attr_height}   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = mode_attr_height}   },
+    {.kind = MK_ATTR,
      .name = "depth",
      .doc = "Current pixel depth (bpp)",
-     .attr = {.type = V_INT, .get = mode_attr_depth}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_INT, .get = mode_attr_depth}    },
+    {.kind = MK_ATTR,
      .name = "format",
      .doc = "Current pixel encoding",
-     .attr = {.type = V_STRING, .get = mode_attr_format}},
+     .attr = {.type = VK_STRING, .get = mode_attr_format}},
 };
 static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
@@ -239,27 +242,27 @@ static DEF_GETTER(card_attr_id) {
     return val_str(k && k->id ? k->id : "");
 }
 static const member_t card_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Card kind id (catalog.nubus_cards)",
-     .attr = {.type = V_STRING, .get = card_attr_id}                                                                                      },
-    {.kind = M_ATTR, .name = "name", .doc = "Card display name",                         .attr = {.type = V_STRING, .get = card_attr_name}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = card_attr_id}                                                                                      },
+    {.kind = MK_ATTR, .name = "name", .doc = "Card display name",                        .attr = {.type = VK_STRING, .get = card_attr_name}},
+    {.kind = MK_ATTR,
      .name = "substitute",
      .doc = "Runs the emulator's substitute declaration ROM instead of Apple's",
-     .attr = {.type = V_BOOL, .get = card_attr_substitute}                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = card_attr_substitute}                                                                                },
+    {.kind = MK_ATTR,
      .name = "monitor",
      .doc = "The monitor on the card's connector: one of its monitor rows, or \"none\"",
-     .attr = {.type = V_STRING, .get = card_attr_monitor}                                                                                 },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = card_attr_monitor}                                                                                 },
+    {.kind = MK_ATTR,
      .name = "sense",
      .doc = "The code the connector's monitor-sense lines read (7: nothing connected)",
-     .attr = {.type = V_UINT, .get = card_attr_sense}                                                                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = card_attr_sense}                                                                                     },
+    {.kind = MK_ATTR,
      .name = "slot",
      .doc = "NuBus slot number ($9..$E)",
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}                                                        },
+     .attr = {.type = VK_INT, .presentation_flags = VFLAG_HEX, .get = card_attr_slot}                                                      },
 };
 static const class_desc_t nubus_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -281,10 +284,10 @@ static DEF_GETTER(slot_attr_number) {
 }
 
 static const member_t slot_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "number",
      .doc = "NuBus slot number ($9..$E)",
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}},
+     .attr = {.type = VK_INT, .presentation_flags = VFLAG_HEX, .get = slot_attr_number}},
 };
 static const class_desc_t nubus_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};

@@ -16,6 +16,7 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // A table that maps every channel value v to 255 - v (an inverting DAC), so

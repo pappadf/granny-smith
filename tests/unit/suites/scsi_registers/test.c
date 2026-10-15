@@ -51,7 +51,10 @@
 // scsi.c registers an object-model node and carries shell-facing helpers, so it
 // references the wider emulator.  None of that is on the path these tests drive.
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -68,15 +71,11 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
@@ -199,10 +198,25 @@ TEST(test_bus_still_usable_after_declines) {
     wr(scsi, MR, MR_DMA); // declined (BUS FREE)
     wr(scsi, MR, MR_ARBITRATE); // legal from BUS FREE
     wr(scsi, MR, 0);
+    wr(scsi, ODR, 1 << TARGET | 1 << 7); // target + initiator ID on the data bus
     wr(scsi, ICR, ICR_SEL);
     wr(scsi, ICR, ICR_SEL | ICR_BSY);
     wr(scsi, ICR, ICR_SEL);
     ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_command);
+    scsi_delete(scsi);
+}
+
+// A selection whose data bus carries only the initiator's ID names no
+// target: nothing answers, so the bus goes free.  The empty mask used to
+// decode as target 0 and select whatever device sat there.
+TEST(test_select_with_no_target_bit_goes_free) {
+    scsi_t *scsi = attach_disk(); // a device IS at ID 0
+
+    wr(scsi, ODR, 1 << 7); // initiator only
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
     scsi_delete(scsi);
 }
 
@@ -405,6 +419,7 @@ int main(void) {
     RUN(test_arbitrate_outside_bus_free_is_declined);
     RUN(test_select_from_command_is_declined);
     RUN(test_bus_still_usable_after_declines);
+    RUN(test_select_with_no_target_bit_goes_free);
     unlink(g_path);
     printf("All scsi_registers tests passed\n");
     return 0;

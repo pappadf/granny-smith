@@ -71,13 +71,15 @@ as many instructions as CPU 0 retired since the previous burst
 model, so the two advance at one rate and CPU 1 trails by at most a quantum
 (~23 µs at 180 MHz).  Around each burst:
 
-- **The fast path swaps** (`ppc_mmu_activate`): CPU 1's fetch window, user
-  SoA arrays and active pair go live; CPU 0's are parked.  The supervisor
-  arrays (the physical identity view) are shared — physical memory is one.
-- **The sprint channel closes**: `g_io_cpi_x256 = 0` and
-  `g_sprint_burndown_ptr = NULL`, so I/O penalties are not charged to a
-  CPU 0 sprint; `g_bus_error_instr_ptr` is saved and restored around
-  `ppc_run`.
+- **The fast path swaps** (`ppc_mmu_activate`): CPU 1's fetch window and
+  fetch TLB, user and supervisor-translated SoA arrays and active pair go
+  live; CPU 0's are parked.  The supervisor arrays (the physical identity
+  view) are shared — physical memory is one.
+- **The sprint channel closes**: `g_sprint_io` is saved, its `cpi_x256` and
+  `burndown` are zeroed so I/O penalties are not charged to a CPU 0 sprint,
+  and the whole struct is restored after the burst (anything CPU 1's
+  exceptions note there is CPU 1's); `g_bus_error_instr_ptr` is saved and
+  restored around `ppc_run`.
 - **Reservations drop**: both cores' `lwarx` reservations are cleared at
   every switch (`ppc_clear_reservation`).  A core that has not run since
   the other one did cannot hold a valid reservation under the conservative

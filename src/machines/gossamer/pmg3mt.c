@@ -10,6 +10,7 @@
 // Server G3" Developer Note, 1998).
 
 #include "gossamer.h"
+#include "of_nvram.h"
 #include "slot_tables.h"
 
 static const uint32_t pmg3_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
@@ -54,5 +55,6 @@ const hw_profile_t machine_pmg3mt = {
     .pci_slots = gossamer_pci_slots,
 
     .substrate = &gossamer_substrate,
+    .of_nvram_check = of_nvram_check_g3,
     .board = &pmg3mt_board,
 };

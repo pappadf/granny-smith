@@ -30,7 +30,7 @@
 // (3) is the one that matters. Steps 1-2 passed the whole time the feature
 // was completely dead.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 import { terminalRun as typeLine } from "../helpers/terminal";
@@ -48,6 +48,8 @@ const PLUS_ROM = path.join(DATA, "roms", "plus-v3-4d1f8172.rom");
 // (web2 will not mount without WebGL2) are re-listed alongside the fake
 // capture device.
 test.use({
+  // Real-time media feeds the guest: keep web2's default pacing.
+  gsSpeed: null,
   launchOptions: {
     args: [
       "--use-gl=angle",
@@ -243,7 +245,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   // (a) The transport is alive end to end. `produced` is written by the
   //     AudioWorklet on the browser main thread and `consumed` by the
   //     emulator worker through the seam, so both climbing proves
-  //     getUserMedia → worklet → shared-heap ring → gs_audio_in_frames →
+  //     getUserMedia → worklet → shared-heap ring → platform_audio_in_frames →
   //     the Singer's DMA. This is the assertion that would have caught the
   //     original bug (the worklet was never rendered, so `produced` stayed
   //     at 0 forever).

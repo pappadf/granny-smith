@@ -23,6 +23,7 @@
 #include "memory.h"
 #include "ppc_disasm.h"
 #include "ppc_softfp.h" // PPC_FPSCR_* bit names
+#include "predecode.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -777,6 +778,11 @@ static void test_sprs(void) {
     CHECK_EQ(P->lr, 0x12345678u);
     step1_valid(e_spr(3, 8, 0)); // mflr
     CHECK_EQ(P->gpr[3], 0x12345678u);
+    // XER reserved bits 3-15 and 24 read as zero on the 601 (601UM 2.2.5)
+    fresh();
+    P->gpr[4] = 0xFFFFFFFFu;
+    step1_valid(e_spr(4, 1, 1)); // mtxer
+    CHECK_EQ(P->xer, 0xE000FF7Fu);
     // RTC asymmetry: write via SPR 20/21, read via 4/5
     fresh();
     P->gpr[4] = 0x1234u;
@@ -1077,6 +1083,19 @@ static void test_conformance_regressions(void) {
     CHECK_EQ(P->pc, 0x00000C00u);
     CHECK_EQ(P->srr0, 0x1004u);
     CHECK_EQ(P->srr1, 0x00020000u | PPC_MSR_ME | PPC_MSR_FP);
+
+    // sc page, POWER Compatibility Note: the 601 ignores bit 30 and, with
+    // LK set, also loads LR with the next instruction's address.
+    fresh();
+    P->lr = 0;
+    step1(0x44000000u); // bit 30 clear
+    CHECK_EQ(P->pc, 0x00000C00u);
+    CHECK_EQ(P->srr0, 0x1004u);
+    CHECK_EQ(P->lr, 0u);
+    fresh();
+    step1(0x44000003u); // sc with LK
+    CHECK_EQ(P->pc, 0x00000C00u);
+    CHECK_EQ(P->lr, 0x1004u);
 }
 
 static void test_fp_surface(void) {
@@ -1298,6 +1317,8 @@ static void test_604_holdover_rejection(void) {
     // One representative per holdover family plus every MQ/RTC SPR move,
     // built from the encoders.
     expect_illegal_604(e_xo(3, 4, 5, 0, 360, 0)); // abs
+    expect_illegal_604(0x44000000u); // sc, bit 30 clear (POWER svc form)
+    expect_illegal_604(0x44000003u); // sc with LK
     expect_illegal_604(e_xo(3, 4, 5, 0, 488, 0)); // nabs
     expect_illegal_604(e_xo(3, 4, 5, 0, 264, 0)); // doz
     expect_illegal_604(e_d(9, 3, 4, 5)); // dozi
@@ -1760,6 +1781,11 @@ int main(void) {
     memory_populate_pages(ctx->memory, 0x40800000u, 0x40820000u);
     test_set_active_context(ctx);
 
+    // CPU_TEST_PREDECODE=1 routes the sprints through the predecoded loop.
+    {
+        const char *pd_env = getenv("CPU_TEST_PREDECODE");
+        predecode_set_enabled(pd_env && pd_env[0] == '1');
+    }
     P = ppc_init(NULL, CPU_MODEL_PPC601);
     if (!P) {
         printf("FAIL: ppc_init\n");

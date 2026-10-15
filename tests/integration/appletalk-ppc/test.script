@@ -21,6 +21,8 @@
 # bracketed by short runs so the guest polls the transitions, and the clock
 # is pinned so the run is reproducible.
 
+include "../lib/mac.script"
+
 machine.rtc.time = "2026-04-26T21:30:36"
 
 # Every layer of the stack has its own log category: a name the manifest
@@ -45,8 +47,8 @@ scheduler.run 150000000
 machine.adb.mouse.move 357 245
 scheduler.run 3000000
 machine.adb.mouse.click true
-scheduler.run 3000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 110000000
 
 # The host port is advertised before the guest has said anything: one NBP
@@ -74,20 +76,20 @@ scheduler.run 60000000
 machine.adb.mouse.move 316 140
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 150000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 90000000
 
 # Owner Name: "gs".  Program linking refuses to start without one.
 machine.adb.mouse.move 315 85
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 4000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -99,8 +101,8 @@ scheduler.run 4000000
 machine.adb.mouse.move 315 127
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 4000000
 machine.adb.keyboard.press 0x05
 scheduler.run 1500000
@@ -113,16 +115,16 @@ scheduler.run 6000000
 machine.adb.mouse.move 149 277
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 
 # Close Sharing Setup.
 machine.adb.mouse.move 85 32
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 30000000
 
 # --- 3. Users & Groups: let guests link ------------------------------------
@@ -130,46 +132,46 @@ scheduler.run 30000000
 machine.adb.mouse.move 173 195
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 150000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 80000000
 
 # Open the <Guest> user.
 machine.adb.mouse.move 105 105
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 150000
 machine.adb.mouse.click true
-scheduler.run 150000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 60000000
 
 # "Allow guests to link to programs on this Macintosh".
 machine.adb.mouse.move 193 160
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 
 # Close the window, then Save the change.
 machine.adb.mouse.move 145 32
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 machine.adb.mouse.move 404 147
 scheduler.run 2000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 40000000
 
 # --- 4. Discover the guest's program-linking ports -------------------------

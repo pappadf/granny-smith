@@ -68,9 +68,10 @@
 #include "memory.h"
 #include "object.h"
 #include "pci.h"
+#include "platform_hooks.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 #include "voodoo2_raster.h"
 
@@ -2968,16 +2969,28 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     v->swap_issue_frame = c.swap_issue_frame;
     // A checkpoint from a 12 MB board must not restore into 8 MB
     // buffers: resize rather than truncate (the mach64gx.c pattern).
+    // All TMUs resize or none do, and tex_size moves only with them: setting
+    // it after a failed calloc made the read below overflow the old, smaller
+    // buffer.  On failure (or a size no board has) the card stays as it was
+    // and the size-tagged read below fails the restore, as in mach64gx.c.
     if (c.tex_size != v->tex_size) {
-        for (int t = 0; t < V2_NUM_TMUS; t++) {
-            uint8_t *grown = (uint8_t *)calloc(1, c.tex_size);
-            if (grown) {
+        uint8_t *grown[V2_NUM_TMUS] = {0};
+        bool ok = c.tex_size == V2_TMU_2MB || c.tex_size == V2_TMU_4MB;
+        for (int t = 0; ok && t < V2_NUM_TMUS; t++)
+            ok = (grown[t] = (uint8_t *)calloc(1, c.tex_size)) != NULL;
+        if (ok) {
+            for (int t = 0; t < V2_NUM_TMUS; t++) {
                 free(v->tex_ram[t]);
-                v->tex_ram[t] = grown;
-                v->tgt.tex[t] = grown;
+                v->tex_ram[t] = grown[t];
+                v->tgt.tex[t] = grown[t];
             }
+            v->tex_size = c.tex_size;
+        } else {
+            for (int t = 0; t < V2_NUM_TMUS; t++)
+                free(grown[t]);
+            LOG(0, "Voodoo2: restore: cannot resize texture RAM %u -> %u bytes; the restore will fail", v->tex_size,
+                c.tex_size);
         }
-        v->tex_size = c.tex_size;
     }
     v->displayed_buffer = c.displayed_buffer;
     v->driving = c.driving != 0;
@@ -3087,6 +3100,33 @@ static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
+// Swap the raster backend in place: fence and join the old one, then build
+// the new one on the same target.  The backends are equivalent by contract
+// (queue order is submission order, every observation point fences), so a
+// run can switch at any instruction boundary; tests use it to replay one
+// restored checkpoint under each backend.  The WebGPU takeover holds
+// pixels outside the shadow, so it neither gives up nor takes the card
+// here.
+static DEF_SETTER(regs_attr_raster_set) {
+    voodoo2_t *v = node_card(self);
+    char kind[8];
+    snprintf(kind, sizeof(kind), "%s", in.s ? in.s : "");
+    value_free(&in);
+    if (!v)
+        return val_err("regs.raster: no card");
+    if (strcmp(kind, "thread") != 0 && strcmp(kind, "sw") != 0 && strcmp(kind, "null") != 0)
+        return val_err("regs.raster: %s is not one of thread, sw, null", kind);
+    if (strcmp(v2_raster_name(v->raster), "webgpu") == 0)
+        return val_err("regs.raster: the webgpu backend cannot be swapped at run time");
+    v2_raster_sync(v->raster);
+    v2_raster_t *next = v2_raster_create(kind, &v->tgt, v2_build_state, v);
+    if (!next)
+        return val_err("regs.raster: could not create the %s backend", kind);
+    v2_raster_destroy(v->raster);
+    v->raster = next;
+    v2_raster_state_dirty(v->raster);
+    return val_none();
+}
 static DEF_GETTER(regs_attr_gpu_engaged) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_raster_presents(v->raster));
@@ -3111,8 +3151,8 @@ static DEF_GETTER(regs_attr_gpu_stats) {
 }
 
 static const arg_decl_t regs_tex_offset_args[] = {
-    {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
-    {.name = "lod", .kind = V_INT, .doc = "LOD level (0-8)"     },
+    {.name = "tmu", .kind = VK_INT, .doc = "Which Bruce (0 or 1)"},
+    {.name = "lod", .kind = VK_INT, .doc = "LOD level (0-8)"     },
 };
 static DEF_METHOD(regs_method_tex_offset) {
     voodoo2_t *v = node_card(self);
@@ -3123,8 +3163,8 @@ static DEF_METHOD(regs_method_tex_offset) {
 }
 
 static const arg_decl_t regs_gamma_args[] = {
-    {.name = "channel", .kind = V_INT, .doc = "0 red, 1 green, 2 blue"     },
-    {.name = "input",   .kind = V_INT, .doc = "8-bit scanout value (0-255)"},
+    {.name = "channel", .kind = VK_INT, .doc = "0 red, 1 green, 2 blue"     },
+    {.name = "input",   .kind = VK_INT, .doc = "8-bit scanout value (0-255)"},
 };
 // The gamma ramp as the scanout (and the takeover's present) applies it:
 // the interpolated CLUT once the guest has programmed one, identity
@@ -3142,10 +3182,10 @@ static DEF_METHOD(regs_method_gamma) {
 }
 
 static const arg_decl_t regs_tex_save_args[] = {
-    {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
+    {.name = "tmu", .kind = VK_INT, .doc = "Which Bruce (0 or 1)"},
     {.name = "path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
+     .kind = VK_STRING,
+     .presentation_flags = VFLAG_PATH,
      .doc = "Host file to write the raw texture RAM to"},
 };
 static DEF_METHOD(regs_method_tex_save) {
@@ -3165,7 +3205,7 @@ static DEF_METHOD(regs_method_tex_save) {
 }
 
 static const arg_decl_t regs_read_arg[] = {
-    {.name = "offset", .kind = V_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
+    {.name = "offset", .kind = VK_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
 };
 static DEF_METHOD(regs_method_read) {
     voodoo2_t *v = node_card(self);
@@ -3176,74 +3216,74 @@ static DEF_METHOD(regs_method_read) {
 }
 
 static const member_t regs_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "status",
      .doc = "status ($000): FIFO free space, retrace, busy bits, swaps pending",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_status}                                                                                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_status}                                                                                                                                },
+    {.kind = MK_ATTR,
      .name = "init_enable",
      .doc = "initEnable (config $40): fbiInit gate, FIFO gate, DAC remap, real revision in 15:12",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_init_enable}                                                                                                                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_init_enable}                                                                                                                           },
+    {.kind = MK_ATTR,
      .name = "fbi_init0",
      .doc = "fbiInit0: bit 0 VGA pass-through, bit 3 register swizzle enable, resets",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit0}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_fbiinit0}                                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "fbi_init1",
      .doc = "fbiInit1: video reset, LFB read enable, blanking, output enables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit1}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_fbiinit1}                                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "fbi_init2",
      .doc = "fbiInit2: DRAM control, buffer offset, refresh (DAC data while remapped)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit2}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_fbiinit2}                                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "fbi_init3",
      .doc = "fbiInit3: bit 0 alternate register mapping, texture disable",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit3}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_fbiinit3}                                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "fbi_init7",
      .doc = "fbiInit7: bit 8 CMDFIFO enable; 7:0 the graphics-clock strap byte",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit7}                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_fbiinit7}                                                                                                                              },
+    {.kind = MK_ATTR,
      .name = "fb_size",
      .doc = "Framebuffer memory in bytes (4 MB on every retail SKU)",
-     .attr = {.type = V_UINT, .get = regs_attr_fb_size}                                                                                                                                                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_fb_size}                                                                                                                                                                },
+    {.kind = MK_ATTR,
      .name = "tmu_size",
      .doc = "Texture memory per TMU in bytes (the 8/12 MB SKU choice)",
-     .attr = {.type = V_UINT, .get = regs_attr_tmu_size}                                                                                                                                                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_tmu_size}                                                                                                                                                               },
+    {.kind = MK_ATTR,
      .name = "raster",
-     .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\")",
-     .attr = {.type = V_STRING, .get = regs_attr_raster}                                                                                                                                                               },
-    {.kind = M_ATTR,
+     .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\"); "
+            "assigning thread, sw or null swaps the backend in place",                                             .attr = {.type = VK_STRING, .get = regs_attr_raster, .set = regs_attr_raster_set}                    },
+    {.kind = MK_ATTR,
      .name = "gpu_engaged",
      .doc = "True while the WebGPU takeover draws and presents the card's frames (raster=webgpu, monitor driven)",
-     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}                                                                                                                                                            },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = regs_attr_gpu_engaged}                                                                                                                                                            },
+    {.kind = MK_ATTR,
      .name = "gpu_present",
      .doc = "The WebGPU takeover presents each vblank (default true); false keeps it rendering without touching the "
-            "canvas — the headless-browser diagnostic (frames still read back through the shadow)",              .attr = {.type = V_BOOL, .get = regs_attr_gpu_present_get, .set = regs_attr_gpu_present_set}        },
-    {.kind = M_ATTR,
+            "canvas — the headless-browser diagnostic (frames still read back through the shadow)",              .attr = {.type = VK_BOOL, .get = regs_attr_gpu_present_get, .set = regs_attr_gpu_present_set}        },
+    {.kind = MK_ATTR,
      .name = "gpu_stats",
      .doc = "The WebGPU takeover's counters: engagements, fallbacks by reason, readbacks, texture uploads (\"\" "
-            "elsewhere)",                                                                                          .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}                                              },
-    {.kind = M_METHOD,
+            "elsewhere)",                                                                                          .attr = {.type = VK_STRING, .get = regs_attr_gpu_stats}                                              },
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read any Chuck register by its byte offset",
-     .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}                                                                                                                           },
-    {.kind = M_METHOD,
+     .method = {.args = regs_read_arg, .nargs = 1, .result = VK_UINT, .fn = regs_method_read}                                                                                                                           },
+    {.kind = MK_METHOD,
      .name = "gamma",
      .doc = "The video gamma ramp's output for an 8-bit input on a channel (0 r, 1 g, 2 b): the interpolated "
-            "33-entry CLUT once programmed, identity before",                                                      .method = {.args = regs_gamma_args, .nargs = 2, .result = V_UINT, .fn = regs_method_gamma}          },
-    {.kind = M_METHOD,
+            "33-entry CLUT once programmed, identity before",                                                      .method = {.args = regs_gamma_args, .nargs = 2, .result = VK_UINT, .fn = regs_method_gamma}          },
+    {.kind = MK_METHOD,
      .name = "tex_offset",
      .doc = "Byte offset of a LOD level in the packed mip chain, per the TMU's live tLOD "
-            "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)",                             .method = {.args = regs_tex_offset_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_offset}},
-    {.kind = M_METHOD,
+            "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)",                             .method = {.args = regs_tex_offset_args, .nargs = 2, .result = VK_UINT, .fn = regs_method_tex_offset}},
+    {.kind = MK_METHOD,
      .name = "tex_save",
      .doc = "Dump a TMU's raw texture RAM to a host file (debug: offline texel forensics)",
-     .method = {.args = regs_tex_save_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_save}                                                                                                                  },
+     .method = {.args = regs_tex_save_args, .nargs = 2, .result = VK_UINT, .fn = regs_method_tex_save}                                                                                                                  },
 };
 
 static const class_desc_t v2_regs_class = {
@@ -3266,18 +3306,18 @@ static DEF_GETTER(dac_attr_read_latch) {
 }
 
 static const member_t dac_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "video_khz",
      .doc = "CLK0 (video) PLL output, from the ICS5342's programmed M/N/P",
-     .attr = {.type = V_UINT, .get = dac_attr_video_khz}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = dac_attr_video_khz}                                  },
+    {.kind = MK_ATTR,
      .name = "graphics_khz",
      .doc = "CLK1 (graphics) PLL output",
-     .attr = {.type = V_UINT, .get = dac_attr_graphics_khz}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = dac_attr_graphics_khz}                               },
+    {.kind = MK_ATTR,
      .name = "read_latch",
      .doc = "Last byte read from the DAC (what a remapped fbiInit2 returns)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_read_latch}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_read_latch}},
 };
 
 static const class_desc_t v2_dac_class = {
@@ -3307,23 +3347,26 @@ static DEF_GETTER(fb_attr_displayed) {
 }
 
 static const member_t fb_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "width",
      .doc = "Active raster width in pixels (videoDimensions)",
-     .attr = {.type = V_UINT, .get = fb_attr_width}                                                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = fb_attr_width}    },
+    {.kind = MK_ATTR,
      .name = "height",
      .doc = "Active raster height in lines",
-     .attr = {.type = V_UINT, .get = fb_attr_height}                                                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = fb_attr_height}   },
+    {.kind = MK_ATTR,
      .name = "depth",
      .doc = "Bits per pixel (always 16 — the framebuffer is 5-6-5)",
-     .attr = {.type = V_UINT, .get = fb_attr_depth}                                                                   },
-    {.kind = M_ATTR, .name = "stride", .doc = "Scanout bytes per row", .attr = {.type = V_UINT, .get = fb_attr_stride}},
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = fb_attr_depth}    },
+    {.kind = MK_ATTR,
+     .name = "stride",
+     .doc = "Scanout bytes per row",
+     .attr = {.type = VK_UINT, .get = fb_attr_stride}   },
+    {.kind = MK_ATTR,
      .name = "displayed_buffer",
      .doc = "Physical colour buffer being scanned (status[11:10])",
-     .attr = {.type = V_UINT, .get = fb_attr_displayed}                                                               },
+     .attr = {.type = VK_UINT, .get = fb_attr_displayed}},
 };
 static const class_desc_t v2_fb_class = {
     .name = "voodoo2_fb",
@@ -3345,14 +3388,14 @@ static DEF_GETTER(video_attr_swaps_pending) {
 }
 
 static const member_t video_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "drives_monitor",
      .doc = "The pass-through predicate: true while the Voodoo drives the monitor "
-            "(fbiInit0[0] set, video running, unblanked, outputs driven)",   .attr = {.type = V_BOOL, .get = video_attr_drives}},
-    {.kind = M_ATTR,
+            "(fbiInit0[0] set, video running, unblanked, outputs driven)",   .attr = {.type = VK_BOOL, .get = video_attr_drives}},
+    {.kind = MK_ATTR,
      .name = "swaps_pending",
      .doc = "swapbufferCMDs issued and not yet retired at a frame boundary",
-     .attr = {.type = V_UINT, .get = video_attr_swaps_pending}                                                                 },
+     .attr = {.type = VK_UINT, .get = video_attr_swaps_pending}                                                                 },
 };
 static const class_desc_t v2_video_class = {
     .name = "voodoo2_video",
@@ -3503,7 +3546,7 @@ static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_
 // before it reports ready, so no boot or catalog read precedes it);
 // registered everywhere so the id resolves regardless.
 static bool v2_webgpu_offered(void) {
-    return gs_v2gpu_available();
+    return platform_v2gpu_available();
 }
 
 // The rasteriser is the one option a user is offered: the emulator's own
@@ -3514,7 +3557,7 @@ static const char *const v2_raster_labels[] = {"Software", "WebGPU", NULL};
 
 // WebGPU is offered only where a WebGPU device exists.
 static bool v2_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || gs_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
 static const pci_card_option_t v2_options[] = {

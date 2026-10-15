@@ -22,7 +22,7 @@
 
 #include <stdbool.h>
 
-LOG_USE_CATEGORY_NAME("setup"); // the validation diagnostic is a setup-time check
+LOG_USE_CATEGORY_NAME("system"); // the validation diagnostic is a setup-time check
 
 // The runtime decode-miss diagnostic belongs with the board, not with setup,
 // so it takes its own category through LOG_WITH.  Registered lazily on first

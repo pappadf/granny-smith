@@ -12,6 +12,6 @@
 #define BUILD_ID_LEN 20
 
 // Returns the build ID string (defined in build_id.c, recompiled every build)
-const char *get_build_id(void);
+const char *build_id_get(void);
 
 #endif // BUILD_ID_H

@@ -31,6 +31,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint.h"
 #include "checkpoint_images.h"
 #include "debug.h"
 #include "floppy.h"
@@ -68,14 +69,14 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].dev = NULL;
     g_page_table[page_index].dev_context = NULL;
     g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
     // Supervisor arrays hold the eager physical identity view; the user
     // arrays belong to the PPC MMU front end and are only cleared here.
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = writable ? adjusted : 0;
+    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
+        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
     if (g_user_read)
         g_user_read[page_index] = 0;
     if (g_user_write)
@@ -108,11 +109,11 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // ROM: the 4 MB image at $FFC00000, and its alias at $FF800000 — "any
     // system ROM space that is not physically implemented in a bank will be
     // aliased to the physical device(s) within that bank" (MPC106UM §6.5).
-    uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
+    uint8_t *rom = ram_native_pointer(cfg->memory_map, cfg->ram_size);
+    uint32_t rom_pages = cfg->machine->rom_size >> MEM_PAGE_SHIFT;
     for (uint32_t p = 0; p < rom_pages; p++) {
-        gos_fill_page((GOS_ROM_BASE >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
-        gos_fill_page((GOS_ROM_BANK0 >> PAGE_SHIFT) + p, rom + (p << PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BASE >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
+        gos_fill_page((GOS_ROM_BANK0 >> MEM_PAGE_SHIFT) + p, rom + (p << MEM_PAGE_SHIFT), false);
     }
 
     // PCI: the root, then the bridge (config ports, the bus, Grackle's own
@@ -134,7 +135,7 @@ static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
 static void gos_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(buf, ram_native_pointer(cfg->mem_map, 0) + phys, len);
+        memcpy(buf, ram_native_pointer(cfg->memory_map, 0) + phys, len);
         return;
     }
     for (uint32_t i = 0; i < len; i++)
@@ -144,7 +145,9 @@ static void gos_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t 
 static void gos_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        uint8_t *dst = ram_native_pointer(cfg->memory_map, 0) + phys;
+        memory_host_written(dst, len); // bus-master DMA over cached code
+        memcpy(dst, buf, len);
         return;
     }
     for (uint32_t i = 0; i < len; i++)
@@ -351,16 +354,16 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
     // scheduler on the PPC seam.
     machine_part_begin(cfg, cp, "memory");
-    cfg->mem_map =
+    cfg->memory_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
-    memory_map_set_host_fill(cfg->mem_map, gos_fill_page);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->memory_map);
+    memory_map_set_host_fill(cfg->memory_map, gos_fill_page);
     machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     if (cfg->ppc) {
         memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
-        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+        memory_map_set_cpu_hooks(cfg->memory_map, &hooks);
     }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
@@ -432,7 +435,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
     machine_part_begin(cfg, cp, "floppy");
     cfg->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, config_images(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);
@@ -678,19 +681,18 @@ const storage_device_decl_t gossamer_default_storage[] = {
     {0},
 };
 
-// The ATI Rage Pro on the board, the machine's built-in video.  Its monitor
-// is strapped at the 13" today; the rest of its list waits on a monitor
-// option for the chip.
-static bool gossamer_monitor_at(size_t i, const char **id, const char **monitor) {
-    if (i != 0)
-        return false;
-    *id = *monitor = "13in_rgb";
-    return true;
-}
+// The ATI Rage Pro on the board, the machine's built-in video.  Its monitors
+// are the card's (mach64gx.c): the 13" (Apple's 14" RGB sense), the 15", 17"
+// and 20" multiple-scan displays and the 21".  The sense code decides the
+// modes the ATI driver offers: Mac OS X 10.0 runs the 17" at 640 x 480
+// through 1024 x 768.
+bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor); // mach64gx.c
+bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense);
 
 const builtin_video_desc_t gossamer_builtin_video = {
     .detail = "ATI Rage Pro",
-    .monitor_at = gossamer_monitor_at,
+    .monitor_at = mach64_ragepro_monitor_at,
+    .monitor_sense = mach64_ragepro_monitor_sense,
     .default_monitor = "13in_rgb",
 };
 
@@ -747,6 +749,13 @@ static void gossamer_seed(config_t *cfg) {
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);
+    // The configuration's own Open Firmware variables ("nvram"), last, so
+    // its boot-device wins over the record above.  machine_config_resolve
+    // set each on a factory store already; a failure here is a bug.
+    const char *bad = NULL;
+    const char *err = of_nvram_setenv_packed(st->hr.nvram, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
+    if (err)
+        LOG(0, "configuration nvram %s: %s", bad, err);
 }
 
 const machine_substrate_t gossamer_substrate = {
@@ -765,4 +774,5 @@ const machine_substrate_t gossamer_substrate = {
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,
+    .media_image = gos_media_image,
 };

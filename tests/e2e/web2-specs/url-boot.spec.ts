@@ -13,7 +13,7 @@
 // media fetch with page.route() and fulfil it from the real ROM on disk —
 // only the transport is stubbed; the identify/boot pipeline runs for real.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gsEvalInPage } from '../helpers/web2-eval';
@@ -21,6 +21,7 @@ import { gsEvalInPage } from '../helpers/web2-eval';
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
+const G3_ROM = path.resolve(__dirname, '../../data/roms/pmg3dt-pmg3mt-78f57389.rom');
 // The declaration ROM of the IIcx's slot-$9 default card (mdc_8_24).
 const JMFB_VROM = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
 // BinHex around StuffIt around a DiskCopy 4.2 floppy, "MacTest Disk.image".
@@ -184,8 +185,10 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
   await expect(
     page.locator('.toast .msg').filter({ hasText: /HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/ }),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
-    .toBeVisible({ timeout: 60_000 });
+  // The boot's own message names the disk it went without.
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: /Booted plus without Hard disk 1: 'hd0_[\d_-]+'/ }),
+  ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
     timeout: 15_000,
   });
@@ -255,7 +258,67 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
   await expect(
     page.locator('.toast .msg').filter({ hasText: "Booting plus without the URL's video ROM" }),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+  await expect(page.locator('.toast .msg').filter({ hasText: /Booted plus without .*'vrom_[\d_-]+'/ }))
     .toBeVisible({ timeout: 60_000 });
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
+});
+
+// A config= document's "nvram" sets Open Firmware variables, seeded by the
+// core when it builds the machine (machine_config.c, V10): a multi-line
+// nvramrc keeps its lines, booleans and strings land as given.  memory=
+// beside it edits the document (lib/urlConfig.ts), which must keep them.
+test('config= nvram sets Open Firmware variables before a G3 first runs', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-g3.rom', G3_ROM);
+  const rc = 'hex\n: gs-url-test ;\nunselect-dev';
+  const config = Buffer.from(
+    JSON.stringify({
+      model: 'pmg3dt',
+      nvram: { 'auto-boot?': false, 'use-nvramrc?': true, 'boot-command': '0 bootr -v', nvramrc: rc },
+    }),
+  ).toString('base64url');
+  await page.goto(`/index.html?rom=url-g3.rom&model=pmg3dt&memory=128MB&config=${config}`);
+  await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
+    timeout: 60_000,
+  });
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted pmg3dt from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  const env = async (name: string) => gsEvalInPage(page, 'machine.nvram.getenv', [name]);
+  expect(await env('auto-boot?')).toBe('false');
+  expect(await env('use-nvramrc?')).toBe('true');
+  expect(await env('boot-command')).toBe('0 bootr -v');
+  expect(await env('nvramrc')).toBe(rc);
+});
+
+// With a config=, hdN is that configuration's N-th hard disk, its startup
+// disk first: a G3 link that moves the disk to ATA gets it on ATA, not on
+// the default configuration's SCSI ID 0.  (No startup node: the G3's Mac OS
+// startup record names only SCSI; Open Firmware's boot-device names the
+// ATA disk for a system that boots through it.)
+test('?config= decides which bus ?hd0= lands on', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-g3.rom', G3_ROM);
+  const config = Buffer.from(
+    JSON.stringify({
+      model: 'pmg3dt',
+      storage: [
+        { bus: 'ata0', unit: 0, type: 'hd' },
+        { bus: 'scsi', unit: 3, type: 'cd' },
+      ],
+    }),
+  ).toString('base64url');
+  await page.goto(`/index.html?rom=url-g3.rom&model=pmg3dt&config=${config}&hd0=blank:100m`);
+  await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
+    timeout: 60_000,
+  });
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted pmg3dt from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  const storage = (await gsEvalInPage(page, 'machine.storage')) as Array<{
+    bus: string;
+    unit: number;
+    type: string;
+    present: boolean;
+  }>;
+  const disks = storage.filter((d) => d.type === 'hd');
+  expect(disks).toEqual([expect.objectContaining({ bus: 'ata0', unit: 0, present: true })]);
 });

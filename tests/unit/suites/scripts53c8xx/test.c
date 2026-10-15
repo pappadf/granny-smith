@@ -35,6 +35,7 @@
 // Every class gets a negative case, because "the engine executed
 // something" is not the same claim as "the engine rejected what it should".
 
+#include "checkpoint.h"
 #include "sym53c8xx.h"
 #include "test_assert.h"
 
@@ -98,6 +99,13 @@ uint8_t *ram_native_pointer(memory_map_t *map, uint32_t offset) {
     (void)map;
     (void)offset;
     return s_mem; // never reached with a NULL cfg; present so the test links
+}
+
+// The code-page coherence hook the card calls before a bus-master write
+// (memory.c); the mock bus caches no code, so nothing to invalidate.
+void memory_host_written(const uint8_t *host, uint32_t len) {
+    (void)host;
+    (void)len;
 }
 
 // ============================================================================

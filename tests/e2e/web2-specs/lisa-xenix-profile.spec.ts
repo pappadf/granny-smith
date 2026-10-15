@@ -22,7 +22,7 @@
 // lisa-xenix-install / lisa-xenix-boot integration tests use, staged under
 // tests/data.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 

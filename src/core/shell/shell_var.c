@@ -5,18 +5,23 @@
 // Scoped shell binding store. See shell_var.h for the contract.
 //
 // Storage: a fixed stack of scopes, each holding a small dynamic array
-// of heap-allocated binding entries (stable pointers, so the V_OBJECT
-// invalidator hook can carry an entry pointer safely across growth).
+// of heap-allocated binding entries (stable pointers, so the object
+// invalidator hooks can point into an entry safely across growth).
 // Scope 0 is the process-global scope (--var bindings, TMP_DIR); scope
 // 1 is the script/session top level; function calls push above that.
 // The built-in/user alias table (alias.c) is the read-only fallback
-// behind every scope — its entries surface as V_REF values, which is
+// behind every scope — its entries surface as VK_REF values, which is
 // exactly the reference-binding semantics.
+//
+// Lookup is a linear scan of each scope: scopes hold a handful to a few
+// tens of bindings, where a scan is as fast as a hash and keeps creation
+// order for free.  Revisit if scripts start keeping hundreds.
 
 #include "shell_var.h"
 
 #include "alias.h"
 #include "object.h"
+#include "status.h"
 #include "value.h"
 
 #include "job/job.h"
@@ -29,12 +34,14 @@
 #define SCOPE_MAX        (2 + SCOPE_FRAMES_MAX)
 
 // One binding. Heap-allocated so its address is stable (the object
-// invalidator callback holds it as user-data).
+// invalidator callbacks point into its watch).
 typedef struct binding {
     char *name;
     value_t value;
-    struct object *watched; // non-NULL while value is a live V_OBJECT
-    bool stale; // watched object was destroyed; reads yield V_ERROR
+    // Every object the value holds, at any depth (a VK_OBJECT, or one in a
+    // list or map); watch.gone means one was destroyed and reads yield
+    // VK_ERROR instead of handing out a dangling pointer.
+    object_watch_t watch;
 } binding_t;
 
 typedef struct scope {
@@ -48,33 +55,23 @@ static int g_n_scopes = 0;
 
 /* --- entry lifecycle ------------------------------------------------------ */
 
-// Invalidator: the watched object is being destroyed. Mark the binding
-// stale; its next read reports the death instead of dereferencing a
-// dangling pointer.
-static void binding_object_gone(void *ud) {
-    binding_t *b = (binding_t *)ud;
-    b->stale = true;
-    b->watched = NULL;
-}
-
-// Stop watching (if we are) and free the stored value.
+// Stop watching and free the stored value.
 static void binding_clear_value(binding_t *b) {
-    if (b->watched) {
-        object_unregister_invalidator(b->watched, binding_object_gone, b);
-        b->watched = NULL;
-    }
-    b->stale = false;
+    object_unwatch(&b->watch);
     value_free(&b->value);
 }
 
-// Store a value into an entry, arming the staleness watch for V_OBJECT.
-static void binding_store(binding_t *b, value_t v) {
+// Store a value into an entry, arming the staleness watch over every object
+// it holds.  False (value freed, binding left empty) on out-of-memory: an
+// unwatched object could dangle after machine.boot.
+static bool binding_store(binding_t *b, value_t v) {
     binding_clear_value(b);
-    b->value = v;
-    if (v.kind == V_OBJECT && v.obj) {
-        b->watched = v.obj;
-        object_register_invalidator(v.obj, binding_object_gone, b);
+    if (!object_watch_value(&b->watch, &v)) {
+        value_free(&v);
+        return false;
     }
+    b->value = v;
+    return true;
 }
 
 static void binding_free(binding_t *b) {
@@ -116,11 +113,12 @@ static binding_t *scope_add(scope_t *s, const char *name) {
     return b;
 }
 
+// Remove (and free) b, keeping the remaining bindings in creation order
 static void scope_remove(scope_t *s, binding_t *b) {
     for (int i = 0; i < s->n; i++) {
         if (s->items[i] == b) {
             binding_free(b);
-            s->items[i] = s->items[s->n - 1];
+            memmove(&s->items[i], &s->items[i + 1], (size_t)(s->n - i - 1) * sizeof(s->items[0]));
             s->n--;
             return;
         }
@@ -144,7 +142,7 @@ static value_t shell_binding_get_impl(const char *name) {
         return val_err("no such binding '$'");
     binding_t *b = find_binding(name);
     if (b) {
-        if (b->stale)
+        if (b->watch.gone)
             return val_err("'$%s' holds an object that was destroyed (e.g. by machine.boot)", name);
         return value_dup(&b->value);
     }
@@ -157,7 +155,7 @@ static value_t shell_binding_get_impl(const char *name) {
 
 static int shell_binding_let_impl(const char *name, value_t v, char *err_buf, size_t err_size) {
     char err[160];
-    if (!object_validate_name(name, err, sizeof(err))) {
+    if (object_validate_name(name, err, sizeof(err)) != STATUS_OK) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "let: %s", err);
         value_free(&v);
@@ -173,7 +171,11 @@ static int shell_binding_let_impl(const char *name, value_t v, char *err_buf, si
         value_free(&v);
         return -1;
     }
-    binding_store(b, v);
+    if (!binding_store(b, v)) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "let: out of memory");
+        return -1;
+    }
     return 0;
 }
 
@@ -183,8 +185,7 @@ static int shell_binding_mutate_impl(const char *name, value_t v) {
         value_free(&v);
         return -1;
     }
-    binding_store(b, v);
-    return 0;
+    return binding_store(b, v) ? 0 : -1;
 }
 
 static shell_binding_kind_t shell_binding_classify_impl(const char *name, const value_t **value_out,
@@ -226,14 +227,42 @@ static void shell_binding_pop_scope_impl(void) {
     memset(s, 0, sizeof(*s));
 }
 
-static bool shell_binding_save_top_impl(const char *name, value_t *saved_out) {
+static binding_t *shell_binding_detach_top_impl(const char *name) {
     scope_t *top = &g_scopes[g_n_scopes - 1];
     binding_t *b = scope_find(top, name);
     if (!b)
-        return false;
-    if (saved_out)
-        *saved_out = b->stale ? val_err("'$%s' holds a destroyed object", name) : value_dup(&b->value);
-    return true;
+        return NULL;
+    // Unlink without freeing: the entry (and its invalidator) lives on.  The
+    // others keep their order (listings and completion follow it).
+    for (int i = 0; i < top->n; i++) {
+        if (top->items[i] == b) {
+            memmove(&top->items[i], &top->items[i + 1], (size_t)(top->n - i - 1) * sizeof(top->items[0]));
+            top->n--;
+            break;
+        }
+    }
+    return b;
+}
+
+static void shell_binding_reattach_top_impl(binding_t *b) {
+    if (!b)
+        return;
+    scope_t *top = &g_scopes[g_n_scopes - 1];
+    binding_t *cur = scope_find(top, b->name);
+    if (cur)
+        scope_remove(top, cur);
+    // Room for the entry; on OOM the shadowed binding is lost, not leaked
+    if (top->n == top->cap) {
+        int cap = top->cap ? top->cap * 2 : 16;
+        binding_t **t = (binding_t **)realloc(top->items, (size_t)cap * sizeof(*t));
+        if (!t) {
+            binding_free(b);
+            return;
+        }
+        top->items = t;
+        top->cap = cap;
+    }
+    top->items[top->n++] = b;
 }
 
 static void shell_binding_remove_top_impl(const char *name) {
@@ -245,22 +274,29 @@ static void shell_binding_remove_top_impl(const char *name) {
 
 /* --- legacy string API ---------------------------------------------------- */
 
-static int shell_var_set_impl(const char *name, const char *value) {
-    if (!name || !*name || !value)
+static int shell_var_set_impl(const char *name, const char *value, char *err_buf, size_t err_size) {
+    // The same rule as `let`: a name `$name` could never read is refused
+    char err[160];
+    if (!value || object_validate_name(name, err, sizeof(err)) != STATUS_OK) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "%s", value ? err : "no value");
         return -1;
+    }
     scope_t *globals = &g_scopes[0];
     binding_t *b = scope_find(globals, name);
     if (!b)
         b = scope_add(globals, name);
-    if (!b)
+    if (!b || !binding_store(b, val_str(value))) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "out of memory");
         return -1;
-    binding_store(b, val_str(value));
+    }
     return 0;
 }
 
 static const char *shell_var_get_impl(const char *name) {
     binding_t *b = name ? find_binding(name) : NULL;
-    if (!b || b->value.kind != V_STRING)
+    if (!b || b->value.kind != VK_STRING)
         return NULL;
     return b->value.s;
 }
@@ -271,7 +307,18 @@ static void shell_var_each_impl(shell_var_iter_fn fn, void *ud) {
     for (int i = g_n_scopes - 1; i >= 0; i--) {
         scope_t *s = &g_scopes[i];
         for (int k = 0; k < s->n; k++) {
-            if (!fn(s->items[k]->name, &s->items[k]->value, ud))
+            binding_t *b = s->items[k];
+            if (!b->watch.gone) {
+                if (!fn(b->name, &b->value, ud))
+                    return;
+                continue;
+            }
+            // A stale value holds dangling object pointers: hand out the
+            // error a read would give, never the value itself
+            value_t e = val_err("'$%s' holds an object that was destroyed", b->name);
+            bool more = fn(b->name, &e, ud);
+            value_free(&e);
+            if (!more)
                 return;
         }
     }
@@ -284,7 +331,10 @@ void shell_var_init(void) {
         memset(g_scopes, 0, sizeof(g_scopes));
         g_n_scopes = 2; // [0] process globals, [1] script/session top level
     }
-    shell_var_set("TMP_DIR", "tmp");
+    // Relative on purpose (see shell_var.h): the project's tmp/ scratch
+    // directory when headless runs from the repository root, as AGENTS.md
+    // asks of scratch files, and /tmp on WASM, whose working directory is /.
+    shell_var_set("TMP_DIR", "tmp", NULL, 0);
 }
 
 // === The table lock (job/job.h): every public entry takes it for the one
@@ -332,11 +382,17 @@ void shell_binding_pop_scope(void) {
     job_tables_unlock();
 }
 
-bool shell_binding_save_top(const char *name, value_t *saved_out) {
+struct binding *shell_binding_detach_top(const char *name) {
     job_tables_lock();
-    bool r = shell_binding_save_top_impl(name, saved_out);
+    binding_t *r = shell_binding_detach_top_impl(name);
     job_tables_unlock();
     return r;
+}
+
+void shell_binding_reattach_top(struct binding *b) {
+    job_tables_lock();
+    shell_binding_reattach_top_impl(b);
+    job_tables_unlock();
 }
 
 void shell_binding_remove_top(const char *name) {
@@ -345,9 +401,9 @@ void shell_binding_remove_top(const char *name) {
     job_tables_unlock();
 }
 
-int shell_var_set(const char *name, const char *value) {
+int shell_var_set(const char *name, const char *value, char *err_buf, size_t err_size) {
     job_tables_lock();
-    int r = shell_var_set_impl(name, value);
+    int r = shell_var_set_impl(name, value, err_buf, err_size);
     job_tables_unlock();
     return r;
 }

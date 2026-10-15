@@ -11,7 +11,7 @@
 // until the tab was switched away and back.  The upload bumps images.revision;
 // the tab now drops its /opfs/images listings when that changes.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, openFilesystemTab, row, expand } from '../helpers/web2-fs';

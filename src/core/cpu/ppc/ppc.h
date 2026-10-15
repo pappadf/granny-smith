@@ -34,6 +34,7 @@
 #ifndef GS_CPU_PPC_H
 #define GS_CPU_PPC_H
 
+#include "checkpoint.h"
 #include "common.h"
 #include "debug.h" // cpu_debug_if_t
 #include "memory.h" // memory_cpu_hooks_t

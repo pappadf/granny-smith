@@ -160,7 +160,7 @@ TEST(test_decode_meta_section) {
     value_t ev = aevt_decode("aevt", "odoc", s.b, s.len);
     ASSERT_TRUE(!val_is_error(&ev));
     const value_t *attrs = value_map_get(&ev, "attrs");
-    ASSERT_TRUE(attrs && attrs->kind == V_MAP);
+    ASSERT_TRUE(attrs && attrs->kind == VK_MAP);
     ASSERT_EQ_INT((int)attrs->map.len, 2);
     ASSERT_EQ_INT((int)val_as_i64(value_map_get(value_map_get(attrs, "timo"), "data"), NULL), 3600);
     // Attributes must not leak into the parameter namespace.
@@ -193,7 +193,7 @@ TEST(test_decode_unfactored_list) {
     value_t ev = aevt_decode("aevt", "odoc", s.b, s.len);
     ASSERT_TRUE(!val_is_error(&ev));
     const value_t *list = leaf_data(&ev, "----");
-    ASSERT_TRUE(list && list->kind == V_LIST);
+    ASSERT_TRUE(list && list->kind == VK_LIST);
     ASSERT_EQ_INT((int)list->list.len, 2);
     ASSERT_TRUE(strcmp(val_as_str(value_map_get(&list->list.items[0], "data")), "one") == 0);
     ASSERT_TRUE(strcmp(val_as_str(value_map_get(&list->list.items[1], "data")), "two") == 0);
@@ -311,7 +311,7 @@ TEST(test_decode_object_specifier) {
     ASSERT_TRUE(!val_is_error(&ev));
     ASSERT_TRUE(strcmp(leaf_type(&ev, "----"), "obj ") == 0);
     const value_t *spec = leaf_data(&ev, "----");
-    ASSERT_TRUE(spec && spec->kind == V_MAP);
+    ASSERT_TRUE(spec && spec->kind == VK_MAP);
     ASSERT_EQ_INT((int)spec->map.len, 4);
     ASSERT_TRUE(strcmp(val_as_str(value_map_get(value_map_get(spec, "seld"), "data")), "pnam") == 0);
     ASSERT_TRUE(strcmp(val_as_str(value_map_get(value_map_get(spec, "from"), "type")), "null") == 0);
@@ -462,6 +462,49 @@ TEST(test_malformed_streams_rejected) {
     put_code(&s, ";;;;");
     put_param(&s, "----", "list", items.b, items.len);
     assert_rejects(s.b, s.len, "prefix size 6");
+
+    // Zero-length factored items: a 16-byte descriptor claiming 32768 of them.
+    items = (sbuf_t){0};
+    put32(&items, 32768);
+    put32(&items, 8);
+    put_code(&items, "null");
+    put32(&items, 0);
+    s = (sbuf_t){0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    assert_rejects(s.b, s.len, "zero-length item count amplification");
+
+    // Fixed four-byte items: the count claims more than the data holds.
+    items = (sbuf_t){0};
+    put32(&items, 3);
+    put32(&items, 8);
+    put_code(&items, "type");
+    put32(&items, 4);
+    put_code(&items, "cwin");
+    s = (sbuf_t){0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    assert_rejects(s.b, s.len, "fixed-length count past the end");
+}
+
+// A list of zero-length factored items is still legal, even one with more
+// items than its descriptor has bytes.
+TEST(test_decode_zero_length_factored_items) {
+    sbuf_t items = {0};
+    put32(&items, 40);
+    put32(&items, 8);
+    put_code(&items, "null");
+    put32(&items, 0);
+    sbuf_t s = {0};
+    put_header(&s);
+    put_code(&s, ";;;;");
+    put_param(&s, "----", "list", items.b, items.len);
+    value_t ev = aevt_decode("aevt", "test", s.b, s.len);
+    ASSERT_TRUE(!val_is_error(&ev));
+    ASSERT_EQ_INT((int)leaf_data(&ev, "----")->list.len, 40);
+    value_free(&ev);
 }
 
 // Truncating a well-formed stream at every offset must never crash and must
@@ -491,9 +534,9 @@ TEST(test_truncation_fuzz) {
         value_t ev = aevt_decode("aevt", "test", s.b, cut);
         if (val_is_error(&ev))
             rejected++;
-        else if (ev.kind != V_MAP)
+        else if (ev.kind != VK_MAP)
             fprintf(stderr, "[FAIL] truncation to %d bytes yielded kind %d\n", cut, (int)ev.kind);
-        ASSERT_TRUE(val_is_error(&ev) || ev.kind == V_MAP);
+        ASSERT_TRUE(val_is_error(&ev) || ev.kind == VK_MAP);
         value_free(&ev);
     }
     ASSERT_TRUE(rejected > s.len / 2); // most cuts land mid-descriptor
@@ -743,6 +786,7 @@ int main(void) {
     RUN(test_decode_type_factored_list);
     RUN(test_decode_fully_factored_list);
     RUN(test_decode_packed_list);
+    RUN(test_decode_zero_length_factored_items);
     RUN(test_decode_object_specifier);
     RUN(test_unknown_descriptor_round_trips);
     RUN(test_wrong_length_scalar_kept_opaque);

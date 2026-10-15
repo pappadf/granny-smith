@@ -10,6 +10,7 @@
 #define FLOPPY_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 #include "image.h"
 #include "memory.h"
@@ -23,10 +24,12 @@
 #define FLOPPY_NUM_DRIVES 2
 
 // === Controller Types ===
-#define FLOPPY_TYPE_IWM     0 // IWM-only (Mac Plus)
-#define FLOPPY_TYPE_SWIM    1 // SWIM dual-mode IWM+ISM (SE/30)
-#define FLOPPY_TYPE_SWIM3   2 // SWIM III, controller-driven (PDM 6100/7100/8100)
-#define FLOPPY_TYPE_NEW_AGE 3 // New Age (µPD72070), controller-driven (Quadra 840AV / Centris 660AV)
+typedef enum floppy_type {
+    FLOPPY_TYPE_IWM = 0, // IWM-only (Mac Plus)
+    FLOPPY_TYPE_SWIM = 1, // SWIM dual-mode IWM+ISM (SE/30)
+    FLOPPY_TYPE_SWIM3 = 2, // SWIM III, controller-driven (PDM 6100/7100/8100)
+    FLOPPY_TYPE_NEW_AGE = 3, // New Age (µPD72070), controller-driven (Quadra 840AV / Centris 660AV)
+} floppy_type_t;
 
 // === Type Definitions ===
 // Opaque floppy controller type
@@ -39,8 +42,8 @@ typedef struct floppy floppy_t;
 // cables (its profile's floppy_slots): the chip always has two drive
 // selects, but drives past n_drives are not in the object model and refuse an
 // insert.
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
-                      const image_list_t *images);
+floppy_t *floppy_init(floppy_type_t type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
+                      checkpoint_t *checkpoint, const image_list_t *images);
 
 // How many drives the controller was built with (or restored with).
 int floppy_drive_count(const floppy_t *floppy);

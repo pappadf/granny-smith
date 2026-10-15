@@ -8,8 +8,11 @@ import { urlMediaName } from '@/lib/mediaUrl';
 
 // One file being fetched.  `total` is null when the server sends no length
 // (a streamed zip member, a compressed response): the bar is then
-// indeterminate and only `received` is shown.
-export type UrlFileStatus = 'queued' | 'downloading' | 'unpacking' | 'done' | 'failed' | 'skipped';
+// indeterminate and only `received` is shown.  `storing`: the download is
+// in and is being written into the image store as a compact UDIF (bus/
+// urlMedia.ts storeCompact), which for a large disk takes a while.
+export type UrlFileStatus =
+  'queued' | 'downloading' | 'unpacking' | 'storing' | 'done' | 'failed' | 'skipped';
 
 export interface UrlFile {
   slot: string; // rom, rom2, vrom, fd0, hd0, cd …
@@ -25,6 +28,10 @@ export interface UrlFile {
   reused?: boolean;
   // A new blank disk (?hd0=blank:…), created rather than downloaded.
   blank?: boolean;
+  // While `storing`: bytes of the disk compressed so far, of `total` (0
+  // while not yet known).  Past the last byte the result is checked and
+  // moved into the store, which reports nothing.
+  stored?: { done: number; total: number };
 }
 
 // downloading: files are coming in; booting: all fetched, the machine is

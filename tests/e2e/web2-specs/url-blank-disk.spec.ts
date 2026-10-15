@@ -10,7 +10,7 @@
 // transport is stubbed (page.route, as url-boot.spec.ts does); creating,
 // storing and attaching run for real.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gsEvalInPage } from "../helpers/web2-eval";
@@ -39,7 +39,8 @@ async function bootFromUrl(page: Page, query: string): Promise<void> {
   await expect(
     page
       .locator(".toast .msg")
-      .filter({ hasText: "Booted plus from URL parameters" }),
+      // "… without <disk>: <why>" when a disk could not be had.
+      .filter({ hasText: /Booted plus (from URL parameters|without )/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
     "Running",

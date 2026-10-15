@@ -13,7 +13,7 @@
 // (the integration rows lisa-imagewriter and mac-imagewriter print from
 // real ones).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile, stageOpfsText } from "../helpers/web2-fs";
 import { terminalRun } from "../helpers/terminal";

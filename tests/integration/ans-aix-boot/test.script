@@ -69,6 +69,7 @@ def aix_boot() {
     # attempt to mount the root file systems.  The checks below record
     # exactly that.
     machine.boot model="ans500" ram=524288 rom="${$ROM}"
+    let t0 = scheduler.host_user_ns
     machine.board.keyswitch = "service"
     assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
 
@@ -188,13 +189,18 @@ def aix_boot() {
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "the Install CD went away under AIX"
 
+    # Phase 0 throughput floor of the predecoded-cores proposal (604
+    # interpreter through Open Firmware and the AIX kernel).  A guess, not a
+    # measurement: the ROM and the install CD are not in the local test data;
+    # lower it if the CI host misses it.
+    mips_floor("ans-aix-boot", $t0, 15)
     echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31"
 }
 
 if have_media($aix_cd) {
     aix_boot()
 } else {
-    echo "skip: ans-aix-boot (the AIX 4.1.5 Install CD not present — set GS_EXTRA_MEDIA_DIR)"
+    skip_test("ans-aix-boot (the AIX 4.1.5 Install CD not present — set GS_EXTRA_MEDIA_DIR)")
 }
 
 quit

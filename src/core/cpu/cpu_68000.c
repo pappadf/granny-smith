@@ -3,69 +3,36 @@
 
 // cpu_68000.c
 // Motorola 68000 instruction decoder instantiation.
-// This file defines the 68000-specific memory access macros and includes
-// the shared cpu_ops.h and cpu_decode.h templates to generate cpu_run_68000().
+// Supplies the 68000 prologue/epilogue around the shared macro set
+// (cpu_decoder_macros.h) and the cpu_ops.h / cpu_decode.h templates to
+// generate cpu_run_68000().
 
+#define CPU_DECODER_IS_68000 1 // this unit is the 68000 core: odd-address checks compile unconditionally
 #include "cpu_internal.h"
 
 #include "system.h"
 
-// 68000 memory access: direct (no MMU translation)
-#define D(n)                                         cpu->d[n]
-#define A(n)                                         cpu->a[n]
-#define PC                                           cpu->pc
-#define READ8(addr)                                  memory_read_uint8(addr)
-#define READ16(addr)                                 memory_read_uint16(addr)
-#define READ32(addr)                                 memory_read_uint32(addr)
-#define WRITE8(addr, x)                              memory_write_uint8(addr, x)
-#define WRITE16(addr, x)                             memory_write_uint16(addr, x)
-#define WRITE32(addr, x)                             memory_write_uint32(addr, x)
-#define FETCH8()                                     (uint8_t) fetch_16(cpu, true)
-#define FETCH16()                                    fetch_16(cpu, true)
-#define FETCH32()                                    fetch_32(cpu, true)
-#define FETCH16_NO_INC()                             fetch_16(cpu, false)
-#define FETCH32_NO_INC()                             fetch_32(cpu, false)
-#define CC_C                                         cpu->carry
-#define CC_X                                         cpu->extend
-#define CC_N                                         cpu->negative
-#define CC_V                                         cpu->overflow
-#define CC_Z                                         cpu->zero
-#define GET_USP()                                    (cpu->usp)
-#define SET_USP(value_)                              (cpu->usp = (value_))
-#define IS_SUPERVISOR()                              (cpu->supervisor != 0)
-#define GET_SR()                                     cpu_get_sr(cpu)
-#define SET_SR(value_)                               cpu_set_sr(cpu, (value_))
-#define READ_CCR()                                   read_ccr(cpu)
-#define WRITE_CCR(value_)                            write_ccr(cpu, (value_))
-#define SBCD(dst, src)                               sbcd(cpu, (dst), (src))
-#define ABCD(dst, src)                               abcd(cpu, (dst), (src))
-#define MOVEM_FROM_REGISTER(op, sz)                  movem_from_register(cpu, (op), (sz))
-#define MOVEM_TO_REGISTER(op, sz)                    movem_to_register(cpu, (op), (sz))
-#define READ_EA(bits, opcode_, increment_)           read_ea_##bits(cpu, (opcode_), (increment_))
-#define WRITE_EA(bits, mode_, reg_, value_)          write_ea_##bits(cpu, (mode_), (reg_), (value_))
-#define CALCULATE_EA(size_, mode_, reg_, increment_) calculate_ea(cpu, (size_), (mode_), (reg_), (increment_))
-#define CONDITIONAL_TEST(test_)                      conditional_test(cpu, (test_))
-#define EXC_TRAP(vector_)                            trap(cpu, (vector_))
-#define EXC_TRAPV()                                  trapv(cpu)
-#define EXC_ATRAP()                                  a_trap(cpu)
-#define EXC_FTRAP()                                  f_trap(cpu)
-#define EXC_DIVIDE_BY_ZERO()                         exception_divide_by_zero(cpu)
-#define EXC_CHK()                                    chk_exception(cpu)
-#define EXC_PRIVILEGE()                              privilege_violation(cpu)
-#define EXC_ILLEGAL()                                illegal_instruction(cpu)
+// Operand/memory/flag/exception macros shared by all three 68K decoders
+#include "cpu_decoder_macros.h"
+// The 68000 alone checks word/long operand addresses for oddness (an
+// address error, cpu_internal.h); the 68020+ bus sizes misaligned accesses.
+#undef READ16
+#undef READ32
+#undef WRITE16
+#undef WRITE32
+#define READ16(addr)     cpu_dread16(cpu, addr)
+#define READ32(addr)     cpu_dread32(cpu, addr)
+#define WRITE16(addr, x) cpu_dwrite16(cpu, addr, x)
+#define WRITE32(addr, x) cpu_dwrite32(cpu, addr, x)
 
 #include "cpu_ops.h"
 
 // Generate the cpu_run_68000 decoder function
-#define CPU_DECODER_NAME        cpu_run_68000
+#define CPU_DECODER_NAME        cpu_run_68000_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
-/* Saturating decrement on the trailing (*instructions)--: memory_io_penalty
- * can clamp *instructions to 0 during the fetch (when the I/O penalty equals
- * or exceeds the remaining burndown), and an unconditional decrement would
- * wrap to UINT32_MAX, breaking the sprint_burndown <= sprint_total invariant
- * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
- * instruction on a slow I/O access. */
+// Saturating burn-down decrement at the end of the prologue: see
+// docs/internals/core/cpu/cores.md, "The 68K decoder prologue".
 #define CPU_DECODER_PROLOGUE                                                                                           \
     /* Double bus fault: the CPU halts, and on Mac hardware the halt line is                                           \
      * wired straight to the board's reset input, so the machine reboots.                                              \
@@ -87,7 +54,6 @@
         system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
         cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
      * error is delivered at the FAULTING instruction's epilogue.  The 68030 decoder                                   \
@@ -97,6 +63,11 @@
      * unrelated (supervisor / MMU-setup) code, where it was delivered with the wrong                                  \
      * context and vectored through the ROM, resetting the machine. */                                                 \
     g_bus_error_instr_ptr = instructions;                                                                              \
+    cpu_check_interrupt(cpu);                                                                                          \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     while (*instructions > 0) {                                                                                        \
         /* The MC68000 has a 24-bit address bus (A0-A23); bits 24-31 of the PC are                                     \
          * not driven.  Control transfers through a pointer whose high byte is a                                       \
@@ -107,6 +78,10 @@
          * mis-delivered as a line-F instead of demand-loading the segment).  No-op                                    \
          * for the Mac Plus, whose PC never exceeds 24 bits. */                                                        \
         cpu->pc &= 0x00FFFFFFu;                                                                                        \
+        if (__builtin_expect(cpu->pc & 1u, 0)) { /* odd PC: address error, the epilogue delivers */                    \
+            m68k_fetch_address_error(cpu);                                                                             \
+            break;                                                                                                     \
+        }                                                                                                              \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
         /* Record the address of the instruction being decoded.  The group-0                                           \
@@ -125,8 +100,6 @@
             cpu->ir = opcode;                                                                                          \
             cpu->ir_pc = cpu->instruction_pc;                                                                          \
         }                                                                                                              \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -146,6 +119,8 @@
     /* bus error; the Lisa OS BUS_ERR handler classifies/recovers (or terminates) it.   */                             \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
         g_bus_error_pending = false;                                                                                   \
+        /* An address error stacks the PC the instruction had reached (its end,   */                                   \
+        /* every extension word fetched); a bus error the offset below.           */                                   \
         /* Group-0 (data) bus-error saved PC = faulting instruction + 2 (just past  */                                 \
         /* the opcode word).  The decoder advanced cpu->pc to the *next* instruction */                                \
         /* during operand decode; the real 68000 stacks PC pointing 2 bytes into the */                                \
@@ -153,12 +128,43 @@
         /* (savedPC-2) to detect the C stack-growth probe `TST.B d16(A7)` (opcode     */                               \
         /* 0x4A2F): with the next-instruction PC it read the displacement word, the   */                               \
         /* probe went undetected, and mkfs was SIGSEGV'd instead of the stack grown.  */                               \
-        cpu->pc = cpu->instruction_pc + 2;                                                                             \
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw,                                                  \
+                            g_bus_error_is_address ? cpu->pc : cpu->instruction_pc + 2);                               \
+        cpu_select_soa(cpu->supervisor);                                                                               \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
+
+// MOVES does not exist on the 68000: both direction arms are OP_UNDEFINED, so
+// don't let cpu_decode.h's live extension-word read issue a bus cycle the
+// real chip never makes.
+#define CPU_MOVES_DIR() 0
 
 #include "cpu_decode.h"
+#undef CPU_DECODER_NAME
+#undef CPU_DECODER_ARGS
+#undef CPU_DECODER_RETURN_TYPE
+#undef CPU_DECODER_PROLOGUE
+#undef CPU_DECODER_EPILOGUE
+
+// ============================================================================
+// The predecoded executor (docs/internals/core/cpu/predecode.md): the
+// one-instruction executor, the sprint loop over predecoded entries, and
+// the decode tree in its classifier role — three more instantiations of
+// the same template, sharing this file's macro bindings and op bodies.
+// ============================================================================
+#define PD_RUN_NAME      cpu_pd_run_68000
+#define PD_STEP_NAME     cpu_pd_step_68000
+#define PD_DECODE_NAME   cpu_pd_decode_68000
+#define PD_TREE_NAME     cpu_pd_tree_68000
+#define PD_CLASSIFY_NAME cpu_pd_classify_68000
+#define PD_HW_RESET(c)   (system_reset_devices(), cpu_reset_to_vector_68030(c))
+#include "cpu_pd_run.h"
+
+// The core's entry point: the predecoded executor when enabled, else the
+// switch core (kept for A/B from the shell: machine.cpu.predecode = 0).
+void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (predecode_enabled() && g_lisa_mmu == NULL)
+        cpu_pd_run_68000(cpu, instructions);
+    else
+        cpu_run_68000_switch(cpu, instructions);
+}

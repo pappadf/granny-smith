@@ -1,5 +1,5 @@
 #!/bin/bash
-# files.rm / files.mv guard probes. Each refusal returns a V_ERROR,
+# files.rm / files.mv guard probes. Each refusal returns a VK_ERROR,
 # which (by design) makes the headless script exit non-zero — so this
 # runner matches the refusal messages and verifies side effects itself
 # instead of using the standard exit-code-only pattern.

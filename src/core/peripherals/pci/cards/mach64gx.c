@@ -53,6 +53,7 @@
 // driver reads Apple's sense lines through GP_IO, a register that does not
 // exist on the 88800GX at all.
 
+#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
@@ -64,7 +65,7 @@
 #include "prom.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -475,12 +476,10 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // (control.c).  Two independent circuits agreeing on one monitor is a good
 // sign the engine below is right.
 //
-// The multiple-scan entries come from Apple's table.  Which raster each
-// code actually selects is a driver decision we have not measured yet, and
-// the bit order WITHIN each extended pair is not stated by the note — so
-// mach64_sense_log() prints the primary and extended codes the engine
-// produced on the first run, and the table gets pinned from that.  Nothing
-// about enumeration depends on it: the card's FCode gives up only when
+// The multiple-scan entries are Apple's MSB1/2/3 extended codes.  A code
+// outside Apple's list reads as an unknown display, which the Rage Pro
+// driver under Mac OS X answers with 640x480 alone.  Enumeration itself
+// does not depend on it: the card's FCode gives up only when
 // primary == 7 AND extended == $3F together, i.e. when all three pins float
 // high in every configuration, which is what "no cable attached" looks
 // like.
@@ -501,10 +500,13 @@ typedef struct mach64_monitor_sense {
 static const mach64_monitor_sense_t mach64_sense[] = {
     // 14" AppleColor / 12" monochrome — no tie resistors; extended = $2B.
     {"14in_rgb",   6, STRAP_EXT01(6), STRAP_EXT02(6), STRAP_EXT12(6)},
-    // The multiple-scan displays answer the extended probe (Apple table 2-3).
-    {"15in_multi", 6, 3,              0,              0             },
-    {"17in_multi", 6, 3,              2,              0             },
-    {"20in_multi", 6, 3,              0,              2             },
+    // The multiple-scan displays answer the extended probe with Apple's
+    // MSB1/2/3 codes $03/$0B/$23 (Displays.h kESCSixMSB1..3), assembled
+    // "BC AC AB": drive A (pin 2) and read B,C into bits 5:4, and so on.
+    // Driving C reads back A,B = 1,1 -- the primary strap, as it must.
+    {"15in_multi", 6, 0,              0,              3             },
+    {"17in_multi", 6, 0,              2,              3             },
+    {"20in_multi", 6, 2,              0,              3             },
     // 21" colour — a primary-only code, like the 14".
     {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
     // No cable: every pin floats high in every configuration, the one answer
@@ -1713,14 +1715,49 @@ static void mach64_engine_run(mach64_t *m) {
     uint32_t cntl = m->reg[DW_DST_CNTL];
     bool x_inc = (cntl & DST_X_DIR) != 0;
     bool y_inc = (cntl & DST_Y_DIR) != 0;
-    for (uint32_t row = 0; row < height; row++) {
+    // One DST_WIDTH write can start a 65535 x 65535 trajectory.  Iterate only
+    // the pixels mach64_emit would not reject outright -- inside the scissor,
+    // inside VRAM -- so a large operation clipped down to the screen costs the
+    // screen.  The per-pixel path is unchanged; the rejects are skipped and
+    // counted in bulk.  A surface whose pitch is smaller than its row can
+    // still overdraw the same VRAM without end, so the emitted pixels are also
+    // capped, at twice the pixels VRAM can hold.
+    uint64_t budget = 2u * ((uint64_t)m->vram_size / op.bpp);
+    for (uint32_t row = 0; row < height && budget; row++) {
         uint32_t y = y_inc ? dst_y + row : dst_y - row;
-        for (uint32_t col = 0; col < width; col++) {
+        // Columns [c0, c1) whose x lies in [sc_left, sc_right] and whose pixel
+        // is inside VRAM (the offset rises with x, so that is x < xlim).  The
+        // scissor is 16-bit, so a y or x that wrapped below 0 never passes.
+        uint64_t row_off = (uint64_t)op.dst.base + (uint64_t)y * op.dst.pitch;
+        uint64_t xlim = row_off + op.bpp <= m->vram_size ? (m->vram_size - op.bpp - row_off) / op.bpp + 1 : 0;
+        uint64_t lo = op.sc_left, hi = (uint64_t)op.sc_right + 1; // x range [lo, hi)
+        if (hi > xlim)
+            hi = xlim;
+        int64_t c0 = 0, c1 = 0;
+        if (y >= op.sc_top && y <= op.sc_bottom && lo < hi) {
+            if (x_inc) { // x = dst_x + col
+                c0 = (int64_t)lo - dst_x;
+                c1 = (int64_t)hi - dst_x;
+            } else { // x = dst_x - col
+                c0 = (int64_t)dst_x - (int64_t)hi + 1;
+                c1 = (int64_t)dst_x - (int64_t)lo + 1;
+            }
+            if (c0 < 0)
+                c0 = 0;
+            if (c1 > (int64_t)width)
+                c1 = width;
+        }
+        if (c1 < c0)
+            c1 = c0;
+        m->tally.scissor += width - (uint32_t)(c1 - c0); // off-VRAM folded in
+        for (uint32_t col = (uint32_t)c0; col < (uint32_t)c1 && budget; col++, budget--) {
             uint32_t x = x_inc ? dst_x + col : dst_x - col;
             bool mono = mach64_mono_bit(m, &op, x, y, col, row);
             mach64_emit(m, &op, x, y, col, row, mono);
         }
     }
+    if (!budget)
+        LOG(0, "Mach64: %ux%u operation overdraws VRAM past its pixel budget; the rest is dropped", width, height);
     m->blits++;
     m->display.fb_dirty = true;
     if (op.frgd_sel == DP_SRC_BLIT || op.bkgd_sel == DP_SRC_BLIT || op.mono_sel == DP_MONO_BLIT)
@@ -3423,26 +3460,26 @@ static DEF_GETTER(mon_attr_probed) {
 }
 
 static const member_t monitor_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "id",
      .doc = "Strapped monitor id (see catalog.profile for the card's list)",
-     .attr = {.type = V_STRING, .get = mon_attr_id}                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = mon_attr_id}                                       },
+    {.kind = MK_ATTR,
      .name = "sense_code",
      .doc = "The monitor's 3-bit primary sense code",
-     .attr = {.type = V_UINT, .get = mon_attr_primary}                                  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mon_attr_primary}                                    },
+    {.kind = MK_ATTR,
      .name = "probed",
      .doc = "True once the guest has driven the monitor-ID pins",
-     .attr = {.type = V_BOOL, .get = mon_attr_probed}                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = mon_attr_probed}                                     },
+    {.kind = MK_ATTR,
      .name = "sensed_primary",
      .doc = "The primary code the guest actually read back",
-     .attr = {.type = V_UINT, .get = mon_attr_sensed_primary}                           },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = mon_attr_sensed_primary}                             },
+    {.kind = MK_ATTR,
      .name = "sensed_extended",
      .doc = "The 6-bit extended code the guest's four-step walk assembled",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = mon_attr_sensed_ext}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = mon_attr_sensed_ext}},
 };
 static const class_desc_t mach64_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
@@ -3484,42 +3521,42 @@ static DEF_METHOD(regs_method_read) {
 }
 
 static const arg_decl_t regs_read_arg[] = {
-    {.name = "dword", .kind = V_INT, .doc = "Register DWORD offset (ATI RRG chapter 2)"},
+    {.name = "dword", .kind = VK_INT, .doc = "Register DWORD offset (ATI RRG chapter 2)"},
 };
 
 static const member_t regs_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "chip_id",
      .doc = "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}      },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_chip_id}    },
+    {.kind = MK_ATTR,
      .name = "config_cntl",
      .doc = "CONFIG_CNTL (I/O only): aperture size, location and VGA disable",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}  },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_config_cntl}},
+    {.kind = MK_ATTR,
      .name = "aperture_size",
      .doc = "Bytes of BAR0 the aperture currently covers (0 = disabled)",
-     .attr = {.type = V_UINT, .get = regs_attr_aperture}                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_aperture}                                    },
+    {.kind = MK_ATTR,
      .name = "vram_size",
      .doc = "Bytes of video memory on this card",
-     .attr = {.type = V_UINT, .get = regs_attr_vram}                                        },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_vram}                                        },
+    {.kind = MK_ATTR,
      .name = "crtc_gen_cntl",
      .doc = "CRTC_GEN_CNTL: pixel width, extended-display and CRTC enables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_crtc_gen}   },
+    {.kind = MK_ATTR,
      .name = "mem_cntl",
      .doc = "MEM_CNTL: MEM_SIZE in bits 2:0",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_mem_cntl}   },
+    {.kind = MK_ATTR,
      .name = "dac_cntl",
      .doc = "DAC_CNTL, monitor-ID pins read live in bits 26:24",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}     },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_dac_cntl}   },
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read any register by its DWORD offset",
-     .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
+     .method = {.args = regs_read_arg, .nargs = 1, .result = VK_UINT, .fn = regs_method_read}},
 };
 static const class_desc_t mach64_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
@@ -3549,30 +3586,30 @@ static DEF_METHOD(dac_method_read) {
 }
 
 static const arg_decl_t dac_read_arg[] = {
-    {.name = "index", .kind = V_INT, .doc = "RGB514 indexed register ($00-$4FF)"},
+    {.name = "index", .kind = VK_INT, .doc = "RGB514 indexed register ($00-$4FF)"},
 };
 
 static const member_t dac_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "index",
      .doc = "The RGB514's 16-bit indexed-register pointer",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_index}     },
+    {.kind = MK_ATTR,
      .name = "pixel_format",
      .doc = "Indexed $0A Pixel Format (3 = 8 bpp, 4 = 15/16, 5 = 24, 6 = 32)",
-     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}                               },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = dac_attr_pixel_format}                               },
+    {.kind = MK_ATTR,
      .name = "misc_control_2",
      .doc = "Indexed $71: pixel-clock select, colour resolution, port select",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_misc2}     },
+    {.kind = MK_ATTR,
      .name = "pixel_mask",
      .doc = "The RS 010 pixel mask ($FF = no masking)",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}  },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = dac_attr_pixel_mask}},
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read an RGB514 indexed register",
-     .method = {.args = dac_read_arg, .nargs = 1, .result = V_UINT, .fn = dac_method_read}},
+     .method = {.args = dac_read_arg, .nargs = 1, .result = VK_UINT, .fn = dac_method_read}},
 };
 static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
@@ -3581,7 +3618,7 @@ static const class_desc_t mach64_dac_class = {
 // The framebuffer node is display_class.c's, shared with the NuBus cards and
 // the built-in chips, so `machine.screen.source` reads the same on either bus.
 // This card used to re-implement it with `size` where NuBus said `raw_size`,
-// V_UINT where NuBus said V_INT, and no `format` at all -- the node was
+// VK_UINT where NuBus said VK_INT, and no `format` at all -- the node was
 // declared to mirror the NuBus one and did not.
 static display_t *mach64_fb_resolve(void *owner) {
     mach64_t *c = (mach64_t *)owner;
@@ -3766,12 +3803,41 @@ const pci_card_kind_t mach64_gx_kind = {
 // and Mac OS loads the ROM's `ATY,RAGEIII` ndrv — and has 2 MB of SGRAM,
 // the shipping configuration.
 //
-// The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
-// 640 x 480 display whose code every Mac driver knows.
+// The monitor is the one the machine's built-in video port names
+// (mach64_ragepro_monitor_at, below): Apple's 14" RGB by default (sense 6,
+// extended from its straps), a 640 x 480 display whose code every Mac driver
+// knows, or one of the multiple-scan displays or the 21" -- the GX's own
+// sense rows.
+
+// The monitors the Rage Pro's machine offers on its built-in video port
+// (gossamer.c's builtin_video_desc_t), as monitor-catalogue ids: the first
+// five rows of mach64_sense, whose GP_IO sense the card already answers.
+// The byte that names one is its row index: the build resolves the
+// document's monitor to it (builtin_sense) and the PCI layer hands it back
+// as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
+// which every G3 built before this list existed carries, its checkpoints
+// included -- straps the 14", the monitor the Rage Pro always had.
+static const char *const ragepro_monitors[] = {"13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"};
+#define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
+
+bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i >= RAGEPRO_MONITORS)
+        return false;
+    *id = *monitor = ragepro_monitors[i];
+    return true;
+}
+
+bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (size_t i = 0; i < RAGEPRO_MONITORS; i++)
+        if (strcmp(ragepro_monitors[i], id) == 0) {
+            *out_sense = (uint8_t)i;
+            return true;
+        }
+    return false;
+}
 
 static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3798,7 +3864,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
         free(dev);
         return NULL;
     }
-    m->mon = &mach64_sense[0];
+    m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
     mach64_reset(dev, cfg);
 
     m->aper_if.read_uint8 = aper_read8;

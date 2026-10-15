@@ -45,6 +45,7 @@
 
 #include "gossamer.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "machine.h"
 #include "object.h"
@@ -124,11 +125,11 @@ static void bank_window(const gos_grackle_t *g, unsigned n, uint32_t *lo, uint32
 void gos_grackle_remap(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     gos_grackle_t *g = &st->grackle;
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
     // The whole RAM decode space goes quiet first: an access outside every
     // enabled bank reads all-ones and drops writes (§6), which an empty
     // page gives by default.
-    for (uint32_t p = 0; p < (0x40000000u >> PAGE_SHIFT); p++)
+    for (uint32_t p = 0; p < (0x40000000u >> MEM_PAGE_SHIFT); p++)
         gos_clear_page(p);
     bool memgo = (cfg32(g, G_MCCR1) & MCCR1_MEMGO) != 0;
     uint8_t enables = g->cfg[G_BANK_EN];
@@ -152,8 +153,8 @@ void gos_grackle_remap(config_t *cfg) {
         }
         uint8_t *host = ram + g->bank_host_off[n];
         uint32_t span = hi - lo + 1u;
-        for (uint32_t p = 0; p < (span >> PAGE_SHIFT); p++)
-            gos_fill_page((lo >> PAGE_SHIFT) + p, host + (((uint64_t)p << PAGE_SHIFT) % size), true);
+        for (uint32_t p = 0; p < (span >> MEM_PAGE_SHIFT); p++)
+            gos_fill_page((lo >> MEM_PAGE_SHIFT) + p, host + (((uint64_t)p << MEM_PAGE_SHIFT) % size), true);
         LOG(2, "bank %u: $%08X-$%08X -> %u MB of DIMM storage at host +$%X", n, lo, hi, size >> 20,
             g->bank_host_off[n]);
     }
@@ -510,10 +511,10 @@ void gos_grackle_init(config_t *cfg, checkpoint_t *cp) {
     iface_set(&st->cfg_data_if, cdata_read8, cdata_read16, cdata_read32, cdata_write8, cdata_write16, cdata_write32);
     iface_set(&st->intack_if, ia_read8, ia_read16, ia_read32, ia_write8, ia_write16, ia_write32);
     iface_set(&st->board_if, board_read8, board_read16, board_read32, board_write8, board_write16, board_write32);
-    memory_map_add(cfg->mem_map, GOS_CFG_ADDR_BASE, GOS_CFG_ADDR_SIZE, "Grackle CONFIG_ADDR", &st->cfg_addr_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_CFG_DATA_BASE, GOS_CFG_DATA_SIZE, "Grackle CONFIG_DATA", &st->cfg_data_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_INTACK_BASE, 0x00100000u, "Grackle INT ACK", &st->intack_if, cfg);
-    memory_map_add(cfg->mem_map, GOS_BOARD_BASE, GOS_BOARD_SIZE, "board register", &st->board_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_CFG_ADDR_BASE, GOS_CFG_ADDR_SIZE, "Grackle CONFIG_ADDR", &st->cfg_addr_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_CFG_DATA_BASE, GOS_CFG_DATA_SIZE, "Grackle CONFIG_DATA", &st->cfg_data_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_INTACK_BASE, 0x00100000u, "Grackle INT ACK", &st->intack_if, cfg);
+    memory_map_add(cfg->memory_map, GOS_BOARD_BASE, GOS_BOARD_SIZE, "board register", &st->board_if, cfg);
 
     // The one PCI bus, and Grackle's own header at device 0.
     st->bus = pci_bus_create(cfg->pci, "Grackle", GOS_PCI_BUS);
@@ -567,7 +568,7 @@ static uint32_t grk_decoded_bytes(const gos_grackle_t *g) {
         (void)m;                                                                                                       \
         const gos_grackle_t *g = grk_obj(self);                                                                        \
         value_t v = val_uint(4, g ? (EXPR) : 0u);                                                                      \
-        v.flags |= VAL_HEX;                                                                                            \
+        v.flags |= VFLAG_HEX;                                                                                          \
         return v;                                                                                                      \
     }
 
@@ -591,22 +592,22 @@ static value_t grk_method_config(struct object *self, const member_t *m, int arg
     if (reg > 0xFCu || (reg & 3u))
         return val_err("grackle.config: register $%llX is not a dword offset in $00-$FC", (unsigned long long)reg);
     value_t v = val_uint(4, cfg32(g, (uint32_t)reg));
-    v.flags |= VAL_HEX;
+    v.flags |= VFLAG_HEX;
     return v;
 }
 
 #define GRK_RO_ATTR(NAME, DOC)                                                                                         \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                           \
-            .type = V_UINT,                                                                                            \
-            .presentation_flags = VAL_HEX,                                                                             \
+        .kind = MK_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                          \
+            .type = VK_UINT,                                                                                           \
+            .presentation_flags = VFLAG_HEX,                                                                           \
             .get = grk_attr_##NAME,                                                                                    \
             .set = NULL                                                                                                \
         }                                                                                                              \
     }
 
 static const arg_decl_t grk_config_args[] = {
-    {.name = "reg", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "dword-aligned register offset ($00-$FC)"},
+    {.name = "reg", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "dword-aligned register offset ($00-$FC)"},
 };
 
 static const member_t grk_members[] = {
@@ -619,10 +620,10 @@ static const member_t grk_members[] = {
     GRK_RO_ATTR(bank_enable, "Memory bank enable ($A0)"),
     GRK_RO_ATTR(ram_decoded, "Bytes of RAM the enabled banks decode (0 while MEMGO is clear)"),
     GRK_RO_ATTR(config_address, "The CONFIG_ADDR latch (CF8 format)"),
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
                                                             .name = "config",
                                                             .doc = "Read one of Grackle's own configuration dwords (device 0)",
-                                                            .method = {.args = grk_config_args, .nargs = 1, .result = V_UINT, .fn = grk_method_config}},
+                                                            .method = {.args = grk_config_args, .nargs = 1, .result = VK_UINT, .fn = grk_method_config}},
 };
 
 static const class_desc_t grk_class = {

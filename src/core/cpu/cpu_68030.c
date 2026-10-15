@@ -3,8 +3,8 @@
 
 // cpu_68030.c
 // Motorola 68030 instruction decoder instantiation.
-// Follows the same template pattern as cpu_68000.c: defines model-specific
-// macros, includes cpu_ops.h (which #ifdef CPU_DECODER_IS_68030 overrides apply),
+// Follows the same template pattern as cpu_68000.c: takes the shared macro
+// set, includes cpu_ops.h (which #ifdef CPU_DECODER_IS_68030 overrides apply),
 // then includes cpu_decode.h to generate cpu_run_68030().
 
 // CPU_MODEL_68030 is defined in cpu.h (included via cpu_internal.h).
@@ -12,57 +12,15 @@
 
 #include "cpu_internal.h"
 #include "fpu.h"
+#include "gs_assert.h"
 #include "mmu.h"
 
 #include "log.h"
 #include "system.h"
 LOG_USE_CATEGORY_NAME("cpu");
 
-// 68030 memory access: direct physical access (no MMU page table for now).
-// These macros are identical to the 68000 path; MMU translation will be
-// added in a later milestone when the full page table is wired up.
-#define D(n)                                         cpu->d[n]
-#define A(n)                                         cpu->a[n]
-#define PC                                           cpu->pc
-#define READ8(addr)                                  memory_read_uint8(addr)
-#define READ16(addr)                                 memory_read_uint16(addr)
-#define READ32(addr)                                 memory_read_uint32(addr)
-#define WRITE8(addr, x)                              memory_write_uint8(addr, x)
-#define WRITE16(addr, x)                             memory_write_uint16(addr, x)
-#define WRITE32(addr, x)                             memory_write_uint32(addr, x)
-#define FETCH8()                                     (uint8_t) fetch_16(cpu, true)
-#define FETCH16()                                    fetch_16(cpu, true)
-#define FETCH32()                                    fetch_32(cpu, true)
-#define FETCH16_NO_INC()                             fetch_16(cpu, false)
-#define FETCH32_NO_INC()                             fetch_32(cpu, false)
-#define CC_C                                         cpu->carry
-#define CC_X                                         cpu->extend
-#define CC_N                                         cpu->negative
-#define CC_V                                         cpu->overflow
-#define CC_Z                                         cpu->zero
-#define GET_USP()                                    (cpu->usp)
-#define SET_USP(value_)                              (cpu->usp = (value_))
-#define IS_SUPERVISOR()                              (cpu->supervisor != 0)
-#define GET_SR()                                     cpu_get_sr(cpu)
-#define SET_SR(value_)                               cpu_set_sr(cpu, (value_))
-#define READ_CCR()                                   read_ccr(cpu)
-#define WRITE_CCR(value_)                            write_ccr(cpu, (value_))
-#define SBCD(dst, src)                               sbcd(cpu, (dst), (src))
-#define ABCD(dst, src)                               abcd(cpu, (dst), (src))
-#define MOVEM_FROM_REGISTER(op, sz)                  movem_from_register(cpu, (op), (sz))
-#define MOVEM_TO_REGISTER(op, sz)                    movem_to_register(cpu, (op), (sz))
-#define READ_EA(bits, opcode_, increment_)           read_ea_##bits(cpu, (opcode_), (increment_))
-#define WRITE_EA(bits, mode_, reg_, value_)          write_ea_##bits(cpu, (mode_), (reg_), (value_))
-#define CALCULATE_EA(size_, mode_, reg_, increment_) calculate_ea(cpu, (size_), (mode_), (reg_), (increment_))
-#define CONDITIONAL_TEST(test_)                      conditional_test(cpu, (test_))
-#define EXC_TRAP(vector_)                            trap(cpu, (vector_))
-#define EXC_TRAPV()                                  trapv(cpu)
-#define EXC_ATRAP()                                  a_trap(cpu)
-#define EXC_FTRAP()                                  f_trap(cpu)
-#define EXC_DIVIDE_BY_ZERO()                         exception_divide_by_zero(cpu)
-#define EXC_CHK()                                    chk_exception(cpu)
-#define EXC_PRIVILEGE()                              privilege_violation(cpu)
-#define EXC_ILLEGAL()                                illegal_instruction(cpu)
+// Operand/memory/flag/exception macros shared by all three 68K decoders
+#include "cpu_decoder_macros.h"
 
 #include "cpu_ops.h"
 
@@ -184,7 +142,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             // instructions that "must be avoided or emulated in the exception
             // routine for F-line unimplemented instructions".  Flushing the
             // whole ATC instead hid them completely.
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         break;
@@ -377,7 +335,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         // descriptor searched" to hand back, which is why the encoding is
         // illegal rather than merely useless.
         if (level == 0 && a_field != 0) {
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.30):
@@ -541,8 +499,7 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // so a reset taken in user mode kept the user pair: the Lisa boot ROM
     // then ran its MMU tests through the user context and bus-faulted on its
     // own I/O strobes once it selected context 1 (boot error 40).
-    g_active_read = g_supervisor_read;
-    g_active_write = g_supervisor_write;
+    cpu_select_soa(true);
     cpu->interrupt_mask = 7;
     cpu->trace = 0;
     cpu->vbr = 0;
@@ -599,7 +556,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
 }
 
 // Generate the cpu_run_68030 decoder function using the shared template
-#define CPU_DECODER_NAME        cpu_run_68030
+#define CPU_DECODER_NAME        cpu_run_68030_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
@@ -611,40 +568,25 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         cpu_hardware_reset(cpu);                                                                                       \
     }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
-    g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
-    g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
-    cpu_check_interrupt(cpu);                                                                                          \
+    cpu_select_soa(cpu->supervisor);                                                                                   \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
-    uint32_t _saved_trace = cpu->trace;                                                                                \
-    if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
+    uint32_t saved_trace_ = cpu->trace;                                                                                \
+    if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
         if (*instructions > 1) {                                                                                       \
-            g_sprint_unrun_slots += *instructions - 1; /* the rest of the plan is not run */                           \
+            g_sprint_io.unrun_slots += *instructions - 1; /* the rest of the plan is not run */                        \
             *instructions = 1;                                                                                         \
         }                                                                                                              \
-    /* Saturating decrement on the trailing (*instructions)--: memory_io_penalty                                       \
-     * can clamp *instructions to 0 during the fetch (when the I/O penalty                                             \
-     * equals or exceeds the remaining burndown), and an unconditional                                                 \
-     * decrement would wrap to UINT32_MAX, breaking the                                                                \
-     * sprint_burndown <= sprint_total invariant in scheduler.c:                                                       \
-     * reconcile_sprint on any SE/30 sprint that ended its last instruction                                            \
-     * on a slow I/O access. */                                                                                        \
+    /* Saturating burn-down decrement: see cores.md, "The 68K decoder prologue" */                                     \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
         cpu->instruction_pc = cpu->pc;                                                                                 \
-        /* Double-fault tracking: a bus error on an instruction fetch leaves                                           \
-         * last_bus_error_pc set so a retry at the SAME PC can be detected as                                          \
-         * a true double fault.  The value must be cleared once the CPU has                                            \
-         * moved past that PC in USER MODE — otherwise a different process                                           \
-         * that later faults at the same VA (e.g. two execs of /etc/init,                                              \
-         * both with crt0 at $148) is falsely flagged as a double fault.                                               \
-         * Only clear in user mode: kernel-side instructions between the                                               \
-         * first fault and the RTE retry must NOT clear the tracking, or                                               \
-         * legitimate kernel-side double faults (and user retries that                                                 \
-         * fault again at the same PC) would be missed. */                                                             \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -665,19 +607,49 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
          * Plain bus timeouts (unmapped physical in NuBus-probe range) use                                             \
          * Format $A (skip) so ROM probes advance past the bad access.                                                 \
          * g_bus_error_is_pmmu is set by mmu_handle_fault based on which                                               \
-         * code path produced the false return. */                                                                     \
-        if (g_mmu && g_mmu->enabled && g_bus_error_is_pmmu)                                                            \
+         * code path produced the false return.  That ran on the memory                                                \
+         * layer's g_mmu, while this reads cpu->mmu: boards set the two                                                \
+         * together (memory_map_set_pmmu + cpu_attach_mmu), and the assert                                             \
+         * holds them to it. */                                                                                        \
+        GS_ASSERT(cpu->mmu == (void *)g_mmu);                                                                          \
+        if (cpu->mmu && ((mmu_state_t *)cpu->mmu)->enabled && g_bus_error_is_pmmu)                                     \
             exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
         else                                                                                                           \
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                             \
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
-    } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {                                          \
+            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
+        cpu_select_soa(cpu->supervisor);                                                                               \
+    } else if (__builtin_expect((saved_trace_ & 2) && (cpu->trace & 2), 0)) {                                          \
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
 
 #include "cpu_decode.h"
+#undef CPU_DECODER_NAME
+#undef CPU_DECODER_ARGS
+#undef CPU_DECODER_RETURN_TYPE
+#undef CPU_DECODER_PROLOGUE
+#undef CPU_DECODER_EPILOGUE
+
+// ============================================================================
+// The predecoded executor (docs/internals/core/cpu/predecode.md): the
+// one-instruction executor, the sprint loop over predecoded entries, and
+// the decode tree in its classifier role — three more instantiations of
+// the same template, sharing this file's macro bindings and op bodies.
+// ============================================================================
+#define PD_RUN_NAME      cpu_pd_run_68030
+#define PD_STEP_NAME     cpu_pd_step_68030
+#define PD_DECODE_NAME   cpu_pd_decode_68030
+#define PD_TREE_NAME     cpu_pd_tree_68030
+#define PD_CLASSIFY_NAME cpu_pd_classify_68030
+#define PD_HW_RESET(c)   cpu_hardware_reset(c)
+#include "cpu_pd_run.h"
+
+// The core's entry point: the predecoded executor when enabled, else the
+// switch core (kept for A/B from the shell: machine.cpu.predecode = 0).
+void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (predecode_enabled())
+        cpu_pd_run_68030(cpu, instructions);
+    else
+        cpu_run_68030_switch(cpu, instructions);
+}

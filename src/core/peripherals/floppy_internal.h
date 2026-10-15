@@ -47,14 +47,8 @@
 // Time in nanoseconds for motor spin-up (400 ms)
 #define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL)
 
-// Step motor settle time in nanoseconds.  After each step command, /STEP
-// reads as 0 (active) until a scheduler event fires after this period.
-// On real hardware the settle is ~12 ms, but the emulator's averaged CPI
-// model means the ROM's fixed-iteration poll timeout (~2800 instructions
-// on Plus, ~3600 on SE/30) expires before 12 ms of emulated time at low
-// CPI values.  10 µs is long enough for MacTest's post-step /STEP check
-// to see 0 (step in progress) while settling well within the ROM's
-// timeout at any CPI.
+// Step settle: /STEP reads 0 for this long after a step.  10 µs, not the
+// drive's ~12 ms -- see docs/internals/core/peripherals/floppy.md.
 #define STEP_SETTLE_TIME_NS (10ULL * 1000ULL)
 
 // Motor speed settle time after stepping across a speed-zone boundary.
@@ -196,8 +190,8 @@ typedef struct floppy_track {
 
 // Represents a physical floppy drive with head position and motor state
 typedef struct floppy_drive {
-    bool _dirtn; // step direction: 0=inward (higher tracks), 1=outward
-    bool _motoron; // motor signal (active low: true=off, false=on)
+    bool dirtn; // step direction: 0=inward (higher tracks), 1=outward
+    bool motoron; // motor signal (active low: true=off, false=on)
     bool motor_spinning_up; // true during motor spin-up period
     bool speed_settling; // true while motor adjusts RPM after zone change
     int step_settle_count; // >0 while step is settling; cleared by scheduler event
@@ -233,7 +227,7 @@ struct floppy {
     // === Plain data (checkpointed via single memcpy) ===
 
     // Controller type (FLOPPY_TYPE_IWM or FLOPPY_TYPE_SWIM)
-    int type;
+    floppy_type_t type;
 
     // IWM controller state (shared drive interface)
     uint8_t iwm_lines; // packed IWM state lines (CA0-Q7)
@@ -282,8 +276,11 @@ struct floppy {
     // ISM write capture state (persists sector writes to disk image)
     uint8_t ism_write_buf[512]; // captured sector data payload
     uint16_t ism_write_pos; // bytes captured so far (0-512)
-    uint8_t ism_write_state; // 0=scanning for data mark, 1=capturing data
+    uint8_t ism_write_state; // 0=scanning for an address mark, 1=capturing data, 2=capturing an ID field
     uint8_t ism_write_a1_count; // consecutive $A1 mark bytes seen
+    uint8_t ism_write_id[4]; // C/H/R/N of the ID field written ahead of the next data field
+    uint8_t ism_write_id_pos; // ID field bytes captured so far (0-4)
+    bool ism_write_id_valid; // ism_write_id is complete and addresses the next data field
 
     // === Pointers (not checkpointed) ===
     image_t *disk[NUM_DRIVES]; // disk image pointers
@@ -384,13 +381,6 @@ uint8_t floppy_iwm_peek(floppy_t *floppy, uint32_t offset);
 
 // Writes a byte to the IWM register at the specified offset
 void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte);
-
-// ============================================================================
-// IWM-Specific Functions (defined in floppy_iwm.c)
-// ============================================================================
-
-// Sets up IWM memory interface callbacks and registers with memory map
-void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map);
 
 // ============================================================================
 // SWIM-Specific Functions (defined in floppy_swim.c)

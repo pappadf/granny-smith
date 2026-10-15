@@ -21,7 +21,7 @@ typedef struct page_entry {
 } page_entry_t;
 ```
 
-The page table is indexed by `addr >> PAGE_SHIFT` (where `PAGE_SHIFT = 12`,
+The page table is indexed by `addr >> MEM_PAGE_SHIFT` (where `MEM_PAGE_SHIFT = 12`,
 giving 4 KB pages). For a 24-bit address space (Plus), this yields 4,096
 entries; for a 32-bit address space (IIcx), up to 1,048,576 entries.
 
@@ -43,7 +43,7 @@ entirely inline in `memory.h` with no function call overhead:
 static inline uint8_t memory_read_uint8(uint32_t addr)
 {
     uint32_t masked = addr & g_address_mask;
-    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
         return LOAD_BE8((uint8_t *)(base + masked));
     return memory_read_uint8_slow(masked);
@@ -63,7 +63,7 @@ repoint them. That is what makes a write-protected or supervisor-only page fall
 to the slow path without any per-access permission test.
 
 For 16-bit and 32-bit reads, the inline accessor additionally checks that the
-access does not cross a page boundary (`(masked & PAGE_MASK) <= MEM_PAGE_SIZE -
+access does not cross a page boundary (`(masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE -
 N`); a failing check falls through to the slow path. Instruction prefetch uses
 `memory_read_prefetch32`, which is the same fast path but returns only the
 opcode word when the 32-bit read would cross into the next page — real hardware
@@ -81,7 +81,21 @@ The slow-path functions (`memory_read_uint16_slow`, etc.) handle two cases:
    `pe->base_addr` so the device sees offsets relative to its own address range.
 
 2. **Cross-page access:** A 16-bit or 32-bit access spans two pages. The slow
-   path splits it into byte-sized reads/writes across the page boundary.
+   path splits it into two halves (bytes for a word, words for a long) and
+   issues each through the inline accessors, so a half that lands on host
+   memory takes the SoA fast path and only a half that needs the slow path
+   re-enters it.
+
+#### The faulting function code
+
+A slow path that latches a bus error records the function code of the
+access in `g_bus_error_fc` (5 supervisor data, 1 user data) so the exception
+frame's SSW carries the FC the access was really issued with.  That FC is
+read from which SoA pair is active, not from SR.S: `MOVES` points the active
+pair at the SFC/DFC's arrays for its one access, so a kernel probing user
+space with `MOVES` (A/UX's `copyin` / `copyout` / `copyinstr`) faults with a
+user-data FC.  Reporting supervisor-data instead makes the kernel's page-fault
+arbiter treat the fault as its own and skip the demand fill.
 
 ### Byte Order
 
@@ -168,6 +182,12 @@ discarded rather than delivered to the guest.
 
 ### Per-Instance Ownership
 
+One map is active at a time, by design: the fast path reads the `g_*`
+globals rather than taking a `memory_map_t *`, because threading a context
+pointer through every guest access would cost the hot path for a use — two
+maps live at once — that nothing needs.  Each map owns its arrays and the
+globals alias the selected one (`memory_map_select`).
+
 Each `memory_map_t` instance stores its own `page_table` and `page_count`.
 The global `g_page_table` pointer is set to the active instance's table during
 initialization. During checkpoint restore, when a new memory map replaces the
@@ -185,7 +205,12 @@ to physical addresses. The page table serves as the translation layer:
   them: an earlier design walked the guest's tables eagerly on every
   invalidation and that loop alone cost **37% of an SE/30 boot**
   (`docs/notes/mmu-tlb-invalidate-perf.md`). Entries are refilled lazily, one
-  page per fault.
+  page per fault. The invalidation zeroes only the entries populated since the
+  last one: the memory map, which owns the SoA arrays, keeps that list
+  (`tlb_track_page`, `memory_soa_invalidate`), growing it on demand and
+  falling back to zeroing the whole arrays only past 128K tracked pages. The
+  list starts overflowed, because the layout fills write entries before
+  anything tracks them.
 - The fault path is `mmu_handle_fault`: a zero SoA entry takes the slow path,
   which walks the guest's translation tables, maintains the architectural U/M
   history bits in them, and fills the entry. A page becomes writable through
@@ -270,12 +295,87 @@ Hooks and helpers:
 - `memory_logpoint_install(start_page, end_page)` / `..._uninstall(...)` — page refcount helpers
 - `dev_read8/16/32`, `dev_write8/16/32` (memory.c) — device dispatch + hook notify
 
+## Code-Page Coherence
+
+The predecoded executors (`docs/internals/core/cpu/predecode.md`) cache decoded
+instructions per host page; the memory layer keeps those caches coherent
+without a check on the fast path.
+
+- **Marks.** `memory_code_page_mark(host)` sets a per-page mark for the
+  host page (the selected map's flat RAM+ROM image is region 0 of
+  `g_mem_code_regions`, re-registered by `memory_map_select` whenever a
+  different map is selected; a card's host-backed window may register as
+  another) and zeroes the
+  page's write entries in every SoA table it has aliases in.  Aliases are
+  found by a reverse scan over the 256-page chunks flagged in
+  `g_mem_soa_chunk` (the selected map's chunk table), and in the CPU's
+  extra logical write table when it has one (`g_mem_extra_write`, the
+  PowerPC MMU's supervisor-translated fills).  `memory_code_page_unmark` clears the mark; the
+  entries come back on the next refill.
+- **One planter.** Every site that plants a write entry —
+  `rebuild_soa_page`, `memory_populate_pages`, `memory_populate_ram_mirror`,
+  `mmu_fill_soa_entry` (68030), `user_soa_fill` (PowerPC), the
+  PDM/TNT/Gossamer glue — goes through `memory_write_fill(page, host, adjusted)`, which
+  sets the chunk flag and **declines on a marked page** (the store then
+  takes the slow path).  Do not write `g_*_write[]` directly.
+- **Refused writes stay cache hits.**  On the switch core a page that
+  predecode marked would still hold its write entry, so a store there never
+  walks the 68K PMMU tables; a walk sets the descriptor's U/M bits and
+  MMUSR, which the guest can see (A/UX ages its pages by U).  The
+  refused-write record (`memory_write_refused_*`, one bit per page and
+  write table, per map) notes exactly the entries the marks took away --
+  every refusal in `memory_write_fill(..., tables)` and every entry
+  `memory_code_page_mark` zeroes -- and drops them where the switch core
+  loses its entry too (`mmu_invalidate_tlb`, the 68040's, a physical
+  logpoint install, a fill that leaves the page read-only).  The MMU slow
+  path completes a store whose bit is set through the page's read entry,
+  without the walk, and re-plants the write entry once the page is no
+  longer code.  With predecode off nothing ever sets a bit.
+- **Slow-path notification.** The 8/16/32-bit slow write paths call
+  `memory_host_written(host, len)` when the target is marked (before the
+  store lands, so a block executing the page is invalidated before the
+  new word can be fetched).
+- **Direct host writers** — anything that writes the image without going
+  through the guest store paths — call `memory_host_written` themselves.
+  The inventory:
+
+| Writer | Where | Hook call |
+|---|---|---|
+| `memory.write` / debug pokes | `memory_debug_write_*` (memory.c) | after the store |
+| ROM installation | `memory_map_init` (memory.c), before the map's first instruction | a new map is a new code region (`memory_map_select`) |
+| Checkpoint restore of the image | `memory_map_init` + the restore path | generation bump (`g_mem_map_generation`) resets the pool |
+| PowerPC HTAB R/C write-back | `ppc_mmu.c` | `memory_host_written` |
+| AMIC DMA (SCSI, SCC, sound, floppy) | `amic.c` byte writers | `memory_host_written` |
+| DBDMA channels | `tnt.c`, `gossamer.c` memcpy paths | `memory_host_written` |
+| 53C8xx SCRIPTS engine | `scripts53c8xx.c` | `memory_host_written` |
+| IIfx / IOP DMA | `iifx.c`, `iop_swim.c` | `memory_host_written` |
+| Mac II / 030 glue mirrors | `mac030_glue.c` | `memory_write_fill` for the aliases; stores notify |
+
+- **PowerPC user mode.** The user SoA tables are filled *logically*
+  (`user_soa_fill`), and a store whose write fill the marks refuse falls
+  back to a physical address that the inline accessor then uses to index
+  those logically-filled tables.  `user_phys_fallback` (ppc_mmu.c) keeps
+  the slot at that physical index empty — on the walk and on the
+  translation-TLB hit — so the access takes the physical slow path instead
+  of landing in whatever logical page sits at that index.  The evicted
+  page refills on its next slow access.
+
+A new device that DMA-writes guest memory through a host pointer must
+call `memory_host_written(host, len)` after the copy.  The debug-build
+audit in the executors (`PD_AUDIT_*`) traps on the first stale entry a
+missing call would leave behind.
+
+Counters: `g_mem_code_write_count` (stores that reached a marked page),
+`g_mem_slowpath_count` (every slow-path access; the elision level-2
+guard), both visible through `machine.memory`.
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `src/core/memory/memory.h` | Page table types, inline accessors, public API |
 | `src/core/memory/memory.c` | Page table allocation, population, slow-path handlers |
+| `src/core/memory/memory_class.c` | The `machine.memory` object node and its `peek` / `poke` children |
 | `src/core/memory/mmu.h` | 68030 PMMU state struct and API (`mmu.c`) |
 | `src/core/memory/mmu_trace.h` | The debugger's translation answer and walk trace, shared by every MMU kind |
 

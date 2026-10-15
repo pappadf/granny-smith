@@ -30,6 +30,7 @@
 #include "psc.h"
 #include "vdc.h"
 
+#include "checkpoint.h"
 #include "cpu.h"
 #include "log.h"
 #include "memory.h"
@@ -220,7 +221,13 @@ static void civic_compose(av_civic_t *cv) {
     if (gr_stride < width * bpp / 8u)
         gr_stride = width * bpp / 8u;
     // Nine bits, not eight.  See civic_update_display for why the mask went.
-    const uint8_t *gr = cv->vram + ((civic_get(cv, SLOT_BASEADDR, 9)) << 5) % AV_CIVIC_VRAM_SIZE;
+    uint32_t gr_off = ((civic_get(cv, SLOT_BASEADDR, 9)) << 5) % AV_CIVIC_VRAM_SIZE;
+    // The same discipline as the non-overlay scanout: a guest-programmed
+    // stride the VRAM cannot back for every row draws no underlay (black)
+    // rather than reading past the store.
+    const uint8_t *gr = NULL;
+    if ((uint64_t)gr_off + (uint64_t)gr_stride * height <= AV_CIVIC_VRAM_SIZE)
+        gr = cv->vram + gr_off;
 
     // The window rect, inverted from the driver's programming:
     // 16 bpp video-in: VInHAL = HAL + left - 1; 8 bpp video-in with <=8 bpp
@@ -263,8 +270,10 @@ static void civic_compose(av_civic_t *cv) {
                     out[2] = v;
                     out[3] = v;
                 }
-            } else {
+            } else if (gr) {
                 civic_gr_pixel(cv, gr, gr_stride, code, x, y, out);
+            } else {
+                out[1] = out[2] = out[3] = 0;
             }
         }
     }
@@ -679,11 +688,11 @@ void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
 void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     // VRAM: direct writable pages + a bus-resolver host region so the 040
     // walker and DMA reach it by physical address.
-    uint32_t pages = AV_CIVIC_VRAM_SIZE >> PAGE_SHIFT;
-    uint32_t start = AV_CIVIC_VRAM_BASE >> PAGE_SHIFT;
+    uint32_t pages = AV_CIVIC_VRAM_SIZE >> MEM_PAGE_SHIFT;
+    uint32_t start = AV_CIVIC_VRAM_BASE >> MEM_PAGE_SHIFT;
     for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
-        mac030_fill_page(start + i, cv->vram + (i << PAGE_SHIFT), true);
-    memory_map_host_region(cfg->mem_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
+        mac030_fill_page(start + i, cv->vram + (i << MEM_PAGE_SHIFT), true);
+    memory_map_host_region(cfg->memory_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);
 
     // The low CIVIC register alias at $50036000 (the island row at $36000
@@ -694,7 +703,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     cv->lo_iface.write_uint8 = civic_lo_write8;
     cv->lo_iface.write_uint16 = civic_lo_write16;
     cv->lo_iface.write_uint32 = civic_lo_write32;
-    memory_map_add(cfg->mem_map, 0x50036000u, 0x00002000u, "CIVIC", &cv->lo_iface, cv);
+    memory_map_add(cfg->memory_map, 0x50036000u, 0x00002000u, "CIVIC", &cv->lo_iface, cv);
 }
 
 // ============================================================
@@ -767,7 +776,11 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     scheduler_new_event_type(cfg->scheduler, "civic", cv, "frame", &civic_frame_event);
-    scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
+    // The frame event re-arms itself, so it is always in a checkpoint's
+    // queue: a restore gets it back from there, and arming it here too ran
+    // two VBL chains.
+    if (!cp)
+        scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
 
     cv->fb_node = (display_fb_node_t){.owner = cv, .resolve = civic_fb_resolve, .base = civic_fb_base};
     cv->video_node = display_attach_video_node(&cv->fb_node, "Video (CIVIC)");

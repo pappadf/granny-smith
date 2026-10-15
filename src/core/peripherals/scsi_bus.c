@@ -30,6 +30,7 @@
 #include "scsi.h"
 
 #include "drive_catalog.h"
+#include "gs_assert.h"
 #include "image.h"
 #include "log.h"
 #include "object.h"
@@ -38,13 +39,14 @@
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
-#include "event/gs_event.h"
+#include "event/event.h"
 
 LOG_USE_CATEGORY_NAME("scsi");
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -108,13 +110,22 @@ size_t cmd_size(uint8_t opcode) {
 // install — is staged whole rather than tripping a fixed-size assert.  The bus
 // handshake is still byte-by-byte, so this is invisible to the guest; only the
 // host-side staging area changes size.
-void scsi_buf_ensure(scsi_t *scsi, size_t bytes) {
+//
+// On allocation failure the old buffer and capacity are kept and false is
+// returned: assigning a NULL realloc result lost the buffer and left callers
+// writing through NULL.  The guest-sized transfers (READ/WRITE/VERIFY) reserve
+// before their phase change and fail the command; phase_data_in/out clamp.
+bool scsi_buf_ensure(scsi_t *scsi, size_t bytes) {
     if (bytes <= scsi->buf.cap)
-        return;
+        return true;
     uint8_t *grown = realloc(scsi->buf.data, bytes);
-    GS_ASSERTF(grown != NULL, "scsi_buf_ensure: failed to grow transfer buffer to %zu bytes", bytes);
+    if (!grown) {
+        LOG(0, "scsi_buf_ensure: failed to grow transfer buffer to %zu bytes", bytes);
+        return false;
+    }
     scsi->buf.data = grown;
     scsi->buf.cap = bytes;
+    return true;
 }
 
 // Pop the next byte from the SCSI buffer.  Data-in is drained front-to-back via
@@ -205,7 +216,12 @@ void phase_data_in(scsi_t *scsi, int bytes) {
 
     scsi->bus.phase = scsi_data_in;
     scsi->bus.req = scsi->bus.bsy = true;
-    scsi_buf_ensure(scsi, (size_t)bytes);
+    // Every transfer that can outgrow BUF_LIMIT reserved its buffer before
+    // this phase (and failed the command if it could not): a failure here
+    // is a size no caller reserved, so never stage past the allocation.
+    bool reserved = scsi_buf_ensure(scsi, (size_t)bytes);
+    GS_ASSERTF(reserved, "SCSI: transfer of %d bytes was not reserved", bytes);
+    (void)reserved; // GS_ASSERTF compiles out in a release build
     scsi->buf.size = scsi->buf.max = bytes;
     scsi->buf.pos = 0; // fresh fill: deliver from the front
     // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
@@ -230,6 +246,13 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
     }
     phase_data_in(scsi, len);
     return len;
+}
+
+int scsi_data_in_copy(scsi_t *scsi, const void *src, int have, int alloc) {
+    int n = scsi_data_in_alloc(scsi, have, alloc);
+    if (n > 0)
+        memcpy(scsi->buf.data, src, (size_t)n);
+    return n;
 }
 
 // How long a target takes to turn a completed WRITE command into a DATA OUT
@@ -292,7 +315,12 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->bus.req = false; // ...but not asking for a byte yet
     scsi->bus.data_out_pending = true;
     scsi->bus.data_out_ready_cy = sch ? scheduler_cpu_cycles(sch) + SCSI_DATA_OUT_SETTLE_CYCLES : 0;
-    scsi_buf_ensure(scsi, (size_t)bytes);
+    // Every transfer that can outgrow BUF_LIMIT reserved its buffer before
+    // this phase (and failed the command if it could not): a failure here
+    // is a size no caller reserved, so never stage past the allocation.
+    bool reserved = scsi_buf_ensure(scsi, (size_t)bytes);
+    GS_ASSERTF(reserved, "SCSI: transfer of %d bytes was not reserved", bytes);
+    (void)reserved; // GS_ASSERTF compiles out in a release build
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
     // Entering DATA OUT resets a 5380's priming state, if there is one.
@@ -424,6 +452,23 @@ static uint8_t scsi_no_medium_asc(const scsi_t *scsi, int target) {
     return scsi->devices[target].type == scsi_dev_cdrom ? ASC_SONY_CADDY_NOT_INSERTED : ASC_MEDIUM_NOT_PRESENT;
 }
 
+// Can every block of [off, off + cnt) be read back from `img`?  Read in
+// staging pieces of whole blocks, so a verify of hundreds of blocks holds
+// no copy of them all.
+static bool scsi_medium_readable(image_t *img, uint64_t off, size_t cnt, uint16_t blk_sz) {
+    enum { PIECE_BLOCKS = 64 };
+    uint8_t *piece = malloc((size_t)PIECE_BLOCKS * blk_sz);
+    GS_ASSERTF(piece != NULL, "VERIFY: failed to allocate a %u-byte staging piece", PIECE_BLOCKS * blk_sz);
+    bool ok = true;
+    for (size_t done = 0; ok && done < cnt;) {
+        size_t n = cnt - done < (size_t)PIECE_BLOCKS * blk_sz ? cnt - done : (size_t)PIECE_BLOCKS * blk_sz;
+        ok = disk_read_data(img, off + done, piece, n) == n;
+        done += n;
+    }
+    free(piece);
+    return ok;
+}
+
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
@@ -444,7 +489,7 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // where `(size_t)lba * blk_sz` wraps: a READ(10) at lba 0x00400000 with
 // 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
 // passed and the wrong blocks were served as valid data.
-static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_t blocks, size_t *off_out,
+static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_t blocks, uint64_t *off_out,
                            size_t *cnt_out) {
     const image_t *img = scsi->device_images[target];
     if (!img)
@@ -459,18 +504,19 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
     uint64_t blk = scsi->devices[target].block_size;
     uint64_t off = (uint64_t)lba * blk;
     uint64_t cnt = (uint64_t)blocks * blk;
-    if (off + cnt > (uint64_t)img->raw_size)
+    if (off + cnt > image_get_raw_size(img) || cnt > SIZE_MAX)
         return false;
-    // Both are bounded by raw_size above, so narrowing is safe.
+    // The count is bounded above, so narrowing it is safe; the offset into
+    // a disk past 4 GB stays 64-bit.
     if (off_out)
-        *off_out = (size_t)off;
+        *off_out = off;
     if (cnt_out)
         *cnt_out = (size_t)cnt;
     return true;
 }
 
 // The same question for the decoded command: does cmd.lba/cmd.tl fit?
-static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
+static bool scsi_lba_range_ok(const scsi_t *scsi, int target, uint64_t *off_out, size_t *cnt_out) {
     return scsi_blocks_ok(scsi, target, scsi->cmd.lba, scsi->cmd.tl, off_out, cnt_out);
 }
 
@@ -652,9 +698,9 @@ void run_cmd(scsi_t *scsi) {
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
-        LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+        LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-            scsi->device_images[target] ? scsi->device_images[target]->raw_size : 0);
+            scsi->device_images[target] ? (unsigned long long)image_get_raw_size(scsi->device_images[target]) : 0);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
@@ -692,11 +738,12 @@ void run_cmd(scsi_t *scsi) {
         // already pushed a whole data-out phase is a late phase change some
         // initiators do not recover from (the Network Server's SCRIPTS program
         // is one -- see the empty-CD-bay note above).
-        size_t byte_off = 0, byte_cnt = 0;
+        uint64_t byte_off = 0;
+        size_t byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-            LOG(1, "SCSI %s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+            LOG(1, "SCSI %s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu",
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                disk_size(scsi->device_images[target]));
+                (unsigned long long)disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
@@ -707,6 +754,10 @@ void run_cmd(scsi_t *scsi) {
             LOG(2, "SCSI %s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         if (scsi->cmd.opcode == CMD_WRITE) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
@@ -716,7 +767,8 @@ void run_cmd(scsi_t *scsi) {
             // (an assert() here was compiled out by -DNDEBUG in the release build).
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
             if (n != byte_cnt) {
-                LOG(1, "SCSI READ: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                LOG(1, "SCSI READ: storage gave %zu of %zu bytes at offset %llu", n, byte_cnt,
+                    (unsigned long long)byte_off);
                 scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
             }
         }
@@ -775,11 +827,12 @@ void run_cmd(scsi_t *scsi) {
         // the int that phase_data_in/out take; a block size of 32 KB or more
         // would overflow it, so cast from the checked size_t rather than
         // recomputing the multiply in int.
-        size_t byte_off = 0, byte_cnt = 0;
+        uint64_t byte_off = 0;
+        size_t byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-            LOG(1, "SCSI %s_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+            LOG(1, "SCSI %s_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%llu",
                 scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                disk_size(scsi->device_images[target]));
+                (unsigned long long)disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
@@ -788,6 +841,10 @@ void run_cmd(scsi_t *scsi) {
             LOG(2, "SCSI %s_10 large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
                 scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         if (scsi->cmd.opcode == CMD_WRITE_10) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
@@ -795,7 +852,8 @@ void run_cmd(scsi_t *scsi) {
             // A short read is a backing-store failure, as for READ(6) above.
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
             if (n != byte_cnt) {
-                LOG(1, "SCSI READ_10: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                LOG(1, "SCSI READ_10: storage gave %zu of %zu bytes at offset %llu", n, byte_cnt,
+                    (unsigned long long)byte_off);
                 scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
             }
         }
@@ -828,8 +886,8 @@ void run_cmd(scsi_t *scsi) {
         LOG(1, "command: SEEK(%d) target=%d lba=%u", scsi->cmd.opcode == CMD_SEEK_6 ? 6 : 10, target, lba);
 
         if (!scsi_seek_lba_ok(scsi, target, lba)) {
-            LOG(1, "SCSI SEEK out of range: target=%d lba=%u raw_size=%zu", target, lba,
-                disk_size(scsi->device_images[target]));
+            LOG(1, "SCSI SEEK out of range: target=%d lba=%u raw_size=%llu", target, lba,
+                (unsigned long long)disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
@@ -879,10 +937,8 @@ void run_cmd(scsi_t *scsi) {
                 pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
                 if (!is_disk)
                     pg0[3] = 1; // CD-ROMs list only page $00
-                int n = scsi_data_in_alloc(scsi, 4 + pg0[3], scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg0, 4 + pg0[3], scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $00 -> %d bytes", target, n);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg0, (size_t)n);
                 break;
             }
             if (page == 0xC7u && is_disk) {
@@ -917,10 +973,8 @@ void run_cmd(scsi_t *scsi) {
                 pg[59] = 3u; // OS identifier length...
                 memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
                 pg[72] = 3u; // max retry count
-                int n = scsi_data_in_alloc(scsi, (int)sizeof(pg), scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg, (int)sizeof(pg), scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $C7 -> %d bytes (%u MB)", target, n, cap_mb);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg, (size_t)n);
                 break;
             }
             LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
@@ -1159,9 +1213,7 @@ void run_cmd(scsi_t *scsi) {
             // Allocation length 0 is legal and means "no data".  This path
             // always had it right; it now shares the helper with everything
             // else that carries an allocation length.
-            int n = scsi_data_in_alloc(scsi, total, alloc_len);
-            if (n > 0)
-                memcpy(scsi->buf.data, resp, (size_t)n);
+            scsi_data_in_copy(scsi, resp, total, alloc_len);
         }
         break;
     }
@@ -1198,7 +1250,7 @@ void run_cmd(scsi_t *scsi) {
         // an anachronism.
         image_t *image = scsi->device_images[target];
         uint16_t blk_sz = scsi->devices[target].block_size;
-        size_t sz = disk_size(image) / blk_sz;
+        uint64_t sz = disk_size(image) / blk_sz;
 
         phase_data_in(scsi, 8);
         // The data is the address of the LAST block, so a block count has to
@@ -1252,7 +1304,8 @@ void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        size_t byte_off = 0, byte_cnt = 0;
+        uint64_t byte_off = 0;
+        size_t byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
             // X3.131-1994 S9.1.2: "If a command is issued that requests access
             // to a logical block not within the capacity of the medium, the
@@ -1260,17 +1313,23 @@ void run_cmd(scsi_t *scsi) {
             // S5.2.15 names the code -- ILLEGAL REQUEST / "LOGICAL BLOCK
             // ADDRESS NOT VALID", which its table 5-49 numbers 21h, the same
             // value READ and WRITE already report.
-            LOG(1, "SCSI VERIFY out of range: target=%d lba=%u len=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
-                scsi->cmd.tl, blk_sz, disk_size(scsi->device_images[target]));
+            LOG(1, "SCSI VERIFY out of range: target=%d lba=%u len=%u blk_sz=%u raw_size=%llu", target, scsi->cmd.lba,
+                scsi->cmd.tl, blk_sz, (unsigned long long)disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
 
         if (!bytchk) {
             // "A BytChk bit of zero causes the verification to be simply a
-            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  A
-            // disk image has no medium to be wrong about, so an in-range
-            // verify succeeds.
+            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  The
+            // image's medium can be wrong in one way -- a block its backing
+            // file cannot give back -- and that is the unrecovered read error
+            // a READ of it reports.
+            if (!scsi_medium_readable(scsi->device_images[target], byte_off, byte_cnt, blk_sz)) {
+                LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+                break;
+            }
             phase_status(scsi, STATUS_GOOD);
             break;
         }
@@ -1280,6 +1339,10 @@ void run_cmd(scsi_t *scsi) {
         // initiator is about to send the blocks, and a target that goes
         // straight to STATUS is not the target it was promised.  The compare
         // happens in command_complete once they have all arrived.
+        if (!scsi_buf_ensure(scsi, byte_cnt)) {
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+            break;
+        }
         phase_data_out(scsi, (int)byte_cnt);
         break;
     }
@@ -1366,10 +1429,11 @@ void command_complete(scsi_t *scsi) {
         // Both used to be assert()s, which -DNDEBUG removes from the release
         // wasm build -- so the failure they were meant to catch became a silent
         // short write reported as STATUS GOOD.
-        size_t byte_off = 0, byte_cnt = 0;
+        uint64_t byte_off = 0;
+        size_t byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
-            LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,
-                blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->device_images[target]));
+            LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%llu", scsi->cmd.tl,
+                blk_sz, byte_cnt, scsi->buf.size, (unsigned long long)disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             return;
         }
@@ -1378,7 +1442,8 @@ void command_complete(scsi_t *scsi) {
         // in-bounds backing-store failure is a MEDIUM ERROR, not success.
         size_t wrote = disk_write_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
         if (wrote != byte_cnt) {
-            LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %zu", wrote, byte_cnt, byte_off);
+            LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %llu", wrote, byte_cnt,
+                (unsigned long long)byte_off);
             scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
             return;
         }
@@ -1394,7 +1459,8 @@ void command_complete(scsi_t *scsi) {
         // This is the one answer a verify can give that a read cannot, and it
         // is a real comparison -- the image is right here -- rather than an
         // agreeable GOOD.
-        size_t byte_off = 0, byte_cnt = 0;
+        uint64_t byte_off = 0;
+        size_t byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             return;
@@ -1404,13 +1470,21 @@ void command_complete(scsi_t *scsi) {
         // answer is known as soon as one byte differs.
         uint8_t *from_medium = malloc(blk_sz);
         GS_ASSERTF(from_medium != NULL, "VERIFY: failed to allocate a %u-byte compare block", blk_sz);
-        bool same = true;
-        for (size_t done = 0; same && done < byte_cnt; done += blk_sz) {
-            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz ||
-                memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
+        bool same = true, readable = true;
+        for (size_t done = 0; same && readable && done < byte_cnt; done += blk_sz) {
+            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz)
+                readable = false;
+            else if (memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
                 same = false;
         }
         free(from_medium);
+        if (!readable) {
+            // A block the medium cannot give back is a read error, as it is
+            // to READ -- not a miscompare against data never read.
+            LOG(1, "SCSI VERIFY: medium unreadable: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            return;
+        }
         if (!same) {
             LOG(1, "SCSI VERIFY miscompare: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
             scsi_check_condition(scsi, SENSE_MISCOMPARE, ASC_MISCOMPARE_VERIFY, 0x00);
@@ -1430,7 +1504,10 @@ void command_complete(scsi_t *scsi) {
             size_t defect_len = ((size_t)scsi->buf.data[2] << 8) | scsi->buf.data[3];
             if (defect_len > 0) {
                 LOG(2, "FORMAT UNIT: taking a %zu-byte defect list", defect_len);
-                scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len);
+                if (!scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len)) {
+                    scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_NO_ASC, 0x00);
+                    return;
+                }
                 scsi->buf.max = (int)(SCSI_FORMAT_DEFECT_HEADER + defect_len);
                 scsi->bus.req = true; // still asking, same phase
                 return;
@@ -1636,8 +1713,8 @@ int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int
 // A device's medium came or went: the page refreshes the SCSI subtree on
 // this, as it does on notify:floppy for the floppy drives.
 static void scsi_notify_media(int id, bool present) {
-    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
-                   present ? "true" : "false");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
+                present ? "true" : "false");
 }
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,

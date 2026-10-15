@@ -44,14 +44,15 @@ case there is nothing to do.
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `web2-specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
-  powerpc-test)
+  powerpc-test, m68k-test)
 
 Emulator modules (e.g., scsi, cpu) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/internals/core/<subsystem>/` (the model) with their hardware reference pages under `docs/reference/hardware/`; machine/family docs live under `docs/internals/machines/<family>/` (the model) and `docs/reference/machines/<family>/` (the hardware).
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
     `git submodule update --init --recursive` is still used for the remaining
-    submodules under `third-party/` (e.g. single-step-tests, powerpc-test).
+    submodules under `third-party/` (e.g. single-step-tests, powerpc-test,
+    m68k-test).
 
 ## Tools and Environments
 
@@ -73,7 +74,7 @@ Emulator modules (e.g., scsi, cpu) have `.c`/`.h` files in `src/core/*/` and doc
    npx playwright install --with-deps chromium
    ```
 
-**Required tools:** `emcc` (6.0.7), `make`, `node` (18+), `python3`, `git`,
+**Required tools:** `emcc` (6.0.7), `make`, a GCC or Clang host compiler (the C sources use GNU extensions such as `, ##__VA_ARGS__` — see `docs/guide/STYLE_GUIDE.md`, "Compiler Extensions"), `node` (18+), `python3`, `git`,
 `binutils-m68k-linux-gnu` (2.42+; assembles the generic NuBus declaration-ROM
 68K fragments — `src/core/peripherals/nubus/vrom68k/`. Any m68k-targeted
 binutils works; override `M68K_AS`/`M68K_OBJCOPY` if yours differ. Shipped in
@@ -90,8 +91,9 @@ the devcontainer image.)
 
 **Run tests:**
 - Unit tests: `make -j$(nproc) -C tests/unit run` (~1.5 min at -j8; ~6 min serial) — uses the
-  `third-party/single-step-tests` (68k) and `third-party/powerpc-test` (601) corpora; both are
-  submodules, so init them first
+  `third-party/single-step-tests` (68000, MAME-derived), `third-party/m68k-test` (68000/68030/68040,
+  sail model) and `third-party/powerpc-test` (601) corpora; all are submodules, so init them first.
+  `CPU_TEST_PREDECODE=1`/`0` routes the CPU suites through the predecoded or the switch executor
 - Integration tests: `make integration-test` (all three tiers: the better part of an hour even with `-j$(nproc)`; `TIER=unit` takes about a minute, `TIER=matrix` about fifteen at -j — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
@@ -197,7 +199,7 @@ to not break this rule in the first place.
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
-- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
+- Core code prints through the output sink (`out_printf` / `out_puts` / `out_write`, `src/core/out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
 - Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 
@@ -244,7 +246,7 @@ after the instruction that makes the access, instead of logging:
 - Do not change or remove existing comments unnecessarily
 - Refer to `docs/guide/STYLE_GUIDE.md` for conventions when unsure
 
-## Object model (`gs_eval`)
+## Object model (`object_eval`)
 
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never

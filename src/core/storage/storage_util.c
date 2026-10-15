@@ -30,7 +30,7 @@ char *gs_strdup(const char *s) {
     return copy;
 }
 
-char *gs_str_printf(const char *fmt, ...) {
+char *str_printf(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     va_list ap2;
@@ -53,7 +53,7 @@ static int mkdir_one(const char *dir) {
     return (rc == 0 || errno == EEXIST) ? 0 : -errno;
 }
 
-int gs_mkdir_p(const char *dir) {
+int mkdir_p(const char *dir) {
     if (!dir || !*dir)
         return -EINVAL;
     char *tmp = gs_strdup(dir);
@@ -76,7 +76,7 @@ int gs_mkdir_p(const char *dir) {
     return rc;
 }
 
-int gs_mkdir_parents(const char *path) {
+int mkdir_parents(const char *path) {
     if (!path || !*path)
         return -EINVAL;
     char *tmp = gs_strdup(path);
@@ -86,13 +86,13 @@ int gs_mkdir_parents(const char *path) {
     int rc = 0;
     if (slash && slash != tmp) {
         *slash = '\0';
-        rc = gs_mkdir_p(tmp);
+        rc = mkdir_p(tmp);
     }
     free(tmp);
     return rc;
 }
 
-int gs_rm_tree(const char *path) {
+int rm_tree(const char *path) {
     if (!path || !*path)
         return -EINVAL;
     struct stat st;
@@ -111,9 +111,9 @@ int gs_rm_tree(const char *path) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
             continue;
         // On the heap, so a deep tree costs a small frame per level.
-        char *child = gs_str_printf("%s/%s", path, e->d_name);
+        char *child = str_printf("%s/%s", path, e->d_name);
         if (child) {
-            (void)gs_rm_tree(child); // best effort; rmdir below reports what is left
+            (void)rm_tree(child); // best effort; rmdir below reports what is left
             free(child);
         }
     }
@@ -121,14 +121,14 @@ int gs_rm_tree(const char *path) {
     return (rmdir(path) == 0 || errno == ENOENT) ? 0 : -errno;
 }
 
-FILE *gs_atomic_open(gs_atomic_t *a, const char *path, const char *tmp_suffix) {
+FILE *file_replace_open(file_replace_t *a, const char *path, const char *tmp_suffix) {
     memset(a, 0, sizeof(*a));
     if (!path) {
         errno = EINVAL;
         return NULL;
     }
     a->path = gs_strdup(path);
-    a->tmp = gs_str_printf("%s%s", path, tmp_suffix ? tmp_suffix : ".tmp");
+    a->tmp = str_printf("%s%s", path, tmp_suffix ? tmp_suffix : ".tmp");
     if (!a->path || !a->tmp) {
         free(a->path);
         free(a->tmp);
@@ -147,7 +147,7 @@ FILE *gs_atomic_open(gs_atomic_t *a, const char *path, const char *tmp_suffix) {
     return a->f;
 }
 
-int gs_atomic_commit(gs_atomic_t *a, bool ok) {
+int file_replace_commit(file_replace_t *a, bool ok) {
     if (!a->f)
         return -EINVAL;
     int rc = 0;
@@ -169,15 +169,15 @@ int gs_atomic_commit(gs_atomic_t *a, bool ok) {
     return rc;
 }
 
-int gs_write_atomic(const char *path, const void *data, size_t len) {
-    gs_atomic_t a;
-    FILE *f = gs_atomic_open(&a, path, NULL);
+int file_write_atomic(const char *path, const void *data, size_t len) {
+    file_replace_t a;
+    FILE *f = file_replace_open(&a, path, NULL);
     if (!f)
         return errno ? -errno : -EIO;
-    return gs_atomic_commit(&a, len == 0 || fwrite(data, 1, len, f) == len);
+    return file_replace_commit(&a, len == 0 || fwrite(data, 1, len, f) == len);
 }
 
-int gs_read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
+int read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;
     FILE *f = fopen(path, "rb");
@@ -210,7 +210,7 @@ int gs_read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
     return 0;
 }
 
-int gs_json_escape(const char *src, char *dst, size_t cap) {
+int json_escape(const char *src, char *dst, size_t cap) {
     size_t o = 0;
     for (const unsigned char *p = (const unsigned char *)(src ? src : ""); *p; p++) {
         char buf[8];
@@ -255,10 +255,10 @@ int gs_json_escape(const char *src, char *dst, size_t cap) {
     return (int)o;
 }
 
-char *gs_json_escape_dup(const char *src) {
+char *json_escape_dup(const char *src) {
     size_t cap = (src ? strlen(src) : 0) * 6 + 1; // every byte as \u00XX at worst
     char *out = malloc(cap);
-    if (out && gs_json_escape(src, out, cap) < 0) {
+    if (out && json_escape(src, out, cap) < 0) {
         free(out);
         out = NULL;
     }

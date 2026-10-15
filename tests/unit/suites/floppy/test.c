@@ -15,6 +15,8 @@
 // floppy_gcr.c is #included so the tests can reach its static codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
 
+#include "gs_assert.h"
+#include "image_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -132,7 +134,7 @@ TEST(test_sector_round_trip) {
             int spt = iwm_sectors_per_track(track);
             for (int sector = 0; sector < spt; sector++) {
                 memset(track_buf, 0xFF, sizeof track_buf);
-                uint8_t *end = encode_sector(track_buf, tag, data, track, sector, side, 2);
+                uint8_t *end = encode_sector(track_buf, tag, data, track, sector, side, 2, false);
                 ASSERT_TRUE(end > track_buf);
 
                 uint8_t *mark = find_address_mark(track_buf, end);
@@ -165,7 +167,7 @@ TEST(test_sector_round_trip_edge_payloads) {
         memset(data, fills[f], sizeof data);
         memset(tag, fills[f], sizeof tag);
         memset(track_buf, 0xFF, sizeof track_buf);
-        uint8_t *end = encode_sector(track_buf, tag, data, 3, 5, 1, 2);
+        uint8_t *end = encode_sector(track_buf, tag, data, 3, 5, 1, 2, false);
         uint8_t *mark = find_address_mark(track_buf, end);
         ASSERT_TRUE(mark != NULL);
 
@@ -189,7 +191,7 @@ TEST(test_track_round_trip) {
         for (int i = 0; i < spt * 512; i++)
             sectors[i] = (uint8_t)(i ^ track);
 
-        encode_track(buf, len, track, 0, sectors, 2, NULL, 0);
+        encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 0);
 
         // Every sector number must appear exactly once in the encoded track.
         int seen[16] = {0};
@@ -215,6 +217,40 @@ TEST(test_track_round_trip) {
         free(buf);
         free(sectors);
     }
+}
+
+// A sector the image could not read is laid down with its header intact and
+// a data checksum that fails: the decoder (and so the guest's driver) rejects
+// that sector, and only that one.
+TEST(test_track_unreadable_sector_fails_its_checksum) {
+    const int track = 20, bad_sector = 3;
+    int spt = iwm_sectors_per_track(track);
+    size_t len = iwm_track_length(track);
+    uint8_t *buf = malloc(len);
+    uint8_t *sectors = calloc((size_t)spt, 512);
+    ASSERT_TRUE(buf != NULL && sectors != NULL);
+    encode_track(buf, len, track, 0, sectors, 2, NULL, 0, 1u << bad_sector);
+    int good[16] = {0}, rejected = 0;
+    uint8_t *end = buf + len;
+    for (uint8_t *p = buf; p + 730 < end; p++) {
+        if (p[0] != 0xD5 || p[1] != 0xAA || p[2] != 0x96)
+            continue;
+        uint8_t out[512], out_tag[12];
+        int d_track = -1, d_side = -1, d_sector = -1;
+        uint8_t *next = decode_sector(out_tag, out, p, end, &d_track, &d_side, &d_sector);
+        if (!next) {
+            rejected++;
+            continue;
+        }
+        ASSERT_TRUE(d_sector >= 0 && d_sector < spt);
+        good[d_sector]++;
+        p = next - 1;
+    }
+    ASSERT_EQ_INT(rejected, 1);
+    for (int i = 0; i < spt; i++)
+        ASSERT_EQ_INT(good[i], i == bad_sector ? 0 : 1);
+    free(buf);
+    free(sectors);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +342,7 @@ TEST(test_write_through_detects_sector_boundary) {
         tag[i] = (uint8_t)(i + 1);
 
     memset(track, 0xFF, sizeof track);
-    uint8_t *end = encode_sector(track, tag, data, 7, 2, 1, 2);
+    uint8_t *end = encode_sector(track, tag, data, 7, 2, 1, 2, false);
     size_t len = (size_t)(end - track);
 
     // Walk the encoded sector one byte at a time, as a guest writing through
@@ -341,6 +377,162 @@ TEST(test_write_through_detects_sector_boundary) {
     // decodable DATA field would fire early -- that is the case this pins.
     ASSERT_EQ_INT(completions, 1);
     ASSERT_TRUE(completion_at > 700);
+}
+
+extern size_t stub_disk_size;
+extern int stub_write_count;
+extern size_t stub_last_write_offset;
+
+// Write a whole GCR sector with header side `hdr_side` through the data
+// register onto a 400K (single-sided) medium; returns the image writes made.
+static int write_through_side(int hdr_side) {
+    static floppy_drive_t drive;
+    memset(&drive, 0, sizeof drive);
+    drive.write_hdr_start = -1;
+    image_t img;
+    memset(&img, 0, sizeof img);
+    img.type = image_fd_ss;
+    img.writable = true;
+    stub_disk_size = 400 * 1024;
+    stub_write_count = 0;
+
+    uint8_t data[512] = {0}, tag[12] = {0};
+    floppy_track_t *t = &drive.tracks[0][0];
+    t->size = iwm_track_length(0);
+    t->data = malloc(t->size);
+    ASSERT_TRUE(t->data != NULL);
+    memset(t->data, 0xFF, t->size);
+    uint8_t *end = encode_sector(t->data, tag, data, 0, 3, hdr_side, 1, false);
+    int len = (int)(end - t->data);
+    for (int pos = 1; pos <= len; pos++) {
+        drive.offset = pos;
+        iwm_write_through(&drive, &img, 0, 0);
+    }
+    free(t->data);
+    return stub_write_count;
+}
+
+// A side-1 header has no home on single-sided media.  iwm_disk_image_offset
+// ignores the side there, so accepting it overwrote side 0 of the same track.
+TEST(test_write_through_rejects_side_beyond_medium) {
+    ASSERT_EQ_INT(write_through_side(0), 1);
+    ASSERT_EQ_INT((int)stub_last_write_offset, 3 * 512);
+    ASSERT_EQ_INT(write_through_side(1), 0);
+}
+
+// ---------------------------------------------------------------------------
+// SWIM ISM write capture
+// ---------------------------------------------------------------------------
+
+extern uint8_t *stub_disk_buf;
+extern image_t *stub_drive_image;
+
+// ISM register indices (writes): data, mark, CRC, setup, mode 0s, mode 1s.
+enum { W_DATA = 0, W_MARK = 1, W_CRC = 2, W_SETUP = 5, W_ZEROS = 6, W_ONES = 7 };
+
+// A SWIM in ISM mode with a 1440K medium in drive 0, head on `track`, side 0,
+// and the sector latch left at `cur_sector` as a previous read would leave it.
+static void swim_ism_rig(floppy_t *f, image_t *img, uint8_t *disk, int track, int cur_sector) {
+    memset(f, 0, sizeof *f);
+    memset(img, 0, sizeof *img);
+    img->type = image_fd_hd;
+    img->writable = true;
+    stub_disk_size = 1440 * 1024;
+    stub_disk_buf = disk;
+    stub_drive_image = img;
+    stub_write_count = 0;
+    memset(disk, 0, stub_disk_size);
+    f->type = FLOPPY_TYPE_SWIM;
+    f->in_ism_mode = true;
+    f->ism_mode = ISM_MODE_ISM_IWM;
+    f->disk[0] = img;
+    f->drives[0].track = track;
+    f->mfm_cur_sector = (uint8_t)cur_sector;
+    floppy_swim_write(f, W_SETUP, 0x00); // MFM framing
+}
+
+// Writes `n` copies of `byte` through the data register.
+static void swim_put(floppy_t *f, uint8_t byte, int n) {
+    for (int i = 0; i < n; i++)
+        floppy_swim_write(f, W_DATA, byte);
+}
+
+// Writes an ID field naming C/H/R, as a format lays one down.
+static void swim_put_id(floppy_t *f, int c, int h, int r) {
+    swim_put(f, 0x00, 12);
+    for (int i = 0; i < 3; i++)
+        floppy_swim_write(f, W_MARK, 0xA1);
+    const uint8_t id[5] = {0xFE, (uint8_t)c, (uint8_t)h, (uint8_t)r, 0x02};
+    for (int i = 0; i < 5; i++)
+        floppy_swim_write(f, W_DATA, id[i]);
+    floppy_swim_write(f, W_CRC, 0);
+    swim_put(f, 0x4E, 22);
+}
+
+// Writes a data field whose 512 bytes are derived from `seed`.
+static void swim_put_data(floppy_t *f, int seed) {
+    swim_put(f, 0x00, 12);
+    for (int i = 0; i < 3; i++)
+        floppy_swim_write(f, W_MARK, 0xA1);
+    floppy_swim_write(f, W_DATA, 0xFB);
+    for (int i = 0; i < 512; i++)
+        floppy_swim_write(f, W_DATA, (uint8_t)(seed * 37 + i));
+    floppy_swim_write(f, W_CRC, 0);
+    swim_put(f, 0x4E, 40);
+}
+
+// True when image block (track, side 0, 1-based sector) holds seed's payload.
+static bool swim_block_holds(const uint8_t *disk, int track, int sector, int seed) {
+    const uint8_t *b = disk + ((size_t)(track * 2) * 18 + (size_t)(sector - 1)) * 512;
+    for (int i = 0; i < 512; i++)
+        if (b[i] != (uint8_t)(seed * 37 + i))
+            return false;
+    return true;
+}
+
+// A track written in one ACTION is addressed by the ID fields the guest writes
+// in front of each data field, not by where the last read left the sector
+// latch.  Taking the latch put sectors 3, 1, 2 (written after a seek, with the
+// latch still at 1) on blocks 1, 2, 3: silent corruption that a uniform-fill
+// format never shows.
+TEST(test_swim_write_addressed_by_id_field) {
+    static floppy_t f;
+    static uint8_t disk[1440 * 1024];
+    image_t img;
+    const int order[3] = {3, 1, 2};
+
+    swim_ism_rig(&f, &img, disk, 5, 1);
+    floppy_swim_write(&f, W_ONES, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    for (int i = 0; i < 3; i++) {
+        swim_put_id(&f, 5, 0, order[i]);
+        swim_put_data(&f, order[i]);
+    }
+    floppy_swim_write(&f, W_ZEROS, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    ASSERT_EQ_INT(stub_write_count, 3);
+    for (int s = 1; s <= 3; s++)
+        ASSERT_TRUE(swim_block_holds(disk, 5, s, s));
+
+    // An ID field naming a sector the medium does not have drops its data
+    // field rather than landing it on the latched block.
+    swim_ism_rig(&f, &img, disk, 5, 4);
+    floppy_swim_write(&f, W_ONES, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    swim_put_id(&f, 5, 0, 19);
+    swim_put_data(&f, 9);
+    floppy_swim_write(&f, W_ZEROS, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    ASSERT_EQ_INT(stub_write_count, 0);
+
+    // With no ID field in the ACTION -- rewriting the sector whose header a
+    // read just found -- the latched sector is still the target.
+    swim_ism_rig(&f, &img, disk, 5, 7);
+    floppy_swim_write(&f, W_ONES, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    swim_put_data(&f, 7);
+    floppy_swim_write(&f, W_ZEROS, ISM_MODE_WRITE | ISM_MODE_ACTION);
+    ASSERT_EQ_INT(stub_write_count, 1);
+    ASSERT_TRUE(swim_block_holds(disk, 5, 7, 7));
+
+    stub_disk_buf = NULL;
+    stub_drive_image = NULL;
+    stub_disk_size = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +580,7 @@ TEST(test_decode_sector_rejects_corruption) {
 
     // A good sector, as the control.
     memset(buf, 0xFF, sizeof buf);
-    uint8_t *end = encode_sector(buf, tag, data, 10, 4, 0, 2);
+    uint8_t *end = encode_sector(buf, tag, data, 10, 4, 0, 2, false);
     uint8_t *mark = find_address_mark(buf, end);
     ASSERT_TRUE(mark != NULL);
     ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) != NULL);
@@ -647,6 +839,7 @@ int main(void) {
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
+    RUN(test_track_unreadable_sector_fails_its_checksum);
     RUN(test_decode_sector_rejects_corruption);
     RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);
@@ -656,6 +849,8 @@ int main(void) {
     RUN(test_media_sector_bounds);
     RUN(test_mfm_sector_layout);
     RUN(test_write_through_detects_sector_boundary);
+    RUN(test_write_through_rejects_side_beyond_medium);
+    RUN(test_swim_write_addressed_by_id_field);
     RUN(test_register_strides);
     printf("All floppy tests passed\n");
     return 0;

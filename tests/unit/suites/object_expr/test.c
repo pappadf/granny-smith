@@ -9,8 +9,10 @@
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
+#include "value_format.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -49,7 +51,7 @@ static value_t eval_m(const char *src) {
 
 TEST(test_literal_addition) {
     value_t v = eval("2 + 3");
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(5, (int)v.u);
     value_free(&v);
 }
@@ -72,7 +74,7 @@ TEST(test_subtraction_and_unary_minus) {
     value_free(&v);
 
     v = eval("-5 + 8");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(3, (int)v.i);
     value_free(&v);
 }
@@ -90,6 +92,24 @@ TEST(test_division_and_modulo) {
     v = eval("1 / 0");
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
+
+    // So is float modulo by zero (fmod would answer NaN).
+    v = eval("1.5 % 0.0");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+// A non-finite float renders as null in the JSON modes (JSON has no inf or
+// nan) and as text elsewhere.
+TEST(test_nonfinite_float_json_is_null) {
+    char buf[32];
+    value_t v = val_float(1.0 / 0.0);
+    value_format_into(&v, VFMT_JSON, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_JSON_TAGGED, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "null") == 0);
+    value_format_into(&v, VFMT_TEXT, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "inf") == 0);
 }
 
 TEST(test_bitwise_ops) {
@@ -123,7 +143,7 @@ TEST(test_shift_ops) {
 
 TEST(test_comparison_ops) {
     value_t v = eval("3 < 5");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
 
@@ -153,19 +173,19 @@ TEST(test_comparison_ops) {
 TEST(test_int_uint_promotion) {
     // Mixed signed/unsigned promotes to int (negative wins).
     value_t v = eval("-2 + 5");
-    ASSERT_EQ_INT(V_INT, v.kind);
+    ASSERT_EQ_INT(VK_INT, v.kind);
     ASSERT_EQ_INT(3, (int)v.i);
     value_free(&v);
 }
 
 TEST(test_int_to_float_promotion) {
     value_t v = eval("1 + 2.5");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     ASSERT_TRUE(v.f == 3.5);
     value_free(&v);
 
     v = eval("10 / 4.0");
-    ASSERT_EQ_INT(V_FLOAT, v.kind);
+    ASSERT_EQ_INT(VK_FLOAT, v.kind);
     ASSERT_TRUE(v.f == 2.5);
     value_free(&v);
 }
@@ -182,7 +202,7 @@ TEST(test_logand_short_circuit) {
     // The right side calls `unknown.path` which would error, but
     // short-circuit must skip it entirely.
     value_t v = eval("false && unknown.path");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(!v.b);
     value_free(&v);
 
@@ -213,7 +233,7 @@ TEST(test_logor_short_circuit) {
 TEST(test_logand_chain_short_circuit) {
     // Chain: false && X && Y must not evaluate X or Y.
     value_t v = eval("false && bad.path && other.bad");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(!v.b);
     value_free(&v);
 }
@@ -233,8 +253,8 @@ TEST(test_ternary) {
 // === Error propagation ======================================================
 
 TEST(test_error_propagates_through_arithmetic) {
-    // Bare identifier with no root bound → V_ERROR; arithmetic on it
-    // propagates V_ERROR rather than coercing to zero.
+    // Bare identifier with no root bound → VK_ERROR; arithmetic on it
+    // propagates VK_ERROR rather than coercing to zero.
     value_t v = eval("missing + 1");
     ASSERT_TRUE(val_is_error(&v));
     value_free(&v);
@@ -242,10 +262,10 @@ TEST(test_error_propagates_through_arithmetic) {
 
 TEST(test_error_propagates_through_negation) {
     value_t v = eval("!missing");
-    // !error is also "false": a V_ERROR turned into a bool via
+    // !error is also "false": a VK_ERROR turned into a bool via
     // val_as_bool is false, so !false = true.  That is what makes
     // `assert $(!cpu.broken)` a valid idiom.
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
 }
@@ -281,7 +301,7 @@ TEST(test_unary_bitnot) {
 
 TEST(test_string_concat) {
     value_t v = eval("\"foo\" + \"bar\"");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "foobar") == 0);
     value_free(&v);
 }
@@ -309,7 +329,7 @@ TEST(test_trailing_garbage) {
 TEST(test_interpolate_simple) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("answer = ${1 + 2}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "answer = 3") == 0);
     value_free(&v);
 }
@@ -318,6 +338,64 @@ TEST(test_interpolate_no_braces_passthrough) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("plain string", &ctx);
     ASSERT_TRUE(strcmp(v.s, "plain string") == 0);
+    value_free(&v);
+}
+
+// Binding callback answering every name with its length, so a lookup of a
+// truncated name would succeed (and splice the wrong number).
+static value_t any_binding(void *ud, const char *name) {
+    (void)ud;
+    return val_int((int64_t)strlen(name));
+}
+
+// A `$name` splice longer than the identifier buffer is an error, not a
+// lookup of its first 63 characters (a different binding).
+TEST(test_interpolate_long_splice_name_errors) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = any_binding;
+    char src[100];
+    src[0] = '$';
+    memset(src + 1, 'a', 70);
+    src[71] = '\0';
+    value_t v = expr_interpolate_string(src, &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(strstr(v.err, "too long") != NULL);
+    value_free(&v);
+    src[64] = '\0'; // 63 characters: fits
+    v = expr_interpolate_string(src, &ctx);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "63") == 0);
+    value_free(&v);
+}
+
+// Deep nesting is an error, not a C-stack overflow: brackets, parentheses,
+// prefix operators and ternary else-chains all count; ordinary depth parses.
+TEST(test_deep_nesting_is_an_error) {
+    enum { N = 20000 };
+    char *src = (char *)malloc(2 * N + 2);
+    ASSERT_TRUE(src != NULL);
+    const char opens[] = {'(', '[', '-'};
+    for (size_t k = 0; k < sizeof(opens); k++) {
+        memset(src, opens[k], N);
+        src[N] = '1';
+        memset(src + N + 1, opens[k] == '(' ? ')' : opens[k] == '[' ? ']' : ' ', N);
+        src[2 * N + 1] = '\0';
+        value_t v = eval(src);
+        ASSERT_TRUE(val_is_error(&v));
+        ASSERT_TRUE(strstr(v.err, "nested too deeply") != NULL);
+        value_free(&v);
+    }
+    // A long `0 ? 0 : 0 ? 0 : ... : 1` else-chain
+    size_t n = 0;
+    for (int i = 0; i < N / 8; i++)
+        n += (size_t)sprintf(src + n, "0?0:");
+    sprintf(src + n, "1");
+    value_t v = eval(src);
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+    free(src);
+    v = eval("((((((((((((((((((((1))))))))))))))))))))");
+    ASSERT_TRUE(!val_is_error(&v));
     value_free(&v);
 }
 
@@ -382,7 +460,7 @@ TEST(test_interp_spec_printf_escape_hatch) {
 
 TEST(test_interp_spec_default_when_no_spec) {
     expr_ctx_t ctx = {0};
-    // No spec — uses native formatter. UInt without VAL_HEX → decimal.
+    // No spec — uses native formatter. UInt without VFLAG_HEX → decimal.
     value_t v = expr_interpolate_string("v=${42}", &ctx);
     ASSERT_TRUE(strcmp(v.s, "v=42") == 0);
     value_free(&v);
@@ -404,18 +482,18 @@ TEST(test_interp_colon_inside_string_doesnt_split_spec) {
     value_free(&v);
 }
 
-// === Map access (V_MAP, shell v2 map/list descent) ==========================
+// === Map access (VK_MAP, shell v2 map/list descent) ==========================
 
 TEST(test_map_dotted_key_access) {
     value_t v = eval_m("$m.mmu.kind");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "68030_pmmu") == 0);
     value_free(&v);
 }
 
 TEST(test_map_bracket_string_key_access) {
     value_t v = eval_m("$m[\"mmu\"][\"kind\"]");
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "68030_pmmu") == 0);
     value_free(&v);
     // Mixed: dotted into a list index.
@@ -444,14 +522,14 @@ TEST(test_map_interpolates_as_json) {
     expr_ctx_t ctx = {0};
     ctx.binding = map_binding;
     value_t v = expr_interpolate_string("${$m}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "{\"mmu\":{\"kind\":\"68030_pmmu\"},\"nums\":[10,20],\"n\":7}") == 0);
     value_free(&v);
 }
 
 TEST(test_map_equals_json_string) {
     value_t v = eval_m("$m.mmu == \"{\\\"kind\\\":\\\"68030_pmmu\\\"}\"");
-    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_EQ_INT(VK_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
 }
@@ -474,12 +552,12 @@ TEST(test_map_equals_json_string) {
 TEST(test_spec_percent_n_is_refused) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:%n%d}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "1") == 0);
     value_free(&v);
 
     value_t w = expr_interpolate_string("${1:%n}", &ctx);
-    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_EQ_INT(VK_STRING, w.kind);
     ASSERT_TRUE(strcmp(w.s, "1") == 0);
     value_free(&w);
 }
@@ -489,7 +567,7 @@ TEST(test_spec_percent_n_is_refused) {
 TEST(test_spec_second_conversion_is_refused) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:%s%d}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "1") == 0);
     value_free(&v);
 }
@@ -498,7 +576,7 @@ TEST(test_spec_second_conversion_is_refused) {
 TEST(test_spec_star_width_is_refused) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:%*d}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "1") == 0);
     value_free(&v);
 }
@@ -510,7 +588,7 @@ TEST(test_spec_star_width_is_refused) {
 TEST(test_spec_width_is_clamped) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:0500d}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(v.s != NULL);
     ASSERT_EQ_INT((int)strlen(v.s), 64); // SPEC_MAX_FIELD, not 500
     ASSERT_EQ_INT((int)v.s[63], (int)'1'); // still the value, right-aligned
@@ -519,7 +597,7 @@ TEST(test_spec_width_is_clamped) {
 
     // The %-prefixed spelling of the same thing.
     value_t w = expr_interpolate_string("${1:%0500d}", &ctx);
-    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_EQ_INT(VK_STRING, w.kind);
     ASSERT_EQ_INT((int)strlen(w.s), 64);
     value_free(&w);
 }
@@ -528,7 +606,7 @@ TEST(test_spec_width_is_clamped) {
 TEST(test_spec_precision_is_clamped) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:%.400f}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(v.s != NULL);
     ASSERT_TRUE(strlen(v.s) <= 159); // inside the scratch buffer either way
     value_free(&v);
@@ -552,9 +630,9 @@ TEST(test_spec_valid_forms_still_render) {
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         value_t v = expr_interpolate_string(cases[i].src, &ctx);
-        if (v.kind != V_STRING || strcmp(v.s, cases[i].want) != 0) {
+        if (v.kind != VK_STRING || strcmp(v.s, cases[i].want) != 0) {
             fprintf(stderr, "[FAIL] spec %s -> \"%s\", expected \"%s\"\n", cases[i].src,
-                    v.kind == V_STRING ? v.s : "<not a string>", cases[i].want);
+                    v.kind == VK_STRING ? v.s : "<not a string>", cases[i].want);
             exit(1);
         }
         value_free(&v);
@@ -563,7 +641,7 @@ TEST(test_spec_valid_forms_still_render) {
 
 // === Expression-language promises ===========================================
 
-// numeric_op reported a failure twice -- as the returned V_ERROR and through
+// numeric_op reported a failure twice -- as the returned VK_ERROR and through
 // the caller's `err` buffer -- but only the non-numeric path wrote the buffer.
 // The other fourteen returns left it untouched and all six callers then read
 // err[0], an uninitialised stack array, so ${1/0} reported whatever was on the
@@ -630,12 +708,12 @@ TEST(test_ternary_still_selects_correctly) {
 TEST(test_ternary_inside_interpolation) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1 ? 10 : 20}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "10") == 0);
     value_free(&v);
 
     value_t w = expr_interpolate_string("${0 ? 10 : 20}", &ctx);
-    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_EQ_INT(VK_STRING, w.kind);
     ASSERT_TRUE(strcmp(w.s, "20") == 0);
     value_free(&w);
 }
@@ -645,7 +723,7 @@ TEST(test_ternary_inside_interpolation) {
 TEST(test_ternary_and_format_spec_together) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1 ? 255 : 0:x}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "ff") == 0);
     value_free(&v);
 }
@@ -655,7 +733,7 @@ TEST(test_ternary_and_format_spec_together) {
 TEST(test_format_spec_without_ternary_unaffected) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${255:04x}", &ctx);
-    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_EQ_INT(VK_STRING, v.kind);
     ASSERT_TRUE(strcmp(v.s, "00ff") == 0);
     value_free(&v);
 }
@@ -664,7 +742,7 @@ TEST(test_format_spec_without_ternary_unaffected) {
 // form loses nothing against the list it replaced.
 TEST(test_range_builtin_matches_dotdot) {
     value_t a = eval("range(4) == 0..4");
-    ASSERT_EQ_INT(V_BOOL, a.kind);
+    ASSERT_EQ_INT(VK_BOOL, a.kind);
     ASSERT_TRUE(a.b);
     value_free(&a);
 
@@ -742,5 +820,8 @@ int main(void) {
     RUN(test_format_spec_without_ternary_unaffected);
     RUN(test_range_builtin_matches_dotdot);
     RUN(test_range_step_zero_is_refused);
+    RUN(test_interpolate_long_splice_name_errors);
+    RUN(test_deep_nesting_is_an_error);
+    RUN(test_nonfinite_float_json_is_null);
     return 0;
 }

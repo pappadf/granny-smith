@@ -11,6 +11,7 @@
 // 2.4); the Rev A ROM ($79D68D63, 2.0f1) runs the same board program.
 
 #include "gossamer.h"
+#include "of_nvram.h"
 #include "slot_tables.h"
 
 // PC66 SDRAM, three 168-pin DIMM slots, 256 MB per slot at most.
@@ -63,5 +64,6 @@ const hw_profile_t machine_pmg3dt = {
     .pci_slots = gossamer_pci_slots,
 
     .substrate = &gossamer_substrate,
+    .of_nvram_check = of_nvram_check_g3,
     .board = &pmg3dt_board,
 };

@@ -28,7 +28,7 @@
 // actually booted — every assertion below the upload is downstream of a real
 // machine.boot document being accepted by the core.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
