@@ -26,7 +26,12 @@
 -- (nightly mode).  suite_done() fails the run at the end when any keep-going
 -- row went red.
 
+-- One instance per script state: a suite and the machine libraries it
+-- pulls in (ans.lua, nt.lua, gossamer.lua) all dofile this file, and the row
+-- counters must be one set.
+if _G.__gs_mac then return _G.__gs_mac end
 local M = {}
+_G.__gs_mac = M
 
 -- --- run-mode bindings (suites read but don't write these) ------------------
 M.ROW_FILTER = vars.ROW or ""

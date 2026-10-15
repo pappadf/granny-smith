@@ -1,0 +1,115 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- The beige G3's BMAC Ethernet cell, driven by Open Firmware 2.4's own
+-- network package (/pci/mac-io/bmac, alias `enet`).
+--
+-- B1  The station address.  Open Firmware reads it out of the cell's
+--     Microwire EEPROM (the package's eread-* words, through SROMCSR) and
+--     publishes it as `local-mac-address`: it must be the address the
+--     model's EEPROM holds, and `cell-id` the Rev C cell's $B1.
+-- B2  Receive.  The package's own words, interpreted inside it after
+--     `dev enet`: `init-bmac` programs the cell (transceiver interface,
+--     FIFOs, filter, receive configuration), `setrxdma` arms one INPUT_LAST
+--     on channel 3, `poll?` reads the descriptor's resCount.  A broadcast
+--     frame offered on the wire must end that descriptor early; poll?
+--     answers its length (60: the frame without FCS or the status
+--     trailer), the bytes land in the buffer, and the FCS after them is the
+--     frame's CRC-32.  A frame for another station must not get in.
+-- B3  Transmit.  `xmt1` sends the received bytes back out on channel 2 and
+--     waits for STATUS FrameSent: the wire sees the same frame.
+-- B4  Loopback.  The row sets XIFC's loopback bit from Forth, moves the
+--     frame aside, erases the receive buffer and sends it again: the frame
+--     comes back through the receive filter into the erased buffer.
+-- B5  `boot enet`: the firmware's TFTP boot broadcasts a BOOTP request
+--     (UDP from its port 1234 to 67) from the EEPROM's address.  Nothing answers; the row
+--     stops there.
+--
+-- The package's receive buffer `rxbfr` is mapped only while an instance is
+-- open; the row receives into a dictionary buffer of its own instead.
+-- Commands go in a line at a time, paced by the serial line (lib/gossamer.script).
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/gossamer.lua")
+
+local banner = gos_boot_prompt("pmg3dt", 65536)
+local p = ""
+
+-- --- B1: the station address -------------------------------------------------
+gos_send("dev enet")
+p = gos_go()
+gos_send(".properties")
+p = gos_go()
+assert(machine.bmac.mac == "00:05:02:47:53:01", "B1: the EEPROM's station address")
+assert(gs.contains(p, "local-mac-address       00050247 5301"), "B1: local-mac-address is the EEPROM's address")
+assert(gs.contains(p, "cell-id                 000000B1"), "B1: cell-id $B1")
+
+-- --- B2: receive ---------------------------------------------------------------
+gos_send("init-bmac")
+p = gos_go()
+gos_send("create fb 600 allot")
+p = gos_go()
+gos_send("fb 600 setrxdma enable-enet-rx")
+p = gos_go()
+gos_send("poll? .")
+p = gos_go()
+assert(gs.contains(p, " 0  ok"), "B2: nothing received before a frame arrives")
+assert(not machine.bmac.receive("000502000001 001122334455 0800 4500 0102030405060708090a0b0c0d0e0f"), "B2: a frame for another station is filtered")
+assert(machine.bmac.receive("ffffffffffff 001122334455 0800 4500 0102030405060708090a0b0c0d0e0f"), "B2: a broadcast frame is accepted")
+gos_send("poll? .")
+p = gos_go()
+assert(gs.contains(p, " 3C  ok"), "B2: poll? answers the received frame's length")
+assert(machine.bmac.rx_frames == 1, "B2: one frame handed to DMA")
+gos_send("rxfcs .")
+p = gos_go()
+-- The FCS, stored least significant byte first, read big-endian by the package.
+assert(gs.contains(p, "-3B476B06"), "B2: the FCS after the frame is its CRC-32")
+gos_send("fb 20 dump")
+p = gos_go()
+assert(gs.contains(p, "FF FF FF FF FF FF 00 11 22 33 44 55 08 00 45 00"), "B2: the frame's header in the buffer")
+assert(gs.contains(p, "01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 00"), "B2: its payload, then the pad")
+
+-- --- B3: transmit --------------------------------------------------------------
+gos_send("fb 3c xmt1")
+p = gos_go()
+assert(not gs.contains(p, "timeout"), "B3: xmt1 saw FrameSent")
+assert(machine.bmac.tx_frames == 1, "B3: one frame sent")
+assert(machine.bmac.last_tx == "ffffffffffff001122334455080045000102030405060708090a0b0c0d0e0f0000000000000000000000000000000000000000000000000000000000", "B3: the wire saw the received frame")
+
+-- --- B4: loopback ---------------------------------------------------------------
+gos_send("fb 600 setrxdma enable-enet-rx")
+p = gos_go()
+gos_send("bmac-base rl@-flip 2 or bmac-base rl!-flip")
+p = gos_go()
+gos_send("fb fb 100 + 3c move")
+p = gos_go()
+gos_send("fb 40 erase")
+p = gos_go()
+gos_send("fb 100 + 3c xmt1")
+p = gos_go()
+assert(not gs.contains(p, "timeout"), "B4: xmt1 saw FrameSent")
+gos_send("poll? .")
+p = gos_go()
+assert(gs.contains(p, " 3C  ok"), "B4: the looped-back frame was received")
+assert(machine.bmac.tx_frames == 2 and machine.bmac.rx_frames == 2, "B4: one more frame each way")
+gos_send("fb 20 dump")
+p = gos_go()
+assert(gs.contains(p, "FF FF FF FF FF FF 00 11 22 33 44 55 08 00 45 00"), "B4: the looped-back frame in the erased buffer")
+
+-- --- B5: boot enet ---------------------------------------------------------------
+gos_send("boot enet")
+machine.scc.a.receive("\r")
+local n = 0
+while machine.bmac.tx_frames < 3 and n < 40 do
+    scheduler.run(50000000)
+    n = n + 1
+end
+assert(machine.bmac.tx_frames > 2, "B5: boot enet sent nothing")
+local bootp = machine.bmac.last_tx
+assert(gs.contains(bootp, "ffffffffffff000502475301"), "B5: a broadcast from the EEPROM's address")
+-- UDP from the firmware's port 1234 ($04D2) to the BOOTP server port 67;
+-- a BOOTREQUEST (op 1, Ethernet, 6-byte address) carrying our address.
+assert(gs.contains(bootp, "04d20043"), "B5: UDP 1234 -> 67")
+assert(gs.contains(bootp, "01010600"), "B5: a BOOTREQUEST for a 6-byte Ethernet address")
+assert(gs.contains(bootp, "000000000502475301"), "B5: chaddr is the EEPROM's address")
+echo("gossamer-bmac: station address, receive, transmit, loopback and BOOTP")
+
+quit()

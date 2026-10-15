@@ -1,0 +1,243 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Full SCO Xenix 3.0 OS install onto the ProFile (Apple Lisa 2).
+-- See config.mk for the procedure (XENIX Installation Guide May-1984 §1.5.1-1.5.4).
+--
+-- Keyboard input is raw Lisa COPS scancodes via keyboard.raw, which sends one wire
+-- byte exactly as given: key down (0x80|kc) then release (kc), pairs adjacent to
+-- avoid Xenix's auto-repeat.  Shifted keys (the parens in "pf(0,0)xenix") hold
+-- SHIFT (kc 0x7e) around the digit with a short settle so the modifier registers.
+-- Keycodes: h=6b d=7b i=53 n=6f t=66 y=67 5=64 p=44 f=69 e=60 x=7a 0=51 9=50
+-- comma=5d Return=48 shift=7e.
+--
+-- keyboard.press/down/up are the portable form -- a key name or an ADB keycode,
+-- translated to COPS codes by the Lisa substrate.  This row stays on raw because
+-- it is exercising the wire encoding, not the key mapping.
+
+local mac = dofile("../lib/mac.lua")
+
+machine.hd.attach()
+assert(machine.id == "lisa", "machine.id != lisa")
+assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
+assert(machine.hd.present == true, "ProFile should be attached")
+
+-- === (§1.5.1) Boot the floppy to the <BootFloppy> shell ======================
+scheduler.run(60000000)
+machine.adb.keyboard.raw(0xC8)
+scheduler.run(3000000)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+mac.run_until_match("expected_bootfloppy.png", 120000000, 5000000)
+machine.screen.match("expected_bootfloppy.png")
+
+-- === (§1.5.2) hdinit: type "hdinit" + RETURN, answer y, answer 5 ============
+machine.adb.keyboard.raw(0xEB)
+machine.adb.keyboard.raw(0x6B)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xFB)
+machine.adb.keyboard.raw(0x7B)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xD3)
+machine.adb.keyboard.raw(0x53)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xD3)
+machine.adb.keyboard.raw(0x53)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xE6)
+machine.adb.keyboard.raw(0x66)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(30000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(20000000)
+machine.adb.keyboard.raw(0xE4)
+machine.adb.keyboard.raw(0x64)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+mac.run_until_match("expected_hdinit.png", 150000000, 5000000)
+machine.screen.match("expected_hdinit.png")
+
+-- === (§1.5.3) Reboot and boot the hard-disk kernel =========================
+-- Power-cycle the machine.  machine.restart tears nothing down, so the
+-- mounted media stay attached: the freshly-initialized ProFile — delta and
+-- all — rides through with no save-and-reattach choreography.  The boot floppy does NOT ride through:
+-- hdinit's flow already ejected it, so the drive is empty at the power-cycle
+-- and it must be re-inserted for the ROM to auto-boot its loader.
+machine.restart()
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42")
+scheduler.run(60000000)
+-- At the loader "boot :" prompt, type "pf(0,0)xenix" to load the kernel from the
+-- hard disk (instead of the floppy's fd(2,0)xenix).
+machine.adb.keyboard.raw(0xC8)
+scheduler.run(3000000)
+machine.adb.keyboard.raw(0xC4)
+machine.adb.keyboard.raw(0x44)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xE9)
+machine.adb.keyboard.raw(0x69)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xFE)
+scheduler.run(300000)
+machine.adb.keyboard.raw(0xD0)
+machine.adb.keyboard.raw(0x50)
+scheduler.run(300000)
+machine.adb.keyboard.raw(0x7E)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xD1)
+machine.adb.keyboard.raw(0x51)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xDD)
+machine.adb.keyboard.raw(0x5D)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xD1)
+machine.adb.keyboard.raw(0x51)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xFE)
+scheduler.run(300000)
+machine.adb.keyboard.raw(0xD1)
+machine.adb.keyboard.raw(0x51)
+scheduler.run(300000)
+machine.adb.keyboard.raw(0x7E)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xFA)
+machine.adb.keyboard.raw(0x7A)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xE0)
+machine.adb.keyboard.raw(0x60)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xD3)
+machine.adb.keyboard.raw(0x53)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xFA)
+machine.adb.keyboard.raw(0x7A)
+scheduler.run(600000)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(120000000)
+-- firsttime auto-runs: "Hard Disk Installation / Do you want /usr on a second
+-- profile <y/n>?"
+machine.screen.match("expected_firsttime.png")
+
+-- === (§1.5.4) firsttime: copy the seven OS distribution floppies ===========
+-- "/usr on a second profile?" -> n
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(8000000)
+-- "Install operating system distribution?" -> y
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(8000000)
+
+-- disk 1 (First Floppy? y)
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-1.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 2
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-2.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 3
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-3.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 4
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-4.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 5
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-5.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 6
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-6.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+-- disk 7
+machine.floppy.drive[0].eject()
+scheduler.run(2000000)
+machine.floppy.drive[0].insert("../../data/Lisa/Xenix-3.0/Xenix-3.0-7.dc42")
+scheduler.run(6000000)
+machine.adb.keyboard.raw(0xE7)
+machine.adb.keyboard.raw(0x67)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(90000000)
+
+-- "Next Floppy?" after the last OS disk -> n
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(20000000)
+-- "Install software development distribution?" -> n
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(8000000)
+-- "Install text processing distribution?" -> n  (then lost+found, complete)
+machine.adb.keyboard.raw(0xEF)
+machine.adb.keyboard.raw(0x6F)
+machine.adb.keyboard.raw(0xC8)
+machine.adb.keyboard.raw(0x48)
+scheduler.run(40000000)
+-- "Xenix Installation complete. / ** Normal System Shutdown **"
+machine.screen.match("expected_complete.png")
+
+-- Xenix has just run its own orderly "** Normal System Shutdown **" (sync + halt),
+-- so the ProFile root filesystem is left clean — the next boot's fsck finds it
+-- consistent and comes straight up multi-user.  Unlike the Lisa Office System there
+-- is no soft power-off to press here: the OS has already halted itself.  Persist the
+-- fully-installed, cleanly-shut-down image as the bootable artifact (consumed by the
+-- lisa-xenix-boot test).
+assert(machine.hd.save(F"${vars.WORK_DIR}/xenix-installed.image"), "profile.save failed")
+quit()

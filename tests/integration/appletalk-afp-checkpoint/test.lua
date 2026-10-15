@@ -1,0 +1,161 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- AppleTalk AFP — a checkpoint taken mid-conversation restores, and to the
+-- guest the restore is a server restart.
+--
+-- The appletalk-afp flow (Chooser → AppleShare → mount "My Volume" → open its
+-- window), then a checkpoint saved at an instant when an ATP transaction is in
+-- flight, and loaded again.
+--
+-- Every AFP command rides an ATP exactly-once transaction, and the responder
+-- holds a release timer (atp.xo_release) for it until the client's TRel comes
+-- back.  A restore replays the saved event queue into a fresh scheduler before
+-- any transaction exists, so every event type the connection can schedule is
+-- registered when it is plugged into the network (atalk_timer_t); a checkpoint
+-- saved inside that window restores.  The run steps the machine in small
+-- slices right after the Finder starts reading the volume, until
+-- scheduler.events shows an ATP event queued, and saves there.
+--
+-- The AFP server is a node on the network, not part of the Mac: the share is
+-- still published after the load, under its name, but the restored machine's
+-- connection has no sessions.  The guest's next request on the session it
+-- held is refused (SessClosed), the AppleShare client sees the connection
+-- closed and drops the volume -- cleanly, no hang -- and it mounts again
+-- through the Chooser, on a new session.
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/afp.lua")
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+-- Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run(30000000)
+
+-- Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+-- add() returns the volume it created, so one call both registers and
+-- verifies — no re-enumeration of the collection needed.
+assert(appletalk.afp.volumes.add("My Volume", F"${vars.WORK_DIR}/share").path == F"${vars.WORK_DIR}/share", "share not registered")
+assert(appletalk.afp.volumes["My Volume"].vol_id > 0, "volume id not assigned")
+assert(appletalk.afp.volumes["My Volume"].cnid_count == 1, "a fresh catalog holds only the root")
+
+-- Nothing has talked to the server yet.
+assert(appletalk.afp.stats.commands_served == 0, "AFP traffic before the client ran")
+assert(gs.try(function() return appletalk.afp.sessions[0].session_ref end, 0) == 0, "an ASP session exists before the Chooser ran")
+
+-- Apple menu → Chooser → AppleShare → the server → Guest: the volume list
+-- (lib/afp.script), checking the screens on the way.
+afp_chooser_to_volumes("chooser-server-listed.png", "volume-list.png")
+
+-- The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert(appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0", "System 6 negotiates AFP 2.0")
+assert(appletalk.afp.stats.commands_served > 0, "no AFP commands were served")
+
+-- Select "My Volume", then OK — the mount itself — and close the Chooser.
+afp_mount_and_close()
+mac.check("desktop-mounted.png")
+
+-- Open the volume's window. The gap between the two clicks has to fit inside
+-- DoubleTime, so it is a fraction of the budgets used for single clicks.
+machine.adb.mouse.move(468, 108)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(80000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+local n = 0
+local hit = 0
+while n < 20000 do
+scheduler.run(3000)
+n = n + 1
+if gs.contains(F"${scheduler.events}", "\"atp\"") then
+hit = 1
+break
+end
+end
+assert(hit == 1, "no ATP event was ever pending to checkpoint")
+
+local old_ref = appletalk.afp.sessions[0].session_ref
+assert(checkpoint.save(F"${vars.WORK_DIR}/afp.checkpoint"), "checkpoint save")
+assert(checkpoint.load(F"${vars.WORK_DIR}/afp.checkpoint"), "checkpoint load")
+
+-- The share is still published, under its name: it is the network's.
+assert(appletalk.afp.volumes["My Volume"].path == F"${vars.WORK_DIR}/share", "the share is gone after the load")
+
+-- The restored connection has no sessions: to the guest, the server restarted.
+assert(gs.try(function() return appletalk.afp.sessions[0].session_ref end, 0) == 0, "a session survived the load")
+
+-- The restored queue still holds the transaction's timer, resolved to a live
+-- callback -- not dropped, and not a wild pointer.
+assert(gs.contains(F"${scheduler.events}", "\"atp\""), "the restored queue lost the ATP event")
+
+-- The machine runs on past the instant that timer fires, and the guest's next
+-- request on its old session is refused: the volume leaves the desktop, and
+-- nothing hangs.  (An assert anywhere in this run fails it: headless exits
+-- non-zero on one.)
+mac.run_until_match("volume-dropped.png", 60000000, 5000000)
+mac.check("volume-dropped.png")
+
+-- ...and the volume mounts again, the way a user would: Chooser → AppleShare
+-- (AppleTalk is already active) → Shared Folders → Guest → My Volume.
+machine.adb.mouse.move(25, 10)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(25, 123)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(60000000)
+machine.adb.mouse.move(95, 90)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(60000000)
+machine.adb.mouse.move(280, 88)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(6000000)
+machine.adb.mouse.move(333, 178)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(40000000)
+machine.adb.mouse.move(392, 259)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("volume-list-again.png", 40000000, 5000000)
+mac.check("volume-list-again.png")
+
+-- A new session, under a new reference: the old one is not reissued.
+local new_ref = appletalk.afp.sessions[0].session_ref
+assert(new_ref ~= 0, "no session after reconnecting")
+assert(new_ref ~= old_ref, "the restored server reissued the old session's reference")
+
+machine.adb.mouse.move(150, 113)
+scheduler.run(4000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(8000000)
+machine.adb.mouse.move(333, 259)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(60000000)
+machine.adb.mouse.move(72, 47)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("desktop-mounted.png", 40000000, 5000000)
+mac.check("desktop-mounted.png")
+
+quit()

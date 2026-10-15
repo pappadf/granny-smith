@@ -1,0 +1,81 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: IIcx ADB no-reply Talk must not post a button event
+-- (issue #122).  The click sequence is the first half of iicx-mactest
+-- (Options > Test Selections, two checkboxes, OK), which is where the
+-- stale button-down surfaced: MBState ($0172) flipped to $00 tens of
+-- millions of instructions after a release with no mouse report behind it.
+-- Every release here is followed by a 100 M-instruction window in which
+-- MBState must read $80 at both ends; the window covers the ~12 ms poll
+-- cadence many times over, so a single bad no-reply Talk shows up.
+--
+-- No goldens: the facts asserted are the guest's own globals, so the row
+-- is independent of the dialog's pixels.
+
+machine.boot{model = "iicx", ram = 4096, video_mode = "13in_rgb_8bpp", rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/apps/MacTest-IIcx-IIci.image", true)
+
+machine.scc.loopback = true
+machine.scsi.loopback = true
+
+-- Boot past Happy Mac through splash screens to MacTest's main UI.
+scheduler.run(200000000)
+assert(machine.id == "iicx", "machine.id != iicx")
+
+-- Press, release, then check that no button-down is posted behind the
+-- release: MBState must be $80 right after the release settles and still
+-- $80 a poll-rich window later.
+local function click_and_check(label, x, y, hold, settle)
+    machine.adb.mouse.move(x, y, "global")
+    scheduler.run(5000000)
+    machine.adb.mouse.click(true)
+    scheduler.run(hold)
+    assert(debug.mac.globals.read("MBState") == 0x00, F"${label}: press not seen (MBState != $00)")
+    machine.adb.mouse.click(false)
+    scheduler.run(5000000)
+    assert(debug.mac.globals.read("MBState") == 0x80, F"${label}: release not seen (MBState != $80)")
+    scheduler.run(settle)
+    assert(debug.mac.globals.read("MBState") == 0x80, F"${label}: stale button-down re-posted after release (MBState == $00)")
+    echo(F"${label}: ok at ${machine.cpu.instr_count}")
+end
+
+-- Options > Test Selections (menu title at x~115, first item at y~28).
+click_and_check("options-menu", 115, 10, 20000000, 100000000)
+-- Let the dialog paint.
+scheduler.run(160000000)
+assert(debug.mac.globals.read("MBState") == 0x80, "dialog settle: MBState != $80")
+
+-- Empty dialog area, the Keyboard and Mouse checkboxes, then OK.
+click_and_check("dialog-blank", 400, 90, 5000000, 100000000)
+click_and_check("keyboard-checkbox", 130, 305, 5000000, 100000000)
+click_and_check("mouse-checkbox", 130, 325, 5000000, 100000000)
+click_and_check("ok-button", 560, 385, 5000000, 100000000)
+
+-- A click quicker than the ADB poll: press and release with no instruction
+-- in between.  The mouse queues the release behind the unreported press
+-- (adb.c, mouse_queue), so the guest sees a press report and then a release
+-- report -- MBState goes $00 and back to $80 -- and `pending` clears once
+-- both are taken.  With a single button state the release overwrote the
+-- press and the click never happened.  Aimed at the empty right end of the
+-- menu bar, where a click does nothing.
+machine.adb.mouse.move(600, 10, "global")
+scheduler.run(5000000)
+local presses = debug.logpoints.add{addr = 0x172, width = "b", mode = "write", value = 0x00, level = 9}
+local releases = debug.logpoints.add{addr = 0x172, width = "b", mode = "write", value = 0x80, level = 9}
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+assert(machine.adb.mouse.pending, "quick click: nothing pending right after the press and release")
+local spent = 0
+while machine.adb.mouse.pending do
+    assert(spent < 20000000, "quick click: the guest never took the queued press and release")
+    scheduler.run(250000)
+    spent = spent + 250000
+end
+scheduler.run(2000000)
+assert(presses.hit_count >= 1, "quick click: the press never reached MBState")
+assert(releases.hit_count >= 1, "quick click: the release never reached MBState")
+assert(debug.mac.globals.read("MBState") == 0x80, "quick click: MBState != $80 after the release")
+echo(F"quick-click: ok, taken within ${spent} instructions")
+local _ = presses.remove
+local _ = releases.remove
+
+quit()

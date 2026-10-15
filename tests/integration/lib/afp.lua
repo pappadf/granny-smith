@@ -1,0 +1,73 @@
+-- Converted from afp.script by scripts/script-to-lua.py
+local mac = dofile("mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
+-- tests/integration/lib/afp.script — the Mac Plus / System 6 AppleShare
+-- mount the appletalk-afp* tests share: Apple menu → Chooser → AppleShare →
+-- the emulated server → Guest → the volume → close the Chooser.
+--
+-- Pull in after ../lib/mac.script.  The coordinates are the 512x342 Plus
+-- desktop with that System 6 volume's Apple menu (About / Access Privileges /
+-- Alarm Clock / Battery / Calculator / Chooser).  Every wait is in guest
+-- instructions and identical in every caller, so the screens each caller
+-- checks are the same screens.
+
+-- Click at (x, y) and let the guest run `settle` instructions.  The press and
+-- release go in back to back (the mouse holds each level until the ROM has
+-- seen it); the settle stays a fixed budget, because what follows a click in
+-- the Chooser is an NBP lookup or an AFP exchange paced by guest timers
+-- behind a screen that does not move.
+function afp_click(x, y, settle) -- global: included file
+    machine.adb.mouse.move(x, y)
+    scheduler.run(2000000)
+    machine.adb.mouse.click(true)
+    machine.adb.mouse.click(false)
+    mac.wait_mouse_taken(100000000)
+    scheduler.run(settle)
+end
+
+-- From the Finder desktop to the AppleShare volume list, logged in as Guest
+-- (FPLogin has run and FPGetSrvrParms has filled the list).  `listed` and
+-- `volumes` are goldens of the two screens on the way (the server listed
+-- after the NBP lookup, the volume list), each "" to check nothing there.
+-- The caller names them, so scripts/check-goldens.py sees the references.
+function afp_chooser_to_volumes(listed, volumes) -- global: included file
+    -- Apple menu → Chooser (press at the menu title, drag down to the item,
+    -- release): the Chooser sits at y=123.
+    machine.adb.mouse.move(25, 10)
+    scheduler.run(2000000)
+    machine.adb.mouse.click(true)
+    scheduler.run(4000000)
+    machine.adb.mouse.move(25, 123)
+    scheduler.run(4000000)
+    machine.adb.mouse.click(false)
+    scheduler.run(60000000)
+
+    -- The AppleShare icon in the Chooser's device list.
+    afp_click(95, 90, 20000000)
+
+    -- "AppleShare requires AppleTalk" → OK.  AppleTalk flips Active and the
+    -- NBP lookup runs; the server list must show the emulated share host.
+    -- (60M: the NBP discovery timers are guest-time-driven.)
+    afp_click(190, 206, 60000000)
+    if listed ~= "" then mac.check(listed) end
+
+    -- Select "Shared Folders", then OK.
+    afp_click(280, 88, 6000000)
+    afp_click(333, 178, 40000000)
+
+    -- "Connect to the file server ... as: Guest" → OK.
+    afp_click(392, 259, 40000000)
+    if volumes ~= "" then mac.check(volumes) end
+end
+
+-- Select the first volume in the list, OK (the mount itself), and close the
+-- Chooser: the AFP volume's icon is then on the desktop.
+function afp_mount_and_close() -- global: included file
+    machine.adb.mouse.move(150, 113)
+    scheduler.run(4000000)
+    machine.adb.mouse.click(true)
+    machine.adb.mouse.click(false)
+    mac.wait_mouse_taken(100000000)
+    scheduler.run(8000000)
+    afp_click(333, 259, 60000000)
+    afp_click(72, 47, 40000000)
+end

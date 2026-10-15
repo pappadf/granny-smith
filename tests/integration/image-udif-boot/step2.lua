@@ -1,0 +1,41 @@
+-- Converted from step2.script by scripts/script-to-lua.py
+-- image-udif-boot step 2, a fresh process: restore both checkpoints, then
+-- boot the exported disk.
+
+local mac = dofile("../lib/mac.lua")
+
+local dmg = F"${vars.WORK_DIR}/hd.dmg"
+
+-- The quick checkpoint references its disk: the drive is served by the UDIF
+-- base and its delta again, not by a copy.
+machine.register("0123456789abcdef", "20261003T000000Z")
+assert(checkpoint.load(), "quick checkpoint load failed")
+assert(machine.scsi.device[0].image.filename == dmg, "the quick checkpoint did not reopen the UDIF base")
+assert(files.path_exists(F"${machine.scsi.device[0].image.path}.delta"), "the drive is not served through its delta")
+assert(files.verify(dmg), "the base changed under the restore")
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+scheduler.run(20000000)
+mac.wait_stable(400000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+
+-- The consolidated one embeds its disk, so it restores without the base:
+-- with hd.dmg gone, the restore re-creates it from the embedded blocks.
+assert(files.rm(dmg), "deleting the base failed")
+assert(not files.path_exists(dmg), "the base is still there")
+assert(checkpoint.load(F"${vars.WORK_DIR}/content.checkpoint"), "consolidated checkpoint load failed")
+assert(files.path_exists(dmg), "the consolidated restore did not re-create the base")
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+scheduler.run(20000000)
+mac.wait_stable(400000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+
+-- The exported .dmg is a disk in its own right: it boots -- and it is the
+-- disk as the first boot left it, still marked in use, so System 7.5 says
+-- it was not shut down properly (desktop-exported.png).
+machine.boot{model = "iici", ram = 8192, rom = vars.ROM}
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd(F"${vars.WORK_DIR}/exported.dmg", 0)
+scheduler.run(60000000)
+mac.wait_stable(900000000)
+mac.check(F"${vars.TEST_DIR}/desktop-exported.png")
+quit()

@@ -1,0 +1,149 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Apple Network Server ROM boot ladder.
+--
+-- Every assertion is a hardware truth read from the live machine after a
+-- clean bounded run — deliberately NO PC logpoints or breakpoints (the PDM
+-- and TNT precedent: the debugger suppresses branch folding and skews any
+-- guest-timed measurement).
+--
+-- Boot shape on this machine: the 604 comes out of reset at $FFF00100,
+-- POST establishes a software path to the front-panel LCD BEFORE it sizes
+-- memory, and narrates itself there in strings Apple published; then Open
+-- Firmware 1.1.22 launches and builds the device tree.  There is no Mac OS
+-- Toolbox anywhere in this ROM.
+
+-- The two profiles differ in the CPU card's clock, the L2 DIMM size and
+-- TwoSuppliesH — and in nothing else an emulator can see, which is exactly
+-- why both run.  Each row is a full cold boot.
+local function ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu, config)
+    machine.boot{model = model, ram = ram_kb, rom = vars.ROM, config = config}
+
+    -- --- S1: the reset vector -----------------------------------------------
+    -- "A processor comes out of hardware reset and fetches the reset vector
+    -- FFF00100.  Hammerhead maps this to ROM space" (Apple, Network Server
+    -- Hardware Developer Notes, 1996, §3).  Same vector as the Macintosh
+    -- boards; asserted here because this ROM is a different image.
+    assert(machine.cpu.pc == 0xFFF00100, F"S1: ${model} reset vector != $FFF00100")
+
+    -- --- Board state before a single instruction runs ------------------------
+    -- The ladder turns the front key to Locked through the configuration
+    -- (the default is Unlocked); the rear key is always locked, which the
+    -- Theory of Operations requires: "the rear keyswitch is in the locked
+    -- position" is a power-on precondition.
+    assert(machine.board.keyswitch == "locked", F"S1: ${model} front keyswitch must follow the configuration")
+    assert(machine.board.rear_key_locked, F"S1: ${model} rear keyswitch must default to locked")
+    -- Board Register 2 is the "Safe Server" environmental halfword, ACTIVE
+    -- LOW throughout — so a healthy machine reads all-ones, not zero.  This
+    -- is the single easiest bit-polarity mistake on the whole machine.
+    assert(machine.board.register2 == 0xFFFF, F"S1: ${model} a healthy Board Register 2 must read all-ones")
+    -- Board Register 1's ANS top byte: BoxId0 = 1 / BoxId1 = 0 hardwired,
+    -- ServiceL high (the key is not in Service), LockedL low (it is Locked),
+    -- and TwoSuppliesH — the one ACTIVE HIGH bit — reporting the PSU count.
+    -- $0800 = BoxId0, $2000 = ServiceL, $8000 = TwoSuppliesH.
+    assert((machine.board.register1 & 0x0800) == 0x0800, F"S1: ${model} BoxId0 strap")
+    assert((machine.board.register1 & 0x1000) == 0, F"S1: ${model} BoxId1 strap must be clear")
+    assert((machine.board.register1 & 0x6000) == 0x2000, F"S1: ${model} keyswitch bits must read Locked")
+    assert(machine.board.two_supplies == two_psu, F"S1: ${model} TwoSuppliesH")
+    if two_psu then
+        assert((machine.board.register1 & 0x8000) == 0x8000, F"S1: ${model} TwoSuppliesH must read high")
+    else
+        assert((machine.board.register1 & 0x8000) == 0, F"S1: ${model} TwoSuppliesH must read low")
+    end
+
+    -- 900M instructions: POST's LCD bring-up, the ROM and DRAM tests, the
+    -- boot beep, memory sizing, NVRAM and CPU-card setup, and the settled
+    -- banner.  POST spins a ~3.4M-iteration `1ms` delay loop between every
+    -- LCD character (the hardware asks software for 1 microsecond; the ROM
+    -- leaves a 1000x margin), so the budget is dominated by that, not by
+    -- anything we model.
+    scheduler.run(900000000)
+
+    -- --- S2: POST reached the LCD -------------------------------------------
+    -- The whole GBUS decode in one marker.  If GBUS device 3 does not
+    -- answer, the machine is blind and every rung below is unreadable.
+    assert(machine.lcd.commands > 0, F"S2: ${model} POST never reached the LCD command register")
+    assert(machine.lcd.writes > 0, F"S2: ${model} POST never wrote a character to the LCD")
+    assert(machine.lcd.on, F"S2: ${model} POST never enabled the display")
+
+    -- --- S3: DRAM sized, and sized to what the profile says ------------------
+    -- Line 1 carries the memory report.  Apple's own string, and the count
+    -- is the profile's RAM: proof the Hammerhead memory path, the eight-DIMM
+    -- configuration and the parity property all reached POST intact.
+    assert(machine.lcd.line(1) == ram_banner, F"S3: ${model} memory banner is '${machine.lcd.line(1)}'")
+
+    -- --- S4: the CPU card and L2 reports -------------------------------------
+    -- Line 2 is the CPU/bus banner POST settles on.  The BUS figure is the
+    -- board descriptor's `bus_hz` coming back out of the ROM's own
+    -- arithmetic — the 700/150's 50 MHz is attested by Apple ("150 MHz 604,
+    -- 50 MHz Bus" on a real machine's own panel), and the 500/132's 44 MHz
+    -- was a fitted constant until this line confirmed it.
+    --
+    -- The CPU figure is currently 066/075 rather than 132/150 because POST
+    -- derives it from the 604's PLL_CFG field in HID1, which the core does
+    -- not yet strap: reading zero decodes as a 1.5:1 multiplier.  Asserting
+    -- what the ROM ACTUALLY prints keeps the row honest and makes the fix
+    -- show up here as a deliberate change rather than a silent one.
+    assert(machine.lcd.line(2) == cpu_banner, F"S4: ${model} CPU banner is '${machine.lcd.line(2)}'")
+
+    -- --- S4: the L2 cache DIMM, present for the first time -------------------
+    -- Line 3 is POST's cache report, and it is the ROM DECODING Hammerhead
+    -- +$E0 — presence in bit 7, the size in bits 1:0.  Every previous
+    -- machine in this repository returned $00 there, which makes POST skip
+    -- the L2 test entirely; these two profiles are the first to run it.
+    -- The size codes were read off this very line by sweeping the register
+    -- ($80 -> 512 KB, $81 -> 256 KB, $82 -> 1 MB, $83 -> 4 MB), so the
+    -- assertion and the encoding come from the same source.
+    assert(machine.lcd.line(3) == l2_banner, F"S4: ${model} L2 banner is '${machine.lcd.line(3)}'")
+    assert(machine.board.l2_kb > 0, F"S4: ${model} the profile must declare a cache DIMM")
+
+    -- --- Negative assertions: the published failure strings -------------------
+    -- POST names our exact work when it fails, so absence is a real test.
+    -- Line 0 carries problem messages; a healthy machine never shows these.
+    assert(machine.lcd.line(0) ~= "CudaNotResponding!!!", F"S4: ${model} Cuda did not answer POST")
+    assert(machine.lcd.line(0) ~= "ParityAddrAtAddrFail", F"S3: ${model} parity address failure")
+    assert(machine.lcd.line(0) ~= "ROM SIMM Failed", F"S3: ${model} ROM SIMM test failed")
+    assert(machine.lcd.line(0) ~= "MainLBU NVRAM Failed", F"S4: ${model} NVRAM test failed")
+    assert(machine.lcd.line(0) ~= "L2 Cache SIMM Failed", F"S4: ${model} the L2 cache test failed")
+    -- The three POST failures the built-in PCI devices would report if their
+    -- config space were wrong.  Absence is a real assertion here: each names
+    -- a device we model, and each appeared for real before its config space
+    -- was modelled.
+    assert(machine.lcd.line(0) ~= "MainLBU 825#1 Failed", F"S5: ${model} 53C825A #0 rejected by POST")
+    assert(machine.lcd.line(0) ~= "MainLBU 825#2 Failed", F"S5: ${model} 53C825A #1 rejected by POST")
+    assert(machine.lcd.line(0) ~= "MainLBU Video Failed", F"S5: ${model} the 54M30 was rejected by POST")
+
+    -- --- The GBUS island answered ---------------------------------------------
+    -- POST reads the Ethernet address PROM during `MainLBU Enet Setup`, and
+    -- every access to that chip select is also the MP doorbell — counted,
+    -- and deliberately NOT raised on a single-processor machine.
+    assert(machine.board.doorbell > 0, F"S2: ${model} POST never read the Ethernet address PROM")
+
+    echo(F"ans-rom-ladder ${model}: lcd=[${machine.lcd.text}] pc=${machine.cpu.pc:08x} reg1=${machine.board.register1:08x}")
+end
+
+-- --- The 512 MB ceiling, which is a ROM limit rather than a chipset one ------
+-- "Production ROMs through (TBD) August 1996? provide decoding of up to 512
+-- Mbytes", and the documented failure mode ABOVE it is a hang during the RAM
+-- test rather than a clean error.  So the profile has to be less permissive
+-- than the silicon, and refuse the configuration before the guest sees it.
+assert(not machine.boot{model = "ans500", rom = vars.ROM, ram = 1048576}, "S3: 1 GB must be rejected — the ROM decodes 512 MB")
+assert(machine.boot{model = "ans500", rom = vars.ROM, ram = 524288}, "S3: 512 MB must be accepted")
+
+-- The 500: 32 MB of parity DRAM, a 132 MHz card on a 44 MHz bus, a 512 KB
+-- cache DIMM, one supply.
+ladder("ans500", 32768, "0032 MB Parity RAM", "066MHz 604, 44MHzBus", "0512KB Level 2 Cache", false, "{\"options\":{\"keyswitch\":\"locked\"}}")
+-- The 700: 48 MB, a 150 MHz card on a 50 MHz bus, 1 MB of cache, and the
+-- optional second, redundant supply.  At 50 MHz the ROM does NOT enable its "fast L2" mode — that is
+-- for "bus speeds of 44 MHz or less" — which is the one place the smaller
+-- machine is architecturally ahead of the larger one.
+ladder("ans700", 49152, "0048 MB Parity RAM", "075MHz 604, 50MHzBus", "1024KB Level 2 Cache", true, "{\"options\":{\"keyswitch\":\"locked\",\"power_supplies\":\"two\"}}")
+
+-- The defaults: the front key Unlocked (Apple's normal running position,
+-- ServiceL and LockedL both high) and one supply, as the 700 shipped.
+machine.boot{model = "ans700", rom = vars.ROM}
+assert(machine.board.keyswitch == "normal", "the front keyswitch defaults to Unlocked")
+assert((machine.board.register1 & 0x6000) == 0x6000, "Unlocked reads ServiceL and LockedL high")
+assert(not machine.board.two_supplies, "the 700 defaults to one supply")
+
+echo("ans-rom-ladder: high-water rung S4 reached on both profiles")
+quit()

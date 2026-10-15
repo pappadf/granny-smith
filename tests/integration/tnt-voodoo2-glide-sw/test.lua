@@ -1,0 +1,38 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- The tnt-voodoo2-glide launch played on the normative synchronous walker.
+--
+-- The row boots and launches Quake exactly as the sibling does (on the
+-- worker thread, the build's default), saves the machine at the launch and
+-- restores it, switches the card to the walker (regs.raster = "sw", which
+-- fences the old backend and builds the new one on the same target) and
+-- plays the detection and the game from there.  (It does not take the
+-- sibling's launch as a checkpoint fixture: a consumer starts only once its
+-- producer has finished, and the two runs back to back set the CI floor.)
+--
+-- THE GOLDEN.  A restored run is deterministic but not the sibling's
+-- straight timeline (the attract demo is a few frames elsewhere at the same
+-- instruction count), so quake-ingame-restored.png is this row's own.  It
+-- was captured on the THREAD backend from the restored launch, and the
+-- walker must reproduce it byte for byte: the equivalence claim, from one
+-- starting state.  Recapture it the same way, never on the walker:
+--
+--   make test-tnt-voodoo2-glide-sw TEST_VARS="REGEN=1 RASTER=thread"
+
+local mac = dofile("../lib/mac.lua")
+dofile("../tnt-voodoo2-glide/glide.lua")
+
+local RASTER = gs.try(function() return RASTER end, "sw")
+
+img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
+if mac.have_media(img) then
+    glide_to_launch("thread")
+    assert(checkpoint.save(F"${vars.WORK_DIR}/glide-launch.gsc"), "checkpoint at the Quake launch")
+    assert(checkpoint.load(F"${vars.WORK_DIR}/glide-launch.gsc"), "restore the Quake-launch checkpoint")
+    assert(machine.pci.slot[1].card.regs.raster == "thread", "the launch was saved on the thread backend")
+    machine.pci.slot[1].card.regs.raster = RASTER
+    assert(machine.pci.slot[1].card.regs.raster == RASTER, F"the ${RASTER} backend is installed after the restore")
+    glide_play("quake-ingame-restored.png", RASTER, F"tnt-voodoo2-glide-sw/${RASTER}")
+else
+    mac.skip_test("tnt-voodoo2-glide-sw (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
+end
+quit()

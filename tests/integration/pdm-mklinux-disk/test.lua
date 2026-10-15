@@ -1,0 +1,451 @@
+-- Converted from test.script by scripts/script-to-lua.py
+local file_sized
+-- Integration test: build the disk MkLinux DR3 installs onto — one drive,
+-- both operating systems.
+--
+-- Half one of recreating `systems/mklinux_dr3_single_169mb.img` from nothing
+-- but the stock 7.5 volume and the DR3 disc.  It ends with a 169 MB drive that
+-- boots System 7.5 on its own and has empty MkLinux partitions waiting;
+-- `pdm-mklinux-install` fills them.
+--
+--   pdm-mklinux-disk     partition, bless, and load the Mac OS side   [here]
+--   pdm-mklinux-install  the DR3 installer onto /dev/sda6             [next]
+--
+-- WHAT MAKES ONE DISK POSSIBLE.  Drive Setup cannot create the A/UX-style
+-- partitions MkLinux needs, and pdisk cannot write drivers or create an HFS
+-- volume — but Drive Setup is willing to leave part of a drive **Unallocated**
+-- when its Mac OS volume is shrunk, and pdisk will fill that.  So the two run
+-- in that order and neither has to do the other's job.  Layout built here:
+--
+--   1  Apple            Apple_partition_map        63 @ 1
+--   2  Macintosh        Apple_Driver43             54 @ 64
+--   3  Macintosh        Apple_Driver43             74 @ 118
+--   4  Patch Partition  Apple_Patches             512 @ 192
+--   5  untitled         Apple_HFS               81920 @ 704       (40.0M)
+--   6  root             Apple_UNIX_SVR2        196608 @ 82624     (96.0M)
+--   7  swap             Apple_UNIX_SVR2         32768 @ 279232    (16.0M)
+--   8  Extra            Apple_Free              34230 @ 312000    (16.7M)
+--
+-- THE SIZES ARE THE SMALLEST THAT ARE STILL COMFORTABLE.  DR3's own table puts
+-- its "Absolute Minimum" package set at 58 MB and the installed system measures
+-- 54 MB, so 96 MB of root sits at 61% full.  Shrinking root also shrinks the
+-- ext2 metadata, which is most of what a fresh image occupies — the same
+-- install on an 871 MB root leaves 162 MiB of the file non-zero, on 96 MB it
+-- leaves 89 MiB including all of System 7.5.
+--
+-- MEDIA: the DR3 disc (a 663 MB hybrid ISO) is not redistributable and not
+-- part of the test data.  The test reads it from
+-- $GS_EXTRA_MEDIA_DIR/mklinux/media/MkLinux-DR3/ and SKIPS cleanly where it is
+-- absent; the finished drive is published back to
+-- $GS_EXTRA_MEDIA_DIR/mklinux/media/.  Everything else it needs — the stock
+-- 7.5 volume — is pinned test data.  `mklinux-boot` has no such dependency and
+-- runs everywhere.
+--
+-- ⚠️ The 7.5 volume is attached read/write and accumulates delta writes.  Under
+-- the harness those land in the per-test GS_STORAGE_CACHE and tests/data is
+-- left untouched; driving this by hand without setting that variable writes
+-- through to the shared image.
+
+local mac = dofile("../lib/mac.lua")
+
+local mkl_root = F"${vars.EXTRA_MEDIA}/mklinux"
+local dr3_iso = F"${mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
+local host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+local target = F"${vars.WORK_DIR}/mklinux-single.img"
+
+-- --- local helpers -----------------------------------------------------------
+
+-- Press-move-release drag.  The Finder tracks a drag while the button is held,
+-- so the path has to be walked in steps with guest ticks between them; a warp
+-- from press point to release point reads as a click and drops the drag.
+local function drag(x1, y1, x2, y2)
+    machine.adb.mouse.move(x1, y1, "global")
+    mac.run_ticks(20)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(10)
+    machine.adb.mouse.move((x1 + (x2 - x1) // 4), (y1 + (y2 - y1) // 4), "global")
+    mac.run_ticks(8)
+    machine.adb.mouse.move((x1 + (x2 - x1) // 2), (y1 + (y2 - y1) // 2), "global")
+    mac.run_ticks(8)
+    machine.adb.mouse.move((x1 + 3 * (x2 - x1) // 4), (y1 + 3 * (y2 - y1) // 4), "global")
+    mac.run_ticks(8)
+    machine.adb.mouse.move(x2, y2, "global")
+    mac.run_ticks(12)
+    machine.adb.mouse.click(false)
+    mac.run_ticks(10)
+end
+
+-- Option-double-click: open the folder AND close the window it lives in, so the
+-- screen never accumulates windows the later coordinates are measured against.
+local function option_double_click(x, y)
+    machine.adb.keyboard.down("option")
+    mac.run_ticks(6)
+    mac.double_click(x, y)
+    mac.run_ticks(10)
+    machine.adb.keyboard.up("option")
+    mac.run_ticks(10)
+end
+
+-- Pull down a menu and choose an item: press on the title, move onto the item,
+-- release.  A plain click() cannot do this — the Menu Manager tracks the
+-- selection while the button is held.
+local function menu_pick(title_x, title_y, item_x, item_y)
+    machine.adb.mouse.move(100, 300, "global")
+    mac.run_ticks(20)
+    machine.adb.mouse.move(title_x, title_y, "global")
+    mac.run_ticks(30)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(40)
+    machine.adb.mouse.move(item_x, item_y, "global")
+    mac.run_ticks(30)
+    machine.adb.mouse.click(false)
+    mac.run_ticks(60)
+end
+
+local function cmd_key(code)
+    machine.adb.keyboard.down("command")
+    mac.run_ticks(6)
+    machine.adb.keyboard.press(code)
+    mac.run_ticks(6)
+    machine.adb.keyboard.up("command")
+    mac.run_ticks(20)
+end
+
+local function shut_down()
+    menu_pick(233, 9, 250, 140)
+    scheduler.run(500000000)
+end
+
+-- One pdisk command line.
+--
+-- FIXED budgets, never wait_stable: pdisk runs in a SIOUX console window whose
+-- insertion point blinks, so the screen never holds still and a stability wait
+-- would burn its whole ceiling.
+--
+-- The budget BEFORE the typing is the one that matters.  Measured with 120 ms
+-- either side, the first character of the line following pdisk's long device
+-- listing was swallowed — echoed to the console but never buffered, because
+-- pdisk had not yet returned to its read loop — and `e /dev/scsi0.1` arrived as
+-- ` /dev/scsi0.1`, which pdisk answered with "No such command (/)" and then
+-- failed every command after it.
+local function pdisk_line(text, steady)
+    scheduler.run(steady)
+    machine.adb.keyboard.type(text)
+    scheduler.run(300000000)
+end
+
+-- --- phase 1: the bus --------------------------------------------------------
+
+local function phase1_boot()
+    -- HD160SC = Quantum ELS170S, 177,269,760 bytes: the smallest catalog
+    -- mechanism that fits 40 MB of Mac OS, 96 MB of root and 16 MB of swap.
+    assert(files.hd_create(target, "HD160SC"), "hd_create HD160SC failed")
+    assert(files.path_size(target) == 177269760, "HD160SC wrong image size")
+
+    -- Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
+    -- clock, discarding a pre-boot value).  The three MkLinux phases use
+    -- ASCENDING bases — disk 0xE1000000 < install 0xE1100000 < boot 0xE1200000
+    -- — so a file this phase creates and a later phase modifies keeps
+    -- crDat < mdDat.
+    machine.boot{model = "pm7100", ram = 24576, rom = vars.ROM}
+    machine.rtc.time = 0xE1000000
+    machine.scsi.attach_hd(host_hd, 0)
+    machine.scsi.attach_hd(target, 1)
+    machine.scsi.attach_cdrom(dr3_iso, 3)
+
+    assert(machine.scsi.device[1].type == "hd", "SCSI 1 is not a hard disk")
+    assert(not machine.scsi.device[1].read_only, "SCSI 1 target drive is read-only")
+    -- The DR3 image is a bare hybrid ISO — zeros at block 0, HFS at 1024,
+    -- ISO9660 at 32768 — so it attaches at the 2048-byte CD default rather than
+    -- at a block size read from a Driver Descriptor Map.  It still mounts:
+    -- system.c reads a DDM only when the 'ER' signature is there.
+    assert(machine.scsi.device[3].block_size == 2048, F"SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the DDM-less CD default)")
+    -- The target is RAW.  Phase 2 starts from a blank disk.
+    assert(not gs.ok(function() return files.partmap(target) end), "the target drive already carries a partition map")
+
+    -- suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
+    -- wait: the machine's PRAM disables it), then boot blocks, CFM init, the
+    -- extensions parade and the Finder.
+    scheduler.run(360000000)
+    scheduler.run(1200000000)
+    mac.wait_stable(900000000)
+    assert(debug.mac.globals.read("BootDrive") ~= 0, "BootDrive == 0 (no startup device)")
+    assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot")
+    mac.check_ex("host-desktop.png", 0, 440, 20, 640)
+end
+
+-- --- phase 2: Drive Setup leaves room ----------------------------------------
+
+local function phase2_drive_setup()
+    mac.double_click(599, 100) -- the DR3 disc
+    mac.wait_stable(600000000)
+    option_double_click(180, 158) -- MacOS Utilities, closing the disc's root
+    mac.wait_stable(600000000)
+    mac.check_ex("cd-utilities.png", 0, 440, 20, 640)
+
+    mac.double_click(50, 155) -- Drive Setup 1.5
+    scheduler.run(800000000)
+    mac.wait_stable(2500000000)
+    -- `Macintosh HD` at ID 0, `<not initialized>` at ID 1, `<CD-ROM drive>` at
+    -- ID 3 — Apple's own formatter enumerating our emulated HD160SC as a drive
+    -- it is willing to touch.
+    mac.check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
+
+    mac.click(60, 117) -- the uninitialized row
+    mac.wait_stable(600000000)
+    mac.click(257, 249) -- Initialize...
+    mac.wait_stable(900000000)
+    mac.click(92, 249) -- Custom Setup...
+    mac.wait_stable(900000000)
+    mac.check_ex("custom-setup.png", 0, 440, 20, 640)
+
+    -- Partitioning Scheme -> `1 Partition`: one Mac OS volume spanning the
+    -- drive, which the next step shrinks.
+    machine.adb.mouse.move(250, 97, "global")
+    mac.run_ticks(30)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(50)
+    machine.adb.mouse.move(220, 128, "global")
+    mac.run_ticks(40)
+    machine.adb.mouse.click(false)
+    mac.run_ticks(60)
+    mac.wait_stable(900000000)
+
+    -- THE STEP THE WHOLE DESIGN RESTS ON.  The Size field arrives selected, so
+    -- typing replaces it; Tab commits.  The volume list then reads `untitled`
+    -- 40 MB AND `Extra`, Type **Unallocated**, 129 MB — Drive Setup declining
+    -- to spread the volume over the whole drive is what leaves pdisk somewhere
+    -- to put root and swap.
+    machine.adb.keyboard.type("40")
+    scheduler.run(60000000)
+    machine.adb.keyboard.press("Tab")
+    scheduler.run(200000000)
+    mac.wait_stable(900000000)
+    mac.check_ex("unallocated.png", 0, 440, 20, 640)
+
+    mac.click(454, 355) -- OK
+    mac.wait_stable(900000000)
+    mac.click(280, 249) -- Initialize
+    scheduler.run(1200000000)
+    mac.wait_stable(3000000000)
+    -- "Initialization was successful.", and the volume mounts.
+    mac.check_ex("initialized.png", 0, 440, 20, 640)
+    cmd_key(0x0C) -- quit Drive Setup
+    mac.wait_stable(1500000000)
+    mac.report_perf("pdm-mklinux-disk/phase2", scheduler.instr_count)
+end
+
+-- --- phase 3: pdisk fills the free space -------------------------------------
+--
+-- pdisk's device names are its own: /dev/scsi<bus>.<id>, so our target at SCSI
+-- ID 1 is /dev/scsi0.1 — pdisk prints the MkLinux name /dev/sdb beside it.
+-- `c <base> <length> <name>` creates an Apple_UNIX_SVR2 partition, MkLinux's
+-- type being pdisk's default, and `6p` means "the base of partition 6", the
+-- Apple_Free entry Drive Setup left.  After the first create the remaining free
+-- space is entry 7.  The installer keys swap off the partition NAME, which is
+-- why the second one has to be called exactly `swap`.
+local function phase3_pdisk()
+    mac.double_click(110, 278) -- pdisk
+    scheduler.run(500000000)
+    mac.check_ex("pdisk-launched.png", 0, 440, 20, 640)
+
+    pdisk_line("e /dev/scsi0.1\n", 300000000)
+    pdisk_line("p\n", 200000000)
+    -- Drive Setup's work, read back by the other tool: two Apple_Driver43
+    -- partitions, the Patch partition, the 40 MB volume, and 128.7 MB free.
+    mac.check_ex("pdisk-before.png", 0, 440, 20, 640)
+
+    pdisk_line("c 6p 96m root\n", 200000000)
+    pdisk_line("c 7p 16m swap\n", 200000000)
+    pdisk_line("p\n", 200000000)
+    mac.check_ex("pdisk-map.png", 0, 440, 20, 640)
+
+    pdisk_line("w\n", 400000000)
+    pdisk_line("y\n", 200000000)
+    pdisk_line("q\n", 200000000)
+    pdisk_line("q\n", 200000000)
+    scheduler.run(400000000)
+    mac.wait_stable(1500000000)
+    cmd_key(0x0D) -- close the utilities window before phase 4 measures anything
+    mac.wait_stable(900000000)
+    mac.report_perf("pdm-mklinux-disk/phase3", scheduler.instr_count)
+end
+
+-- --- phase 4: the five Mac Files ---------------------------------------------
+--
+-- README_DR3: "There are five files in the `Mac Files` folder.  Copy the two
+-- files `MkLinux Booter` and `Mach Kernel` to your Extensions folder.  Copy the
+-- control panel `MkLinux` to your Control Panels folder.  Copy the two files
+-- `lilo.conf` and `MkLinux.prefs` to your Preferences folder."
+--
+-- They go into the STOCK volume's System Folder, which phase 5 then copies
+-- wholesale onto the new drive — one drag instead of five more.
+--
+-- THE SYSTEM FOLDER IS VIEWED BY NAME, and that is not cosmetic.  In icon view
+-- the Finder draws each item at its saved position, and those positions are a
+-- property of the volume's history: the same image reached by a different route
+-- lays the folder out on a tighter grid, scrolled sideways (measured), and two
+-- files land in the System Folder's root.  A list view is alphabetical, 16
+-- pixels a row, and cannot drift.  The drop x is 70, not 100: a row is a drop
+-- target only over its icon and its NAME, and `Extensions` runs out of text at
+-- x=97, so a drop at 100 lands on the window background — which the Finder
+-- reads as "copy into the System Folder itself", silently.
+local function phase4_mac_files()
+    option_double_click(599, 55)
+    mac.wait_stable(600000000)
+    option_double_click(196, 228)
+    mac.wait_stable(600000000)
+    menu_pick(133, 9, 150, 60) -- View -> by Name
+    mac.wait_stable(600000000)
+    drag(200, 36, 200, 278) -- to the bottom half; rows start at y=316, step 16
+    mac.wait_stable(600000000)
+    mac.check_ex("system-folder-by-name.png", 0, 440, 20, 640)
+
+    mac.double_click(599, 100)
+    mac.wait_stable(600000000)
+    option_double_click(56, 158) -- Mac Files, closing the disc's root
+    mac.wait_stable(600000000)
+    mac.check_ex("mac-files.png", 0, 440, 20, 640)
+
+    -- A generous settle after each: the copy progress dialog appears and
+    -- disappears, and `Mach Kernel` is 1.28 MB — slow enough that a short wait
+    -- returns mid-copy and the next drag lands on the dialog.
+    drag(52, 113, 70, 364) -- MkLinux Booter -> Extensions
+    mac.wait_stable(1500000000)
+    drag(180, 113, 70, 364) -- Mach Kernel   -> Extensions
+    mac.wait_stable(2500000000)
+    drag(180, 183, 70, 332) -- MkLinux       -> Control Panels
+    mac.wait_stable(1500000000)
+
+    -- Scroll four rows so `Preferences` clears the bottom edge.  FIVE clicks,
+    -- not four: the first click on an inactive window's control only activates
+    -- the window, and the Mac Files title-bar click before it guarantees the
+    -- System Folder window IS inactive whichever window the last drop left in
+    -- front.
+    mac.click(200, 36)
+    mac.run_ticks(20)
+    mac.click(405, 452)
+    mac.run_ticks(8)
+    mac.click(405, 452)
+    mac.run_ticks(8)
+    mac.click(405, 452)
+    mac.run_ticks(8)
+    mac.click(405, 452)
+    mac.run_ticks(8)
+    mac.click(405, 452)
+    mac.run_ticks(20)
+    mac.check_ex("system-folder-scrolled.png", 0, 440, 20, 640) -- Preferences at y=389
+
+    drag(52, 243, 70, 389) -- lilo.conf     -> Preferences
+    mac.wait_stable(1500000000)
+    drag(180, 243, 70, 389) -- MkLinux.prefs -> Preferences
+    mac.wait_stable(1500000000)
+    mac.check_ex("copies-done.png", 0, 440, 20, 640)
+    mac.report_perf("pdm-mklinux-disk/phase4", scheduler.instr_count)
+end
+
+-- --- phase 5: bless the new volume -------------------------------------------
+--
+-- Copying a System Folder onto a volume with none is what makes that volume
+-- bootable — the Finder blesses it, and its icon gains the Mac face.
+--
+-- DROP INTO THE DESTINATION'S WINDOW, NOT ONTO ITS DESKTOP ICON.  Measured: a
+-- drop aimed at the volume icon missed by a few pixels, landed on the desktop,
+-- and MOVED the System Folder out of the boot volume — a drag within one volume
+-- is a move, not a copy.  With both windows open the copy is unambiguous.
+local function phase5_bless()
+    -- Close EVERY window first — Cmd-Option-W, the Finder's close-all — so the
+    -- two that matter open at the positions these coordinates were measured at
+    -- instead of on top of whatever phase 4 left behind.
+    machine.adb.keyboard.down("command")
+    mac.run_ticks(6)
+    machine.adb.keyboard.down("option")
+    mac.run_ticks(6)
+    machine.adb.keyboard.press(0x0D)
+    mac.run_ticks(6)
+    machine.adb.keyboard.up("option")
+    mac.run_ticks(6)
+    machine.adb.keyboard.up("command")
+    mac.wait_stable(900000000)
+    mac.check_ex("bare-desktop.png", 0, 440, 20, 640)
+
+    -- THREE volumes are mounted here — Macintosh HD, the DR3 disc, and the new
+    -- drive — so `untitled` is the THIRD desktop icon, at y=158.  (Measured by
+    -- hand with no disc attached it is the second, at y=103; that is the sort
+    -- of coordinate that only holds for the bus it was measured on.)
+    mac.double_click(599, 158) -- `untitled`, the new volume
+    mac.wait_stable(900000000)
+    option_double_click(599, 55) -- Macintosh HD, staggered below it
+    mac.wait_stable(900000000)
+    mac.check_ex("two-volumes.png", 0, 440, 20, 640)
+
+    drag(196, 228, 200, 110) -- System Folder -> the untitled window
+    scheduler.run(1500000000)
+    mac.wait_stable(8000000000)
+    mac.check_ex("blessed.png", 0, 440, 20, 640)
+    mac.report_perf("pdm-mklinux-disk/phase5", scheduler.instr_count)
+end
+
+-- --- phase 6: flush, verify, publish -----------------------------------------
+
+local function phase6_publish()
+    -- Shut Down before reading anything.  The Finder's copies live in the
+    -- guest's disk cache long after the progress dialog is gone: an export
+    -- taken straight after the drags shows only the first file (measured).
+    shut_down()
+    machine.scsi.device[1].image.export(F"${vars.WORK_DIR}/mklinux-single-macos.img")
+
+    -- The map both tools built between them.
+    files.partmap(F"${vars.WORK_DIR}/mklinux-single-macos.img")
+    local parts = files.list(F"${vars.WORK_DIR}/mklinux-single-macos.img")
+    assert(#parts == 8, F"the drive has ${#parts} partitions, want 8 (map + 2 drivers + patches + HFS + root + swap + free)")
+
+    -- Partition 5 is the Mac OS volume, and it carries a blessed System Folder
+    -- with all five files where README_DR3 puts them.  Asserted by membership
+    -- and size rather than by a count, so an unrelated System Folder change
+    -- does not fail the row and a truncated copy does.
+    local sysf = F"${vars.WORK_DIR}/mklinux-single-macos.img/partition5/System Folder"
+    local ext = files.list(F"${sysf}/Extensions")
+    local cps = files.list(F"${sysf}/Control Panels")
+    local prefs = files.list(F"${sysf}/Preferences")
+    assert(file_sized(ext, "MkLinux Booter", 23152), "Extensions is missing MkLinux Booter (23,152 bytes)")
+    assert(file_sized(ext, "Mach Kernel", 1286036), "Extensions is missing Mach Kernel (1,286,036 bytes)")
+    assert(file_sized(cps, "MkLinux", 13595), "Control Panels is missing the MkLinux control panel (13,595 bytes)")
+    assert(file_sized(prefs, "lilo.conf", 1110), "Preferences is missing lilo.conf (1,110 bytes)")
+    assert(file_sized(prefs, "MkLinux.prefs", 99), "Preferences is missing MkLinux.prefs (99 bytes)")
+
+    -- Hand-off: the install test cannot read another test's WORK_DIR — the
+    -- harness wipes it — so the drive is published next to the rest of the
+    -- MkLinux media.
+    files.cp(F"${vars.WORK_DIR}/mklinux-single-macos.img", tostring(mkl_root) .. "/media/mklinux_single_macos_169mb.img")
+    assert(files.path_exists(tostring(mkl_root) .. "/media/mklinux_single_macos_169mb.img"), "the drive was not published to media/")
+end
+
+-- True when `listing` holds a file named `name` of exactly `size` bytes.
+-- files.list returns a list of maps; a plain membership test would pass on a
+-- half-copied file, and a half-copied `Mach Kernel` is exactly the failure the
+-- phase-4 settles exist to prevent.
+function file_sized(listing, name, size)
+    for _, entry in ipairs(listing) do
+        if entry.name == name then
+            if entry.size == size then return true end
+            echo(F"file_sized: ${name} is ${entry.size} bytes, want ${size}")
+            return false
+        end
+    end
+    return false
+end
+
+if mac.have_media(dr3_iso) then
+    phase1_boot()
+    phase2_drive_setup()
+    phase3_pdisk()
+    phase4_mac_files()
+    phase5_bless()
+    phase6_publish()
+    mac.report_row("7.5", "ariel", "mklinux-disk drive-setup pdisk bless mac-files")
+else
+    mac.skip_test("pdm-mklinux-disk (the DR3 disc not present — set GS_EXTRA_MEDIA_DIR)")
+end
+
+quit()
