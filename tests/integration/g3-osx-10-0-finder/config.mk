@@ -11,7 +11,12 @@ TEST_DESC := Boots the minimal Mac OS X 10.0.3 disk (UDIF, ATA) on a beige G3 th
 
 TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
 
-TEST_ARGS := model=pmg3dt ram=262144 config=$(TEST_DATA)/systems/mac_os_x_10_0_3_2gb_g3_minimal.json
+# The configuration comes with the disk.  Test data that predates the disk
+# has neither, so the setup stands in an empty document, the machine boots
+# with its defaults and the script skips the row.
+TEST_SETUP := cp "$(TEST_DATA)/systems/mac_os_x_10_0_3_2gb_g3_minimal.json" "$(TEST_TMPDIR)/config.json" 2>/dev/null || echo '{}' > "$(TEST_TMPDIR)/config.json"
+
+TEST_ARGS := model=pmg3dt ram=262144 config=$(TEST_TMPDIR)/config.json
 
 # One boot: the Finder is up after 10 G of scheduler time.
 TEST_TIMEOUT := 1800
