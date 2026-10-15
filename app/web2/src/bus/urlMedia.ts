@@ -31,10 +31,10 @@
 // goes ahead without that disk.
 //
 // `config=` is the configuration document, base64url-encoded JSON (the
-// dialog's document; absent, the model's default configuration).  `hdN`,
-// `cd` and `fdN` keep meaning the Nth hard disk / the CD-ROM drive of the
-// default configuration / floppy drive N; a floppy named for a position the
-// default configuration leaves empty puts a drive there.  Every other
+// dialog's document; absent, the model's default configuration).  `hdN` and
+// `cd` mean that document's Nth hard disk and its CD-ROM drive (a G3 link
+// can put both on ATA), `fdN` floppy drive N; a floppy named for a position
+// the default configuration leaves empty puts a drive there.  Every other
 // parameter is a configuration edit by name -- an option of the model's tree
 // (`addressing=32`, `memory=32768`) or the screen (`monitor=`, `mode=`,
 // `display=`) -- applied over that document (lib/urlConfig.ts).
@@ -364,8 +364,17 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
       dev ? await attachMedia(dev.bus, dev.unit, 'hd', p) : await attachHardDisk(p, n),
     );
   }
+  // ?cd= likewise: a configuration's own CD-ROM drive (a G3's on ATA), else
+  // the default configuration's.
   const cdPath = paths.get('cd');
-  if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
+  if (cdPath) {
+    const cd = params.config ? (await machineDevices('cd'))[0] : undefined;
+    report(
+      'cd',
+      cdPath,
+      cd ? await attachMedia(cd.bus, cd.unit, 'cd', cdPath) : await attachCdrom(cdPath),
+    );
+  }
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
