@@ -74,12 +74,18 @@ LOG_USE_CATEGORY_NAME("ppcmmu");
 // Direct-mapped translation TLB for the slow (non-SoA) paths.  Tag packs
 // the EA page with the privilege the entry was created under; `w_ok`
 // requires that a store through the entry needs no PTE side effects
-// (protection allows it AND the C bit is already set).
+// (protection allows it AND the C bit is already set).  An entry also
+// keeps the segment register it was made under -- the whole value: VSID,
+// keys, T -- and serves only while the segment register still holds it,
+// so a segment-register write invalidates nothing here, and an address
+// space switched back to finds its entries again (Mac OS X rewrites SR0-3
+// on every trap).
 #define XTLB_SIZE 256
 typedef struct {
     uint32_t tag; // (ea & 0xFFFFF000) | user<<1 | valid
     uint32_t pa_page; // physical page base
     uint32_t w_ok; // store permitted with no walk side effects
+    uint32_t sr; // the segment register's value at the fill
 } xtlb_entry_t;
 static xtlb_entry_t g_xtlb[XTLB_SIZE];
 
@@ -373,7 +379,8 @@ void ppc_recompute_sr_t_mask(ppc_t *p) {
 //
 // A segment register translates only the effective addresses of its own
 // 256 MB segment, so only the cached translations there go: the user and
-// supervisor-translated fills, the translation and fetch TLBs.  (A kernel
+// supervisor-translated fills and the fetch TLB (the translation TLB's
+// entries carry the segment register they were made under).  (A kernel
 // that keeps its own mappings in some segments and switches the user's in
 // others on every trap -- Mac OS X 10.1 rewrites SR0-3 about every 13 K
 // instructions -- keeps the rest.)
@@ -384,9 +391,6 @@ void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v) {
     ppc_recompute_sr_t_mask(p);
     user_zero_seg(n);
     sv_zero_seg(n);
-    for (int i = 0; i < XTLB_SIZE; i++)
-        if ((g_xtlb[i].tag >> 28) == n)
-            g_xtlb[i].tag = 0;
     for (int i = 0; i < PPC_FTLB_SIZE; i++)
         if ((g_ppc_ftlb[i].tag >> 28) == n)
             g_ppc_ftlb[i].tag = 0;
@@ -915,13 +919,15 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     //     the 604 in real addressing mode never consults a segment), so every
     //     DT=0 access short-circuits above.
     //
-    // Everything else that would invalidate the key already flushes: mtsr, the
-    // BAT writes and SDR1 all call ppc_mmu_invalidate_all.  Adding DT to the
+    // Everything else that would invalidate the key is covered: the segment
+    // register is part of it (te->sr), and the BAT writes and SDR1 call
+    // ppc_mmu_invalidate_all.  Adding DT to the
     // tag would cost tag space and buy nothing.  The invariant lives in two
     // other files, which is why it is written down here.
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
-    if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
+    uint32_t srv = p->sr[ea >> 28];
+    if (!lp_watched && te->tag == tag && te->sr == srv && (!store || te->w_ok)) {
         *addr = te->pa_page | (ea & 0xFFFu);
         if (user && dt)
             user_phys_fallback(*addr, store); // the slot may have refilled since the miss
@@ -1002,6 +1008,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     te->tag = tag;
     te->pa_page = out.pa & 0xFFFFF000u;
     te->w_ok = out.w_ok ? 1u : 0u;
+    te->sr = srv;
     *addr = out.pa;
     return false;
 }
@@ -1011,12 +1018,12 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
 // user entry for ea -- the case ppc_dxlate_slow serves from it without a
 // walk -- return the host bytes, as that path would reach them, with its
 // side effect on the user write array.  NULL otherwise.
-uint8_t *ppc_mmu_user_store_host(uint32_t ea) {
+uint8_t *ppc_mmu_user_store_host(const ppc_t *p, uint32_t ea) {
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[ea >> MEM_PAGE_SHIFT])
         return NULL;
     uint32_t tag = (ea & 0xFFFFF000u) | 2u | 1u;
     const xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
-    if (te->tag != tag || !te->w_ok)
+    if (te->tag != tag || te->sr != p->sr[ea >> 28] || !te->w_ok)
         return NULL;
     uint32_t pa = te->pa_page | (ea & 0xFFFu);
     uint32_t ppage = pa >> MEM_PAGE_SHIFT;
