@@ -57,7 +57,7 @@
 bool g_ppc_jit_on;
 
 // Tunables (the `jit` node; settable in every build so scripts run anywhere)
-static uint32_t g_threshold = 100000; // instructions run in a page (predecoded) before it joins its region
+static uint32_t g_threshold = 300000; // instructions run in a page (predecoded) before it joins its region
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
 static uint32_t g_supervisor; // jit.supervisor: translate supervisor code that runs with data translation on

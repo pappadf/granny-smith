@@ -409,7 +409,7 @@ Two runs compare only when they split the run into the same
 |---|---|
 | `enabled` | 1 = run translations (wasm builds) |
 | `available` | 1 when the build can generate code |
-| `threshold` | instructions the predecoded tier runs in a page before it joins its region (100000) |
+| `threshold` | instructions the predecoded tier runs in a page before it joins its region (300000: against 100000, 13 % faster on the PM6100 row, the PM8500 row unchanged within its noise, and better on the Mac OS X scenario) |
 | `budget` | the share of wall time, in percent, translating may take (3; 100: no limit) |
 | `cooldown` | entries between two translations of a region, doubling per translation (64) |
 | `quiet` | entries after a code write before its region is retranslated (64) |
