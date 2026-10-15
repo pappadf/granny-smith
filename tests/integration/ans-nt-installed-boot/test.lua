@@ -67,7 +67,7 @@ local function nt_installed_boot()
     -- (sent() escapes backslashes, so the matches avoid them.)
     local boot = nt_load_eval("bootdisk", ".of", 20000000)
     boot = F"${boot}${nt_ldr(\"\", \"system path -> 'D:\", 400000000000, \"B3\")}"
-    assert(gs.contains(boot, "starting the installed Windows NT"), "B3: bootdisk.of did not run")
+    assert(gs.contains(boot, "starting the installed Windows NT"), F"B3: bootdisk.of did not run; got: ${boot}")
     assert(gs.contains(boot, "Open Firmware ARC Interface"), "B3: the veneer did not start")
     assert(gs.contains(boot, "adbport: keyboard class connected"), "B3: NT's keyboard class never connected to the ADB driver")
     assert(gs.contains(boot, "adbport: mouse class connected"), "B3: NT's mouse class never connected to the ADB driver")

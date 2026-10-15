@@ -1452,6 +1452,10 @@ class Converter:
                     # try($VAR, fallback) on a --var: nil when unset
                     self.vars_names.add(e[1])
                     return "(vars.%s or %s)" % (e[1], self.expr(fb, scope)[0])
+                # try($t[key], fallback) on a value a binding holds: a Lua
+                # table lookup is nil when the key is missing, not an error.
+                if e[0] == "index" and e[1][0] == "var":
+                    return "(%s or %s)" % (self.expr(e, scope)[0], self.expr(fb, scope)[0])
                 return "gs.try(function() return %s end, %s)" % (self.expr(e, scope)[0], self.expr(fb, scope)[0])
             if name == "range" and not named:
                 self.port("range() builtin used as a value")

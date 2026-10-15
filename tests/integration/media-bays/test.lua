@@ -6,19 +6,19 @@ assert(machine.scsi.device[0].type == "cdrom", "cdrom= in the default CD-ROM dri
 
 -- The profile's default configuration says the same.
 local d = catalog.default_config("ans500")
-assert(d.storage[2].bus == "scsi" and d.storage[2].unit == 0 and d.storage[2].type == "cd", "default CD-ROM drive")
-assert(d.storage[3].bus == "scsi" and d.storage[3].unit == 2 and d.storage[3].type == "hd", "default hard disk")
+assert(d.storage[1].bus == "scsi" and d.storage[1].unit == 0 and d.storage[1].type == "cd", "default CD-ROM drive")
+assert(d.storage[2].bus == "scsi" and d.storage[2].unit == 2 and d.storage[2].type == "hd", "default hard disk")
 assert(d.startup.bus == "scsi" and d.startup.unit == 2, "the startup device is the default hard disk")
 
 -- machine.storage names what is in each device and the bay eject_media
 -- takes it from -- what the web app rebuilds its mounts from after a
 -- checkpoint restore, which attached nothing through it.
-assert(machine.storage[3].filename == F"${vars.WORK_DIR}/hd.img", "storage names the hard disk's image")
-assert(machine.storage[3].media.bus == "scsi" and machine.storage[3].media.id == 2, "and its bay")
-assert(machine.storage[2].filename == F"${vars.WORK_DIR}/cd.iso", "storage names the disc")
-assert(catalog.profile("lisa").storage[2].id == "profile", "the Lisa's disk is on the ProFile port")
+assert(machine.storage[2].filename == F"${vars.WORK_DIR}/hd.img", "storage names the hard disk's image")
+assert(machine.storage[2].media.bus == "scsi" and machine.storage[2].media.id == 2, "and its bay")
+assert(machine.storage[1].filename == F"${vars.WORK_DIR}/cd.iso", "storage names the disc")
+assert(catalog.profile("lisa").storage[1].id == "profile", "the Lisa's disk is on the ProFile port")
 assert(#catalog.profile("lisa").storage == 1, "no phantom SCSI bus on the Lisa")
-assert(catalog.default_config("plus").storage[3].type == "cd", "the Plus has an external CD-ROM drive")
+assert(catalog.default_config("plus").storage[2].type == "cd", "the Plus has an external CD-ROM drive")
 
 -- attach_media names a position as the configuration does: the second
 -- fast/wide channel's front bay 4.
@@ -69,9 +69,9 @@ assert(gs.try(function() return machine.scsi.device[3].type end, "none") ~= "cdr
 -- (ata1) is ATA unit 2, and storage says so, with the image in it.
 machine.boot{model = "pmg3dt", rom = F"${vars.TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom", config = "{\"storage\":[{\"bus\":\"ata0\",\"unit\":0,\"type\":\"hd\"},{\"bus\":\"ata1\",\"unit\":0,\"type\":\"hd\"}]}"}
 machine.attach_media("ata1", 0, "hd", F"${vars.WORK_DIR}/hd2.img")
-assert(machine.storage[3].media.bus == "ata" and machine.storage[3].media.id == 2, "ata1 is ATA unit 2")
-assert(machine.storage[3].filename == F"${vars.WORK_DIR}/hd2.img", "storage names the ATA disk's image")
-assert(machine.storage[2].filename == "", "an empty device names no image")
+assert(machine.storage[2].media.bus == "ata" and machine.storage[2].media.id == 2, "ata1 is ATA unit 2")
+assert(machine.storage[2].filename == F"${vars.WORK_DIR}/hd2.img", "storage names the ATA disk's image")
+assert(machine.storage[1].filename == "", "an empty device names no image")
 
 echo("media-bays-ok")
 quit()

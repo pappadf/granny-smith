@@ -32,7 +32,7 @@ dofile("glide.lua")
 -- tnt-voodoo2-glide-sw row plays the same launch on the normative
 -- synchronous walker; RASTER=null is the no-raster variant
 -- scripts/voodoo2/bench.sh can time (not a floor — see the script).
-local RASTER = gs.try(function() return RASTER end, "thread")
+local RASTER = vars.RASTER or "thread"
 
 img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
 if mac.have_media(img) then

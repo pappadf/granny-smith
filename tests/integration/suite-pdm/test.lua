@@ -245,7 +245,7 @@ local function row_pdm_nubus_empty()
     -- (the cursor task, when the card is the main screen) never run.  A boot
     -- document can only seat a card in a declared socket, so a $B socket
     -- would make this boot succeed.
-    assert(not machine.boot{model = "pm8100", ram = 16384, rom = vars.ROM, slots = "11=display_card_24ac"}, "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)")
+    assert(not gs.truthy(function() return machine.boot{model = "pm8100", ram = 16384, rom = vars.ROM, slots = "11=display_card_24ac"} end), "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)")
     -- Chip init, the slot scan, and on to the "insert disk" gray desktop.
     scheduler.run(360000000)
     while (machine.cpu.msr & 0x4000) == 0 do scheduler.run(1000) end

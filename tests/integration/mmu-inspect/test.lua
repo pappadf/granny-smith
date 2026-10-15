@@ -58,9 +58,9 @@ assert(machine.cpu.mmu.enabled, "the ROM turned the PMMU on")
 check_walk(machine.cpu.pc)
 check_walk(0x50000000)
 local w030 = machine.cpu.mmu.walk(machine.cpu.pc)
-assert(w030.steps[2].step == "tt", "the 030 checks TT first")
-assert(w030.steps[3].step == "root", "then the root pointer")
-assert(w030.steps[4].step == "level" and w030.steps[4].name == "A", "then level A")
+assert(w030.steps[1].step == "tt", "the 030 checks TT first")
+assert(w030.steps[2].step == "root", "then the root pointer")
+assert(w030.steps[3].step == "level" and w030.steps[3].name == "A", "then level A")
 check_map(machine.cpu.pc)
 -- The root pointer's DT says whether the tables hold short or long descriptors.
 local fmt030 = "short"
@@ -77,7 +77,7 @@ assert(machine.cpu.mmu.enabled, "the ROM turned the 040 MMU on")
 check_walk(machine.cpu.pc)
 check_walk(0x00000000)
 local w040 = machine.cpu.mmu.walk(machine.cpu.pc)
-assert(w040.steps[4].name == "root" and w040.steps[5].name == "pointer", "root, pointer, page levels")
+assert(w040.steps[3].name == "root" and w040.steps[4].name == "pointer", "root, pointer, page levels")
 check_map(machine.cpu.pc)
 check_descriptor("page")
 
@@ -87,7 +87,7 @@ scheduler.run(60000000)
 check_walk(machine.cpu.pc)
 check_walk(0x00000000)
 check_walk(0x68000000)
-assert(machine.cpu.mmu.walk(machine.cpu.pc).steps[2].step == "segment", "the 601 consults the segment register first")
+assert(machine.cpu.mmu.walk(machine.cpu.pc).steps[1].step == "segment", "the 601 consults the segment register first")
 check_map(machine.cpu.pc)
 
 -- PowerPC 604: the BATs first, then the segment and the hashed page table.
@@ -96,7 +96,7 @@ scheduler.run(60000000)
 check_walk(machine.cpu.pc)
 check_walk(0x00000000)
 local w604 = machine.cpu.mmu.walk(machine.cpu.pc)
-assert(w604.steps[2].step == "bat", "the 604 consults the BATs first")
+assert(w604.steps[1].step == "bat", "the 604 consults the BATs first")
 assert(w604.via == "page" and w604.steps[#w604.steps].step == "pteg", "the PC is in the page table")
 check_map(machine.cpu.pc)
 check_descriptor("pte")
@@ -112,10 +112,10 @@ machine.boot{model = "lisa", rom = "../../data/roms/lisa2-revh-098917b2.rom"}
 scheduler.run(3000000)
 check_walk(machine.cpu.pc)
 local wl = machine.cpu.mmu.walk(machine.cpu.pc)
-assert(#wl.steps == 1 and wl.steps[2].step == "segment", "one segment step")
+assert(#wl.steps == 1 and wl.steps[1].step == "segment", "one segment step")
 assert(wl.space == "rom", "the boot ROM's space")
-local seg = machine.cpu.mmu.descriptor(wl.steps[2].index, 1, 0)[1]
-assert(seg.slr == wl.steps[2].slr and seg.sor == wl.steps[2].sor, "descriptor() reads the walk's SOR/SLR")
+local seg = machine.cpu.mmu.descriptor(wl.steps[1].index, 1, 0)[1]
+assert(seg.slr == wl.steps[1].slr and seg.sor == wl.steps[1].sor, "descriptor() reads the walk's SOR/SLR")
 check_map(machine.cpu.pc)
 
 -- No MMU, no node.

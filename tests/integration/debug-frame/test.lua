@@ -12,14 +12,14 @@ local function check_frame(arch)
     assert(f.pc == machine.cpu.pc, "frame pc is the CPU's")
     assert(f.regs.pc == machine.cpu.pc, "regs.pc is the CPU's")
     assert(#f.rows == 4, "row count")
-    assert(f.rows[2].addr == machine.cpu.pc, "first row is the PC")
+    assert(f.rows[1].addr == machine.cpu.pc, "first row is the PC")
     local g = debug.frame{count = 8, before = 3}
-    assert(g.rows[5].addr == machine.cpu.pc, "before=3 puts the PC on row 3")
+    assert(g.rows[4].addr == machine.cpu.pc, "before=3 puts the PC on row 3")
     assert(machine.cpu.instr_count > 0, "instr_count on every architecture")
     -- machine.cpu.frame is the same call.
     local c = machine.cpu.frame{count = 4}
     assert(c.arch == arch, "machine.cpu.frame arch")
-    assert(c.rows[2].addr == f.rows[2].addr, "machine.cpu.frame is debug.frame")
+    assert(c.rows[1].addr == f.rows[1].addr, "machine.cpu.frame is debug.frame")
 end
 
 -- The typed translate/peek every MMU kind has: the frame's row
@@ -30,7 +30,7 @@ local function check_mmu(physical_ok)
     local pc = machine.cpu.pc
     local t = machine.cpu.mmu.translate(pc)
     assert(t.valid, "the PC translates")
-    assert(t.phys == debug.frame{count = 1}.rows[2].phys, "frame rows use the same translation")
+    assert(t.phys == debug.frame{count = 1}.rows[1].phys, "frame rows use the same translation")
     assert(machine.cpu.mmu.translate(pc, {fetch = true}).valid, "fetch-side translation")
     if physical_ok then
         assert(machine.cpu.mmu.peek(pc, 4) == machine.cpu.mmu.peek(t.phys, 4, "physical"), "logical == physical at the translation")
@@ -85,8 +85,8 @@ assert(d.pc == machine.dsp.pc, "dsp frame pc")
 assert(d.regs.pc == machine.dsp.pc, "dsp regs.pc")
 assert(d.regs.emr == machine.dsp.emr, "dsp register names")
 assert(#d.rows == 4, "dsp row count")
-assert(d.rows[2].addr == machine.dsp.pc, "dsp first row is its pc")
-assert(d.rows[3].addr == machine.dsp.pc + 4, "dsp instructions are 4 bytes")
+assert(d.rows[1].addr == machine.dsp.pc, "dsp first row is its pc")
+assert(d.rows[2].addr == machine.dsp.pc + 4, "dsp instructions are 4 bytes")
 assert(#d.fpu.a == 4, "dsp accumulators")
 assert(machine.dsp.disasm{count = 2}, "dsp.disasm prints and answers true")
 

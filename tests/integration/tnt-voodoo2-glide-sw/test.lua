@@ -21,7 +21,7 @@
 local mac = dofile("../lib/mac.lua")
 dofile("../tnt-voodoo2-glide/glide.lua")
 
-local RASTER = gs.try(function() return RASTER end, "sw")
+local RASTER = vars.RASTER or "sw"
 
 img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
 if mac.have_media(img) then

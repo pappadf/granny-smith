@@ -138,9 +138,9 @@ scheduler.run(500000000)
 -- Last Modified is the host file's mtime, so its column is left out.
 mac.check_ex("sys7-find-file.png", 265, 420, 290, 545)
 local afp_errs = appletalk.afp.stats.errors_by_code
-assert(gs.try(function() return afp_errs["-5009"] end, 0) >= 1, "FPCatSearch did not end the search with afpEofError")
-assert(gs.try(function() return afp_errs["-5039"] end, 0) == 0, "FPResolveID answered afpBadIDErr")
-assert(gs.try(function() return afp_errs["-5034"] end, 0) >= 1, "Find File did not check its match by file ID")
+assert((afp_errs["-5009"] or 0) >= 1, "FPCatSearch did not end the search with afpEofError")
+assert((afp_errs["-5039"] or 0) == 0, "FPResolveID answered afpBadIDErr")
+assert((afp_errs["-5034"] or 0) >= 1, "Find File did not check its match by file ID")
 
 -- Cmd-Q quits Find File; the Finder comes back as it was.
 machine.adb.keyboard.down(0x37)
