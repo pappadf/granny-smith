@@ -52,7 +52,7 @@ machine.adb.keyboard.press("return")
 -- for the same reason; the listing is unchanged.
 scheduler.run(110000000)
 
-check("desktop.png")
+mac.check("desktop.png")
 
 -- open the Apple menu and select the CommandShell desk accessory
 machine.adb.mouse.move(20, 10, "aux")
@@ -72,7 +72,7 @@ scheduler.run(20000000)
 -- the budgets: shell.png shows the opened window with the login banner
 -- (previously it pinned the Apple menu still open, window deferred), and
 -- ls.png shows the executed listing.
-check("shell.png")
+mac.check("shell.png")
 
 -- enter command "ls"
 machine.adb.keyboard.press(0x25)
@@ -82,7 +82,7 @@ machine.adb.keyboard.press("return")
 scheduler.run(20000000)
 
 -- The shell should have run `ls` and printed a directory listing
-check("ls.png")
+mac.check("ls.png")
 
-report_row("A/UX 3.0.1", "jmfb", "hd-boot login shell")
+mac.report_row("A/UX 3.0.1", "jmfb", "hd-boot login shell")
 quit()

@@ -59,9 +59,9 @@ end
 -- still start System 7.5 and reach the Finder.
 local function row_control_75()
     boot_image(img, false)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} during the 7.5 control boot")
-    check_ex("control-75-desktop.png", 0, 440, 20, 640)
+    mac.check_ex("control-75-desktop.png", 0, 440, 20, 640)
 end
 
 -- THE MECHANISM.  Assert the emulator fix at the exact place the boot blocks
@@ -97,11 +97,11 @@ end
 -- System that acts on it would be a regression for every other suite.
 local function row_plain_75_with_latch()
     boot_image(plain_75, true)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} booting plain 7.5 with Caps Lock latched")
     local km = machine.cpu.mmu.peek(0x17B, 1)
     assert((km & 0x02) ~= 0, "Caps Lock is not latched in KeyMap on the plain 7.5 boot")
-    check_ex("plain-75-capslock.png", 0, 440, 20, 640)
+    mac.check_ex("plain-75-capslock.png", 0, 440, 20, 640)
 end
 
 -- MILESTONE 3-4, now enforced: the verbose boot console over the Mac OS logo.
@@ -117,14 +117,14 @@ end
 -- through to the Finder.)
 local function row_copland_logo()
     boot_image(img, true)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     -- The console's "Getting to know the System libraries ... done =>
     -- N.NNN" line prints a LIVE elapsed-time measurement — a guest-side
     -- stopwatch, not pinned by the RTC seed.  Any timing-adjacent change
     -- moves the milliseconds (the TNT work shifted it 1.885 -> 1.884),
     -- so exclude the number field (the menu-clock precedent).
-    check_ex("copland-logo.png", 48, 310, 64, 372)
-    report_perf("pm7100-copland-boot/copland-logo", scheduler.instr_count)
+    mac.check_ex("copland-logo.png", 48, 310, 64, 372)
+    mac.report_perf("pm7100-copland-boot/copland-logo", scheduler.instr_count)
 end
 
 -- MILESTONE 5, the finish line: the Copland Finder desktop — menu bar, volume
@@ -134,21 +134,21 @@ end
 -- instructions; wait_stable settles the frame.
 local function row_copland_desktop()
     boot_image(img, true)
-    reach("copland-desktop.png", 7000000000, 900000000, 100000000)
-    check("copland-desktop.png")
-    report_perf("pm7100-copland-boot/copland-desktop", scheduler.instr_count)
+    mac.reach("copland-desktop.png", 7000000000, 900000000, 100000000)
+    mac.check("copland-desktop.png")
+    mac.report_perf("pm7100-copland-boot/copland-desktop", scheduler.instr_count)
 end
 
-if have_media(img) then
+if mac.have_media(img) then
     mac.row("control-75", row_control_75)
     mac.row("keymap-latch", row_keymap_latch)
     mac.row("capslock-diverts", row_capslock_diverts)
     mac.row("plain-75-latch", row_plain_75_with_latch)
     mac.row("copland-logo", row_copland_logo)
     mac.row("copland-desktop", row_copland_desktop)
-    suite_done()
+    mac.suite_done()
 else
-    skip_test("pm7100-copland-boot (Copland media not present)")
+    mac.skip_test("pm7100-copland-boot (Copland media not present)")
 end
 
 quit()

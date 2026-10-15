@@ -41,33 +41,33 @@ machine.screen.match("finder-marathon-8bpp-640x480.png")
 
 -- --- Launch Marathon by double-clicking its icon in the folder window --------
 machine.adb.mouse.move(237, 157, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- Run to the main menu (window [160M, 260M] — see header).
-run_until_match("marathon-menu-8bpp-640x480.png", 180000000, 5000000)
+mac.run_until_match("marathon-menu-8bpp-640x480.png", 180000000, 5000000)
 machine.screen.match("marathon-menu-8bpp-640x480.png")
 
 -- --- Open PREFERENCES (left panel, bottom) -----------------------------------
 -- Opening the dialog also stops the idle countdown to the self-running demo.
 machine.adb.mouse.move(170, 291, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("marathon-prefs-8bpp-640x480.png", 20000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("marathon-prefs-8bpp-640x480.png", 20000000, 5000000)
 machine.screen.match("marathon-prefs-8bpp-640x480.png")
 
 -- --- Set the Graphics popups (same coordinates as the IIcx test) -------------
 -- Detail: Low Resolution -> High Resolution
 machine.adb.mouse.move(278, 132, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(5000000)
 machine.adb.mouse.move(270, 116, "global")
@@ -76,7 +76,7 @@ machine.adb.mouse.click(false)
 scheduler.run(5000000)
 -- Number of Colors: keep 256
 machine.adb.mouse.move(261, 179, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(5000000)
 machine.adb.mouse.move(257, 179, "global")
@@ -85,7 +85,7 @@ machine.adb.mouse.click(false)
 scheduler.run(5000000)
 -- Brightness: Dark -> Normal
 machine.adb.mouse.move(268, 202, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(5000000)
 machine.adb.mouse.move(247, 217, "global")
@@ -94,7 +94,7 @@ machine.adb.mouse.click(false)
 scheduler.run(5000000)
 -- Window Size: re-affirm 100%
 machine.adb.mouse.move(263, 155, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(5000000)
 machine.adb.mouse.move(240, 155, "global")
@@ -105,27 +105,27 @@ machine.screen.match("marathon-prefs-set-8bpp-640x480.png")
 
 -- --- OK: accept the dialog and return to the main menu -----------------------
 machine.adb.mouse.move(533, 410, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(20000000)
 assert(machine.nubus.slot[9].card.framebuffer.depth == 8, "depth changed away from 8 bpp at 256 colors")
 machine.screen.match("marathon-menu-after-prefs-8bpp-640x480.png")
 
 -- --- BEGIN NEW GAME ----------------------------------------------------------
 machine.adb.mouse.move(315, 161, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- +125M (~12.5 s at 40 MHz): the "Arrival" cut scene — pixel-exact.
-run_until_match("marathon-arrival-8bpp-640x480.png", 125000000, 5000000)
+mac.run_until_match("marathon-arrival-8bpp-640x480.png", 125000000, 5000000)
 machine.screen.match("marathon-arrival-8bpp-640x480.png")
 
 -- +125M more (~25 s after the click): live gameplay with the full HUD.
-run_until_match("marathon-game-8bpp-640x480.png", 125000000, 5000000)
+mac.run_until_match("marathon-game-8bpp-640x480.png", 125000000, 5000000)
 machine.screen.match("marathon-game-8bpp-640x480.png")
 
 quit()

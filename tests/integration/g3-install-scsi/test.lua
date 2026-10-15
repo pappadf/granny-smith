@@ -21,7 +21,7 @@ local cd = F"${vars.EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
 local hd = F"${vars.WORK_DIR}/g3-scsi-hd.img"
 local installed = F"${vars.WORK_DIR}/g3-scsi-installed.img"
 
-if have_media(cd) then
+if mac.have_media(cd) then
     -- --- I1 ---------------------------------------------------------------------
     assert(files.hd_create(hd, "HD500SC"), "I1: create the blank disk")
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
@@ -29,12 +29,12 @@ if have_media(cd) then
     machine.scsi.attach_hd(hd, 0)
     assert(machine.scsi.attach_cdrom(cd, 3), "I1: attach the CD")
     scheduler.run(13000000000)
-    check_ex("finder-cd.png", 0, 440, 20, 640)
+    mac.check_ex("finder-cd.png", 0, 440, 20, 640)
 
     -- --- I2 ---------------------------------------------------------------------
     gos_install_921("install-finished.png")
-    click(453, 288) -- Quit
-    run_ticks(900)
+    mac.click(453, 288) -- Quit
+    mac.run_ticks(900)
     machine.scsi.device[0].image.export(installed)
 
     -- --- I3 ---------------------------------------------------------------------
@@ -43,9 +43,9 @@ if have_media(cd) then
     machine.scsi.attach_hd(installed, 0)
     scheduler.run(12000000000)
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/hd-desktop.png") end, nil)
-    check_ex("hd-desktop.png", 0, 440, 20, 640)
+    mac.check_ex("hd-desktop.png", 0, 440, 20, 640)
 else
-    skip_test("g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
+    mac.skip_test("g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
 end
 
 quit()

@@ -35,11 +35,11 @@ dofile("glide.lua")
 local RASTER = gs.try(function() return RASTER end, "thread")
 
 img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
-if have_media(img) then
+if mac.have_media(img) then
     glide_to_launch(RASTER)
 
     glide_play("quake-ingame.png", RASTER, F"tnt-voodoo2-glide/${RASTER}")
 else
-    skip_test("tnt-voodoo2-glide (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
+    mac.skip_test("tnt-voodoo2-glide (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
 end
 quit()

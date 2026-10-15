@@ -9,8 +9,8 @@ assert(files.path_size(F"${vars.WORK_DIR}/outer.img/partition1/inner.img") == 81
 assert(files.path_compare(F"${vars.WORK_DIR}/outer.img/partition1/inner.img", F"${vars.TEST_DATA}/systems/System_6_0_8.dsk") == -1, "the inner image reads back unchanged")
 
 -- It boots to the Finder desktop, every sector read through the outer volume.
-wait_stable(400000000)
-check("desktop.png")
+mac.wait_stable(400000000)
+mac.check("desktop.png")
 assert(files.images[0].reads > 0, "the boot read the nested floppy")
 
 quit()

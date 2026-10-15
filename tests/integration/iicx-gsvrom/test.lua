@@ -25,5 +25,5 @@ mac.row("gsvrom-24ac", row_gsvrom_24ac)
 mac.row("gsvrom-824gc", row_gsvrom_824gc)
 mac.row("gsvrom-custom-mode", row_gsvrom_custom_mode)
 
-suite_done()
+mac.suite_done()
 quit()

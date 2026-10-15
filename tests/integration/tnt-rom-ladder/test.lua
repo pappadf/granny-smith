@@ -162,7 +162,7 @@ machine.memory.poke.l(0xF300830C, 0)
 -- T11 desktop (the boot reaches its media hunt chime-less — an open
 -- question; the row pins the whole capture so the chime's first appearance
 -- will show up as a length change here).
-check_sound("of-beep.wav", 51928)
+mac.check_sound("of-beep.wav", 51928)
 assert(machine.sound.peak >= 2000, F"T10: beep rendered silent (peak ${machine.sound.peak})")
 assert(machine.sound.sample_rate == 22050, "T10: sound rate != the beep's 22050")
 assert(machine.sound.out_enabled == false, "T10: channel 8 still draining at the wall")
@@ -185,7 +185,7 @@ assert(machine.sound.out_enabled == false, "T10: channel 8 still draining at the
 -- disk attached, the media hunt has found nothing to boot.  (A blank store
 -- reached that point later -- Open Firmware's format pass came first.)
 assert(debug.mac.globals.read("ScrnBase") == 0x90800210, "T11: ScrnBase not in the Control VRAM aperture")
-check("gray-desktop.png")
+mac.check("gray-desktop.png")
 
 -- The T5 marker (the OF memory-sizing sequence against Hammerhead) stays
 -- asserted transitively — MemTop and the kernel's 32 MB layout are

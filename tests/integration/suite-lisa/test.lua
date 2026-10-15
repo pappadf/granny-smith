@@ -28,8 +28,8 @@ local mac = dofile("../lib/mac.lua")
 dofile("rows.lua")
 
 mac.row("lisa-los31-profile", row_lisa_los31_profile)
-if row_on("lisa-los31-lisaem") then
-    if have_media("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42") then
+if mac.row_on("lisa-los31-lisaem") then
+    if mac.have_media("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42") then
         mac.row("lisa-los31-lisaem", row_lisa_los31_lisaem)
     else
         echo("skip: lisa-los31-lisaem (no LisaEm ProFile image in the test data)")
@@ -42,5 +42,5 @@ mac.row("xl-macworks-boot", row_xl_macworks_boot)
 mac.row("xl-no-media", row_xl_no_media)
 mac.row("lisa-checkpoint", row_lisa_checkpoint)
 
-suite_done()
+mac.suite_done()
 quit()

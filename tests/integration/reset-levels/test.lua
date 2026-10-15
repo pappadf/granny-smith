@@ -21,7 +21,7 @@ local function rebooted(budget, before)
     local lowest = 0xFFFFFFFF
     local i = 0
     while i < 10 do
-        scheduler.run(budget, "/", 10)
+        scheduler.run(budget // 10)
         local t = ticks()
         if t < lowest then lowest = t end
         i = i + 1

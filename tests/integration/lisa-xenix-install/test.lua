@@ -26,7 +26,7 @@ machine.adb.keyboard.raw(0xC8)
 scheduler.run(3000000)
 machine.adb.keyboard.raw(0xC8)
 machine.adb.keyboard.raw(0x48)
-run_until_match("expected_bootfloppy.png", 120000000, 5000000)
+mac.run_until_match("expected_bootfloppy.png", 120000000, 5000000)
 machine.screen.match("expected_bootfloppy.png")
 
 -- === (§1.5.2) hdinit: type "hdinit" + RETURN, answer y, answer 5 ============
@@ -60,7 +60,7 @@ machine.adb.keyboard.raw(0xE4)
 machine.adb.keyboard.raw(0x64)
 machine.adb.keyboard.raw(0xC8)
 machine.adb.keyboard.raw(0x48)
-run_until_match("expected_hdinit.png", 150000000, 5000000)
+mac.run_until_match("expected_hdinit.png", 150000000, 5000000)
 machine.screen.match("expected_hdinit.png")
 
 -- === (§1.5.3) Reboot and boot the hard-disk kernel =========================

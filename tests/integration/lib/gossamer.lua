@@ -47,7 +47,7 @@ function gos_wait_prompt(chunks) -- global: included file
     local out = ""
     local spent = 0
     local slice = 250000
-    while not gs.contains(out, "0 > ") and spent < chunks * 20000000 do
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and spent < chunks * 20000000 do
         scheduler.run(slice)
         spent = spent + slice
         local ch = machine.scc.a.sent()

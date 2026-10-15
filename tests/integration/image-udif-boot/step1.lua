@@ -21,8 +21,8 @@ machine.rtc.time = 3000000000
 machine.scsi.attach_hd(dmg, 0)
 assert(machine.scsi.device[0].image.filename ~= "", "the UDIF did not attach")
 scheduler.run(60000000)
-wait_stable(900000000)
-check(F"${vars.TEST_DIR}/desktop.png")
+mac.wait_stable(900000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
 
 -- The boot wrote to the disk (Finder, desktop database); the writes are in
 -- the delta and the base is untouched.

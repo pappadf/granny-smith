@@ -173,7 +173,7 @@ for i = 0, 4095 do
 end
 local LFB_NS = scheduler.host_user_ns - T0
 echo(F"lfb-throughput: 4096 dword LFB writes in ${LFB_NS} ns (shell-driven upper bound)")
-report_perf("tnt-pci-voodoo2", scheduler.instr_count)
+mac.report_perf("tnt-pci-voodoo2", scheduler.instr_count)
 
 -- --- The raster seam: the null backend, and the timing invariant. ------------
 -- pci_option="raster=null" installs the backend that draws nothing

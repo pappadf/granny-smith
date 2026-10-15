@@ -44,7 +44,7 @@ assert(machine.hd.present == true, "ProFile should be attached")
 -- own. The geometry asserts came with it.
 assert(machine.screen.width == 720, "screen.width != 720")
 assert(machine.screen.height == 364, "screen.height != 364")
-check("boot-menu.png")
+mac.check("boot-menu.png")
 
 -- (1) Install.
 machine.adb.mouse.move(648, 211, "global")
@@ -56,7 +56,7 @@ scheduler.run(14000000)
 -- (2) ProFile detected -> "use the disk attached to the parallel connector?"
 -- This is also the screen lisa-los-install existed to reach: same media,
 -- same click on Install, same dialog. Folded in here.
-check("expected.png")
+mac.check("expected.png")
 
 -- (3) OK (use this disk).
 machine.adb.mouse.move(607, 120, "global")
@@ -82,7 +82,7 @@ scheduler.run(600000)
 machine.adb.mouse.click(false)
 scheduler.run(40000000)
 -- (6) Installer initialised the ProFile and asks for Office System 2.
-check("expected_insert2.png")
+mac.check("expected_insert2.png")
 
 -- --- copy Office System 2 -> "insert Office System 3" ---
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image")
@@ -93,7 +93,7 @@ machine.adb.mouse.click(true)
 scheduler.run(600000)
 machine.adb.mouse.click(false)
 scheduler.run(15000000)
-check("expected_insert3.png")
+mac.check("expected_insert3.png")
 
 -- --- copy Office System 3 -> "insert Office System 4" ---
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-3.image")
@@ -104,7 +104,7 @@ machine.adb.mouse.click(true)
 scheduler.run(600000)
 machine.adb.mouse.click(false)
 scheduler.run(15000000)
-check("expected_insert4.png")
+mac.check("expected_insert4.png")
 
 -- --- copy Office System 4 -> "insert Office System 5" ---
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-4.image")
@@ -114,8 +114,8 @@ scheduler.run(3000000)
 machine.adb.mouse.click(true)
 scheduler.run(600000)
 machine.adb.mouse.click(false)
-run_until_match("expected_insert5.png", 25000000, 5000000)
-check("expected_insert5.png")
+mac.run_until_match("expected_insert5.png", 25000000, 5000000)
+mac.check("expected_insert5.png")
 
 -- --- copy Office System 5 -> "reinsert Office System 1" ---
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-5.image")
@@ -126,7 +126,7 @@ machine.adb.mouse.click(true)
 scheduler.run(600000)
 machine.adb.mouse.click(false)
 scheduler.run(15000000)
-check("expected_reinsert1.png")
+mac.check("expected_reinsert1.png")
 
 -- --- reinsert Office System 1 -> boot_remount writes the boot tracks, finishing ---
 machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image")
@@ -139,7 +139,7 @@ machine.adb.mouse.click(false)
 scheduler.run(20000000)
 -- Install complete: back at the Install/Repair menu with the ProFile as the startup
 -- disk ("the disk attached to the parallel connector").
-check("expected_installed.png")
+mac.check("expected_installed.png")
 
 -- === Reboot off the installed ProFile and cleanly power off ==================
 -- The install ran from the floppy, so the running OS's boot volume is the floppy,
@@ -171,16 +171,16 @@ assert(machine.hd.pram_init(2, true, true), "pram_init failed")
 -- Clipboard / Disk icons).  This used to arrive at a "clock not set" note that the
 -- row dismissed by warping onto OK and clicking; the COPS clock powers up at
 -- 1 January 1984 now and the note does not appear.
-run_until_match("expected_desktop.png", 112000000, 5000000)
-check("expected_desktop.png")
+mac.run_until_match("expected_desktop.png", 112000000, 5000000)
+mac.check("expected_desktop.png")
 
 -- Press the soft power-off switch.  LOS catches the COPS $FB, runs its orderly
 -- FS_Shutdown (boot volume MDDF mountinfo := unmounted), and the screen blanks as
 -- the machine powers off.  After this the saved image cold-boots clean (no
 -- "startup disk was in use" scavenge).
 local _ = machine.power.off
-run_until_match("expected_poweroff.png", 40000000, 5000000)
-check("expected_poweroff.png")
+mac.run_until_match("expected_poweroff.png", 40000000, 5000000)
+mac.check("expected_poweroff.png")
 
 -- Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
 -- blocks) as the bootable LOS-on-HD artifact (suite-lisa's lisa-los31-profile row consumes it).

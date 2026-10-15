@@ -32,7 +32,7 @@ local function g3_hd_boot(row, model)
     -- 6 G in, mid-boot, the g3dt row saves the fixture gossamer-checkpoint
     -- restores in a fresh process (the state it would reach itself).
     scheduler.run(6000000000)
-    if row == "g3dt-hd" then fixture_save("g3dt-921-midboot") end
+    if row == "g3dt-hd" then mac.fixture_save("g3dt-921-midboot") end
     -- Up to 6 G more: the row's frame (the desktop with the Setup Assistant
     -- open, outside the menu clock) and the startup sound, sampled every
     -- 250 M.  REGEN runs all 12 G, where the goldens were captured.
@@ -57,18 +57,18 @@ local function g3_hd_boot(row, model)
     assert(machine.sound.frames > 110000, F"${row}: no startup sound after the boot beep (frames ${machine.sound.frames})")
 
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/${row}.png") end, nil)
-    check_ex(F"goldens/${row}.png", 0, 440, 20, 640)
-    report_perf(F"suite-gossamer/${row}", scheduler.instr_count)
+    mac.check_ex(F"goldens/${row}.png", 0, 440, 20, 640)
+    mac.report_perf(F"suite-gossamer/${row}", scheduler.instr_count)
 end
 
 g3_hd_boot("g3dt-hd", "pmg3dt")
 
 -- --- g3dt-floppy -------------------------------------------------------------
 assert(machine.floppy.drive[0].insert("../../data/systems/ans_nt_boot_floppy_daea7d6.img", false), "g3dt-floppy: insert the 1.44 MB disk")
-run_until_match_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640, 3000000000, 250000000)
+mac.run_until_match_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640, 3000000000, 250000000)
 gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/g3dt-floppy.png") end, nil)
-check_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640)
-report_perf("suite-gossamer/g3dt-floppy", scheduler.instr_count)
+mac.check_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640)
+mac.report_perf("suite-gossamer/g3dt-floppy", scheduler.instr_count)
 
 g3_hd_boot("g3mt-hd", "pmg3mt")
 echo("suite-gossamer: both models boot Mac OS 9.2.1 to the desktop")

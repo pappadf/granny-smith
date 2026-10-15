@@ -13,10 +13,10 @@ assert(checkpoint.load(), "quick checkpoint load failed")
 assert(machine.scsi.device[0].image.filename == dmg, "the quick checkpoint did not reopen the UDIF base")
 assert(files.path_exists(F"${machine.scsi.device[0].image.path}.delta"), "the drive is not served through its delta")
 assert(files.verify(dmg), "the base changed under the restore")
-check(F"${vars.TEST_DIR}/desktop.png")
+mac.check(F"${vars.TEST_DIR}/desktop.png")
 scheduler.run(20000000)
-wait_stable(400000000)
-check(F"${vars.TEST_DIR}/desktop.png")
+mac.wait_stable(400000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
 
 -- The consolidated one embeds its disk, so it restores without the base:
 -- with hd.dmg gone, the restore re-creates it from the embedded blocks.
@@ -24,10 +24,10 @@ assert(files.rm(dmg), "deleting the base failed")
 assert(not gs.truthy(function() return files.path_exists(dmg) end), "the base is still there")
 assert(checkpoint.load(F"${vars.WORK_DIR}/content.checkpoint"), "consolidated checkpoint load failed")
 assert(files.path_exists(dmg), "the consolidated restore did not re-create the base")
-check(F"${vars.TEST_DIR}/desktop.png")
+mac.check(F"${vars.TEST_DIR}/desktop.png")
 scheduler.run(20000000)
-wait_stable(400000000)
-check(F"${vars.TEST_DIR}/desktop.png")
+mac.wait_stable(400000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
 
 -- The exported .dmg is a disk in its own right: it boots -- and it is the
 -- disk as the first boot left it, still marked in use, so System 7.5 says
@@ -36,6 +36,6 @@ machine.boot{model = "iici", ram = 8192, rom = vars.ROM}
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd(F"${vars.WORK_DIR}/exported.dmg", 0)
 scheduler.run(60000000)
-wait_stable(900000000)
-check(F"${vars.TEST_DIR}/desktop-exported.png")
+mac.wait_stable(900000000)
+mac.check(F"${vars.TEST_DIR}/desktop-exported.png")
 quit()

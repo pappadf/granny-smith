@@ -18,5 +18,5 @@ machine.floppy.drive[0].insert("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.i
 assert(machine.floppy.drive[0].present, "diskette not inserted")
 
 scheduler.run(120000000)
-check("desktop.png")
+mac.check("desktop.png")
 quit()

@@ -33,32 +33,32 @@ assert(machine.scsi.device[0].revision == "6.3 ", "unexpected SCSI revision")
 
 -- Boot to the Finder desktop (SE/30, 8 MB RAM).  The drive is unformatted, so
 -- it must NOT mount here — only HD SC Setup should be able to touch it.
-run_until_match("desktop.png", 80000000, 5000000)
+mac.run_until_match("desktop.png", 80000000, 5000000)
 machine.screen.match("desktop.png")
 
 -- Double-click "Disk Tools" to open the floppy
 machine.adb.mouse.move(480, 55, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("floppy.png", 50000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("floppy.png", 50000000, 5000000)
 machine.screen.match("floppy.png")
 
 -- Double-click Apple HD SC Setup
 machine.adb.mouse.move(167, 83, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(50000000)
 
 -- THE ACCEPTANCE CHECK.  A drive the formatter rejects reports "This program
@@ -68,29 +68,29 @@ machine.screen.match("ready.png")
 
 -- Initialize
 machine.adb.mouse.move(167, 115, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(5000000)
 machine.screen.match("confirm.png")
 
 -- Confirm "Init" in the erase-warning dialog
 machine.adb.mouse.move(360, 190, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- Writing the driver, partition map and volume across 479,350 blocks
 scheduler.run(800000000)
 
 -- "Please name this volume." — accept the default
 machine.adb.mouse.move(200, 180, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(80000000)
 
 -- "Disk initialization successfully completed." plus the now-mounted volume,

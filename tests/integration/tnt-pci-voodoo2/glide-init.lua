@@ -140,7 +140,7 @@ vreg_wr(0x210, vreg_rd(0x210) | 0x8)
 -- lives at $02C in the alternate map and $024 in the standard one; the
 -- object model reads the latch back, which is what makes a write-only
 -- register's routing observable.
-machine.memory.poke.l(vars.BAR + 0x200000 + 0x02C, swap32(0x00123456))
+machine.memory.poke.l(BAR + 0x200000 + 0x02C, swap32(0x00123456))
 assert(machine.pci.slot[1].card.regs.read(0x024) == 0x00123456, "an alternate-map write must land on the standard register")
 
 -- The REGISTER swizzle path: fbiInit0[3] is only an enable — address bit
@@ -148,11 +148,11 @@ assert(machine.pci.slot[1].card.regs.read(0x024) == 0x00123456, "an alternate-ma
 -- alias gets its native value into the register; through the plain
 -- address it must byte-swap itself.  color0 ($144) is R/W, so the round
 -- trip closes both ways.
-machine.memory.poke.l(vars.BAR + 0x100000 + 0x144, 0x11223344)
+machine.memory.poke.l(BAR + 0x100000 + 0x144, 0x11223344)
 assert(machine.pci.slot[1].card.regs.read(0x144) == 0x11223344, "a bit-20 write carries the guest's native value")
 assert(vreg_rd(0x144) == 0x11223344, "...and the unswizzled path sees the same register")
-assert(machine.memory.peek.l(vars.BAR + 0x100000 + 0x144) == 0x11223344, "a bit-20 read swizzles back to the native value")
-assert(machine.memory.peek.l(vars.BAR + 0x144) == swap32(0x11223344), "...while the plain address returns the little-endian lanes")
+assert(machine.memory.peek.l(BAR + 0x100000 + 0x144) == 0x11223344, "a bit-20 read swizzles back to the native value")
+assert(machine.memory.peek.l(BAR + 0x144) == swap32(0x11223344), "...while the plain address returns the little-endian lanes")
 
 -- --- Step 11: video timing, 640x480@60, then unblank. -----------------------
 -- Register packing per V2 §13: hSync = hSyncOff<<16 | hSyncOn, vSync
@@ -204,10 +204,10 @@ vreg_wr(0x248, vreg_rd(0x248) | 0x40000000)
 vreg_wr(0x114, 0x0000008F)
 idle3()
 function lfb_put(x, y, v16) -- global: included file
-    machine.memory.poke.w(vars.BAR + 0x400000 + (y << 11) + (x << 1), swap16(v16))
+    machine.memory.poke.w(BAR + 0x400000 + (y << 11) + (x << 1), swap16(v16))
 end
 function lfb_get(x, y) -- global: included file
-    return swap16(machine.memory.peek.w(vars.BAR + 0x400000 + (y << 11) + (x << 1)))
+    return swap16(machine.memory.peek.w(BAR + 0x400000 + (y << 11) + (x << 1)))
 end
 lfb_put(128, 100, 0xDEAD)
 lfb_put(0, 0, 0x0)

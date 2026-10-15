@@ -56,7 +56,7 @@ local function row_iix_nomedia()
     assert(machine.screen.width == 640, "iix-nomedia: screen.width != 640")
     assert(machine.screen.height == 480, "iix-nomedia: screen.height != 480")
     assert(machine.screen.checksum() ~= blank, "iix-nomedia: JMFB never painted")
-    report_perf("suite-iix/iix-nomedia", scheduler.instr_count)
+    mac.report_perf("suite-iix/iix-nomedia", scheduler.instr_count)
 end
 
 -- ---- iix-824gc-seat ---------------------------------------------------------
@@ -74,7 +74,7 @@ local function row_iix_824gc_seat()
     assert(machine.nubus.slot[9].card.gc.state == "reset", "iix-824gc-seat: gc.state != reset in ROM-only boot")
     assert(machine.screen.width == 640, "iix-824gc-seat: screen.width != 640")
     assert(machine.screen.checksum() ~= blank, "iix-824gc-seat: 8•24 GC never painted")
-    report_perf("suite-iix/iix-824gc-seat", scheduler.instr_count)
+    mac.report_perf("suite-iix/iix-824gc-seat", scheduler.instr_count)
 end
 
 -- ---- iix-701-fd -------------------------------------------------------------
@@ -88,14 +88,14 @@ local function row_iix_701_fd()
     machine.rtc.pram.validate()
     machine.rtc.pram.poke(0x46, gs.bytes(0x002780a6a6000000, 8))
     scheduler.run(40000000)
-    local spent = wait_match("goldens/iix-7.0.1-640x480x1-finder.png", 900000000, 20000000)
+    local spent = mac.wait_match("goldens/iix-7.0.1-640x480x1-finder.png", 900000000, 20000000)
     assert(machine.id == "iix", "iix-701-fd: machine.id != iix")
     assert(machine.ram == 8192, "iix-701-fd: machine.ram != 8192")
     assert(machine.screen.width == 640, "iix-701-fd: screen.width != 640")
     assert(machine.screen.height == 480, "iix-701-fd: screen.height != 480")
-    assert_addr(false)
-    report_row("7.0.1", "jmfb", "fd-boot 640x480x1")
-    report_perf("suite-iix/iix-701-fd", spent)
+    mac.assert_addr(false)
+    mac.report_row("7.0.1", "jmfb", "fd-boot 640x480x1")
+    mac.report_perf("suite-iix/iix-701-fd", spent)
 end
 
 -- ---- iix-portrait-603 -------------------------------------------------------
@@ -125,16 +125,16 @@ local function row_iix_portrait_603()
     assert(machine.screen.width == 640, "iix-portrait-603: screen.width != 640")
     assert(machine.screen.height == 870, "iix-portrait-603: ROM did not program the portrait raster")
     assert(machine.rtc.pram.peek(0x48) == 0x80, "iix-portrait-603: savedMode rewritten by ROM")
-    check("goldens/iix-6.0.3-640x870x1-welcome.png")
-    report_row("6.0.3", "jmfb", "rom-stage 640x870x1 portrait")
+    mac.check("goldens/iix-6.0.3-640x870x1-welcome.png")
+    mac.report_row("6.0.3", "jmfb", "rom-stage 640x870x1 portrait")
 
     -- ...and 6.0.3 keeps the portrait raster through to the desktop.
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.screen.width == 640, "iix-portrait-603: desktop width != 640")
     assert(machine.screen.height == 870, "iix-portrait-603: desktop lost the portrait raster")
-    check("goldens/iix-6.0.3-640x870x1-finder.png")
-    report_row("6.0.3", "jmfb", "fd-boot 640x870x1 portrait-desktop")
-    report_perf("suite-iix/iix-portrait-603", scheduler.instr_count)
+    mac.check("goldens/iix-6.0.3-640x870x1-finder.png")
+    mac.report_row("6.0.3", "jmfb", "fd-boot 640x870x1 portrait-desktop")
+    mac.report_perf("suite-iix/iix-portrait-603", scheduler.instr_count)
 end
 
 -- ---- iix-71-extfd -----------------------------------------------------------
@@ -149,19 +149,19 @@ local function row_iix_71_extfd()
     machine.rtc.pram.validate()
     machine.rtc.pram.poke(0x46, gs.bytes(0x002781a6a6000000, 8))
     scheduler.run(75000000)
-    wait_stable(600000000)
+    mac.wait_stable(600000000)
     assert(machine.id == "iix", "iix-71-extfd: machine.id != iix")
     assert(machine.ram == 16384, "iix-71-extfd: machine.ram != 16384")
     assert(machine.screen.width == 640, "iix-71-extfd: screen.width != 640 (JMFB not seated?)")
-    check("goldens/iix-7.1-640x480x2-desktop.png")
+    mac.check("goldens/iix-7.1-640x480x2-desktop.png")
 
     machine.floppy.drive[1].insert(install_71)
     assert(machine.floppy.drive[1].present, "iix-71-extfd: Install.img not present in FD1")
-    wait_stable(600000000)
+    mac.wait_stable(600000000)
     assert(machine.memory.peek.w(0xaf0) == 0, "iix-71-extfd: system error raised on FD1 insert (Finder bomb?)")
-    check("goldens/iix-7.1-640x480x2-fd1-mounted.png")
-    report_row("7.1", "jmfb", "fd-boot external-fd1")
-    report_perf("suite-iix/iix-71-extfd", scheduler.instr_count)
+    mac.check("goldens/iix-7.1-640x480x2-fd1-mounted.png")
+    mac.report_row("7.1", "jmfb", "fd-boot external-fd1")
+    mac.report_perf("suite-iix/iix-71-extfd", scheduler.instr_count)
 end
 
 
@@ -193,7 +193,7 @@ local function row_iix_gc_accel1()
     gc_boot_1bpp("accel")
     machine.scsi.attach_hd(hd_608_gc, 0)
     scheduler.run(200000000)
-    wait_stable(600000000)
+    mac.wait_stable(600000000)
     assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "iix-gc-accel1: slot $9 card != 8•24 GC")
     assert(machine.nubus.slot[9].card.gc.on == true, "iix-gc-accel1: accelerator did not turn on")
     assert(machine.nubus.slot[9].card.gc.state == "gc-on", "iix-gc-accel1: accelerator state != gc-on")
@@ -201,9 +201,9 @@ local function row_iix_gc_accel1()
     assert(machine.nubus.slot[9].card.gc.rpc_count > 0, "iix-gc-accel1: no RPCs serviced (bring-up never engaged)")
     assert(machine.screen.width == 640, "iix-gc-accel1: screen width != 640")
     assert(machine.screen.height == 480, "iix-gc-accel1: screen height != 480")
-    check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
-    report_row("6.0.8", "824gc", "hd-boot gc-accel-on rpc-counted")
-    report_perf("suite-iix/iix-gc-accel1", scheduler.instr_count)
+    mac.check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    mac.report_row("6.0.8", "824gc", "hd-boot gc-accel-on rpc-counted")
+    mac.report_perf("suite-iix/iix-gc-accel1", scheduler.instr_count)
 end
 
 local function row_iix_gc_decline1()
@@ -211,7 +211,7 @@ local function row_iix_gc_decline1()
     machine.nubus.slot[9].card.gc.force_decline = true
     machine.scsi.attach_hd(hd_608_gc, 0)
     scheduler.run(200000000)
-    wait_stable(600000000)
+    mac.wait_stable(600000000)
     assert(machine.nubus.slot[9].card.gc.force_decline == true, "iix-gc-decline1: force_decline lost")
     assert(machine.nubus.slot[9].card.gc.on == true, "iix-gc-decline1: accelerator did not turn on")
     assert(machine.nubus.slot[9].card.gc.state == "gc-on", "iix-gc-decline1: accelerator state != gc-on")
@@ -219,8 +219,8 @@ local function row_iix_gc_decline1()
     assert(machine.nubus.slot[9].card.gc.rpc_count > 0, "iix-gc-decline1: no RPCs serviced (bring-up never engaged)")
     assert(machine.screen.width == 640, "iix-gc-decline1: screen width != 640")
     -- The oracle: the SAME golden as the accel row above.
-    check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
-    report_perf("suite-iix/iix-gc-decline1", scheduler.instr_count)
+    mac.check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    mac.report_perf("suite-iix/iix-gc-decline1", scheduler.instr_count)
 end
 
 -- ---- iix-jmfb-sweep ---------------------------------------------------------
@@ -256,11 +256,11 @@ local function sweep_cell(sense, sister, spid, w, h, settle, golden)
     assert(machine.screen.width == w, F"jmfb-sweep ${golden}: width != ${w}")
     assert(machine.screen.height == h, F"jmfb-sweep ${golden}: height != ${h}")
     assert(machine.rtc.pram.peek(0x48) == spid, F"jmfb-sweep ${golden}: savedMode rewritten by ROM")
-    check(golden)
+    mac.check(golden)
     -- Claim the cell so the contract protects it: these are (card x geometry x
     -- depth) cells, taken at ROM stage — the same shape iix-portrait-603
     -- already declares.
-    report_row("7.0.1", "jmfb", F"rom-stage ${w}x${h}x${machine.screen.depth}")
+    mac.report_row("7.0.1", "jmfb", F"rom-stage ${w}x${h}x${machine.screen.depth}")
 end
 
 local function row_iix_jmfb_sweep()
@@ -283,7 +283,7 @@ local function row_iix_jmfb_sweep()
     sweep_cell(0, gs.bytes(0x002781a7a7000000, 8), 0x81, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
     sweep_cell(0, gs.bytes(0x002782a7a7000000, 8), 0x82, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
     sweep_cell(0, gs.bytes(0x002783a7a7000000, 8), 0x83, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")
-    report_perf("suite-iix/iix-jmfb-sweep", scheduler.instr_count)
+    mac.report_perf("suite-iix/iix-jmfb-sweep", scheduler.instr_count)
 end
 
 -- ---- iix-75-hd --------------------------------------------------------------
@@ -313,14 +313,14 @@ local function row_iix_75_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(400000000)
-    wait_stable(1500000000)
+    mac.wait_stable(1500000000)
     assert(machine.id == "iix", "iix-75-hd: machine.id != iix")
     assert(machine.ram == 8192, "iix-75-hd: machine.ram != 8192")
     assert(machine.screen.width == 640, "iix-75-hd: screen.width != 640")
-    assert_addr(false)
-    check_ex("goldens/iix-7.5-640x480x1-finder.png", 0, 440, 20, 640)
-    report_row("7.5", "jmfb", "hd-boot 5380")
-    report_perf("suite-iix/iix-75-hd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.check_ex("goldens/iix-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    mac.report_row("7.5", "jmfb", "hd-boot 5380")
+    mac.report_perf("suite-iix/iix-75-hd", scheduler.instr_count)
 end
 
 -- ---- iix-jmfb-refuse --------------------------------------------------------
@@ -371,7 +371,7 @@ local function row_iix_jmfb_refuse()
     machine.memory.poke.w(reg_rw, 0x0014)
     assert(machine.screen.height == 480, "iix-jmfb-refuse: descriptor did not recover after RowWords")
     assert(machine.screen.checksum() == good, "iix-jmfb-refuse: recovered picture differs after RowWords")
-    report_perf("suite-iix/iix-jmfb-refuse", scheduler.instr_count)
+    mac.report_perf("suite-iix/iix-jmfb-refuse", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -385,13 +385,13 @@ mac.row("iix-gc-accel1", row_iix_gc_accel1)
 mac.row("iix-gc-decline1", row_iix_gc_decline1)
 mac.row("iix-jmfb-refuse", row_iix_jmfb_refuse)
 mac.row("iix-jmfb-sweep", row_iix_jmfb_sweep)
-if row_on("iix-75-hd") then
-    if have_media(hd_75) then
+if mac.row_on("iix-75-hd") then
+    if mac.have_media(hd_75) then
         mac.row("iix-75-hd", row_iix_75_hd)
     else
         echo("skip: iix-75-hd (7.5 prepared image not fetched)")
     end
 end
 
-suite_done()
+mac.suite_done()
 quit()

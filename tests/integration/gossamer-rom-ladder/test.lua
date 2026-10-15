@@ -96,7 +96,7 @@ ladder("Rev C", "AAPL,PowerMac G3", 0x01BEFFFA)
 -- thirteen-descriptor program (twelve OUTPUT_MORE $8000 + OUTPUT_LAST
 -- $2B60, 404,320 bytes) through channel 8, polling it to its STOP.  The
 -- capture matches a golden WAV sample-exactly (REGEN=1 regenerates).
-check_sound("boot-beep.wav", 101080)
+mac.check_sound("boot-beep.wav", 101080)
 assert(machine.sound.peak >= 2000, F"G10: beep rendered silent (peak ${machine.sound.peak})")
 assert(machine.sound.sample_rate == 44100, "G10: sound rate != the beep's 44100")
 assert(machine.sound.out_enabled == false, "G10: channel 8 still draining after the beep")
@@ -133,7 +133,7 @@ local revc_pc = machine.cpu.pc
 -- chip's big-endian aperture (BAR0 + 8 MB, assigned at $81000000 here) at
 -- its $480 start offset.
 assert(debug.mac.globals.read("ScrnBase") == 0x81800480, "G11: ScrnBase not in the Rage Pro's big-endian aperture")
-check("gray-desktop.png")
+mac.check("gray-desktop.png")
 
 -- --- G12: the multiple-scan displays sense as Apple's codes -----------------
 -- The built-in port takes the 15", 17" and 20" multiple-scan displays; the

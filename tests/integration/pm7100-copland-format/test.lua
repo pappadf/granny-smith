@@ -92,7 +92,7 @@ local function phase1_host_desktop()
     scheduler.run(360000000)
     -- Boot blocks -> CFM init -> extensions parade -> Finder desktop.
     scheduler.run(1200000000)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
 
     -- The machine Copland's rule 200 gates on, and the video it wants.
     assert(machine.id == "pm7100", "machine.id != pm7100")
@@ -123,8 +123,8 @@ local function phase1_host_desktop()
     -- with its 9 items, and NO icon for the unformatted target drive.  The
     -- menu-bar clock is masked the way every other 7.5 golden in the suite
     -- masks it.
-    check_ex("host-desktop.png", 0, 440, 20, 640)
-    report_perf("pm7100-copland-install/phase1", scheduler.instr_count)
+    mac.check_ex("host-desktop.png", 0, 440, 20, 640)
+    mac.report_perf("pm7100-copland-install/phase1", scheduler.instr_count)
 end
 
 -- Pick an item from an open pop-up menu: press on the pop-up, move onto the
@@ -133,11 +133,11 @@ end
 -- re-picks the current item.
 local function popup_pick(px, py, ix, iy)
     machine.adb.mouse.move(px, py, "global")
-    run_ticks(30)
+    mac.run_ticks(30)
     machine.adb.mouse.click(true)
-    run_ticks(40)
+    mac.run_ticks(40)
     machine.adb.mouse.move(ix, iy, "global")
-    run_ticks(40)
+    mac.run_ticks(40)
     machine.adb.mouse.click(false)
 end
 
@@ -158,64 +158,64 @@ local function phase2_format_target()
     -- Into the CD: Mac OS 8 Runtime SW -> Drive Setup 2.0d5c2 -> Drive Setup.
     -- The Finder auto-opened the disc's root window in phase 1, so the folder
     -- icons are where the phase-1 golden shows them.
-    double_click(152, 193)
-    wait_stable(600000000)
-    check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
+    mac.double_click(152, 193)
+    mac.wait_stable(600000000)
+    mac.check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
 
-    double_click(93, 165)
-    wait_stable(600000000)
-    check_ex("cd-drive-setup-folder.png", 0, 440, 20, 640)
+    mac.double_click(93, 165)
+    mac.wait_stable(600000000)
+    mac.check_ex("cd-drive-setup-folder.png", 0, 440, 20, 640)
 
     -- Launching it raises Apple's confidential-release notice — which is itself
     -- the proof that the binary that came off the CD is the DR1 build, not 7.5's
     -- Drive Setup 1.0.2.
-    double_click(186, 137)
-    wait_stable(2000000000)
-    check_ex("drive-setup-splash.png", 0, 440, 20, 640)
-    click(407, 138)
+    mac.double_click(186, 137)
+    mac.wait_stable(2000000000)
+    mac.check_ex("drive-setup-splash.png", 0, 440, 20, 640)
+    mac.click(407, 138)
 
     -- The bus scan.  A fixed budget first: nothing on screen changes while Drive
     -- Setup walks the bus, so a bare stability wait would return during the scan
     -- with an empty list.
     scheduler.run(400000000)
-    wait_stable(2000000000)
+    mac.wait_stable(2000000000)
     -- "List of Drives": Macintosh HD at ID 0, <not initialized> at ID 1, and
     -- <CD-ROM drive> at ID 3.  Apple's own formatter enumerating our emulated
     -- HD230SC as an initializable mechanism is the acceptance test for that
     -- drive, now on the tool Copland actually requires rather than on 7.0.1's
     -- HD SC Setup.
-    check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
+    mac.check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
 
     -- Select the uninitialized drive; the status line must turn into "This disk
     -- can be initialized." with the Initialize... button enabled.  A drive the
     -- formatter rejects leaves that button greyed out.
-    click(60, 115)
-    wait_stable(600000000)
-    check_ex("drive-setup-selected.png", 0, 440, 20, 640)
+    mac.click(60, 115)
+    mac.wait_stable(600000000)
+    mac.check_ex("drive-setup-selected.png", 0, 440, 20, 640)
 
     -- Initialize... -> Custom Setup..., and pick the partitioning scheme
     -- explicitly.  "1 Macintosh HFS" is already the default, but Apple's
     -- procedure names the step and a default is not something to depend on.
-    click(257, 249)
-    wait_stable(600000000)
-    click(92, 249)
-    wait_stable(600000000)
+    mac.click(257, 249)
+    mac.wait_stable(600000000)
+    mac.click(92, 249)
+    mac.wait_stable(600000000)
     -- Custom Setup reports the drive's own capacity: 234 MB, above the
     -- installer's 230 MB floor (rule 204/205).  That number is Drive Setup's
     -- verdict on the mechanism, not ours.
-    check_ex("custom-setup.png", 0, 440, 20, 640)
+    mac.check_ex("custom-setup.png", 0, 440, 20, 640)
 
     popup_pick(255, 97, 240, 128)
-    wait_stable(600000000)
+    mac.wait_stable(600000000)
     -- One volume, "untitled", Apple HFS, spanning the whole drive, and OK live.
-    check_ex("custom-setup-1hfs.png", 0, 440, 20, 640)
+    mac.check_ex("custom-setup-1hfs.png", 0, 440, 20, 640)
 
-    click(340, 355)
-    wait_stable(600000000)
+    mac.click(340, 355)
+    mac.wait_stable(600000000)
     -- THE STATUS LINE this step is after:
     --   New Partitioning: 1 Macintosh HFS
     --   Initialization Options: None
-    check_ex("ready-to-initialize.png", 0, 440, 20, 640)
+    mac.check_ex("ready-to-initialize.png", 0, 440, 20, 640)
 
     -- Write the driver, the partition map and the volume across 479,350 blocks.
     --
@@ -226,13 +226,13 @@ local function phase2_format_target()
     -- mid-format golden (measured).  1.1 G covers the whole operation; the
     -- settle then absorbs the mount and the Finder putting the new volume on
     -- the desktop.
-    click(280, 249)
+    mac.click(280, 249)
     scheduler.run(1100000000)
-    wait_stable(3000000000)
+    mac.wait_stable(3000000000)
     -- "Initialization was successful.", the drive list now naming the volume
     -- `untitled` at SCSI ID 1, and its icon on the desktop.
-    check_ex("initialized.png", 0, 440, 20, 640)
-    report_perf("pm7100-copland-install/phase2", scheduler.instr_count)
+    mac.check_ex("initialized.png", 0, 440, 20, 640)
+    mac.report_perf("pm7100-copland-install/phase2", scheduler.instr_count)
 end
 
 -- Export the formatted volume and prove, host-side, that Drive Setup 2.0d5c2
@@ -275,13 +275,13 @@ end
 
 -- Skip cleanly where the Copland media is absent: it is not redistributable
 -- and not part of the test data (see GS_EXTRA_MEDIA_DIR above).
-if have_media(ddk_cd) and have_media(F"${ssw75}/Install Disk 1.img") and have_media(host_hd) then
+if mac.have_media(ddk_cd) and mac.have_media(F"${ssw75}/Install Disk 1.img") and mac.have_media(host_hd) then
     phase1_host_desktop()
     phase2_format_target()
     phase2_export_formatted()
-    report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount drive-setup-2.0d5c2")
+    mac.report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount drive-setup-2.0d5c2")
 else
-    skip_test("pm7100-copland-format (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
+    mac.skip_test("pm7100-copland-format (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 end
 
 quit()

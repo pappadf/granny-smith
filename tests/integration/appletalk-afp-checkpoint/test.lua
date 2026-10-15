@@ -51,7 +51,7 @@ assert(appletalk.afp.stats.commands_served > 0, "no AFP commands were served")
 
 -- Select "My Volume", then OK — the mount itself — and close the Chooser.
 afp_mount_and_close()
-check("desktop-mounted.png")
+mac.check("desktop-mounted.png")
 
 -- Open the volume's window. The gap between the two clicks has to fit inside
 -- DoubleTime, so it is a fraction of the budgets used for single clicks.
@@ -59,11 +59,11 @@ machine.adb.mouse.move(468, 108)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(80000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 local n = 0
 local hit = 0
 while n < 20000 do
@@ -94,8 +94,8 @@ assert(gs.contains(F"${scheduler.events}", "\"atp\""), "the restored queue lost 
 -- request on its old session is refused: the volume leaves the desktop, and
 -- nothing hangs.  (An assert anywhere in this run fails it: headless exits
 -- non-zero on one.)
-run_until_match("volume-dropped.png", 60000000, 5000000)
-check("volume-dropped.png")
+mac.run_until_match("volume-dropped.png", 60000000, 5000000)
+mac.check("volume-dropped.png")
 
 -- ...and the volume mounts again, the way a user would: Chooser → AppleShare
 -- (AppleTalk is already active) → Shared Folders → Guest → My Volume.
@@ -111,27 +111,27 @@ machine.adb.mouse.move(95, 90)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(60000000)
 machine.adb.mouse.move(280, 88)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(6000000)
 machine.adb.mouse.move(333, 178)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(40000000)
 machine.adb.mouse.move(392, 259)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("volume-list-again.png", 40000000, 5000000)
-check("volume-list-again.png")
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("volume-list-again.png", 40000000, 5000000)
+mac.check("volume-list-again.png")
 
 -- A new session, under a new reference: the old one is not reissued.
 local new_ref = appletalk.afp.sessions[0].session_ref
@@ -142,20 +142,20 @@ machine.adb.mouse.move(150, 113)
 scheduler.run(4000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(8000000)
 machine.adb.mouse.move(333, 259)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(60000000)
 machine.adb.mouse.move(72, 47)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("desktop-mounted.png", 40000000, 5000000)
-check("desktop-mounted.png")
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("desktop-mounted.png", 40000000, 5000000)
+mac.check("desktop-mounted.png")
 
 quit()

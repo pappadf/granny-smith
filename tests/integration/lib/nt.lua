@@ -101,7 +101,7 @@ function nt_ldr(key, want, ceiling, rung) -- global: included file
     end
     local out = ""
     local spent = 0
-    while not gs.contains(out, want) do
+    while not gs.truthy(function() return gs.contains(out, want) end) do
         assert(spent < ceiling, F"${rung}: SETUPLDR never showed '${want}'")
         scheduler.run(20000000)
         spent = spent + 20000000
@@ -167,13 +167,13 @@ function nt_power_on(rom) -- global: included file
     machine.boot{model = "ans500", ram = 65536, rom = rom}
     local fw = ""
     local spins = 0
-    while not gs.contains(fw, "0 > ") and not gs.contains(fw, "install-console>") and spins < 24 do
+    while not gs.truthy(function() return gs.contains(fw, "0 > ") end) and not gs.truthy(function() return gs.contains(fw, "install-console>") end) and spins < 24 do
         scheduler.run(250000000)
         fw = F"${fw}${machine.scc.a.sent()}"
         spins = spins + 1
     end
     local settle = 0
-    while not gs.contains(fw, "0 > ") and settle < 5 do
+    while not gs.truthy(function() return gs.contains(fw, "0 > ") end) and settle < 5 do
         scheduler.run(250000000)
         fw = F"${fw}${machine.scc.a.sent()}"
         settle = settle + 1
@@ -181,7 +181,7 @@ function nt_power_on(rom) -- global: included file
     -- The console on ttya.  From a virgin store 2.26NT, like the production
     -- ROM, comes up on the screen; Apple's documented terminal setup on the
     -- ADB keyboard and a power cycle move it, as ans_boot_serial does.
-    if not gs.contains(fw, "0 > ") then
+    if not gs.truthy(function() return gs.contains(fw, "0 > ") end) then
         mac.type_settle("setenv output-device ttya\n", 5000000, 400000000)
         mac.type_settle("setenv input-device ttya\n", 5000000, 400000000)
         local ignored = machine.scc.a.sent()

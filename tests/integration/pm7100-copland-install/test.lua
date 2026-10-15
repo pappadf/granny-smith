@@ -48,8 +48,8 @@ local function await_request_named(n, golden)
         scheduler.run(20000000)
         k = k + 1
     end
-    wait_stable(900000000)
-    check_ex(golden, 0, 440, 20, 640)
+    mac.wait_stable(900000000)
+    mac.check_ex(golden, 0, 440, 20, 640)
 end
 
 local function await_request(n)
@@ -76,43 +76,43 @@ local function phase3_install_75()
     -- wait: the machine's PRAM disables it), then boot blocks to the Finder.
     scheduler.run(360000000)
     scheduler.run(1200000000)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot")
 
     -- The formatted target mounts as `untitled` beside the host volume and the
     -- CD — phase 2's work, seen from the guest for the first time.
     machine.floppy.drive[0].insert(tostring(ssw75) .. "/Install Disk 1.img", true)
     scheduler.run(600000000)
-    wait_stable(900000000)
-    check_ex("host-with-target.png", 0, 440, 20, 640)
+    mac.wait_stable(900000000)
+    mac.check_ex("host-with-target.png", 0, 440, 20, 640)
 
     -- The floppy's window auto-opens on its single Installer.
-    double_click(153, 95)
+    mac.double_click(153, 95)
     scheduler.run(800000000)
-    wait_stable(3000000000)
-    check_ex("welcome.png", 0, 440, 20, 640)
+    mac.wait_stable(3000000000)
+    mac.check_ex("welcome.png", 0, 440, 20, 640)
 
-    click(470, 366)
-    wait_stable(2000000000)
+    mac.click(470, 366)
+    mac.wait_stable(2000000000)
     -- "Easy Install", and the destination the Installer picked by itself: the
     -- volume we booted from.  Wrong — hence the two Switch Disk clicks below.
-    check_ex("easy-install-wrong-disk.png", 0, 440, 20, 640)
+    mac.check_ex("easy-install-wrong-disk.png", 0, 440, 20, 640)
 
     -- Switch Disk cycles the mounted volumes: Macintosh HD -> Mac OS 8 DDK 0.4
     -- (locked, and it says so) -> untitled.  The intervening move is required,
     -- not cosmetic: a same-spot warp emits no ADB motion, so a second click at
     -- the same pixel has no fresh position event to bind to and is dropped
     -- (../lib/mac.script, click()).
-    click(307, 355)
-    wait_stable(1000000000)
+    mac.click(307, 355)
+    mac.wait_stable(1000000000)
     machine.adb.mouse.move(420, 300, "global")
-    run_ticks(10)
-    click(307, 355)
-    wait_stable(1000000000)
+    mac.run_ticks(10)
+    mac.click(307, 355)
+    mac.wait_stable(1000000000)
     -- Destination Disk: untitled, and Install is live again.
-    check_ex("easy-install-untitled.png", 0, 440, 20, 640)
+    mac.check_ex("easy-install-untitled.png", 0, 440, 20, 640)
 
-    click(471, 359)
+    mac.click(471, 359)
     -- Disks 2-7.  Each request is matched pixel-exact before the disk goes in,
     -- so the golden is both the synchronisation point and the assertion that
     -- the Installer asked for that particular disk.
@@ -136,24 +136,24 @@ local function phase3_install_75()
     -- settled" while the run was still going — which is what a too-small
     -- ceiling looks like, not a hang.
     scheduler.run(600000000)
-    wait_stable(30000000000)
+    mac.wait_stable(30000000000)
     -- NOT the end.  7.5's Installer stops on an advisory about QuickDraw GX and
     -- PowerTalk that has to be dismissed before it reports anything.  Treating
     -- this frame as the finish line was the mistake that made an earlier
     -- version of this test quit mid-install: the volume looked plausible (a
     -- System Folder was there) while the Installer had not written the boot
     -- blocks or its own verdict yet.
-    check_ex("quickdraw-gx-notice.png", 0, 440, 20, 640)
-    click(445, 360)
+    mac.check_ex("quickdraw-gx-notice.png", 0, 440, 20, 640)
+    mac.click(445, 360)
 
     -- NOW it finishes.
     scheduler.run(600000000)
-    wait_stable(30000000000)
+    mac.wait_stable(30000000000)
     -- Always leave the frame behind, so a golden mismatch is diagnosable from
     -- the run's artifacts rather than needing a 25-minute re-run.
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/tail.png") end, nil)
-    check_ex("installed.png", 0, 440, 20, 640)
-    report_perf("pm7100-copland-install/phase3", scheduler.instr_count)
+    mac.check_ex("installed.png", 0, 440, 20, 640)
+    mac.report_perf("pm7100-copland-install/phase3", scheduler.instr_count)
 end
 
 -- Prove the System landed, and publish the volume for phase 4.
@@ -199,12 +199,12 @@ local function phase3_export()
     assert(files.path_exists(tostring(media) .. "/copland_target_75_230mb.img"), "the installed volume was not published to media/")
 end
 
-if have_media(target) and have_media(F"${ssw75}/Install Disk 7.img") and have_media(ddk_cd) and have_media(host_hd) then
+if mac.have_media(target) and mac.have_media(F"${ssw75}/Install Disk 7.img") and mac.have_media(ddk_cd) and mac.have_media(host_hd) then
     phase3_install_75()
     phase3_export()
-    report_row("7.5", "ariel", "copland-install-phase3 ssw75-floppy-install")
+    mac.report_row("7.5", "ariel", "copland-install-phase3 ssw75-floppy-install")
 else
-    skip_test("pm7100-copland-install (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
+    mac.skip_test("pm7100-copland-install (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 end
 
 quit()

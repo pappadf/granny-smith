@@ -11,7 +11,7 @@ scheduler.run(200000000)
 -- Past the ROM's self-tests and into the SCSI scan: the nanokernel is up
 -- and the 68K emulator is running the Start Manager (MSR[PR] set).
 assert((machine.cpu.msr & 0x4000) ~= 0, "perf-pdm: not in the 68K emulator after 200M instructions")
-mips_floor("perf-pdm", t0, 25)
+mac.mips_floor("perf-pdm", t0, 25)
 echo(F"perf-pdm: blocks=${predecode.blocks} decodes=${predecode.decodes} suppressed=${predecode.suppressed_writes}")
-report_perf("perf-pdm/rom-boot", scheduler.instr_count)
+mac.report_perf("perf-pdm/rom-boot", scheduler.instr_count)
 quit()

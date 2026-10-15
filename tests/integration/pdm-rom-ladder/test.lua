@@ -163,7 +163,7 @@ assert(dsecs >= 1, "L17: Time global not advancing")
 -- WAV sample-exactly (REGEN=1 regenerates it).  Register truths after the
 -- chime: the beep's stop sequence clears RUN and drops the shared rate
 -- field back to the 22 050 Hz power-on default.
-check_sound("chime.wav", 88064)
+mac.check_sound("chime.wav", 88064)
 assert(machine.sound.peak >= 4000, F"L19: chime rendered silent (peak ${machine.sound.peak})")
 assert(machine.sound.out_enabled == false, "L19: sound-out RUN still set at the wall")
 assert(machine.sound.sample_rate == 22050, "L19: post-chime rate != 22050")
@@ -176,7 +176,7 @@ assert(machine.sound.sample_rate == 22050, "L19: post-chime rate != 22050")
 assert(machine.screen.width == 640, "L20: screen width != 640")
 assert(machine.screen.height == 480, "L20: screen height != 480")
 assert(machine.screen.depth == 8, "L20: screen depth != 8 bpp")
-check("gray-desktop.png")
+mac.check("gray-desktop.png")
 
 -- The L10 "Lisa" POST marker stays deferred (POST does not run pre-kernel
 -- on the normal cold path), and the warm-restart row is deferred to the

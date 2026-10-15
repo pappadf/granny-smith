@@ -91,7 +91,7 @@ local function row_q700_chime()
     local t0 = debug.mac.globals.read("Ticks")
     scheduler.run(10000000)
     assert(debug.mac.globals.read("Ticks") > t0, "q700-chime: Ticks stalled")
-    report_perf("suite-quadra/q700-chime", scheduler.instr_count)
+    mac.report_perf("suite-quadra/q700-chime", scheduler.instr_count)
 end
 
 -- ---- q700-71-fd -------------------------------------------------------------
@@ -100,7 +100,7 @@ end
 local function boot_q700_fd()
     machine.boot{model = "q700", ram = 4096, rom = quadra_rom}
     machine.floppy.drive[0].insert(disk_tools_71)
-    local spent = wait_match("goldens/q700-7.1-640x480-finder.png", 500000000, 20000000)
+    local spent = mac.wait_match("goldens/q700-7.1-640x480-finder.png", 500000000, 20000000)
     assert(machine.id == "q700", "q700-71-fd: machine.id != q700")
     assert(machine.ram == 4096, "q700-71-fd: machine.ram != 4096")
     assert(machine.screen.width == 640, "q700-71-fd: not in 640x480")
@@ -113,10 +113,10 @@ local function row_q700_71_fd()
     -- ADB alive: a mouse move changes the frame (cursor redraw).
     local before = machine.screen.checksum()
     machine.adb.mouse.move(320, 240)
-    wait_change(before, 60000000)
-    mips_floor("q700-71-fd", t0, 3)
-    report_row("7.1", "dafb", "fd-boot swim-direct")
-    report_perf("suite-quadra/q700-71-fd", scheduler.instr_count)
+    mac.wait_change(before, 60000000)
+    mac.mips_floor("q700-71-fd", t0, 3)
+    mac.report_row("7.1", "dafb", "fd-boot swim-direct")
+    mac.report_perf("suite-quadra/q700-71-fd", scheduler.instr_count)
 end
 
 -- ---- q700-75-hd -------------------------------------------------------------
@@ -129,7 +129,7 @@ local function row_q700_75_hd()
     machine.boot{model = "q700", ram = 8192, rom = quadra_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
-    wait_desktop(1500000000)
+    mac.wait_desktop(1500000000)
     assert(machine.id == "q700", "q700-75-hd: machine.id != q700")
     assert(machine.ram == 8192, "q700-75-hd: machine.ram != 8192")
     assert(machine.screen.width == 640, "q700-75-hd: not in 640x480")
@@ -140,12 +140,12 @@ local function row_q700_75_hd()
     -- Measured: under default PRAM the towers boot 7.5 in 24-bit
     -- compatibility mode; deliberately selecting 32-bit is a PRAM
     -- follow-up.
-    assert_addr(false)
-    check_ex("goldens/q700-7.5-640x480-finder.png", 0, 440, 20, 640)
-    about_box()
-    check_about_clock("goldens/q700-7.5-640x480-about.png")
-    report_row("7.5", "dafb", "hd-boot 53c96 about")
-    report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.check_ex("goldens/q700-7.5-640x480-finder.png", 0, 440, 20, 640)
+    mac.about_box()
+    mac.check_about_clock("goldens/q700-7.5-640x480-about.png")
+    mac.report_row("7.5", "dafb", "hd-boot 53c96 about")
+    mac.report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
 end
 
 -- ---- q700-20m ---------------------------------------------------------------
@@ -175,7 +175,7 @@ local function row_q700_20m()
         assert(machine.ram == kb, F"q700-20m: machine.ram != ${kb}")
         assert(debug.mac.globals.read("MemTop") == kb * 1024, F"q700-20m: RAM sizing incomplete at ${kb} KB (MemTop=${debug.mac.globals.read(\"MemTop\"):08x}, want ${kb * 1024:08x}, PC=${machine.cpu.pc:08x})")
     end
-    report_perf("suite-quadra/q700-20m", scheduler.instr_count)
+    mac.report_perf("suite-quadra/q700-20m", scheduler.instr_count)
 end
 
 -- ---- tower-256m -------------------------------------------------------------
@@ -200,7 +200,7 @@ end
 local function row_tower_256m()
     tower_sizes("q900", quadra_rom)
     tower_sizes("q950", q950_rom)
-    report_perf("suite-quadra/tower-256m", scheduler.instr_count)
+    mac.report_perf("suite-quadra/tower-256m", scheduler.instr_count)
 end
 
 -- ---- q700-dafb-senses -------------------------------------------------------
@@ -249,7 +249,7 @@ local function row_q700_dafb_senses()
     sense_is(9, 640, 480, "PAL (extended $30)")
     sense_is(11, 640, 480, "19in (extended $3A)")
     sense_is(14, 640, 480, "multiscan band 3 (extended $23)")
-    report_perf("suite-quadra/q700-dafb-senses", scheduler.instr_count)
+    mac.report_perf("suite-quadra/q700-dafb-senses", scheduler.instr_count)
 end
 
 -- ---- q700-75-monitors -------------------------------------------------------
@@ -271,21 +271,21 @@ local function row_q700_75_monitors()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(400000000)
-    wait_stable(1200000000)
+    mac.wait_stable(1200000000)
     assert(machine.screen.width == 832, F"q700-75-monitors: 16in width ${machine.screen.width}, want 832")
     assert(machine.screen.height == 624, F"q700-75-monitors: 16in height ${machine.screen.height}, want 624")
-    check_ex("goldens/q700-7.5-832x624-finder.png", 0, 632, 20, 832)
-    report_row("7.5", "dafb", "hd-boot 832x624 16in-extended-sense")
+    mac.check_ex("goldens/q700-7.5-832x624-finder.png", 0, 632, 20, 832)
+    mac.report_row("7.5", "dafb", "hd-boot 832x624 16in-extended-sense")
 
     machine.boot{model = "q700", ram = 8192, rom = quadra_rom, video_sense = 0}
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(400000000)
-    wait_stable(1200000000)
+    mac.wait_stable(1200000000)
     assert(machine.screen.width == 1152, F"q700-75-monitors: 2-page width ${machine.screen.width}, want 1152")
     assert(machine.screen.height == 870, F"q700-75-monitors: 2-page height ${machine.screen.height}, want 870")
-    check_ex("goldens/q700-7.5-1152x870-finder.png", 0, 952, 20, 1152)
-    report_row("7.5", "dafb", "hd-boot 1152x870 two-page")
-    report_perf("suite-quadra/q700-75-monitors", scheduler.instr_count)
+    mac.check_ex("goldens/q700-7.5-1152x870-finder.png", 0, 952, 20, 1152)
+    mac.report_row("7.5", "dafb", "hd-boot 1152x870 two-page")
+    mac.report_perf("suite-quadra/q700-75-monitors", scheduler.instr_count)
 end
 
 -- ---- q900-76-fd -------------------------------------------------------------
@@ -297,15 +297,15 @@ local function row_q900_76_fd()
     machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert(disk_tools_76)
     scheduler.run(300000000)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.id == "q900", "q900-76-fd: machine.id != q900")
     assert(machine.screen.width == 640, "q900-76-fd: not in 640x480")
     -- The 7.6 *floppy* system runs 24-bit (measured — unlike the installed
     -- volume, which selects 32-bit itself).
-    assert_addr(false)
-    check_ex("goldens/q900-7.6-640x480-finder.png", 0, 440, 20, 640)
-    report_row("7.6", "dafb", "fd-boot swim-iop")
-    report_perf("suite-quadra/q900-76-fd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.check_ex("goldens/q900-7.6-640x480-finder.png", 0, 440, 20, 640)
+    mac.report_row("7.6", "dafb", "fd-boot swim-iop")
+    mac.report_perf("suite-quadra/q900-76-fd", scheduler.instr_count)
 end
 
 -- ---- q900-75-hd -------------------------------------------------------------
@@ -330,16 +330,16 @@ local function row_q900_75_hd()
     -- (Its device slots are deliberately not asserted: the external chain is
     -- empty, and an empty slot does not resolve.)
     local _ = machine.scsi2
-    wait_desktop(1500000000)
+    mac.wait_desktop(1500000000)
     assert(machine.id == "q900", "q900-75-hd: machine.id != q900")
     assert(machine.ram == 16384, "q900-75-hd: machine.ram != 16384")
     assert(debug.mac.globals.read("MMUFluff") == 14, "q900-75-hd: not identified as Quadra 900")
-    assert_addr(false)
-    check_ex("goldens/q900-7.5-640x480-finder.png", 0, 440, 20, 640)
-    about_box()
-    check_about_clock("goldens/q900-7.5-640x480-about.png")
-    report_row("7.5", "dafb", "hd-boot caboose iop about")
-    report_perf("suite-quadra/q900-75-hd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.check_ex("goldens/q900-7.5-640x480-finder.png", 0, 440, 20, 640)
+    mac.about_box()
+    mac.check_about_clock("goldens/q900-7.5-640x480-about.png")
+    mac.report_row("7.5", "dafb", "hd-boot caboose iop about")
+    mac.report_perf("suite-quadra/q900-75-hd", scheduler.instr_count)
 end
 
 -- ---- q950-71-hd -------------------------------------------------------------
@@ -352,33 +352,33 @@ local function row_q950_71_hd()
     machine.boot{model = "q950", ram = 8192, rom = q950_rom}
     machine.scsi.attach_hd(hd_71, 0)
     scheduler.run(700000000)
-    wait_stable(1400000000)
+    mac.wait_stable(1400000000)
     assert(debug.mac.globals.read("MMUFluff") == 20, "q950-71-hd: not identified as Quadra 950")
     assert(machine.screen.width == 640, "q950-71-hd: not in 640x480")
     -- Apple menu → Control Panels (press on the title, drag down, release).
     machine.adb.mouse.move(14, 5, "global")
-    run_ticks(8)
+    mac.run_ticks(8)
     machine.adb.mouse.click(true)
-    run_ticks(12)
+    mac.run_ticks(12)
     machine.adb.mouse.move(80, 132, "global")
-    run_ticks(12)
+    mac.run_ticks(12)
     machine.adb.mouse.click(false)
-    wait_stable(400000000)
+    mac.wait_stable(400000000)
     -- Double-click the Monitors control panel icon.
-    double_click(124, 137)
-    settle(500000000)
+    mac.double_click(124, 137)
+    mac.settle(500000000)
     -- Click "Thousands": the driver writes PCBR1=$C0, scanout goes x555.
     machine.adb.mouse.move(189, 130, "global")
-    run_ticks(8)
+    mac.run_ticks(8)
     machine.adb.mouse.click(true)
-    run_ticks(4)
+    mac.run_ticks(4)
     machine.adb.mouse.click(false)
-    wait_stable(500000000)
-    check("goldens/q950-7.1-640x480x16-thousands.png")
-    about_box()
-    check_about("goldens/q950-7.1-640x480x16-about.png")
-    report_row("7.1", "dafb", "hd-boot thousands x555 about")
-    report_perf("suite-quadra/q950-71-hd", scheduler.instr_count)
+    mac.wait_stable(500000000)
+    mac.check("goldens/q950-7.1-640x480x16-thousands.png")
+    mac.about_box()
+    mac.check_about("goldens/q950-7.1-640x480x16-about.png")
+    mac.report_row("7.1", "dafb", "hd-boot thousands x555 about")
+    mac.report_perf("suite-quadra/q950-71-hd", scheduler.instr_count)
 end
 
 -- ---- q950-76-hd -------------------------------------------------------------
@@ -394,14 +394,14 @@ local function row_q950_76_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_76, 0)
     scheduler.run(700000000)
-    wait_stable(1600000000)
+    mac.wait_stable(1600000000)
     assert(debug.mac.globals.read("MMUFluff") == 20, "q950-76-hd: not identified as Quadra 950")
     assert(machine.ram == 32768, "q950-76-hd: machine.ram != 32768")
-    assert_addr(true)
+    mac.assert_addr(true)
     assert(appletalk.stats.llap_rx > 0, "q950-76-hd: AppleTalk never reached the wire")
-    check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
-    report_row("7.6", "dafb", "hd-boot")
-    report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)
+    mac.check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
+    mac.report_row("7.6", "dafb", "hd-boot")
+    mac.report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)
 end
 
 -- ---- q700-checkpoint --------------------------------------------------------
@@ -415,8 +415,8 @@ local function row_q700_checkpoint()
     machine.boot{model = "q700", ram = 4096, rom = quadra_rom}
     assert(checkpoint.load(F"${vars.WORK_DIR}/suite-quadra.gsc"), "q700-checkpoint: load failed")
     scheduler.run(2000000)
-    check("goldens/q700-7.1-640x480-finder.png")
-    report_perf("suite-quadra/q700-checkpoint", scheduler.instr_count)
+    mac.check("goldens/q700-7.1-640x480-finder.png")
+    mac.report_perf("suite-quadra/q700-checkpoint", scheduler.instr_count)
 end
 
 -- ---- q700-sense-checkpoint --------------------------------------------------
@@ -445,15 +445,15 @@ local function row_q700_sense_checkpoint()
     scheduler.run(2000000)
     machine.memory.poke.l(0xf980001c, 0x7)
     assert(machine.memory.peek.l(0xf980001c) == 0x6, F"q700-sense-checkpoint: sense reg reads ${machine.memory.peek.l(0xf980001c):x} after restore, want 6 — the restore path dropped video_sense and fell back to the default")
-    report_perf("suite-quadra/q700-sense-checkpoint", scheduler.instr_count)
+    mac.report_perf("suite-quadra/q700-sense-checkpoint", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
 
 mac.row("q700-chime", row_q700_chime)
 mac.row("q700-71-fd", row_q700_71_fd)
-if row_on("q700-75-hd") then
-    if have_media(hd_75) then
+if mac.row_on("q700-75-hd") then
+    if mac.have_media(hd_75) then
         mac.row("q700-75-hd", row_q700_75_hd)
     else
         echo("skip: q700-75-hd (7.5 prepared image not fetched)")
@@ -461,23 +461,23 @@ if row_on("q700-75-hd") then
 end
 mac.row("q700-20m", row_q700_20m)
 mac.row("tower-256m", row_tower_256m)
-if row_on("q900-76-fd") then
-    if have_media(disk_tools_76) then
+if mac.row_on("q900-76-fd") then
+    if mac.have_media(disk_tools_76) then
         mac.row("q900-76-fd", row_q900_76_fd)
     else
         echo("skip: q900-76-fd (7.6 Disk Tools not fetched)")
     end
 end
-if row_on("q900-75-hd") then
-    if have_media(hd_75) then
+if mac.row_on("q900-75-hd") then
+    if mac.have_media(hd_75) then
         mac.row("q900-75-hd", row_q900_75_hd)
     else
         echo("skip: q900-75-hd (7.5 prepared image not fetched)")
     end
 end
 mac.row("q950-71-hd", row_q950_71_hd)
-if row_on("q950-76-hd") then
-    if have_media(hd_76) then
+if mac.row_on("q950-76-hd") then
+    if mac.have_media(hd_76) then
         mac.row("q950-76-hd", row_q950_76_hd)
     else
         echo("skip: q950-76-hd (7.6 prepared image not fetched)")
@@ -489,8 +489,8 @@ mac.row("q700-sense-checkpoint", row_q700_sense_checkpoint)
 -- The two monitor-sense rows run last.  machine.boot inherits nothing, so
 -- their non-default senses cannot reach another row; they were once moved
 -- here because it did (that is how they first broke q900-76-fd).
-if row_on("q700-75-monitors") then
-    if have_media(hd_75) then
+if mac.row_on("q700-75-monitors") then
+    if mac.have_media(hd_75) then
         mac.row("q700-75-monitors", row_q700_75_monitors)
     else
         echo("skip: q700-75-monitors (7.5 prepared image not fetched)")
@@ -498,5 +498,5 @@ if row_on("q700-75-monitors") then
 end
 mac.row("q700-dafb-senses", row_q700_dafb_senses)
 
-suite_done()
+mac.suite_done()
 quit()

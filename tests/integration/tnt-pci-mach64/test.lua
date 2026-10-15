@@ -427,8 +427,8 @@ assert((machine.pci.slot[1].card.regs.mem_cntl & 7) == 2, "the running card is u
 
 -- The card DECLARES what it will accept, so a frontend can offer a control
 -- without knowing which card it is.
-assert(catalog.profile("pm9500").cards[0].options[0].id == "vram", "the card must declare its option")
-assert(catalog.profile("pm9500").cards[0].options[0].default == "2m", "...and what it does by default")
+assert(catalog.profile("pm9500").cards[1].options[1].id == "vram", "the card must declare its option")
+assert(catalog.profile("pm9500").cards[1].options[1].default == "2m", "...and what it does by default")
 
 machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx"}
 

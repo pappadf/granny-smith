@@ -42,8 +42,8 @@ local function row_se30_nomedia()
     assert(machine.ram == 1024, "se30-nomedia: machine.ram != 1024")
     assert(machine.screen.width == 512, "se30-nomedia: width != 512")
     assert(machine.screen.height == 342, "se30-nomedia: height != 342")
-    check("goldens/se30-nomedia-512x342.png")
-    report_perf("suite-se30/se30-nomedia", scheduler.instr_count)
+    mac.check("goldens/se30-nomedia-512x342.png")
+    mac.report_perf("suite-se30/se30-nomedia", scheduler.instr_count)
 end
 
 -- ---- se30-chime -------------------------------------------------------------
@@ -57,7 +57,7 @@ local function row_se30_chime()
     machine.sound.capture.stop()
     assert(machine.sound.capture.frames == 15367, F"se30-chime: capture length ${machine.sound.capture.frames}, want 15367")
     machine.sound.match("goldens/se30-chime.wav")
-    report_perf("suite-se30/se30-chime", scheduler.instr_count)
+    mac.report_perf("suite-se30/se30-chime", scheduler.instr_count)
 end
 
 -- ---- se30-608-fd ------------------------------------------------------------
@@ -70,13 +70,13 @@ local function row_se30_608_fd()
     machine.floppy.drive[0].insert(ssw_608)
     local t0 = scheduler.host_user_ns
     scheduler.run(40000000)
-    local spent = wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
+    local spent = mac.wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
     assert(machine.ram == 2048, "se30-608-fd: machine.ram != 2048")
     assert(machine.screen.width == 512, "se30-608-fd: width != 512")
-    assert_addr(false)
-    mips_floor("se30-608-fd", t0, 4)
-    report_row("6.0.8", "builtin", "fd-boot swim-direct 800k-gcr")
-    report_perf("suite-se30/se30-608-fd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.mips_floor("se30-608-fd", t0, 4)
+    mac.report_row("6.0.8", "builtin", "fd-boot swim-direct 800k-gcr")
+    mac.report_perf("suite-se30/se30-608-fd", scheduler.instr_count)
 end
 
 -- ---- se30-71-fd -------------------------------------------------------------
@@ -93,14 +93,14 @@ local function row_se30_71_fd()
     -- wait_stable (not wait_match) because this row interacts afterwards:
     -- the settle point is identical in capture and verify runs, so the
     -- About choreography lands the same way in both.
-    wait_stable(2500000000)
-    check("goldens/se30-7.1-512x342-finder.png")
+    mac.wait_stable(2500000000)
+    mac.check("goldens/se30-7.1-512x342-finder.png")
     assert(machine.ram == 4096, "se30-71-fd: machine.ram != 4096")
-    assert_addr(false)
-    about_box()
-    check("goldens/se30-7.1-512x342-about.png")
-    report_row("7.1", "builtin", "fd-boot swim-direct 1.44m-mfm about")
-    report_perf("suite-se30/se30-71-fd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.about_box()
+    mac.check("goldens/se30-7.1-512x342-about.png")
+    mac.report_row("7.1", "builtin", "fd-boot swim-direct 1.44m-mfm about")
+    mac.report_perf("suite-se30/se30-71-fd", scheduler.instr_count)
 end
 
 -- ---- se30-701-gsvrom --------------------------------------------------------
@@ -118,13 +118,13 @@ local function row_se30_701_gsvrom()
     -- identical desktop. The version is not what either golden proves: se30-71-fd
     -- pins 7.1 through its About-box golden, and this row's own claim is the
     -- substitute ROM, asserted below via the card's declaration ROM.
-    local spent = wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
+    local spent = mac.wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
     assert(machine.id == "se30", "se30-701-gsvrom: machine.id != se30")
     assert(machine.ram == 8192, "se30-701-gsvrom: machine.ram != 8192")
     assert(machine.nubus.slot[14].card.declrom.path == "builtin:builtin_se30_video", "se30-701-gsvrom: not the generated vROM")
-    assert_addr(false)
-    report_row("7.0.1", "gsvrom", "fd-boot substitute-vrom")
-    report_perf("suite-se30/se30-701-gsvrom", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.report_row("7.0.1", "gsvrom", "fd-boot substitute-vrom")
+    mac.report_perf("suite-se30/se30-701-gsvrom", scheduler.instr_count)
 end
 
 -- ---- se30-75-hd -------------------------------------------------------------
@@ -142,13 +142,13 @@ local function row_se30_75_hd()
     -- 7.5 puts a clock in the menu bar, so the golden excludes that
     -- corner (the RTC is pinned above, but the displayed minute still
     -- depends on where in guest time the frame lands).
-    wait_stable(2500000000)
+    mac.wait_stable(2500000000)
     assert(machine.id == "se30", "se30-75-hd: machine.id != se30")
     assert(machine.ram == 16384, "se30-75-hd: machine.ram != 16384")
-    assert_addr(false)
-    check_ex("goldens/se30-7.5-512x342-finder.png", 0, 380, 20, 512)
-    report_row("7.5", "builtin", "hd-boot scsi")
-    report_perf("suite-se30/se30-75-hd", scheduler.instr_count)
+    mac.assert_addr(false)
+    mac.check_ex("goldens/se30-7.5-512x342-finder.png", 0, 380, 20, 512)
+    mac.report_row("7.5", "builtin", "hd-boot scsi")
+    mac.report_perf("suite-se30/se30-75-hd", scheduler.instr_count)
 end
 
 -- ---- se30-checkpoint --------------------------------------------------------
@@ -158,14 +158,14 @@ local function row_se30_checkpoint()
     machine.boot{model = "se30", ram = 2048, rom = vars.ROM}
     machine.floppy.drive[0].insert(ssw_608)
     scheduler.run(40000000)
-    wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
+    mac.wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
     assert(checkpoint.save(F"${vars.WORK_DIR}/suite-se30.gsc"), "se30-checkpoint: save failed")
     machine.boot{model = "se30", ram = 1024, rom = vars.ROM}
     assert(checkpoint.load(F"${vars.WORK_DIR}/suite-se30.gsc"), "se30-checkpoint: load failed")
     scheduler.run(5000000)
     assert(machine.ram == 2048, "se30-checkpoint: restored RAM size wrong")
-    check("goldens/se30-6.0.8-512x342-finder.png")
-    report_perf("suite-se30/se30-checkpoint", scheduler.instr_count)
+    mac.check("goldens/se30-6.0.8-512x342-finder.png")
+    mac.report_perf("suite-se30/se30-checkpoint", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -175,8 +175,8 @@ mac.row("se30-chime", row_se30_chime)
 mac.row("se30-608-fd", row_se30_608_fd)
 mac.row("se30-71-fd", row_se30_71_fd)
 mac.row("se30-701-gsvrom", row_se30_701_gsvrom)
-if row_on("se30-75-hd") then
-    if have_media(hd_75) then
+if mac.row_on("se30-75-hd") then
+    if mac.have_media(hd_75) then
         mac.row("se30-75-hd", row_se30_75_hd)
     else
         echo("skip: se30-75-hd (7.5 prepared image not fetched)")
@@ -184,5 +184,5 @@ if row_on("se30-75-hd") then
 end
 mac.row("se30-checkpoint", row_se30_checkpoint)
 
-suite_done()
+mac.suite_done()
 quit()

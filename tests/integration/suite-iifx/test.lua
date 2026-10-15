@@ -55,7 +55,7 @@ local function row_iifx_chime()
     assert(machine.oss.levels[1].ipl == 1, "iifx-chime: OSS level map does not start at IPL 1")
     assert(#machine.oss.source_levels == 15, "iifx-chime: OSS has 15 sources")
     machine.sound.match("goldens/iifx-chime.wav")
-    report_perf("suite-iifx/iifx-chime", scheduler.instr_count)
+    mac.report_perf("suite-iifx/iifx-chime", scheduler.instr_count)
 end
 
 -- ---- iifx-608-fd ------------------------------------------------------------
@@ -76,17 +76,17 @@ local function row_iifx_608_fd()
     -- Found by scripts/check-goldens.py once it learned to see wait_match
     -- goldens. The real Finder is up by ~400 M here.
     scheduler.run(300000000)
-    local spent = wait_match("goldens/iifx-6.0.8-640x480x1-finder.png", 900000000, 20000000)
+    local spent = mac.wait_match("goldens/iifx-6.0.8-640x480x1-finder.png", 900000000, 20000000)
     assert(machine.id == "iifx", "iifx-608-fd: machine.id != iifx")
     assert(machine.ram == 32768, "iifx-608-fd: machine.ram != 32768")
     assert(machine.screen.width == 640, "iifx-608-fd: screen.width != 640")
     assert(machine.screen.height == 480, "iifx-608-fd: screen.height != 480")
-    assert_addr(false)
-    report_row("6.0.8", "jmfb", "fd-boot swim-iop 800k-gcr")
+    mac.assert_addr(false)
+    mac.report_row("6.0.8", "jmfb", "fd-boot swim-iop 800k-gcr")
     -- Total row spend, not $spent: with the 300 M pre-run above, the wait
     -- matches on its first poll, so $spent would be a constant 20 M and
     -- signal nothing. instr_count still moves if the boot changes.
-    report_perf("suite-iifx/iifx-608-fd", scheduler.instr_count)
+    mac.report_perf("suite-iifx/iifx-608-fd", scheduler.instr_count)
 end
 
 -- ---- iifx-701-fd ------------------------------------------------------------
@@ -98,7 +98,7 @@ local function row_iifx_701_fd()
     machine.boot{model = "iifx", ram = 16384, video_card = "mdc_8_24", rom = vars.ROM}
     machine.floppy.drive[0].insert(sys_701)
     scheduler.run(200000000)
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.id == "iifx", "iifx-701-fd: machine.id != iifx")
     assert(machine.rom.id == "4147dd77", "iifx-701-fd: rom.id != 4147dd77")
     assert(machine.ram == 16384, "iifx-701-fd: machine.ram != 16384")
@@ -106,7 +106,7 @@ local function row_iifx_701_fd()
     assert(machine.screen.height == 480, "iifx-701-fd: screen.height != 480")
     assert(machine.memory.peek.b(0x5405) == 0x04, "iifx-701-fd: fDBInit still set ($5405 != 0x04)")
     assert((machine.memory.peek.l(0x0DD0) & 0x100000) == 0, "iifx-701-fd: RPUExists bit 20 of AddrMapFlags still set")
-    assert_addr(false)
+    mac.assert_addr(false)
     -- golden-collision-ok: iifx-7.0.1-640x480x1-finder.png iifx-7.1-640x480x1-824gc-finder.png
     -- - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
     -- "Disk Tools", so at 640x480x1 the two Finders draw an identical desktop,
@@ -114,11 +114,11 @@ local function row_iifx_701_fd()
     -- golden is what proves its row: this one is pinned by the fDBInit and
     -- RPUExists lowmem asserts above, and the 824gc row by its card-identity and
     -- gc.state == "reset" asserts.
-    check("goldens/iifx-7.0.1-640x480x1-finder.png")
-    about_box()
-    check_about("goldens/iifx-7.0.1-640x480x1-about.png")
-    report_row("7.0.1", "jmfb", "fd-boot lowmem about")
-    report_perf("suite-iifx/iifx-701-fd", scheduler.instr_count)
+    mac.check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    mac.about_box()
+    mac.check_about("goldens/iifx-7.0.1-640x480x1-about.png")
+    mac.report_row("7.0.1", "jmfb", "fd-boot lowmem about")
+    mac.report_perf("suite-iifx/iifx-701-fd", scheduler.instr_count)
 end
 
 -- ---- iifx-71-824gc ----------------------------------------------------------
@@ -138,18 +138,18 @@ local function row_iifx_71_824gc()
     -- Found by scripts/check-goldens.py once it learned to see wait_match
     -- goldens. The real Finder is up by ~400 M here.
     scheduler.run(300000000)
-    local spent = wait_match("goldens/iifx-7.1-640x480x1-824gc-finder.png", 900000000, 20000000)
+    local spent = mac.wait_match("goldens/iifx-7.1-640x480x1-824gc-finder.png", 900000000, 20000000)
     assert(machine.id == "iifx", "iifx-71-824gc: machine.id != iifx")
     assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "iifx-71-824gc: slot $9 card != 8•24 GC")
     assert(machine.nubus.slot[9].card.declrom.present, "iifx-71-824gc: declaration ROM not present")
     assert(machine.nubus.slot[9].card.gc.state == "reset", "iifx-71-824gc: gc.state != reset (no GC software on Disk Tools)")
     assert(machine.screen.width == 640, "iifx-71-824gc: screen.width != 640")
-    assert_addr(false)
-    report_row("7.1", "824gc", "fd-boot gc-declined")
+    mac.assert_addr(false)
+    mac.report_row("7.1", "824gc", "fd-boot gc-declined")
     -- Total row spend, not $spent: with the 300 M pre-run above, the wait
     -- matches on its first poll, so $spent would be a constant 20 M and
     -- signal nothing. instr_count still moves if the boot changes.
-    report_perf("suite-iifx/iifx-71-824gc", scheduler.instr_count)
+    mac.report_perf("suite-iifx/iifx-71-824gc", scheduler.instr_count)
 end
 
 -- ---- iifx-24ac-seat ---------------------------------------------------------
@@ -167,7 +167,7 @@ local function row_iifx_24ac_seat()
     assert(machine.screen.width == 640, "iifx-24ac-seat: screen.width != 640")
     assert(machine.screen.height == 480, "iifx-24ac-seat: screen.height != 480")
     assert(machine.screen.checksum() ~= blank, "iifx-24ac-seat: boot screen not visible")
-    report_perf("suite-iifx/iifx-24ac-seat", scheduler.instr_count)
+    mac.report_perf("suite-iifx/iifx-24ac-seat", scheduler.instr_count)
 end
 
 -- ---- iifx-75-24ac-832 -------------------------------------------------------
@@ -186,7 +186,7 @@ local function row_iifx_75_24ac_832()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(400000000)
-    wait_stable(1800000000)
+    mac.wait_stable(1800000000)
     assert(machine.id == "iifx", "iifx-75-24ac-832: machine.id != iifx")
     assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC", "iifx-75-24ac-832: slot $9 card != 24AC")
     assert(machine.screen.width == 832, "iifx-75-24ac-832: screen.width != 832 (mode not applied?)")
@@ -197,9 +197,9 @@ local function row_iifx_75_24ac_832()
     -- It is NOT decoration: machine.boot re-seeds the RTC from host time,
     -- so the `machine.rtc.time =` above it is a no-op and the minute digit
     -- tracks the wall clock (measured 2026-07-30).
-    check_ex("goldens/iifx-7.5-832x624x8-24ac-finder.png", 0, 632, 20, 832)
-    report_row("7.5", "24ac", "hd-boot 832x624x8")
-    report_perf("suite-iifx/iifx-75-24ac-832", scheduler.instr_count)
+    mac.check_ex("goldens/iifx-7.5-832x624x8-24ac-finder.png", 0, 632, 20, 832)
+    mac.report_row("7.5", "24ac", "hd-boot 832x624x8")
+    mac.report_perf("suite-iifx/iifx-75-24ac-832", scheduler.instr_count)
 end
 
 -- ---- iifx-aux3-login --------------------------------------------------------
@@ -216,9 +216,9 @@ local function row_iifx_aux3_login()
     assert(machine.rom.id == "4147dd77", "iifx-aux3-login: rom.id != 4147dd77")
     assert(machine.screen.width == 640, "iifx-aux3-login: screen.width != 640")
     assert(machine.screen.height == 480, "iifx-aux3-login: screen.height != 480")
-    check_ex("goldens/iifx-aux3-640x480x1-login.png", 240, 318, 258, 323)
-    report_row("A/UX 3.0.1", "jmfb", "hd-boot login-prompt")
-    report_perf("suite-iifx/iifx-aux3-login", scheduler.instr_count)
+    mac.check_ex("goldens/iifx-aux3-640x480x1-login.png", 240, 318, 258, 323)
+    mac.report_row("A/UX 3.0.1", "jmfb", "hd-boot login-prompt")
+    mac.report_perf("suite-iifx/iifx-aux3-login", scheduler.instr_count)
 end
 
 -- ---- iifx-8m ----------------------------------------------------------------
@@ -242,13 +242,13 @@ local function row_iifx_8m()
     scheduler.run(400000000)
     assert(machine.ram == 8192, "iifx-8m: machine.ram != 8192")
     assert(debug.mac.globals.read("MemTop") == 0x800000, F"iifx-8m: RAM sizing incomplete (MemTop=${debug.mac.globals.read(\"MemTop\"):08x}, PC=${machine.cpu.pc:08x})")
-    wait_stable(900000000)
+    mac.wait_stable(900000000)
     assert(machine.screen.width == 640, "iifx-8m: screen.width != 640")
     assert(machine.screen.height == 480, "iifx-8m: screen.height != 480")
     assert(machine.screen.depth == 1, "iifx-8m: screen.depth != 1")
-    check("goldens/iifx-6.0.8-640x480x1-8m-finder.png")
-    report_row("6.0.8", "mdc_8_24", "hd-boot 8m-post")
-    report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
+    mac.check("goldens/iifx-6.0.8-640x480x1-8m-finder.png")
+    mac.report_row("6.0.8", "mdc_8_24", "hd-boot 8m-post")
+    mac.report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
 end
 
 -- ---- iifx-checkpoint ---------------------------------------------------------
@@ -266,8 +266,8 @@ end
 local function row_iifx_checkpoint()
     machine.boot{model = "iifx", ram = 16384, video_card = "mdc_8_24", rom = vars.ROM}
     machine.floppy.drive[0].insert(sys_701)
-    reach("goldens/iifx-7.0.1-640x480x1-finder.png", 200000000, 900000000, 20000000)
-    check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    mac.reach("goldens/iifx-7.0.1-640x480x1-finder.png", 200000000, 900000000, 20000000)
+    mac.check("goldens/iifx-7.0.1-640x480x1-finder.png")
     assert(checkpoint.save(F"${vars.WORK_DIR}/suite-iifx.gsc"), "iifx-checkpoint: save failed")
     -- A different RAM size, so a restore that quietly kept the old machine fails
     -- the assert below rather than passing on the golden.
@@ -276,9 +276,9 @@ local function row_iifx_checkpoint()
     assert(machine.ram == 16384, "iifx-checkpoint: restored RAM size wrong")
     assert(machine.id == "iifx", "iifx-checkpoint: restored machine.id wrong")
     scheduler.run(5000000)
-    wait_stable(400000000)
-    check("goldens/iifx-7.0.1-640x480x1-finder.png")
-    report_perf("suite-iifx/iifx-checkpoint", scheduler.instr_count)
+    mac.wait_stable(400000000)
+    mac.check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    mac.report_perf("suite-iifx/iifx-checkpoint", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -288,15 +288,15 @@ mac.row("iifx-608-fd", row_iifx_608_fd)
 mac.row("iifx-701-fd", row_iifx_701_fd)
 mac.row("iifx-71-824gc", row_iifx_71_824gc)
 mac.row("iifx-24ac-seat", row_iifx_24ac_seat)
-if row_on("iifx-75-24ac-832") then
-    if have_media(hd_75) then
+if mac.row_on("iifx-75-24ac-832") then
+    if mac.have_media(hd_75) then
         mac.row("iifx-75-24ac-832", row_iifx_75_24ac_832)
     else
         echo("skip: iifx-75-24ac-832 (7.5 prepared image not fetched)")
     end
 end
-if row_on("iifx-aux3-login") then
-    if have_media(hd_aux) then
+if mac.row_on("iifx-aux3-login") then
+    if mac.have_media(hd_aux) then
         mac.row("iifx-aux3-login", row_iifx_aux3_login)
     else
         echo("skip: iifx-aux3-login (A/UX installed image not fetched)")
@@ -305,5 +305,5 @@ end
 mac.row("iifx-8m", row_iifx_8m)
 mac.row("iifx-checkpoint", row_iifx_checkpoint)
 
-suite_done()
+mac.suite_done()
 quit()

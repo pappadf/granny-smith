@@ -23,8 +23,8 @@ dofile("../tnt-voodoo2-glide/glide.lua")
 
 local RASTER = gs.try(function() return RASTER end, "sw")
 
-local img = F"${vars.WORK_DIR}/quake.img"
-if have_media(img) then
+img = F"${vars.WORK_DIR}/quake.img" -- global: used by an included file
+if mac.have_media(img) then
     glide_to_launch("thread")
     assert(checkpoint.save(F"${vars.WORK_DIR}/glide-launch.gsc"), "checkpoint at the Quake launch")
     assert(checkpoint.load(F"${vars.WORK_DIR}/glide-launch.gsc"), "restore the Quake-launch checkpoint")
@@ -33,6 +33,6 @@ if have_media(img) then
     assert(machine.pci.slot[1].card.regs.raster == RASTER, F"the ${RASTER} backend is installed after the restore")
     glide_play("quake-ingame-restored.png", RASTER, F"tnt-voodoo2-glide-sw/${RASTER}")
 else
-    skip_test("tnt-voodoo2-glide-sw (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
+    mac.skip_test("tnt-voodoo2-glide-sw (tests/data/apps/quake_8_1_voodoo2.img not fetched — gs-test-data extended media)")
 end
 quit()

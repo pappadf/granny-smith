@@ -67,7 +67,7 @@ end
 function ans_wait_prompt() -- global: included file
     local out = ""
     local spins = 0
-    while not gs.contains(out, "0 > ") and spins < 240 do
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and spins < 240 do
         scheduler.run(25000000)
         out = F"${out}${machine.scc.a.sent()}"
         spins = spins + 1
@@ -122,7 +122,7 @@ function ans_boot_serial(model, ram_kb) -- global: included file
     -- non-volatile and the second model in a row inherits the first's setup.
     local out = ""
     local spins = 0
-    while not gs.contains(out, "0 > ") and not gs.contains(out, "install-console>") and spins < 240 do
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and not gs.truthy(function() return gs.contains(out, "install-console>") end) and spins < 240 do
         scheduler.run(25000000)
         out = F"${out}${machine.scc.a.sent()}"
         spins = spins + 1
@@ -130,7 +130,7 @@ function ans_boot_serial(model, ram_kb) -- global: included file
     -- Give a console that IS ttya a moment to print its prompt before
     -- concluding that it is not.
     local settle = 0
-    while not gs.contains(out, "0 > ") and settle < 50 do
+    while not gs.truthy(function() return gs.contains(out, "0 > ") end) and settle < 50 do
         scheduler.run(25000000)
         out = F"${out}${machine.scc.a.sent()}"
         settle = settle + 1

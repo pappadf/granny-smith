@@ -1,4 +1,5 @@
 -- Converted from glide.script by scripts/script-to-lua.py
+local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
 -- The tnt-voodoo2-glide flow, as two functions: tnt-voodoo2-glide runs them
 -- back to back, tnt-voodoo2-glide-sw plays the second from a checkpoint.
 
@@ -49,28 +50,28 @@ function glide_to_launch(raster) -- global: included file
     machine.adb.mouse.click(false)
     scheduler.run(20000000)
     machine.adb.keyboard.type("Macintosh HD")
-    wait_keys_taken(100000000)
-    settle(50000000)
+    mac.wait_keys_taken(100000000)
+    mac.settle(50000000)
     machine.adb.keyboard.down(0x37)
     scheduler.run(2000000)
     machine.adb.keyboard.press(0x1F)
     scheduler.run(2000000)
     machine.adb.keyboard.up(0x37)
-    wait_keys_taken(100000000)
-    settle(200000000)
+    mac.wait_keys_taken(100000000)
+    mac.settle(200000000)
     machine.adb.keyboard.type("Quake")
-    wait_keys_taken(100000000)
-    settle(50000000)
+    mac.wait_keys_taken(100000000)
+    mac.settle(50000000)
     machine.adb.keyboard.down(0x37)
     scheduler.run(2000000)
     machine.adb.keyboard.press(0x1F)
     scheduler.run(2000000)
     machine.adb.keyboard.up(0x37)
-    wait_keys_taken(100000000)
-    settle(200000000)
+    mac.wait_keys_taken(100000000)
+    mac.settle(200000000)
     machine.adb.keyboard.type("Quake 3Dfx")
-    wait_keys_taken(100000000)
-    settle(50000000)
+    mac.wait_keys_taken(100000000)
+    mac.settle(50000000)
     machine.adb.keyboard.down(0x37)
     scheduler.run(2000000)
     machine.adb.keyboard.press(0x1F)
@@ -134,8 +135,8 @@ function glide_play(golden, raster, perf_row) -- global: included file
     -- scheduler is instruction-exact.  (Played from a restored checkpoint
     -- the demo is a few frames elsewhere at this count, so the -sw row's
     -- golden is its own: see that row.)
-    check(golden)
-    report_perf(perf_row, scheduler.instr_count)
+    mac.check(golden)
+    mac.report_perf(perf_row, scheduler.instr_count)
 
     echo(F"tnt-voodoo2-glide: Quake renders in-game frames through the model (raster=${raster})")
 end

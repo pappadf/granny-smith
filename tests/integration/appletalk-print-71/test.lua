@@ -33,7 +33,7 @@ assert(appletalk.printer.documents == 0, "a document exists before any print")
 -- --- Chooser: pick the LaserWriter ------------------------------------------
 -- Apple menu -> Chooser
 machine.adb.mouse.move(22, 9, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(6000000)
 machine.adb.mouse.move(60, 114, "global")
@@ -43,50 +43,50 @@ scheduler.run(150000000)
 
 -- The LaserWriter driver icon in the left-hand list
 machine.adb.mouse.move(242, 168, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(120000000)
 
 -- The printer itself in the right-hand list
 machine.adb.mouse.move(390, 113, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(60000000)
 
 -- Close the Chooser; System 7 then advises "choose Page Setup…" — OK it.
 machine.adb.mouse.move(105, 68, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(60000000)
 machine.adb.mouse.move(437, 262, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(80000000)
 
 -- --- Open the volume window and print it ------------------------------------
 -- Double-click the "Macintosh HD" icon
 machine.adb.mouse.move(597, 60, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(100000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(120000000)
 
 -- File -> Print Window…
 machine.adb.mouse.move(50, 9, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(8000000)
 machine.adb.mouse.move(90, 267, "global")
@@ -96,10 +96,10 @@ scheduler.run(150000000)
 
 -- The Print button of the LaserWriter 7.1.2 dialog
 machine.adb.mouse.move(515, 44, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- Let the job stream, run and finish: the driver splits it into query jobs
 -- and the document, and background printing hands it to PrintMonitor.

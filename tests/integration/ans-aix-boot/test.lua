@@ -132,7 +132,7 @@ local function aix_boot()
     -- Network Server ships with `output-device screen` and this row
     -- deliberately does not tell it otherwise: the machine under test is the
     -- one out of the box.
-    check("bootapple.png")
+    mac.check("bootapple.png")
 
     -- --- The rest of the boot, up to the install's console prompt --------
     -- `bootapple`'s banner stays on the framebuffer (checked above, at a
@@ -194,14 +194,14 @@ local function aix_boot()
     -- interpreter through Open Firmware and the AIX kernel).  A guess, not a
     -- measurement: the ROM and the install CD are not in the local test data;
     -- lower it if the CI host misses it.
-    mips_floor("ans-aix-boot", t0, 15)
+    mac.mips_floor("ans-aix-boot", t0, 15)
     echo("ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31")
 end
 
-if have_media(aix_cd) then
+if mac.have_media(aix_cd) then
     aix_boot()
 else
-    skip_test("ans-aix-boot (the AIX 4.1.5 Install CD not present — set GS_EXTRA_MEDIA_DIR)")
+    mac.skip_test("ans-aix-boot (the AIX 4.1.5 Install CD not present — set GS_EXTRA_MEDIA_DIR)")
 end
 
 quit()

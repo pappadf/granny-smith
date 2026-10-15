@@ -41,7 +41,7 @@ assert(appletalk.afp.stats.commands_served > 0, "no AFP commands were served")
 
 -- Select "My Volume", then OK — the mount itself — and close the Chooser.
 afp_mount_and_close()
-check("desktop-mounted.png")
+mac.check("desktop-mounted.png")
 
 assert(appletalk.afp.sessions[0].session_ref > 0, "no ASP session after the mount")
 
@@ -59,8 +59,8 @@ end
 machine.adb.mouse.move(472, 300)
 scheduler.run(2000000)
 machine.adb.mouse.click(false)
-run_until_match("desktop-unmounted.png", 40000000, 5000000)
-check("desktop-unmounted.png")
+mac.run_until_match("desktop-unmounted.png", 40000000, 5000000)
+mac.check("desktop-unmounted.png")
 
 -- The session closed with the unmount -- not two minutes later.
 assert(gs.try(function() return appletalk.afp.sessions[0].session_ref end, 0) == 0, "the ASP session outlived the unmount")

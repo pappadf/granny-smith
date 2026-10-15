@@ -55,7 +55,7 @@ local function probe(model, ram_kb)
     local d0 = ans_go()
     assert(not gs.truthy(function() return gs.contains(d0, "not found") end), F"S8: ${model} the disk0 alias does not resolve")
 
-    report_perf(F"ans-scsi/${model}", scheduler.instr_count)
+    mac.report_perf(F"ans-scsi/${model}", scheduler.instr_count)
     echo(F"ans-scsi ${model}: SCRIPTS engine ran INQUIRY on both fast/wide channels")
 end
 

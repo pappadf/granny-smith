@@ -40,7 +40,7 @@ machine.adb.mouse.move(165, 135)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(20000000)
 
 -- "LaserWriter requires AppleTalk" -> OK
@@ -48,7 +48,7 @@ machine.adb.mouse.move(187, 206)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(60000000)
 
 -- Select the printer in the right-hand list
@@ -56,7 +56,7 @@ machine.adb.mouse.move(300, 88)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(20000000)
 
 -- Close the Chooser
@@ -64,7 +64,7 @@ machine.adb.mouse.move(72, 47)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(40000000)
 
 -- Double-click the Macintosh HD icon to open its window
@@ -72,11 +72,11 @@ machine.adb.mouse.move(470, 52)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(80000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(40000000)
 
 -- File -> Print Directory...
@@ -94,7 +94,7 @@ machine.adb.mouse.move(452, 45)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- Let the job stream, run, and finish; the driver splits it into query jobs
 -- (PatchPrep, font list) and the document.  Poll until a document lands.

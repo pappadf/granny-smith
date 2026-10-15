@@ -23,7 +23,7 @@ local cd = F"${vars.EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
 local hd = F"${vars.WORK_DIR}/g3-ata-hd.img"
 local installed = F"${vars.WORK_DIR}/g3-ata-installed.img"
 
-if have_media(cd) then
+if mac.have_media(cd) then
     -- --- A1 ---------------------------------------------------------------------
     assert(files.hd_create(hd, "HD500SC"), "A1: create the blank disk")
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
@@ -32,12 +32,12 @@ if have_media(cd) then
     assert(machine.ata.attach_cdrom(cd, 1), "A1: attach the CD as ATAPI unit 1")
     assert(machine.ata.devices == "hd atapi - -", "A1: cell 0 does not hold the disk and the CD")
     scheduler.run(13000000000)
-    check_ex("finder-cd.png", 0, 440, 20, 640)
+    mac.check_ex("finder-cd.png", 0, 440, 20, 640)
 
     -- --- A2 ---------------------------------------------------------------------
     gos_install_921("install-finished.png")
-    click(453, 288) -- Quit
-    run_ticks(900)
+    mac.click(453, 288) -- Quit
+    mac.run_ticks(900)
     assert(machine.ata.export(0, installed), "A2: export the installed disk")
 
     -- --- A3 ---------------------------------------------------------------------
@@ -51,9 +51,9 @@ if have_media(cd) then
     scheduler.run(12000000000)
     assert(debug.mac.globals.read("DSErrCode") == 0, "A4: a system error during the ATA boot")
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/ata-desktop.png") end, nil)
-    check_ex("ata-desktop.png", 0, 440, 20, 640)
+    mac.check_ex("ata-desktop.png", 0, 440, 20, 640)
 else
-    skip_test("g3-install-ata (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
+    mac.skip_test("g3-install-ata (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
 end
 
 quit()

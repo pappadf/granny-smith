@@ -124,14 +124,14 @@ check("desktop.png")
 -- Double-click the "Apple HD SC Setup" label to launch it.  (The clickable
 -- hit region is the text label, not the gap above it.)
 machine.adb.mouse.move(52, 110, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(120000000)
 -- HD SC Setup recognises the uninitialised drive at SCSI Device 0:
 -- "The disk is uninitialized, or its partition map has become invalid."
@@ -139,30 +139,30 @@ check("ready.png")
 
 -- Click "Initialize".
 machine.adb.mouse.move(245, 113, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("confirm.png", 30000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("confirm.png", 30000000, 5000000)
 check("confirm.png")
 
 -- Click "Init" in the "erase all data" confirmation alert.  This writes the
 -- partition map, the Apple_Driver43 partition and the HFS volume structures
 -- over the IIfx's SCSI DMA engine.
 machine.adb.mouse.move(430, 195, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("name.png", 100000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("name.png", 100000000, 5000000)
 check("name.png")
 
 -- Click "OK" to accept the default volume name ("Untitled").
 machine.adb.mouse.move(263, 170, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(150000000)
 -- The guest OS reports the format completed and mounted the volume:
 -- "Disk initialization successfully completed."
@@ -186,33 +186,33 @@ machine.floppy.drive[0].insert(F"${src}/Install 1.img", true)
 
 -- The Installer auto-launches from the floppy's System Folder; its welcome
 -- window ("Welcome to Mac OS 7.6") is painted by ~790M instructions.
-run_until_match("installer.png", 800000000, 20000000)
+mac.run_until_match("installer.png", 800000000, 20000000)
 check("installer.png")
 
 -- Click "Continue" to reach the software licence.
 machine.adb.mouse.move(470, 366, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("licence.png", 60000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("licence.png", 60000000, 5000000)
 check("licence.png")
 
 -- Click "Agree" to reach the "Install System Software" window (Easy Install,
 -- destination disk "Untitled" — the volume Part 1 just created).
 machine.adb.mouse.move(510, 390, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("easy-install.png", 80000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("easy-install.png", 80000000, 5000000)
 check("easy-install.png")
 
 -- Switch the mode popup from "Easy Install" to "Custom Install".  It is a
 -- press-drag-release menu — Easy Install / Custom Install / Custom Remove at
 -- 16-pixel spacing — so Custom Install sits one item below the button.
 machine.adb.mouse.move(170, 133, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(20000000)
 machine.adb.mouse.move(170, 147, "global")
@@ -227,20 +227,20 @@ check("custom-install.png")
 -- only system variant whose contents exclude the corrupt "English Dialect"
 -- (see the header).  "Selected size" changes from "zero K" to "6,528K".
 machine.adb.mouse.move(114, 199, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
-run_until_match("minimum-checked.png", 30000000, 5000000)
+mac.wait_mouse_taken(100000000)
+mac.run_until_match("minimum-checked.png", 30000000, 5000000)
 check("minimum-checked.png")
 
 -- Click "Install".  The Installer reads its script off Install 1, ejects the
 -- disk and asks for the first source floppy.
 machine.adb.mouse.move(471, 359, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 
 -- --- Part 3: feed every floppy the Installer asks for ------------------------
 

@@ -74,7 +74,7 @@ assert(machine.screen.height == 480, "boot: screen height != 480")
 assert((machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40, "boot: MODE depth latch != 8 bpp")
 assert(machine.nubus.slot[9].card.framebuffer.depth == 8, "boot: framebuffer not 8 bpp")
 -- The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
-check("finder-640x480-8bpp.png")
+mac.check("finder-640x480-8bpp.png")
 
 -- --- Insert the "Utilities Disk 2" floppy into the internal drive (FD0) ------
 -- (apps/Norton-Utils-Disk-2.image — the Norton/Symantec "Utilities Disk 2".)
@@ -88,7 +88,7 @@ scheduler.run(60000000)
 -- No system error must have been raised (DSErrCode/$AF0 == 0) mounting/opening.
 assert(machine.memory.peek.w(0xaf0) == 0, "system error raised inserting Utilities Disk 2")
 -- The mounted disk with its window open, showing the "System Info" app icon.
-check("utilities-disk-640x480-8bpp.png")
+mac.check("utilities-disk-640x480-8bpp.png")
 
 -- --- Launch "System Info" by double-clicking its icon -----------------------
 -- The icon sits in the disk window at (264, 100) in screen (global) coordinates.
@@ -97,43 +97,43 @@ check("utilities-disk-640x480-8bpp.png")
 -- propagate.  50M instr after the second release is well past System Info's
 -- fully-drawn benchmark window.
 machine.adb.mouse.move(264, 100, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(50000000)
 -- System Info's window is up and it has identified the machine + the 24AC card.
 -- All four suites (Test CPU / Display / Volume / FPU) are checked by default.
-check("system-info-640x480-8bpp.png")
+mac.check("system-info-640x480-8bpp.png")
 
 -- --- De-select every suite except "Test Display" -----------------------------
 -- Single-click each checkbox (they toggle) to UNCHECK Test CPU, Test Volume and
 -- Test FPU, leaving only Test Display.  The checkboxes are at screen x=187,
 -- y=224 (CPU) / 264 (Volume) / 284 (FPU) — Test Display at y=244 is left alone.
 machine.adb.mouse.move(187, 224, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1500000)
 machine.adb.mouse.move(187, 264, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(1500000)
 machine.adb.mouse.move(187, 284, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(3000000)
 -- Pixel-proof that ONLY Test Display is now checked (CPU/Volume/FPU cleared).
-check("system-info-display-only-640x480-8bpp.png")
+mac.check("system-info-display-only-640x480-8bpp.png")
 
 -- --- Click "Run": the display benchmark starts immediately (no dialog) --------
 -- Because PRAM was seeded with the reference config (128 KB cache + AppleTalk
@@ -144,13 +144,13 @@ check("system-info-display-only-640x480-8bpp.png")
 -- instr after the click (verified: identical frame at +350M and +400M), so 380M
 -- lands on the stable result.
 machine.adb.mouse.move(456, 255, "global")
-wait_cursor(20)
+mac.wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-wait_mouse_taken(100000000)
+mac.wait_mouse_taken(100000000)
 scheduler.run(380000000)
 -- The Display benchmark completed: "System Ratings" (Video) with a Current
 -- System rating vs the Quadra 700 reference — only the Display suite ran.
-check("system-info-video-rating-640x480-8bpp.png")
+mac.check("system-info-video-rating-640x480-8bpp.png")
 
 quit()

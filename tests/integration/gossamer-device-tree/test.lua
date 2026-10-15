@@ -34,7 +34,7 @@ local banner = gos_boot_prompt("pmg3dt", 65536)
 -- The Open Firmware console on the Rage Pro's screen: the banner, the
 -- prompt, and the `ttya io` the row typed — drawn by the ATI FCode 1.53 in
 -- the Mac ROM through the chip's little-endian aperture at 640 x 480 x 8.
-check("of-console.png")
+mac.check("of-console.png")
 
 local cd = ""
 local p = ""
