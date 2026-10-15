@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Lua is the script language** — Lua 5.4 is embedded (`third-party/lua/`, MIT) and the object tree is bound to it (`src/core/lua/`, `docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`, `include` or `shell.script_run` runs on it, `shell.lua(text)` runs source text, and the integration-test library is `tests/integration/lib/mac.lua`. The tree's root children are globals; `machine.boot{model = "plus", rom = vars.ROM}` passes named arguments as a trailing table; tree errors are Lua errors. The shell's own script language still runs the tests not yet ported, the terminal's lines and the debugger's conditions; `scripts/script-to-lua.py` converts a `.script` file.
+- **Lua is the script language** — Lua 5.4 is embedded (`third-party/lua/`, MIT) and the object tree is bound to it (`src/core/lua/`, `docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`, `include` or `shell.script_run` runs on it, `shell.lua(text)` runs source text, and the integration tests and their libraries are Lua (`tests/integration/lib/mac.lua`; `scripts/script-to-lua.py` converted the corpus). The tree's root children are globals; `machine.boot{model = "plus", rom = vars.ROM}` passes named arguments as a trailing table; tree errors are Lua errors. The shell's own script language still runs the terminal's lines, the debugger's conditions and its own tests.
 
 ## [v0.9.4] — 2026-10-11
 

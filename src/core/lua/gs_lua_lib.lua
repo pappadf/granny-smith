@@ -168,13 +168,15 @@ local function is_sequence(t)
   return true
 end
 
+local MAPMT = luadebug.getregistry()["gs.map"] -- a tree map, or one gs.map tagged
+
 local str
 local function json(v)
   local tv = type(v)
   if v == nil or v == gs.none then return "null" end
   if tv == "string" then return string.format("%q", v):gsub("\\\n", "\\n") end
   if tv == "table" then
-    if is_sequence(v) then
+    if getmetatable(v) ~= MAPMT and is_sequence(v) then
       local parts = {}
       for i = 1, #v do parts[i] = json(v[i]) end
       return "[" .. table.concat(parts, ",") .. "]"
@@ -189,7 +191,7 @@ end
 function str(v)
   if v == nil or v == gs.none then return "none" end
   if type(v) ~= "table" then return tostring(v) end
-  if is_sequence(v) then
+  if getmetatable(v) ~= MAPMT and is_sequence(v) then
     local parts = {}
     for i = 1, #v do parts[i] = str(v[i]) end
     return "[" .. table.concat(parts, ", ") .. "]"
@@ -199,7 +201,7 @@ end
 gs.str = str
 
 -- echo(map) and tostring(map) read as the JSON text too.
-luadebug.getregistry()["gs.map"].__tostring = str
+MAPMT.__tostring = str
 
 -- gs.contains(haystack, needle): plain substring test.
 function gs.contains(haystack, needle)

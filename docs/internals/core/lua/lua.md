@@ -120,12 +120,14 @@ Lua's own `string`, `table`, `math`, `utf8`, `coroutine`, `luadebug` and the
 | `dofile(path)`, `require "a.b"` | relative to the running file's directory; `require` maps dots to directories and appends `.lua` |
 | `gs.try(fn, fallback)` | `fn()`'s result, or `fallback` (called with the error when it is a function) when it raised |
 | `gs.ok(fn)` | true when `fn()` ran without raising |
+| `gs.truthy(fn)` | what the old `!call(...)` tested: false when `fn()` raised or returned nil, false, 0, "" or an empty table |
+| `gs.str(v)` | a value as the old `${…}` spliced it: a list as `[a, b]`, a map as its compact JSON, nil as `none`; `tostring` of a tree map is the same |
 | `F"text ${expr} ${expr:08x}"` | a template filled from the caller's locals, parameters, upvalues and the globals; `:spec` is a `string.format` spec |
 | `gs.template(s)` | the compiled template, a function of an environment table |
 | `gs.bytes(v, w)` | a bytes value, big-endian; `gs.bytes("…")` the string's bytes |
 | `gs.hex(v [, width])`, `gs.contains(s, needle)` | formatting and a plain substring test |
 | `gs.node(path)` | what a path names (a proxy, or an attribute's value); `gs.path(p)`, `gs.is_node(x)` |
-| `gs.list(x)`, `gs.map(t)` | a collection or list read as a sequence; a table tagged as a map value |
+| `gs.list(x)`, `gs.map(t)` | a collection or list read as a sequence; a table tagged as a map value (so a call passes it positionally, and `gs.str` renders it `{}` when empty) |
 | `gs.fmt(path)` | the attribute's plain text |
 | `gs.none`, `gs.is_none(v)` | the in-list spelling of none |
 | `gs.quit_signal`, `gs.interrupt_signal` | the values `quit()` and Ctrl-C raise; `gs.try` re-raises them, a plain `pcall` that swallows one is re-interrupted at the next hook |
@@ -152,10 +154,27 @@ globals rule, `vars`, the library, quit and interrupt.
 `tests/integration/debug` is the first integration test in Lua;
 `tests/integration/lib/mac.lua` is the suite library.
 
-## Not yet done
+## The port, and what still runs on the shell language
 
-The shell language's interpreter still runs the unported `.script` tests,
-the terminal's lines, `shell.eval` and the breakpoint conditions and
-logpoint templates (`debug.c`); the terminal's command form as a line-level
-front end to Lua, the coroutine driver that would retire the job thread,
-and the deletion of the old interpreter follow the port of the corpus.
+Every integration test is `test.lua` (`scripts/script-to-lua.py` did the
+mechanical part; the residue it marks `-- PORT:` was finished by hand), the
+custom runners generate Lua, and the libraries are `lib/*.lua`.  What a
+port has to watch for, learned from this one: a list held in a map field
+is 1-based too (`walk.steps[0]` → `[1]`); a bare path the old language ran
+as a zero-argument command (`machine.videoin.pattern`) is a call; the old
+`!call(...)` is `gs.truthy`; a `"\x00"` in a needle was a real NUL the old
+`val_str` cut the string at, so the needle meant its prefix (the device-tree
+test's console prints the four characters `\x00`, which Lua spells `"\\x00"`);
+and a wait that samples the screen must sample after each run, never before
+the first, or a sample-exact row shifts by a quantum.
+
+Still on the shell language's interpreter: the terminal's lines and
+`shell.eval`, the breakpoint conditions and logpoint templates (`debug.c`),
+the tests of that language itself (`shell-v2`, `shell-class`,
+`shell-commands`, `shell-command-words`, `object-expr`, `object-metadata`,
+`object-model-reorg`, `object-logpoint`, `object-debug`, `daemon-statements`),
+and the two scripts the Playwright specs feed to the browser terminal
+(`tnt-pci-voodoo2/draw-webgpu.script`, `glide-init.script`).  The
+terminal's command form as a line-level front end to Lua, the coroutine
+driver that would retire the job thread, and the deletion of the old
+interpreter follow.
