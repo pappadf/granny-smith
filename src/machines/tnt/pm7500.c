@@ -7,6 +7,7 @@
 // MESH + 53C94 SCSI, Control/Chaos onboard video, 50 MHz processor bus
 // (Apple, "Power Macintosh 7500 and 8500 Computers" Developer Note, 1995).
 
+#include "of_nvram.h"
 #include "slot_tables.h"
 #include "tnt.h"
 
@@ -135,5 +136,6 @@ const hw_profile_t machine_pm7500 = {
     .builtin_video = &tnt_builtin_video,
 
     .substrate = &tnt_substrate,
+    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm7500_board,
 };

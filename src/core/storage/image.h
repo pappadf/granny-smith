@@ -66,7 +66,7 @@ void image_set_type(image_t *image, enum image_type type);
 // True when the caller opened the image for writing
 bool image_is_writable(const image_t *image);
 // Logical size in bytes (a synthesised wrapper prefix included)
-size_t image_get_raw_size(const image_t *image);
+uint64_t image_get_raw_size(const image_t *image);
 // Wrapper layers peeled to reach the disk: "raw", "dc42", "bin+ndif", ...
 const char *image_get_format(const image_t *image);
 // Key of the source the image's path opened (source.h), or NULL
@@ -95,7 +95,7 @@ void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t 
 // Every opener takes a path the VFS resolves: a host file, or a file inside
 // an image or archive (outer.img/partition1/inner.img, disks.zip/a.dsk).
 // Wrapper formats are peeled through the format registry -- UDIF, NDIF,
-// DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
+// QCOW2, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
 // engine reads the innermost source directly: nothing is decoded to a file.
 image_t *image_open_readonly(const char *base_path);
 
@@ -163,7 +163,7 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 // === Operations ===
 
 // Read/write raw data from/to the disk image
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
 // Read a logical sector's DiskCopy tag (per-sector metadata) into `buf`.
 // Returns the number of tag bytes copied (0 if the image has no tags or the
@@ -178,12 +178,12 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // source already carries its own, which this leaves alone.
 void image_set_diskcopy_identity(image_t *image, const char *name, uint8_t format_byte);
 
-size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
 // Get the size of the disk image in bytes.  0 for a NULL image -- no opened
 // image is empty (the openers refuse a zero-length one), so 0 always means
 // "no image".
-size_t disk_size(image_t *disk);
+uint64_t disk_size(image_t *disk);
 
 // Bytes per block the image was opened with (512 unless a geometry said
 // otherwise); disk_read_data/disk_write_data work in whole blocks of it.
@@ -207,7 +207,7 @@ typedef struct image_list {
 image_t *images_find(const image_list_t *images, const char *name);
 
 // Create an empty disk image file of the specified size (for checkpoint restore)
-int image_create_empty(const char *filename, size_t size);
+int image_create_empty(const char *filename, uint64_t size);
 
 // Write a blank image of `size` zero bytes as UDIF (udif_writer.h): one zero
 // run, a couple of KB whatever the size.  0, or -1 on failure (including an

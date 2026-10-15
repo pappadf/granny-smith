@@ -1836,7 +1836,7 @@ static DEF_METHOD(scsi_dev_method_info) {
         return val_bool(true);
     }
     const char *fname = image_get_filename(img);
-    size_t sz = disk_size(img);
+    uint64_t sz = disk_size(img);
     double size_mb = (double)sz / (1024.0 * 1024.0);
     out_printf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
     return val_bool(true);
@@ -2133,13 +2133,13 @@ static DEF_METHOD(scsi_method_identify_hd) {
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        LOG(2, "identify_hd: %s is floppy-sized (%zu bytes)", path, image_get_raw_size(img));
+        LOG(2, "identify_hd: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
-    size_t sz = image_get_raw_size(img);
+    uint64_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
-    LOG(2, "identify_hd: %s is an HD image: %zu bytes, %s %s %s", path, sz,
+    LOG(2, "identify_hd: %s is an HD image: %llu bytes, %s %s %s", path, (unsigned long long)sz,
         sz == best->size ? "matches" : "nearest model", best->vendor, best->product);
     image_close(img);
     return val_bool(true);
@@ -2156,7 +2156,7 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        LOG(2, "identify_cdrom: %s is floppy-sized (%zu bytes)", path, image_get_raw_size(img));
+        LOG(2, "identify_cdrom: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2164,7 +2164,7 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     // as a disk (a partition map, or a bare HFS / HFS+ / UFS volume).  The
     // image was opened through the registry already, so a .dmg or a Toast
     // image inside an archive is judged by the disk it holds.
-    size_t sz = disk_size(img);
+    uint64_t sz = disk_size(img);
     source_t *src = image_source(img);
     bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
     const format_t *f = format_contents(src, NULL);

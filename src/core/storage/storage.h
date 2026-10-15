@@ -123,15 +123,15 @@ status_t storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *check
 // alike; a block past the end of a base shorter than the geometry reads as
 // zeros.  A misaligned offset is STATUS_E_INVAL, one past the device
 // STATUS_E_RANGE.
-status_t storage_read_block(storage_t *storage, size_t offset, void *buffer);
+status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer);
 
 // Reads `count` consecutive blocks at the given byte offset, as `count`
 // storage_read_block calls would, but with one base read per run of
 // unmodified blocks: a host file is read in large pieces, not per block.
-status_t storage_read_blocks(storage_t *storage, size_t offset, void *buffer, size_t count);
+status_t storage_read_blocks(storage_t *storage, uint64_t offset, void *buffer, size_t count);
 
 // Writes one block (block_size bytes) at the given byte offset.
-status_t storage_write_block(storage_t *storage, size_t offset, const void *buffer);
+status_t storage_write_block(storage_t *storage, uint64_t offset, const void *buffer);
 
 // === Rollback ===
 

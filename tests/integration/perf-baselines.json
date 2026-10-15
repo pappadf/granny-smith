@@ -148,6 +148,10 @@
       "instr": 4000000,
       "tolerance": 0.2
     },
+    "g3-osx-10-0-finder/finder": {
+      "instr": 5416035027,
+      "tolerance": 0.2
+    },
     "gossamer-checkpoint/restored-desktop": {
       "instr": 2250000000,
       "tolerance": 0.2

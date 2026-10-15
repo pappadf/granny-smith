@@ -476,12 +476,10 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // (control.c).  Two independent circuits agreeing on one monitor is a good
 // sign the engine below is right.
 //
-// The multiple-scan entries come from Apple's table.  Which raster each
-// code actually selects is a driver decision we have not measured yet, and
-// the bit order WITHIN each extended pair is not stated by the note — so
-// mach64_sense_log() prints the primary and extended codes the engine
-// produced on the first run, and the table gets pinned from that.  Nothing
-// about enumeration depends on it: the card's FCode gives up only when
+// The multiple-scan entries are Apple's MSB1/2/3 extended codes.  A code
+// outside Apple's list reads as an unknown display, which the Rage Pro
+// driver under Mac OS X answers with 640x480 alone.  Enumeration itself
+// does not depend on it: the card's FCode gives up only when
 // primary == 7 AND extended == $3F together, i.e. when all three pins float
 // high in every configuration, which is what "no cable attached" looks
 // like.
@@ -502,10 +500,13 @@ typedef struct mach64_monitor_sense {
 static const mach64_monitor_sense_t mach64_sense[] = {
     // 14" AppleColor / 12" monochrome — no tie resistors; extended = $2B.
     {"14in_rgb",   6, STRAP_EXT01(6), STRAP_EXT02(6), STRAP_EXT12(6)},
-    // The multiple-scan displays answer the extended probe (Apple table 2-3).
-    {"15in_multi", 6, 3,              0,              0             },
-    {"17in_multi", 6, 3,              2,              0             },
-    {"20in_multi", 6, 3,              0,              2             },
+    // The multiple-scan displays answer the extended probe with Apple's
+    // MSB1/2/3 codes $03/$0B/$23 (Displays.h kESCSixMSB1..3), assembled
+    // "BC AC AB": drive A (pin 2) and read B,C into bits 5:4, and so on.
+    // Driving C reads back A,B = 1,1 -- the primary strap, as it must.
+    {"15in_multi", 6, 0,              0,              3             },
+    {"17in_multi", 6, 0,              2,              3             },
+    {"20in_multi", 6, 2,              0,              3             },
     // 21" colour — a primary-only code, like the 14".
     {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
     // No cable: every pin floats high in every configuration, the one answer
@@ -3802,12 +3803,41 @@ const pci_card_kind_t mach64_gx_kind = {
 // and Mac OS loads the ROM's `ATY,RAGEIII` ndrv — and has 2 MB of SGRAM,
 // the shipping configuration.
 //
-// The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
-// 640 x 480 display whose code every Mac driver knows.
+// The monitor is the one the machine's built-in video port names
+// (mach64_ragepro_monitor_at, below): Apple's 14" RGB by default (sense 6,
+// extended from its straps), a 640 x 480 display whose code every Mac driver
+// knows, or one of the multiple-scan displays or the 21" -- the GX's own
+// sense rows.
+
+// The monitors the Rage Pro's machine offers on its built-in video port
+// (gossamer.c's builtin_video_desc_t), as monitor-catalogue ids: the first
+// five rows of mach64_sense, whose GP_IO sense the card already answers.
+// The byte that names one is its row index: the build resolves the
+// document's monitor to it (builtin_sense) and the PCI layer hands it back
+// as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
+// which every G3 built before this list existed carries, its checkpoints
+// included -- straps the 14", the monitor the Rage Pro always had.
+static const char *const ragepro_monitors[] = {"13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"};
+#define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
+
+bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i >= RAGEPRO_MONITORS)
+        return false;
+    *id = *monitor = ragepro_monitors[i];
+    return true;
+}
+
+bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (size_t i = 0; i < RAGEPRO_MONITORS; i++)
+        if (strcmp(ragepro_monitors[i], id) == 0) {
+            *out_sense = (uint8_t)i;
+            return true;
+        }
+    return false;
+}
 
 static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3834,7 +3864,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
         free(dev);
         return NULL;
     }
-    m->mon = &mach64_sense[0];
+    m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
     mach64_reset(dev, cfg);
 
     m->aper_if.read_uint8 = aper_read8;

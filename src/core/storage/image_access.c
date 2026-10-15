@@ -24,7 +24,7 @@ void image_set_type(image_t *image, enum image_type type) {
 bool image_is_writable(const image_t *image) {
     return image && image->writable;
 }
-size_t image_get_raw_size(const image_t *image) {
+uint64_t image_get_raw_size(const image_t *image) {
     return image ? image->raw_size : 0;
 }
 const char *image_get_format(const image_t *image) {

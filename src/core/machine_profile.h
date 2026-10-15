@@ -516,6 +516,14 @@ typedef struct hw_profile {
     // and the Lisa, which has no such chip.
     const struct pram_defaults *pram;
 
+    // Check a configuration's Open Firmware variables ("nvram": n pairs
+    // packed as machine_build_opts_t.of_vars) by setting them on the board's
+    // factory store (of_nvram.h): NULL when it takes them all, else the
+    // reason, with *bad naming the variable.  NULL hook: the model has no
+    // NVRAM a configuration can set -- every 68k Mac, the PDM boards, and
+    // the Network Servers, whose store starts blank.
+    const char *(*of_nvram_check)(int n, const char *packed, const char **bad);
+
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
     // included, builds through mac030_build_core + mac030_build_lowspeed and
     // tears down through

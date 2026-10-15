@@ -31,10 +31,10 @@ int image_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
             // into dst in one read, so the storage reads its file in large
             // pieces rather than a block at a time.
             take = (n - done) & ~(size_t)(STORAGE_BLOCK_SIZE - 1);
-            if (disk_read_data(img, (size_t)block_off, dst + done, take) != take)
+            if (disk_read_data(img, block_off, dst + done, take) != take)
                 return -EIO;
         } else {
-            if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
+            if (disk_read_data(img, block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
                 return -EIO;
             memcpy(dst + done, blk + in_block, take);
         }

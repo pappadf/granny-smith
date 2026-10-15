@@ -824,6 +824,13 @@ The document mirrors the tree:
                 "nubus_c": { "monitor": "13in_rgb", "mode": "640x480x8" } } }
 ```
 
+On the Open Firmware Macs (`hw_profile_t.of_nvram_check`: the Power Mac
+7500/8500/9500 and the G3s) the document may also carry `nvram`, Open
+Firmware variables by name -- `{"nvram": {"use-nvramrc?": true,
+"boot-command": "0 bootr", "nvramrc": "…"}}` -- each a string (booleans
+may be JSON `true`/`false`), as `setenv` takes it.  It has no counterpart
+in the tree and no default: absent, the board's factory store.
+
 Each top-level key, when present, is the complete set for its node; an
 absent key is the model's default, and within `options`, `floppies` and
 `displays` an absent member takes its default (an absent display device
@@ -855,16 +862,20 @@ this configuration, a monitor the device does not take, a mode the
 monitor does not have, more than one connected monitor (V7); the legacy
 card or display arguments beside the document's `cards` / `displays`
 (V8); a startup device not in `storage`, or on a bus the machine's startup
-record cannot name (V9).  `tests/integration/machine-config-validation`
-pins one case per rule.
+record cannot name (V9); an `nvram` on a model without Open Firmware NVRAM,
+a variable the firmware does not have, a value it cannot take, or more
+than its 2 KB partition holds -- each set on a factory store to find out
+(V10).  `tests/integration/machine-config-validation` pins one case per
+rule.
 
 The document is a construction input only.  The **seeding step**
 (`machine_substrate_t.seed`, `src/machines/runtime/config_seed.h`) writes
 the parameter-memory records that follow from it -- AppleTalk's on/off
 state in SysParam (with the rest of SysParam as the machine's own ROM
 initialises it, `pram_defaults_t.sysparam`) and the default startup
-device -- once, when a new machine is built; never on a restore, a reset
-or a power cycle, after which the store is the guest's.
+device, then on the Open Firmware Macs the document's `nvram` variables
+(`of_nvram_setenv_packed`) -- once, when a new machine is built; never on
+a restore, a reset or a power cycle, after which the store is the guest's.
 
 A running machine keeps no record of the document it was built from: each
 fact is read from the object that holds it -- `machine.id`, `machine.ram`,

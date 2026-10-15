@@ -20,6 +20,7 @@
 // deliberately separate — it changes what probe-pci walks on a
 // boot-critical path.
 
+#include "of_nvram.h"
 #include "slot_tables.h"
 #include "tnt.h"
 
@@ -155,5 +156,6 @@ const hw_profile_t machine_pm9500 = {
     .pci_slots = pm9500_pci_slots,
 
     .substrate = &tnt_substrate,
+    .of_nvram_check = of_nvram_check_tnt,
     .board = &pm9500_board,
 };

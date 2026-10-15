@@ -323,8 +323,8 @@ int checkpoint_machine_write_manifest(const config_t *cfg) {
         char *grown = NULL;
         if (base_esc && inst_esc)
             grown = str_printf(
-                "%s%s\n    { \"index\": %d, \"base_path\": \"%s\", \"size\": %zu, \"instance_path\": \"%s\" }", img_buf,
-                first ? "" : ",", i, base_esc, img->raw_size, inst_esc);
+                "%s%s\n    { \"index\": %d, \"base_path\": \"%s\", \"size\": %llu, \"instance_path\": \"%s\" }",
+                img_buf, first ? "" : ",", i, base_esc, (unsigned long long)img->raw_size, inst_esc);
         free(base_esc);
         free(inst_esc);
         free(img_buf);

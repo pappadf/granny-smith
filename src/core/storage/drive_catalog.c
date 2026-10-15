@@ -62,7 +62,7 @@ const struct drive_model *drive_catalog_get(int i) {
 }
 
 // find the closest model whose size >= the given size
-const struct drive_model *drive_catalog_find_closest(size_t size) {
+const struct drive_model *drive_catalog_find_closest(uint64_t size) {
     for (int i = 0; i < catalog_count; i++) {
         if (size <= catalog[i].size)
             return &catalog[i];

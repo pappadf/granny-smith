@@ -74,6 +74,17 @@ of_var_kind_t of_nvram_getenv(const uint8_t nv[OF_NVRAM_SIZE], const char *name,
 // prefix is accepted).  Returns NULL on success, else a reason.
 const char *of_nvram_setenv(uint8_t nv[OF_NVRAM_SIZE], const char *name, const char *value);
 
+// Set `n` variables given as packed pairs -- name, NUL, value, NUL, back to
+// back (machine_build_opts_t.of_vars) -- in order, each as of_nvram_setenv
+// sets it.  NULL on success, else the first failure's reason, with *bad
+// (may be NULL) naming its variable.
+const char *of_nvram_setenv_packed(uint8_t nv[OF_NVRAM_SIZE], int n, const char *packed, const char **bad);
+
+// hw_profile_t.of_nvram_check for each board: the packed variables set on a
+// factory store of its firmware's (of_nvram_factory), which is kept nowhere.
+const char *of_nvram_check_tnt(int n, const char *packed, const char **bad);
+const char *of_nvram_check_g3(int n, const char *packed, const char **bad);
+
 // The variable names in slot order, for listing; `count` gets the length.
 const char *const *of_nvram_var_names(size_t *count);
 

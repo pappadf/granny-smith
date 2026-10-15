@@ -99,7 +99,7 @@ peeler extract <archive> <member> [<dir>] # one member (both forks) into <dir>
 The core has a single table of formats a byte source can be in
 ([`format_registry.h`](../../src/core/storage/format_registry.h)).
 peeler's wrappers (`hqx`, `bin`, `gz`) sit there beside the disk-image
-wrappers (UDIF, NDIF, DiskCopy 4.2) and are unwrapped in a loop; its
+wrappers (UDIF, NDIF, QCOW2, DiskCopy 4.2) and are unwrapped in a loop; its
 archives (`sit`, `cpt`, `zip`, `tar`) are namespace formats beside `disk`
 (partition map or bare volume). So the same detection decides what a
 file is whether it is opened as a disk, listed in the Filesystem tab,

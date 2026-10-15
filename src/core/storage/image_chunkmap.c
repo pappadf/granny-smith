@@ -2,12 +2,14 @@
 // Copyright (c) pappadf
 
 // image_chunkmap.c
-// NDIF and UDIF images as chunk-mapped sources.  See image_chunkmap.h.
+// NDIF, UDIF and QCOW2 images as chunk-mapped sources.  See image_chunkmap.h.
 
 #include "image_chunkmap.h"
 
 #include "chunk_cache.h"
+#include "common.h"
 #include "image_ndif.h"
+#include "image_qcow2.h"
 #include "image_udif.h"
 #include "log.h"
 #include "resource_fork.h"
@@ -25,14 +27,14 @@ LOG_USE_CATEGORY_NAME("image")
 // The generic chunk map
 // ============================================================================
 
-typedef enum { RUN_ZERO, RUN_RAW, RUN_NDIF, RUN_UDIF } run_kind_t;
+typedef enum { RUN_ZERO, RUN_RAW, RUN_NDIF, RUN_UDIF, RUN_QCOW2 } run_kind_t;
 
 // One run of the decoded image.
 typedef struct {
     uint64_t out_off, out_len; // bytes of the decoded image
     uint64_t in_off, in_len; // bytes of the data fork
     run_kind_t kind;
-    uint32_t type; // the format's own chunk type (NDIF / UDIF)
+    uint32_t type; // the format's own chunk type (NDIF / UDIF); QCOW2: the cluster bits
 } cm_run_t;
 
 typedef struct {
@@ -41,7 +43,7 @@ typedef struct {
     size_t n_runs, cap_runs;
     uint64_t size; // decoded image size
     char *key;
-    const char *what; // "NDIF" / "UDIF", for messages
+    const char *what; // "ndif" / "udif" / "qcow2", for messages
 } cm_src_t;
 
 static int cm_add(cm_src_t *m, cm_run_t r) {
@@ -106,6 +108,9 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
                               .offset = 0,
                               .length = (uint32_t)r->in_len};
             rc = ndif_decode_chunk(&c, in, (size_t)r->in_len, buf, cap);
+        } else if (r->kind == RUN_QCOW2) {
+            rc = r->out_len <= cap ? qcow2_decode_cluster(in, (size_t)r->in_len, r->type, buf, (size_t)r->out_len)
+                                   : -EINVAL;
         } else {
             udif_chunk_t c = {
                 .type = r->type, .sector = 0, .count = r->out_len / CM_SECTOR, .offset = 0, .length = r->in_len};
@@ -428,6 +433,175 @@ source_t *udif_source_open_bounded(source_t *data, size_t max_chunk, int *err) {
         rc = cm_finish(m);
     if (rc != 0) {
         LOG(1, "UDIF '%s': unusable block map (%d)", source_key(data), rc);
+        cm_free(m);
+        *err = rc;
+        return NULL;
+    }
+    source_t *s = peel_source_new(&cm_ops, m, NULL);
+    *err = s ? 0 : -ENOMEM;
+    return s;
+}
+
+// ============================================================================
+// QCOW2
+// ============================================================================
+
+bool qcow2_source_detect(const uint8_t *head, size_t len) {
+    return qcow2_detect(head, len);
+}
+
+// Largest L1 table read (QEMU's own limit), and the most runs a map may
+// hold: one per run of contiguous host clusters, so only a badly
+// fragmented, very large image comes near it.
+#define QCOW2_MAX_L1   (32u * 1024u * 1024u)
+#define QCOW2_MAX_RUNS (4u * 1024u * 1024u)
+
+// Add a run, extending the previous one when it continues it: QEMU
+// allocates host clusters in guest order as the guest writes, so most
+// adjacent raw clusters are adjacent in the file too.
+static int qcow2_add(cm_src_t *m, cm_run_t r) {
+    if (r.kind == RUN_RAW && m->n_runs) {
+        cm_run_t *p = &m->runs[m->n_runs - 1];
+        if (p->kind == RUN_RAW && p->out_off + p->out_len == r.out_off && p->in_off + p->in_len == r.in_off) {
+            p->out_len += r.out_len;
+            p->in_len += r.in_len;
+            return 0;
+        }
+    }
+    if (m->n_runs >= QCOW2_MAX_RUNS)
+        return -EFBIG;
+    return cm_add(m, r);
+}
+
+// A raw run of `len` guest bytes at `out` from host offset `host`.  Bytes
+// past the end of the file read as zeros (as QEMU reads them), so the run
+// is cut there and the rest left to the gap.
+static int qcow2_add_raw(cm_src_t *m, uint64_t out, uint64_t host, uint64_t len, uint64_t dsize) {
+    if (host >= dsize)
+        return 0;
+    if (len > dsize - host)
+        len = dsize - host;
+    return qcow2_add(m, (cm_run_t){.out_off = out, .out_len = len, .in_off = host, .in_len = len, .kind = RUN_RAW});
+}
+
+// Map the guest clusters one L2 table describes.  `first` is the guest
+// offset of its first entry.
+static int qcow2_map_l2(cm_src_t *m, const qcow2_header_t *h, const uint8_t *l2, uint64_t first, uint64_t dsize) {
+    uint64_t cluster = (uint64_t)1 << h->cluster_bits;
+    bool ext = (h->incompat & QCOW2_INCOMPAT_EXTL2) != 0;
+    uint64_t n = qcow2_l2_entries(h);
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t out = first + i * cluster;
+        if (out >= h->size)
+            break;
+        uint64_t span = h->size - out < cluster ? h->size - out : cluster; // the last cluster may be cut
+        uint64_t e = RD_BE64(l2 + i * (ext ? 16u : 8u));
+        if (e & QCOW2_L2_COMPRESSED) {
+            if (h->compression_type != QCOW2_COMPRESSION_DEFLATE) {
+                LOG(0, "QCOW2 '%s': zstd-compressed clusters are not supported", source_key(m->data));
+                return -ENOTSUP;
+            }
+            uint64_t off, len;
+            qcow2_compressed_extent(e, h->cluster_bits, &off, &len);
+            if (off >= dsize)
+                return -EINVAL;
+            if (len > dsize - off)
+                len = dsize - off; // the last sector of the file may be short
+            int rc = qcow2_add(m, (cm_run_t){.out_off = out,
+                                             .out_len = span,
+                                             .in_off = off,
+                                             .in_len = len,
+                                             .kind = RUN_QCOW2,
+                                             .type = h->cluster_bits});
+            if (rc)
+                return rc;
+            continue;
+        }
+        uint64_t host = e & QCOW2_OFFSET_MASK;
+        if (!ext) {
+            // Zero flag (v3), or unallocated with no backing file: zeros, the gap.
+            if ((h->version >= 3 && (e & QCOW2_L2_ZERO)) || host == 0)
+                continue;
+            int rc = qcow2_add_raw(m, out, host, span, dsize);
+            if (rc)
+                return rc;
+            continue;
+        }
+        // Extended entry: 32 subclusters, each allocated, zero or neither.
+        uint64_t bitmap = RD_BE64(l2 + i * 16u + 8u);
+        uint64_t sub = cluster / QCOW2_SUBCLUSTERS;
+        for (uint32_t s = 0; s < QCOW2_SUBCLUSTERS; s++) {
+            uint64_t so = out + s * sub;
+            if (so >= h->size)
+                break;
+            bool zero = (bitmap >> (32 + s)) & 1, alloc = (bitmap >> s) & 1;
+            if (zero || !alloc)
+                continue;
+            if (host == 0)
+                return -EINVAL; // an allocated subcluster needs a host cluster
+            uint64_t slen = h->size - so < sub ? h->size - so : sub;
+            int rc = qcow2_add_raw(m, so, host + s * sub, slen, dsize);
+            if (rc)
+                return rc;
+        }
+    }
+    return 0;
+}
+
+source_t *qcow2_source_open(source_t *data, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    *err = -EINVAL;
+    uint64_t dsize = source_size(data);
+    uint8_t hdr[QCOW2_HEADER_READ] = {0};
+    size_t hlen = dsize < sizeof(hdr) ? (size_t)dsize : sizeof(hdr);
+    if (source_read_exact(data, 0, hdr, hlen) != 0)
+        return NULL;
+    qcow2_header_t h;
+    const char *why = NULL;
+    int rc = qcow2_parse_header(hdr, hlen, &h, &why);
+    if (rc != 0) {
+        LOG(0, "QCOW2 '%s': %s", source_key(data), why ? why : "unreadable header");
+        *err = rc;
+        return NULL;
+    }
+    if (h.incompat & QCOW2_INCOMPAT_CORRUPT)
+        LOG(0, "QCOW2 '%s' is marked corrupt; reading it anyway", source_key(data));
+    uint64_t cluster = (uint64_t)1 << h.cluster_bits;
+    uint64_t l1n = qcow2_l1_needed(&h);
+    if (l1n * 8u > QCOW2_MAX_L1 || h.l1_offset > dsize || l1n * 8u > dsize - h.l1_offset) {
+        LOG(0, "QCOW2 '%s': L1 table out of range", source_key(data));
+        return NULL;
+    }
+    uint8_t *l1 = malloc(l1n ? (size_t)l1n * 8u : 1);
+    uint8_t *l2 = malloc((size_t)cluster);
+    cm_src_t *m = cm_new(data, "qcow2");
+    rc = (l1 && l2 && m) ? 0 : -ENOMEM;
+    if (rc == 0)
+        m->size = h.size;
+    if (rc == 0 && l1n)
+        rc = source_read_exact(data, h.l1_offset, l1, (size_t)l1n * 8u);
+    uint64_t l2_span = qcow2_l2_entries(&h) << h.cluster_bits;
+    for (uint64_t i = 0; i < l1n && rc == 0; i++) {
+        uint64_t l2_off = RD_BE64(l1 + i * 8u) & QCOW2_OFFSET_MASK;
+        if (l2_off == 0)
+            continue; // the whole table's span is unallocated
+        if ((l2_off & (cluster - 1)) || l2_off > dsize || cluster > dsize - l2_off) {
+            rc = -EINVAL;
+            break;
+        }
+        rc = source_read_exact(data, l2_off, l2, (size_t)cluster);
+        if (rc == 0)
+            rc = qcow2_map_l2(m, &h, l2, i * l2_span, dsize);
+    }
+    free(l1);
+    free(l2);
+    if (rc == 0)
+        rc = cm_finish(m);
+    if (rc != 0) {
+        if (m)
+            LOG(1, "QCOW2 '%s': unusable cluster map (%d)", source_key(data), rc);
         cm_free(m);
         *err = rc;
         return NULL;

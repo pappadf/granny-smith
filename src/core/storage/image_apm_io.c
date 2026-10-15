@@ -33,9 +33,9 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
     // + block 0).  Cap to the image size so small fixtures work, in whole
     // blocks: disk_read_data reads nothing else.
     size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
-    size_t img_size = disk_size(img);
+    uint64_t img_size = disk_size(img);
     if (scan_bytes > img_size)
-        scan_bytes = img_size - img_size % APM_BLOCK_SIZE;
+        scan_bytes = (size_t)(img_size - img_size % APM_BLOCK_SIZE);
     if (scan_bytes < 2 * APM_BLOCK_SIZE) {
         if (errmsg)
             *errmsg = image_apm_err_read;

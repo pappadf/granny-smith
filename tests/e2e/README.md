@@ -62,6 +62,7 @@ tests/e2e/
 │   ├── perf-headbase.spec.ts            # Head vs base WASM build, alternated (CPU benchmarks; needs PERF_BASE_DIST)
 │   ├── perf-jit.spec.ts                 # PowerPC translation tier vs predecoded, alternated in one session (tracked numbers)
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
+│   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase

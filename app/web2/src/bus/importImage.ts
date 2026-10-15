@@ -19,8 +19,16 @@
 // length is gathered in memory up to that size, and only goes to the writer
 // once it is bigger.  Mac archives (StuffIt, Compact Pro, BinHex, MacBinary)
 // are not unpacked here; the caller stages them as it always has.
+//
+// A QEMU QCOW2 image, whatever its size, cannot go through the writer as it
+// arrives: its cluster tables say where each guest cluster lives, and the
+// clusters need not be in disk order.  It is streamed to the scratch area as
+// it is (compact already), and the core decodes it from there into the UDIF
+// (files.convert), reading the tables and clusters it needs: never the whole
+// disk in memory, and the QCOW2 removed once the UDIF is stored.  Nothing
+// else keeps a QCOW2 -- the stored image is the UDIF.
 
-import { gsEval, gsErrorText } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
@@ -81,7 +89,7 @@ export interface ImportOutcome {
 }
 
 // Names a disk image may carry that the stored .dmg replaces.
-const RAW_EXT = /\.(img|image|dsk|hda|hfv|iso|toast|cdr|raw|bin|dmg|smi|udif)$/i;
+const RAW_EXT = /\.(img|image|dsk|hda|hfv|iso|toast|cdr|raw|bin|dmg|smi|udif|qcow2|qcow)$/i;
 
 // The name an image is stored under: its own, sanitised, as .dmg
 // ("Disk Tools.img" -> "Disk_Tools.dmg").
@@ -102,6 +110,21 @@ function isZipJunk(name: string): boolean {
     base === '.DS_Store' ||
     base === ''
   );
+}
+
+// True when `head` starts with a QCOW2 header ("QFI\xfb", version 2 or 3).
+export function isQcow2Head(head: Uint8Array): boolean {
+  if (head.length < 8) return false;
+  if (head[0] !== 0x51 || head[1] !== 0x46 || head[2] !== 0x49 || head[3] !== 0xfb) return false;
+  const version = ((head[4] << 24) | (head[5] << 16) | (head[6] << 8) | head[7]) >>> 0;
+  return version === 2 || version === 3;
+}
+
+// True when `blob` is a QCOW2 image: a small one goes to importImage too,
+// to be converted, rather than being stored as it is.
+export async function isQcow2File(blob: Blob): Promise<boolean> {
+  if (blob.size < 8) return false;
+  return isQcow2Head(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
 }
 
 function sizeText(bytes: number): string {
@@ -404,11 +427,16 @@ async function importDecoded(
   const pump: Pump = { source: reader, pending: [] };
   const base = sanitizeName(name.split('/').pop() || 'disk') || 'disk';
 
+  // The first window says whether this is a QCOW2 image (see the header).
+  const first = await reader.next();
+  if (first) pump.pending.push(first);
+  const isQcow2 = !!first && isQcow2Head(first);
+
   // Small: everything fits under the threshold.  A known length decides at
   // once; an unknown one is gathered until it is past it.
   const known = reader.total;
-  if (opts.onSmall && (known === null || known <= LARGE_IMPORT_BYTES)) {
-    let gathered = 0;
+  if (opts.onSmall && !isQcow2 && (known === null || known <= LARGE_IMPORT_BYTES)) {
+    let gathered = first?.length ?? 0;
     while (gathered <= LARGE_IMPORT_BYTES) {
       const win = await reader.next();
       if (!win) break;
@@ -442,6 +470,29 @@ async function importDecoded(
   }
   const part = scratchPath(`${base}.dmg.part`);
   try {
+    if (isQcow2) {
+      // Staged as it is, then decoded by the core straight into a UDIF.
+      const staged = scratchPath(`${base}.qcow2.part`);
+      try {
+        await writeExact(staged, pump, opts, cancelled);
+        setActivityDetail('converting the QCOW2 image...');
+        const r = await gsEvalWithProgress(
+          'files.convert',
+          [staged, part, 64, 1, 'udif', name, opts.origin ?? ''],
+          (done, total) =>
+            setActivityDetail(
+              `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
+            ),
+        );
+        if (!r || typeof r !== 'object' || 'error' in (r as object))
+          throw new Error(gsErrorText(r));
+      } finally {
+        await rmQuiet(staged);
+      }
+      const placed = await placeUdif(part, shown, opts.categories);
+      if (placed) showNotification(`${shown} stored`, 'info');
+      return { handled: true, path: placed?.path ?? null, category: placed?.category };
+    }
     if (isUdif) {
       await writeExact(part, pump, opts, cancelled);
       const tail = await xferRead(part, Math.max(0, reader.read - 512), 512);

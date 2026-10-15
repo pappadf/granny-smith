@@ -97,6 +97,9 @@ import {
 import { getProfile, type ConfigDocument, type MachineProfile, type StorageBus } from './profile';
 import {
   attachHardDisk,
+  attachMedia,
+  machineDevices,
+  type MachineDevice,
   attachCdrom,
   detectFdDriveCount,
   insertFloppy,
@@ -346,11 +349,20 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // ?hdN= is the default configuration's N-th hard disk (hd0 is the startup
   // disk, which the configuration names), on whatever bus it is -- not SCSI
   // id N on the first bus.
+  // With a config=, the N-th hard disk is that configuration's (its startup
+  // disk first): a link that puts the disk on another bus (a G3's ATA, not
+  // its default SCSI ID 0) gets it there.
+  const configured = params.config ? await configuredHardDisks(params.config) : null;
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
-    report(hd.slot, p, await attachHardDisk(p, n));
+    const dev = configured?.[n];
+    report(
+      hd.slot,
+      p,
+      dev ? await attachMedia(dev.bus, dev.unit, 'hd', p) : await attachHardDisk(p, n),
+    );
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
@@ -373,6 +385,17 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     showNotification(`Booted ${chosen} from URL parameters`, 'info');
   }
   return true;
+}
+
+// The running machine's hard-disk devices in configuration order, the
+// startup device (as `config` names it) moved first: what hd0, hd1, ...
+// mean for a URL that brought its own configuration.
+async function configuredHardDisks(config: Record<string, unknown>): Promise<MachineDevice[]> {
+  const devs = await machineDevices('hd');
+  const start = config.startup as { bus?: unknown; unit?: unknown } | null | undefined;
+  const i = start ? devs.findIndex((d) => d.bus === start.bus && d.unit === start.unit) : -1;
+  if (i > 0) devs.unshift(...devs.splice(i, 1));
+  return devs;
 }
 
 // The URL's media parameters as [canonical name, value] pairs, in a fixed

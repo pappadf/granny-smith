@@ -987,8 +987,8 @@ static int16_t swim_do_format(iop_t *iop, floppy_t *floppy, int idx, image_t *im
     }
 
     int16_t rc = MAC_ERR_NO_ERR;
-    size_t total = disk_size(img);
-    for (size_t off = 0; off < total; off += 512) {
+    uint64_t total = disk_size(img);
+    for (uint64_t off = 0; off < total; off += 512) {
         if (disk_write_data(img, off, fill, sizeof fill) != sizeof fill) {
             rc = MAC_ERR_IO;
             break;
@@ -996,7 +996,7 @@ static int16_t swim_do_format(iop_t *iop, floppy_t *floppy, int idx, image_t *im
         // Only when the caller supplied tags: an image with no tag area
         // should not be given one as a side effect of a format.
         if (tag_addr)
-            disk_write_tag(img, off / 512, tags, sizeof tags);
+            disk_write_tag(img, (size_t)(off / 512), tags, sizeof tags);
     }
 
     // The medium was rewritten behind the controller's back, so the GCR track
