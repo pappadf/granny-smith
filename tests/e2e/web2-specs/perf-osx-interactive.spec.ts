@@ -43,7 +43,10 @@ const terminalRun = (page: Page, line: string) =>
 const DATA = path.resolve(__dirname, "../../data");
 const ROM = path.join(DATA, "roms/pmg3dt-pmg3mt-78f57389.rom");
 const DISK = path.join(DATA, "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg");
-const SIDECAR = path.join(DATA, "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.json");
+const SIDECAR = path.join(
+  DATA,
+  "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.json",
+);
 const SCENARIO = path.resolve(__dirname, "../../bench/osx-interactive.script");
 
 const LABEL = process.env.PERF_LABEL ?? "unlabeled";
@@ -53,7 +56,9 @@ const CONFIG_SETUP: Record<string, string> = {
   jit: "predecode.enabled = 1\njit.enabled = 1\njit.supervisor = 0\n",
   "jit-sup": "predecode.enabled = 1\njit.enabled = 1\njit.supervisor = 1\n",
 };
-const CONFIGS = (process.env.PERF_CONFIGS ?? "predecode,jit,jit-sup").split(",");
+const CONFIGS = (process.env.PERF_CONFIGS ?? "predecode,jit,jit-sup").split(
+  ",",
+);
 
 // The link a user would open: the G3, 256 MB, the disk's own configuration
 // (ATA, Apple's Gossamer nvramrc patch, the 17" monitor)
@@ -80,44 +85,81 @@ async function bootFromLink(page: Page): Promise<void> {
   ]) {
     const body = fs.readFileSync(file);
     await page.route(`**/${suffix}`, (route) =>
-      route.fulfill({ status: 200, contentType: "application/octet-stream", body }),
+      route.fulfill({
+        status: 200,
+        contentType: "application/octet-stream",
+        body,
+      }),
     );
   }
   await page.goto(link());
-  await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
-    timeout: 120_000,
-  });
+  await page.waitForFunction(
+    () => (window as { __gsReady?: boolean }).__gsReady === true,
+    undefined,
+    {
+      timeout: 120_000,
+    },
+  );
   // The machine exists once the scheduler answers; only then do the
   // terminal's commands find it
-  await expect.poll(() => attr(page, "scheduler.mode"), { timeout: 600_000, intervals: [2_000] }).not.toBeNull();
+  await expect
+    .poll(() => attr(page, "scheduler.mode"), {
+      timeout: 600_000,
+      intervals: [2_000],
+    })
+    .not.toBeNull();
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, "checkpoint.auto = false");
   await terminalRun(page, 'scheduler.mode = "turbo"');
-  await expect.poll(() => attr(page, "checkpoint.auto"), { timeout: 15_000 }).toBe("false");
-  await expect.poll(() => attr(page, "scheduler.mode"), { timeout: 15_000 }).toBe("turbo");
+  await expect
+    .poll(() => attr(page, "checkpoint.auto"), { timeout: 15_000 })
+    .toBe("false");
+  await expect
+    .poll(() => attr(page, "scheduler.mode"), { timeout: 15_000 })
+    .toBe("turbo");
 }
 
 // Wait for `marker` (or a failure) in the terminal; return the whole text
 // with the terminal's line wrapping undone.  On a timeout: the terminal and
 // the screen, for where it stopped.
-async function waitFor(page: Page, marker: string, timeoutMs: number): Promise<string> {
+async function waitFor(
+  page: Page,
+  marker: string,
+  timeoutMs: number,
+): Promise<string> {
   try {
-    await expect(page.locator(CONSOLE_OUTPUT)).toContainText(new RegExp(`${marker}|ASSERT FAILED|failed`), {
-      timeout: timeoutMs,
-    });
+    await expect(page.locator(CONSOLE_OUTPUT)).toContainText(
+      new RegExp(`${marker}|ASSERT FAILED|failed`),
+      {
+        timeout: timeoutMs,
+      },
+    );
   } catch (e) {
-    console.log(`PERFSCEN timeout; terminal:\n${await page.locator(CONSOLE_OUTPUT).innerText({ timeout: 5_000 })}`);
-    await page.screenshot({ path: test.info().outputPath("timeout.png"), timeout: 10_000 });
+    console.log(
+      `PERFSCEN timeout; terminal:\n${await page.locator(CONSOLE_OUTPUT).innerText({ timeout: 5_000 })}`,
+    );
+    await page.screenshot({
+      path: test.info().outputPath("timeout.png"),
+      timeout: 10_000,
+    });
     throw e;
   }
   return (await page.locator(CONSOLE_OUTPUT).innerText()).replace(/\n/g, "");
 }
 
-test.skip(!process.env.PERF_OSX_INTERACTIVE, "opt-in: PERF_OSX_INTERACTIVE=1 (boots Mac OS X per configuration)");
-test.skip(!fs.existsSync(DISK), "the Aqua disk is not in this checkout's test data (gs-test-data df4ebcf or later)");
+test.skip(
+  !process.env.PERF_OSX_INTERACTIVE,
+  "opt-in: PERF_OSX_INTERACTIVE=1 (boots Mac OS X per configuration)",
+);
+test.skip(
+  !fs.existsSync(DISK),
+  "the Aqua disk is not in this checkout's test data (gs-test-data df4ebcf or later)",
+);
 
-test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked numbers)", async ({ browser }) => {
+test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked numbers)", async ({
+  browser,
+}) => {
   test.setTimeout(3 * 60 * 60 * 1000);
   const scenario = fs.readFileSync(SCENARIO, "utf8");
   for (let run = 1; run <= RUNS; run++) {
@@ -126,7 +168,11 @@ test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked 
       expect(setup, `unknown configuration ${config}`).toBeTruthy();
       const page = await browser.newPage();
       await bootFromLink(page);
-      await stageOpfsText(page, "/opfs/upload/osx-interactive.script", scenario);
+      await stageOpfsText(
+        page,
+        "/opfs/upload/osx-interactive.script",
+        scenario,
+      );
       const body = setup
         .trim()
         .split("\n")
@@ -144,10 +190,18 @@ test("perf-osx-interactive: Mac OS X menu, minimize and restore (turbo, tracked 
           `include "/opfs/upload/osx-interactive.script"\n`,
       );
       await terminalRun(page, 'include "/opfs/upload/osx-driver.script"');
-      const text = await waitFor(page, '"phase":"restore2"[^}]*}', 60 * 60 * 1000);
+      const text = await waitFor(
+        page,
+        '"phase":"restore2"[^}]*}',
+        60 * 60 * 1000,
+      );
       expect(text).not.toContain("ASSERT FAILED");
       for (const m of text.matchAll(/@@SCEN (\{[^}]*\})/g)) {
-        const rec = JSON.parse(m[1]) as { phase: string; ns: number; instr: number };
+        const rec = JSON.parse(m[1]) as {
+          phase: string;
+          ns: number;
+          instr: number;
+        };
         console.log(
           `PERFSCEN label=${LABEL} config=${config} run=${run} phase=${rec.phase} ms=${(rec.ns / 1e6).toFixed(0)} instr=${rec.instr}`,
         );
