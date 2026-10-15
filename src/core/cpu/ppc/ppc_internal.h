@@ -445,7 +445,7 @@ uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 extern uintptr_t *g_ppc_user_wok;
 // The same store served from the translation TLB (ppc_mmu.c): the host bytes
 // a user store to ea reaches without a walk, or NULL.
-uint8_t *ppc_mmu_user_store_host(const ppc_t *p, uint32_t ea);
+uint8_t *ppc_mmu_user_store_host(uint32_t ea);
 
 // The supervisor-translated SoA (ppc_mmu.c): LOGICAL fills for data
 // accesses with MSR[PR]=0 and MSR[DT]=1 -- a kernel that runs with

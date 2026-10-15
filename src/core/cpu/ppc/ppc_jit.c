@@ -3631,7 +3631,7 @@ static bool region_entry(jit_region_t *R, jit_slot_t *s, uint32_t k, uint32_t id
 // prints it and clears it), to see why translated runs end
 #define JIT_XH_SIZE 4096
 static ppc_t *g_last_p;
-static ppc_t *g_wa_p; // the CPU (jit.trace = 11's writer pcs, ppc_jit_code_store's segment registers)
+static ppc_t *g_wa_p; // the CPU, for jit.trace = 11's writer pcs
 static uint64_t g_xh_tail, g_xh_budget_sum, g_xh_calls;
 static uint64_t g_xh_kind[5]; // exits: deopt, same chunk, other chunk, other region, other // exits with < 32 slots
                               // left; entry budgets
@@ -3962,7 +3962,7 @@ int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     uintptr_t rd = g_user_read[page];
     uint8_t *host;
     if (!rd) { // the entries are gone; the translation TLB may still serve it
-        host = ppc_mmu_user_store_host(g_wa_p, ea);
+        host = ppc_mmu_user_store_host(ea);
         if (!host)
             return why[1]++, 1;
     } else if (g_ppc_user_wok[page] != rd)
