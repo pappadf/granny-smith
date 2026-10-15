@@ -25,6 +25,7 @@
 #include "gossamer.h"
 
 #include "ata.h"
+#include "checkpoint.h"
 #include "dbdma.h"
 #include "image.h"
 #include "log.h"
@@ -254,7 +255,7 @@ void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value) {
 
 void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
-    st->atapi = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "atapi");
+    st->atapi = scsi_init_named(cfg->scheduler, cp, config_images(cfg), "atapi");
     for (int c = 0; c < 2; c++) {
         ata_channel_t *ch = &st->ata[c];
         ata_channel_init(ch, c);
@@ -265,7 +266,7 @@ void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
         scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", ctx, "dma_pump", ata_pump_fn[c]);
         ata_set_atapi_bus(ch, st->atapi);
         if (cp)
-            ata_checkpoint_restore(ch, cp, CONFIG_IMAGES(cfg));
+            ata_checkpoint_restore(ch, cp, config_images(cfg));
         dbdma_port_t port = {.out = ata_dma_out, .in = ata_dma_in, .s_bits = NULL, .ctx = ch, .burst = ATA_DMA_BURST};
         dbdma_set_port(st->dbdma, ata_dma_chan[c], &port);
     }
@@ -330,8 +331,9 @@ int gos_media_attach(config_t *cfg, const media_slot_t *slot) {
     if (!ata_attach_hd(ch, slot->unit & 1, slot->img))
         return -1;
     config_add_image(cfg, slot->img);
-    LOG(1, "ATA cell %d device %d: hard disk %s (%zu sectors)", slot->unit >> 1, slot->unit & 1,
-        image_get_filename(slot->img) ? image_get_filename(slot->img) : "(unnamed)", disk_size(slot->img) / 512u);
+    LOG(1, "ATA cell %d device %d: hard disk %s (%llu sectors)", slot->unit >> 1, slot->unit & 1,
+        image_get_filename(slot->img) ? image_get_filename(slot->img) : "(unnamed)",
+        (unsigned long long)(disk_size(slot->img) / 512u));
     return 0;
 }
 
@@ -344,6 +346,17 @@ bool gos_media_present(config_t *cfg, media_bus_t bus, int unit) {
     if (st->ata[unit >> 1].img[unit & 1])
         return true;
     return system_media_present_scsi_bus(st->atapi, unit);
+}
+
+image_t *gos_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus != MEDIA_BUS_ATA)
+        return system_media_image_std(cfg, bus, unit);
+    gossamer_state_t *st = gos_st(cfg);
+    if (!st || !st->ata_ready || !unit_ok(unit))
+        return NULL;
+    if (st->ata[unit >> 1].img[unit & 1])
+        return st->ata[unit >> 1].img[unit & 1];
+    return system_media_image_scsi_bus(st->atapi, unit);
 }
 
 int gos_media_eject(config_t *cfg, media_bus_t bus, int unit) {
@@ -422,32 +435,32 @@ static value_t ata_attr_devices(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t ata_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "image path"              },
-    {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
+    {.name = "path", .kind = VK_STRING, .doc = "image path"              },
+    {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
 };
 
 static const arg_decl_t ata_export_args[] = {
-    {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
-    {.name = "path", .kind = V_STRING, .doc = "destination file"        },
+    {.name = "unit", .kind = VK_INT,    .doc = "cell * 2 + device (0..3)"},
+    {.name = "path", .kind = VK_STRING, .doc = "destination file"        },
 };
 
 static const member_t ata_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "devices",
      .doc = "What each unit holds (cell 0 device 0/1, cell 1 device 0/1): hd, atapi or -",
-     .attr = {.type = V_STRING, .get = ata_attr_devices, .set = NULL}                                },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = ata_attr_devices, .set = NULL}                                },
+    {.kind = MK_METHOD,
      .name = "attach_hd",
      .doc = "Attach a hard-disk image as an ATA disk at a unit",
-     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_hd}   },
-    {.kind = M_METHOD,
+     .method = {.args = ata_attach_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_attach_hd}   },
+    {.kind = MK_METHOD,
      .name = "attach_cdrom",
      .doc = "Attach a CD-ROM image as an ATAPI drive at a unit",
-     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_cdrom}},
-    {.kind = M_METHOD,
+     .method = {.args = ata_attach_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_attach_cdrom}},
+    {.kind = MK_METHOD,
      .name = "export",
      .doc = "Write a unit's hard-disk contents to a flat image file",
-     .method = {.args = ata_export_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_export}      },
+     .method = {.args = ata_export_args, .nargs = 2, .result = VK_BOOL, .fn = ata_method_export}      },
 };
 
 static const class_desc_t ata_class = {

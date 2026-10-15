@@ -11,7 +11,7 @@
 // dropFileOnRow) — Playwright/CDP cannot drive native HTML5 drag-and-drop — but
 // the handlers, bus/fsOps, the worker and OPFS it triggers are all real.
 
-import { test, expect, type Download } from '@playwright/test';
+import { test, expect, type Download } from '../helpers/test';
 import * as path from 'node:path';
 import {
   gotoWeb2,

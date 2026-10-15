@@ -21,6 +21,7 @@
 // via_t, scc_t and rtc_t do.  This suite exists so the next field added to
 // that region is caught if it does not survive.
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
@@ -69,7 +70,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
 // Link stubs
 // ============================================================
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -100,15 +104,11 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
@@ -141,15 +141,15 @@ void scheduler_forget_source(struct scheduler *sch, void *source) {
 // The medium itself is out of scope here: these tests stage the state AROUND a
 // device, not its contents, and images_find() returns NULL so
 // no image is ever opened.
-size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_read_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_write_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_size(image_t *img) {
+uint64_t disk_size(image_t *img) {
     (void)img;
     return 0;
 }
@@ -309,6 +309,40 @@ TEST(test_5380_state_survives_a_round_trip) {
     ASSERT_EQ_INT(b->chip5380->cdr_idx, 2);
 
     scsi_delete(b);
+    scsi_delete(a);
+}
+
+// buf.max/size/pos are file content.  The staging writes index data[size++]
+// while size < max, so a restored max beyond the allocation was an OOB heap
+// write: the buffer must cover max, and an inconsistent triple must fail.
+TEST(test_restored_transfer_buffer_covers_its_max) {
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
+    a->bus.phase = scsi_data_out;
+    a->buf.max = a->buf.cap * 4; // as if a large WRITE(10) were mid-DATA-OUT
+    a->buf.size = 0;
+    a->buf.pos = 0;
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+    g_cp_errors = 0;
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_TRUE(b->buf.cap >= b->buf.max);
+    scsi_delete(b);
+
+    a->buf.max = 8;
+    a->buf.size = 16; // more staged than the phase asked for
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+    b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    ASSERT_TRUE(b->buf.size == 0 && b->buf.cap >= b->buf.max);
+    g_cp_errors = 0;
+
+    scsi_delete(b);
+    a->buf.max = a->buf.size = 0;
     scsi_delete(a);
 }
 
@@ -482,6 +516,7 @@ int main(void) {
     RUN(test_a_restore_brings_the_cd_drives_back);
     RUN(test_a_pending_data_out_settle_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
+    RUN(test_restored_transfer_buffer_covers_its_max);
     RUN(test_busless_round_trip_is_symmetric);
     RUN(test_53c96_writes_no_host_pointers);
     RUN(test_53c96_state_survives_a_round_trip);

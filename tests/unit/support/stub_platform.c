@@ -3,6 +3,7 @@
 // Platform stubs for unit tests
 // Provides minimal implementations of platform-specific functions.
 
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/time.h>
 
@@ -28,7 +29,9 @@ void emscripten_force_exit(int code) {
 }
 
 // A-Trap name lookup stub (weak symbol so real implementation can override)
-const char *__attribute__((weak)) macos_atrap_name(uint16_t trap) {
+const char *__attribute__((weak)) debug_mac_atrap_name(uint16_t trap, char *buf, size_t buf_size) {
     (void)trap;
+    (void)buf;
+    (void)buf_size;
     return "ATRAP";
 }

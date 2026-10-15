@@ -386,7 +386,7 @@ worker attaches, the card keeps the software rasteriser and
 - **Threading.** Unlike the Voodoo2's, this translator runs on the
   emulator thread, synchronously (the card has no command queue to put a
   thread behind): a fence blocks it on the GPU worker. Waits keep the
-  page's stall watch fed (`gs_v2gpu_keepalive`) — a software adapter
+  page's stall watch fed (`platform_v2gpu_keepalive`) — a software adapter
   compiles a pipeline on first use and can take seconds — and count as a
   lost device after 20 s. The worker starts lazily, on the card's first
   attach, so a page that never boots the card creates no second device;

@@ -17,7 +17,7 @@
 
 #include "config_space.h"
 #include "pci.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -950,7 +950,7 @@ TEST(test_large_prefetchable_bar) {
 TEST(test_bus_master_dma) {
     config_t *cfg = test_cfg();
     cfg->ram_size = DMA_RAM_SIZE;
-    cfg->mem_map = (memory_map_t *)g_dma_ram; // only ever handed back to the stub
+    cfg->memory_map = (memory_map_t *)g_dma_ram; // only ever handed back to the stub
     pci_root_t *root = pci_root_create(cfg);
     pci_bus_t *bus = pci_bus_create(root, "test", 0);
     device_reset();
@@ -1012,7 +1012,7 @@ TEST(test_bus_master_dma) {
     cfg_write_dword(&g_dev, PCI_CFG_COMMAND, 0);
     ASSERT_EQ_INT((int)pci_dma_read(&g_dev, 0x123u, buf, 1), 0);
 
-    cfg->mem_map = NULL;
+    cfg->memory_map = NULL;
     cfg->ram_size = 0;
     pci_root_delete(root);
 }

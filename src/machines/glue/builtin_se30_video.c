@@ -22,8 +22,6 @@
 #include "display.h"
 #include "gsvrom.h"
 #include "log.h"
-#include "system.h"
-#include "system_config.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -182,6 +180,10 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &head, sizeof head);
         display_head_apply(&p->display, &head);
     }
+    // Re-point the scanout at the restored buffer: the VIA redrive that
+    // follows reaches select_buffer, which early-returns on an unchanged
+    // main_buf and would leave init's primary-buffer pointer in place.
+    p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
 
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;
@@ -194,7 +196,11 @@ static const nubus_card_ops_t builtin_se30_video_ops = {
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
-    .on_vbl = NULL, // VBL slot-IRQ flow stays in se30_trigger_vbl for v1
+    // No per-card VBL hook: the SE/30's built-in video has no slot
+    // interrupt logic of its own.  The machine raises its pseudo-slot $E
+    // VBL from its frame timer (se30_trigger_vbl in se30.c, the board's
+    // trigger_vbl), which is where that wiring lives on the real board.
+    .on_vbl = NULL,
     .display = card_display,
 };
 

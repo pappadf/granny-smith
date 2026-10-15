@@ -19,13 +19,14 @@
 
 #include "pci.h"
 
+#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "prom.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -357,8 +358,14 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
                         uint32_t pci_mask, const char *what) {
-    if (!bus || bus->window_count >= PCI_MAX_WINDOWS)
+    if (!bus)
         return;
+    if (bus->window_count >= PCI_MAX_WINDOWS) {
+        // A family declaring one window too many loses a whole aperture; say so.
+        LOG(0, "%s: no free window slot for '%s' (PCI_MAX_WINDOWS = %d); dropped", bus->name,
+            what ? what : "PCI window", PCI_MAX_WINDOWS);
+        return;
+    }
     pci_window_t *w = &bus->window[bus->window_count++];
     w->bus = bus;
     w->space = space;
@@ -376,7 +383,7 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.peek_uint8 = window_peek8;
     w->iface.peek_uint16 = window_peek16;
     w->iface.peek_uint32 = window_peek32;
-    memory_map_add(bus->cfg->mem_map, map_base, size, w->what, &w->iface, w);
+    memory_map_add(bus->cfg->memory_map, map_base, size, w->what, &w->iface, w);
 }
 
 const memory_interface_t *pci_bus_window_iface(pci_bus_t *bus, int window) {
@@ -1095,7 +1102,7 @@ static bool dma_permitted(const pci_device_t *dev, const char *dir, uint32_t phy
 
 // Does [phys, phys+len) lie wholly inside the machine's RAM?
 static bool dma_in_ram(const config_t *cfg, uint32_t phys, uint32_t len) {
-    return cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys;
+    return cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys;
 }
 
 uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len) {
@@ -1107,7 +1114,7 @@ uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len)
     config_t *cfg = dev->bus->cfg;
     bool rev = dev->bus->lane_reverse;
     if (dma_in_ram(cfg, phys, len)) {
-        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(out, ram + phys, len);
         else
@@ -1130,7 +1137,7 @@ uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32
     config_t *cfg = dev->bus->cfg;
     bool rev = dev->bus->lane_reverse;
     if (dma_in_ram(cfg, phys, len)) {
-        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
         if (!rev)
             memcpy(ram + phys, in, len);
         else

@@ -152,7 +152,7 @@ static void bart_claim_empty(config_t *cfg, uint32_t base, uint32_t size, const 
     pdm_bart_window_t *w = &st->bart_window[st->bart_window_count++];
     w->base = base;
     snprintf(w->what, sizeof(w->what), "%s", what);
-    memory_map_add(cfg->mem_map, base, size, w->what, &bart_fault_iface, w);
+    memory_map_add(cfg->memory_map, base, size, w->what, &bart_fault_iface, w);
 }
 
 // ============================================================
@@ -325,7 +325,7 @@ void pdm_bart_init(config_t *cfg) {
 
     // The register file.  Page granularity is ours, not the chip's; inside
     // the page the file answers $00..$87 and faults above it.
-    memory_map_add(cfg->mem_map, PDM_BART_BASE, MEM_PAGE_SIZE, "BART registers", &st->bart_reg_interface, cfg);
+    memory_map_add(cfg->memory_map, PDM_BART_BASE, MEM_PAGE_SIZE, "BART registers", &st->bart_reg_interface, cfg);
 
     // Standard slot space (16 MB per slot) and super slot space (256 MB per
     // slot) for every declared connector, named per slot so a fault log and

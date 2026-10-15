@@ -19,6 +19,7 @@
 
 #include "ata.h"
 
+#include "checkpoint.h"
 #include "image.h"
 #include "log.h"
 #include "scsi.h"
@@ -323,8 +324,8 @@ static bool hd_io(ata_channel_t *ch, int unit, bool write, uint64_t lba, uint32_
     if (!img)
         return false;
     size_t bytes = (size_t)n * SECTOR;
-    size_t got = write ? disk_write_data(img, (size_t)lba * SECTOR, ch->buf, bytes)
-                       : disk_read_data(img, (size_t)lba * SECTOR, ch->buf, bytes);
+    size_t got =
+        write ? disk_write_data(img, lba * SECTOR, ch->buf, bytes) : disk_read_data(img, lba * SECTOR, ch->buf, bytes);
     return got == bytes;
 }
 
@@ -340,9 +341,21 @@ static bool stage_read(ata_channel_t *ch, uint32_t max_sectors) {
     return true;
 }
 
+// A read the image could not serve: the media error a drive reports for a
+// sector it cannot recover -- ERR with UNC, the task file left addressing
+// the block that failed (ATA-4: on an error the command block registers
+// hold the address of the sector in error; here, the first of the block,
+// since the image names no finer address).  The range was checked at the
+// start, so this is never IDNF.
+static void read_failed(ata_channel_t *ch, ata_dev_t *d) {
+    LOG(1, "ch%d: read of LBA %llu failed in the image: UNC", ch->index, (unsigned long long)ch->lba);
+    tf_store_lba(ch, d, ch->lba);
+    finish_abort(ch, d, ATA_ER_UNC);
+}
+
 static void pio_in_block(ata_channel_t *ch, ata_dev_t *d) {
     if (!stage_read(ch, ch->block_sectors)) {
-        finish_abort(ch, d, ATA_ER_ABRT | ATA_ER_IDNF);
+        read_failed(ch, d);
         return;
     }
     ch->xfer = ATA_XFER_PIO_IN;
@@ -378,7 +391,7 @@ static void start_rw(ata_channel_t *ch, ata_dev_t *d, bool write, bool dma, uint
             uint32_t n = count < ATA_BUF_SIZE / SECTOR ? count : ATA_BUF_SIZE / SECTOR;
             ch->buf_len = n * SECTOR;
         } else if (!stage_read(ch, ATA_BUF_SIZE / SECTOR)) {
-            finish_abort(ch, d, ATA_ER_ABRT | ATA_ER_IDNF);
+            read_failed(ch, d);
             return;
         }
         d->status = ATA_ST_DRDY | ATA_ST_DSC | ATA_ST_DRQ;
@@ -974,7 +987,7 @@ int ata_dma_in(void *ctx, uint8_t *buf, int len) {
             tf_store_lba(ch, d, ch->lba - 1);
             finish_ok(ch, d);
         } else if (!stage_read(ch, ATA_BUF_SIZE / SECTOR)) {
-            finish_abort(ch, d, ATA_ER_ABRT | ATA_ER_IDNF);
+            read_failed(ch, d);
         }
     }
     return moved;

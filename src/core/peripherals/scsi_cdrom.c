@@ -4,6 +4,7 @@
 // scsi_cdrom.c
 // CD-ROM device logic for the SCSI subsystem (AppleCD SC Plus / Sony CDU-8002).
 
+#include "gs_assert.h"
 #include "platform.h"
 #include "scsi.h"
 #include "scsi_internal.h"
@@ -322,9 +323,7 @@ static void cd_mode_sense(scsi_t *scsi, bool ten) {
     // Bound by the allocation length.  Zero means zero -- CDU-541 manual
     // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
     // response to a probe that allocated nothing for it.
-    int n = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (n > 0)
-        memcpy(scsi->buf.data, resp, (size_t)n);
+    scsi_data_in_copy(scsi, resp, pos, alloc_len);
 }
 
 // Handle MODE SENSE(6) for CD-ROM device
@@ -480,6 +479,53 @@ static void put_cd_address(uint8_t *dst, uint32_t lba, bool msf) {
     dst[3] = (uint8_t)lba;
 }
 
+// READ TOC formats 01b and 10b for a single-session data disc (SFF-8020i
+// r2.6 §10.8.19, Tables 127 and 128).  01b: the first and last session (1)
+// and session 1's first track, at LBA 0.  10b: the session's lead-in
+// Q sub-channel entries -- points A0h (first track 1, disc type 00h,
+// CD-ROM), A1h (last track 1) and A2h (the lead-out's start), then track 1 --
+// as 11-byte descriptors whose addresses are always MSF.
+static void scsi_cdrom_read_toc_session(scsi_t *scsi, uint8_t format, bool msf, uint16_t alloc_len) {
+    int target = scsi->bus.target & 7;
+    uint16_t blk_sz = scsi->devices[target].block_size;
+    uint32_t total = 0;
+    if (scsi->device_images[target])
+        total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
+
+    uint8_t toc[4 + 4 * 11];
+    memset(toc, 0, sizeof(toc));
+    int pos = 4;
+    if (format == 1) {
+        toc[pos + 1] = 0x14; // ADR=1, control=4 (data track)
+        toc[pos + 2] = 0x01; // first track in the last session
+        put_cd_address(&toc[pos + 4], 0, msf);
+        pos += 8;
+    } else {
+        static const uint8_t points[4] = {0xA0, 0xA1, 0xA2, 0x01};
+        for (int i = 0; i < 4; i++) {
+            uint8_t *d = &toc[pos];
+            d[0] = 0x01; // session
+            d[1] = 0x14; // ADR=1, control=4
+            d[3] = points[i];
+            uint8_t a[4];
+            if (points[i] == 0xA0) {
+                d[8] = 0x01; // first track
+            } else if (points[i] == 0xA1) {
+                d[8] = 0x01; // last track
+            } else {
+                lba_to_msf(points[i] == 0xA2 ? total : 0, a);
+                d[8] = a[1], d[9] = a[2], d[10] = a[3];
+            }
+            pos += 11;
+        }
+    }
+    toc[0] = (uint8_t)((pos - 2) >> 8);
+    toc[1] = (uint8_t)(pos - 2);
+    toc[2] = 0x01; // first session
+    toc[3] = 0x01; // last session
+    scsi_data_in_copy(scsi, toc, pos, alloc_len);
+}
+
 void scsi_cdrom_read_toc(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
     uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
@@ -490,6 +536,25 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     // Format codes and Format 1 session info are MMC, a later standard than
     // either authority for this drive, which reports ANSI version 0x01.)
     bool msf = (scsi->buf.data[1] & 0x02) != 0;
+
+    // An ATAPI host asks for the multi-session (01b) and full (10b) TOC
+    // formats: SFF-8020i r2.6 §10.8.19 Table 125 puts the format in byte 2
+    // bits 3-0 (MMC) and, when that is zero, in byte 9 bits 7-6 -- a field
+    // vendor-specific under SCSI-2 and zero from every SCSI-2 driver, so the
+    // SCSI path still gets format 00b below.  Mac OS X's CD driver reads the
+    // full TOC to build the disc's tracks; answered in format 00b layout it
+    // published no medium and the boot waited for its root device.
+    uint8_t format = scsi->buf.data[2] & 0x0F;
+    if (!format)
+        format = scsi->buf.data[9] >> 6;
+    if (format == 1 || format == 2) {
+        scsi_cdrom_read_toc_session(scsi, format, msf, alloc_len);
+        return;
+    }
+    if (format > 2) {
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+        return;
+    }
 
     // Starting track (byte 6).  A single-session data disc has exactly track 1,
     // so only 1h and AAh (lead-out) can be satisfied; anything else names a
@@ -559,9 +624,7 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     toc[2] = 0x01; // first track
     toc[3] = 0x01; // last track
 
-    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, toc, (size_t)len);
+    scsi_data_in_copy(scsi, toc, pos, alloc_len);
 }
 
 // Handle the Sony vendor READ TOC (C1h) — returns the CDU-541 "TOC Data Format"
@@ -623,9 +686,7 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     toc[2] = 0x01; // first track number
     toc[3] = 0x01; // last track number
 
-    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, toc, (size_t)len);
+    scsi_data_in_copy(scsi, toc, pos, alloc_len);
 }
 
 // ============================================================================
@@ -641,9 +702,7 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
     memset(resp, 0, sizeof(resp));
     resp[1] = 0x15; // audio status: no current audio status info
 
-    int len = scsi_data_in_alloc(scsi, 4, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, resp, (size_t)len);
+    scsi_data_in_copy(scsi, resp, 4, alloc_len);
 }
 
 // ============================================================================
@@ -666,9 +725,7 @@ void scsi_cdrom_read_header(scsi_t *scsi) {
     resp[0] = 0x01; // CD-ROM data mode 1
     put_cd_address(&resp[4], lba, msf); // bytes 4-7: absolute address
 
-    int len = scsi_data_in_alloc(scsi, 8, alloc_len);
-    if (len > 0)
-        memcpy(scsi->buf.data, resp, (size_t)len);
+    scsi_data_in_copy(scsi, resp, 8, alloc_len);
 }
 
 // ============================================================================

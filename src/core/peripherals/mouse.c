@@ -5,16 +5,12 @@
 // Implements Macintosh Plus mouse quadrature signal generation for the SCC (X1/Y1) and VIA (X2/Y2).
 
 #include "mouse.h"
-#include "adb.h"
+#include "checkpoint.h"
 #include "cpu.h"
-#include "debug_mac.h"
 #include "log.h"
-#include "object.h"
 #include "system.h"
-#include "system_config.h"
-#include "value.h"
+#include "system_internal.h"
 
-#include <assert.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -35,6 +31,8 @@ LOG_USE_CATEGORY_NAME("mouse");
 // hand a frame behind and never further, at any speed.  Each axis is one
 // pulse train: the counts still to go (signed: the direction) and the gap
 // between its edges.  A new batch joins what is left and re-spreads it.
+#define MOUSE_BUTTON_QUEUE 16
+
 struct mouse {
     bool x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
     int32_t pending_x; // counts still to play on each axis (signed)
@@ -45,6 +43,14 @@ struct mouse {
     double window_end_ns; // when the current batch is to be played out
     int8_t scale_rem_x; // Carried host-delta remainders from the 2:1 scaling,
     int8_t scale_rem_y; // so small deltas keep their X:Y ratio across events
+    // The button.  The ROM samples PB3 once per VBL and debounces it over 3
+    // ticks, so a short level is never seen: each level is held at least
+    // MOUSE_BUTTON_HOLD_NS, and host changes that come sooner wait in
+    // `button_queue` and apply one hold apart (mouse_button_event).
+    bool button; // the level on PB3 now (true = pressed)
+    double button_since_ns; // when that level was applied
+    bool button_queue[MOUSE_BUTTON_QUEUE];
+    int button_head, button_count;
 
     /* Pointers last */
     struct scheduler *scheduler; // Event scheduler (CPU-cycle aligned)
@@ -64,6 +70,18 @@ struct mouse {
 #define AXIS_X 0
 #define AXIS_Y 1
 
+// VIA port B pins the Plus mouse drives (port index 1)
+#define MOUSE_VIA_PORT_B 1
+#define MOUSE_PB_BUTTON  3 // /SW: button, active low (0 = pressed)
+#define MOUSE_PB_X2      4 // X2 quadrature
+#define MOUSE_PB_Y2      5 // Y2 quadrature
+
+// The shortest a button level lasts.  The ROM samples PB3 once per VBL and
+// commits a change only once it has held for 3 ticks (its debounce against
+// MBTicks, mouse_control.md §13), so a level is held 4 VBL periods and a
+// millisecond: the debounce completes inside it at any phase.
+#define MOUSE_BUTTON_HOLD_NS (4 * MAC_VBL_PERIOD_NS + 1000000ULL)
+
 // Emit one edge on an axis, in the direction `positive`, and set the
 // quadrature (X2/Y2) bit that tells the handler which way it went.
 static void mouse_edge(mouse_t *m, int axis, bool positive) {
@@ -73,14 +91,14 @@ static void mouse_edge(mouse_t *m, int axis, bool positive) {
         // For right motion X2 follows X1; for left motion X2 is inverted relative to X1
         bool x2 = positive ? m->x1 : !m->x1;
         scc_dcd(m->scc, 0, m->x1); // Update SCC DCD A (X1)
-        via_input(m->via, 1, 4, x2); // Update VIA PB4 (X2)
+        via_input(m->via, MOUSE_VIA_PORT_B, MOUSE_PB_X2, x2);
     } else {
         // Toggle Y1 edge
         m->y1 = !m->y1;
         // For down motion Y2 is opposite Y1; for up motion Y2 equals Y1 (see table)
         bool y2 = positive ? !m->y1 : m->y1;
         scc_dcd(m->scc, 1, m->y1); // Update SCC DCD B (Y1)
-        via_input(m->via, 1, 5, y2); // Update VIA PB5 (Y2)
+        via_input(m->via, MOUSE_VIA_PORT_B, MOUSE_PB_Y2, y2);
     }
 }
 
@@ -167,9 +185,46 @@ static void mouse_motion(mouse_t *restrict m, int dx, int dy) {
     }
 }
 
-// Host motion and the button (VIA PB3, active low: 0 = pressed).
+// Put a button level on PB3 (active low: 0 = pressed) and start its hold.
+static void mouse_button_apply(mouse_t *m, bool button) {
+    m->button = button;
+    m->button_since_ns = scheduler_time_ns(m->scheduler);
+    via_input(m->via, MOUSE_VIA_PORT_B, MOUSE_PB_BUTTON, !button);
+}
+
+// A held level has lasted its hold: the next queued level applies, and the
+// one after it is due one hold later.
+static void mouse_button_event(void *source, uint64_t data) {
+    (void)data;
+    mouse_t *m = source;
+    if (m->button_count == 0)
+        return;
+    mouse_button_apply(m, m->button_queue[m->button_head]);
+    m->button_head = (m->button_head + 1) % MOUSE_BUTTON_QUEUE;
+    m->button_count--;
+    if (m->button_count)
+        scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, MOUSE_BUTTON_HOLD_NS);
+}
+
+// Host motion and the button.  A change while the current level is still
+// inside its hold (or behind others already waiting) queues, so a press and
+// release quicker than a VBL reach the ROM as a press and then a release.
 void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
-    via_input(m->via, 1, 3, !button);
+    bool latest =
+        m->button_count ? m->button_queue[(m->button_head + m->button_count - 1) % MOUSE_BUTTON_QUEUE] : m->button;
+    if (button != latest) {
+        double held = scheduler_time_ns(m->scheduler) - m->button_since_ns;
+        if (m->button_count == 0 && held >= (double)MOUSE_BUTTON_HOLD_NS) {
+            mouse_button_apply(m, button);
+        } else if (m->button_count < MOUSE_BUTTON_QUEUE) {
+            if (m->button_count == 0) {
+                // The first in line waits out what is left of the current hold
+                uint64_t wait = (uint64_t)((double)MOUSE_BUTTON_HOLD_NS - held);
+                scheduler_new_cpu_event(m->scheduler, &mouse_button_event, m, 0, 0, wait ? wait : 1);
+            }
+            m->button_queue[(m->button_head + m->button_count++) % MOUSE_BUTTON_QUEUE] = button;
+        }
+    }
     mouse_motion(m, dx, dy);
 }
 
@@ -190,14 +245,30 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
 
     // Register event type for checkpointing
     scheduler_new_event_type(scheduler, "mouse", mouse, "train", &mouse_train_event);
+    scheduler_new_event_type(scheduler, "mouse", mouse, "button", &mouse_button_event);
 
     // Load from checkpoint if provided
     if (checkpoint) {
         size_t data_size = offsetof(mouse_t, scheduler);
         system_read_checkpoint_data(checkpoint, mouse, data_size);
+        // The button queue's cursors come from a file the user supplies and
+        // index the ring: out of range, the queued levels are dropped
+        if (mouse->button_head < 0 || mouse->button_head >= MOUSE_BUTTON_QUEUE || mouse->button_count < 0 ||
+            mouse->button_count > MOUSE_BUTTON_QUEUE)
+            mouse->button_head = mouse->button_count = 0;
     }
 
     return mouse;
+}
+
+// True while motion counts are still being played out to the guest, or a
+// button level is still inside its hold (or queued behind one)
+bool mouse_input_pending(const mouse_t *mouse) {
+    if (!mouse)
+        return false;
+    // A level still inside its hold has not been committed by the ROM yet
+    bool holding = scheduler_time_ns(mouse->scheduler) - mouse->button_since_ns < (double)MOUSE_BUTTON_HOLD_NS;
+    return mouse->pending_x != 0 || mouse->pending_y != 0 || mouse->button_count > 0 || holding;
 }
 
 // Free resources associated with a mouse instance
@@ -218,147 +289,4 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
         return;
     size_t data_size = offsetof(mouse_t, scheduler);
     system_write_checkpoint_data(checkpoint, mouse, data_size);
-}
-
-// === Object-model class descriptor =========================================
-//
-// `mouse`. Methods move(x, y), click(down), trace(enabled).  Each acts on the
-// current machine's input (cfg->host_input) and answers "no machine" when
-// none is booted.
-
-// Mode-string → mode char for debug_mac_*_mode().
-//   "default" / NULL → 'd' (default routing)
-//   "global"         → 'g'
-//   "hw"             → 'h'
-//   "aux"            → 'a'
-// Returns 'd' for default, the mode char otherwise, or 0 on bad input.
-// The single mode parser, declared in mouse.h and also used by the machine
-// side (mac_host_io.c).  See the header for the mapping.
-char input_mouse_mode_parse(const char *mode) {
-    if (!mode || !*mode || strcmp(mode, "default") == 0)
-        return 'd';
-    if (strcmp(mode, "global") == 0)
-        return 'g';
-    if (strcmp(mode, "hw") == 0 || strcmp(mode, "relative") == 0)
-        return 'h';
-    if (strcmp(mode, "aux") == 0)
-        return 'a';
-    return 0;
-}
-
-static char mouse_mode_char(const value_t *v) {
-    if (!v || v->kind != V_STRING || !v->s)
-        return 'd';
-    return input_mouse_mode_parse(v->s);
-}
-
-static DEF_METHOD(mouse_method_move) {
-    if (!global_emulator)
-        return val_err("mouse.move: no machine");
-    int64_t x = argv[0].i;
-    int64_t y = argv[1].i;
-    const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
-    // Validate the cursor mode up front so a bad mode gives a clear error.
-    if ((argc >= 3) && !mouse_mode_char(&argv[2]))
-        return val_err("mouse.move: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
-    // Inject through the machine substrate: Mac Toolbox cursor / Lisa COPS —
-    // one uniform path.
-    if (system_input_mouse_move((int)x, (int)y, modestr) < 0)
-        return val_err("mouse.move: machine rejected request");
-    return val_bool(true);
-}
-
-static DEF_METHOD(mouse_method_click) {
-    if (!global_emulator)
-        return val_err("mouse.click: no machine");
-    bool down = (argc >= 1 && argv[0].kind == V_BOOL) ? argv[0].b : true;
-    const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
-    // Validate the cursor mode up front so a bad mode gives a clear error.
-    if ((argc >= 2) && !mouse_mode_char(&argv[1]))
-        return val_err("mouse.click: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
-    // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
-    if (system_input_mouse_button(down, modestr) < 0)
-        return val_err("mouse.click: machine rejected request");
-    return val_bool(true);
-}
-
-static DEF_METHOD(mouse_method_trace) {
-    if (!global_emulator)
-        return val_err("mouse.trace: no machine");
-    debug_mac_set_trace_mouse(global_emulator->host_input, argv[0].b);
-    return val_none();
-}
-
-// Omitting `mode` is the mode named "default".
-static const value_t mouse_def_mode = {.kind = V_STRING, .s = (char *)"default"};
-
-static const arg_decl_t mouse_move_args[] = {
-    {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
-    {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
-    {.name = "mode",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &mouse_def_mode,
-     .doc = "\"default\" (a Mac: absolute Toolbox cursor; a Lisa: deltas), \"relative\" (deltas, every machine), "
-            "\"global\" (Toolbox MTemp), \"hw\" (= relative), or \"aux\" (A/UX MAE)"},
-};
-// `mouse.click()` with no arguments is a press, so the slot has a real
-// default rather than none.
-static const value_t mouse_click_def_down = {.kind = V_BOOL, .width = 1, .b = true};
-
-static const arg_decl_t mouse_click_args[] = {
-    {.name = "down",
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &mouse_click_def_down,
-     .doc = "true = press, false = release"                                                                },
-    {.name = "mode",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &mouse_def_mode,
-     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), \"hw\" (raw), or \"aux\" (A/UX MAE)"},
-};
-static const arg_decl_t mouse_trace_args[] = {
-    {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},
-};
-
-static const member_t mouse_members[] = {
-    {.kind = M_METHOD,
-     .name = "move",
-     .doc = "Set mouse position; optional mode chooses the routing path",
-     .method = {.args = mouse_move_args, .nargs = 3, .result = V_BOOL, .fn = mouse_method_move}  },
-    {.kind = M_METHOD,
-     .name = "click",
-     .doc = "Press or release the mouse button; optional mode chooses the routing path",
-     .method = {.args = mouse_click_args, .nargs = 2, .result = V_BOOL, .fn = mouse_method_click}},
-    {.kind = M_METHOD,
-     .name = "trace",
-     .doc = "Toggle the 1 Hz mouse-position trace logger",
-     .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
-};
-
-static const class_desc_t mouse_class = {
-    .name = "mouse",
-    .doc = "The host mouse as the guest sees it: move, click, trace",
-    .members = mouse_members,
-    .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
-};
-
-// === Process-singleton lifecycle ============================================
-//
-// `mouse` is a stateless facade: every method forwards to whatever machine
-// is current, so the node itself outlives machines.  Register once at
-// shell_init time (idempotent).
-
-static struct object *s_mouse_object = NULL;
-
-void mouse_class_register(void) {
-    if (s_mouse_object)
-        return;
-    s_mouse_object = object_new(&mouse_class, NULL, "mouse");
-    if (s_mouse_object) {
-        object_set_label(s_mouse_object, "Mouse");
-        object_set_order(s_mouse_object, 20);
-        object_attach(adb_bus_object(), s_mouse_object);
-    }
 }

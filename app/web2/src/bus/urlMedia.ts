@@ -48,10 +48,11 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
+import { routePrintLine } from './logSink';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
 import {
@@ -62,7 +63,7 @@ import {
   setUrlBootStage,
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
-import { setMounted } from '@/state/images.svelte';
+import { setMounted, clearMounts } from '@/state/images.svelte';
 import { unzipAll } from '@/lib/archive';
 import {
   canonicalParamName,
@@ -96,6 +97,9 @@ import {
 import { getProfile, type ConfigDocument, type MachineProfile, type StorageBus } from './profile';
 import {
   attachHardDisk,
+  attachMedia,
+  machineDevices,
+  type MachineDevice,
   attachCdrom,
   detectFdDriveCount,
   insertFloppy,
@@ -287,6 +291,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   setUrlBootStage('booting');
   const chosen =
     params.model && info.compatible.includes(params.model) ? params.model : info.compatible[0];
+  // A model= this ROM cannot boot used to fall back to the ROM's first model
+  // without a word, as if the link had named it.
+  if (params.model && chosen !== params.model)
+    showNotification(
+      `model=${params.model}: this ROM boots ${info.compatible.join(', ')}; booting ${chosen}`,
+      'warning',
+    );
 
   // One boot document: the core validates model/rom together, installs the
   // ROM itself and boots the model's own default RAM (there was a 4096 KB
@@ -332,24 +343,59 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     setUrlBootStage('failed', `Could not boot ${chosen}: ${gsErrorText(booted)}`);
     return false;
   }
+  clearMounts();
 
   await insertUrlFloppies(params, paths);
   // ?hdN= is the default configuration's N-th hard disk (hd0 is the startup
   // disk, which the configuration names), on whatever bus it is -- not SCSI
   // id N on the first bus.
+  // With a config=, the N-th hard disk is that configuration's (its startup
+  // disk first): a link that puts the disk on another bus (a G3's ATA, not
+  // its default SCSI ID 0) gets it there.
+  const configured = params.config ? await configuredHardDisks(params.config) : null;
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
-    report(hd.slot, p, await attachHardDisk(p, n));
+    const dev = configured?.[n];
+    report(
+      hd.slot,
+      p,
+      dev ? await attachMedia(dev.bus, dev.unit, 'hd', p) : await attachHardDisk(p, n),
+    );
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
-  showNotification(`Booted ${chosen} from URL parameters`, 'info');
+  // A medium that could not be had was said once, in a toast that is gone
+  // long before anyone wonders why the Mac shows a question-mark disk:
+  // the boot's own message names what it went without, and so does the
+  // terminal, where it stays.
+  const missing = urlBoot.files.filter((f) => f.status === 'failed');
+  if (missing.length) {
+    const list = missing.map((f) => `${f.label}: ${f.error ?? 'not available'}`).join('; ');
+    showNotification(`Booted ${chosen} without ${list}`, 'warning');
+    for (const f of missing)
+      routePrintLine(
+        `URL boot: ${f.label} (${f.slot}) not attached: ${f.error ?? 'not available'}`,
+      );
+  } else {
+    showNotification(`Booted ${chosen} from URL parameters`, 'info');
+  }
   return true;
+}
+
+// The running machine's hard-disk devices in configuration order, the
+// startup device (as `config` names it) moved first: what hd0, hd1, ...
+// mean for a URL that brought its own configuration.
+async function configuredHardDisks(config: Record<string, unknown>): Promise<MachineDevice[]> {
+  const devs = await machineDevices('hd');
+  const start = config.startup as { bus?: unknown; unit?: unknown } | null | undefined;
+  const i = start ? devs.findIndex((d) => d.bus === start.bus && d.unit === start.unit) : -1;
+  if (i > 0) devs.unshift(...devs.splice(i, 1));
+  return devs;
 }
 
 // The URL's media parameters as [canonical name, value] pairs, in a fixed
@@ -525,13 +571,17 @@ async function fetchAndPersist(
   url: string,
   category: MediaTypeId,
 ): Promise<string | undefined> {
+  // A Mac archive the streamed import downloaded and left to the staged
+  // flow: unpacked from that copy, not fetched again.
+  let archive: string | undefined;
   if (category === 'hd' || category === 'cdrom') {
     const stored = await storedFromUrl(slot, url, category);
     if (stored) return stored;
     const imported = await fetchAndImport(slot, url, category);
-    if (imported !== false) return imported;
+    if (imported !== false && typeof imported !== 'object') return imported;
+    if (typeof imported === 'object') archive = imported.archive;
   }
-  const staged = await fetchAndStage(slot, url);
+  const staged = await fetchAndStage(slot, url, archive);
   if (!staged) return undefined;
   try {
     if (category === 'hd' || category === 'cdrom') {
@@ -562,21 +612,34 @@ async function storeCompact(
   category: DiskCategory,
 ): Promise<string | undefined | false> {
   const part = scratchPath(`url_${slot}.dmg.part`);
+  // Compressing a large disk takes a while: the progress view shows it,
+  // rather than a finished row that sits there.
+  const before = urlBoot.files.find((f) => f.slot === slot)?.status;
+  updateUrlFile(slot, { status: 'storing', stored: { done: 0, total: 0 } });
+  let last = 0;
   try {
-    const r = await gsEval('files.convert', [
-      staged.path,
-      part,
-      64,
-      1,
-      'udif',
-      staged.name,
-      url.trim(),
-    ]);
-    if (!r || typeof r !== 'object' || 'error' in (r as object)) return false;
+    const r = await gsEvalWithProgress(
+      'files.convert',
+      [staged.path, part, 64, 1, 'udif', staged.name, url.trim()],
+      (done, total) => {
+        const now = performance.now();
+        // At most ten a second, but always the last byte (the view then
+        // says the result is being checked and stored).
+        const end = total > 0 && done >= total;
+        if (!end && now - last < 100) return;
+        last = now;
+        updateUrlFile(slot, { stored: { done, total } });
+      },
+    );
+    if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+      // The caller stores the staged file as it is.
+      if (before) updateUrlFile(slot, { status: before });
+      return false;
+    }
     const name = `${staged.name}.dmg`;
     const stored = await persistAs(part, name, category);
     if (stored.ok) {
-      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name });
+      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name, status: 'done' });
       return stored.path;
     }
     rejectDownload(slot, staged.name, stored.reason);
@@ -600,13 +663,14 @@ function rejectDownload(slot: string, name: string, reason: string): void {
 // 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged,
 // then stored as a UDIF too (storeCompact): only a UDIF records the URL it
 // came from, which is what lets the next boot of the link reuse it.  Returns the path to attach from, undefined when
-// nothing was stored, or false when the body is a Mac archive, which the
-// staged flow unpacks.
+// nothing was stored, or -- when the body is a Mac archive, which the staged
+// flow unpacks -- the archive as downloaded ({ archive }), or false when
+// there is none to hand over.
 async function fetchAndImport(
   slot: string,
   url: string,
   category: DiskCategory,
-): Promise<string | undefined | false> {
+): Promise<string | undefined | false | { archive: string }> {
   const label = slot.toUpperCase();
   let plan: MediaFetchPlan;
   try {
@@ -655,6 +719,7 @@ async function fetchAndImport(
       member: plan.container ? plan.member : null,
       storeAs,
       origin: url.trim(),
+      keepArchive: true,
       onProgress: (read) => progress(read),
       // importImage discards the staged file when this returns.
       onSmall: async (path) => {
@@ -671,7 +736,7 @@ async function fetchAndImport(
       },
     },
   ).finally(endActivity);
-  if (!out.handled) return false;
+  if (!out.handled) return out.archive ? { archive: out.archive } : false;
   if (!out.path) {
     if (!rejected) updateUrlFile(slot, { status: 'failed', error: 'not stored' });
     return undefined;
@@ -758,10 +823,13 @@ function fetchFailureText(e: unknown, url: string): string {
 // members itself.  A container fetched without a member path keeps the old
 // behaviour: a zip's first file, a Mac archive's found medium.  Returns the
 // staged path and the name to store it under -- the caller discards it --
-// or null, with nothing left behind.
+// or null, with nothing left behind.  `downloaded` is the value's body
+// already staged (a Mac archive fetchAndImport left over): it is taken over,
+// and nothing is fetched.
 async function fetchAndStage(
   slot: string,
   url: string,
+  downloaded?: string,
 ): Promise<{ path: string; name: string } | null> {
   const label = slot.toUpperCase();
   let plan: MediaFetchPlan;
@@ -771,36 +839,40 @@ async function fetchAndStage(
     const msg = fetchFailureText(e, url);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
+    if (downloaded) await discardStaging(downloaded);
     return null;
   }
   const storeAs = urlMediaNameFor(slot);
-  updateUrlFile(slot, { name: storeAs, status: 'downloading' });
-  const staged = scratchPath(`url_${slot}`);
+  updateUrlFile(slot, { name: storeAs, status: downloaded ? 'unpacking' : 'downloading' });
+  const staged = downloaded ?? scratchPath(`url_${slot}`);
   let handedOver = false;
   try {
-    let res: Response;
-    try {
-      res = await fetch(plan.fetchUrl);
-    } catch (e) {
-      throw new MediaUrlError(fetchFailureText(e, plan.fetchUrl));
-    }
-    if (!res.ok) {
-      const what = res.status === 404 ? 'not found' : `${res.status} ${res.statusText}`;
-      throw new MediaUrlError(`${plan.containerName ?? plan.fileName}: ${what}`);
-    }
-    const length = Number(res.headers.get('Content-Length'));
-    const total = Number.isFinite(length) && length > 0 ? length : null;
-    updateUrlFile(slot, { total });
-    const body = res.body ?? (await res.blob());
-    if (!(await streamToOpfs(staged, body, progressReporter(slot)))) {
-      updateUrlFile(slot, { status: 'failed', error: 'could not store the download' });
-      return null;
+    let ct = '';
+    if (!downloaded) {
+      let res: Response;
+      try {
+        res = await fetch(plan.fetchUrl);
+      } catch (e) {
+        throw new MediaUrlError(fetchFailureText(e, plan.fetchUrl));
+      }
+      if (!res.ok) {
+        const what = res.status === 404 ? 'not found' : `${res.status} ${res.statusText}`;
+        throw new MediaUrlError(`${plan.containerName ?? plan.fileName}: ${what}`);
+      }
+      const length = Number(res.headers.get('Content-Length'));
+      const total = Number.isFinite(length) && length > 0 ? length : null;
+      updateUrlFile(slot, { total });
+      ct = res.headers.get('Content-Type') ?? '';
+      const body = res.body ?? (await res.blob());
+      if (!(await streamToOpfs(staged, body, progressReporter(slot)))) {
+        updateUrlFile(slot, { status: 'failed', error: 'could not store the download' });
+        return null;
+      }
     }
     // Whether the download is an archive is the core's call, from its content.
     const archive = await stagedArchiveFormat(staged);
     if (plan.member !== null || archive) updateUrlFile(slot, { status: 'unpacking' });
 
-    const ct = res.headers.get('Content-Type') ?? '';
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
       if (!(await extractMember(slot, staged, plan))) return null;

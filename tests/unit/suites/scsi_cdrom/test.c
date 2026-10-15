@@ -41,7 +41,10 @@
 // drives (select -> CDB -> data-in), so the references are satisfied here
 // rather than by linking system.c and pulling in the whole machine.
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -58,10 +61,6 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 // The bus-explicit forms, which `scsi.attach_hd` / `scsi.attach_cdrom` call
 // so a machine with more than one visible SCSI bus (the Apple Network
 // Servers' two fast/wide channels) can attach to the one it was asked for.
@@ -69,7 +68,7 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
@@ -1016,6 +1015,70 @@ TEST(read_toc_rejects_a_track_the_disc_does_not_have) {
     scsi_delete(scsi);
 }
 
+// The ATAPI TOC formats (SFF-8020i r2.6 §10.8.19, Tables 125, 127, 128):
+// the format sits in byte 2 bits 3-0, or -- when that is zero -- in byte 9
+// bits 7-6, which is where Mac OS X's CD driver puts it.  01b is the session
+// summary; 10b the full TOC: points A0h, A1h, A2h and track 1 as 11-byte
+// descriptors in MSF, the A2h lead-out matching format 00b's AAh entry.
+TEST(read_toc_answers_the_session_and_full_formats) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[64];
+    int phase = 0;
+
+    // Format 00b, MSF, for the lead-out to compare against.
+    const uint8_t plain[10] = {0x43, 0x02, 0, 0, 0, 0, 0x01, 0x00, 0x14, 0x00};
+    size_t n = issue_cdb10(scsi, plain, r, sizeof(r), &phase);
+    ASSERT_TRUE(n >= 20);
+    uint8_t leadout[3] = {r[17], r[18], r[19]};
+
+    // 10b in byte 9, as 10.0's driver asks: 43 02 .. 14 80 (header first).
+    const uint8_t full[10] = {0x43, 0x02, 0, 0, 0, 0, 0x00, 0x00, 0x30, 0x80};
+    n = issue_cdb10(scsi, full, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 4 + 4 * 11);
+    ASSERT_EQ_INT(r[1], 2 + 4 * 11);
+    ASSERT_EQ_INT(r[2], 1); // first and last session
+    ASSERT_EQ_INT(r[3], 1);
+    const uint8_t *d = r + 4;
+    ASSERT_EQ_INT(d[0], 1); // session
+    ASSERT_EQ_INT(d[1], 0x14); // ADR 1, data track
+    ASSERT_EQ_INT(d[3], 0xA0);
+    ASSERT_EQ_INT(d[8], 1); // first track
+    ASSERT_EQ_INT(d[9], 0x00); // disc type: CD-ROM
+    ASSERT_EQ_INT(d[11 + 3], 0xA1);
+    ASSERT_EQ_INT(d[11 + 8], 1); // last track
+    ASSERT_EQ_INT(d[22 + 3], 0xA2);
+    ASSERT_EQ_INT(d[22 + 8], leadout[0]);
+    ASSERT_EQ_INT(d[22 + 9], leadout[1]);
+    ASSERT_EQ_INT(d[22 + 10], leadout[2]);
+    ASSERT_EQ_INT(d[33 + 3], 0x01); // track 1 at 00:02:00
+    ASSERT_EQ_INT(d[33 + 8], 0);
+    ASSERT_EQ_INT(d[33 + 9], 2);
+    ASSERT_EQ_INT(d[33 + 10], 0);
+
+    // The same format named in byte 2 (MMC).
+    const uint8_t full_mmc[10] = {0x43, 0x02, 0x02, 0, 0, 0, 0x00, 0x00, 0x30, 0x00};
+    n = issue_cdb10(scsi, full_mmc, r, sizeof(r), &phase);
+    ASSERT_EQ_INT((int)n, 4 + 4 * 11);
+
+    // 01b: the session summary, session 1's first track at LBA 0.
+    const uint8_t session[10] = {0x43, 0x00, 0, 0, 0, 0, 0x00, 0x00, 0x0C, 0x40};
+    n = issue_cdb10(scsi, session, r, sizeof(r), &phase);
+    ASSERT_EQ_INT((int)n, 12);
+    ASSERT_EQ_INT(r[1], 10);
+    ASSERT_EQ_INT(r[6], 1);
+    ASSERT_EQ_INT(r[8] | r[9] | r[10] | r[11], 0);
+
+    // A reserved format is refused.
+    const uint8_t reserved[10] = {0x43, 0x00, 0x05, 0, 0, 0, 0x00, 0x00, 0x0C, 0x00};
+    (void)issue_cdb10(scsi, reserved, r, sizeof(r), &phase);
+    ASSERT_TRUE(phase != scsi_data_in);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    scsi_delete(scsi);
+}
+
 // READ HEADER carries the same bit -- X3.131-1994 S14.1.5: "The READ HEADER,
 // READ SUB-CHANNEL and READ TABLE OF CONTENTS commands have this feature."
 TEST(read_header_honours_the_msf_bit) {
@@ -1154,6 +1217,7 @@ int main(void) {
     RUN(read_toc_honours_the_msf_bit);
     RUN(read_toc_lead_out_only_and_the_length_is_what_is_available);
     RUN(read_toc_rejects_a_track_the_disc_does_not_have);
+    RUN(read_toc_answers_the_session_and_full_formats);
     RUN(read_header_honours_the_msf_bit);
     RUN(mode_sense_page_07_is_returned);
     RUN(mode_sense_all_pages_includes_07_in_order);

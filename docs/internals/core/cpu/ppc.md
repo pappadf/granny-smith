@@ -27,7 +27,7 @@ drift out of sync and each cross-checks the other.
 | `ppc.h` | public surface: `ppc_t` (opaque), init/reset/run, sched-if and debug-if adapters, external-interrupt line |
 | `ppc_internal.h` | the `ppc_t` state (POD, pointers last), MSR/XER/vector constants, field macros, shared inline helpers |
 | `ppc.c` | lifecycle, checkpoint, exception machinery, SPR file, `machine.cpu` object class, `$` aliases |
-| `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (reserved fields, BO forms, strict `sc`) so both includers agree by construction |
+| `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (BO forms, the reserved fields of the rows that check them, `sc` and its 601-only POWER forms) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
 | `ppc_mmu.c` | the 601 MMU front end: T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
@@ -35,10 +35,13 @@ drift out of sync and each cross-checks the other.
 | `ppc_softfp.c/.h` | **the FPU arithmetic kernel**: integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
 | `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
 
-One consequence of the shared tree: invalid forms (reserved fields set,
-invalid BO encodings) take the illegal-instruction program exception in the
-interpreter, exactly where the disassembler prints `.long` — a legitimate
-deterministic choice for what the manual calls boundedly-undefined forms.
+One consequence of the shared tree: invalid forms (invalid BO encodings,
+reserved fields set on the rows that check them) take the
+illegal-instruction program exception in the interpreter, exactly where the
+disassembler prints `.long` — a legitimate deterministic choice for what the
+manual calls boundedly-undefined forms. Not every row checks its reserved
+fields: `rfi`, `mcrf`, `mtcrf`, `mfsr`/`mtsr` and the CR-logical and compare
+rows, among others, execute as if those bits were zero.
 
 ## Main-CPU status (vs the aux-core contract)
 
@@ -58,15 +61,26 @@ bus-side MMU), the 601 core splits the two array pairs by ROLE:
 - the **supervisor arrays always hold the machine's eager physical
   identity view** (filled by the family's page layout, e.g. `pdm_fill_page`);
 - the **user arrays belong to the MMU front end**, which fills them with
-  LOGICAL page mappings as translated user-mode accesses succeed.
+  LOGICAL page mappings as translated user-mode accesses succeed;
+- a third pair, the **supervisor-translated arrays** (`g_ppc_sv_read/write`,
+  private to `ppc_mmu.c`), holds the same kind of LOGICAL fills for
+  supervisor accesses with translation on -- a kernel that runs with
+  MSR[DR] set (Mac OS X, Linux, the BSDs, AIX, NT).
 
-`ppc_update_active_maps` therefore selects the user arrays only when
-**both** MSR[PR] and MSR[DT] are set; every other mode combination runs on
-the identity view, with supervisor translated accesses (the nanokernel's
-MemRetry paths) rewritten to physical addresses per access through a small
-translation TLB in `ppc_mmu.c`.  This is what makes exception entry and
-`rfi` free: the dominant mode transition (user-translated 68k world ↔
-untranslated kernel handler) is a pointer swap, not an invalidation.
+`ppc_update_active_maps` selects the user arrays when **both** MSR[PR] and
+MSR[DT] are set, the supervisor-translated arrays for MSR[DT] alone (once
+they exist), and the identity view in real mode.  Exception entry and `rfi`
+stay free: every mode transition is a pointer swap, not an invalidation.  An
+access the logical arrays cannot serve (a device page, a watched page, a
+store that still owes the PTE's C bit, a refused code page) goes through a
+small translation TLB and is handed back physical, with the colliding entry
+at that physical page index cleared first (`user_phys_fallback`,
+`sv_phys_fallback` -- the logical arrays are indexed by the physical page
+number on that path).  A code-page mark strips the supervisor-translated
+write entries through `g_mem_extra_write` (memory.h), like the SoA arrays'.
+Supervisor-translated accesses were the out-of-line path for every access
+before the third pair: about 19 % of Mac OS X 10.1's instructions, and its
+boot to the Finder ran 1.5x slower.
 `g_user_soa_reserved` (memory.h) tells the generic identity-restore paths
 in memory.c to keep their hands off the user arrays.
 
@@ -106,8 +120,10 @@ in memory.c to keep their hands off the user arrays.
   Figure 6-15) — exactly the granularity the kernel's FlushTLB loop
   assumes.  `dcbz` takes the alignment exception on W=1/I=1 mappings and
   is a no-op in non-memory-forced T=1 segments.
-- **Caches**: the user-SoA fills (tracked, so invalidation is
-  proportional to fills), a 256-entry direct-mapped translation TLB for
+- **Caches**: the user and supervisor-translated SoA fills (tracked per
+  256 MB segment, so invalidation is proportional to fills and a
+  segment-register write drops only its own segment's -- Mac OS X switches
+  SR0-3 on every trap), a 256-entry direct-mapped translation TLB for
   the non-SoA paths, and a fetch window + 64-entry fetch TLB holding
   instruction-page host pointers.  All of it lives in file statics — NOT
   in the checkpointed `ppc_t` blob (host pointers in the stream would
@@ -224,8 +240,16 @@ precedent).  The deltas, each keyed on `cpu_model`:
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.
-- **MSR**: adds POW (accepted as a no-op idle hint), BE, PM, RI, and the
-  little-endian pair ILE/LE.  Exception entry keeps ME/EP/PM/ILE, clears
+- **MSR**: adds POW, BE, PM, RI, and the little-endian pair ILE/LE.
+- **Nap/doze** (604UM §1.4, 750UM §10.2): an `mtmsr` that raises POW stops
+  the core until an asynchronous interrupt -- on the 604 POW alone naps; on
+  the 750 it enters the HID0-selected mode, and only DOZE and NAP are
+  honoured (SLEEP also stops the time base, which the model derives from
+  the scheduler clock).  `ppc_check_power_mode` ends the sprint there with
+  the PC past the `mtmsr`, the scheduler adapter's `is_stopped` reports
+  `dozing`, and the scheduler sleeps emulated time to the next event (the
+  decrementer is one) exactly as for the 68K's STOP; exception entry
+  clears it.  Mac OS 9 idles this way on the G3.  Exception entry keeps ME/EP/PM/ILE, clears
   the rest, and REPLACES LE with a copy of ILE; `rfi` restores MSR[16-31]
   only (POW and ILE survive).  The 601 masks ILE/LE off (its Macs never
   leave big-endian).

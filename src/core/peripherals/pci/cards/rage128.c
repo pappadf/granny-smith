@@ -49,6 +49,7 @@
 // chapter 3 (mode setting); and the card's own ROM, detokenized.  The
 // Linux aty128fb driver was used for orientation only.
 
+#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
@@ -57,12 +58,13 @@
 #include "memory.h"
 #include "object.h"
 #include "pci.h"
+#include "platform_hooks.h"
 #include "prom.h"
 #include "rage128_gpu.h"
 #include "rage128_priv.h"
 #include "scheduler.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -1399,7 +1401,7 @@ static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
 static const char *const r128_raster_labels[] = {"Software", "WebGPU", NULL};
 
 static bool r128_raster_offered(const char *value) {
-    return strcmp(value, "webgpu") != 0 || gs_v2gpu_available();
+    return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
 static const pci_card_option_t r128_options[] = {
@@ -1473,15 +1475,15 @@ static DEF_GETTER(mon_attr_apple_sense) {
 }
 
 static const member_t monitor_members[] = {
-    {.kind = M_ATTR, .name = "id", .doc = "Attached monitor id",         .attr = {.type = V_STRING, .get = mon_attr_id}},
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR, .name = "id", .doc = "Attached monitor id",        .attr = {.type = VK_STRING, .get = mon_attr_id}},
+    {.kind = MK_ATTR,
      .name = "ddc",
      .doc = "The monitor answers DDC with an EDID",
-     .attr = {.type = V_BOOL, .get = mon_attr_ddc}                                                                     },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = mon_attr_ddc}                                                                     },
+    {.kind = MK_ATTR,
      .name = "apple_sense",
      .doc = "An Apple-sense cable: VSYNC loopback and tied sense lines",
-     .attr = {.type = V_BOOL, .get = mon_attr_apple_sense}                                                             },
+     .attr = {.type = VK_BOOL, .get = mon_attr_apple_sense}                                                             },
 };
 static const class_desc_t r128_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
@@ -1545,61 +1547,61 @@ static DEF_GETTER(regs_attr_gpu_stats) {
 }
 
 static const arg_decl_t regs_off_arg[] = {
-    {.name = "offset", .kind = V_INT, .doc = "Register byte offset in an aperture ($0000-$1FFC)"},
+    {.name = "offset", .kind = VK_INT, .doc = "Register byte offset in an aperture ($0000-$1FFC)"},
 };
 static const arg_decl_t regs_pll_arg[] = {
-    {.name = "index", .kind = V_INT, .doc = "PLL register index ($00-$3F)"},
+    {.name = "index", .kind = VK_INT, .doc = "PLL register index ($00-$3F)"},
 };
 
 static const member_t regs_members[] = {
-    {.kind = M_ATTR,
+    {.kind = MK_ATTR,
      .name = "vram_size",
      .doc = "Bytes of video memory on this card",
-     .attr = {.type = V_UINT, .get = regs_attr_vram}                                       },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_vram}                                        },
+    {.kind = MK_ATTR,
      .name = "crtc_gen_cntl",
      .doc = "CRTC_GEN_CNTL: pixel width, extended display and CRTC enables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_crtc_gen}   },
+    {.kind = MK_ATTR,
      .name = "config_cntl",
      .doc = "CONFIG_CNTL: the aperture and register byte-order swappers",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl} },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = regs_attr_config_cntl}},
+    {.kind = MK_ATTR,
      .name = "microcode",
      .doc = "CCE microcode the guest uploaded: known, unknown or none",
-     .attr = {.type = V_STRING, .get = regs_attr_microcode}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = regs_attr_microcode}                                 },
+    {.kind = MK_ATTR,
      .name = "cce_packets",
      .doc = "CCE command packets executed since reset",
-     .attr = {.type = V_UINT, .get = regs_attr_cce_packets}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_cce_packets}                                 },
+    {.kind = MK_ATTR,
      .name = "prims3d",
      .doc = "3D primitives the engine has rasterised since reset",
-     .attr = {.type = V_UINT, .get = regs_attr_prims3d}                                    },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_UINT, .get = regs_attr_prims3d}                                     },
+    {.kind = MK_ATTR,
      .name = "raster",
      .doc = "The 3D rasteriser in use: sw (exact) or webgpu (the host GPU; pci_option \"raster=...\")",
-     .attr = {.type = V_STRING, .get = regs_attr_raster}                                   },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_STRING, .get = regs_attr_raster}                                    },
+    {.kind = MK_ATTR,
      .name = "gpu_engaged",
      .doc = "True while the WebGPU takeover holds the 3D surfaces on the host GPU",
-     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}                                },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = regs_attr_gpu_engaged}                                 },
+    {.kind = MK_ATTR,
      .name = "gpu_presenting",
      .doc = "True while the WebGPU takeover shows the frames itself (the scanout is a GPU surface)",
-     .attr = {.type = V_BOOL, .get = regs_attr_gpu_presenting}                             },
-    {.kind = M_ATTR,
+     .attr = {.type = VK_BOOL, .get = regs_attr_gpu_presenting}                              },
+    {.kind = MK_ATTR,
      .name = "gpu_stats",
      .doc = "The WebGPU takeover's counters, one line",
-     .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}                                },
-    {.kind = M_METHOD,
+     .attr = {.type = VK_STRING, .get = regs_attr_gpu_stats}                                 },
+    {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read a register by its byte offset (no side effects)",
-     .method = {.args = regs_off_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
-    {.kind = M_METHOD,
+     .method = {.args = regs_off_arg, .nargs = 1, .result = VK_UINT, .fn = regs_method_read} },
+    {.kind = MK_METHOD,
      .name = "pll",
      .doc = "Read a PLL register by index",
-     .method = {.args = regs_pll_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_pll} },
+     .method = {.args = regs_pll_arg, .nargs = 1, .result = VK_UINT, .fn = regs_method_pll}  },
 };
 static const class_desc_t r128_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
@@ -1789,7 +1791,7 @@ static pci_device_t *r128_webgpu_factory(int slot_index, config_t *cfg, const ro
 }
 
 static bool r128_webgpu_offered(void) {
-    return gs_v2gpu_available();
+    return platform_v2gpu_available();
 }
 
 const pci_card_kind_t rage128_kind = {

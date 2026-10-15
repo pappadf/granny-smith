@@ -134,6 +134,21 @@ let revc_pc = machine.cpu.pc
 assert debug.mac.globals.read("ScrnBase") == 0x81800480 "G11: ScrnBase not in the Rage Pro's big-endian aperture"
 check("gray-desktop.png")
 
+# --- G12: the multiple-scan displays sense as Apple's codes -----------------
+# The built-in port takes the 15", 17" and 20" multiple-scan displays; the
+# FCode's extended walk must assemble each into Apple's MSB1/2/3 code
+# ($03/$0B/$23).  Any other code is an unknown display, which leaves the
+# ATI driver offering 640 x 480 alone.
+def multiscan(monitor, ext) {
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" config="{\"displays\":{\"builtin\":{\"monitor\":\"${$monitor}\"}}}"
+    scheduler.run 700000000
+    assert machine.pci.slot[4].card.monitor.sensed_primary == 6 "G12 ${$monitor}: primary sense != 6"
+    assert machine.pci.slot[4].card.monitor.sensed_extended == $ext "G12 ${$monitor}: extended sense != ${$ext:02x}"
+}
+multiscan("multiscan_15", 0x03)
+multiscan("multiscan_17", 0x0B)
+multiscan("multiscan_20", 0x23)
+
 # ============================================================================
 # Rev A — Open Firmware 2.0f1, the same board program: G1-G7
 # ============================================================================
@@ -144,5 +159,5 @@ $ROM = "${$TEST_DATA}/roms/pmg3dt-pmg3mt-reva-79d68d63.rom"
 machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
 ladder("Rev A", "AAPL,Gossamer", 0x61BEFFFA)
 
-echo "gossamer-rom-ladder: G1-G8, G10, G11 reached (Rev C pc=${$revc_pc:08x} ticks=${$dticks}/${$expect} time+${$dtime}; Rev A through G7)"
+echo "gossamer-rom-ladder: G1-G8, G10-G12 reached (Rev C pc=${$revc_pc:08x} ticks=${$dticks}/${$expect} time+${$dtime}; Rev A through G7)"
 quit

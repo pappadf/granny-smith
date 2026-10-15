@@ -8,7 +8,7 @@
 // page's request round trip, as in checkpoint-stall.spec.ts.  Numbers land
 // in $GS_MEASURE_OUT (JSON lines).  Needs a VITE_GS_MEASURE=1 build.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";

@@ -18,6 +18,8 @@ int debug_break_and_trace(void) {
     return 0;
 }
 
+void debug_note_pc(void) {}
+
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     (void)addr;
     if (buf && buf_size > 0)
@@ -25,7 +27,7 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     return 0;
 }
 
-// Identity translation stub (real impl in src/core/debug/addr_format.c).
+// Identity translation stub (real impl in src/core/debug/debug_cpu.c).
 // Referenced by the 68K main-CPU debug-if adapter in cpu.c.
 uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid) {
     if (is_identity)
@@ -53,6 +55,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     (void)double_fault_kind;
 }
 
+// PPC flavour of the exception trace ring stub (ppc.c's exception entry).
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr) {
+    (void)vector;
+    (void)resume_pc;
+    (void)srr0;
+    (void)dar;
+    (void)msr;
+}
+
 // Debug-surface helpers the MMU object classes call (debug.h).  Unit suites
 // that link cpu.c / ppc.c do not exercise translate/peek; these keep them
 // linking without dragging in debug.c or value.c.
@@ -64,7 +75,7 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
     (void)phys;
     (void)valid;
     (void)via;
-    return (value_t){.kind = V_NONE};
+    return (value_t){.kind = VK_NONE};
 }
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     (void)argc;
@@ -84,5 +95,5 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
     (void)who;
     (void)argc;
     (void)argv;
-    return (value_t){.kind = V_NONE};
+    return (value_t){.kind = VK_NONE};
 }

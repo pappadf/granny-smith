@@ -7,7 +7,7 @@
 // the console echoes the statement.  An expression commits as a console
 // statement instead.  Copy path copies the row's path.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 

@@ -9,7 +9,7 @@ scheduler.run 100
 machine.cpu
 
 # Bare-read of cpu.fpu prints the floating-point register file (Plus
-# has no FPU so this is an "fpu not present" V_ERROR; SE/30 would
+# has no FPU so this is an "fpu not present" VK_ERROR; SE/30 would
 # print fp0..fp7 / fpcr / fpsr / fpiar).
 
 # disasm defaults to PC when no count is given.

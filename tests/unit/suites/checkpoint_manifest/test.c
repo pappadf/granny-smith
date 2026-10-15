@@ -5,8 +5,9 @@
 
 #include "checkpoint_machine.h"
 #include "image.h"
+#include "image_internal.h"
 #include "system.h"
-#include "system_config.h"
+#include "system_internal.h"
 #include "test_assert.h"
 
 #include <stdio.h>
@@ -14,10 +15,20 @@
 #include <string.h>
 #include <unistd.h>
 
-static config_t g_cfg;
-config_t *global_emulator = NULL;
+// checkpoint_machine.c reads the machine's images through system.c's
+// accessors; this suite stands in for system.c with a list of its own.
+static config_t g_cfg; // zeroed: no machine profile, so no model/RAM fields
+static image_t *g_images[8];
+static int g_n_images;
 
-const char *get_build_id(void) {
+image_t *config_get_image(const config_t *cfg, int index) {
+    return cfg && index >= 0 && index < g_n_images ? g_images[index] : NULL;
+}
+int config_get_n_images(const config_t *cfg) {
+    return cfg ? g_n_images : 0;
+}
+
+const char *build_id_get(void) {
     return "test-build";
 }
 
@@ -41,23 +52,23 @@ TEST(test_image_list_is_well_formed) {
     ASSERT_TRUE(mkdtemp(root) != NULL);
     checkpoint_machine_set_root(root);
     ASSERT_EQ_INT(0, checkpoint_machine_set("m1", "20260923"));
+    // The machine directory exists now: moving the root under it is refused.
+    ASSERT_EQ_INT(-1, checkpoint_machine_set_root("/elsewhere"));
 
     static image_t imgs[6];
     static char names[6][300];
-    memset(&g_cfg, 0, sizeof(g_cfg));
-    g_cfg.images[0] = NULL; // an empty slot first
+    g_images[0] = NULL; // an empty slot first
     for (int i = 1; i <= 5; i++) {
         memset(names[i], 'a' + i, 280);
         names[i][0] = '/';
         names[i][280] = '\0';
         imgs[i].filename = names[i];
         imgs[i].raw_size = 512u * (unsigned)i;
-        g_cfg.images[i] = &imgs[i];
+        g_images[i] = &imgs[i];
     }
-    g_cfg.n_images = 6;
-    global_emulator = &g_cfg;
+    g_n_images = 6;
 
-    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest());
+    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     char path[128];
     snprintf(path, sizeof(path), "%s/manifest.json", checkpoint_machine_dir());
     const char *text = read_text(path);
@@ -67,8 +78,8 @@ TEST(test_image_list_is_well_formed) {
     ASSERT_TRUE(strstr(text, "}\n  ]\n}\n") != NULL);
 
     // An empty list closes cleanly too.
-    g_cfg.n_images = 0;
-    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest());
+    g_n_images = 0;
+    ASSERT_EQ_INT(0, checkpoint_machine_write_manifest(&g_cfg));
     text = read_text(path);
     ASSERT_TRUE(strstr(text, "\"images\": []\n}\n") != NULL);
 

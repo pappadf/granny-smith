@@ -10,7 +10,7 @@
 //      machine.status from scheduler.running.
 
 import { scratchPath } from '@/lib/opfsPaths';
-import { gsEval, gsErrorText } from './emulator';
+import { gsEval, gsErrorText, gsOk } from './emulator';
 import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
 import {
@@ -34,15 +34,22 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
   if (probe !== true) return false;
 
   const accept = await showCheckpointPrompt();
+  // Withdrawn by a newer prompt: that one owns the checkpoint now
+  if (accept === null) return false;
   if (!accept) {
-    await gsEval('checkpoint.clear');
-    showNotification('Starting fresh (checkpoint discarded)', 'info');
+    const cleared = await gsEval('checkpoint.clear');
+    if (gsOk(cleared)) showNotification('Starting fresh (checkpoint discarded)', 'info');
+    else
+      showNotification(
+        `Starting fresh, but the checkpoint could not be discarded: ${gsErrorText(cleared)}`,
+        'warning',
+      );
     return false;
   }
 
-  const ok = (await gsEval('checkpoint.load')) === true;
-  if (!ok) {
-    showNotification('Checkpoint load failed', 'error');
+  const ok = await gsEval('checkpoint.load');
+  if (ok !== true) {
+    showNotification(`Checkpoint load failed: ${gsErrorText(ok)}`, 'error');
     return false;
   }
   await reconcileUiWithMachine('restore');
@@ -72,7 +79,7 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const tmpPath = `${dir}/${name}`;
   try {
     await gsEval('files.mkdir', [dir]);
-    // Both methods return V_BOOL false on failure (a full quota, no machine,
+    // Both methods return VK_BOOL false on failure (a full quota, no machine,
     // a download that could not read the file back) — check each.
     const saved = await gsEval('checkpoint.save', [tmpPath]);
     if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };

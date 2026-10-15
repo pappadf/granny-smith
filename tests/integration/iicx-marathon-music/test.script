@@ -36,14 +36,14 @@ check("finder-marathon-8bpp-640x480.png")
 
 # --- Launch Marathon by double-clicking its icon in the folder window --------
 machine.adb.mouse.move 237 157 "global"
-scheduler.run 5000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 1000000
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # Run to the main menu.  TIMING IS A WINDOW, not just a minimum: the menu is
 # fully drawn by +75M instructions after the double-click, and Marathon starts
@@ -60,10 +60,10 @@ check("marathon-menu-8bpp-640x480.png")
 # Opening the dialog also stops the idle countdown to the self-running demo,
 # so timing is no longer a window from here on.
 machine.adb.mouse.move 170 291 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 # The Preferences dialog as it opens: Detail "Low Resolution", Window Size
 # "100%", Number of Colors "256", Brightness "Dark" — pixel-exact.
@@ -71,10 +71,10 @@ check("marathon-prefs-8bpp-640x480.png")
 
 # --- Background Music ON (checkbox, left of "Background Music") ---------------
 machine.adb.mouse.move 95 313 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 5000000
 
 # --- Set the Graphics popups -------------------------------------------------
@@ -84,7 +84,7 @@ scheduler.run 5000000
 # positions itself by the currently-checked item).
 # Detail: Low Resolution -> High Resolution
 machine.adb.mouse.move 278 132 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.move 270 116 "global"
@@ -94,7 +94,7 @@ scheduler.run 5000000
 # Number of Colors: keep 256 (the checked item is already under the cursor when
 # the popup opens; releasing on it exercises the popup without changing depth).
 machine.adb.mouse.move 261 179 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.move 257 179 "global"
@@ -103,7 +103,7 @@ machine.adb.mouse.click false
 scheduler.run 5000000
 # Brightness: Dark -> Normal
 machine.adb.mouse.move 268 202 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.move 247 217 "global"
@@ -112,7 +112,7 @@ machine.adb.mouse.click false
 scheduler.run 5000000
 # Window Size: re-affirm 100% (already the value; exercises the popup)
 machine.adb.mouse.move 263 155 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.move 240 155 "global"
@@ -130,10 +130,10 @@ check("marathon-prefs-set-8bpp-640x480.png")
 
 # --- OK: accept the dialog and return to the main menu -----------------------
 machine.adb.mouse.move 533 410 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 scheduler.run 20000000
 # At 256 colors the mode does not change (stays 8 bpp) and no error is raised;
 # we are back at the main menu.
@@ -145,17 +145,17 @@ check("marathon-menu-after-prefs-8bpp-640x480.png")
 # The top button of the centre panel.  Starts the "Arrival" intro cut scene,
 # which then hands off to live gameplay.
 machine.adb.mouse.move 315 161 "global"
-scheduler.run 3000000
+wait_cursor(20)
 machine.adb.mouse.click true
-scheduler.run 1000000
 machine.adb.mouse.click false
+wait_mouse_taken(100000000)
 
 # +50M: Arrival cut scene.  (The test image's boot blocks set a 1 MB system
 # heap — bbSysHeapSize at HFS-partition offset $86 — so QuickTime's software
 # synth can load its instruments; with the stock 128 KB floor the instrument
 # fetch fails with a swallowed memFullErr and the song is silent.  See
 # the Marathon music investigation notes for the full root cause.)
-scheduler.run 50000000
+run_until_match("marathon-arrival-8bpp-640x480.png", 50000000, 5000000)
 check("marathon-arrival-8bpp-640x480.png")
 
 # --- The level song starts during the cut-scene -> gameplay hand-off ----------
@@ -176,7 +176,7 @@ assert machine.sound.capture.peak > 4000 "no in-game background music (capture.p
 # (matching +175M..+179M, measured 2026-10 once an aborted ADB register Talk
 # stopped making the mouse answer the next poll -- that extra report put the
 # window ~2.5M later; the frame itself is unchanged).
-scheduler.run 86500000
+run_until_match("marathon-game-8bpp-640x480.png", 86500000, 5000000)
 check("marathon-game-8bpp-640x480.png")
 
 quit

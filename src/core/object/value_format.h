@@ -6,10 +6,10 @@
 //
 // Before this existed, `value_t` was re-rendered by seven per-kind switch
 // statements -- three in shell.c, three in expr.c, one in api.c -- and they
-// had drifted in ways users could see: VAL_HEX honoured for V_INT in one and
-// ignored in another, V_BYTES capped at 64 in one and uncapped in the next,
+// had drifted in ways users could see: VFLAG_HEX honoured for VK_INT in one and
+// ignored in another, VK_BYTES capped at 64 in one and uncapped in the next,
 // and two JSON encoders whose comment promised they agreed "byte-for-byte"
-// while disagreeing on V_ENUM, V_OBJECT and V_ERROR.  Every new value_kind_t
+// while disagreeing on VK_ENUM, VK_OBJECT and VK_ERROR.  Every new value_kind_t
 // meant seven edits, and the seventh was always the one that got missed.
 //
 // The differences that remain are MODES, declared below.  A difference that
@@ -34,18 +34,19 @@ typedef struct {
 } vbuf_t;
 
 void vbuf_append(vbuf_t *b, const char *s, size_t n);
+void vbuf_append_str(vbuf_t *b, const char *s); // NUL-terminated; NULL appends nothing
 void vbuf_appendf(vbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void vbuf_free(vbuf_t *b);
 
 typedef enum {
     // Script interpolation, `${x}`: the value's plain text, unquoted, with
-    // V_BYTES as bare hex digits and a list's elements recursing in this same
+    // VK_BYTES as bare hex digits and a list's elements recursing in this same
     // mode so they are unquoted too.  `echo "${methods("find")}"` in
     // tests/integration/debug pins that.
     VFMT_TEXT,
 
     // Top-level REPL output, a bare `x` at the prompt.  As TEXT, except that
-    // V_BYTES carries its `0x` prefix and is never capped -- asking for the
+    // VK_BYTES carries its `0x` prefix and is never capped -- asking for the
     // value alone is asking for all of it.  Containers do not reach this mode:
     // shell.c renders a list of same-class objects as an attribute table and a
     // map as aligned rows, and calls value_format(elem, VFMT_INLINE) for the
@@ -54,7 +55,7 @@ typedef enum {
 
     // Composed into a larger line -- a `name = value` row, or a list element.
     // Strings and enum labels are QUOTED so the composition stays readable,
-    // and V_BYTES is capped so a 1 MiB attribute does not print 2 MiB of hex.
+    // and VK_BYTES is capped so a 1 MiB attribute does not print 2 MiB of hex.
     VFMT_INLINE,
 
     // One cell of a fixed-width table.  Unquoted, and structured kinds render

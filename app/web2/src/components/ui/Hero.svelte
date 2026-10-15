@@ -19,7 +19,7 @@
     font-size: var(--gs-hero-title-size);
     font-weight: var(--gs-hero-title-weight);
     color: var(--gs-hero-title-fg);
-    margin: 0 0 var(--gs-space-2) 0;
+    margin: 0 0 var(--gs-space-3) 0;
   }
   .gs-hero__subtitle {
     color: var(--gs-hero-subtitle-fg);

@@ -21,6 +21,7 @@
 // 100,000-access register trace diffed against the pre-move build to find it.
 // A test at this level would have said so in a second.
 
+#include "checkpoint.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_internal.h"
@@ -76,7 +77,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const 
     (void)cp, (void)d, (void)n, (void)f, (void)l;
 }
 
-config_t *global_emulator = NULL;
+// The active machine, as scsi.c asks for it: none in this suite.
+config_t *system_config(void) {
+    return NULL;
+}
 
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *context) {
@@ -105,15 +109,11 @@ int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    (void)config, (void)filename, (void)scsi_id;
-    return false;
-}
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
     return -1;
 }
-bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool system_attach_scsi_cdrom(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
@@ -151,15 +151,15 @@ void scheduler_forget_source(struct scheduler *sch, void *source) {
 // The medium itself is out of scope here: these tests stage the state AROUND a
 // device, not its contents, and images_find() returns NULL so
 // no image is ever opened.
-size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_read_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+size_t disk_write_data(image_t *img, uint64_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
     return 0;
 }
-size_t disk_size(image_t *img) {
+uint64_t disk_size(image_t *img) {
     (void)img;
     return 0;
 }

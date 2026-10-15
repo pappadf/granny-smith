@@ -1,0 +1,23 @@
+# g3dt-boot — the 750 (G3) core: a Power Macintosh G3 desktop booting Mac OS
+# 9.2.1 (the suite-gossamer image), checkpointed 4.8 G scheduler slots in
+# (3.25 G instructions), where the system loads its native extensions.
+# Mostly native PowerPC code with the MMU on.  Not the idle desktop: there
+# Mac OS 9 naps the 750, which would measure the idle loop's sleep, not the
+# CPU.  The boot naps in stretches already (from ~1.4 G instructions on);
+# the checkpoint opens a run of at least 500 M instructions without one,
+# so the B window (30 M + 300 M) never reaches a nap.  At 4 G slots it
+# did: the window ran 15 M instructions and stopped in the nap loop.
+
+def bench_boot() {
+    machine.boot model="pmg3dt" ram=65536 rom="${$TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
+    scheduler.run 4800000000
+    bench_guard()
+}
+
+def bench_guard() {
+    # Instruction and data translation on: the system is running, not the
+    # ROM's real-mode start-up.
+    assert (machine.cpu.msr & 0x30) == 0x30 "g3dt-boot: translation is off (MSR=${machine.cpu.msr:08x})"
+}

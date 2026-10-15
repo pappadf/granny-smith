@@ -8,8 +8,8 @@
 // (docs/internals/core/peripherals/pci/cards/rage128.md, "The WebGPU
 // takeover").  Everything runs on the emulator thread, synchronously:
 // a fence blocks on the GPU worker.  The wire protocol is
-// rage128_gpu_protocol.h; the host transport the gs_v2gpu_* seam in
-// system.h (shared with the Voodoo2's takeover).
+// rage128_gpu_protocol.h; the host transport the platform_v2gpu_* seam in
+// platform_hooks.h (shared with the Voodoo2's takeover).
 //
 // VRAM stays the card's memory.  A surface's rows are each in one of
 // three states: equal on both sides, newer on the GPU (drawn there, not

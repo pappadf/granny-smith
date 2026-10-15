@@ -114,7 +114,7 @@ int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
 // then failed to copy the file to its disk -- "couldn't be written and was
 // skipped (unknown error)" -- since HFS cannot create the name.  The CNID never
 // changes, so the short form does not either, and afp_demangle maps it back.
-#define AFP_MAC_NAME_MAX 31
+// (AFP_MAC_NAME_MAX, afp_internal.h.)
 
 int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t cap) {
     uint8_t full[255];
@@ -418,18 +418,19 @@ uint16_t afp_count_offspring(const char *full_path) {
     DIR *dir = opendir(full_path);
     if (!dir)
         return 0;
-    uint32_t count = 0;
+    uint16_t count = 0;
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
         if (!afp_name_visible(ent->d_name))
             continue; // sidecars, .gs-afp, and names no Mac name can hold
-        if (++count >= UINT16_MAX)
-            break;
+        if (count == UINT16_MAX)
+            break; // the OffspringCount field is 16 bits: it saturates
+        count++;
     }
     closedir(dir);
-    return (uint16_t)count;
+    return count;
 }
 
 // Directory access rights.  The server is guest-only, so every caller gets

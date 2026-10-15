@@ -8,6 +8,7 @@
 #define SOUND_H
 
 // === Includes ===
+#include "checkpoint.h"
 #include "common.h"
 
 #include <stdbool.h>

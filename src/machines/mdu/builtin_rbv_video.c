@@ -19,7 +19,7 @@
 #include "memory.h" // ram_native_pointer: the frame buffer in main RAM
 #include "nubus.h"
 #include "rbv.h"
-#include "system_config.h"
+#include "system_internal.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -216,7 +216,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     // a restore's RAM image already holds it.
     const nubus_slot_decl_t *decl = nubus_slot_decl_get(card->bus, card->slot);
     if (decl && decl->fb_in_ram)
-        builtin_rbv_video_set_framebuffer(card, ram_native_pointer(cfg->mem_map, 0), 0, /*blank*/ cp == NULL);
+        builtin_rbv_video_set_framebuffer(card, ram_native_pointer(cfg->memory_map, 0), 0, /*blank*/ cp == NULL);
     return 0;
 }
 
@@ -299,10 +299,12 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);
+    // ...and the scanout depends on the restored video_off / halted bits: a
+    // checkpoint taken while RvVIDOff was set must come back blanked, not
+    // scanning the framebuffer pointer card_init left in display.bits.
+    rbv_video_apply_scanout(p);
 
-    // p->display.bits still points into p->fb (card_init set it up and the
-    // buffer address has not moved), but everything the frontend caches about
-    // this display is now stale.
+    // Everything the frontend caches about this display is now stale.
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;
     p->display.fb_dirty = true;

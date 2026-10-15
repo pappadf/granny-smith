@@ -54,7 +54,7 @@ peel_source_release(src);
   `read`, `size`, `key` and `tier`. The tier says how reads cost:
   `RANDOM` (a view or a memory buffer), `INDEXED` (BGZF), `EARNED`
   (decoded once, then random), `STREAM` or `WHOLE`. The emulator's
-  core uses the same type as `gs_source_t`
+  core uses the same type as `source_t`
   (see [`source.md`](../internals/core/storage/source.md)).
 - **Probe** — `peel_probe_init` reads a bounded head and tail of a
   source; `peel_identify` and `peel_formats` run the detectors over it
@@ -99,7 +99,7 @@ peeler extract <archive> <member> [<dir>] # one member (both forks) into <dir>
 The core has a single table of formats a byte source can be in
 ([`format_registry.h`](../../src/core/storage/format_registry.h)).
 peeler's wrappers (`hqx`, `bin`, `gz`) sit there beside the disk-image
-wrappers (UDIF, NDIF, DiskCopy 4.2) and are unwrapped in a loop; its
+wrappers (UDIF, NDIF, QCOW2, DiskCopy 4.2) and are unwrapped in a loop; its
 archives (`sit`, `cpt`, `zip`, `tar`) are namespace formats beside `disk`
 (partition map or bare volume). So the same detection decides what a
 file is whether it is opened as a disk, listed in the Filesystem tab,
@@ -123,8 +123,8 @@ volume.
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
-| `files.archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
+| `files.archive.identify(path)` | `VK_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
+| `files.archive.extract(path, [out_dir])` | `VK_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
 
 Both go through the VFS, so `path` may itself be inside an image or
 another archive. `extract` is a recursive copy of the archive's tree:

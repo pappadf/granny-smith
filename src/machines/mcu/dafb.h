@@ -46,8 +46,9 @@ void dafb_delete(dafb_t *dafb);
 void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp);
 
 // Attach the scheduler: Swatch VBL/cursor events run from the programmed
-// timing (a 60.15 Hz fallback covers the pre-mode-set window).
-void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched);
+// timing (a 60.15 Hz fallback covers the pre-mode-set window).  On a
+// restore (`cp` non-NULL) the frame event comes back with the event queue.
+void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched, checkpoint_t *cp);
 
 // Video interrupt output — level-sensitive.
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);

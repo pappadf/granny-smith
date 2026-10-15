@@ -85,6 +85,9 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- Predecoded-core T1 headers (generated into build/gen/) --
+
+include src/core/cpu/pdgen.mk
 # -- GSDisk SCSI disk driver (bare-volume wrapper) --
 # Assembled into build/gsdisk/ like the vrom68k fragments; defines
 # GSDISK_HEADER, which image_wrap.c includes.
@@ -126,6 +129,7 @@ INCLUDES := $(CORE_INCLUDES) \
             -Isrc/platform \
             -I$(PLATFORM_DIR) \
             -I$(VROM68K_OUT) \
+            -I$(PDGEN_OUT) \
             -I$(GSDISK_OUT) \
             -I$(LASERWRITER_OUT)
 
@@ -214,11 +218,12 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -lopfs.js \
            -pthread \
            -sPROXY_TO_PTHREAD \
+           -sALLOW_TABLE_GROWTH \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
-           -s EXPORTED_FUNCTIONS="['_main','_get_gs_mailbox']" \
+           -s EXPORTED_FUNCTIONS="['_main','_get_mailbox']" \
            -sINCOMING_MODULE_JS_API=canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
@@ -278,6 +283,11 @@ $(BUILD_ID_OBJ): $(filter-out $(BUILD_ID_OBJ),$(OBJ)) $(LDFLAGS_STAMP)
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
+# The predecoded executors include the generated T1 headers.
+$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
+    $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
+$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc.o $(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
+
 # image_wrap.c embeds the generated GSDisk driver header.
 $(OBJ_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
 
@@ -315,52 +325,49 @@ $(OUTPUT): $(OBJ) | check-emcc
 #   HD0=path/to/hd.zip    HD1=...  (up to HD7)
 #   SPEED=max|realtime|hardware
 
-# Build the URL query string from media variables.
+# The URL query parameters from the media variables, one --param each for
+# the dev server, which URL-encodes each value (a path may hold '&', '%' or
+# a space; quoted here so the shell keeps it whole).
 RUN_PARAMS :=
 ifdef ROM
-RUN_PARAMS += rom=/$(ROM)
+RUN_PARAMS += --param 'rom=/$(ROM)'
 endif
 ifdef VROM
-RUN_PARAMS += vrom=/$(VROM)
+RUN_PARAMS += --param 'vrom=/$(VROM)'
 endif
 ifdef FD0
-RUN_PARAMS += fd0=/$(FD0)
+RUN_PARAMS += --param 'fd0=/$(FD0)'
 endif
 ifdef FD1
-RUN_PARAMS += fd1=/$(FD1)
+RUN_PARAMS += --param 'fd1=/$(FD1)'
 endif
 ifdef HD0
-RUN_PARAMS += hd0=/$(HD0)
+RUN_PARAMS += --param 'hd0=/$(HD0)'
 endif
 ifdef HD1
-RUN_PARAMS += hd1=/$(HD1)
+RUN_PARAMS += --param 'hd1=/$(HD1)'
 endif
 ifdef HD2
-RUN_PARAMS += hd2=/$(HD2)
+RUN_PARAMS += --param 'hd2=/$(HD2)'
 endif
 ifdef HD3
-RUN_PARAMS += hd3=/$(HD3)
+RUN_PARAMS += --param 'hd3=/$(HD3)'
 endif
 ifdef HD4
-RUN_PARAMS += hd4=/$(HD4)
+RUN_PARAMS += --param 'hd4=/$(HD4)'
 endif
 ifdef HD5
-RUN_PARAMS += hd5=/$(HD5)
+RUN_PARAMS += --param 'hd5=/$(HD5)'
 endif
 ifdef HD6
-RUN_PARAMS += hd6=/$(HD6)
+RUN_PARAMS += --param 'hd6=/$(HD6)'
 endif
 ifdef HD7
-RUN_PARAMS += hd7=/$(HD7)
+RUN_PARAMS += --param 'hd7=/$(HD7)'
 endif
 ifdef SPEED
-RUN_PARAMS += speed=$(SPEED)
+RUN_PARAMS += --param 'speed=$(SPEED)'
 endif
-
-# Join params list with & to form query string.
-EMPTY :=
-SPACE := $(EMPTY) $(EMPTY)
-RUN_QS = $(subst $(SPACE),&,$(strip $(RUN_PARAMS)))
 
 # Enable fallback root when any media variable is specified.
 RUN_SERVER_FLAGS :=
@@ -377,7 +384,7 @@ endif
 RUN_PORT ?= 8080
 run: all ui2
 ifneq ($(strip $(RUN_PARAMS)),)
-	python3 scripts/dev_server.py --root $(WEB2_DIST) --port $(RUN_PORT) $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port $(RUN_PORT) $(RUN_SERVER_FLAGS) $(RUN_PARAMS)
 else
 	python3 scripts/dev_server.py --root $(WEB2_DIST) --port $(RUN_PORT)
 endif

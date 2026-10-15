@@ -37,7 +37,7 @@
 #define PPC_MSR_IT  0x0020u // instruction translation (bit 26)
 #define PPC_MSR_DT  0x0010u // data translation (bit 27)
 // 604-only MSR bits (604UM Table 4-3).
-#define PPC_MSR_POW 0x00040000u // power management enable (bit 13; accepted as a no-op idle hint)
+#define PPC_MSR_POW 0x00040000u // power management enable (bit 13): ppc_check_power_mode
 // Little-endian mode (604UM Table 4-3 bits 15/31; PEM §3.2.2).  LE selects
 // the address munging below for every data access and instruction fetch;
 // ILE is copied into LE on exception entry.  Implemented on the 604 only:
@@ -159,7 +159,7 @@ struct ppc {
     uint32_t instruction_pc; // address of the instruction being executed
     uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
-    uint32_t reserve_addr;
+    uint32_t reserve_addr; // lwarx effective address (state only; stwcx. does not compare it)
     // 750 L2 global invalidate (750UM §9.1.5): scheduler cycle at which
     // L2IP drops back to 0 after L2I was set with L2E clear.  With no time
     // binding, l2_inval_reads counts the L2IP=1 reads still owed instead.
@@ -167,6 +167,12 @@ struct ppc {
     uint32_t l2_inval_reads;
     uint32_t ext_irq; // level of the external-interrupt line
     uint32_t dec_pending; // latched decrementer exception request
+    // Nap/doze: MSR[POW] (with a HID0 mode on the 750) stops instruction
+    // fetch until an interrupt -- Mac OS 9's idle loop does exactly this.
+    // The scheduler's is_stopped path then sleeps emulated time to the next
+    // event instead of running the idle loop, as the 68K core does for
+    // STOP.  Any exception entry clears it.
+    uint32_t dozing;
     int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750 (the model discriminator)
 
     // --- time derivation (exact-rational RTC/TB/DEC) ---
@@ -211,6 +217,8 @@ static inline bool ppc_is_604(const ppc_t *p) {
 
 // The MPC750: L2CR/ICTC/THRM, read-only HID1, its own performance-monitor
 // map (no SDA, user mirrors), no PIR (750UM Table 2-49).
+void ppc_check_power_mode(ppc_t *p);
+
 static inline bool ppc_is_750(const ppc_t *p) {
     return p->cpu_model == CPU_MODEL_PPC750;
 }
@@ -325,9 +333,56 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
 typedef struct ppc_fetch_window {
     uint32_t lo, span;
     uintptr_t host_adjust;
+    struct pd_block *blk; // the predecoded block of the window's page (NULL: not looked up / none)
     uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
+    struct ppc_ftlb_entry *fe; // the fetch-TLB entry the window came from (NULL: real mode, a device window)
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
+
+// The fetch TLB behind the window: direct-mapped, logical page and
+// privilege to host page, for MSR[IT] set.  Each entry also remembers the
+// predecoded block last found for its page, so a page transition to a page
+// seen before needs neither ppc_fetch_fill nor a pool lookup (the block is
+// re-validated with predecode_block_ok before use).  Invalidated by
+// ppc_mmu_flush_fetch and, per congruence class, by tlbie.
+#define PPC_FTLB_SIZE 256
+typedef struct ppc_ftlb_entry {
+    uint32_t tag; // (pc & 0xFFFFF000) | user<<1 | valid
+    uintptr_t host_adjust; // host_base - page_base
+    struct pd_block *blk; // the predecoded block last found for this page (NULL: none yet)
+} ppc_ftlb_entry_t;
+extern ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE];
+
+// Refill the window from a fetch-TLB hit, inline: the common page
+// transition.  False on a miss (or with MSR[IT] clear): ppc_fetch_fill
+// then translates and fills.
+static inline bool ppc_fetch_window_hit(uint32_t msr, uint32_t pc) {
+    if (!(msr & PPC_MSR_IT))
+        return false;
+    uint32_t page = pc & ~(uint32_t)MEM_PAGE_MASK;
+    ppc_ftlb_entry_t *fe = &g_ppc_ftlb[(pc >> MEM_PAGE_SHIFT) & (PPC_FTLB_SIZE - 1)];
+    if (fe->tag != (page | ((msr & PPC_MSR_PR) ? 2u : 0u) | 1u))
+        return false;
+    g_ppc_fetch.lo = page;
+    g_ppc_fetch.span = MEM_PAGE_SIZE;
+    g_ppc_fetch.host_adjust = fe->host_adjust;
+    g_ppc_fetch.le_xor = (msr & PPC_MSR_LE) ? 4u : 0u;
+    g_ppc_fetch.blk = fe->blk;
+    g_ppc_fetch.fe = fe;
+    return true;
+}
+
+// An MSR write drops only the one-page window: it carries no privilege or
+// translation mode.  The fetch TLB's tag holds MSR[PR] and it is used only
+// with MSR[IT] set, and nothing else in the MSR changes an instruction
+// translation, so its entries stay valid.  (Wiping it on every exception
+// and rfi cost the 68K emulator a full translation on 15 % of its page
+// transitions.)
+static inline void ppc_mmu_flush_fetch_window(void) {
+    g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
+    g_ppc_fetch.fe = NULL;
+}
 
 // Refill the fetch window for pc (and return the word there via *iw).
 // Returns false when the fetch raised ISI.
@@ -348,8 +403,8 @@ void ppc_recompute_sr_t_mask(ppc_t *p);
 
 // Invalidation entry points.  invalidate_all: address-space change (SR/
 // BAT/SDR1 value change, bank remap, checkpoint restore).  tlbie:
-// congruence-class invalidation.  flush_fetch: MSR change (privilege or
-// translation bits — fetch permissions are mode-dependent).
+// congruence-class invalidation.  flush_fetch: the fetch window and the
+// fetch TLB (BAT change at a context synchronization, logpoints).
 void ppc_mmu_invalidate_all(ppc_t *p);
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea);
 void ppc_mmu_flush_fetch(void);
@@ -381,18 +436,41 @@ void ppc_mmu_debug_translate(ppc_t *p, uint32_t ea, bool data, bool user, mmu_xl
 // debug.mac — stable across supervisor/user stop contexts.
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 
+// Per logical page, the write entry the last user SoA fill would have
+// planted had the page not been a code page (0: the fill left it
+// read-only).  It describes the current mapping only while it equals the
+// page's g_user_read entry: every fill sets both, every invalidation of a
+// fill zeroes both.  The translation tier completes a store into a code
+// page through it (ppc_jit_code_store).
+extern uintptr_t *g_ppc_user_wok;
+// The same store served from the translation TLB (ppc_mmu.c): the host bytes
+// a user store to ea reaches without a walk, or NULL.
+uint8_t *ppc_mmu_user_store_host(uint32_t ea);
+
+// The supervisor-translated SoA (ppc_mmu.c): LOGICAL fills for data
+// accesses with MSR[PR]=0 and MSR[DT]=1 -- a kernel that runs with
+// translation on (Mac OS X, Linux, the BSDs, AIX) -- kept like the user
+// arrays' fills.  NULL until the first such access allocates them.
+extern uintptr_t *g_ppc_sv_read;
+extern uintptr_t *g_ppc_sv_write;
+
 // Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair — the
 // one global obligation of a main CPU.  Called on every MSR write, exception
-// entry, and rfi.  The user arrays hold the MMU's LOGICAL fills, so they are
-// active only for translated user-mode data; every other mode runs on the
-// machine's eager physical identity view in the supervisor arrays
-// (supervisor-translated accesses rewrite their address in ppc_dxlate_slow
-// before touching memory).
+// entry, and rfi.  The user arrays hold the MMU's LOGICAL fills for
+// translated user-mode data, the supervisor-translated arrays the same for
+// translated supervisor data; real mode runs on the machine's eager
+// physical identity view in the supervisor arrays.  (Accesses the logical
+// arrays cannot serve rewrite their address to physical in ppc_dxlate_slow
+// before touching memory.)
 static inline void ppc_update_active_maps(ppc_t *p) {
-    ppc_mmu_flush_fetch();
-    if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
+    ppc_mmu_flush_fetch_window();
+    uint32_t m = p->msr & (PPC_MSR_PR | PPC_MSR_DT);
+    if (m == (PPC_MSR_PR | PPC_MSR_DT)) {
         g_active_read = g_user_read;
         g_active_write = g_user_write;
+    } else if (m == PPC_MSR_DT && g_ppc_sv_read) {
+        g_active_read = g_ppc_sv_read;
+        g_active_write = g_ppc_sv_write;
     } else {
         g_active_read = g_supervisor_read;
         g_active_write = g_supervisor_write;
@@ -404,16 +482,16 @@ static inline void ppc_update_active_maps(ppc_t *p) {
 // abandoned with no side effects — the update forms depend on this).
 // Fast paths: with translation off, only T=1 segments need the slow
 // half (601UM §6.5.2 — SR[T] is consulted independent of MSR[DT]); with
-// translation on in user mode the active maps hold logical fills, so a
-// covered page needs no address rewrite at all.
+// translation on the active maps hold logical fills (user, or supervisor
+// once its arrays exist), so a covered page needs no address rewrite.
 static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     if (!(p->msr & PPC_MSR_DT)) {
         if (__builtin_expect(!(p->sr_t_mask & (1u << (*addr >> 28))), 1))
             return false;
         return ppc_dxlate_slow(p, iw, addr, store);
     }
-    if (p->msr & PPC_MSR_PR) {
-        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> PAGE_SHIFT];
+    if (g_active_read != g_supervisor_read) { // logical maps (never the physical view)
+        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> MEM_PAGE_SHIFT];
         if (__builtin_expect(e != 0, 1))
             return false;
     }
@@ -495,6 +573,16 @@ static inline bool ppc_fp_check(ppc_t *p) {
 // hardware-split page-crossing case (604UM §4.5.6): loads deliver the raw
 // big-endian value via *val, stores consumed it.
 int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val);
+
+// The gate's common case, inline at every load and store: a naturally
+// aligned access with MSR[LE] clear.  It cannot cross a page or segment,
+// and no model's alignment rule applies to it, so only the translation
+// remains (the inline ppc_dxlate).  Everything else takes the full gate.
+static inline int ppc_scalar_gate_inl(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val) {
+    if (__builtin_expect(((*addr & (size - 1u)) | (p->msr & PPC_MSR_LE)) == 0, 1))
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    return ppc_scalar_gate(p, iw, addr, size, store, val);
+}
 
 // Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
 // one-liner table: branches, divides with their deterministic-undefined

@@ -3,6 +3,7 @@
 // Storage engine unit tests (delta-file model)
 
 #include "source.h"
+#include "status.h"
 #include "storage.h"
 #include "test_assert.h"
 
@@ -25,7 +26,7 @@
 #define STATE_FILE    SANDBOX_DIR "/state.bin"
 #define TEST_BLOCKS   128
 
-#define ASSERT_OK(expr)        ASSERT_EQ_INT(GS_SUCCESS, (expr))
+#define ASSERT_OK(expr)        ASSERT_EQ_INT(STATUS_OK, (expr))
 #define ASSERT_ERR(expr, code) ASSERT_EQ_INT((code), (expr))
 
 // ============================================================================
@@ -69,12 +70,12 @@ static void setup_sandbox(void) {
 
 // Base sources opened by make_config: storage takes its own reference, so
 // the test's are dropped when the sandbox goes.
-static gs_source_t *g_bases[128];
+static source_t *g_bases[128];
 static int g_n_bases;
 
 static void teardown_sandbox(void) {
     while (g_n_bases > 0)
-        gs_source_release(g_bases[--g_n_bases]);
+        source_release(g_bases[--g_n_bases]);
     cleanup_dir(SANDBOX_DIR);
 }
 
@@ -96,7 +97,7 @@ static storage_config_t make_config(const char *base, const char *delta, const c
     storage_config_t config = {0};
     // The base is a byte source; a path with no file (a brand-new image)
     // is no base, as a missing base file always was.
-    config.base = base ? gs_source_host(base, NULL) : NULL;
+    config.base = base ? source_host(base, NULL) : NULL;
     if (config.base && g_n_bases < (int)(sizeof(g_bases) / sizeof(g_bases[0])))
         g_bases[g_n_bases++] = config.base;
     config.delta_path = delta;
@@ -141,13 +142,13 @@ TEST(storage_invalid_arguments) {
     uint8_t buffer[STORAGE_BLOCK_SIZE];
     memset(buffer, 0xAA, sizeof(buffer));
 
-    ASSERT_ERR(storage_read_block(NULL, 0, buffer), GS_ERROR);
-    ASSERT_ERR(storage_write_block(NULL, 0, buffer), GS_ERROR);
-    ASSERT_ERR(storage_read_block(storage, 1, buffer), GS_ERROR); // unaligned
-    ASSERT_ERR(storage_write_block(storage, STORAGE_BLOCK_SIZE / 2, buffer), GS_ERROR);
-    ASSERT_ERR(storage_checkpoint(NULL, NULL), GS_ERROR);
-    ASSERT_ERR(storage_save_state(NULL, NULL, file_write_cb), GS_ERROR);
-    ASSERT_ERR(storage_load_state(NULL, NULL, file_read_cb), GS_ERROR);
+    ASSERT_ERR(storage_read_block(NULL, 0, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_write_block(NULL, 0, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_read_block(storage, 1, buffer), STATUS_E_INVAL); // unaligned
+    ASSERT_ERR(storage_write_block(storage, STORAGE_BLOCK_SIZE / 2, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_checkpoint(NULL, NULL), STATUS_E_INVAL);
+    ASSERT_ERR(storage_save_state(NULL, NULL, file_write_cb), STATUS_E_INVAL);
+    ASSERT_ERR(storage_load_state(NULL, NULL, file_read_cb), STATUS_E_INVAL);
 
     ASSERT_OK(storage_delete(storage));
 
@@ -155,9 +156,9 @@ TEST(storage_invalid_arguments) {
     storage_config_t bad = make_config(NULL, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
     // A NULL base is allowed (new image with no base), but NULL delta is not
     bad.delta_path = NULL;
-    ASSERT_ERR(storage_new(&bad, &dummy), GS_ERROR);
+    ASSERT_ERR(storage_new(&bad, &dummy), STATUS_E_INVAL);
     bad = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 0);
-    ASSERT_ERR(storage_new(&bad, &dummy), GS_ERROR);
+    ASSERT_ERR(storage_new(&bad, &dummy), STATUS_E_INVAL);
 
     teardown_sandbox();
 }
@@ -295,6 +296,46 @@ TEST(storage_rollback) {
     teardown_sandbox();
 }
 
+// A committed block keeps one preimage however often it is rewritten before
+// the next commit, and a commit forgets it: the next rewrite journals afresh.
+TEST(storage_journal_one_preimage_per_commit) {
+    setup_sandbox();
+    create_base_image(BASE_FILE, TEST_BLOCKS, 0x21);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    // A commit takes a checkpoint stream or goes through clear_rollback.
+    ASSERT_ERR(storage_checkpoint(storage, NULL), STATUS_E_INVAL);
+
+    uint8_t block[STORAGE_BLOCK_SIZE];
+    fill_block(9, 0x01, block);
+    ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage));
+
+    const off_t entry = 4 + STORAGE_BLOCK_SIZE;
+    struct stat st;
+    for (uint8_t salt = 0x02; salt < 0x06; salt++) {
+        fill_block(9, salt, block);
+        ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    }
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == entry);
+
+    ASSERT_OK(storage_clear_rollback(storage));
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == 0);
+    fill_block(9, 0x07, block);
+    ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_TRUE(stat(JOURNAL_FILE, &st) == 0 && st.st_size == entry);
+
+    // The preimage is the last commit's data.
+    uint8_t verify[STORAGE_BLOCK_SIZE];
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_OK(storage_read_block(storage, 9 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(9, 0x05, verify);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 // --- Variable block size -------------------------------------------------
 // The engine is block-size-agnostic: 512 (flat disks), 532 (Lisa ProFile:
 // 512 data + 20 inline tag), or any multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE].
@@ -379,7 +420,7 @@ static void run_block_size_roundtrip(uint32_t bsize) {
     storage = NULL;
     config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
     config.block_size = (bsize == STORAGE_BLOCK_SIZE) ? 532 : STORAGE_BLOCK_SIZE;
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
 
     teardown_sandbox();
 }
@@ -402,11 +443,11 @@ TEST(storage_block_size_validation) {
     // Too small, too large, or not a multiple of 4 are all rejected.
     storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 4);
     config.block_size = 256; // < 512
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
     config.block_size = STORAGE_MAX_BLOCK_SIZE + 4; // > max
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
     config.block_size = 530; // not a multiple of 4
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
 
     teardown_sandbox();
 }
@@ -621,6 +662,56 @@ TEST(storage_load_state_runs) {
 
     ASSERT_OK(storage_delete(storage));
     ASSERT_OK(storage_delete(reloaded));
+    teardown_sandbox();
+}
+
+// A consolidated restore onto the base the state was saved from writes only
+// the blocks that differ from it: the delta stays the size of the changes,
+// not of the disk.  Every block used to be written, so restoring a Save
+// State of a machine with a large disk cost the whole disk in the browser's
+// storage, and a second restore ran out of quota.
+TEST(storage_load_state_writes_only_changes) {
+    setup_sandbox();
+    const uint64_t blocks = 20000;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    const uint64_t changed[] = {0, 2, 3, 9999, blocks - 1};
+    for (size_t i = 0; i < sizeof(changed) / sizeof(changed[0]); i++) {
+        fill_block_bs((size_t)changed[i], STORAGE_BLOCK_SIZE, 0x5A, buf);
+        ASSERT_OK(storage_write_block(storage, (size_t)changed[i] * STORAGE_BLOCK_SIZE, buf));
+    }
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_save_state(storage, state, file_write_cb));
+    fclose(state);
+
+    // Restore onto the same base, into a fresh delta.
+    storage_config_t config2 = make_config(BASE_FILE, DELTA2_FILE, JOURNAL2_FILE, blocks);
+    storage_t *reloaded = NULL;
+    ASSERT_OK(storage_new(&config2, &reloaded));
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_load_state(reloaded, state, file_read_cb));
+    fclose(state);
+
+    uint8_t want[STORAGE_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want));
+        ASSERT_OK(storage_read_block(reloaded, (size_t)lba * STORAGE_BLOCK_SIZE, buf));
+        ASSERT_TRUE(memcmp(want, buf, STORAGE_BLOCK_SIZE) == 0);
+    }
+    ASSERT_OK(storage_delete(reloaded));
+
+    // A tenth of the disk is generous for five changed blocks (their
+    // clusters plus the header and tables); the old behaviour wrote it all.
+    struct stat st;
+    ASSERT_TRUE(stat(DELTA2_FILE, &st) == 0);
+    ASSERT_TRUE((uint64_t)st.st_size < blocks * STORAGE_BLOCK_SIZE / 10);
+
+    ASSERT_OK(storage_delete(storage));
     teardown_sandbox();
 }
 
@@ -907,12 +998,218 @@ TEST(storage_v1_delta_still_opens) {
     teardown_sandbox();
 }
 
+// A source that passes reads through to its parent and counts them.
+static int g_base_reads;
+static int64_t counting_base_read(source_t *s, uint64_t off, void *buf, size_t len) {
+    g_base_reads++;
+    return source_read(s->ctx, off, buf, len);
+}
+static uint64_t counting_base_size(source_t *s) {
+    return source_size(s->ctx);
+}
+static const char *counting_base_key(source_t *s) {
+    return source_key(s->ctx);
+}
+static source_tier_t counting_base_tier(source_t *s) {
+    return source_tier(s->ctx);
+}
+static void counting_base_close(source_t *s) {
+    (void)s; // the parent reference is the source's own
+}
+static const source_ops_t counting_base_ops = {counting_base_read, counting_base_size, counting_base_key,
+                                               counting_base_tier, counting_base_close};
+
+// storage_read_blocks over the whole disk, and over windows that start and
+// end inside modified and unmodified runs, returns what storage_read_block
+// returns block by block.
+static void assert_read_blocks_matches_per_block(storage_t *storage, uint64_t blocks) {
+    size_t size = (size_t)blocks * STORAGE_BLOCK_SIZE;
+    uint8_t *want = malloc(size), *got = malloc(size);
+    ASSERT_TRUE(want != NULL && got != NULL);
+    for (uint64_t lba = 0; lba < blocks; lba++)
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want + lba * STORAGE_BLOCK_SIZE));
+    ASSERT_OK(storage_read_blocks(storage, 0, got, (size_t)blocks));
+    ASSERT_TRUE(memcmp(want, got, size) == 0);
+    static const uint64_t starts[] = {0, 1, 6, 199, 250, 4095, 8190, 8999, 18999};
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        if (starts[i] >= blocks)
+            continue;
+        uint64_t n = blocks - starts[i] < 300 ? blocks - starts[i] : 300;
+        memset(got, 0xEE, size);
+        ASSERT_OK(storage_read_blocks(storage, (size_t)starts[i] * STORAGE_BLOCK_SIZE, got, (size_t)n));
+        ASSERT_TRUE(memcmp(want + starts[i] * STORAGE_BLOCK_SIZE, got, (size_t)n * STORAGE_BLOCK_SIZE) == 0);
+    }
+    // Past the end is refused, as storage_read_block refuses it.
+    ASSERT_ERR(storage_read_blocks(storage, (size_t)(blocks - 1) * STORAGE_BLOCK_SIZE, got, 2), STATUS_E_RANGE);
+    free(want);
+    free(got);
+}
+
+TEST(storage_read_blocks_matches_per_block) {
+    const uint64_t blocks = 20000;
+    // A full base, modified in runs, singles and alternating blocks.
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    assert_read_blocks_matches_per_block(storage, blocks);
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+
+    // A base that ends mid-block: the partial block and everything past it
+    // read as zeros.
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, 5000, STORAGE_BLOCK_SIZE, 0x33);
+    ASSERT_TRUE(truncate(BASE_FILE, (off_t)(4999 * STORAGE_BLOCK_SIZE + 200)) == 0);
+    config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    ASSERT_OK(storage_new(&config, &storage));
+    assert_read_blocks_matches_per_block(storage, blocks);
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+
+    // No base at all.
+    setup_sandbox();
+    config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    ASSERT_OK(storage_new(&config, &storage));
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_read_blocks_matches_per_block(storage, blocks);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// An unmodified run is one read of the base, however many blocks it spans
+// (a disk image converted or exported reads its file in large pieces).
+TEST(storage_read_blocks_one_base_read_per_run) {
+    setup_sandbox();
+    const uint64_t blocks = 2048;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x21);
+    source_t *host = source_host(BASE_FILE, NULL);
+    ASSERT_TRUE(host != NULL);
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.base = peel_source_new(&counting_base_ops, host, host);
+    source_release(host);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    source_release(config.base); // storage holds its own reference
+    uint8_t *buf = malloc(blocks * STORAGE_BLOCK_SIZE);
+    ASSERT_TRUE(buf != NULL);
+    g_base_reads = 0;
+    ASSERT_OK(storage_read_blocks(storage, 0, buf, (size_t)blocks));
+    ASSERT_EQ_INT(1, g_base_reads);
+    expect_block(1000, 0x21, buf + 1000 * STORAGE_BLOCK_SIZE);
+    // One modified block in the middle splits the run in two.
+    fill_block(1000, 0x55, buf);
+    ASSERT_OK(storage_write_block(storage, 1000 * STORAGE_BLOCK_SIZE, buf));
+    g_base_reads = 0;
+    ASSERT_OK(storage_read_blocks(storage, 0, buf, (size_t)blocks));
+    ASSERT_EQ_INT(2, g_base_reads);
+    expect_block(1000, 0x55, buf + 1000 * STORAGE_BLOCK_SIZE);
+    expect_block(1001, 0x21, buf + 1001 * STORAGE_BLOCK_SIZE);
+    free(buf);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// A base that fails every read touching blocks [g_bad_lo, g_bad_hi) with
+// -EIO, as a corrupt compressed chunk or a host I/O error fails it, and
+// serves the parent's bytes everywhere else.
+static uint64_t g_bad_lo, g_bad_hi;
+static int64_t failing_base_read(source_t *s, uint64_t off, void *buf, size_t len) {
+    uint64_t lo = g_bad_lo * STORAGE_BLOCK_SIZE, hi = g_bad_hi * STORAGE_BLOCK_SIZE;
+    if (len && off < hi && off + len > lo)
+        return -EIO;
+    return source_read(s->ctx, off, buf, len);
+}
+static const source_ops_t failing_base_ops = {failing_base_read, counting_base_size, counting_base_key,
+                                              counting_base_tier, counting_base_close};
+
+static storage_t *open_failing_base(uint64_t blocks, uint64_t bad_lo, uint64_t bad_hi) {
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x29);
+    source_t *host = source_host(BASE_FILE, NULL);
+    ASSERT_TRUE(host != NULL);
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.base = peel_source_new(&failing_base_ops, host, host);
+    source_release(host);
+    g_bad_lo = bad_lo;
+    g_bad_hi = bad_hi;
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    source_release(config.base); // storage holds its own reference
+    return storage;
+}
+
+static int null_write_cb(void *ctx, const void *data, size_t size) {
+    (void)data;
+    *(size_t *)ctx += size;
+    return 0;
+}
+
+// A block the base holds and cannot read is an error on every read path --
+// never zeros -- and its neighbours still read.
+TEST(storage_unreadable_base_block_is_an_error) {
+    setup_sandbox();
+    const uint64_t blocks = 64;
+    storage_t *storage = open_failing_base(blocks, 20, 22);
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    ASSERT_OK(storage_read_block(storage, 19 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(19, 0x29, buf);
+    ASSERT_ERR(storage_read_block(storage, 20 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    ASSERT_ERR(storage_read_block(storage, 21 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    ASSERT_OK(storage_read_block(storage, 22 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(22, 0x29, buf);
+
+    // A run read across the bad blocks fails; one beside them does not.
+    uint8_t *run = malloc(blocks * STORAGE_BLOCK_SIZE);
+    ASSERT_TRUE(run != NULL);
+    ASSERT_ERR(storage_read_blocks(storage, 0, run, (size_t)blocks), STATUS_E_IO);
+    ASSERT_OK(storage_read_blocks(storage, 0, run, 20));
+    ASSERT_OK(storage_read_blocks(storage, 22 * STORAGE_BLOCK_SIZE, run, (size_t)blocks - 22));
+    expect_block(30, 0x29, run + 8 * STORAGE_BLOCK_SIZE);
+
+    // A block the guest rewrote reads from the delta, base or no base.
+    fill_block(20, 0x77, buf);
+    ASSERT_OK(storage_write_block(storage, 20 * STORAGE_BLOCK_SIZE, buf));
+    ASSERT_OK(storage_read_block(storage, 20 * STORAGE_BLOCK_SIZE, buf));
+    expect_block(20, 0x77, buf);
+    ASSERT_ERR(storage_read_block(storage, 21 * STORAGE_BLOCK_SIZE, buf), STATUS_E_IO);
+    free(run);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// The export / consolidated-checkpoint stream fails on an unreadable base
+// block rather than embedding zeros for it, and stops there.  Once every bad
+// block is covered by the delta, the stream completes.
+TEST(storage_save_state_unreadable_base_fails) {
+    setup_sandbox();
+    const uint64_t blocks = 64;
+    storage_t *storage = open_failing_base(blocks, 40, 41);
+    size_t streamed = 0;
+    ASSERT_ERR(storage_save_state(storage, &streamed, null_write_cb), STATUS_E_IO);
+    ASSERT_TRUE(streamed <= 40 * STORAGE_BLOCK_SIZE);
+
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    fill_block(40, 0x66, buf);
+    ASSERT_OK(storage_write_block(storage, 40 * STORAGE_BLOCK_SIZE, buf));
+    streamed = 0;
+    ASSERT_OK(storage_save_state(storage, &streamed, null_write_cb));
+    ASSERT_EQ_INT((long long)(blocks * STORAGE_BLOCK_SIZE), (long long)streamed);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
     RUN(storage_state_roundtrip);
     RUN(storage_delta_persistence);
     RUN(storage_rollback);
+    RUN(storage_journal_one_preimage_per_commit);
     RUN(storage_block_size_532);
     RUN(storage_block_size_other);
     RUN(storage_block_size_validation);
@@ -921,6 +1218,7 @@ int main(void) {
     RUN(storage_save_state_no_base);
     RUN(storage_save_state_short_base);
     RUN(storage_load_state_runs);
+    RUN(storage_load_state_writes_only_changes);
     RUN(storage_block_past_2gib);
     RUN(storage_journal_entry_out_of_range_is_dropped);
     RUN(storage_journal_partial_tail_is_dropped);
@@ -928,5 +1226,9 @@ int main(void) {
     RUN(storage_v2_rollback_truncates_new_slots);
     RUN(storage_v2_reopen_after_crash_is_committed_state);
     RUN(storage_v1_delta_still_opens);
+    RUN(storage_read_blocks_matches_per_block);
+    RUN(storage_read_blocks_one_base_read_per_run);
+    RUN(storage_unreadable_base_block_is_an_error);
+    RUN(storage_save_state_unreadable_base_fails);
     return 0;
 }

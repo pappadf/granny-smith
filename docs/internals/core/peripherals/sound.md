@@ -127,15 +127,15 @@ where two threads shared the read index caused audible glitches.
 
 Implemented via `EM_JS` in `src/platform/wasm/em_audio.c` (compiled into `build/main.mjs`). All calls are proxied to the main thread (AudioContext / AudioWorklet are main-thread-only under `PROXY_TO_PTHREAD`):
 
-* `gs_audio_init()` (from `em_audio_init()` at startup)
+* `audio_init_on_main()` (from `em_audio_init()` at startup)
   - Creates / reuses `AudioContext`.
   - Registers the `gs-audio-worklet` `AudioWorkletProcessor` class from a blob.
   - The worklet *node* is created lazily by the first `open`.
-* `gs_audio_open(rate, channels)` (from `platform_audio_open`)
+* `audio_open_on_main(rate, channels)` (from `platform_audio_open`)
   - Same channel count: an in-place rate change (worklet stream restart).
   - Different channel count (or first call): (re)creates the node with
     `outputChannelCount: [channels]` and the given source rate.
-* `gs_audio_set_rate(rate)` (from `platform_audio_set_rate`)
+* `audio_set_rate_on_main(rate)` (from `platform_audio_set_rate`)
   - Posts `{rate}` to the worklet: flush ring, re-gate at target depth, brief
     gain ramp — a stream restart, per the rate-switching design.
 * `gs_audio_push(ptr, nframes, volume)` (from `platform_audio_push`)

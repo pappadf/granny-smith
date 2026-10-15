@@ -4,7 +4,7 @@
   import Table, { type TableColumn } from '@/components/common/Table.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { opfs } from '@/bus/opfs';
-  import { gsEval } from '@/bus/emulator';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
   import { reconcileUiWithMachine } from '@/bus/boot';
   import { showNotification } from '@/state/toasts.svelte';
   import {
@@ -22,6 +22,11 @@
   } from '@/lib/checkpointMeta';
   import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
+  import { saveBlob } from '@/bus/download';
+  import { saveCheckpoint } from '@/bus/checkpoint';
+  import { getOrCreateMachine } from '@/lib/machineId';
+  import { sanitizeName } from '@/lib/archive';
+  import { machine } from '@/state/machine.svelte';
 
   let rows = $state<CheckpointEntry[]>([]);
 
@@ -91,17 +96,14 @@
   ];
 
   async function loadCheckpoint(row: CheckpointEntry) {
-    try {
-      const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
-      if (ok === true) {
-        await reconcileUiWithMachine('restore');
-        showNotification(`Loaded checkpoint '${row.label}'`, 'info');
-      } else {
-        showNotification('Checkpoint load failed', 'error');
-      }
-    } catch {
-      showNotification('Checkpoint load failed', 'error');
+    // gsEval never rejects: a transport failure is an {error} result too.
+    const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
+    if (ok !== true) {
+      showNotification(`Checkpoint load failed: ${gsErrorText(ok)}`, 'error');
+      return;
     }
+    await reconcileUiWithMachine('restore');
+    showNotification(`Loaded checkpoint '${row.label}'`, 'info');
   }
 
   function onContext(key: string, ev: MouseEvent) {
@@ -139,11 +141,33 @@
     }
   }
 
-  function doDownload(row: CheckpointEntry) {
-    showNotification(
-      `Saving '${row.label}' to your computer will land in a later phase`,
-      'warning',
-    );
+  // A checkpoint the user created is self-contained: its file is the
+  // download.  A machine's background checkpoint refers to disk deltas that
+  // only make sense in this browser, so for the running machine the
+  // download is a Save State (a self-contained copy made now); any other
+  // machine has to be resumed first.
+  async function doDownload(row: CheckpointEntry) {
+    if (row.saved) {
+      try {
+        const blob = await opfs.readFile(`${row.path}/state.checkpoint`);
+        saveBlob(blob, `${sanitizeName(row.label) || 'checkpoint'}.bin`);
+      } catch {
+        showNotification(`Could not read '${row.label}'`, 'error');
+      }
+      return;
+    }
+    const me = getOrCreateMachine();
+    const running = machine.status === 'running' || machine.status === 'paused';
+    if (!running || row.dirName !== `${me.id}-${me.created}`) {
+      showNotification(
+        `Load '${row.label}' first, then use Save State to save it to your computer`,
+        'warning',
+      );
+      return;
+    }
+    const res = await saveCheckpoint();
+    if (res.ok) showNotification(`State saved (${res.name})`, 'info');
+    else showNotification(`Save State failed (${res.step}): ${res.message}`, 'error');
   }
 
   async function doDelete(row: CheckpointEntry) {

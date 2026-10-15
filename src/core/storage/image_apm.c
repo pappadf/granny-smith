@@ -36,8 +36,6 @@
 // corrupt pmMapBlkCnt that would otherwise drive a huge allocation.
 #define APM_MAX_PARTITIONS 256
 
-// Read a big-endian uint16 from a byte buffer.
-// Read a big-endian uint32 from a byte buffer.
 // Copy a 32-byte APM name/type field into a 33-byte NUL-terminated buffer,
 // stripping trailing NULs and spaces for display.
 static void copy_apm_str(char *dst, const uint8_t *src) {
@@ -81,7 +79,30 @@ enum apm_fs_kind image_apm_classify_type(const char *type_string) {
     return APM_FS_UNKNOWN;
 }
 
-// Static error strings (also referenced by image_apm_io.c via extern).
+const char *image_apm_fs_kind_label(enum apm_fs_kind kind) {
+    switch (kind) {
+    case APM_FS_HFS:
+        return "HFS";
+    case APM_FS_UFS:
+        return "UFS";
+    case APM_FS_MFS:
+        return "MFS";
+    case APM_FS_ISO9660:
+        return "ISO";
+    case APM_FS_PARTITION_MAP:
+        return "map";
+    case APM_FS_DRIVER:
+        return "drvr";
+    case APM_FS_FREE:
+        return "free";
+    case APM_FS_PATCHES:
+        return "patch";
+    default:
+        return "--";
+    }
+}
+
+// Error strings (declared in image_apm.h).
 const char *const image_apm_err_nil = "image is NULL";
 const char *const image_apm_err_read = "short read on APM block";
 const char *const image_apm_err_sig = "APM signature missing on block 1";

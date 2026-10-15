@@ -30,12 +30,12 @@
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
 // through the worker (files.mv/files.rm).
 
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
 import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
-import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
+import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
@@ -48,7 +48,7 @@ import {
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
 import { opfsSafeName } from './fsOps';
-import { importImage, type DiskCategory } from './importImage';
+import { importImage, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -239,8 +239,9 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
 async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   // A large file is a disk image (or an archive holding one): streamed into
   // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
-  // there; it falls through to the staged flow below.
-  if (file.size > LARGE_IMPORT_BYTES) {
+  // there; it falls through to the staged flow below.  A QCOW2 image of any
+  // size is converted there too.
+  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file))) {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],
@@ -292,7 +293,12 @@ async function actOnStored(
 export async function acceptFilesAsCategory(
   files: File[],
   category: MediaTypeId,
+  // autoMount false: only store it (the New Machine dialog selects the image
+  // for the machine it builds); true puts it into the running machine (a
+  // ROM boots one when none runs).
+  opts: { autoMount?: boolean } = {},
 ): Promise<string | null> {
+  const autoMount = opts.autoMount ?? true;
   if (!files.length) return null;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
@@ -301,8 +307,11 @@ export async function acceptFilesAsCategory(
   const file = files[0];
   startActivity(file.name);
   try {
-    if ((category === 'hd' || category === 'cdrom') && file.size > LARGE_IMPORT_BYTES) {
-      const out = await importDiskFile(file, category);
+    if (
+      (category === 'hd' || category === 'cdrom') &&
+      (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)))
+    ) {
+      const out = await importDiskFile(file, category, autoMount);
       if (out !== undefined) return out;
     }
     const staging = await stageUpload(file);
@@ -320,6 +329,7 @@ export async function acceptFilesAsCategory(
       showNotification(`'${file.name}' ${stored.reason}`, 'error');
       return null;
     }
+    if (!autoMount) return stored.path;
     if (category === 'rom') await maybeBootFromRom(stored.path);
     else await autoMountIfEmpty(stored.path, category);
     return stored.path;
@@ -344,7 +354,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
   const dir = targetDir.replace(/\/+$/, '');
   const category: DiskCategory | null = dir === HD_DIR ? 'hd' : dir === CD_DIR ? 'cdrom' : null;
   for (const file of files) {
-    if (category && file.size > LARGE_IMPORT_BYTES) {
+    if (category && (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)))) {
       startActivity(file.name, 'Importing');
       try {
         const out = await importDiskFile(file, category);
@@ -376,12 +386,13 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 async function importDiskFile(
   file: File,
   category: DiskCategory,
+  autoMount = true,
 ): Promise<string | null | undefined> {
   const out = await importImage({ kind: 'blob', blob: file }, file.name, {
     categories: [category],
   });
   if (!out.handled) return undefined;
-  if (out.path) await autoMountIfEmpty(out.path, category);
+  if (out.path && autoMount) await autoMountIfEmpty(out.path, category);
   return out.path;
 }
 
@@ -392,13 +403,16 @@ async function importDiskFile(
 // on disk until explicitly mounted from the Images tab. Toast on the
 // outcome either way.
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
+  // With no machine running, a refusal is not news: the image is stored and
+  // that is all (it used to warn "this machine has no floppy drive").
+  const quietRefusal = machine.status !== 'running' && machine.status !== 'paused';
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
     const r = await insertFloppy(persistedPath, true);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
-    } else {
+    } else if (!quietRefusal) {
       showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
     return;
@@ -410,7 +424,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
-    } else {
+    } else if (!quietRefusal) {
       showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
@@ -678,6 +692,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
     return;
   }
+  clearMounts();
   await reconcileUiWithMachine('boot');
   await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
@@ -689,22 +704,29 @@ async function loadCheckpointFile(file: File): Promise<void> {
   // deleted once loaded.  It used to be read whole into memory and written
   // to the memory-backed /tmp, where it stayed for the session.
   const staged = scratchPath(sanitizeName(file.name) || 'checkpoint');
-  let ok: boolean;
+  let res: unknown;
   try {
     if (!(await streamToOpfs(staged, file))) {
-      showNotification('Emulator not ready for checkpoint load', 'warning');
+      // Copying it into the browser's storage failed -- in practice a full
+      // quota (a big Save State is hundreds of MB).  This used to say the
+      // emulator was "not ready", which sent people looking in the wrong
+      // place.
+      showNotification(
+        `Could not copy ${file.name} into the browser's storage — is there enough free space? (Images and Checkpoints panels)`,
+        'error',
+      );
       return;
     }
     showNotification(`Loading checkpoint ${file.name}…`, 'info');
-    ok = (await gsEval('checkpoint.load', [staged])) === true;
+    res = await gsEval('checkpoint.load', [staged]);
   } finally {
     await discardStaging(staged);
   }
-  if (ok) {
+  if (res === true) {
     await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');
   } else {
-    showNotification(`Checkpoint load failed`, 'error');
+    showNotification(`Checkpoint load failed: ${gsErrorText(res)}`, 'error');
   }
 }
 
@@ -715,9 +737,15 @@ async function loadCheckpointFile(file: File): Promise<void> {
 export async function pickAndLoadCheckpoint(): Promise<void> {
   const [file] = await openFilePicker('', false);
   if (!file) return;
+  // The button shows before the core is up (right after a page load), and
+  // the user has already picked the file: wait for the core rather than drop
+  // the pick.  A core that failed to start has said so on the page.
   if (!isModuleReady()) {
-    showNotification('Emulator still starting; please retry', 'warning');
-    return;
+    try {
+      await whenModuleReady();
+    } catch {
+      return;
+    }
   }
   if (!(await fileHasCheckpointSignature(file))) {
     showNotification(`'${file.name}' is not a Granny Smith checkpoint`, 'error');
@@ -780,10 +808,14 @@ export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}):
 // floppy. One file.  Returns the path of the persisted file (when the
 // upload succeeds), or null when the user cancelled or the file was
 // rejected.
-export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<string | null> {
+export async function pickAndUploadAs(
+  category: MediaTypeId,
+  accept = '',
+  opts: { autoMount?: boolean } = {},
+): Promise<string | null> {
   const files = await openFilePicker(accept, false);
   if (!files.length) return null;
-  return acceptFilesAsCategory(files, category);
+  return acceptFilesAsCategory(files, category, opts);
 }
 
 export { ROMS_DIR };

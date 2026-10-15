@@ -25,6 +25,11 @@ debug.breakpoints.add 0x00FE2DC6
 scheduler.run 40000000
 assert machine.id == "lisa" "machine.id != lisa"
 assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
+# The Lisa 2/5's old I/O board clocks its VIAs at CPU/10: its ROM id ($A0)
+# says "slow timers", and LisaOS sizes its 20 ms tick from that.  At CPU/4
+# (the Pepsi board's rate) every tick was 8 ms and DELAY_TIME ran 2.5x fast.
+assert machine.via1.freq_factor == 10 "via1 not at the 2/5's CPU/10"
+assert machine.via2.freq_factor == 10 "via2 not at the 2/5's CPU/10"
 assert machine.cpu.pc == 0x00FE2DC6 "did not reach the boot-menu input wait"
 
 # Attach a blank in-memory ProFile (drives OCD/ low; the ROM now sees it connected).
@@ -42,10 +47,12 @@ machine.cpu.a2 = 0x00000420
 machine.cpu.pc = 0x00FE1F70
 scheduler.run 8000000
 
-# PROREAD read the block successfully (D0 = 0: the 4 status bytes were all OK and
-# the 532-byte block streamed through) and returned cleanly to the menu loop.
+# PROREAD returned cleanly to the menu loop.  (D0 is not checked here: by the
+# time the menu reaches the poll at $FE2DC6 its own code has reused D0 -- it
+# holds $0A on the first arrival.  This used to read 0 only because the
+# breakpoint's resume skip stayed armed and the run stopped on the SECOND
+# arrival.  The block's contents below are what show the read succeeded.)
 assert machine.cpu.pc == 0x00FE2DC6 "PROREAD did not return cleanly to the boot menu"
-assert machine.cpu.d0 == 0 "PROREAD returned an error (D0 != 0)"
 
 # The device-info header buffer at $400 holds the controller's identity:
 #   "PROFILE      " (13-byte name), device number 0 -> drive type 0 = ProFile,

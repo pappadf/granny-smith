@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // ---- In-memory image backing ----------------------------------------------
@@ -36,7 +37,7 @@ static uint8_t g_img[IMG_SIZE];
 
 // Stub the one storage entry point image_hfs.c uses.  disk_read_data wants a
 // 512-aligned offset+length; our fixture only ever issues such reads.
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     if (offset + size > IMG_SIZE)
         return 0; // short read
@@ -45,7 +46,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 }
 
 // The image's size: the whole fixture.
-size_t disk_size(image_t *disk) {
+uint64_t disk_size(image_t *disk) {
     (void)disk;
     return IMG_SIZE;
 }
@@ -233,7 +234,7 @@ TEST(test_readdir_root) {
     hfs_volume_t *vol = hfs_open(DUMMY, 0, IMG_SIZE);
     ASSERT_TRUE(vol != NULL);
 
-    hfs_dir_iter_t *it = hfs_opendir_cnid(vol, HFS_ROOT_CNID);
+    hfs_dir_iter_t *it = hfs_opendir_cnid(vol, HFS_ROOT_ID);
     ASSERT_TRUE(it != NULL);
     int saw_sub = 0, saw_hello = 0, saw_bullet = 0, count = 0;
     hfs_dirent_t de;

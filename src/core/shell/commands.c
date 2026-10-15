@@ -8,6 +8,7 @@
 #include "commands.h"
 
 #include "shell_funcs.h"
+#include "status.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -68,7 +69,7 @@ static int user_index(const char *name) {
 // The method node `path` names, if it names one.
 static bool method_node(const char *path, node_t *out) {
     node_t n = object_resolve(object_root(), path);
-    if (!node_valid(n) || !n.member || n.member->kind != M_METHOD)
+    if (!node_valid(n) || !n.member || n.member->kind != MK_METHOD)
         return false;
     if (out)
         *out = n;
@@ -76,7 +77,7 @@ static bool method_node(const char *path, node_t *out) {
 }
 
 int shell_command_define(const char *name, const char *target, char *err, size_t err_size) {
-    if (!object_validate_name(name, err, err_size))
+    if (object_validate_name(name, err, err_size) != STATUS_OK)
         return -1;
     if (strlen(name) >= SHELL_NAME_MAX) {
         snprintf(err, err_size, "'%s' is longer than %d characters", name, SHELL_NAME_MAX - 1);
@@ -99,7 +100,7 @@ int shell_command_define(const char *name, const char *target, char *err, size_t
         snprintf(err, err_size, "'%s' did not resolve", target);
         return -1;
     }
-    if (!n.member || n.member->kind != M_METHOD) {
+    if (!n.member || n.member->kind != MK_METHOD) {
         snprintf(err, err_size, "'%s' is not a method (a command runs a method; use alias for a value)", target);
         return -1;
     }
@@ -292,25 +293,25 @@ static DEF_METHOD(method_command_list) {
 }
 
 static const arg_decl_t command_add_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "The word typed bare"       },
-    {.name = "path", .kind = V_STRING, .doc = "Path of the method it runs"},
+    {.name = "name", .kind = VK_STRING, .doc = "The word typed bare"       },
+    {.name = "path", .kind = VK_STRING, .doc = "Path of the method it runs"},
 };
 static const arg_decl_t command_remove_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "A user command's word"},
+    {.name = "name", .kind = VK_STRING, .doc = "A user command's word"},
 };
 
 static const member_t shell_command_members[] = {
-    {.kind = M_METHOD,
+    {.kind = MK_METHOD,
      .name = "add",
      .examples = EXAMPLES("shell.command.add ll files.list"),
      .doc = "Declare a user command (the same as `command NAME = PATH`)",
-     .method = {.args = command_add_args, .nargs = 2, .result = V_NONE, .fn = method_command_add}      },
-    {.kind = M_METHOD,
+     .method = {.args = command_add_args, .nargs = 2, .result = VK_NONE, .fn = method_command_add}      },
+    {.kind = MK_METHOD,
      .name = "remove",
      .examples = EXAMPLES("shell.command.remove ll"),
      .doc = "Remove a user command",
-     .method = {.args = command_remove_args, .nargs = 1, .result = V_NONE, .fn = method_command_remove}},
-    {.kind = M_METHOD,
+     .method = {.args = command_remove_args, .nargs = 1, .result = VK_NONE, .fn = method_command_remove}},
+    {.kind = MK_METHOD,
      .name = "list",
      .examples = EXAMPLES("shell.command.list"),
      .doc = "Every command, built-ins first",
@@ -318,8 +319,8 @@ static const member_t shell_command_members[] = {
                               "right now",
                 .args = NULL,
                 .nargs = 0,
-                .result = V_LIST,
-                .fn = method_command_list}                                                             },
+                .result = VK_LIST,
+                .fn = method_command_list}                                                              },
 };
 
 const class_desc_t shell_command_class = {

@@ -24,7 +24,7 @@ assert machine.rtc.time == 1000000
 machine.rtc.pram.poke 0x80 0xAB:1
 assert machine.rtc.pram.peek(0x80) == 0xAB
 
-# Read the full PRAM snapshot — output is V_BYTES.
+# Read the full PRAM snapshot — output is VK_BYTES.
 machine.rtc.pram.snapshot
 
 quit

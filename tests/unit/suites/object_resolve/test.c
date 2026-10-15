@@ -9,6 +9,7 @@
 //   - reserved-word rejection at registration
 
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -25,7 +26,7 @@ static value_t a_get_pc(struct object *self, const member_t *m) {
 }
 
 static const member_t a_members[] = {
-    {.kind = M_ATTR, .name = "pc", .doc = "program counter", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = MK_ATTR, .name = "pc", .doc = "program counter", .attr = {.type = VK_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t a_class = {
     .name = "a",
@@ -83,7 +84,7 @@ static value_t dev_get_id(struct object *self, const member_t *m) {
     return val_int(d ? d->id : -1);
 }
 static const member_t dev_members[] = {
-    {.kind = M_ATTR, .name = "id", .doc = "device id", .attr = {.type = V_INT, .get = dev_get_id, .set = NULL}},
+    {.kind = MK_ATTR, .name = "id", .doc = "device id", .attr = {.type = VK_INT, .get = dev_get_id, .set = NULL}},
 };
 static const class_desc_t dev_class = {
     .name = "device",
@@ -97,7 +98,7 @@ static const collection_desc_t bucket_entries = {
 
 // Bucket exposes one indexed child member named "devices".
 static const member_t bucket_members[] = {
-    {.kind = M_CHILD, .name = "devices", .flags = 0, .child = {.collection = &bucket_entries}},
+    {.kind = MK_CHILD, .name = "devices", .flags = 0, .child = {.collection = &bucket_entries}},
 };
 static const class_desc_t bucket_class = {
     .name = "bucket",
@@ -134,7 +135,7 @@ TEST(test_named_child_resolves) {
     node_t n = object_resolve(object_root(), "a.pc");
     ASSERT_TRUE(node_valid(n));
     value_t v = node_get(n);
-    ASSERT_EQ_INT(V_UINT, v.kind);
+    ASSERT_EQ_INT(VK_UINT, v.kind);
     ASSERT_EQ_INT(0x1234, (int)v.u);
     value_free(&v);
 
@@ -178,7 +179,7 @@ TEST(test_indexed_children_sparse_stable) {
 
     // Hole at index 1: resolution succeeds at the indexed-child node
     // (it has a member descriptor with an index), but reading the
-    // value yields V_ERROR via node_get because get(1) returns NULL.
+    // value yields VK_ERROR via node_get because get(1) returns NULL.
     node_t n1 = object_resolve(object_root(), "bucket.devices[1]");
     ASSERT_TRUE(node_valid(n1));
     value_t v1 = node_get(n1);
@@ -242,7 +243,7 @@ TEST(test_indexed_next_skips_holes) {
 // must reject it. Note: registration entry points should always
 // validate before attaching (root.c does this).
 static const member_t bad_members[] = {
-    {.kind = M_ATTR, .name = "while", .doc = "reserved word", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = MK_ATTR, .name = "while", .doc = "reserved word", .attr = {.type = VK_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t bad_class = {
     .name = "bad",
@@ -251,8 +252,8 @@ static const class_desc_t bad_class = {
 };
 
 static const member_t dup_members[] = {
-    {.kind = M_ATTR, .name = "x", .doc = "first x",     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
-    {.kind = M_ATTR, .name = "x", .doc = "duplicate x", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = MK_ATTR, .name = "x", .doc = "first x",     .attr = {.type = VK_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = MK_ATTR, .name = "x", .doc = "duplicate x", .attr = {.type = VK_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t dup_class = {
     .name = "dup",
@@ -262,19 +263,19 @@ static const class_desc_t dup_class = {
 
 TEST(test_reserved_word_in_class_rejected) {
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&bad_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&bad_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
 }
 
 TEST(test_duplicate_member_rejected) {
     char err[200];
-    ASSERT_TRUE(!object_validate_class(&dup_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&dup_class, err, sizeof(err)) != STATUS_OK);
     ASSERT_TRUE(strstr(err, "duplicate") != NULL);
 }
 
 TEST(test_well_formed_class_accepted) {
     char err[200];
-    ASSERT_TRUE(object_validate_class(&a_class, err, sizeof(err)));
+    ASSERT_TRUE(object_validate_class(&a_class, err, sizeof(err)) == STATUS_OK);
 }
 
 // === Path edge cases ======================================================
