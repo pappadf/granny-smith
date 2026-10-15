@@ -1323,6 +1323,11 @@ class Converter:
             if xp < UNARY_PREC:
                 xt = "(" + xt + ")"
             if op == "!":
+                # `!call(...)`: the old evaluator read a method's error as
+                # false, and 0 / "" / an empty list as false; gs.truthy does
+                # both (the tree raises in Lua).
+                if x[0] == "call":
+                    return "not gs.truthy(function() return %s end)" % xt, UNARY_PREC
                 return "not " + xt, UNARY_PREC
             if op == "+":
                 return xt, xp
@@ -1366,8 +1371,14 @@ class Converter:
             if op2 == "==":
                 return "not " + t, UNARY_PREC
             return t, ATOM
-        if op in ("==", "!=") and ((b[0] == "str" and b[2].startswith("[")) or (a[0] == "str" and a[2].startswith("["))):
-            self.port("a list compared with its '[a, b]' text: a Lua table never equals a string")
+        # A list or map compared with its text (`== "[a, b]"`, `== "{...}"`):
+        # the old evaluator rendered the collection; gs.str does the same.
+        if op in ("==", "!=") and b[0] == "str" and b[2][:1] in ("[", "{"):
+            at, _ = self.expr(a, scope)
+            return "gs.str(%s) %s %s" % (at, {"!=": "~="}.get(op, op), self.expr(b, scope)[0]), LUA_PREC["=="]
+        if op in ("==", "!=") and a[0] == "str" and a[2][:1] in ("[", "{"):
+            bt, _ = self.expr(b, scope)
+            return "%s %s gs.str(%s)" % (self.expr(a, scope)[0], {"!=": "~="}.get(op, op), bt), LUA_PREC["=="]
         lua_op = {"&&": "and", "||": "or", "!=": "~=", "^": "~", "/": "//"}.get(op, op)
         if op == "+" and (self.is_string_expr(a) or self.is_string_expr(b)):
             lua_op = ".."
@@ -1793,7 +1804,8 @@ class Converter:
                 elif name in ROOTS:
                     self.emit(self.with_comment("local _ = %s" % name, st), ind)
                     return
-            elif last is not None and last not in METHOD_VERBS:
+            elif head[0] == "index" or (last is not None and last not in METHOD_VERBS):
+                # `files.images[0]` or `machine.cpu.pc` alone: a read
                 t, _ = self.expr(head, scope)
                 self.emit(self.with_comment("local _ = %s" % t, st), ind)
                 return

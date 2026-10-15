@@ -32,6 +32,17 @@ function gs.ok(fn)
   return ok
 end
 
+-- gs.truthy(fn): fn()'s result read as the old language read a value in
+-- a condition: false when fn raised, and false for nil, false, 0, "" and an
+-- empty table (what `!call(...)` tested).
+function gs.truthy(fn)
+  local ok, r = pcall(fn)
+  if not ok then passthrough(r); return false end
+  if r == nil or r == false or r == 0 or r == "" or r == gs.none then return false end
+  if type(r) == "table" and next(r) == nil then return false end
+  return true
+end
+
 -- gs.hex(v [, width]): zero-padded lowercase hex, no prefix.
 function gs.hex(v, width)
   return string.format("%0" .. (width or 8) .. "x", v)
@@ -97,7 +108,7 @@ local function compile(s)
     if spec then
       parts[#parts + 1] = string.format("string.format(%q, (%s))", spec, expr)
     else
-      parts[#parts + 1] = string.format("tostring(%s)", expr)
+      parts[#parts + 1] = string.format("gs.str(%s)", expr)
     end
     pos = j
   end
@@ -145,6 +156,50 @@ end
 function F(s)
   return gs.template(s)(caller_env(3))
 end
+
+-- gs.str(v): a value as the old `${…}` spliced it.  A list is `[a, b]`
+-- with its items as plain text; a map is its compact JSON (strings quoted,
+-- nested lists JSON too); nil is "none".  pairs keeps a tree map's order.
+local function is_sequence(t)
+  local n = #t
+  for k in next, t do
+    if type(k) ~= "number" or k < 1 or k > n or k % 1 ~= 0 then return false end
+  end
+  return true
+end
+
+local str
+local function json(v)
+  local tv = type(v)
+  if v == nil or v == gs.none then return "null" end
+  if tv == "string" then return string.format("%q", v):gsub("\\\n", "\\n") end
+  if tv == "table" then
+    if is_sequence(v) then
+      local parts = {}
+      for i = 1, #v do parts[i] = json(v[i]) end
+      return "[" .. table.concat(parts, ",") .. "]"
+    end
+    local parts = {}
+    for k, x in pairs(v) do parts[#parts + 1] = string.format("%q", tostring(k)) .. ":" .. json(x) end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  return tostring(v)
+end
+
+function str(v)
+  if v == nil or v == gs.none then return "none" end
+  if type(v) ~= "table" then return tostring(v) end
+  if is_sequence(v) then
+    local parts = {}
+    for i = 1, #v do parts[i] = str(v[i]) end
+    return "[" .. table.concat(parts, ", ") .. "]"
+  end
+  return json(v)
+end
+gs.str = str
+
+-- echo(map) and tostring(map) read as the JSON text too.
+luadebug.getregistry()["gs.map"].__tostring = str
 
 -- gs.contains(haystack, needle): plain substring test.
 function gs.contains(haystack, needle)

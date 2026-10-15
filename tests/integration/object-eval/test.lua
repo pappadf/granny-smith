@@ -1,0 +1,57 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Run a few thousand instructions so PC has actually moved.
+scheduler.run(50000)
+
+-- Object-model resolver checks. Hardware-constant attributes are
+-- pinned with assert; cpu.pc / cpu.d0 / cpu.a7 are bare-read because
+-- their values depend on how far through boot we ran. The legacy
+-- `eval <path>` form still works (it lives on as a JSON-printer);
+-- we mix both forms below to exercise each.
+assert(machine.id == "plus", "expected Plus machine")
+assert(machine.freq == 7833600, "Plus runs at 7.83 MHz")
+assert(machine.memory.ram_size == 4194304, "Plus has 4 MiB RAM")
+assert(machine.memory.rom_size == 131072, "Plus has 128 KiB ROM")
+local _ = machine.name
+local _ = machine.cpu.pc
+local _ = machine.cpu.d0
+local _ = machine.cpu.a7
+
+-- Bare object reads return an object reference.
+local _ = machine.cpu
+local _ = scheduler
+
+-- Mac low-memory globals via debug.mac.globals.read — value lookup
+-- delegates to mac_globals_data.c.
+echo(F"${debug.mac.globals.read(\"MBState\")}")
+echo(F"${debug.mac.globals.read(\"Ticks\")}")
+echo(F"${debug.mac.globals.read(\"ROMBase\")}")
+
+-- Globals wider than 4 bytes read back as a byte buffer rather than a
+-- uint (issue #106): the read method's result slot is polymorphic, and
+-- reading one of the 49 wide entries used to abort the process on the
+-- object model's return-kind assertion.
+assert(#debug.mac.globals.read("KeyMap") == 16, "KeyMap should read as a 16-byte buffer")
+assert(#debug.mac.globals.read("EventQueue") == 10, "EventQueue should read as a 10-byte buffer")
+echo(F"${debug.mac.globals.read(\"KeyMap\")}")
+local _ = machine.cpu.ccr
+local _ = machine.cpu.sp
+
+-- Setter form — write through node_set, then assert the round-trip.
+-- sound.enabled is a writable VK_BOOL attribute; the assert form is a
+-- stronger check than a bare-read whose output used to be eyeballed.
+machine.sound.enabled = false
+assert(machine.sound.enabled == false)
+machine.sound.enabled = true
+assert(machine.sound.enabled == true)
+
+-- Legacy `eval` continues to work in parallel for the JSON shape.
+local _ = machine.id
+local _ = machine.cpu.pc
+
+-- meta.members describes every member in one call: the attributes, the
+-- methods and the children (class and attached) -- nothing more, nothing less.
+assert(#machine.cpu.meta.members() == #machine.cpu.meta.attributes + #machine.cpu.meta.methods + #machine.cpu.meta.children, "cpu: members is attributes + methods + children")
+assert(#machine.meta.members() == #machine.meta.attributes + #machine.meta.methods + #machine.meta.children, "machine: members is attributes + methods + children")
+assert(#meta.members() == #meta.attributes + #meta.methods + #meta.children, "root: members is attributes + methods + children")
+
+quit()

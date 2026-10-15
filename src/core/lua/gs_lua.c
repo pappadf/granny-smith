@@ -200,12 +200,20 @@ static int push_path(lua_State *L, const char *path) {
     return 1;
 }
 
-// proxy[key]: the child path, resolved.
+// proxy[key]: the child path, resolved.  A string key that is not a member
+// may be a collection's key (`volumes["docs"]`): the bracket form is tried
+// before giving up.
 static int node_index(lua_State *L) {
     gsl_node_t *nd = check_node(L, 1);
     char path[OBJ_PATH_MAX];
     if (!child_path(L, nd->path, 2, path, sizeof path))
         return raise_text(L, lua_tostring(L, -1));
+    if (lua_type(L, 2) == LUA_TSTRING && !node_valid(object_resolve(object_root(), path))) {
+        char keyed[OBJ_PATH_MAX];
+        int n = snprintf(keyed, sizeof keyed, "%s[\"%s\"]", nd->path, lua_tostring(L, 2));
+        if (n > 0 && (size_t)n < sizeof keyed && node_valid(object_resolve(object_root(), keyed)))
+            return push_path(L, keyed);
+    }
     return push_path(L, path);
 }
 
