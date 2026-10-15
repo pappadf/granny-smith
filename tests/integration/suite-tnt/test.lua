@@ -90,13 +90,13 @@ local function row_pm7500_76_hd()
     -- and the Energy Saver first-boot dialog.  The menu-bar clock area is
     -- excluded — it tracks the pinned RTC plus guest uptime, so it shifts
     -- whenever model changes move boot timing.
-    mac.check_ex("goldens/pm7500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    check_ex("goldens/pm7500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
     -- Phase 0 throughput floor of the predecoded-cores proposal (604
     -- interpreter through OF, the 68K emulator and the System 7.6 boot:
     -- measured 76 MIPS on the assert-enabled build, floor well below).
-    mac.mips_floor("pm7500-76-hd", t0, 20)
-    mac.report_row("7.6", "control", "hd-boot mesh chime")
-    mac.report_perf("suite-tnt/pm7500-76-hd", scheduler.instr_count)
+    mips_floor("pm7500-76-hd", t0, 20)
+    report_row("7.6", "control", "hd-boot mesh chime")
+    report_perf("suite-tnt/pm7500-76-hd", scheduler.instr_count)
 end
 
 -- ---- pm8500-76-hd -----------------------------------------------------------
@@ -108,9 +108,9 @@ end
 -- fix: the same disk image boots to the Finder on the 604.
 local function row_pm8500_76_hd()
     tnt_hd_boot("pm8500", "", 2500000000)
-    mac.check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
-    mac.report_row("7.6", "control", "hd-boot mesh chime 604")
-    mac.report_perf("suite-tnt/pm8500-76-hd", scheduler.instr_count)
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control", "hd-boot mesh chime 604")
+    report_perf("suite-tnt/pm8500-76-hd", scheduler.instr_count)
 end
 
 -- ---- pm9500-76-mach64 -------------------------------------------------------
@@ -164,9 +164,9 @@ local function row_pm9500_76_mach64()
     -- Menu bar, "Macintosh HD", Trash, the control strip and the Energy Saver
     -- first-boot dialog — every pixel of it drawn through the Mach64's draw
     -- engine.
-    mac.check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
-    mac.report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
-    mac.report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
+    check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
+    report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
 end
 
 -- ---- tnt-voodoo2-display ----------------------------------------------------
@@ -222,8 +222,8 @@ local function row_tnt_voodoo2_display()
     assert(not machine.pci.slot[1].card.video.drives_monitor, "the card powers up passing through")
     assert(machine.screen.depth == 32, "the desktop is Control's millions-of-colours mode")
     assert(machine.screen.width == 640, "Control's 640x480")
-    mac.check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
-    mac.report_row("7.6", "control+voodoo2", "hd-boot pci-passthrough take-release checkpoint")
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control+voodoo2", "hd-boot pci-passthrough take-release checkpoint")
 
     -- --- The card takes the monitor. --------------------------------------
     -- Exactly what the Glide library does: enable Memory Space itself, open
@@ -279,7 +279,7 @@ local function row_tnt_voodoo2_display()
     assert(machine.screen.height == 480, "..both axes")
     assert(machine.screen.source.displayed_buffer == 0, "screen.source resolves to the CARD's framebuffer node")
     -- The card's own rendering.
-    mac.check("goldens/pm8500-voodoo2-640x480x32-frame.png")
+    check("goldens/pm8500-voodoo2-640x480x32-frame.png")
 
     -- --- A checkpoint taken while the card is driving restores exactly. ---
     local csum = machine.screen.checksum(0, 0, 480, 640)
@@ -300,8 +300,8 @@ local function row_tnt_voodoo2_display()
     assert(machine.screen.depth == 32, "Control is the screen again")
     -- THE strongest statement in the row: the same golden as before the
     -- takeover, byte for byte — the takeover was non-destructive.
-    mac.check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
-    mac.report_perf("suite-tnt/tnt-voodoo2-display", scheduler.instr_count)
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_perf("suite-tnt/tnt-voodoo2-display", scheduler.instr_count)
 end
 
 -- ---- pm7500-76-8bpp-restart -------------------------------------------------
@@ -355,48 +355,48 @@ local function row_pm7500_76_8bpp_restart()
     -- desktop: the power switch was thrown on a running desktop, so the
     -- Finder says so — deterministic, and itself proof the first boot was
     -- a complete one.  Menu-bar clock excluded as in the other rows.
-    mac.check_ex("goldens/pm7500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
-    mac.report_row("7.6", "control", "hd-boot nvram-depth restart 8bpp")
-    mac.report_perf("suite-tnt/pm7500-76-8bpp-restart", scheduler.instr_count)
+    check_ex("goldens/pm7500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control", "hd-boot nvram-depth restart 8bpp")
+    report_perf("suite-tnt/pm7500-76-8bpp-restart", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
 
-if mac.row_on("pm7500-76-hd") then
-    if mac.have_media(hd_76) then
+if row_on("pm7500-76-hd") then
+    if have_media(hd_76) then
         mac.row("pm7500-76-hd", row_pm7500_76_hd)
     else
         echo("skip: pm7500-76-hd (7.6 image not fetched)")
     end
 end
-if mac.row_on("pm8500-76-hd") then
-    if mac.have_media(hd_76) then
+if row_on("pm8500-76-hd") then
+    if have_media(hd_76) then
         mac.row("pm8500-76-hd", row_pm8500_76_hd)
     else
         echo("skip: pm8500-76-hd (7.6 image not fetched)")
     end
 end
-if mac.row_on("pm9500-76-mach64") then
-    if mac.have_media(hd_76) then
+if row_on("pm9500-76-mach64") then
+    if have_media(hd_76) then
         mac.row("pm9500-76-mach64", row_pm9500_76_mach64)
     else
         echo("skip: pm9500-76-mach64 (7.6 image not fetched)")
     end
 end
-if mac.row_on("tnt-voodoo2-display") then
-    if mac.have_media(hd_76) then
+if row_on("tnt-voodoo2-display") then
+    if have_media(hd_76) then
         mac.row("tnt-voodoo2-display", row_tnt_voodoo2_display)
     else
         echo("skip: tnt-voodoo2-display (7.6 image not fetched)")
     end
 end
-if mac.row_on("pm7500-76-8bpp-restart") then
-    if mac.have_media(hd_76) then
+if row_on("pm7500-76-8bpp-restart") then
+    if have_media(hd_76) then
         mac.row("pm7500-76-8bpp-restart", row_pm7500_76_8bpp_restart)
     else
         echo("skip: pm7500-76-8bpp-restart (7.6 image not fetched)")
     end
 end
 
-mac.suite_done()
+suite_done()
 quit()

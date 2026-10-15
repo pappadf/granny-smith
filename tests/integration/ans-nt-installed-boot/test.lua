@@ -93,18 +93,18 @@ local function nt_installed_boot()
     machine.adb.keyboard.up(K_CONTROL)
     scheduler.run(3000000)
     nt_screen("nt-logon-information.png", 40000000000)
-    nt_key(K_RETURN)
+    nt_key(vars.K_RETURN)
     nt_screen("nt-desktop.png", 400000000000)
     echo("B5: Ctrl+Alt+Del from the ADB keyboard; Administrator is logged on to the desktop")
-    mac.report_perf("ans-nt-installed-boot/desktop", scheduler.instr_count)
+    report_perf("ans-nt-installed-boot/desktop", scheduler.instr_count)
 
     echo("ans-nt-installed-boot: an installed Windows NT 4.0 cold-boots through the powermac-nt-hal floppy's bootdisk.of to its logon screen, and Administrator logs on from the ADB keyboard (rung B5)")
 end
 
-if mac.have_media(nt_rom) and mac.have_media(nt_disk) and mac.have_media(nt_floppy) then
+if have_media(nt_rom) and have_media(nt_disk) and have_media(nt_floppy) then
     nt_installed_boot()
 else
-    mac.skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 9b20396 or later; run scripts/fetch-test-data.sh)")
+    skip_test("ans-nt-installed-boot (the 2.26NT ROM, the installed NT disk or the boot floppy is not in tests/data -- gs-test-data 9b20396 or later; run scripts/fetch-test-data.sh)")
 end
 
 quit()

@@ -210,14 +210,20 @@ end
 -- Run until the screen checksum is unchanged for 3 consecutive polls of
 -- `step` instructions, up to `ceiling` (the field-proven iifx-install-76
 -- settle()).  Returns the instructions spent.
+-- (Spelled out rather than through wait_until: the screen is sampled AFTER
+-- each run, never before the first, so the quanta spent are exactly the
+-- shell-language library's and the sample-exact rows keep their timeline.)
 local function wait_still(step, ceiling, what)
-  local previous, stable = 0, 0
-  return M.wait_until(function()
+  local previous, stable, spent = 0, 0, 0
+  while stable < 3 do
+    assert(spent < ceiling, F"${what} within ${ceiling}")
+    scheduler.run(step)
+    spent = spent + step
     local now = machine.screen.checksum()
     if now == previous then stable = stable + 1 else stable = 0 end
     previous = now
-    return stable >= 3
-  end, step, ceiling, what)
+  end
+  return spent
 end
 
 -- Run until the screen matches `golden`, in `step`-instruction quanta,

@@ -38,45 +38,45 @@ local function boot_host()
     -- wait: the machine's PRAM disables it), then boot blocks to the Finder.
     scheduler.run(360000000)
     scheduler.run(1200000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot")
-    mac.check_ex("host-desktop.png", 0, 440, 20, 640)
+    check_ex("host-desktop.png", 0, 440, 20, 640)
 end
 
 local function open_installer()
     -- The CD window auto-opens; `Mac OS 8 Runtime SW` then the D11E4 folder.
-    mac.double_click(152, 193)
-    mac.wait_stable(600000000)
-    mac.check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
+    double_click(152, 193)
+    wait_stable(600000000)
+    check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
 
-    mac.double_click(275, 170)
-    mac.wait_stable(600000000)
-    mac.check_ex("cd-d11e4-folder.png", 0, 440, 20, 640)
+    double_click(275, 170)
+    wait_stable(600000000)
+    check_ex("cd-d11e4-folder.png", 0, 440, 20, 640)
 
     -- `Install Mac OS` is a 'kajr' installation SCRIPT, not an application —
     -- double-clicking it launches the `Installer` sitting beside it in the same
     -- folder, with this script's rules loaded.
-    mac.double_click(87, 137)
+    double_click(87, 137)
     scheduler.run(800000000)
-    mac.wait_stable(3000000000)
+    wait_stable(3000000000)
     -- It comes up on the volume it booted from, `Macintosh HD` — 77 MB — and
     -- rule 205's text fires verbatim: "must choose a disk with a capacity of at
     -- least 230 megabytes".  Two Switch Disk clicks from here, the same trap and
     -- the same fix as the 7.5 install before it, except that this Installer
     -- refuses rather than silently doing the wrong thing.
-    mac.check_ex("installer-too-small.png", 0, 440, 20, 640)
+    check_ex("installer-too-small.png", 0, 440, 20, 640)
 
     -- First click lands on the CD, which is locked and says so.
-    mac.click(307, 355)
-    mac.wait_stable(1000000000)
-    mac.check_ex("installer-locked-cd.png", 0, 440, 20, 640)
+    click(307, 355)
+    wait_stable(1000000000)
+    check_ex("installer-locked-cd.png", 0, 440, 20, 640)
     -- The intervening move is required, not cosmetic: a same-spot warp emits no
     -- ADB motion, so a second click at the same pixel has no fresh position
     -- event to bind to and is dropped (../lib/mac.script, click()).
     machine.adb.mouse.move(420, 290, "global")
-    mac.run_ticks(10)
-    mac.click(307, 355)
-    mac.wait_stable(1000000000)
+    run_ticks(10)
+    click(307, 355)
+    wait_stable(1000000000)
     -- `untitled`, and every rule passes: the panel switches to "Click Install to
     -- install the Mac OS 8 Developer Release: Compatibility Edition" and the
     -- Install button goes live.  That sentence is rule 206's package set, and
@@ -85,32 +85,32 @@ local function open_installer()
     -- all passed — which is the whole reason the two tests before this one
     -- exist.  Rule 207 is the strictest: it wants the loader partition on the
     -- disk itself, not just files on a volume.
-    mac.check_ex("installer-ready.png", 0, 440, 20, 640)
+    check_ex("installer-ready.png", 0, 440, 20, 640)
 end
 
 -- Phase 4 — the install itself.
 local function install_os8()
-    mac.click(471, 359)
+    click(471, 359)
     -- Measured: the install runs between 4 and 5 G instructions from the click,
     -- off the CD, with no disk swaps and no dialog to dismiss on the way.  A
     -- fixed budget past the end and then a settle, rather than a bare stability
     -- wait: the "Reading from:" progress panel holds still for long stretches
     -- while it copies, and a stability wait returns on one of those frames.
     scheduler.run(6000000000)
-    mac.wait_stable(4000000000)
+    wait_stable(4000000000)
     -- Always leave the frame behind, so a golden mismatch is diagnosable from
     -- the run's artifacts rather than needing a re-run.
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/tail.png") end, nil)
     -- The Installer's own verdict.  Unlike 7.5's, it reports directly, with no
     -- advisory in between and no request to re-feed any media.
-    mac.check_ex("installed.png", 0, 440, 20, 640)
+    check_ex("installed.png", 0, 440, 20, 640)
 
     -- Quit rather than Continue: it leaves the Installer, which closes the
     -- target volume rather than leaving it open for another pass.
-    mac.click(452, 303)
-    mac.wait_stable(2000000000)
-    mac.check_ex("installer-quit.png", 0, 440, 20, 640)
-    mac.report_perf("pm7100-copland-install-os8/install", scheduler.instr_count)
+    click(452, 303)
+    wait_stable(2000000000)
+    check_ex("installer-quit.png", 0, 440, 20, 640)
+    report_perf("pm7100-copland-install-os8/install", scheduler.instr_count)
 end
 
 -- Phase 5 — prove Copland landed, and publish the volume for the boot test.
@@ -156,14 +156,14 @@ local function export_volume()
     assert(files.path_exists(tostring(media) .. "/copland_d11e4_installed_230mb.img"), "the installed volume was not published to media/")
 end
 
-if mac.have_media(target) and mac.have_media(ddk_cd) and mac.have_media(host_hd) then
+if have_media(target) and have_media(ddk_cd) and have_media(host_hd) then
     boot_host()
     open_installer()
     install_os8()
     export_volume()
-    mac.report_row("7.5+D11E4", "ariel", "copland-install-phase4 os8-ddk-cd-install")
+    report_row("7.5+D11E4", "ariel", "copland-install-phase4 os8-ddk-cd-install")
 else
-    mac.skip_test("pm7100-copland-install-os8 (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
+    skip_test("pm7100-copland-install-os8 (Copland media not present — set GS_EXTRA_MEDIA_DIR)")
 end
 
 quit()

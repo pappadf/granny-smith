@@ -45,40 +45,40 @@ machine.floppy.drive[0].insert("../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k 
 -- desktop is up by ~100 M. The fixed lead-in only skips the early boot frames so
 -- the settle below cannot latch onto a static pre-Finder screen.
 scheduler.run(60000000)
-mac.wait_stable(900000000)
+wait_stable(900000000)
 assert(machine.id == "iici", "machine.id != iici")
 assert(machine.screen.width == 640, "screen.width != 640")
 assert(machine.screen.height == 480, "screen.height != 480")
 assert(machine.screen.depth == 1, "screen.depth != 1")
-mac.check("desktop.png")
+check("desktop.png")
 
 -- Double-click the "Utilities" floppy icon (top-right) to open its window.
-mac.double_click(590, 45)
+double_click(590, 45)
 scheduler.run(600000000)
 
 -- Double-click the "Apple HD SC Setup" label to launch it. (The clickable hit
 -- region is the text label, not the gap above it.)
-mac.double_click(196, 113)
+double_click(196, 113)
 scheduler.run(900000000)
 -- HD SC Setup recognises the uninitialised drive at SCSI Device 0.
-mac.check("ready.png")
+check("ready.png")
 
 -- Click "Initialize" -> the "erase all data" confirmation alert.
-mac.click(247, 121)
+click(247, 121)
 scheduler.run(400000000)
 
 -- Click "Init" to confirm.
-mac.click(432, 194)
+click(432, 194)
 scheduler.run(900000000)
 
 -- Click "OK" to accept the default volume name ("Untitled"). This writes the
 -- full HFS volume (MDB + bitmap + catalog/extents B-trees + alternate MDB).
-mac.click(263, 181)
+click(263, 181)
 scheduler.run(900000000)
 -- The guest OS reports the format completed and mounted the volume.
-mac.check("done.png")
+check("done.png")
 
-mac.report_row("6.0.8", "rbv", "hd-format 5380-drq")
+report_row("6.0.8", "rbv", "hd-format 5380-drq")
 
 -- The format's writes went to the delta, which holds what was written --
 -- the volume's structures at both ends of the disk -- not everything up to

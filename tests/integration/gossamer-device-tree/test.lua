@@ -34,7 +34,7 @@ local banner = gos_boot_prompt("pmg3dt", 65536)
 -- The Open Firmware console on the Rage Pro's screen: the banner, the
 -- prompt, and the `ttya io` the row typed — drawn by the ATI FCode 1.53 in
 -- the Mac ROM through the chip's little-endian aperture at 640 x 480 x 8.
-mac.check("of-console.png")
+check("of-console.png")
 
 local cd = ""
 local p = ""
@@ -51,7 +51,7 @@ gos_send("dev /pci/mac-io")
 cd = gos_go()
 gos_send(": decode-unit parse-1hex ;")
 cd = gos_go()
-assert(not gs.contains(cd, "unknown"), "the mac-io decode-unit definition was refused")
+assert(not gs.truthy(function() return gs.contains(cd, "unknown") end), "the mac-io decode-unit definition was refused")
 
 -- --- The CPU node: the profile's 750 at 267 MHz on the 66.82 MHz bus -------
 gos_send("dev /cpus/PowerPC,750")

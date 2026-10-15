@@ -52,31 +52,31 @@ local function tree(model, ram_kb, bus_clock, l2_label)
     -- hex (@11 / @12) against the decimal IDSELs (17 / 18) of its interrupt
     -- table — confusing the two puts every device at the wrong config
     -- address, so this is the assertion that catches it.
-    assert(gs.contains(ls, "/53c825\x00@11"), F"S7: ${model} 53c825@11 missing")
-    assert(gs.contains(ls, "/53c825\x00@12"), F"S7: ${model} 53c825@12 missing")
-    assert(gs.contains(ls, "/gc\x00@10"), F"S7: ${model} gc@10 missing")
-    assert(gs.contains(ls, "/54m30\x00@F"), F"S7: ${model} 54m30@F missing")
-    assert(gs.contains(ls, "/hammerhead\x00@F8000000"), F"S7: ${model} hammerhead missing")
-    assert(gs.contains(ls, "/bandit\x00@F2000000"), F"S7: ${model} bandit 1 missing")
-    assert(gs.contains(ls, "/bandit\x00@F4000000"), F"S7: ${model} bandit 2 missing")
+    assert(gs.contains(ls, "/53c825@11"), F"S7: ${model} 53c825@11 missing")
+    assert(gs.contains(ls, "/53c825@12"), F"S7: ${model} 53c825@12 missing")
+    assert(gs.contains(ls, "/gc@10"), F"S7: ${model} gc@10 missing")
+    assert(gs.contains(ls, "/54m30@F"), F"S7: ${model} 54m30@F missing")
+    assert(gs.contains(ls, "/hammerhead@F8000000"), F"S7: ${model} hammerhead missing")
+    assert(gs.contains(ls, "/bandit@F2000000"), F"S7: ${model} bandit 1 missing")
+    assert(gs.contains(ls, "/bandit@F4000000"), F"S7: ${model} bandit 2 missing")
     -- MESH IS GONE — delta #4, and a deletion is still a fact to assert.
-    assert(not gs.contains(ls, "/mesh"), F"S7: ${model} the Network Servers have no MESH")
+    assert(not gs.truthy(function() return gs.contains(ls, "/mesh") end), F"S7: ${model} the Network Servers have no MESH")
     -- Grand Central's subtree is EXACTLY the 9500's, and its six children
     -- are the ones AIX's own `devices.pci.gc` fileset enumerates by name:
     -- `53c94 mace ch-a ch-b swim3 via-cuda`.
-    assert(gs.contains(ls, "/53c94\x00@10000"), F"S7: ${model} 53c94 missing")
-    assert(gs.contains(ls, "/mace\x00@11000"), F"S7: ${model} mace missing")
-    assert(gs.contains(ls, "/escc\x00@13000"), F"S7: ${model} escc missing")
-    assert(gs.contains(ls, "/ch-a\x00@13020"), F"S7: ${model} escc ch-a missing")
-    assert(gs.contains(ls, "/ch-b\x00@13000"), F"S7: ${model} escc ch-b missing")
-    assert(gs.contains(ls, "/awacs\x00@14000"), F"S7: ${model} awacs missing")
-    assert(gs.contains(ls, "/swim3\x00@15000"), F"S7: ${model} swim3 missing")
-    assert(gs.contains(ls, "/via-cuda\x00@16000"), F"S7: ${model} via-cuda missing")
-    assert(gs.contains(ls, "/keyboard\x00@0,0"), F"S7: ${model} adb keyboard missing")
-    assert(gs.contains(ls, "/mouse\x00@1,0"), F"S7: ${model} adb mouse missing")
-    assert(gs.contains(ls, "/nvram\x00@1D000"), F"S7: ${model} nvram missing")
+    assert(gs.contains(ls, "/53c94@10000"), F"S7: ${model} 53c94 missing")
+    assert(gs.contains(ls, "/mace@11000"), F"S7: ${model} mace missing")
+    assert(gs.contains(ls, "/escc@13000"), F"S7: ${model} escc missing")
+    assert(gs.contains(ls, "/ch-a@13020"), F"S7: ${model} escc ch-a missing")
+    assert(gs.contains(ls, "/ch-b@13000"), F"S7: ${model} escc ch-b missing")
+    assert(gs.contains(ls, "/awacs@14000"), F"S7: ${model} awacs missing")
+    assert(gs.contains(ls, "/swim3@15000"), F"S7: ${model} swim3 missing")
+    assert(gs.contains(ls, "/via-cuda@16000"), F"S7: ${model} via-cuda missing")
+    assert(gs.contains(ls, "/keyboard@0,0"), F"S7: ${model} adb keyboard missing")
+    assert(gs.contains(ls, "/mouse@1,0"), F"S7: ${model} adb mouse missing")
+    assert(gs.contains(ls, "/nvram@1D000"), F"S7: ${model} nvram missing")
     -- The LCD, which Apple's abridged listing omits and the ROM publishes.
-    assert(gs.contains(ls, "/lcd\x00@1C000"), F"S7: ${model} the front-panel LCD node is missing")
+    assert(gs.contains(ls, "/lcd@1C000"), F"S7: ${model} the front-panel LCD node is missing")
 
     -- --- The root node: the machine's own identity ---------------------------
     send("dev /")
@@ -130,7 +130,7 @@ local function tree(model, ram_kb, bus_clock, l2_label)
     -- Apple states plainly that the part has no interrupt line, and the
     -- tree agrees: no `interrupts` property at all, where the 53C825A above
     -- carries one.  Allocating it an EXT position would corrupt the map.
-    assert(not gs.contains(video, "AAPL,interrupts"), F"S7: ${model} the 54M30 must carry no routed interrupt")
+    assert(not gs.truthy(function() return gs.contains(video, "AAPL,interrupts") end), F"S7: ${model} the 54M30 must carry no routed interrupt")
 
     -- --- The device aliases: the boot paths a boot command will type ---------
     send("devalias")
@@ -152,7 +152,7 @@ local function tree(model, ram_kb, bus_clock, l2_label)
     assert(machine.lcd.line(2) == bus_clock_lcd, F"S4: ${model} CPU banner")
     assert(machine.lcd.line(3) == l2_label, F"S4: ${model} L2 banner")
 
-    mac.report_perf(F"ans-device-tree/${model}", scheduler.instr_count)
+    report_perf(F"ans-device-tree/${model}", scheduler.instr_count)
     echo(F"ans-device-tree ${model}: Listing 6-1 matched; ?esb set; AAPL,interrupts confirms the 20+EXT rule")
 end
 

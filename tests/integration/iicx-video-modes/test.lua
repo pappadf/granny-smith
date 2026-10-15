@@ -88,8 +88,8 @@ assert(machine.screen.height == 480, "13in_rgb 1bpp height != 480")
 assert(machine.rtc.pram.peek(0x48) == 0x80, "13in_rgb 1bpp savedMode rewritten by ROM")
 assert(machine.memory.peek.l(0xf9200208) == 0x80, "13in_rgb 1bpp CLUTPBCR != 0x80")
 assert(machine.memory.peek.l(0xf920000c) == 0x14, "13in_rgb 1bpp RowWords != 0x14")
-mac.check("welcome-13in_rgb-640x480-1bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x1 13in_rgb")
+check("welcome-13in_rgb-640x480-1bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 640x480x1 13in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -104,8 +104,8 @@ assert(machine.memory.peek.l(0xf920000c) == 0x28, "13in_rgb 2bpp RowWords != 0x2
 -- pixels at both depths. The depth change is proven by the three asserts above
 -- (savedMode 0x80 vs 0x81, CLUT PBCR, RowWords), not by the frame; the golden
 -- only pins that the raster still scans out correctly.
-mac.check("welcome-13in_rgb-640x480-2bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x2 13in_rgb")
+check("welcome-13in_rgb-640x480-2bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 640x480x2 13in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -115,8 +115,8 @@ scheduler.run(49000000)
 assert(machine.rtc.pram.peek(0x48) == 0x82, "13in_rgb 4bpp savedMode rewritten by ROM")
 assert(machine.memory.peek.l(0xf9200208) == 0x90, "13in_rgb 4bpp CLUTPBCR != 0x90")
 assert(machine.memory.peek.l(0xf920000c) == 0x50, "13in_rgb 4bpp RowWords != 0x50")
-mac.check("welcome-13in_rgb-640x480-4bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x4 13in_rgb")
+check("welcome-13in_rgb-640x480-4bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 640x480x4 13in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -126,8 +126,8 @@ scheduler.run(49000000)
 assert(machine.rtc.pram.peek(0x48) == 0x83, "13in_rgb 8bpp savedMode rewritten by ROM")
 assert(machine.memory.peek.l(0xf9200208) == 0x98, "13in_rgb 8bpp CLUTPBCR != 0x98")
 assert(machine.memory.peek.l(0xf920000c) == 0xa0, "13in_rgb 8bpp RowWords != 0xa0")
-mac.check("welcome-13in_rgb-640x480-8bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x8 13in_rgb")
+check("welcome-13in_rgb-640x480-8bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 640x480x8 13in_rgb")
 
 -- --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
 machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
@@ -138,8 +138,8 @@ scheduler.run(49000000)
 assert(machine.screen.width == 512, "12in_rgb 1bpp width != 512")
 assert(machine.screen.height == 384, "12in_rgb 1bpp height != 384")
 assert(machine.rtc.pram.peek(0x48) == 0x80, "12in_rgb 1bpp savedMode rewritten by ROM")
-mac.check("welcome-12in_rgb-512x384-1bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x1 12in_rgb")
+check("welcome-12in_rgb-512x384-1bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 512x384x1 12in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -147,8 +147,8 @@ machine.rtc.pram.validate()
 machine.rtc.pram.poke(0x46, gs.bytes(0x002781a2a2000000, 8))
 scheduler.run(49000000)
 assert(machine.rtc.pram.peek(0x48) == 0x81, "12in_rgb 2bpp savedMode rewritten by ROM")
-mac.check("welcome-12in_rgb-512x384-2bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x2 12in_rgb")
+check("welcome-12in_rgb-512x384-2bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 512x384x2 12in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -156,8 +156,8 @@ machine.rtc.pram.validate()
 machine.rtc.pram.poke(0x46, gs.bytes(0x002782a2a2000000, 8))
 scheduler.run(49000000)
 assert(machine.rtc.pram.peek(0x48) == 0x82, "12in_rgb 4bpp savedMode rewritten by ROM")
-mac.check("welcome-12in_rgb-512x384-4bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x4 12in_rgb")
+check("welcome-12in_rgb-512x384-4bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 512x384x4 12in_rgb")
 
 machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
 machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -165,8 +165,8 @@ machine.rtc.pram.validate()
 machine.rtc.pram.poke(0x46, gs.bytes(0x002783a2a2000000, 8))
 scheduler.run(49000000)
 assert(machine.rtc.pram.peek(0x48) == 0x83, "12in_rgb 8bpp savedMode rewritten by ROM")
-mac.check("welcome-12in_rgb-512x384-8bpp.png")
-mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x8 12in_rgb")
+check("welcome-12in_rgb-512x384-8bpp.png")
+report_row("7.0.1", "jmfb", "rom-stage 512x384x8 12in_rgb")
 
 -- --- 15" Portrait B&W (sense $1) and 21" RGB Kong (sense $0) ---
 -- RE-HOSTED to suite-iix (an 8-of-16 split): those eight cells now run on the

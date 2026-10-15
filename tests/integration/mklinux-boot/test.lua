@@ -114,9 +114,9 @@ local function prove_root_is_mounted(model)
     -- Each line runs until the keys are taken and the console holds still
     -- (the old fixed budgets are the ceilings): the password prompt, the
     -- shell's prompt after the login, and the prompt back after sync.
-    mac.type_settle("root\n", 10000000, 250000000)
-    mac.type_settle("mklinux\n", 10000000, 800000000)
-    mac.type_settle("sync\n", 10000000, 700000000)
+    type_settle("root\n", 10000000, 250000000)
+    type_settle("mklinux\n", 10000000, 800000000)
+    type_settle("sync\n", 10000000, 700000000)
     machine.scsi.device[0].image.export(F"${vars.WORK_DIR}/${model}-after-sync.img")
     local moved = files.path_compare(F"${vars.WORK_DIR}/${model}-at-login.img", F"${vars.WORK_DIR}/${model}-after-sync.img")
     echo(F"${model}: the disk moved at offset ${moved} between the login prompt and sync")
@@ -136,8 +136,8 @@ local function ride_to_login(model, ram_kb)
     -- boot answers low memory; a machine running the Mach kernel does not.
     assert(not gs.ok(function() return machine.cpu.mmu.peek(0x17B, 1) end), F"${model}: still in the 68k address space — the Booter never handed off")
     assert(machine.screen.depth == 8, F"${model}: ${machine.screen.depth} bpp, want 8 — MkLinux's console needs the 256-colour mode")
-    mac.report_row_foreign("DR3", "ariel", "mklinux-boot single-disk login")
-    mac.report_perf(F"mklinux-boot/${model}", scheduler.instr_count)
+    report_row_foreign("DR3", "ariel", "mklinux-boot single-disk login")
+    report_perf(F"mklinux-boot/${model}", scheduler.instr_count)
 end
 
 -- The 7100 row carries the extras, so the suite pays for three boots and not
@@ -149,8 +149,8 @@ local function row_pm7100()
     -- the software that consumes it.  The countdown line is masked — it is a
     -- live clock — which is why this one is a match-with-mask and not a
     -- wait_match.
-    mac.run_until_match_ex("booter-splash.png", 300, 420, 340, 570, 450000000, 11000000)
-    mac.check_ex("booter-splash.png", 300, 420, 340, 570)
+    run_until_match_ex("booter-splash.png", 300, 420, 340, 570, 450000000, 11000000)
+    check_ex("booter-splash.png", 300, 420, 340, 570)
 
     -- This row OWNS the login golden, and it captures it on a FIXED budget
     -- rather than with wait_match.  wait_match under REGEN=1 stops as soon as
@@ -165,13 +165,13 @@ local function row_pm7100()
     -- now carries the drive from power-on, empty or not): Linux probes the
     -- empty drive and waits out its NOT READY, which moved the prompt's
     -- arrival from well inside the old budget to a measured 2.61 G total.
-    mac.run_until_match("mklinux-login.png", 2400000000, 60000000)
-    mac.check("mklinux-login.png")
+    run_until_match("mklinux-login.png", 2400000000, 60000000)
+    check("mklinux-login.png")
     assert(not gs.ok(function() return machine.cpu.mmu.peek(0x17B, 1) end), "pm7100: still in the 68k address space")
     assert(machine.screen.depth == 8, F"pm7100: ${machine.screen.depth} bpp, want 8")
     prove_root_is_mounted("pm7100")
-    mac.report_row_foreign("DR3", "ariel", "mklinux-boot single-disk login")
-    mac.report_perf("mklinux-boot/pm7100", scheduler.instr_count)
+    report_row_foreign("DR3", "ariel", "mklinux-boot single-disk login")
+    report_perf("mklinux-boot/pm7100", scheduler.instr_count)
 end
 
 local function row_pm6100() ride_to_login("pm6100", 24576) end
@@ -207,12 +207,12 @@ local function row_pm8100() ride_to_login("pm8100", 40960) end
 local function row_pm7500()
     power_on_tnt("pm7500", 32768)
     scheduler.run(2000000000)
-    mac.wait_stable(1000000000)
+    wait_stable(1000000000)
     assert(not gs.ok(function() return machine.cpu.mmu.peek(0x17B, 1) end), "pm7500: still in the 68k address space — the Booter never handed off")
     assert(machine.screen.depth == 32, F"pm7500: ${machine.screen.depth} bpp, want 32")
     prove_root_is_mounted("pm7500")
-    mac.report_row_foreign("DR3", "control", "mklinux-boot single-disk login")
-    mac.report_perf("mklinux-boot/pm7500", scheduler.instr_count)
+    report_row_foreign("DR3", "control", "mklinux-boot single-disk login")
+    report_perf("mklinux-boot/pm7500", scheduler.instr_count)
 end
 
 -- pm7100 first: it owns the login golden the other NuBus rows wait on.
@@ -220,6 +220,6 @@ mac.row("pm7100", row_pm7100)
 mac.row("pm6100", row_pm6100)
 mac.row("pm8100", row_pm8100)
 mac.row("pm7500", row_pm7500)
-mac.suite_done()
+suite_done()
 
 quit()

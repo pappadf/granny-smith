@@ -99,7 +99,7 @@ local function row_cd_boot()
     -- Still read-only after a full boot: nothing quietly promoted it.
     assert(machine.scsi.device[3].read_only, "cd-boot: device stopped being read-only")
 
-    mac.report_perf("iici-cdrom-boot/cd-boot", scheduler.instr_count)
+    report_perf("iici-cdrom-boot/cd-boot", scheduler.instr_count)
 end
 
 -- ---- cd-desktop -------------------------------------------------------------
@@ -109,12 +109,12 @@ local function row_cd_desktop()
     machine.rtc.time = 3000000000
     machine.scsi.attach_cdrom(disc, 3)
     scheduler.run(400000000)
-    mac.wait_stable(1600000000)
+    wait_stable(1600000000)
     -- The application zone exists only once the Process Manager has launched
     -- the Finder; a boot that dies during System startup leaves it at SysZone.
     assert(debug.mac.globals.read("ApplZone") ~= debug.mac.globals.read("SysZone"), "cd-desktop: ApplZone == SysZone — the Finder never launched")
-    mac.check("goldens/iici-7.1-640x480x1-cd-finder.png")
-    mac.report_perf("iici-cdrom-boot/cd-desktop", scheduler.instr_count)
+    check("goldens/iici-7.1-640x480x1-cd-finder.png")
+    report_perf("iici-cdrom-boot/cd-desktop", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -130,11 +130,11 @@ mac.row("cd-boot", row_cd_boot)
 -- disc, which boots a pm6100 to the desktop) — so this row wants such a disc
 -- and skips cleanly until one is in gs-test-data, exactly like cd-2048 above.
 local boot_cd = "../../data/systems/mac_os_8_1_retail.iso"
-if mac.row_on("cd-desktop") and mac.have_media(boot_cd) then
+if row_on("cd-desktop") and have_media(boot_cd) then
     mac.row("cd-desktop", row_cd_desktop)
 else
     echo(F"skip: cd-desktop (no CD-mastered bootable disc at ${boot_cd})")
 end
 
-mac.suite_done()
+suite_done()
 quit()

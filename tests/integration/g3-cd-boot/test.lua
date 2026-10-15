@@ -29,10 +29,10 @@ local function finder(label, golden)
     -- the CD's System and extensions, the Finder opening the disc's window.
     scheduler.run(13000000000)
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/${label}.png") end, nil)
-    mac.check_ex(golden, 0, 440, 20, 640)
+    check_ex(golden, 0, 440, 20, 640)
 end
 
-if mac.have_media(cd) then
+if have_media(cd) then
     -- --- C1: SCSI CD-ROM on MESH ------------------------------------------------
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
@@ -46,7 +46,7 @@ if mac.have_media(cd) then
     assert(machine.ata.devices == "- atapi - -", "C2: the ATAPI drive is not on cell 0 device 1")
     finder("c2-atapi", "finder-cd.png")
 else
-    mac.skip_test("g3-cd-boot (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
+    skip_test("g3-cd-boot (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
 end
 
 quit()

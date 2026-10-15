@@ -36,7 +36,7 @@ local function boot_single_bank(ram_kb, bank1_size)
 
     -- The boot got through kernel init and video init to the gray desktop.
     assert(machine.screen.depth == 8, F"${ram_kb} KB: video never initialized (black screen)")
-    mac.check("gray-desktop.png")
+    check("gray-desktop.png")
     echo(F"pdm-6100-single-bank: ${ram_kb} KB ok (bank 1 at $800000, sdr1=${machine.cpu.sdr1:08x})")
 end
 

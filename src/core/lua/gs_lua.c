@@ -219,6 +219,41 @@ static int node_index(lua_State *L) {
 
 static bool to_value(lua_State *L, int idx, value_t *out);
 
+// The declared kind of a method's argument slot `i` (the rest slot's for
+// the tail), or VK_NONE when undeclared.
+static value_kind_t slot_kind(node_t n, int i) {
+    const arg_decl_t *args = n.member->method.args;
+    int nargs = n.member->method.nargs;
+    if (!args || nargs == 0)
+        return VK_NONE;
+    if (i < nargs)
+        return args[i].kind;
+    if (args[nargs - 1].validation_flags & OBJ_ARG_REST)
+        return args[nargs - 1].kind;
+    return VK_NONE;
+}
+
+// The declared kind of a method's named argument, or VK_NONE.
+static value_kind_t named_slot_kind(node_t n, const char *name) {
+    const arg_decl_t *args = n.member->method.args;
+    for (int i = 0; i < n.member->method.nargs; i++)
+        if (strcmp(args[i].name, name) == 0)
+            return args[i].kind;
+    return VK_NONE;
+}
+
+// Convert the Lua value at `idx` for a slot of `kind`: a Lua string going
+// to a bytes slot keeps every byte (a tree bytes value arrived as one).
+static bool to_slot_value(lua_State *L, int idx, value_kind_t kind, value_t *out) {
+    if (kind == VK_BYTES && lua_type(L, idx) == LUA_TSTRING) {
+        size_t n;
+        const char *s = lua_tolstring(L, idx, &n);
+        *out = val_bytes(s, n);
+        return true;
+    }
+    return to_value(L, idx, out);
+}
+
 // proxy[key] = v: node_set on the attribute.
 static int node_newindex(lua_State *L) {
     gsl_node_t *nd = check_node(L, 1);
@@ -235,7 +270,7 @@ static int node_newindex(lua_State *L) {
         return raise_text(L, lua_tostring(L, -1));
     }
     value_t v;
-    if (!to_value(L, 3, &v))
+    if (!to_slot_value(L, 3, n.member->attr.type, &v))
         return raise_text(L, lua_tostring(L, -1));
     value_t r = node_set(n, v); // consumes v
     if (val_is_error(&r))
@@ -292,7 +327,7 @@ static int node_call_mm(lua_State *L) {
     bool ok = true;
     int i;
     for (i = 0; i < pc; i++) {
-        if (!to_value(L, 2 + i, &pos[i])) {
+        if (!to_slot_value(L, 2 + i, slot_kind(n, i), &pos[i])) {
             ok = false;
             break;
         }
@@ -313,7 +348,7 @@ static int node_call_mm(lua_State *L) {
                 break;
             }
             named[nn].name = lua_tostring(L, -2); // stays alive: the table holds the key
-            if (!to_value(L, -1, &named[nn].value)) {
+            if (!to_slot_value(L, -1, named_slot_kind(n, named[nn].name), &named[nn].value)) {
                 lua_remove(L, -2); // the value; the message stays on top
                 lua_remove(L, -2); // the key
                 ok = false;

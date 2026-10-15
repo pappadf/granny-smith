@@ -11,7 +11,7 @@ local function click(x, y)
     scheduler.run(2000000)
     machine.adb.mouse.click(true)
     machine.adb.mouse.click(false)
-    mac.wait_mouse_taken(100000000)
+    wait_mouse_taken(100000000)
 end
 
 -- File -> Print Directory..., then the quality radio button at x `q` and OK
@@ -56,11 +56,11 @@ machine.adb.mouse.move(470, 52)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(80000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(40000000)
 
 -- Faster

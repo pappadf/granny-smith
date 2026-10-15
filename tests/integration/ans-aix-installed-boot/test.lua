@@ -79,23 +79,23 @@ local function installed_boot()
         machine.screen.save(F"${vars.WORK_DIR}/console-login-actual.png")
     end
     assert(saw_login == 1, "S13: the graphics console never showed 'Console login:' (see console-login-actual.png in the work directory)")
-    mac.check_ex("console-login.png", 0, 0, 64, 640)
+    check_ex("console-login.png", 0, 0, 64, 640)
 
     -- --- The ADB keyboard: log in as root (the install set no password) ----
     machine.adb.keyboard.type("root\n")
-    mac.wait_match("root-shell.png", 3000000000, 100000000)
+    wait_match("root-shell.png", 3000000000, 100000000)
 
     -- And the disk is still the one it booted from.
     assert(machine.scsi.device[2].type == "hd", "S13: the boot disk went away under AIX")
-    mac.report_perf("ans-aix-installed-boot/root-shell", scheduler.instr_count)
+    report_perf("ans-aix-installed-boot/root-shell", scheduler.instr_count)
 
     echo("ans-aix-installed-boot: an installed AIX 4.1.5 cold-boots through Open Firmware's disk2:aix to 'Console login:' on the graphics console, and root logs in from the ADB keyboard (rung S13)")
 end
 
-if mac.have_media(aix_disk) then
+if have_media(aix_disk) then
     installed_boot()
 else
-    mac.skip_test("ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — run scripts/fetch-test-data.sh)")
+    skip_test("ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — run scripts/fetch-test-data.sh)")
 end
 
 quit()

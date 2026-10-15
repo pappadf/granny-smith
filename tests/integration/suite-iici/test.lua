@@ -73,7 +73,7 @@ local function row_iici_chime()
     assert(machine.rbv.variant == "RBV/IIci", "iici-chime: wrong RBV variant")
     assert(machine.rbv.active == machine.rbv.pending & machine.rbv.enabled, "iici-chime: RBV active != pending & enabled")
     machine.sound.match("goldens/iici-chime.wav")
-    mac.report_perf("suite-iici/iici-chime", scheduler.instr_count)
+    report_perf("suite-iici/iici-chime", scheduler.instr_count)
 end
 
 -- ---- iici-701-fd ------------------------------------------------------------
@@ -82,18 +82,18 @@ local function row_iici_701_fd()
     machine.boot{model = "iici", ram = 8192, video_card = "builtin_rbv_video", rom = vars.ROM}
     machine.floppy.drive[0].insert(sys_701)
     scheduler.run(300000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.id == "iici", "iici-701-fd: machine.id != iici")
     assert(machine.rom.id == "368cadfe", "iici-701-fd: rom.id != 368cadfe")
     assert(machine.ram == 8192, "iici-701-fd: machine.ram != 8192")
     assert(machine.screen.width == 640, "iici-701-fd: screen.width != 640")
     assert(machine.screen.height == 480, "iici-701-fd: screen.height != 480")
-    mac.assert_addr(false)
-    mac.check("goldens/iici-7.0.1-640x480x1-finder.png")
-    mac.about_box()
-    mac.check_about("goldens/iici-7.0.1-640x480x1-about.png")
-    mac.report_row("7.0.1", "rbv", "fd-boot about")
-    mac.report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
+    assert_addr(false)
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
+    about_box()
+    check_about("goldens/iici-7.0.1-640x480x1-about.png")
+    report_row("7.0.1", "rbv", "fd-boot about")
+    report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
 end
 
 -- ---- iici-701-depths --------------------------------------------------------
@@ -125,7 +125,7 @@ local function boot_iici_701_at_depth(spid)
     if spid == 0x82 then machine.rtc.pram.poke(0x56, gs.bytes(0x001f828600000000, 8)) end
     if spid == 0x83 then machine.rtc.pram.poke(0x56, gs.bytes(0x001f838600000000, 8)) end
     scheduler.run(300000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.rtc.pram.peek(0x58) == spid, F"iici-701-depths: savedMode rewritten by the ROM (wanted ${spid:02x})")
     assert(machine.screen.width == 640, "iici-701-depths: width != 640")
     assert(machine.screen.height == 480, "iici-701-depths: height != 480")
@@ -133,19 +133,19 @@ end
 local function row_iici_701_depths()
     boot_iici_701_at_depth(0x81)
     assert(machine.screen.depth == 2, F"iici-701-depths: savedMode $81 gave depth ${machine.screen.depth}, want 2")
-    mac.check("goldens/iici-7.0.1-640x480x2-finder.png")
-    mac.report_row("7.0.1", "rbv", "fd-boot 2bpp")
+    check("goldens/iici-7.0.1-640x480x2-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 2bpp")
 
     boot_iici_701_at_depth(0x82)
     assert(machine.screen.depth == 4, F"iici-701-depths: savedMode $82 gave depth ${machine.screen.depth}, want 4")
-    mac.check("goldens/iici-7.0.1-640x480x4-finder.png")
-    mac.report_row("7.0.1", "rbv", "fd-boot 4bpp")
+    check("goldens/iici-7.0.1-640x480x4-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 4bpp")
 
     boot_iici_701_at_depth(0x83)
     assert(machine.screen.depth == 8, F"iici-701-depths: savedMode $83 gave depth ${machine.screen.depth}, want 8")
-    mac.check("goldens/iici-7.0.1-640x480x8-finder.png")
-    mac.report_row("7.0.1", "rbv", "fd-boot 8bpp")
-    mac.report_perf("suite-iici/iici-701-depths", scheduler.instr_count)
+    check("goldens/iici-7.0.1-640x480x8-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 8bpp")
+    report_perf("suite-iici/iici-701-depths", scheduler.instr_count)
 end
 
 -- ---- iici-75-hd -------------------------------------------------------------
@@ -161,13 +161,13 @@ local function row_iici_75_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(300000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
     assert(machine.id == "iici", "iici-75-hd: machine.id != iici")
     assert(machine.ram == 16384, "iici-75-hd: machine.ram != 16384")
-    mac.assert_addr(false)
-    mac.check_ex("goldens/iici-7.5-640x480x1-finder.png", 0, 440, 20, 640)
-    mac.report_row("7.5", "rbv", "hd-boot 5380")
-    mac.report_perf("suite-iici/iici-75-hd", scheduler.instr_count)
+    assert_addr(false)
+    check_ex("goldens/iici-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "rbv", "hd-boot 5380")
+    report_perf("suite-iici/iici-75-hd", scheduler.instr_count)
 end
 
 -- ---- iici-76-hd -------------------------------------------------------------
@@ -179,13 +179,13 @@ local function row_iici_76_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_76, 0)
     scheduler.run(400000000)
-    mac.wait_stable(1800000000)
+    wait_stable(1800000000)
     assert(machine.id == "iici", "iici-76-hd: machine.id != iici")
     assert(machine.ram == 32768, "iici-76-hd: machine.ram != 32768")
-    mac.assert_addr(true)
-    mac.check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
-    mac.report_row("7.6", "rbv", "hd-boot 5380 addr32")
-    mac.report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
+    assert_addr(true)
+    check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.6", "rbv", "hd-boot 5380 addr32")
+    report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
 end
 
 -- ---- iici-76-hd-addr32 ------------------------------------------------------
@@ -200,14 +200,14 @@ local function row_iici_76_hd_addr32()
     machine.scsi.attach_hd(hd_76, 0)
     local boots = debug.logpoints.add{addr = 0x16A, width = "l", mode = "write", value = 0, level = 9}
     scheduler.run(400000000)
-    mac.wait_stable(1800000000)
+    wait_stable(1800000000)
     assert(machine.id == "iici", "iici-76-hd-addr32: machine.id != iici")
     assert(boots.hit_count == 1, F"iici-76-hd-addr32: ${boots.hit_count} boots, want 1")
     local _ = boots.remove
-    mac.assert_addr(true)
-    mac.check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
-    mac.report_row("7.6", "rbv", "hd-boot 5380 addr32 seeded")
-    mac.report_perf("suite-iici/iici-76-hd-addr32", scheduler.instr_count)
+    assert_addr(true)
+    check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.6", "rbv", "hd-boot 5380 addr32 seeded")
+    report_perf("suite-iici/iici-76-hd-addr32", scheduler.instr_count)
 end
 
 -- ---- iici-71-hd -------------------------------------------------------------
@@ -226,7 +226,7 @@ local function row_iici_71_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_71_gc, 0)
     scheduler.run(300000000)
-    mac.wait_stable(1200000000)
+    wait_stable(1200000000)
     assert(machine.id == "iici", "iici-71-hd: machine.id != iici")
     assert(machine.ram == 8192, "iici-71-hd: machine.ram != 8192")
     assert(machine.screen.width == 640, "iici-71-hd: screen.width != 640")
@@ -234,9 +234,9 @@ local function row_iici_71_hd()
     -- The 24AC must NOT be present: this row exists to prove the card-free path,
     -- so an inherited card would make it silently re-measure the 24AC hang.
     assert(machine.nubus.slot[11].card.name == "Built-in video", "iici-71-hd: slot $B is not the built-in video")
-    mac.check("goldens/iici-7.1-640x480x1-finder.png")
-    mac.report_row("7.1", "rbv", "hd-boot 5380")
-    mac.report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
+    check("goldens/iici-7.1-640x480x1-finder.png")
+    report_row("7.1", "rbv", "hd-boot 5380")
+    report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
 end
 
 -- ---- iici-lowram ------------------------------------------------------------
@@ -261,7 +261,7 @@ local function row_iici_lowram()
         assert(machine.ram == kb, F"iici-lowram: machine.ram != ${kb}")
         assert(debug.mac.globals.read("MemTop") == kb * 1024, F"iici-lowram: POST did not complete at ${kb} KB — MemTop=${debug.mac.globals.read(\"MemTop\"):08x} want ${kb * 1024:08x}")
     end
-    mac.report_perf("suite-iici/iici-lowram", scheduler.instr_count)
+    report_perf("suite-iici/iici-lowram", scheduler.instr_count)
 end
 
 -- ---- iici-24ac-dual ---------------------------------------------------------
@@ -291,7 +291,7 @@ local function row_iici_24ac_dual()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_71_gc, 0)
     scheduler.run(900000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
     assert(machine.id == "iici", "iici-24ac-dual: machine.id != iici")
     -- Two display devices, both live.
     assert(machine.nubus.slot[11].card.name == "Built-in video", "iici-24ac-dual: slot $B is not the built-in video")
@@ -315,9 +315,9 @@ local function row_iici_24ac_dual()
     -- is a SECOND display and its content is not in this framebuffer. What proves
     -- the states differ is above and not pixel-based: slot $C is the 24AC, its own
     -- framebuffer is 8 bpp, and its blitter engine did non-zero fills under the OS.
-    mac.check("goldens/iici-7.1-640x480x1-24ac-dual-finder.png")
-    mac.report_row("7.1", "rbv+24ac", "dual-display hd-boot 24ac-engine")
-    mac.report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
+    check("goldens/iici-7.1-640x480x1-24ac-dual-finder.png")
+    report_row("7.1", "rbv+24ac", "dual-display hd-boot 24ac-engine")
+    report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 end
 
 -- ---- iici-checkpoint --------------------------------------------------------
@@ -343,19 +343,19 @@ end
 local function row_iici_checkpoint()
     machine.boot{model = "iici", ram = 8192, video_card = "builtin_rbv_video", rom = vars.ROM}
     machine.floppy.drive[0].insert(sys_701)
-    mac.reach("goldens/iici-7.0.1-640x480x1-finder.png", 300000000, 900000000, 20000000)
-    mac.check("goldens/iici-7.0.1-640x480x1-finder.png")
+    reach("goldens/iici-7.0.1-640x480x1-finder.png", 300000000, 900000000, 20000000)
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
     assert(checkpoint.save(F"${vars.WORK_DIR}/suite-iici.gsc"), "iici-checkpoint: save failed")
     machine.boot{model = "iici", ram = 1024, video_card = "builtin_rbv_video", rom = vars.ROM}
     assert(checkpoint.load(F"${vars.WORK_DIR}/suite-iici.gsc"), "iici-checkpoint: load failed")
     scheduler.run(5000000)
-    mac.wait_stable(400000000)
+    wait_stable(400000000)
     assert(machine.ram == 8192, "iici-checkpoint: restored RAM size wrong")
     -- Re-match the pre-save golden rather than comparing raw checksums:
     -- the restored guest keeps running for a few million instructions
     -- before it is quiescent again, so only a settled frame is comparable.
-    mac.check("goldens/iici-7.0.1-640x480x1-finder.png")
-    mac.report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
+    report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
 end
 
 -- ---- iici-mactest-diag ------------------------------------------------------
@@ -393,11 +393,11 @@ local function row_iici_mactest_diag()
     -- then holds. Waiting for the settled screen and matching that is both
     -- stabler and a truer statement of the state — "MacTest is up and offering
     -- Start".
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.id == "iici", "iici-mactest-diag: machine.id != iici")
     assert(machine.screen.width == 640, "iici-mactest-diag: primary width != 640")
     assert(machine.screen.height == 480, "iici-mactest-diag: primary height != 480")
-    mac.check("goldens/iici-mactest-640x480x1-main.png")
+    check("goldens/iici-mactest-640x480x1-main.png")
 
     -- Options ▸ Test Selections, uncheck Keyboard + Mouse, OK. Coordinates and
     -- the prime-click are inherited from iicx-mactest-options, which
@@ -412,14 +412,14 @@ local function row_iici_mactest_diag()
     scheduler.run(160000000)
     -- Prime click: the first click after the dialog opens is swallowed on focus
     -- under E-clock-synced ADB, so a throwaway on empty dialog area absorbs it.
-    mac.click(400, 90)
-    mac.click(130, 305)
-    mac.click(130, 325)
-    mac.check("goldens/iici-mactest-640x480x1-adb-unchecked.png")
+    click(400, 90)
+    click(130, 305)
+    click(130, 325)
+    check("goldens/iici-mactest-640x480x1-adb-unchecked.png")
     -- OK is DITL item 1; (560, 385) is inside its rect-derived global bounds —
     -- the rendered glyph centre is 2 px above the real rect and hits a dummy
     -- user-item instead.
-    mac.click(560, 385)
+    click(560, 385)
     scheduler.run(60000000)
 
     -- Start (button centre ~(188, 153)), then let the whole board-level sequence
@@ -428,9 +428,9 @@ local function row_iici_mactest_diag()
     -- passed, so this one golden stands in for every one of them.  That is a far
     -- stronger claim than the checksum inequality this row carried as a
     -- milestone, which only said "not the logic-board dialog".
-    mac.click(188, 153)
-    mac.wait_match("goldens/iici-mactest-640x480x1-insert-800k.png", 1500000000, 20000000)
-    mac.report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
+    click(188, 153)
+    wait_match("goldens/iici-mactest-640x480x1-insert-800k.png", 1500000000, 20000000)
+    report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
 end
 
 -- ---- iici-portrait ----------------------------------------------------------
@@ -452,11 +452,11 @@ local function row_iici_portrait()
         scheduler.run(50000000)
         machine.screen.save("goldens/iici-640x870x1-no-disk.png")
     else
-        mac.wait_match("goldens/iici-640x870x1-no-disk.png", 400000000, 10000000)
+        wait_match("goldens/iici-640x870x1-no-disk.png", 400000000, 10000000)
     end
     assert(machine.screen.height == 870, "iici-portrait: screen.height != 870 after boot")
     assert(machine.cpu.mmu.peek(0x106, 2) == 80, "iici-portrait: ScreenRow != 80")
-    mac.report_perf("suite-iici/iici-portrait", scheduler.instr_count)
+    report_perf("suite-iici/iici-portrait", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -464,29 +464,29 @@ end
 mac.row("iici-chime", row_iici_chime)
 mac.row("iici-701-fd", row_iici_701_fd)
 mac.row("iici-701-depths", row_iici_701_depths)
-if mac.row_on("iici-75-hd") then
-    if mac.have_media(hd_75) then
+if row_on("iici-75-hd") then
+    if have_media(hd_75) then
         mac.row("iici-75-hd", row_iici_75_hd)
     else
         echo("skip: iici-75-hd (7.5 prepared image not fetched)")
     end
 end
-if mac.row_on("iici-76-hd") then
-    if mac.have_media(hd_76) then
+if row_on("iici-76-hd") then
+    if have_media(hd_76) then
         mac.row("iici-76-hd", row_iici_76_hd)
     else
         echo("skip: iici-76-hd (7.6 prepared image not fetched)")
     end
 end
-if mac.row_on("iici-76-hd-addr32") then
-    if mac.have_media(hd_76) then
+if row_on("iici-76-hd-addr32") then
+    if have_media(hd_76) then
         mac.row("iici-76-hd-addr32", row_iici_76_hd_addr32)
     else
         echo("skip: iici-76-hd-addr32 (7.6 prepared image not fetched)")
     end
 end
-if mac.row_on("iici-71-hd") then
-    if mac.have_media(hd_71_gc) then
+if row_on("iici-71-hd") then
+    if have_media(hd_71_gc) then
         mac.row("iici-71-hd", row_iici_71_hd)
     else
         echo("skip: iici-71-hd (7.1 prepared image not fetched)")
@@ -495,8 +495,8 @@ end
 mac.row("iici-lowram", row_iici_lowram)
 mac.row("iici-24ac-dual", row_iici_24ac_dual)
 mac.row("iici-checkpoint", row_iici_checkpoint)
-if mac.row_on("iici-mactest-diag") then
-    if mac.have_media(mactest_img) then
+if row_on("iici-mactest-diag") then
+    if have_media(mactest_img) then
         mac.row("iici-mactest-diag", row_iici_mactest_diag)
     else
         echo("skip: iici-mactest-diag (MacTest image not fetched)")
@@ -504,5 +504,5 @@ if mac.row_on("iici-mactest-diag") then
 end
 mac.row("iici-portrait", row_iici_portrait)
 
-mac.suite_done()
+suite_done()
 quit()

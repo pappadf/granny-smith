@@ -1,5 +1,4 @@
 -- Converted from rows.script by scripts/script-to-lua.py
-local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
 -- Row bodies for suite-lisa, transcribed VERBATIM from the six test
 -- scripts this suite absorbed (lisa-profile-boot, lisa-xenix-hdinit,
 -- lisa-xenix-boot, lisa-xenix-nofloppy, xl-boot, xl-no-media). The only
@@ -55,10 +54,10 @@ function row_lisa_los31_profile() -- global: included file
     -- COPS clock powers up at 1 January 1984 now, so there is no note and nothing to
     -- dismiss; the golden is the same desktop, differing only in where the cursor is
     -- parked.
-    mac.run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
-    mac.check("goldens/lisa-los3.1-720x364x1-office.png")
-    mac.report_row("LOS 3.1", "builtin", "profile-boot own-pram")
-    mac.report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
+    run_until_match("goldens/lisa-los3.1-720x364x1-office.png", 112000000, 5000000)
+    check("goldens/lisa-los3.1-720x364x1-office.png")
+    report_row("LOS 3.1", "builtin", "profile-boot own-pram")
+    report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)
 end
 
 function row_lisa_xenix_hdinit() -- global: included file
@@ -88,8 +87,8 @@ function row_lisa_xenix_hdinit() -- global: included file
     assert(machine.hd.present == true, "ProFile should be attached")
 
     -- (§1.5.1) Boot the floppy to the loader's "boot :" prompt (a COPS poll loop).
-    mac.run_until_match("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png", 60000000, 5000000)
-    mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png")
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png", 60000000, 5000000)
+    check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootprompt.png")
 
     -- The ROM's pre-handoff COPS re-init leaves the loader's protocol decoder in its
     -- 3-byte-report state, so the first injected key is swallowed; send a dummy key to
@@ -100,7 +99,7 @@ function row_lisa_xenix_hdinit() -- global: included file
     machine.adb.keyboard.raw(0x48)
     scheduler.run(120000000)
     -- Kernel booted to the boot-floppy single-user shell ("<BootFloppy>").
-    mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootfloppy.png")
+    check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootfloppy.png")
 
     -- (§1.5.2) Type "hdinit" + RETURN.
     --
@@ -125,14 +124,14 @@ function row_lisa_xenix_hdinit() -- global: included file
     -- line succeeds, which is what it is here to catch.)
     assert(not gs.ok(function() return machine.adb.keyboard.type("abcdefghijklm") end), "the Lisa accepted a line its COPS FIFO cannot hold")
     -- "WARNING: ... Do you want to continue <y/n>?"
-    mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-continue.png")
+    check("goldens/lisa-xenix3.0-720x364x1-hdinit-continue.png")
 
     -- Answer "y" + RETURN.
     machine.adb.keyboard.press("y")
     machine.adb.keyboard.press("return")
     scheduler.run(20000000)
     -- "Enter size of hard disk (5 or 10):"
-    mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-size.png")
+    check("goldens/lisa-xenix3.0-720x364x1-hdinit-size.png")
 
     -- Answer "5" (5 MB ProFile) + RETURN.  hdinit builds the filesystem, runs fsck,
     -- writes the boot block, then shuts the system down.
@@ -142,8 +141,8 @@ function row_lisa_xenix_hdinit() -- global: included file
     machine.adb.keyboard.raw(0x48)
     scheduler.run(150000000)
     -- "Disk initialization complete. / ** Normal System Shutdown **"
-    mac.check("goldens/lisa-xenix3.0-720x364x1-hdinit-complete.png")
-    mac.report_perf("suite-lisa/lisa-xenix-hdinit", scheduler.instr_count)
+    check("goldens/lisa-xenix3.0-720x364x1-hdinit-complete.png")
+    report_perf("suite-lisa/lisa-xenix-hdinit", scheduler.instr_count)
 end
 
 function row_lisa_xenix_boot() -- global: included file
@@ -219,9 +218,9 @@ function row_lisa_xenix_boot() -- global: included file
     scheduler.run(120000000)
     -- The installed Xenix has booted to its multi-user startup prompt
     -- ("Type CONTROL-d to proceed with normal startup, / or give root password ...").
-    mac.check("goldens/lisa-xenix3.0-720x364x1-startup.png")
-    mac.report_row("Xenix 3.0", "builtin", "fd-boot cops-typing profile")
-    mac.report_perf("suite-lisa/lisa-xenix-boot", scheduler.instr_count)
+    check("goldens/lisa-xenix3.0-720x364x1-startup.png")
+    report_row("Xenix 3.0", "builtin", "fd-boot cops-typing profile")
+    report_perf("suite-lisa/lisa-xenix-boot", scheduler.instr_count)
 end
 
 function row_lisa_xenix_nofloppy() -- global: included file
@@ -240,8 +239,8 @@ function row_lisa_xenix_nofloppy() -- global: included file
     assert(machine.hd.present == true, "ProFile should be attached")
 
     -- === No floppy: the ROM "insert diskette / STARTUP FROM…" screen =============
-    mac.run_until_match("goldens/lisa-xenix3.0-720x364x1-nofloppy.png", 200000000, 5000000)
-    mac.check("goldens/lisa-xenix3.0-720x364x1-nofloppy.png")
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-nofloppy.png", 200000000, 5000000)
+    check("goldens/lisa-xenix3.0-720x364x1-nofloppy.png")
 
     -- === Apple-3 → the ROM STARTUP FROM device picker ===========================
     machine.adb.keyboard.raw(0xFF)
@@ -253,7 +252,7 @@ function row_lisa_xenix_nofloppy() -- global: included file
     machine.adb.keyboard.raw(0x7F)
     scheduler.run(5000000)
     -- Picker shows two boot devices: ▣2 (floppy) and ▣3 (the parallel-port ProFile).
-    mac.check("goldens/lisa-xenix3.0-720x364x1-nofloppy-startupfrom.png")
+    check("goldens/lisa-xenix3.0-720x364x1-nofloppy-startupfrom.png")
 
     -- === Apple-3 → select the ProFile (▣3); its on-disk loader boots ============
     machine.adb.keyboard.raw(0xFF)
@@ -280,9 +279,9 @@ function row_lisa_xenix_nofloppy() -- global: included file
 
     -- Xenix boots to its multi-user startup prompt ("Type CONTROL-d to proceed with
     -- normal startup, / or give root password for system maintenance").
-    mac.run_until_match("goldens/lisa-xenix3.0-720x364x1-startup.png", 120000000, 5000000)
-    mac.check("goldens/lisa-xenix3.0-720x364x1-startup.png")
-    mac.report_perf("suite-lisa/lisa-xenix-nofloppy", scheduler.instr_count)
+    run_until_match("goldens/lisa-xenix3.0-720x364x1-startup.png", 120000000, 5000000)
+    check("goldens/lisa-xenix3.0-720x364x1-startup.png")
+    report_perf("suite-lisa/lisa-xenix-nofloppy", scheduler.instr_count)
 end
 
 function row_xl_macworks_boot() -- global: included file
@@ -319,9 +318,9 @@ function row_xl_macworks_boot() -- global: included file
 
     -- Verify the Finder desktop: menu bar (File/Edit/View/Special), the open
     -- "MacWorks System Disk" window with its icons, the Trash, and the gray desktop.
-    mac.check("goldens/xl-macworks3.0-608x431x1-finder.png")
-    mac.report_row("MacWorks 3.0", "builtin", "fd-boot loader-eject")
-    mac.report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
+    check("goldens/xl-macworks3.0-608x431x1-finder.png")
+    report_row("MacWorks 3.0", "builtin", "fd-boot loader-eject")
+    report_perf("suite-lisa/xl-macworks-boot", scheduler.instr_count)
 end
 
 function row_xl_no_media() -- global: included file
@@ -358,8 +357,8 @@ function row_xl_no_media() -- global: included file
 
     -- The "insert a diskette" prompt: disk-drive icon + insert arrow + drive id 2, no
     -- error code, with the CONTINUE and STARTUP FROM... buttons.  Pixel-exact match.
-    mac.check("goldens/xl-608x431x1-no-media.png")
-    mac.report_perf("suite-lisa/xl-no-media", scheduler.instr_count)
+    check("goldens/xl-608x431x1-no-media.png")
+    report_perf("suite-lisa/xl-no-media", scheduler.instr_count)
 end
 
 -- ---- lisa-checkpoint --------------------------------------------------------
@@ -416,9 +415,9 @@ function row_lisa_checkpoint() -- global: included file
     -- match is the oracle: reaching the same raster the un-checkpointed boot
     -- reaches proves the translation state survived, which neither the load
     -- itself nor a size check can show.
-    mac.run_until_match("goldens/lisa-checkpoint-720x364x1-restored.png", 40000000, 5000000)
-    mac.check("goldens/lisa-checkpoint-720x364x1-restored.png")
-    mac.report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
+    run_until_match("goldens/lisa-checkpoint-720x364x1-restored.png", 40000000, 5000000)
+    check("goldens/lisa-checkpoint-720x364x1-restored.png")
+    report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 end
 
 function row_lisa_los31_lisaem() -- global: included file
@@ -437,6 +436,6 @@ function row_lisa_los31_lisaem() -- global: included file
     assert(machine.hd.pram_init(2, false), "pram_init failed")
     scheduler.run(112000000)
     -- The clean Office System desktop, as lisa-los31-profile's.
-    mac.check("goldens/lisa-los3.1-720x364x1-office.png")
-    mac.report_perf("suite-lisa/lisa-los31-lisaem", scheduler.instr_count)
+    check("goldens/lisa-los3.1-720x364x1-office.png")
+    report_perf("suite-lisa/lisa-los31-lisaem", scheduler.instr_count)
 end

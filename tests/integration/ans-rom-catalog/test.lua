@@ -20,7 +20,7 @@ local function catalog_row(model, ram_kb, rom, id, of_banner)
     assert(machine.rom.intact, F"${model} ${rom}: the ROM's own checksum must verify")
     assert(gs.contains(banner, of_banner), F"${model} ${rom}: Open Firmware did not announce ${of_banner}")
     assert(gs.contains(banner, "0 > "), F"${model} ${rom}: no Open Firmware prompt")
-    mac.report_perf(F"ans-rom-catalog/${model}-${id}", scheduler.instr_count)
+    report_perf(F"ans-rom-catalog/${model}-${id}", scheduler.instr_count)
 end
 
 catalog_row("ans500", 32768, "ans500-ans700-962f6c13.rom", "962f6c13-d540b3dd5bcf9caa", "OpenFirmware1.1.22")

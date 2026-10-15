@@ -36,7 +36,7 @@ local function probe(model, ram_kb)
     -- data with peripheral qualifier 011b, device type 1Fh, status GOOD —
     -- this listed the same drive as Unit 0 through Unit 7, and AIX would
     -- have configured eight of it.
-    assert(not gs.contains(p1, "Unit 1"), F"S8: ${model} a single-LUN target must not answer LUN 1")
+    assert(not gs.truthy(function() return gs.contains(p1, "Unit 1") end), F"S8: ${model} a single-LUN target must not answer LUN 1")
 
     -- --- S8: channel 1, which is a different bus entirely --------------------
     ans_send("probe-scsi2")
@@ -45,7 +45,7 @@ local function probe(model, ram_kb)
     assert(gs.contains(p2, "Removable Read Only device") or gs.contains(p2, "CD"), F"S8: ${model} probe-scsi2 did not identify the CD-ROM")
     -- The disk is on channel 0 ONLY: the two controllers are separate buses,
     -- and a model that shared one would show it here.
-    assert(not gs.contains(p2, "Target 1"), F"S8: ${model} channel 1 must not see channel 0's disk")
+    assert(not gs.truthy(function() return gs.contains(p2, "Target 1") end), F"S8: ${model} channel 1 must not see channel 0's disk")
 
     -- --- The device aliases resolve to real media ----------------------------
     -- `disk0` is `/bandit/53c825@11/sd@0,0` and `disk4` is
@@ -53,9 +53,9 @@ local function probe(model, ram_kb)
     -- the bays are numbered across two controllers.
     ans_send("dev disk0 device-end")
     local d0 = ans_go()
-    assert(not gs.contains(d0, "not found"), F"S8: ${model} the disk0 alias does not resolve")
+    assert(not gs.truthy(function() return gs.contains(d0, "not found") end), F"S8: ${model} the disk0 alias does not resolve")
 
-    mac.report_perf(F"ans-scsi/${model}", scheduler.instr_count)
+    report_perf(F"ans-scsi/${model}", scheduler.instr_count)
     echo(F"ans-scsi ${model}: SCRIPTS engine ran INQUIRY on both fast/wide channels")
 end
 

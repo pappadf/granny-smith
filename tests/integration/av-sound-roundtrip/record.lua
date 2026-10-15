@@ -23,39 +23,39 @@ machine.audioin.source = "wav"
 machine.audioin.load(utterance)
 assert(machine.audioin.connected, "roundtrip: the WAV source is not connected")
 scheduler.run(600000000)
-mac.wait_stable(1500000000)
+wait_stable(1500000000)
 
 -- Volume up: the disk ships at 0, and the playback would be silent for a
 -- reason that has nothing to do with the recording.
 machine.adb.mouse.move(50, 50, "global")
-mac.run_ticks(30)
+run_ticks(30)
 machine.adb.mouse.move(14, 8, "global")
-mac.run_ticks(20)
+run_ticks(20)
 machine.adb.mouse.click(true)
-mac.run_ticks(40)
+run_ticks(40)
 machine.adb.mouse.move(70, 150, "global")
-mac.run_ticks(30)
+run_ticks(30)
 machine.adb.mouse.click(false)
-mac.run_ticks(400)
-mac.check("goldens/01-control-panels.png")
-mac.double_click(104, 131) -- the Sound cdev icon
-mac.run_ticks(600)
-mac.check("goldens/02-sound-cdev.png")
+run_ticks(400)
+check("goldens/01-control-panels.png")
+double_click(104, 131) -- the Sound cdev icon
+run_ticks(600)
+check("goldens/02-sound-cdev.png")
 machine.adb.mouse.move(173, 205, "global")
-mac.run_ticks(20)
+run_ticks(20)
 machine.adb.mouse.click(true)
-mac.run_ticks(15)
+run_ticks(15)
 machine.adb.mouse.move(173, 165, "global")
-mac.run_ticks(15)
+run_ticks(15)
 machine.adb.mouse.move(173, 128, "global")
-mac.run_ticks(15)
+run_ticks(15)
 machine.adb.mouse.click(false)
-mac.run_ticks(300)
+run_ticks(300)
 
 -- "Add..." opens the standard SndRecord dialog (Record/Stop/Pause/Play).
-mac.click(261, 240)
-mac.run_ticks(600)
-mac.check("goldens/03-record-dialog.png")
+click(261, 240)
+run_ticks(600)
+check("goldens/03-record-dialog.png")
 
 -- REWIND IMMEDIATELY BEFORE RECORDING.  The WAV source is consumed by any
 -- input DMA, and this disk's PlainTalk extensions open the input during
@@ -67,8 +67,8 @@ machine.audioin.rewind()
 local samples_before = machine.audioin.samples
 
 
-mac.click(138, 152) -- Record
-mac.run_ticks(20)
+click(138, 152) -- Record
+run_ticks(20)
 assert(machine.sound.in_enabled, "roundtrip: input DMA not running while recording")
 
 -- Sample the meter ACROSS the take, not after it.  machine.audioin.peak is
@@ -79,28 +79,28 @@ assert(machine.sound.in_enabled, "roundtrip: input DMA not running while recordi
 local heard_peak = 0
 local ticks_left = 400
 while ticks_left > 0 do
-    mac.run_ticks(20)
+    run_ticks(20)
     ticks_left = ticks_left - 20
     if machine.audioin.peak > heard_peak then heard_peak = machine.audioin.peak end
 end
 assert(machine.audioin.samples > samples_before, "roundtrip: no samples pulled from the WAV while recording")
 assert(heard_peak > 1000, F"roundtrip: the source peaked at only ${heard_peak} counts across the take — the utterance never reached the codec")
 echo(F"@@RECORD heard_peak=${heard_peak}")
-mac.click(174, 152) -- Stop
-mac.run_ticks(200)
+click(174, 152) -- Stop
+run_ticks(200)
 -- The dialog after Stop: the recorded sound's duration is drawn here, so
 -- this golden pins that the guest believes it stored something.
-mac.check("goldens/04-recorded.png")
+check("goldens/04-recorded.png")
 
 -- Play it back with the capture running: this is the host's ear on what the
 -- guest actually stored.
 machine.sound.capture.start()
-mac.click(248, 152) -- Play
-mac.run_ticks(400)
+click(248, 152) -- Play
+run_ticks(400)
 assert(machine.dsp.emr == 0x8000, F"roundtrip: emr=${machine.dsp.emr:04x} after playback — kernel died")
 machine.sound.capture.stop(F"${vars.WORK_DIR}/playback.wav")
 echo(F"@@PLAYBACK frames=${machine.sound.capture.frames} peak=${machine.sound.capture.peak}")
 
-mac.click(377, 169) -- Cancel — never Save
-mac.run_ticks(100)
+click(377, 169) -- Cancel — never Save
+run_ticks(100)
 quit()

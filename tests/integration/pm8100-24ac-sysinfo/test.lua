@@ -52,7 +52,7 @@ machine.rtc.time = 0xE0000000
 machine.scsi.attach_hd("../../data/systems/system_7_5_0_77mb_mode32_24ac.img", 0)
 scheduler.run(360000000)
 scheduler.run(1200000000)
-mac.wait_stable(300000000)
+wait_stable(300000000)
 
 -- --- The card, as the emulator sees it --------------------------------------
 assert(machine.id == "pm8100", "machine.id != pm8100")
@@ -121,7 +121,7 @@ assert(machine.cpu.mmu.peek(gd2 + 0x1E, 4) == 0, "a THIRD GDevice exists; only t
 --
 -- The menu-bar clock is excluded: the RTC is pinned above, but which guest
 -- minute a settled frame lands in is not something this row pins.
-mac.check_ex("goldens/pm8100-7.5-640x480-finder.png", 0, 440, 20, 640)
+check_ex("goldens/pm8100-7.5-640x480-finder.png", 0, 440, 20, 640)
 
 -- --- Insert the "Utilities Disk 2" floppy into the internal SWIM3 drive -----
 -- The Finder mounts it and opens its window (the volume's saved state is
@@ -132,10 +132,10 @@ mac.check_ex("goldens/pm8100-7.5-640x480-finder.png", 0, 440, 20, 640)
 machine.floppy.drive[0].insert("../../data/apps/Norton-Utils-Disk-2.image")
 assert(machine.floppy.drive[0].present, "Utilities Disk 2 not present in FD0")
 scheduler.run(600000000)
-mac.wait_stable(900000000)
+wait_stable(900000000)
 -- No system error was raised mounting it (DSErrCode, 68K logical $AF0).
 assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} inserting Utilities Disk 2")
-mac.check_ex("goldens/pm8100-utilities-disk.png", 0, 440, 20, 640)
+check_ex("goldens/pm8100-utilities-disk.png", 0, 440, 20, 640)
 
 -- --- Launch "System Info" by double-clicking its icon ----------------------
 -- Both applications on this disk are FAT binaries — checked, not assumed:
@@ -152,9 +152,9 @@ mac.check_ex("goldens/pm8100-utilities-disk.png", 0, 440, 20, 640)
 --
 -- A FIXED budget, not a settle: the launched window is deterministic (the
 -- RTC is pinned) but never quiescent, because the application animates.
-mac.double_click(264, 100)
-mac.run_until_match_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640, 1500000000, 37000000)
-mac.check_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640)
+double_click(264, 100)
+run_until_match_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640, 1500000000, 37000000)
+check_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640)
 
 -- --- De-select every suite except "Test Display" ---------------------------
 -- The checkboxes are at x=187, y=224 (CPU) / 244 (Display) / 264 (Volume) /
@@ -162,11 +162,11 @@ mac.check_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640)
 -- window is placed identically on a 640x480 screen.  Test Display is left
 -- alone.  click() steps the cursor away between clicks, which is why these
 -- are three separate calls and not a repeated press.
-mac.click(187, 224)
-mac.click(187, 264)
-mac.click(187, 284)
-mac.run_ticks(30)
-mac.check_ex("goldens/pm8100-system-info-display-only.png", 0, 440, 20, 640)
+click(187, 224)
+click(187, 264)
+click(187, 284)
+run_ticks(30)
+check_ex("goldens/pm8100-system-info-display-only.png", 0, 440, 20, 640)
 
 -- --- Click "Run": System Info's "System Differences" advisory --------------
 -- Unlike iicx-24ac-sysinfo, this row does NOT seed a reference config into
@@ -175,9 +175,9 @@ mac.check_ex("goldens/pm8100-system-info-display-only.png", 0, 440, 20, 640)
 -- worth more than dodging it: the dialog names both differences it found,
 -- which is a read-out of the booted System's real settings.  Its "Test"
 -- button proceeds to the benchmark anyway.
-mac.click(456, 255)
-mac.run_until_match_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640, 200000000, 5000000)
-mac.check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
+click(456, 255)
+run_until_match_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640, 200000000, 5000000)
+check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
 
 -- --- Test: the Display benchmark ------------------------------------------
 -- A full-screen QuickDraw fill/line/scroll stress on the main (built-in)
@@ -192,10 +192,10 @@ mac.check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
 -- +15 G, so 6 G lands half a gigacycle past the end with 9 G of slack
 -- above it.  The budget ends early once the ratings are on the screen
 -- (sampled on a 250 M grid, as measured).
-mac.click(489, 273)
-mac.run_until_match_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640, 6000000000, 250000000)
-mac.check_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640)
+click(489, 273)
+run_until_match_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640, 6000000000, 250000000)
+check_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640)
 
-mac.report_row("7.5", "ariel+24ac", "hd-boot fd-mount ppc-launch display-benchmark")
-mac.report_perf("pm8100-24ac-sysinfo/bench", scheduler.instr_count)
+report_row("7.5", "ariel+24ac", "hd-boot fd-mount ppc-launch display-benchmark")
+report_perf("pm8100-24ac-sysinfo/bench", scheduler.instr_count)
 quit()

@@ -14,7 +14,7 @@
 -- round-trip identities, and the texture-layout offsets against the
 -- spec's own worked examples.
 
-LFB = BAR + 0x400000 -- global: included file
+LFB = vars.BAR + 0x400000 -- global: included file
 function px(x, y) -- global: included file
     return swap16(machine.memory.peek.w(LFB + (y << 11) + (x << 1)))
 end
@@ -136,7 +136,7 @@ vreg_wr(0x304 | 0x800, 0x00000820)
 vreg_wr(0x300 | 0x800, 0x00041A00)
 vreg_wr(0x30C | 0x800, 0x00000000)
 vreg_wr(0x300 | 0x1000, 0x00000000)
-machine.memory.poke.l(BAR + 0x900000, swap32(0x000007E0))
+machine.memory.poke.l(vars.BAR + 0x900000, swap32(0x000007E0))
 vreg_wr(0x02C | 0x800, 0x00020000)
 vreg_wr(0x030 | 0x800, 0x00020000)
 vreg_wr(0x054 | 0x800, 0x00000000)
@@ -156,7 +156,7 @@ assert(px(50, 50) == 0x07E0, "textured 5-6-5: vertex pixel too")
 -- Texel $83E0: alpha 1, green 31 -> expands to the same full green.
 -- Repaint the area black first so the assertion sees this draw.
 vreg_wr(0x300 | 0x800, 0x00041B00)
-machine.memory.poke.l(BAR + 0x900000, swap32(0x000083E0))
+machine.memory.poke.l(vars.BAR + 0x900000, swap32(0x000083E0))
 vreg_wr(0x148, 0x00000000)
 vreg_wr(0x118, (50 << 16) | 67)
 vreg_wr(0x11C, (50 << 16) | 67)
@@ -178,9 +178,9 @@ assert(px(55, 52) == 0x07E0, "textured 1-5-5-5: the 5-bit green expands to the s
 vreg_wr(0x304 | 0x1000, 0x00000820)
 vreg_wr(0x300 | 0x1000, 0x00041A00)
 vreg_wr(0x30C | 0x1000, 0x00000000)
-machine.memory.poke.l(BAR + 0xB00000, swap32(0x0000F800))
+machine.memory.poke.l(vars.BAR + 0xB00000, swap32(0x0000F800))
 vreg_wr(0x300 | 0x800, 0x00024A00)
-machine.memory.poke.l(BAR + 0x900000, swap32(0x00008410))
+machine.memory.poke.l(vars.BAR + 0x900000, swap32(0x00008410))
 vreg_wr(0x02C | 0x1000, 0x00020000)
 vreg_wr(0x030 | 0x1000, 0x00020000)
 vreg_wr(0x054 | 0x1000, 0x00000000)

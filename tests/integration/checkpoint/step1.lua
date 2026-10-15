@@ -5,8 +5,8 @@
 
 local mac = dofile("../lib/mac.lua")
 
-mac.wait_stable(400000000)
-mac.check(F"${vars.TEST_DIR}/desktop.png")
+wait_stable(400000000)
+check(F"${vars.TEST_DIR}/desktop.png")
 
 assert(checkpoint.save("checkpoint.gs"), "step1: checkpoint save failed")
 machine.screen.save(F"${mac.RESULTS_DIR}/screenshot-step1.png")

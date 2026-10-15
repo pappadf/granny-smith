@@ -58,7 +58,7 @@ assert(appletalk.afp.stats.commands_served > 0, "no AFP commands were served")
 
 -- Select "My Volume", then OK — the mount itself — and close the Chooser.
 afp_mount_and_close()
-mac.check("desktop-mounted.png")
+check("desktop-mounted.png")
 
 -- Open the volume's window. The gap between the two clicks has to fit inside
 -- DoubleTime, so it is a fraction of the budgets used for single clicks.
@@ -66,16 +66,16 @@ machine.adb.mouse.move(468, 108)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(80000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(60000000)
 -- The window's info bar carries the volume's free space, which the server
 -- now reports honestly from the host filesystem — so it is excluded from the
 -- match while the listing itself stays pinned.
-mac.check_ex("volume-window.png", 58, 140, 80, 420)
+check_ex("volume-window.png", 58, 140, 80, 420)
 
 -- The object-model observability subtrees carry what the wire did, so the
 -- suite asserts on them instead of grepping the log.

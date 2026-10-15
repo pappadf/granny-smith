@@ -126,7 +126,7 @@ end
 -- Mbytes", and the documented failure mode ABOVE it is a hang during the RAM
 -- test rather than a clean error.  So the profile has to be less permissive
 -- than the silicon, and refuse the configuration before the guest sees it.
-assert(not machine.boot{model = "ans500", rom = vars.ROM, ram = 1048576}, "S3: 1 GB must be rejected — the ROM decodes 512 MB")
+assert(not gs.truthy(function() return machine.boot{model = "ans500", rom = vars.ROM, ram = 1048576} end), "S3: 1 GB must be rejected — the ROM decodes 512 MB")
 assert(machine.boot{model = "ans500", rom = vars.ROM, ram = 524288}, "S3: 512 MB must be accepted")
 
 -- The 500: 32 MB of parity DRAM, a 132 MHz card on a 44 MHz bus, a 512 KB

@@ -26,7 +26,7 @@ local mac = dofile("../lib/mac.lua")
 
 local hd = "../../data/systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg"
 
-if mac.have_media(hd) then
+if have_media(hd) then
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.attach_media("ata0", 0, "hd", hd)
     assert(machine.ata.devices == "hd - - -", "the disk is not ATA bus 0's master")
@@ -43,7 +43,7 @@ if mac.have_media(hd) then
     -- match waits for the mode.
     scheduler.run(10000000000)
     if mac.REGEN_MODE == "1" then
-        mac.wait_stable(10000000000)
+        wait_stable(10000000000)
     else
         local spent = 10000000000
         local up = false
@@ -59,12 +59,12 @@ if mac.have_media(hd) then
 
     -- The ndrv drives the Rage Pro at 1024 x 768 and the Finder is up.
     assert(machine.pci.slot[4].card.monitor.sensed_extended == 0x0B, F"the ndrv sensed extended code ${machine.pci.slot[4].card.monitor.sensed_extended:02x}, not the 17\"'s $0B")
-    mac.check("finder.png")
-    mac.report_perf("g3-osx-10-0-finder/finder", scheduler.instr_count)
+    check("finder.png")
+    report_perf("g3-osx-10-0-finder/finder", scheduler.instr_count)
     echo("g3-osx-10-0-finder: Mac OS X 10.0.3 at the Finder")
 else
     -- The perf gate reads this row's own skip line; skip_test marks the test.
     echo("skip: finder (the disk is not in this checkout's test data)")
-    mac.skip_test("g3-osx-10-0-finder (systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg is not in the fetched test data -- see this row's header)")
+    skip_test("g3-osx-10-0-finder (systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg is not in the fetched test data -- see this row's header)")
 end
 quit()

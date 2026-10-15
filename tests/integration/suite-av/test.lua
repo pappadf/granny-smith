@@ -157,7 +157,7 @@ local function row_av_identity()
     -- probe must bus-error rather than read a value, which is what clears
     -- MUNIExists.  The boot above already ran that probe — reaching here at
     -- all means the fault was taken and handled.
-    mac.report_perf("suite-av/av-identity", scheduler.instr_count)
+    report_perf("suite-av/av-identity", scheduler.instr_count)
 end
 
 -- ---- av-ram-sizing ----------------------------------------------------------
@@ -187,7 +187,7 @@ local function row_av_ram_sizing()
     av_660_sized(28672, 150000000)
     av_660_sized(45056, 150000000)
     av_660_sized(69632, 150000000)
-    mac.report_perf("suite-av/av-ram-sizing", scheduler.instr_count)
+    report_perf("suite-av/av-ram-sizing", scheduler.instr_count)
 end
 
 -- ---- av-video ---------------------------------------------------------------
@@ -211,7 +211,7 @@ local function row_av_video()
     -- Something was actually painted, i.e. the screen moved off the power-on
     -- blank this very machine produced a moment ago.
     assert(machine.screen.checksum() ~= blank, "av-video: framebuffer never painted")
-    mac.report_perf("suite-av/av-video", scheduler.instr_count)
+    report_perf("suite-av/av-video", scheduler.instr_count)
 end
 
 -- ---- av-hd-device -----------------------------------------------------------
@@ -255,7 +255,7 @@ local function row_q840av_71_hd_desktop()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    mac.wait_desktop(1500000000)
+    wait_desktop(1500000000)
 
     assert(machine.id == "q840av", "q840av-hd: machine.id != q840av")
     assert(debug.mac.globals.read("BootDrive") ~= 0, "q840av-hd: BootDrive is 0 — nothing booted")
@@ -265,17 +265,17 @@ local function row_q840av_71_hd_desktop()
     -- at ~950 ticks).
     assert(debug.mac.globals.read("Ticks") > 600, F"q840av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
 
-    mac.check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     -- The two models render an identical desktop from the same volume, so the
     -- desktop frames collide by construction.  About This Macintosh is what
     -- separates them: it prints the Gestalt machine name, which is the whole
     -- point of this family — the YMCA strap nibble picks the ProductInfo, the
     -- enabler gates on the resulting machine ID, and only then does the System
     -- know which box it is running on.
-    mac.about_box()
-    mac.check_about("goldens/q840av-7.1-640x480x8-hd-about.png")
-    mac.report_row("7.1", "civic", "hd-boot about")
-    mac.report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
+    about_box()
+    check_about("goldens/q840av-7.1-640x480x8-hd-about.png")
+    report_row("7.1", "civic", "hd-boot about")
+    report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 end
 
 -- ---- av-checkpoint ----------------------------------------------------------
@@ -293,17 +293,17 @@ local function row_av_checkpoint()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    mac.wait_desktop(1500000000)
-    mac.check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    wait_desktop(1500000000)
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     assert(checkpoint.save(F"${vars.WORK_DIR}/suite-av.gsc"), "av-checkpoint: save failed")
     machine.boot{model = "q840av", ram = 8192, rom = av_rom}
     assert(checkpoint.load(F"${vars.WORK_DIR}/suite-av.gsc"), "av-checkpoint: load failed")
     assert(machine.ram == 16384, "av-checkpoint: restored RAM size wrong")
     assert(machine.id == "q840av", "av-checkpoint: restored machine.id wrong")
     scheduler.run(5000000)
-    mac.wait_stable(400000000)
-    mac.check("goldens/q840av-7.1-640x480x8-hd-finder.png")
-    mac.report_perf("suite-av/av-checkpoint", scheduler.instr_count)
+    wait_stable(400000000)
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    report_perf("suite-av/av-checkpoint", scheduler.instr_count)
 end
 
 -- ---- q660av-71-hd-desktop ---------------------------------------------------
@@ -312,7 +312,7 @@ local function row_q660av_71_hd_desktop()
     machine.boot{model = "q660av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    mac.wait_desktop(1500000000)
+    wait_desktop(1500000000)
 
     assert(machine.id == "q660av", "q660av-hd: machine.id != q660av")
     assert(debug.mac.globals.read("BootDrive") ~= 0, "q660av-hd: BootDrive is 0 — nothing booted")
@@ -322,17 +322,17 @@ local function row_q660av_71_hd_desktop()
     -- at ~950 ticks).
     assert(debug.mac.globals.read("Ticks") > 600, F"q660av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
 
-    mac.check("goldens/q660av-7.1-640x480x8-hd-finder.png")
+    check("goldens/q660av-7.1-640x480x8-hd-finder.png")
     -- The two models render an identical desktop from the same volume, so the
     -- desktop frames collide by construction.  About This Macintosh is what
     -- separates them: it prints the Gestalt machine name, which is the whole
     -- point of this family — the YMCA strap nibble picks the ProductInfo, the
     -- enabler gates on the resulting machine ID, and only then does the System
     -- know which box it is running on.
-    mac.about_box()
-    mac.check_about("goldens/q660av-7.1-640x480x8-hd-about.png")
-    mac.report_row("7.1", "civic", "hd-boot about")
-    mac.report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
+    about_box()
+    check_about("goldens/q660av-7.1-640x480x8-hd-about.png")
+    report_row("7.1", "civic", "hd-boot about")
+    report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 end
 
 -- ---- video-in rows ----------------------------------------------------------
@@ -357,7 +357,7 @@ local function row_video_in(model, golden)
     -- A fixed head start, not wait_desktop(): the captured frame at the
     -- golden instant depends on the boot timeline it was captured on.
     scheduler.run(600000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
 
     -- Default state: nothing plugged in — the machine booted with the
     -- digitizer present but idle, and the DMSD reports no signal lock.
@@ -369,9 +369,9 @@ local function row_video_in(model, golden)
     local _ = machine.videoin.pattern
     assert(machine.videoin.connected, "video-in: pattern source not connected")
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
-    mac.double_click(536, 150)
-    mac.run_ticks(600)
+    run_ticks(30)
+    double_click(536, 150)
+    run_ticks(600)
 
     -- Hardware truths before pixels: the vdig started the capture engine.
     assert(machine.videoin.fields > 0, "video-in: no fields captured — the vdig never started the VDC")
@@ -381,7 +381,7 @@ local function row_video_in(model, golden)
     -- Sebastian: video-in enable + overlay bits both set (PCBR bit 4 + 7).
     assert((machine.memory.peek.b(0x50F30820) & 0x90) == 0x90, F"video-in: PCBR ${machine.memory.peek.b(0x50F30820):02x} — overlay not enabled")
 
-    mac.check(golden)
+    check(golden)
     -- No report_row() here, deliberately.  The coverage matrix is keyed on the
     -- raster (machine x system x card x WxHxD), and these rows add none: the
     -- -hd-desktop rows above already claim 640x480x8 for both models.  Worse,
@@ -389,7 +389,7 @@ local function row_video_in(model, golden)
     -- is composited the scanout descriptor is a 32-bpp XRGB buffer — so a claim
     -- from here would register a phantom 640x480x32 cell for a guest whose
     -- graphics mode is 8 bpp.  What this row covers is a feature, not a raster.
-    mac.report_perf(F"suite-av/${model}-71-video-in", scheduler.instr_count)
+    report_perf(F"suite-av/${model}-71-video-in", scheduler.instr_count)
 end
 
 -- ---- the floppy rows --------------------------------------------------------
@@ -408,7 +408,7 @@ local function av_hd_desktop(model)
     machine.boot{model = model, ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    mac.wait_desktop(1500000000)
+    wait_desktop(1500000000)
 end
 
 -- ---- av-floppy-mount ----------------------------------------------------------
@@ -427,12 +427,12 @@ local function row_av_floppy_mount()
     -- A budget first: the screen does not change while the drive spins up and
     -- the driver probes the medium, so a bare settle would return early.  It
     -- ends early once the mounted disk is on the screen.
-    mac.run_until_match("goldens/q840av-7.1-floppy-mount.png", 600000000, 50000000)
-    mac.wait_stable(900000000)
+    run_until_match("goldens/q840av-7.1-floppy-mount.png", 600000000, 50000000)
+    wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the floppy")
-    mac.check("goldens/q840av-7.1-floppy-mount.png")
-    mac.report_row("7.1", "civic", "fd-mount mfm1440k")
-    mac.report_perf("suite-av/av-floppy-mount", scheduler.instr_count)
+    check("goldens/q840av-7.1-floppy-mount.png")
+    report_row("7.1", "civic", "fd-mount mfm1440k")
+    report_perf("suite-av/av-floppy-mount", scheduler.instr_count)
 end
 
 -- ---- av-floppy-800k ---------------------------------------------------------
@@ -441,12 +441,12 @@ end
 local function row_av_floppy_800k()
     av_hd_desktop("q660av")
     machine.floppy.drive[0].insert(av_fd_800)
-    mac.run_until_match("goldens/q660av-7.1-floppy-800k.png", 600000000, 50000000)
-    mac.wait_stable(900000000)
+    run_until_match("goldens/q660av-7.1-floppy-800k.png", 600000000, 50000000)
+    wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the 800K disk")
-    mac.check("goldens/q660av-7.1-floppy-800k.png")
-    mac.report_row("7.1", "civic", "fd-mount gcr800k")
-    mac.report_perf("suite-av/av-floppy-800k", scheduler.instr_count)
+    check("goldens/q660av-7.1-floppy-800k.png")
+    report_row("7.1", "civic", "fd-mount gcr800k")
+    report_perf("suite-av/av-floppy-800k", scheduler.instr_count)
 end
 
 -- ---- av-floppy-write-eject --------------------------------------------------
@@ -459,34 +459,34 @@ local function row_av_floppy_write_eject()
     av_hd_desktop("q840av")
     machine.floppy.drive[0].insert(av_fd_144, true)
     scheduler.run(600000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     local inst = machine.floppy.drive[0].disk.path
     local delta = F"${inst}.delta"
     local before = files.path_size(delta)
 
     -- Activate the disk's window, then File > New Folder (cmd-N).
-    mac.click(200, 100)
+    click(200, 100)
     machine.adb.keyboard.down(0x37)
     scheduler.run(2000000)
     machine.adb.keyboard.press(0x2D)
     scheduler.run(2000000)
     machine.adb.keyboard.up(0x37)
-    mac.wait_stable(600000000)
+    wait_stable(600000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} writing to the floppy")
-    mac.check("goldens/q840av-7.1-floppy-write.png")
+    check("goldens/q840av-7.1-floppy-write.png")
 
     -- Select the disk icon and Put Away (cmd-Y).
-    mac.click(600, 95)
+    click(600, 95)
     machine.adb.keyboard.down(0x37)
     scheduler.run(2000000)
     machine.adb.keyboard.press(0x10)
     scheduler.run(2000000)
     machine.adb.keyboard.up(0x37)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(not machine.floppy.drive[0].present, "the disk is still in the drive after Put Away")
     assert(files.path_size(delta) > before, F"nothing reached the medium (delta still ${before} bytes)")
-    mac.report_row("7.1", "civic", "fd-write fd-eject")
-    mac.report_perf("suite-av/av-floppy-write-eject", scheduler.instr_count)
+    report_row("7.1", "civic", "fd-write fd-eject")
+    report_perf("suite-av/av-floppy-write-eject", scheduler.instr_count)
 end
 
 -- ---- av-floppy-format -------------------------------------------------------
@@ -499,25 +499,25 @@ local function row_av_floppy_format()
     local blank = F"${vars.WORK_DIR}/av-blank-1440.img"
     assert(files.fd_create(blank, true), "could not create a blank 1.44 MB image")
     machine.floppy.drive[0].insert(blank, true)
-    mac.reach("goldens/q840av-7.1-floppy-initdialog.png", 900000000, 900000000, 20000000)
+    reach("goldens/q840av-7.1-floppy-initdialog.png", 900000000, 900000000, 20000000)
     -- "This is not a Macintosh disk" -> Initialize -> Erase -> name (Return).
-    mac.check("goldens/q840av-7.1-floppy-initdialog.png")
-    mac.click(410, 176)
-    mac.settle(300000000)
-    mac.click(410, 176)
-    mac.settle(300000000)
+    check("goldens/q840av-7.1-floppy-initdialog.png")
+    click(410, 176)
+    settle(300000000)
+    click(410, 176)
+    settle(300000000)
     machine.adb.keyboard.press(0x24)
     -- Not a bare settle: "Formatting disk..." sits unchanged on the screen
     -- for the whole format and verify, so a settle returns mid-format.
     -- Format, verify and the HFS write take under 2 G instructions here;
     -- the 3 G budget ends early once the formatted disk is on the screen.
-    mac.run_until_match("goldens/q840av-7.1-floppy-format.png", 3000000000, 100000000)
-    mac.wait_stable(900000000)
+    run_until_match("goldens/q840av-7.1-floppy-format.png", 3000000000, 100000000)
+    wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy")
     assert(machine.floppy.drive[0].present, "the disk left the drive during the format")
-    mac.check("goldens/q840av-7.1-floppy-format.png")
-    mac.report_row("7.1", "civic", "fd-format")
-    mac.report_perf("suite-av/av-floppy-format", scheduler.instr_count)
+    check("goldens/q840av-7.1-floppy-format.png")
+    report_row("7.1", "civic", "fd-format")
+    report_perf("suite-av/av-floppy-format", scheduler.instr_count)
 end
 
 -- ---- av-floppy-boot ---------------------------------------------------------
@@ -532,11 +532,11 @@ local function row_av_floppy_boot()
     assert(not gs.ok(function() return machine.scsi.device[0].type end), "a SCSI disk is attached: this row must boot from the floppy")
     -- A budget, not a settle: a floppy boot has long quiet stretches.  It
     -- ends early once the Installer is on the screen.
-    mac.run_until_match("goldens/q840av-7.6-floppy-boot.png", 8000000000, 250000000)
+    run_until_match("goldens/q840av-7.6-floppy-boot.png", 8000000000, 250000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} booting from the floppy")
-    mac.check("goldens/q840av-7.6-floppy-boot.png")
-    mac.report_row("7.6", "civic", "fd-boot")
-    mac.report_perf("suite-av/av-floppy-boot", scheduler.instr_count)
+    check("goldens/q840av-7.6-floppy-boot.png")
+    report_row("7.6", "civic", "fd-boot")
+    report_perf("suite-av/av-floppy-boot", scheduler.instr_count)
 end
 
 -- ---- av-beep ----------------------------------------------------------------
@@ -559,46 +559,46 @@ local function row_av_beep()
     -- A fixed head start, not wait_desktop(): the sound capture is
     -- sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run(600000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
 
     -- Apple menu → Control Panels (menus are press-drag-release; park the
     -- mouse first — the first warp after boot is swallowed).
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.move(14, 8, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(40)
+    run_ticks(40)
     machine.adb.mouse.move(70, 150, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.click(false)
-    mac.run_ticks(400)
-    mac.double_click(104, 131) -- the Sound cdev icon
-    mac.run_ticks(600) -- panel open — "Built-in" visible
+    run_ticks(400)
+    double_click(104, 131) -- the Sound cdev icon
+    run_ticks(600) -- panel open — "Built-in" visible
 
     -- Raise the volume slider: press on the track, drag up in two steps,
     -- release (plays the feedback alert).
     machine.adb.mouse.move(173, 205, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 165, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 128, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.click(false)
-    mac.run_ticks(300)
+    run_ticks(300)
     assert(machine.dsp.emr == 0x8000, F"av-beep: emr=${machine.dsp.emr:04x} after the slider alert — kernel died")
     assert(machine.sound.overruns == 0, F"av-beep: ${machine.sound.overruns} frame overruns after the slider alert")
 
     machine.sound.capture.start()
-    mac.click(280, 163) -- "Simple Beep" in the alert-sound list
-    mac.run_ticks(400)
+    click(280, 163) -- "Simple Beep" in the alert-sound list
+    run_ticks(400)
     assert(machine.dsp.state == "running", F"av-beep: DSP ${machine.dsp.state} after playback")
     assert(machine.dsp.emr == 0x8000, F"av-beep: emr=${machine.dsp.emr:04x} after playback — kernel died")
     assert(machine.sound.overruns == 0, F"av-beep: ${machine.sound.overruns} frame overruns after playback")
-    mac.check_sound("goldens/av-beep.wav", 7200)
-    mac.report_perf("suite-av/av-beep", scheduler.instr_count)
+    check_sound("goldens/av-beep.wav", 7200)
+    report_perf("suite-av/av-beep", scheduler.instr_count)
 end
 
 -- ---- av-tts -----------------------------------------------------------------
@@ -617,65 +617,65 @@ local function row_av_tts()
     -- A fixed head start, not wait_desktop(): the sound capture is
     -- sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run(600000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
 
     -- Volume up via the Sound cdev (ships at 0 — silent otherwise).
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.move(14, 8, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(40)
+    run_ticks(40)
     machine.adb.mouse.move(70, 150, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.click(false)
-    mac.run_ticks(400)
-    mac.double_click(104, 131) -- the Sound cdev icon
-    mac.run_ticks(600)
+    run_ticks(400)
+    double_click(104, 131) -- the Sound cdev icon
+    run_ticks(600)
     machine.adb.mouse.move(173, 205, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 165, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 128, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.click(false)
-    mac.run_ticks(300)
+    run_ticks(300)
     assert(machine.dsp.emr == 0x8000, F"av-tts: emr=${machine.dsp.emr:04x} after the slider alert — kernel died")
 
     -- Close the Sound panel and the Control Panels window, then launch
     -- TeachText from the volume root.
-    mac.click(115, 51)
-    mac.run_ticks(100)
-    mac.click(28, 33)
-    mac.run_ticks(100)
-    mac.double_click(600, 52) -- Macintosh HD
-    mac.run_ticks(400)
-    mac.double_click(294, 95) -- TeachText
-    mac.run_ticks(800)
+    click(115, 51)
+    run_ticks(100)
+    click(28, 33)
+    run_ticks(100)
+    double_click(600, 52) -- Macintosh HD
+    run_ticks(400)
+    double_click(294, 95) -- TeachText
+    run_ticks(800)
 
     -- Type "hello" (Speak All is grayed on an empty document), then Cmd-H.
     machine.adb.keyboard.press(0x04)
-    mac.run_ticks(5)
+    run_ticks(5)
     machine.adb.keyboard.press(0x0E)
-    mac.run_ticks(5)
+    run_ticks(5)
     machine.adb.keyboard.press(0x25)
-    mac.run_ticks(5)
+    run_ticks(5)
     machine.adb.keyboard.press(0x25)
-    mac.run_ticks(5)
+    run_ticks(5)
     machine.adb.keyboard.press(0x1F)
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.sound.capture.start()
     machine.adb.keyboard.down(0x37)
     machine.adb.keyboard.press(0x04)
     machine.adb.keyboard.up(0x37)
-    mac.run_ticks(200)
+    run_ticks(200)
     assert(machine.dsp.state == "running", F"av-tts: DSP ${machine.dsp.state} after speech")
     assert(machine.dsp.emr == 0x8000, F"av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died")
     assert(machine.sound.overruns == 0, F"av-tts: ${machine.sound.overruns} frame overruns")
-    mac.check_sound("goldens/av-tts.wav", 68400)
-    mac.report_perf("suite-av/av-tts", scheduler.instr_count)
+    check_sound("goldens/av-tts.wav", 68400)
+    report_perf("suite-av/av-tts", scheduler.instr_count)
 end
 
 -- ---- av-sound-in ------------------------------------------------------------
@@ -697,54 +697,54 @@ local function row_av_sound_in()
     -- A fixed head start, not wait_desktop(): the sound capture is
     -- sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run(600000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
 
     -- Volume up via the Sound cdev (ships at 0 — playback silent otherwise).
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.move(14, 8, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(40)
+    run_ticks(40)
     machine.adb.mouse.move(70, 150, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.click(false)
-    mac.run_ticks(400)
-    mac.double_click(104, 131) -- the Sound cdev icon
-    mac.run_ticks(600)
+    run_ticks(400)
+    double_click(104, 131) -- the Sound cdev icon
+    run_ticks(600)
     machine.adb.mouse.move(173, 205, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 165, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.move(173, 128, "global")
-    mac.run_ticks(15)
+    run_ticks(15)
     machine.adb.mouse.click(false)
-    mac.run_ticks(300)
+    run_ticks(300)
 
     -- "Add…" opens the standard SndRecord dialog (Record/Stop/Pause/Play).
-    mac.click(261, 240)
-    mac.run_ticks(600)
+    click(261, 240)
+    run_ticks(600)
     local samples_before = machine.audioin.samples
-    mac.click(138, 152) -- Record
-    mac.run_ticks(400)
+    click(138, 152) -- Record
+    run_ticks(400)
     assert(machine.sound.in_enabled, "av-sound-in: input DMA not running while recording")
     assert(machine.audioin.samples > samples_before, "av-sound-in: no samples pulled from the source while recording")
     assert(machine.dsp.emr == 0x8000, F"av-sound-in: emr=${machine.dsp.emr:04x} while recording — kernel died")
-    mac.click(174, 152) -- Stop
-    mac.run_ticks(200)
+    click(174, 152) -- Stop
+    run_ticks(200)
 
     -- Play the recording back out through the DSP path.
     machine.sound.capture.start()
-    mac.click(248, 152) -- Play
-    mac.run_ticks(400)
+    click(248, 152) -- Play
+    run_ticks(400)
     assert(machine.dsp.emr == 0x8000, F"av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died")
     assert(machine.sound.overruns == 0, F"av-sound-in: ${machine.sound.overruns} frame overruns")
-    mac.check_sound("goldens/av-sound-in.wav", 160320)
-    mac.click(377, 169) -- Cancel — never Save
-    mac.run_ticks(100)
-    mac.report_perf("suite-av/av-sound-in", scheduler.instr_count)
+    check_sound("goldens/av-sound-in.wav", 160320)
+    click(377, 169) -- Cancel — never Save
+    run_ticks(100)
+    report_perf("suite-av/av-sound-in", scheduler.instr_count)
 end
 
 -- ---- the speech-recognition rows --------------------------------------------
@@ -765,20 +765,20 @@ local function sr_bring_up()
     -- A fixed head start, not wait_desktop(): the sound capture is
     -- sample-exact, so the boot timeline it was captured on is fixed.
     scheduler.run(600000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
 
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     -- The fixed-tick clicks: which take the recognizer lands depends on this
     -- exact timeline (row_av_sr_macro).
-    mac.double_click_fixed(536, 306) -- the Speech Setup alias
-    mac.run_ticks(600)
-    mac.click_fixed(176, 107) -- Recognition: On
-    mac.run_ticks(1800) -- the recognizer's startup blackout
-    mac.click_fixed(114, 51) -- close the Speech Setup panel
-    mac.run_ticks(200)
+    double_click_fixed(536, 306) -- the Speech Setup alias
+    run_ticks(600)
+    click_fixed(176, 107) -- Recognition: On
+    run_ticks(1800) -- the recognizer's startup blackout
+    click_fixed(114, 51) -- close the Speech Setup panel
+    run_ticks(200)
     machine.adb.mouse.move(320, 400, "global")
-    mac.run_ticks(1200)
+    run_ticks(1200)
 
     assert(machine.dsp.state == "running", F"sr: DSP ${machine.dsp.state} after the recognizer started")
     assert(machine.dsp.emr == 0x8000, F"sr: emr=${machine.dsp.emr:04x} — kernel died bringing the recognizer up")
@@ -790,8 +790,8 @@ end
 local function sr_say(path)
     machine.audioin.load(path)
     machine.audioin.rewind()
-    mac.run_ticks(320) -- long enough to play the whole ~3.5 s utterance
-    mac.run_ticks(200) -- endpointer close + the host search + the feedback draw
+    run_ticks(320) -- long enough to play the whole ~3.5 s utterance
+    run_ticks(200) -- endpointer close + the host search + the feedback draw
 end
 
 -- ---- av-sr-command ----------------------------------------------------------
@@ -816,8 +816,8 @@ local function row_av_sr_command()
 
     assert(machine.dsp.emr == 0x8000, F"av-sr-command: emr=${machine.dsp.emr:04x} after the utterance — kernel died")
     assert(machine.sound.overruns == 0, F"av-sr-command: ${machine.sound.overruns} frame overruns")
-    mac.check("goldens/av-sr-command.png")
-    mac.report_perf("suite-av/av-sr-command", scheduler.instr_count)
+    check("goldens/av-sr-command.png")
+    report_perf("suite-av/av-sr-command", scheduler.instr_count)
 end
 
 -- ---- av-sr-macro ------------------------------------------------------------
@@ -849,18 +849,18 @@ local function row_av_sr_macro()
     -- macro's AppleScript action.
     machine.audioin.load(av_sr_date)
     machine.audioin.rewind()
-    mac.run_ticks(180)
+    run_ticks(180)
     machine.sound.capture.start()
-    mac.run_ticks(700)
+    run_ticks(700)
 
     assert(machine.dsp.emr == 0x8000, F"av-sr-macro: emr=${machine.dsp.emr:04x} after the utterance — kernel died")
     assert(machine.sound.overruns == 0, F"av-sr-macro: ${machine.sound.overruns} frame overruns")
     -- The golden alone would still pass if a regen ever captured silence,
     -- so assert the answer was actually SPOKEN before comparing it.
     assert(machine.sound.capture.peak > 2000, F"av-sr-macro: capture peak ${machine.sound.capture.peak} — nothing was spoken back")
-    mac.check_sound("goldens/av-sr-macro.wav", 279600)
-    mac.check("goldens/av-sr-macro.png")
-    mac.report_perf("suite-av/av-sr-macro", scheduler.instr_count)
+    check_sound("goldens/av-sr-macro.wav", 279600)
+    check("goldens/av-sr-macro.png")
+    report_perf("suite-av/av-sr-macro", scheduler.instr_count)
 end
 
 -- ---- av-dsp-boot ------------------------------------------------------------
@@ -904,7 +904,7 @@ local function row_av_dsp_boot()
     assert(machine.dsp.state ~= "reset", F"av-dsp-boot: DSP parked ('${machine.dsp.state}') — the RTM sound install failed and shut it down")
     assert(machine.dsp.state ~= "crashed", "av-dsp-boot: DSP crashed after the install")
     assert(machine.dsp.emr == 0x8000, F"av-dsp-boot: emr=${machine.dsp.emr:04x} at rest, want $8000 (idle loop awaiting frame ticks)")
-    mac.report_perf("suite-av/av-dsp-boot", scheduler.instr_count)
+    report_perf("suite-av/av-dsp-boot", scheduler.instr_count)
 end
 
 -- ---- av-dsp-determinism -----------------------------------------------------
@@ -930,7 +930,7 @@ local function row_av_dsp_determinism()
     local fp2 = dsp_fingerprint()
     assert(fp1 == fp2, F"av-dsp-determinism: ${fp1} != ${fp2}")
     assert(machine.dsp.instr_count > 100000, "av-dsp-determinism: the DSP did not run inside the window")
-    mac.report_perf("suite-av/av-dsp-determinism", scheduler.instr_count)
+    report_perf("suite-av/av-dsp-determinism", scheduler.instr_count)
 end
 
 -- ---- av-chime ---------------------------------------------------------------
@@ -950,15 +950,15 @@ local function row_av_chime()
     -- L-file where an AV storm is actually diagnosed.
     assert(machine.psc.chip == "PSC", "av-chime: machine.psc missing")
     assert(#machine.psc.levels == 4, "av-chime: PSC level map is not L3..L6")
-    assert(machine.psc.levels[0].ipl == 3, "av-chime: PSC level map does not start at IPL 3")
+    assert(machine.psc.levels[1].ipl == 3, "av-chime: PSC level map does not start at IPL 3")
     assert(#machine.psc.level_ier == 4, "av-chime: PSC has four level IERs")
     -- 27,840 frames (was 52,800) since a sprint ended early stopped freezing
     -- the CPU to the next event: the ROM's delay that holds the chime's output
     -- open runs at its true length, and the same chime (same partials, same
     -- decay) is held about half as long -- ~1.15 s, against the ~0.6-1 s the
     -- out-enabled frame count above puts it at.
-    mac.check_sound("goldens/av-chime.wav", 27840)
-    mac.report_perf("suite-av/av-chime", scheduler.instr_count)
+    check_sound("goldens/av-chime.wav", 27840)
+    report_perf("suite-av/av-chime", scheduler.instr_count)
 end
 
 -- ---- av-audio-in-device -----------------------------------------------------
@@ -996,55 +996,55 @@ local function row_av_audio_in_device()
         j = j + 1
     end
     assert(nz > 4, F"audioin: only ${nz}/8 probed words nonzero — tone not reaching the double buffer")
-    mac.report_perf("suite-av/av-audio-in-device", scheduler.instr_count)
+    report_perf("suite-av/av-audio-in-device", scheduler.instr_count)
 end
 
 -- --- row calls ---------------------------------------------------------------
 
-if mac.row_on("av-identity") then
-    if mac.have_media(av_rom) then
+if row_on("av-identity") then
+    if have_media(av_rom) then
         mac.row("av-identity", row_av_identity)
     else
         echo(F"skip: av-identity — ${av_rom} not fetched")
     end
 end
-if mac.row_on("av-ram-sizing") then
-    if mac.have_media(av_rom) then
+if row_on("av-ram-sizing") then
+    if have_media(av_rom) then
         mac.row("av-ram-sizing", row_av_ram_sizing)
     else
         echo(F"skip: av-ram-sizing — ${av_rom} not fetched")
     end
 end
-if mac.row_on("av-video") then
-    if mac.have_media(av_rom) then
+if row_on("av-video") then
+    if have_media(av_rom) then
         mac.row("av-video", row_av_video)
     else
         echo(F"skip: av-video — ${av_rom} not fetched")
     end
 end
-if mac.row_on("av-chime") then
-    if mac.have_media(av_rom) then
+if row_on("av-chime") then
+    if have_media(av_rom) then
         mac.row("av-chime", row_av_chime)
     else
         echo(F"skip: av-chime — ${av_rom} not fetched")
     end
 end
-if mac.row_on("av-dsp-boot") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-dsp-boot") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-dsp-boot", row_av_dsp_boot)
     else
         echo(F"skip: av-dsp-boot — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-audio-in-device") then
-    if mac.have_media(av_rom) then
+if row_on("av-audio-in-device") then
+    if have_media(av_rom) then
         mac.row("av-audio-in-device", row_av_audio_in_device)
     else
         echo(F"skip: av-audio-in-device — ${av_rom} not fetched")
     end
 end
-if mac.row_on("av-dsp-determinism") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-dsp-determinism") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-dsp-determinism", row_av_dsp_determinism)
     else
         echo(F"skip: av-dsp-determinism — ${av_hd} not fetched")
@@ -1052,118 +1052,118 @@ if mac.row_on("av-dsp-determinism") then
 end
 
 -- The boot rows additionally need the AV boot disk.
-if mac.row_on("av-hd-device") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-hd-device") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-hd-device", row_av_hd_device)
     else
         echo(F"skip: av-hd-device — ${av_hd} not fetched")
     end
 end
-if mac.row_on("q840av-71-hd-desktop") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("q840av-71-hd-desktop") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("q840av-71-hd-desktop", row_q840av_71_hd_desktop)
     else
         echo(F"skip: q840av-71-hd-desktop — ${av_hd} not fetched")
     end
 end
-if mac.row_on("q660av-71-hd-desktop") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("q660av-71-hd-desktop") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("q660av-71-hd-desktop", row_q660av_71_hd_desktop)
     else
         echo(F"skip: q660av-71-hd-desktop — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-checkpoint") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-checkpoint") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-checkpoint", row_av_checkpoint)
     else
         echo(F"skip: av-checkpoint — ${av_hd} not fetched")
     end
 end
-if mac.row_on("q840av-71-video-in") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("q840av-71-video-in") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("q840av-71-video-in", function() return row_video_in("q840av", "goldens/q840av-7.1-640x480x8-video-monitor.png") end)
     else
         echo(F"skip: q840av-71-video-in — ${av_hd} not fetched")
     end
 end
-if mac.row_on("q660av-71-video-in") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("q660av-71-video-in") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("q660av-71-video-in", function() return row_video_in("q660av", "goldens/q660av-7.1-640x480x8-video-monitor.png") end)
     else
         echo(F"skip: q660av-71-video-in — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-beep") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-beep") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-beep", row_av_beep)
     else
         echo(F"skip: av-beep — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-tts") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-tts") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-tts", row_av_tts)
     else
         echo(F"skip: av-tts — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-sound-in") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-sound-in") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-sound-in", row_av_sound_in)
     else
         echo(F"skip: av-sound-in — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-sr-command") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) and mac.have_media(av_sr_trash) then
+if row_on("av-sr-command") then
+    if have_media(av_rom) and have_media(av_hd) and have_media(av_sr_trash) then
         mac.row("av-sr-command", row_av_sr_command)
     else
         echo(F"skip: av-sr-command — ${av_hd} or ${av_sr_trash} not fetched")
     end
 end
-if mac.row_on("av-sr-macro") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) and mac.have_media(av_sr_date) then
+if row_on("av-sr-macro") then
+    if have_media(av_rom) and have_media(av_hd) and have_media(av_sr_date) then
         mac.row("av-sr-macro", row_av_sr_macro)
     else
         echo(F"skip: av-sr-macro — ${av_hd} or ${av_sr_date} not fetched")
     end
 end
-if mac.row_on("av-floppy-mount") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) and mac.have_media(av_fd_144) then
+if row_on("av-floppy-mount") then
+    if have_media(av_rom) and have_media(av_hd) and have_media(av_fd_144) then
         mac.row("av-floppy-mount", row_av_floppy_mount)
     else
         echo(F"skip: av-floppy-mount — ${av_hd} or ${av_fd_144} not fetched")
     end
 end
-if mac.row_on("av-floppy-800k") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) and mac.have_media(av_fd_800) then
+if row_on("av-floppy-800k") then
+    if have_media(av_rom) and have_media(av_hd) and have_media(av_fd_800) then
         mac.row("av-floppy-800k", row_av_floppy_800k)
     else
         echo(F"skip: av-floppy-800k — ${av_hd} or ${av_fd_800} not fetched")
     end
 end
-if mac.row_on("av-floppy-write-eject") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) and mac.have_media(av_fd_144) then
+if row_on("av-floppy-write-eject") then
+    if have_media(av_rom) and have_media(av_hd) and have_media(av_fd_144) then
         mac.row("av-floppy-write-eject", row_av_floppy_write_eject)
     else
         echo(F"skip: av-floppy-write-eject — ${av_hd} or ${av_fd_144} not fetched")
     end
 end
-if mac.row_on("av-floppy-format") then
-    if mac.have_media(av_rom) and mac.have_media(av_hd) then
+if row_on("av-floppy-format") then
+    if have_media(av_rom) and have_media(av_hd) then
         mac.row("av-floppy-format", row_av_floppy_format)
     else
         echo(F"skip: av-floppy-format — ${av_hd} not fetched")
     end
 end
-if mac.row_on("av-floppy-boot") then
-    if mac.have_media(av_rom) and mac.have_media(av_fd_boot) then
+if row_on("av-floppy-boot") then
+    if have_media(av_rom) and have_media(av_fd_boot) then
         mac.row("av-floppy-boot", row_av_floppy_boot)
     else
         echo(F"skip: av-floppy-boot — ${av_fd_boot} not fetched")
     end
 end
 
-mac.suite_done()
+suite_done()
 quit()

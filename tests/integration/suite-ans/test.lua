@@ -71,7 +71,7 @@ local function row_ans500_of_console()
     -- on the screen is the point: the two narrators are independent.
     local chatter = ""
     local spins = 0
-    while not gs.contains(chatter, "install-console>") and spins < 24 do
+    while not gs.truthy(function() return gs.contains(chatter, "install-console>") end) and spins < 24 do
         scheduler.run(250000000)
         chatter = F"${chatter}${machine.scc.a.sent()}"
         spins = spins + 1
@@ -91,9 +91,9 @@ local function row_ans500_of_console()
     -- The firmware's banner, its boot attempt against the NVRAM default
     -- (`disk2:aix`, with no disk attached) and its prompt — drawn by the
     -- ROM's own VGA console driver into the framebuffer this model derives.
-    mac.check("goldens/ans500-of-640x480x8-console.png")
-    mac.report_row_foreign("OF 1.1.22", "cirrus_54m30", "of-console derived-mode")
-    mac.report_perf("suite-ans/ans500-of-console", scheduler.instr_count)
+    check("goldens/ans500-of-640x480x8-console.png")
+    report_row_foreign("OF 1.1.22", "cirrus_54m30", "of-console derived-mode")
+    report_perf("suite-ans/ans500-of-console", scheduler.instr_count)
 end
 
 -- ---- ans500-proto20-macos ---------------------------------------------------
@@ -139,15 +139,15 @@ local function row_ans500_proto20_macos()
 
     -- The gray desktop with the boot arrow cursor — QuickDraw painting
     -- through the framebuffer this model derives from the VGA registers.
-    mac.check("goldens/ans500-rom-640x480x8-proto20-desktop.png")
+    check("goldens/ans500-rom-640x480x8-proto20-desktop.png")
 
     -- This ROM does NOT drive the front panel.  Asserted rather than
     -- assumed: the LCD is the production firmware's instrument, and a Mac OS
     -- ROM having quietly written to it would mean the panel's decode was
     -- answering something it should not.
     assert(machine.lcd.writes == 0, "the Mac OS ROM must not write the front-panel LCD")
-    mac.report_row("rom", "cirrus_54m30", "rom-stage proto20-rom macos-desktop")
-    mac.report_perf("suite-ans/ans500-proto20-macos", scheduler.instr_count)
+    report_row("rom", "cirrus_54m30", "rom-stage proto20-rom macos-desktop")
+    report_perf("suite-ans/ans500-proto20-macos", scheduler.instr_count)
 end
 
 -- ---- ans500-diag-floppy -----------------------------------------------------
@@ -215,14 +215,14 @@ local function row_ans500_diag_floppy()
         spent = spent + 500000000
         seen = gs.try(function() return machine.screen.matches("goldens/ans500-diags1.1-640x480x8-level-one-menu.png") end, false)
     end
-    local settled = mac.wait_stable(3000000000)
-    mac.check("goldens/ans500-diags1.1-640x480x8-level-one-menu.png")
+    local settled = wait_stable(3000000000)
+    check("goldens/ans500-diags1.1-640x480x8-level-one-menu.png")
 
     -- The utility takes its commands from the ADB keyboard: "2" is "Show the
     -- Power-On Self Test results".
     machine.adb.keyboard.type("2\n")
-    mac.run_until_match("goldens/ans500-diags1.1-640x480x8-post-results.png", 800000000, 20000000)
-    mac.check("goldens/ans500-diags1.1-640x480x8-post-results.png")
+    run_until_match("goldens/ans500-diags1.1-640x480x8-post-results.png", 800000000, 20000000)
+    check("goldens/ans500-diags1.1-640x480x8-post-results.png")
 
     -- "3" runs the complete system test -- the PCI bridges (Bandit and Grand
     -- Central's config identities), the 53C825s' register and DMA FIFO tests,
@@ -236,37 +236,37 @@ local function row_ans500_diag_floppy()
     -- golden of that screen (captured after the full budget and a settle) is
     -- what the row waits for.
     machine.adb.keyboard.type("3\n")
-    mac.run_until_match("goldens/ans500-diags1.1-640x480x8-system-test-done.png", 6000000000, 100000000)
+    run_until_match("goldens/ans500-diags1.1-640x480x8-system-test-done.png", 6000000000, 100000000)
     if mac.REGEN_MODE == "1" then
-        local settled2 = mac.wait_stable(2000000000)
+        local settled2 = wait_stable(2000000000)
     end
-    mac.check("goldens/ans500-diags1.1-640x480x8-system-test-done.png")
+    check("goldens/ans500-diags1.1-640x480x8-system-test-done.png")
     machine.adb.keyboard.type("4\n")
-    mac.run_until_match("goldens/ans500-diags1.1-640x480x8-error-summary.png", 600000000, 15000000)
-    mac.check("goldens/ans500-diags1.1-640x480x8-error-summary.png")
+    run_until_match("goldens/ans500-diags1.1-640x480x8-error-summary.png", 600000000, 15000000)
+    check("goldens/ans500-diags1.1-640x480x8-error-summary.png")
 
     echo(F"ans500-diag-floppy: the Diagnostic Utility 1.1 boots from the internal floppy in Service position (${spent} instructions to the Level One menu), answers the ADB keyboard, and its complete system test passes everything but the SDLC DMA loopback")
-    mac.report_row_foreign("diags 1.1", "cirrus_54m30", "fd-boot swim3 service-keyswitch adb-keyboard")
-    mac.report_perf("suite-ans/ans500-diag-floppy", scheduler.instr_count)
+    report_row_foreign("diags 1.1", "cirrus_54m30", "fd-boot swim3 service-keyswitch adb-keyboard")
+    report_perf("suite-ans/ans500-diag-floppy", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
 
 mac.row("ans500-of-console", row_ans500_of_console)
-if mac.row_on("ans500-proto20-macos") then
-    if mac.have_media(proto20_rom) then
+if row_on("ans500-proto20-macos") then
+    if have_media(proto20_rom) then
         mac.row("ans500-proto20-macos", row_ans500_proto20_macos)
     else
         echo("skip: ans500-proto20-macos (the 2.0 prototype ROM is not present)")
     end
 end
-if mac.row_on("ans500-diag-floppy") then
-    if mac.have_media(diag_fd) then
+if row_on("ans500-diag-floppy") then
+    if have_media(diag_fd) then
         mac.row("ans500-diag-floppy", row_ans500_diag_floppy)
     else
         echo("skip: ans500-diag-floppy (the Network Server Diagnostic Utility floppy image is not present — run scripts/fetch-test-data.sh)")
     end
 end
 
-mac.suite_done()
+suite_done()
 quit()

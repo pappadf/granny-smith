@@ -52,11 +52,11 @@ machine.adb.mouse.move(468, 108)
 scheduler.run(2000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(80000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(60000000)
 
 -- Opening the volume listed both files, adopting them into the catalog.
@@ -91,7 +91,7 @@ scheduler.run(150000000)
 -- by the gap between the server's clock (the host's) and its own pinned one,
 -- so the column reads the guest clock minus however long the host took from
 -- staging the share to the mount -- 9:30 PM on one run, 9:29 on a slower one.
-mac.check_ex2("longname-copied.png", 58, 140, 80, 420, 82, 290, 114, 403)
+check_ex2("longname-copied.png", 58, 140, 80, 420, 82, 290, 114, 403)
 assert(appletalk.afp.stats.bytes_read == 6, "the long-named file's data was not read for the copy")
 assert(appletalk.afp.stats.open_forks == 0, "the copy left a fork open")
 quit()

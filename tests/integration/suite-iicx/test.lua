@@ -34,7 +34,7 @@ local function row_iicx_chime()
     assert(machine.id == "iicx", "iicx-chime: machine.id != iicx")
     assert(machine.sound.capture.frames == 15367, F"iicx-chime: capture length ${machine.sound.capture.frames}, want 15367")
     machine.sound.match("goldens/iicx-chime.wav")
-    mac.report_perf("suite-iicx/iicx-chime", scheduler.instr_count)
+    report_perf("suite-iicx/iicx-chime", scheduler.instr_count)
 end
 
 
@@ -62,7 +62,7 @@ end
 local function row_iicx_gc_accel8()
     gc_boot_8bpp()
     scheduler.run(200000000)
-    mac.wait_stable(600000000)
+    wait_stable(600000000)
     assert(machine.nubus.slot[9].card.gc.on == true, "iicx-gc-accel8: accelerator did not turn on")
     assert(machine.nubus.slot[9].card.gc.state == "gc-on", "iicx-gc-accel8: accelerator state != gc-on")
     assert(machine.nubus.slot[9].card.gc.error == 0, "iicx-gc-accel8: accelerator posted an error")
@@ -71,8 +71,8 @@ local function row_iicx_gc_accel8()
     assert(machine.screen.width == 640, "iicx-gc-accel8: screen width != 640")
     assert(machine.screen.height == 480, "iicx-gc-accel8: screen height != 480")
     assert(machine.screen.depth == 8, "iicx-gc-accel8: screen depth != 8")
-    mac.check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
-    mac.report_row("6.0.8", "824gc", "hd-boot gc-accel-on 8bpp rpc-counted")
+    check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
+    report_row("6.0.8", "824gc", "hd-boot gc-accel-on 8bpp rpc-counted")
 
     -- Absorbed from iicx-824gc-adb-mouse: cursor tracking through the real
     -- ADB path. Mouse starts at (15,15) and the deltas must land in all
@@ -86,7 +86,7 @@ local function row_iicx_gc_accel8()
     machine.adb.mouse.move(-20, 10, "hw")
     scheduler.run(20000000)
     assert(machine.memory.peek.l(0x830) == 0x00410023, "iicx-gc-accel8: Mouse != (35,65) after -20,+10")
-    mac.report_perf("suite-iicx/iicx-gc-accel8", scheduler.instr_count)
+    report_perf("suite-iicx/iicx-gc-accel8", scheduler.instr_count)
 end
 
 local function row_iicx_gc_decline8()
@@ -95,7 +95,7 @@ local function row_iicx_gc_decline8()
     machine.nubus.slot[9].card.gc.force_decline = true
     machine.scsi.attach_hd(hd_608_gc, 0)
     scheduler.run(200000000)
-    mac.wait_stable(600000000)
+    wait_stable(600000000)
     assert(machine.nubus.slot[9].card.gc.force_decline == true, "iicx-gc-decline8: force_decline lost")
     assert(machine.nubus.slot[9].card.gc.on == true, "iicx-gc-decline8: accelerator did not turn on")
     assert(machine.nubus.slot[9].card.gc.error == 0, "iicx-gc-decline8: accelerator posted an error")
@@ -103,8 +103,8 @@ local function row_iicx_gc_decline8()
     assert(machine.screen.width == 640, "iicx-gc-decline8: screen width != 640")
     assert(machine.screen.depth == 8, "iicx-gc-decline8: screen depth != 8")
     -- The oracle: the SAME golden as the accel row above.
-    mac.check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
-    mac.report_perf("suite-iicx/iicx-gc-decline8", scheduler.instr_count)
+    check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
+    report_perf("suite-iicx/iicx-gc-decline8", scheduler.instr_count)
 end
 
 
@@ -144,22 +144,22 @@ local function row_iicx_gc_beep()
 
     -- --- The Finder desktop, drawn by the card (accelerator ON). ---
     assert(machine.nubus.slot[9].card.gc.on == true, "accelerator did not turn on")
-    mac.check("goldens/iicx-6.0.8-640x480x1-gc-finder.png")
+    check("goldens/iicx-6.0.8-640x480x1-gc-finder.png")
 
     -- --- Open the Control Panel from the Apple menu. ---
     -- Held mouse-down at the Apple menu (25,10) drops the menu; "Control Panel"
     -- sits at y=139; releasing over it launches the DA (General cdev selected).
     machine.adb.mouse.move(50, 50, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.move(25, 10, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(8000000)
     machine.adb.mouse.move(68, 139, "global")
     scheduler.run(3000000)
     machine.adb.mouse.click(false)
-    mac.run_until_match("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png", 60000000, 5000000)
-    mac.check("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png")
+    run_until_match("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png", 60000000, 5000000)
+    check("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png")
 
     -- --- Drag the Speaker Volume slider from level 3 to 5. ---
     -- The slider track is at x=458; the level-3 knob center is y=248 and each
@@ -170,7 +170,7 @@ local function row_iicx_gc_beep()
     -- re-rendering the 512-byte voice table in place ~14 times mid-play.
     machine.sound.capture.start()
     machine.adb.mouse.move(458, 248, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(3000000)
     machine.adb.mouse.move(458, 242, "global")
@@ -205,7 +205,7 @@ local function row_iicx_gc_beep()
     -- parameter RAM valid (the ROM skips its own PRAMInit): 5427 frames.
     -- Re-captured again when ADB auto-poll stopped running on a clock of its
     -- own (Talks now start only when a device has data): 5423 frames.
-    mac.check_sound("goldens/iicx-gc-beep.wav", 5424)
+    check_sound("goldens/iicx-gc-beep.wav", 5424)
 
     -- Sample-exact compare against the golden (fails the test on any divergence).
     -- Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -221,7 +221,7 @@ local function row_iicx_gc_beep()
     -- into the next one).
     machine.sound.capture.start()
     machine.adb.mouse.move(458, 225, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(3000000)
     machine.adb.mouse.move(458, 221, "global")
@@ -233,7 +233,7 @@ local function row_iicx_gc_beep()
     machine.adb.mouse.click(false)
     scheduler.run(40000000)
 
-    mac.check_sound("goldens/iicx-gc-beep2.wav", 5423)
+    check_sound("goldens/iicx-gc-beep2.wav", 5423)
     -- The pre-volume waveform is the first beep's (up to the timing-phase
     -- effect below): the Sound Manager re-renders the same table and no state
     -- leaks between beeps.  The second beep is
@@ -252,7 +252,7 @@ local function row_iicx_gc_beep()
     -- (the same perturbations then give 1 to 8); both captures stay pinned by
     -- their goldens.
     assert(machine.sound.volume == 6, "ASC volume register != slider level 6")
-    mac.report_perf("suite-iicx/iicx-gc-beep", scheduler.instr_count)
+    report_perf("suite-iicx/iicx-gc-beep", scheduler.instr_count)
 end
 
 
@@ -303,7 +303,7 @@ local function row_iicx_24ac()
     assert((machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40, "boot: MODE depth latch != 8 bpp")
     assert(machine.nubus.slot[9].card.framebuffer.depth == 8, "boot: framebuffer not 8 bpp")
     -- The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
-    mac.check("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png")
+    check("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png")
 
     -- Open the Apple menu with a held mouse-down (press and hold — the menu stays
     -- down while the button is held), same global-mode geometry as iici-boot
@@ -319,12 +319,12 @@ local function row_iicx_24ac()
     -- smeared the desktop into solid white/black bands.  The baseline below is the
     -- corrected render: the menu over an intact gray desktop.
     machine.adb.mouse.move(50, 50, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.move(25, 10, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(8000000)
-    mac.check("goldens/iicx-7.1-640x480x8-24ac-applemenu-640x480-8bpp.png")
+    check("goldens/iicx-7.1-640x480x8-24ac-applemenu-640x480-8bpp.png")
 
     -- --- Part 3: vertical scroll through the engine's block-copy ($7F) path. ---
     -- Dismiss the Apple menu (release over the desktop → no selection), then open
@@ -342,7 +342,7 @@ local function row_iicx_24ac()
     machine.adb.mouse.click(false)
     scheduler.run(6000000)
     machine.adb.mouse.move(25, 10, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(6000000)
     machine.adb.mouse.move(25, 132, "global")
@@ -350,7 +350,7 @@ local function row_iicx_24ac()
     machine.adb.mouse.click(false)
     scheduler.run(80000000)
     machine.adb.mouse.move(125, 10, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(5000000)
     machine.adb.mouse.move(140, 62, "global")
@@ -358,19 +358,19 @@ local function row_iicx_24ac()
     machine.adb.mouse.click(false)
     scheduler.run(40000000)
     machine.adb.mouse.move(411, 214, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(35000000)
     machine.adb.mouse.click(false)
     scheduler.run(8000000)
-    mac.check("goldens/iicx-7.1-640x480x8-24ac-cp-scroll-640x480-8bpp.png")
+    check("goldens/iicx-7.1-640x480x8-24ac-cp-scroll-640x480-8bpp.png")
     -- The missing proof: no OS-level test asserted the 24AC's engine
     -- counters, so engine use was only ever INFERRED from goldens that a
     -- fallback render would reproduce exactly. These make it explicit.
     assert(machine.nubus.slot[9].card.engine.fill_ops > 0, "iicx-24ac: engine did no fills — accelerator never engaged")
     assert(machine.nubus.slot[9].card.engine.fill_bytes > 0, "iicx-24ac: engine filled no bytes")
-    mac.report_row("7.1", "display_card_24ac", "hd-boot 8bpp engine-counted menus scroll")
-    mac.report_perf("suite-iicx/iicx-24ac", scheduler.instr_count)
+    report_row("7.1", "display_card_24ac", "hd-boot 8bpp engine-counted menus scroll")
+    report_perf("suite-iicx/iicx-24ac", scheduler.instr_count)
 end
 
 local function row_iicx_24ac_restart()
@@ -403,7 +403,7 @@ local function row_iicx_24ac_restart()
     assert(machine.screen.width == 640, "boot: screen width != 640")
     assert(machine.screen.height == 480, "boot: screen height != 480")
     assert(machine.nubus.slot[9].card.framebuffer.depth == 8, "boot: framebuffer not 8 bpp")
-    mac.check("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png")
+    check("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png")
 
     -- === Pick Special ▸ Restart with a real press-and-hold-drag-release. =========
     -- The Special menu title sits at (235,10); the "Restart" item is at (245,124)
@@ -411,7 +411,7 @@ local function row_iicx_24ac_restart()
     -- hold on the title to pull the menu down, drag to Restart, release to choose
     -- it — exactly the user's interaction.
     machine.adb.mouse.move(235, 10, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.adb.mouse.click(true)
     scheduler.run(4000000)
     machine.adb.mouse.move(245, 124, "global")
@@ -445,12 +445,12 @@ local function row_iicx_24ac_restart()
     -- top-left corner and exclude that small box (rows 12-34, cols 10-30) from the
     -- compare, so the match turns on the desktop content, not the cursor hotspot.
     machine.adb.mouse.move(14, 15, "global")
-    mac.wait_cursor(20)
+    wait_cursor(20)
     machine.screen.save(F"${vars.WORK_DIR}/after-restart.png")
     -- Definitive end state: the machine is back on the 8-bpp colour Finder desktop,
     -- pixel-exact against the same baseline the cold boot produces (iicx-24ac).
-    mac.check_ex("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png", 12, 10, 34, 30)
-    mac.report_perf("suite-iicx/iicx-24ac-restart", scheduler.instr_count)
+    check_ex("goldens/iicx-7.1-640x480x8-24ac-finder-640x480-8bpp.png", 12, 10, 34, 30)
+    report_perf("suite-iicx/iicx-24ac-restart", scheduler.instr_count)
 end
 
 mac.row("iicx-chime", row_iicx_chime)
@@ -461,5 +461,5 @@ mac.row("iicx-gc-decline8", row_iicx_gc_decline8)
 mac.row("iicx-24ac", row_iicx_24ac)
 mac.row("iicx-24ac-restart", row_iicx_24ac_restart)
 
-mac.suite_done()
+suite_done()
 quit()

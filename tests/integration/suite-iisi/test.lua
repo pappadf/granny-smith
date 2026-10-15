@@ -45,7 +45,7 @@ local function row_iisi_chime()
     assert(machine.rbv.chip == "RBV", "iisi-chime: machine.rbv missing")
     assert(machine.rbv.variant == "V8/IIsi", "iisi-chime: wrong RBV variant")
     machine.sound.match("goldens/iisi-chime.wav")
-    mac.report_perf("suite-iisi/iisi-chime", scheduler.instr_count)
+    report_perf("suite-iisi/iisi-chime", scheduler.instr_count)
 end
 
 -- ---- iisi-701-fd ------------------------------------------------------------
@@ -58,17 +58,17 @@ local function row_iisi_701_fd()
     -- on it — this row's golden was such a frame until 2026-07-28. Same defect
     -- fixed in suite-iifx's two floppy rows. The real Finder is up by ~200 M.
     scheduler.run(200000000)
-    local spent = mac.wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
+    local spent = wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
     assert(machine.id == "iisi", "iisi-701-fd: machine.id != iisi")
     assert(machine.rom.id == "36b7fb6c", "iisi-701-fd: rom.id != 36b7fb6c")
     assert(machine.ram == 17408, "iisi-701-fd: machine.ram != 17408")
     assert(machine.screen.width == 640, "iisi-701-fd: screen.width != 640")
     assert(machine.screen.height == 480, "iisi-701-fd: screen.height != 480")
-    mac.assert_addr(false)
-    mac.report_row("7.0.1", "v8", "fd-boot")
+    assert_addr(false)
+    report_row("7.0.1", "v8", "fd-boot")
     -- Total row spend, not $spent: with the 200 M pre-run above the wait matches
     -- on its first poll, so $spent would be a constant 20 M and signal nothing.
-    mac.report_perf("suite-iisi/iisi-701-fd", scheduler.instr_count)
+    report_perf("suite-iisi/iisi-701-fd", scheduler.instr_count)
 end
 
 -- ---- iisi-608-hd -----------------------------------------------------------
@@ -77,12 +77,12 @@ local function row_iisi_608_hd()
     machine.boot{model = "iisi", ram = 5120, rom = vars.ROM}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_608, 0)
-    local spent = mac.wait_match("goldens/iisi-6.0.8-640x480x1-finder.png", 900000000, 20000000)
+    local spent = wait_match("goldens/iisi-6.0.8-640x480x1-finder.png", 900000000, 20000000)
     assert(machine.ram == 5120, "iisi-608-hd: machine.ram != 5120")
     assert(machine.screen.width == 640, "iisi-608-hd: screen.width != 640")
-    mac.assert_addr(false)
-    mac.report_row("6.0.8", "v8", "hd-boot scsi")
-    mac.report_perf("suite-iisi/iisi-608-hd", spent)
+    assert_addr(false)
+    report_row("6.0.8", "v8", "hd-boot scsi")
+    report_perf("suite-iisi/iisi-608-hd", spent)
 end
 
 -- ---- iisi-71-kbd -----------------------------------------------------------
@@ -96,7 +96,7 @@ local function row_iisi_71_kbd()
     machine.rtc.time = 3000000000
     machine.floppy.drive[0].insert(disk_tools_71)
     scheduler.run(60000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.ram == 9216, "iisi-71-kbd: machine.ram != 9216")
     assert(machine.screen.width == 640, "iisi-71-kbd: screen.width != 640")
     -- golden-collision-ok: iisi-7.1-640x480x1-desktop.png iisi-7.0.1-640x480x1-finder.png
@@ -105,23 +105,23 @@ local function row_iisi_71_kbd()
     -- (the same frame appears in suite-iifx and suite-se30 for the same reason).
     -- Neither golden is what proves its row: this one exists as the stable
     -- starting point for the ADB keystroke choreography that follows.
-    mac.check("goldens/iisi-7.1-640x480x1-desktop.png")
+    check("goldens/iisi-7.1-640x480x1-desktop.png")
 
     -- File → Find… (drag the File menu open and release on the item).
     machine.adb.mouse.move(50, 50, "global")
-    mac.run_ticks(30)
+    run_ticks(30)
     machine.adb.mouse.move(38, 7, "global")
-    mac.run_ticks(20)
+    run_ticks(20)
     machine.adb.mouse.click(true)
-    mac.run_ticks(40)
+    run_ticks(40)
     machine.adb.mouse.move(38, 200, "global")
-    mac.run_ticks(40)
+    run_ticks(40)
     machine.adb.mouse.click(false)
     -- Fixed guest-time window, not a settle: the Find dialog blinks a
     -- text caret, so the screen never holds still and the golden is
     -- caret-phase-sensitive.
-    mac.run_ticks(90)
-    mac.check("goldens/iisi-7.1-640x480x1-find-dialog.png")
+    run_ticks(90)
+    check("goldens/iisi-7.1-640x480x1-find-dialog.png")
 
     -- Type "macintosh" one key at a time — every keystroke must land.
     machine.adb.keyboard.press(0x2E)
@@ -133,10 +133,10 @@ local function row_iisi_71_kbd()
     machine.adb.keyboard.press(0x1F)
     machine.adb.keyboard.press(0x01)
     machine.adb.keyboard.press(0x04)
-    mac.run_ticks(90)
-    mac.check("goldens/iisi-7.1-640x480x1-typed.png")
-    mac.report_row("7.1", "v8", "fd-boot adb-egret keyboard")
-    mac.report_perf("suite-iisi/iisi-71-kbd", scheduler.instr_count)
+    run_ticks(90)
+    check("goldens/iisi-7.1-640x480x1-typed.png")
+    report_row("7.1", "v8", "fd-boot adb-egret keyboard")
+    report_perf("suite-iisi/iisi-71-kbd", scheduler.instr_count)
 end
 
 -- ---- iisi-75-hd ------------------------------------------------------------
@@ -147,13 +147,13 @@ local function row_iisi_75_hd()
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(hd_75, 0)
     scheduler.run(300000000)
-    mac.wait_stable(1500000000)
+    wait_stable(1500000000)
     assert(machine.id == "iisi", "iisi-75-hd: machine.id != iisi")
     assert(machine.screen.width == 640, "iisi-75-hd: screen.width != 640")
-    mac.assert_addr(false)
-    mac.check_ex("goldens/iisi-7.5-640x480x1-finder.png", 0, 440, 20, 640)
-    mac.report_row("7.5", "v8", "hd-boot scsi")
-    mac.report_perf("suite-iisi/iisi-75-hd", scheduler.instr_count)
+    assert_addr(false)
+    check_ex("goldens/iisi-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "v8", "hd-boot scsi")
+    report_perf("suite-iisi/iisi-75-hd", scheduler.instr_count)
 end
 
 -- ---- row dispatch -----------------------------------------------------------
@@ -176,7 +176,7 @@ local function boot_iisi_701_at_depth(spid)
     if spid == 0x82 then machine.rtc.pram.poke(0x6E, gs.bytes(0x0028828600000000, 8)) end
     if spid == 0x83 then machine.rtc.pram.poke(0x6E, gs.bytes(0x0028838600000000, 8)) end
     scheduler.run(300000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     assert(machine.rtc.pram.peek(0x70) == spid, F"iisi-701-depths: savedMode rewritten by the ROM (wanted ${spid:02x})")
     assert(machine.screen.width == 640, "iisi-701-depths: width != 640")
     assert(machine.screen.height == 480, "iisi-701-depths: height != 480")
@@ -184,19 +184,19 @@ end
 local function row_iisi_701_depths()
     boot_iisi_701_at_depth(0x81)
     assert(machine.screen.depth == 2, F"iisi-701-depths: savedMode $81 gave depth ${machine.screen.depth}, want 2")
-    mac.check("goldens/iisi-7.0.1-640x480x2-finder.png")
-    mac.report_row("7.0.1", "v8", "fd-boot 2bpp")
+    check("goldens/iisi-7.0.1-640x480x2-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 2bpp")
 
     boot_iisi_701_at_depth(0x82)
     assert(machine.screen.depth == 4, F"iisi-701-depths: savedMode $82 gave depth ${machine.screen.depth}, want 4")
-    mac.check("goldens/iisi-7.0.1-640x480x4-finder.png")
-    mac.report_row("7.0.1", "v8", "fd-boot 4bpp")
+    check("goldens/iisi-7.0.1-640x480x4-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 4bpp")
 
     boot_iisi_701_at_depth(0x83)
     assert(machine.screen.depth == 8, F"iisi-701-depths: savedMode $83 gave depth ${machine.screen.depth}, want 8")
-    mac.check("goldens/iisi-7.0.1-640x480x8-finder.png")
-    mac.report_row("7.0.1", "v8", "fd-boot 8bpp")
-    mac.report_perf("suite-iisi/iisi-701-depths", scheduler.instr_count)
+    check("goldens/iisi-7.0.1-640x480x8-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 8bpp")
+    report_perf("suite-iisi/iisi-701-depths", scheduler.instr_count)
 end
 
 -- ---- iisi-12in-rgb ----------------------------------------------------------
@@ -217,11 +217,11 @@ local function row_iisi_12in_rgb()
         scheduler.run(50000000)
         machine.screen.save("goldens/iisi-512x384x1-no-disk.png")
     else
-        mac.wait_match("goldens/iisi-512x384x1-no-disk.png", 400000000, 10000000)
+        wait_match("goldens/iisi-512x384x1-no-disk.png", 400000000, 10000000)
     end
     assert(machine.screen.height == 384, "iisi-12in-rgb: screen.height != 384 after boot")
     assert(machine.cpu.mmu.peek(0x106, 2) == 64, "iisi-12in-rgb: ScreenRow != 64")
-    mac.report_perf("suite-iisi/iisi-12in-rgb", scheduler.instr_count)
+    report_perf("suite-iisi/iisi-12in-rgb", scheduler.instr_count)
 end
 
 mac.row("iisi-chime", row_iisi_chime)
@@ -230,13 +230,13 @@ mac.row("iisi-608-hd", row_iisi_608_hd)
 mac.row("iisi-71-kbd", row_iisi_71_kbd)
 mac.row("iisi-701-depths", row_iisi_701_depths)
 mac.row("iisi-12in-rgb", row_iisi_12in_rgb)
-if mac.row_on("iisi-75-hd") then
-    if mac.have_media(hd_75) then
+if row_on("iisi-75-hd") then
+    if have_media(hd_75) then
         mac.row("iisi-75-hd", row_iisi_75_hd)
     else
         echo("skip: iisi-75-hd (7.5 prepared image not fetched)")
     end
 end
 
-mac.suite_done()
+suite_done()
 quit()

@@ -42,7 +42,7 @@ machine.screen.match("main.png")
 -- bar x-coords (verified empirically in iicx-mactest-options): Options
 -- title sits at x~115.  "Test Selections..." is the first item at y~28.
 machine.adb.mouse.move(115, 10, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 scheduler.run(20000000)
 
@@ -60,26 +60,26 @@ scheduler.run(160000000)
 -- under E-clock-synced ADB (the dialog consumes it on focus); a throwaway
 -- click on empty dialog area absorbs it so the real checkbox clicks land.
 machine.adb.mouse.move(400, 90, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(10000000)
 
 -- Uncheck "Keyboard" — ADB Communication checkbox column, y=305.
 machine.adb.mouse.move(130, 305, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(10000000)
 
 -- Uncheck "Mouse" — directly below Keyboard at y=325.
 machine.adb.mouse.move(130, 325, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(10000000)
 
 -- Verify both ADB items are now unchecked.  This baseline was captured
@@ -109,24 +109,24 @@ machine.screen.match("test-selections-adb-unchecked.png")
 -- not the rendered-glyph centre, when targeting Mac OS dialog
 -- buttons in tests.
 machine.adb.mouse.move(560, 385, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(60000000)
 
 -- --- Continue with the normal MacTest flow ---------------------------------
 -- Click Start (button center ~(188, 153)) — same coords as iicx-mactest.
 machine.adb.mouse.move(188, 153, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(35000000)
 
 -- VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
 -- first blank 800K diskette (a modal wait, so overshooting is harmless).
-mac.run_until_match("insert-800k-internal.png", 140000000, 5000000)
+run_until_match("insert-800k-internal.png", 140000000, 5000000)
 machine.screen.match("insert-800k-internal.png")
 
 machine.floppy.create(F"${vars.WORK_DIR}/blank800-int.dsk", 0)
@@ -134,13 +134,13 @@ scheduler.run(10000000)
 
 -- OK on the "insert disk" dialog (~454, 245).
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(35000000)
 
-mac.run_until_match("insert-1.4mb-internal.png", 265000000, 6000000)
+run_until_match("insert-1.4mb-internal.png", 265000000, 6000000)
 machine.screen.match("insert-1.4mb-internal.png")
 
 machine.adb.mouse.click(false, "global")
@@ -150,12 +150,12 @@ machine.floppy.create(F"${vars.WORK_DIR}/blankHD-int.dsk", "hd")
 -- the click has no fresh position event to bind to under E-clock-synced
 -- ADB. A real move makes the OK-click register.
 machine.adb.mouse.move(200, 150, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 
 scheduler.run(35000000)
 scheduler.run(265000000)
@@ -165,12 +165,12 @@ scheduler.run(265000000)
 -- read window and is dropped; a follow-up click after the window registers and
 -- starts the test.  (800K steps fit the poll window and need only one click.)
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(35000000)
-mac.run_until_match("insert-800k-external.png", 140000000, 5000000)
+run_until_match("insert-800k-external.png", 140000000, 5000000)
 machine.screen.match("insert-800k-external.png")
 
 machine.adb.mouse.click(false, "global")
@@ -191,12 +191,12 @@ scheduler.run(400000000)
 -- read window with its mouse-up dropped — leaving the next dialog's OK button
 -- stuck hilited).  Same move-away-then-back pattern as the internal 1.4 MB step.
 machine.adb.mouse.move(200, 150, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 
 scheduler.run(35000000)
 scheduler.run(265000000)
@@ -206,7 +206,7 @@ machine.adb.mouse.click(false, "global")
 -- The external 800K test needs ~1.1 G instructions under the honest VBL
 -- cadence (it is paced by the .Sony driver's VBL polling); the next prompt
 -- is a modal wait, so a generous budget is harmless.
-mac.run_until_match("insert-1.4mb-external.png", 1200000000, 30000000)
+run_until_match("insert-1.4mb-external.png", 1200000000, 30000000)
 machine.screen.match("insert-1.4mb-external.png")
 
 machine.adb.mouse.click(false, "global")
@@ -215,10 +215,10 @@ machine.floppy.drive[0].eject()
 machine.floppy.drive[1].insert(F"${vars.WORK_DIR}/blankHD-ext.dsk", true)
 
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 
 scheduler.run(35000000)
 scheduler.run(265000000)
@@ -226,12 +226,12 @@ scheduler.run(265000000)
 -- the internal 1.44 MB step above; the first click lands too early under the
 -- frame-VBL cadence, the follow-up click registers.
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(35000000)
-mac.run_until_match("floppy-test-success.png", 115000000, 5000000)
+run_until_match("floppy-test-success.png", 115000000, 5000000)
 machine.screen.match("floppy-test-success.png")
 
 
@@ -250,10 +250,10 @@ machine.floppy.drive[0].insert("../../data/apps/MacTest-IIcx-IIci.image", true)
 -- Click OK on the "Please insert the disk" dialog (same OK button
 -- position as the earlier insert-disk dialogs at this dialog kind).
 machine.adb.mouse.move(454, 245, "global")
-mac.wait_cursor(20)
+wait_cursor(20)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 
 -- Run for a while to let MacTest read the app disk, skip the
 -- disabled Keyboard/Mouse phases, and reach the RAM-test "Testing

@@ -16,7 +16,7 @@ machine.boot{model = "q700", ram = 8192, rom = vars.ROM, slots = "13=display_car
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd(F"${vars.WORK_DIR}/hd.img", 0)
 scheduler.run(700000000)
-mac.wait_stable(1800000000)
+wait_stable(1800000000)
 
 assert(machine.id == "q700", "machine.id != q700")
 
@@ -36,14 +36,14 @@ assert(machine.nubus.slot[14].card.gc.on == false, "GC INIT unexpectedly started
 -- From both: the built-in DAFB stays the boot screen even with two cards in.
 assert((debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000, "ScrnBase not on the DAFB")
 -- 7.6 selects 32-bit addressing itself (measured).
-mac.assert_addr(true)
+assert_addr(true)
 assert(machine.screen.width == 640, "screen width != 640")
 assert(machine.screen.height == 480, "screen height != 480")
 -- 7.6 puts a clock in the menu bar, so the golden excludes that corner —
 -- the same exclusion the other 7.5/7.6 rows use. The RTC is pinned above,
 -- but the displayed minute still depends on where in guest time the
 -- settled frame lands.
-mac.check_ex("dafb-desktop.png", 0, 440, 20, 640)
-mac.report_row("7.6", "dafb+24ac+824gc", "hd-boot dual-card dafb-primary gc-declined-on-040")
-mac.report_perf("quadra-dual-card/dual", scheduler.instr_count)
+check_ex("dafb-desktop.png", 0, 440, 20, 640)
+report_row("7.6", "dafb+24ac+824gc", "hd-boot dual-card dafb-primary gc-declined-on-040")
+report_perf("quadra-dual-card/dual", scheduler.instr_count)
 quit()

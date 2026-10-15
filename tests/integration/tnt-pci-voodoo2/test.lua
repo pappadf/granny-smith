@@ -42,7 +42,7 @@ function cfg_rd(reg) -- global: used by an included file
 end
 
 -- --- The kind is registered and seatable with no machine edit. --------------
-assert(catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "the card must be registered")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "the card must be registered")
 
 -- The 8 MB board: the row's pinned values were captured on it.
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "memory=8m"}
@@ -173,7 +173,7 @@ for i = 0, 4095 do
 end
 local LFB_NS = scheduler.host_user_ns - T0
 echo(F"lfb-throughput: 4096 dword LFB writes in ${LFB_NS} ns (shell-driven upper bound)")
-mac.report_perf("tnt-pci-voodoo2", scheduler.instr_count)
+report_perf("tnt-pci-voodoo2", scheduler.instr_count)
 
 -- --- The raster seam: the null backend, and the timing invariant. ------------
 -- pci_option="raster=null" installs the backend that draws nothing

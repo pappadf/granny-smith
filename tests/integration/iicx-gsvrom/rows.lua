@@ -1,5 +1,4 @@
 -- Converted from rows.script by scripts/script-to-lua.py
-local mac = dofile("../lib/mac.lua") -- NOTE: no direct mac.script include (this file is included by another); the library runs once per chunk
 -- Row bodies for iicx-gsvrom, transcribed BY SCRIPT from the four
 -- directories this suite absorbed (iicx-gsvrom-video-modes, -24ac,
 -- -824gc, -custom-mode). Mechanical edits only: the media insert that
@@ -43,8 +42,8 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.rtc.pram.peek(0x49) == 0xa6, "13in_rgb 1bpp sister != 0xa6")
     assert(machine.memory.peek.l(0xf9200208) == 0x80, "13in_rgb 1bpp CLUTPBCR != 0x80")
     assert(machine.memory.peek.l(0xf920000c) == 0x14, "13in_rgb 1bpp RowWords != 0x14")
-    mac.check("goldens/welcome-13in_rgb-640x480-1bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x480x1 13in_rgb")
+    check("goldens/welcome-13in_rgb-640x480-1bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x480x1 13in_rgb")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=13in_rgb_2bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -55,8 +54,8 @@ function row_gsvrom_sweep() -- global: included file
     -- golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
     -- - black-and-white splash, identical at both depths; the depth is proven by
     -- the savedMode/RowWords asserts above. Same pair as iicx-video-modes.
-    mac.check("goldens/welcome-13in_rgb-640x480-2bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x480x2 13in_rgb")
+    check("goldens/welcome-13in_rgb-640x480-2bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x480x2 13in_rgb")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=13in_rgb_4bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -64,8 +63,8 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.rtc.pram.peek(0x48) == 0x82, "13in_rgb 4bpp savedMode != 0x82")
     assert(machine.memory.peek.l(0xf9200208) == 0x90, "13in_rgb 4bpp CLUTPBCR != 0x90")
     assert(machine.memory.peek.l(0xf920000c) == 0x50, "13in_rgb 4bpp RowWords != 0x50")
-    mac.check("goldens/welcome-13in_rgb-640x480-4bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x480x4 13in_rgb")
+    check("goldens/welcome-13in_rgb-640x480-4bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x480x4 13in_rgb")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=13in_rgb_8bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -73,8 +72,8 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.rtc.pram.peek(0x48) == 0x83, "13in_rgb 8bpp savedMode != 0x83")
     assert(machine.memory.peek.l(0xf9200208) == 0x98, "13in_rgb 8bpp CLUTPBCR != 0x98")
     assert(machine.memory.peek.l(0xf920000c) == 0xa0, "13in_rgb 8bpp RowWords != 0xa0")
-    mac.check("goldens/welcome-13in_rgb-640x480-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 13in_rgb")
+    check("goldens/welcome-13in_rgb-640x480-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 13in_rgb")
 
     -- --- 12" RGB at 1/8 bpp ------------------------------------------------------
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=12in_rgb_1bpp", rom = vars.ROM}
@@ -84,15 +83,15 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.screen.height == 384, "12in_rgb 1bpp height != 384")
     assert(machine.rtc.pram.peek(0x48) == 0x80, "12in_rgb 1bpp savedMode != 0x80")
     assert(machine.rtc.pram.peek(0x49) == 0xa2, "12in_rgb 1bpp sister != 0xa2")
-    mac.check("goldens/welcome-12in_rgb-512x384-1bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 512x384x1 12in_rgb")
+    check("goldens/welcome-12in_rgb-512x384-1bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 512x384x1 12in_rgb")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=12in_rgb_8bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
     scheduler.run(48000000)
     assert(machine.rtc.pram.peek(0x48) == 0x83, "12in_rgb 8bpp savedMode != 0x83")
-    mac.check("goldens/welcome-12in_rgb-512x384-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 512x384x8 12in_rgb")
+    check("goldens/welcome-12in_rgb-512x384-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 512x384x8 12in_rgb")
 
     -- --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=15in_bw_1bpp", rom = vars.ROM}
@@ -102,15 +101,15 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.screen.height == 870, "15in_bw 1bpp height != 870")
     assert(machine.rtc.pram.peek(0x48) == 0x80, "15in_bw 1bpp savedMode != 0x80")
     assert(machine.rtc.pram.peek(0x49) == 0xa1, "15in_bw 1bpp sister != 0xa1")
-    mac.check("goldens/welcome-15in_bw-640x870-1bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x870x1 15in_bw")
+    check("goldens/welcome-15in_bw-640x870-1bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x870x1 15in_bw")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=15in_bw_8bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
     scheduler.run(49000000)
     assert(machine.rtc.pram.peek(0x48) == 0x83, "15in_bw 8bpp savedMode != 0x83")
-    mac.check("goldens/welcome-15in_bw-640x870-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x870x8 15in_bw")
+    check("goldens/welcome-15in_bw-640x870-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x870x8 15in_bw")
 
     -- --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=21in_rgb_1bpp", rom = vars.ROM}
@@ -120,22 +119,22 @@ function row_gsvrom_sweep() -- global: included file
     assert(machine.screen.height == 870, "21in_rgb 1bpp height != 870")
     assert(machine.rtc.pram.peek(0x48) == 0x80, "21in_rgb 1bpp savedMode != 0x80")
     assert(machine.rtc.pram.peek(0x49) == 0xa7, "21in_rgb 1bpp sister != 0xa7")
-    mac.check("goldens/welcome-21in_rgb-1152x870-1bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 1152x870x1 21in_rgb")
+    check("goldens/welcome-21in_rgb-1152x870-1bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 1152x870x1 21in_rgb")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=mdc_8_24,rom=substitute,mode=21in_rgb_8bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
     scheduler.run(50000000)
     assert(machine.rtc.pram.peek(0x48) == 0x83, "21in_rgb 8bpp savedMode != 0x83")
-    mac.check("goldens/welcome-21in_rgb-1152x870-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 1152x870x8 21in_rgb")
+    check("goldens/welcome-21in_rgb-1152x870-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 1152x870x8 21in_rgb")
 
     -- --- the card's declaration ROM is the generated blob, path-less, by CRC ----
     assert(machine.nubus.slot[9].card.id == "mdc_8_24", "slot $9 does not seat the 8•24")
     assert(machine.nubus.slot[9].card.substitute, "slot $9's 8•24 does not run its substitute ROM")
     assert(machine.nubus.slot[9].card.declrom.path == "builtin:mdc_8_24", "declaration ROM is not the generated one")
     assert(machine.nubus.slot[9].card.declrom.crc ~= 0, "the generated declaration ROM has no CRC")
-    mac.report_perf("iicx-gsvrom/gsvrom-sweep", scheduler.instr_count)
+    report_perf("iicx-gsvrom/gsvrom-sweep", scheduler.instr_count)
 end
 
 function row_gsvrom_24ac() -- global: included file
@@ -153,8 +152,8 @@ function row_gsvrom_24ac() -- global: included file
     -- - two different cards driving the same 640x480x8 geometry render the same
     -- splash. Card identity is proven by the sPRAMRec asserts above (sister byte
     -- 0x6b is the 24AC), not by the pixels.
-    mac.check("goldens/welcome-24ac-640x480-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 24ac")
+    check("goldens/welcome-24ac-640x480-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 24ac")
 
     machine.boot{model = "iicx", ram = 8192, slots = "9=display_card_24ac,rom=substitute,mode=rgb_832x624_8bpp", rom = vars.ROM}
     machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
@@ -163,9 +162,9 @@ function row_gsvrom_24ac() -- global: included file
     assert(machine.screen.height == 624, "24ac 832x624 height != 624")
     assert(machine.rtc.pram.peek(0x48) == 0x82, "24ac savedMode != 0x82 (8bpp)")
     assert(machine.rtc.pram.peek(0x49) == 0x6c, "24ac sister != 0x6c")
-    mac.check("goldens/welcome-24ac-832x624-8bpp.png")
-    mac.report_row("7.0.1", "gsvrom", "rom-stage 832x624x8 24ac")
-    mac.report_perf("iicx-gsvrom/gsvrom-24ac", scheduler.instr_count)
+    check("goldens/welcome-24ac-832x624-8bpp.png")
+    report_row("7.0.1", "gsvrom", "rom-stage 832x624x8 24ac")
+    report_perf("iicx-gsvrom/gsvrom-24ac", scheduler.instr_count)
 end
 
 function row_gsvrom_824gc() -- global: included file
@@ -180,7 +179,7 @@ function row_gsvrom_824gc() -- global: included file
     assert(machine.nubus.slot[9].card.gc.state == "gc-on", "accelerator state != gc-on")
     assert(machine.nubus.slot[9].card.gc.error == 0, "accelerator posted an error")
     assert(machine.nubus.slot[9].card.gc.rpc_count > 0, "no RPCs serviced (bring-up never engaged)")
-    mac.report_perf("iicx-gsvrom/gsvrom-824gc", scheduler.instr_count)
+    report_perf("iicx-gsvrom/gsvrom-824gc", scheduler.instr_count)
 end
 
 function row_gsvrom_custom_mode() -- global: included file
@@ -196,9 +195,9 @@ function row_gsvrom_custom_mode() -- global: included file
     assert(machine.screen.height == 600, "custom height != 600")
     assert(machine.rtc.pram.peek(0x48) == 0x83, "savedMode != 0x83 (8bpp)")
     assert(machine.rtc.pram.peek(0x49) == 0xa6, "sister != 0xa6 (default monitor)")
-    mac.check("goldens/finder-custom-800x600-8bpp.png")
+    check("goldens/finder-custom-800x600-8bpp.png")
     -- A desktop cell, not a ROM-stage one: this row boots all the way to the
     -- Finder at a custom geometry the mode tables do not carry.
-    mac.report_row("7.0.1", "gsvrom", "fd-boot custom-mode 800x600x8")
-    mac.report_perf("iicx-gsvrom/gsvrom-custom-mode", scheduler.instr_count)
+    report_row("7.0.1", "gsvrom", "fd-boot custom-mode 800x600x8")
+    report_perf("iicx-gsvrom/gsvrom-custom-mode", scheduler.instr_count)
 end

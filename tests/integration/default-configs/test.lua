@@ -24,7 +24,7 @@ local function default_boots(model, rom, n)
     end
     assert(machine.screen.width > 0, F"${model}: no screen")
     assert(machine.screen.checksum() ~= 0, F"${model}: nothing drawn after ${n} instructions")
-    mac.report_perf(F"default-configs/${model}", spent)
+    report_perf(F"default-configs/${model}", spent)
 end
 
 default_boots("plus", "plus-v3-4d1f8172.rom", 20000000)

@@ -37,14 +37,14 @@ assert(catalog.proms.identify(F"${vars.TEST_DATA}/roms/mach64-gx-101-8c68216e.pr
 -- ...and the failures, each told apart from the others.  A PC/x86 option
 -- ROM is the predictable user error and must not be mistaken for "not a ROM".
 assert(not catalog.proms.identify(F"${vars.WORK_DIR}/fake-x86-vga.prom").recognised, "an x86 option ROM must be rejected")
-assert(not catalog.proms.offer(F"${vars.WORK_DIR}/fake-x86-vga.prom"), "...and must not register as an offer")
+assert(not gs.truthy(function() return catalog.proms.offer(F"${vars.WORK_DIR}/fake-x86-vga.prom") end), "...and must not register as an offer")
 assert(not catalog.proms.identify(F"${vars.WORK_DIR}/uncatalogued.prom").recognised, "an uncatalogued OF ROM must be rejected")
 assert(catalog.proms.identify(F"${vars.WORK_DIR}/uncatalogued.prom").intact, "...though it is intact: the right card, an unknown programming")
 -- A damaged dump names a catalogued identity but must not be recognised.
 assert(not catalog.proms.identify(F"${vars.WORK_DIR}/damaged-104.prom").recognised, "a dump whose FCode checksum fails must be rejected")
 assert(catalog.proms.identify(F"${vars.WORK_DIR}/damaged-104.prom").id == "1002-4758-c6e8", "...though its header still names -104")
 assert(not catalog.proms.identify(F"${vars.WORK_DIR}/damaged-104.prom").intact, "...and it reports why")
-assert(not catalog.proms.offer(F"${vars.WORK_DIR}/damaged-104.prom"), "a damaged dump must not register as an offer")
+assert(not gs.truthy(function() return catalog.proms.offer(F"${vars.WORK_DIR}/damaged-104.prom") end), "a damaged dump must not register as an offer")
 assert(not catalog.proms.identify(vars.ROM).recognised, "a 4 MB CPU ROM is not an expansion ROM")
 
 -- The frontend's ingest path, end to end: a persistent store that does not
@@ -59,7 +59,7 @@ assert(catalog.proms.offer(F"${vars.WORK_DIR}/prom-store/1002-4758-c6e8"), "and 
 assert(catalog.proms.identify(F"${vars.WORK_DIR}/prom-store/1002-4758-c6e8").card_id == "mach64_gx", "identity survives the copy and the rename")
 
 -- --- The card kind reaches the configuration layer from one declaration. ----
-assert(catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "the card must be registered")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "the card must be registered")
 
 machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx"}
 
@@ -378,12 +378,12 @@ local C565 = machine.screen.checksum(0, 0, 32, 64)
 assert(C565 ~= 0, "the synthetic raster must not hash to nothing")
 assert(machine.screen.checksum(0, 0, 32, 64) == C565, "the 5-6-5 checksum must be stable")
 machine.screen.match(F"${vars.WORK_DIR}/raster-565.png")
-assert(not machine.screen.matches(F"${vars.WORK_DIR}/raster-555.png"), "the 5-5-5 expansion of the same bytes must NOT match")
+assert(not gs.truthy(function() return machine.screen.matches(F"${vars.WORK_DIR}/raster-555.png") end), "the 5-5-5 expansion of the same bytes must NOT match")
 -- Flip only the pixel-width field to 5-5-5: identical bytes, other rule.
 machine.memory.poke.l(AL + 0x1C, swap32((GEN & 0xFFFFF8FF) | 0x300))
 assert(machine.screen.depth == 16, "5,5,5 is also 16 bpp")
 machine.screen.match(F"${vars.WORK_DIR}/raster-555.png")
-assert(not machine.screen.matches(F"${vars.WORK_DIR}/raster-565.png"), "...and must reject the 5-6-5 expansion")
+assert(not gs.truthy(function() return machine.screen.matches(F"${vars.WORK_DIR}/raster-565.png") end), "...and must reject the 5-6-5 expansion")
 
 -- --- The authentic 9500: no onboard video. ----------------------------------
 -- The real machine has none — it "requires a display card in a PCI slot" —
@@ -420,9 +420,9 @@ assert(machine.pci.slot[1].card.monitor.id == "15in_multi", "...including the se
 -- A malformed pair, a key the card does not take and a value it does not
 -- offer each reject the boot, before the running machine is touched: the
 -- card answers for its own options, so a typo is never silently a default.
-assert(not machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "bogus"}, "a malformed option must reject the boot")
-assert(not machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "memory=8m"}, "a key the card does not take must reject the boot")
-assert(not machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "vram=3m"}, "a value the card does not offer must reject the boot")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "bogus"} end), "a malformed option must reject the boot")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "memory=8m"} end), "a key the card does not take must reject the boot")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "vram=3m"} end), "a value the card does not offer must reject the boot")
 assert((machine.pci.slot[1].card.regs.mem_cntl & 7) == 2, "the running card is untouched")
 
 -- The card DECLARES what it will accept, so a frontend can offer a control

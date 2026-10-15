@@ -22,7 +22,7 @@ local mac = dofile("../lib/mac.lua")
 
 local img = F"${vars.WORK_DIR}/macos81.img"
 local payload_size = files.path_size(F"${vars.WORK_DIR}/share/payload.image")
-if mac.have_media(img) then
+if have_media(img) then
 
 machine.boot{model = "pm6100", ram = 24576, rom = vars.ROM}
 machine.rtc.time = "2026-04-26T21:30:36"
@@ -58,25 +58,25 @@ machine.adb.mouse.move(148, 110, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(200000000)
 -- Double-click "Shared Folders" -> the login dialog.
 machine.adb.mouse.move(380, 112, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(3000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(150000000)
 -- Guest -> OK: FPLogin, and the volume list.
 machine.adb.mouse.move(454, 306, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(150000000)
 assert(appletalk.afp.sessions.count == 1, "expected exactly one ASP session after the login")
 -- The one volume is preselected: OK mounts it.
@@ -84,7 +84,7 @@ machine.adb.mouse.move(399, 306, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(150000000)
 assert(appletalk.afp.volumes["Shared"].sessions_using == 1, "the mount is not counted on the volume")
 -- Close the Chooser.
@@ -92,7 +92,7 @@ machine.adb.mouse.move(95, 66, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(100000000)
 
 -- --- 3. Open the volume, drag the payload to the desktop ---------------------
@@ -100,11 +100,11 @@ machine.adb.mouse.move(591, 112, "global")
 scheduler.run(20000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(3000000)
 machine.adb.mouse.click(true)
 machine.adb.mouse.click(false)
-mac.wait_mouse_taken(100000000)
+wait_mouse_taken(100000000)
 scheduler.run(150000000)
 assert(appletalk.afp.volumes["Shared"].cnid_count == 2, "the payload was not listed")
 local bytes0 = appletalk.afp.stats.bytes_read
@@ -145,8 +145,8 @@ end
 echo(F"pdm-afp-copy-motion: ${appletalk.afp.stats.bytes_read - bytes0} bytes read over ${appletalk.afp.stats.ok_by_command[\"FPRead\"]} FPReads in ${round} motion rounds")
 assert(appletalk.afp.stats.open_forks == 0, "the copy left a fork open")
 assert(debug.mac.globals.read("DSErrCode") == 0, "system error during the copy")
-mac.report_row("8.1", "ariel", "afp-copy adb-motion")
-mac.report_perf("pdm-afp-copy-motion/copy", scheduler.instr_count)
+report_row("8.1", "ariel", "afp-copy adb-motion")
+report_perf("pdm-afp-copy-motion/copy", scheduler.instr_count)
 
 else
     echo("skip: pdm-afp-copy-motion/copy (tests/data/apps/quake_8_1_voodoo2.img not fetched -- gs-test-data extended media)")

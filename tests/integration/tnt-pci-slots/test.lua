@@ -45,7 +45,7 @@ assert(machine.pci.slot[4].device == 11, "Control IDSEL")
 assert(machine.pci.slot[4].card.name == "Control", "Control not seated from the slot table")
 -- The registry is an explicit list; adding a card driver is one extern plus
 -- one entry, and every compatible socket is offered it with no machine edit.
-assert(catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "card registry")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "card registry")
 
 -- --- The config-cycle contract, before a single instruction runs. ------------
 -- Bandit 1's own header at device 11 (kPCIBridgeSelfDevice): one-hot
@@ -217,10 +217,10 @@ machine.memory.poke.l(0xF4800000, 0x00000000)
 machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "tnt_control", slots = "1=none"}
 assert(not gs.ok(function() return machine.pci.slot[1].card.name end), "a builtin kind must not be seated in a socket")
 -- An unknown id is rejected before the running machine is touched.
-assert(not machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "nonesuch"}, "unknown pci_card id must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "nonesuch"} end), "unknown pci_card id must be rejected")
 -- So is a real card that fits no socket of this model: the Network Server's
 -- fixed Cirrus 54M30 is not a card any TNT Mac can seat.
-assert(not machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "cirrus_54m30"}, "a card that fits no socket must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "cirrus_54m30"} end), "a card that fits no socket must be rejected")
 assert(machine.id == "pm9500", "machine survives the rejected boot")
 
 -- --- Each seated card names its kind. -----------------------------------------

@@ -7,7 +7,7 @@ local function probe(label, v)
     machine.rtc.pram.poke(0x8a, v)
     machine.floppy.drive[0].insert(sys_701)
     scheduler.run(200000000)
-    mac.wait_stable(900000000)
+    wait_stable(900000000)
     echo(F"RESULT $8A=${label}: MMU32bit=${debug.mac.globals.read(\"MMU32bit\")}")
 end
 probe("01", gs.bytes(0x01, 1))

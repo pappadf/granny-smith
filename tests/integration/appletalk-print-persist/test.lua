@@ -16,7 +16,7 @@ local function click(x, y, settle)
     scheduler.run(2000000)
     machine.adb.mouse.click(true)
     machine.adb.mouse.click(false)
-    mac.wait_mouse_taken(100000000)
+    wait_mouse_taken(100000000)
     scheduler.run(settle)
 end
 
@@ -43,11 +43,11 @@ local function open_disk()
     scheduler.run(2000000)
     machine.adb.mouse.click(true)
     machine.adb.mouse.click(false)
-    mac.wait_mouse_taken(100000000)
+    wait_mouse_taken(100000000)
     scheduler.run(80000)
     machine.adb.mouse.click(true)
     machine.adb.mouse.click(false)
-    mac.wait_mouse_taken(100000000)
+    wait_mouse_taken(100000000)
     scheduler.run(40000000)
 end
 
