@@ -101,7 +101,7 @@ you can connect to your camera and microphone — see
 | Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays | PCI A1–C1 |
 | Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays | PCI A1–C1 |
 | Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays | PCI A1–F2 |
-| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | SCSI hard disk + CD-ROM, two ATA buses | PCI A1–C1 |
+| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM, two ATA buses | PCI A1–C1 |
 | Power Mac G3 Minitower | `pmg3mt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | as the Desktop | PCI A1–C1 |
 
 Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have no CD-ROM
@@ -134,7 +134,7 @@ Combinations the project tests regularly. Others may well work too.
 | Quadra 840AV / 660AV | System 7.1 with its enabler, 7.6 (840AV) |
 | Power Mac 6100 / 7100 / 8100 | System 7.5 – 7.6, Mac OS 8.1 – 9.0.4; MkLinux DR3 |
 | Power Mac 7500 / 8500 / 9500 | System 7.6, Mac OS 8.1; MkLinux DR3 (7500) |
-| Power Mac G3 | Mac OS 9.2.1 (install from CD and boot) |
+| Power Mac G3 | Mac OS 9.2.1 (install from CD and boot); Mac OS X 10.0.3 (from ATA, with the Mac OS X NVRAM patch) |
 | Network Server 500 | AIX 4.1.5, Windows NT 4.0 for PowerPC, Network Server Diagnostic Utility |
 | Lisa 2 | Lisa Office System 3.1, Lisa Workshop, SCO Xenix 3.0 |
 | Macintosh XL | MacWorks XL 3.0 |

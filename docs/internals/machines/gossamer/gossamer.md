@@ -73,6 +73,14 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   aperture: the accelerator streams its host data through the second copy
   of the register blocks there, and without it every alert, button and
   menu title drew blank.
+- **The Rage Pro's monitor** is the built-in port's choice
+  (`displays.builtin.monitor`): the 13" (Apple's 14" RGB sense, the
+  default), the 15", 17" and 20" multiple-scan displays or the 21", the
+  rows the Mach64 GX's sense table already answers through `GP_IO`.  The
+  multiple-scan rows must assemble Apple's extended codes $03/$0B/$23
+  (MSB1/2/3, "BC AC AB"): with them the ATI driver in Mac OS X 10.0 offers
+  640 x 480 through 1024 x 768 on the 17" and starts at 832 x 624; with any
+  other code it sees an unknown display and offers 640 x 480 alone.
 - **DBDMA CommandPtr on a parked channel.**  The ATA driver rewrites it
   with RUN set to continue a long transfer.
 - **ATA DMA must take time.**  With the device ready at the command write,
@@ -120,7 +128,7 @@ shortly after boot.
 - `gossamer-rom-ladder` — both ROMs from reset to the Start Manager: the
   Grackle and Heathrow programming, the board register, the SPD-sized RAM
   decode, the boot beep against a golden capture, the tick chain, the
-  Rage Pro gray desktop.
+  Rage Pro gray desktop, and the multiple-scan displays' extended sense.
 - `gossamer-device-tree` — the Open Firmware prompt reached from the
   keyboard, and the device tree checked property by property.
 - `gossamer-pci-slots` — the three slots and the on-board ATI: empty
@@ -135,6 +143,11 @@ shortly after boot.
   DBDMA, loopback set from Forth, the BOOTP request of `boot enet`.
 - `gossamer-checkpoint` — a mid-boot save, a restore in a fresh process
   and the same desktop frame.
+- `g3-osx-10-0-finder` — Mac OS X 10.0.3 from the minimal ATA disk in
+  the test data (a UDIF, its NVRAM patch and 17" monitor in the sidecar
+  configuration): BootX, the kernel, automatic login and the Finder at
+  1024 x 768, a golden frame.  It skips until `tests/data-version` pins a
+  gs-test-data commit that has the disk.
 - Media-gated on the retail Mac OS 9.2.1 CD under `GS_EXTRA_MEDIA_DIR`
   (they skip without it): `g3-cd-boot` (the CD to the Finder as a SCSI
   CD-ROM and as an ATAPI one), `g3-install-scsi` (Drive Setup and the

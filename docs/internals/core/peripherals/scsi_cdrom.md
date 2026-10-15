@@ -328,10 +328,11 @@ Store the prevent state per-device. When prevent=1, eject operations (START/STOP
 |------|-------|
 | 0 | Opcode `0x43` |
 | 1 | MSF bit (bit 1): 0 = LBA format, 1 = MSF format |
-| 2-5 | Reserved |
+| 2 | Format (bits 3-0; MMC) — Reserved under SCSI-2 |
+| 3-5 | Reserved |
 | 6 | Starting Track |
 | 7-8 | Allocation Length (big-endian) |
-| 9 | Control |
+| 9 | Control; bits 7-6 the format when byte 2's is zero (SFF-8020i) |
 
 > **Corrected 2026-09-14.** This row used to read "Format (bits 7-6 of byte 2 in
 > some implementations, or byte 9 bits 5-0)", and the code carried a
@@ -341,6 +342,15 @@ Store the prevent state per-device. When prevent=1, eject operations (START/STOP
 > codes — and the Format 1 session info described below — are **MMC**, a later
 > standard than either authority for this drive, which reports ANSI version
 > `0x01` (SCSI-1) in INQUIRY.
+>
+> **Amended 2026-10-14.** The same model is the ATAPI CD-ROM's back end
+> ([ata.md](ata.md)), and SFF-8020i r2.6 §10.8.19 Table 125 *does* define a
+> format: byte 2 bits 3-0, else byte 9 bits 7-6. Both are zero from every
+> SCSI-2 driver, so the SCSI path still gets format 0; a non-zero one selects
+> formats 1 and 2 below, and 3 is refused (ILLEGAL REQUEST / INVALID FIELD IN
+> CDB). Mac OS X's CD driver asks for format 2 (`43 02 … 14 80`); answered in
+> format 0's layout it published no medium and the install CD's boot waited for
+> its root device.
 
 **Format 0 — TOC (default):**
 
@@ -378,11 +388,18 @@ Response for a single-track data disc:
 
 For data tracks: Control = `0x04` (data, no pre-emphasis, two-channel, copy prohibited). ADR = `0x01` (Q sub-channel encodes current position). Combined: `0x14`.
 
-**Format 1 — Session Info:** *not applicable.* Retained here only to be
-explicitly withdrawn: this is an MMC feature reached through a format field that
-neither X3.131-1994 nor the CDU-541 manual defines for `0x43`. It is not
-implemented, and implementing it would mean adding a post-1994 feature to a
-drive that declares SCSI-1.
+**Format 1 — Session Info** (SFF-8020i Table 127): the 4-byte header (data
+length 10, first and last session 1) and one 8-byte descriptor, session 1's
+first track (1) at LBA 0 / MSF 00:02:00. Reached only through the format field
+above, so a SCSI-2 driver never sees it.
+
+**Format 2 — Full TOC** (SFF-8020i Table 128): the header (data length
+2 + 11 × 4, sessions 1 and 1) and four 11-byte lead-in Q sub-channel
+descriptors in MSF, whatever the MSF bit: point `A0h` (PMin = first track 1,
+PSec = disc type `00h`, CD-ROM), `A1h` (PMin = last track 1), `A2h`
+(PMin/PSec/PFrame = the lead-out's start, the same address as format 0's `AAh`
+entry) and track `01h` (00:02:00); each with session 1, ADR/Control `0x14`,
+TNO 0.
 
 **Starting track:** only `0x01` and `0xAA` (lead-out) can be satisfied by a
 single-session data disc; anything else is refused with CHECK CONDITION /
