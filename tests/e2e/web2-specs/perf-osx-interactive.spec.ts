@@ -71,16 +71,20 @@ async function bootFromLink(page: Page): Promise<void> {
       route.fulfill({ status: 200, contentType: "application/octet-stream", body }),
     );
   }
+  console.log("PERFSCEN step: goto");
   await page.goto(link());
+  console.log("PERFSCEN step: loaded");
   await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
     timeout: 120_000,
   });
   await expect(page.locator(".toast .msg").filter({ hasText: "Booted pmg3dt from URL parameters" })).toBeVisible({
     timeout: 300_000,
   });
+  console.log("PERFSCEN step: booted");
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'scheduler.mode = "turbo"');
+  console.log("PERFSCEN step: turbo");
 }
 
 // Wait for `marker` (or a failure) in the terminal; return the whole text
