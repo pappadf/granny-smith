@@ -8,6 +8,13 @@ binding namespace serves variables and aliases behind a single `$`
 sigil. The operations themselves live on the object tree; the shell is
 the line-input and scripting surface that walks it.
 
+> **Status (2026-10):** scripts are moving to Lua
+> (`docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`,
+> `include` or `shell.script_run` runs on the Lua state, and new tests are
+> written in Lua. The language below still runs the terminal's lines,
+> `shell.eval`, the breakpoint conditions and logpoint templates, and every
+> `.script` test not yet ported.
+
 ## Overview
 
 Two callers reach the emulator through the shell layer:

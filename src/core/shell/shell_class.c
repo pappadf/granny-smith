@@ -21,6 +21,7 @@
 #include "alias.h" // shell_alias_class
 #include "cmd_complete.h"
 #include "expr.h"
+#include "gs_lua.h"
 #include "highlight.h"
 #include "lint.h"
 #include "object.h"
@@ -268,6 +269,17 @@ static DEF_METHOD(shell_method_eval) {
     return val_none();
 }
 
+// `shell.lua(text)` — run Lua source on the script state (gs_lua.h) with
+// the REPL's printing: an expression's results are printed.  VK_NONE on
+// success, VK_ERROR when the chunk failed (the failure has been reported).
+static DEF_METHOD(shell_method_lua) {
+    if (argv[0].kind != VK_STRING || !argv[0].s)
+        return val_err("shell.lua: expected (text)");
+    if (gs_lua_run_source(argv[0].s, true) < 0)
+        return val_err("shell.lua: chunk failed");
+    return val_none();
+}
+
 // `shell.interrupt()` — stop the running scheduler and cancel any
 // running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
@@ -288,6 +300,7 @@ static DEF_METHOD(shell_method_interrupt) {
         if (s)
             scheduler_stop(s);
         script_interrupt();
+        gs_lua_interrupt();
         return val_none();
     }
     // From inside a script it is the script asking: stop my run, not me.
@@ -454,6 +467,10 @@ static const member_t shell_members[] = {
      .name = "eval",
      .doc = "Run a (possibly multi-line) script source string",
      .method = {.args = shell_eval_args, .nargs = 1, .result = VK_NONE, .fn = shell_method_eval}},
+    {.kind = MK_METHOD,
+     .name = "lua",
+     .doc = "Run Lua source on the script state; an expression's results are printed",
+     .method = {.args = shell_eval_args, .nargs = 1, .result = VK_NONE, .fn = shell_method_lua}},
     {.kind = MK_METHOD,
      .name = "interrupt",
      .doc = "Stop the running scheduler and cancel the caller's running script (Ctrl-C path)",

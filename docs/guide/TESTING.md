@@ -157,7 +157,7 @@ Two rules suite rows must follow, both learned from real failures:
 
 - **Name every staging argument the row depends on.** `machine.boot`
   takes a complete document: `model` and `rom` are required (the harness
-  binds `--var ROM` to the test's configured ROM, so `rom="${$ROM}"` is
+  binds `--var ROM` to the test's configured ROM, so `rom = vars.ROM` is
   the idiom), and every omitted field resolves to the model's own
   default — never to what a previous row booted. A row that cares about
   the video card, vROM, or monitor sense still passes it explicitly so
@@ -173,9 +173,13 @@ Two rules suite rows must follow, both learned from real failures:
   capturing and when verifying, so menu/click choreography lands the
   same way in both. Screens that animate (a blinking "?" icon, a text
   caret) never settle at all — those rows use a fixed `run_ticks`
-  window and their goldens are animation-phase-sensitive by design. Shared
-harness functions live in `tests/integration/lib/mac.script`, pulled
-in with the shell's `include` statement. The library provides
+  window and their goldens are animation-phase-sensitive by design. Tests are Lua files (`test.lua`; `docs/internals/core/lua/lua.md` is the
+language's contract with the tree; a directory still holding a `test.script`
+runs on the shell's own language until it is ported, and
+`scripts/script-to-lua.py` does the mechanical part of a port). Shared
+harness functions live in `tests/integration/lib/mac.lua`, pulled in with
+`local mac = dofile("../lib/mac.lua")` and called as `mac.wait_match(...)`.
+The library provides
 condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
 `wait_global`, `wait_desktop` — a wait states its condition; ceilings are
 hang detectors), budgets that end early on their golden
@@ -203,9 +207,11 @@ was captured), `skip_test` for a test whose media is absent (the runner then pri
 `=== SKIP: <test> (<why>) ===` instead of PASS and records `SKIP` in
 `durations.jsonl`), guest-tick choreography (`run_ticks`, `click` and `double_click`, which
 press and release back to back and run until the guest has taken the click,
-`about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
-milestone rows), addressing-mode asserts (`assert_addr`), and
-machine-read coverage records (`@@COV` lines).
+`about_box`), the row harness (`mac.row(label, function() … end)` runs a
+row under pcall, counts it and reports it; `mac.milestone` the same for a
+known gap; `mac.suite_done` the epilogue; `mac.wait_until(cond, step,
+ceiling, what)` is the one loop under every wait), addressing-mode asserts
+(`assert_addr`), and machine-read coverage records (`@@COV` lines).
 
 A second, machine-specific library sits beside it:
 `tests/integration/lib/ans.script`, for the Apple Network Servers. Those
