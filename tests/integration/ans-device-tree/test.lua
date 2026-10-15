@@ -149,16 +149,16 @@ local function tree(model, ram_kb, bus_clock, l2_label)
     assert(gs.contains(aliases, "disk6               /bandit/53c825@12/sd@6,0"), F"S7: ${model} disk6 alias")
 
     -- --- The LCD settled on its banner --------------------------------------
-    assert(machine.lcd.line(2) == bus_clock_lcd, F"S4: ${model} CPU banner")
-    assert(machine.lcd.line(3) == l2_label, F"S4: ${model} L2 banner")
+    assert(machine.lcd.line(2) == bus_clock_lcd, F"S4: ${model} CPU banner: got [${machine.lcd.line(2)}] want [${bus_clock_lcd}]")
+    assert(machine.lcd.line(3) == l2_label, F"S4: ${model} L2 banner: got [${machine.lcd.line(3)}] want [${l2_label}]")
 
     mac.report_perf(F"ans-device-tree/${model}", scheduler.instr_count)
     echo(F"ans-device-tree ${model}: Listing 6-1 matched; ?esb set; AAPL,interrupts confirms the 20+EXT rule")
 end
 
 -- clock-frequency is printed in hex: 44 MHz = $029F6300, 50 MHz = $02FAF080.
-local bus_clock_lcd = "066MHz 604, 44MHzBus"
+bus_clock_lcd = "066MHz 604, 44MHzBus"
 tree("ans500", 32768, "029F6300", "0512KB Level 2 Cache")
-local bus_clock_lcd = "075MHz 604, 50MHzBus"
+bus_clock_lcd = "075MHz 604, 50MHzBus"
 tree("ans700", 49152, "02FAF080", "1024KB Level 2 Cache")
 quit()
