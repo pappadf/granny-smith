@@ -287,8 +287,8 @@ with `jit.supervisor` set: on the Mac OS X 10.1 boot to the Finder
 but the boot takes 92 s against 86 s user-only and 82 s with the JIT
 off -- the kernel leaves translated code every 60-85 instructions in
 its busiest stretches (exits to pages that have not joined a region,
-and to other regions), so entry and exit cost more than translation
-saves.  It emits each block's instructions from the
+and, before chains crossed regions (§3.6), to other regions), so entry
+and exit cost more than translation saves.  It emits each block's instructions from the
 entry fields: registers as wasm locals, immediates and masks as
 constants, CR0 records and compares with XER[SO], XER[CA] and XER[OV] as
 bits of the XER local, the 601's `mtxer` mask.  A branch to a block of
@@ -346,14 +346,23 @@ In real mode the mapping is the memory map's, and every translation is
 dropped when the memory map changes (`g_mem_map_generation`).
 
 A transfer to an address the chunk has no block for goes to the
-function's chain stub, which looks the address up in the region's own
-tables at run time: the member slot, the word's owner chunk, that chunk's
-function and map, and (in instruction-translation mode) the fetch TLB
-against the slot's mapping.  On a hit it stores CR/XER/LR/CTR and
-tail-calls the other function (`return_call_indirect`) with the budget and
-the fold allowance; otherwise it leaves.  The tables outlive the code that
-reads them: a remapped member or a reset drops the region's functions
-first.
+function's chain stub, which looks the address up at run time: the
+target's region in `g_rdirect` (every region by mode and logical
+megabyte, so a chain reaches the translations of any region of the same
+MSR[IT]/MSR[PR] mode, not only its own), the member slot, the word's
+owner chunk, that chunk's function and map, and (in
+instruction-translation mode) the fetch TLB against the slot's mapping.
+On a hit it stores CR/XER/LR/CTR and tail-calls the other function
+(`return_call_indirect`) with the budget and the fold allowance;
+otherwise it leaves.  The tables outlive the code that reads them: a
+remapped member or a reset drops the region's functions first, and
+regions themselves live until `ppc_jit_reset`, which clears `g_rdirect`.
+On the Mac OS X scenario's warm round, chaining across regions cut the
+exits to other regions from 995 K to 275 K (all exits from 3.05 M to
+2.44 M; the rest are targets on pages that have not joined their region)
+without a wall-time change measurable through the scenario's run-to-run
+noise (about 7 %): an exit and the entry after it cost less than the
+counts suggested.
 
 ### 3.7 Coherence
 
