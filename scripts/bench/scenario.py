@@ -59,8 +59,8 @@ SCENARIOS = {
 }
 
 CONFIGS = {
-    "switch": ("predecode.enabled = 0\n", False),
-    "predecode": ("predecode.enabled = 1\n", False),
+    "switch": ("predecode.enabled = 0\njit.enabled = 0\n", False),
+    "predecode": ("predecode.enabled = 1\njit.enabled = 0\n", False),
     "jit": ("predecode.enabled = 1\njit.enabled = 1\njit.supervisor = 0\n", True),
     "jit-sup": ("predecode.enabled = 1\njit.enabled = 1\njit.supervisor = 1\n", True),
 }

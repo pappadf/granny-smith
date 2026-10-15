@@ -54,13 +54,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+// On by default where there is a tier (jit.enabled); off where there is none
+#ifdef __EMSCRIPTEN__
+bool g_ppc_jit_on = true;
+#else
 bool g_ppc_jit_on;
+#endif
 
 // Tunables (the `jit` node; settable in every build so scripts run anywhere)
 static uint32_t g_threshold = 300000; // instructions run in a page (predecoded) before it joins its region
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
-static uint32_t g_supervisor; // jit.supervisor: translate supervisor code that runs with data translation on
+static uint32_t g_supervisor = 1; // jit.supervisor: translate supervisor code that runs with data translation on
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
