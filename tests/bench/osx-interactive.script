@@ -17,6 +17,9 @@
 #              fixed stretch of scheduler slots, so every build and executor
 #              runs the same guest instructions; each prints one @@SCEN line
 #              with its host wall time and the guest instructions it retired.
+#   MODE=live  the same on the running machine, already at the Finder, with
+#              no checkpoint (the browser run: a checkpoint of this 256 MB
+#              machine takes longer than the page's 3 s heartbeat watch)
 #
 # The pointer: OS X keeps no Toolbox cursor globals, so "global" moves do not
 # work.  osx_goto() slams the pointer into the top-left corner and walks it
@@ -90,7 +93,9 @@ if $MODE == "boot" {
     checkpoint.save "${$CKPT}"
     echo "@@SCEN {\"phase\":\"boot\",\"instr\":${machine.cpu.instr_count}}"
 } else {
-    checkpoint.load "${$CKPT}"
+    if $MODE == "run" {
+        checkpoint.load "${$CKPT}"
+    }
     # The configuration under test (scenario.py's driver defines it: the
     # executor, the translation tier's switches)
     try(scen_setup(), none)
