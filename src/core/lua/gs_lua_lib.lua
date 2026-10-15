@@ -159,7 +159,7 @@ end
 
 -- gs.str(v): a value as the old `${…}` spliced it.  A list is `[a, b]`
 -- with its items as plain text; a map is its compact JSON (strings quoted,
--- nested lists JSON too); nil is "none".  pairs keeps a tree map's order.
+-- nested lists JSON too); nil is the empty string.  pairs keeps a tree map's order.
 local function is_sequence(t)
   local n = #t
   for k in next, t do
@@ -189,7 +189,7 @@ local function json(v)
 end
 
 function str(v)
-  if v == nil or v == gs.none then return "none" end
+  if v == nil or v == gs.none then return "" end
   if type(v) ~= "table" then return tostring(v) end
   if getmetatable(v) ~= MAPMT and is_sequence(v) then
     local parts = {}

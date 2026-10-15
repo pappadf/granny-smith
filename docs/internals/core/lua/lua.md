@@ -121,7 +121,7 @@ Lua's own `string`, `table`, `math`, `utf8`, `coroutine`, `luadebug` and the
 | `gs.try(fn, fallback)` | `fn()`'s result, or `fallback` (called with the error when it is a function) when it raised |
 | `gs.ok(fn)` | true when `fn()` ran without raising |
 | `gs.truthy(fn)` | what the old `!call(...)` tested: false when `fn()` raised or returned nil, false, 0, "" or an empty table |
-| `gs.str(v)` | a value as the old `${…}` spliced it: a list as `[a, b]`, a map as its compact JSON, nil as `none`; `tostring` of a tree map is the same |
+| `gs.str(v)` | a value as the old `${…}` spliced it: a list as `[a, b]`, a map as its compact JSON, nil as the empty string; `tostring` of a tree map is the same |
 | `F"text ${expr} ${expr:08x}"` | a template filled from the caller's locals, parameters, upvalues and the globals; `:spec` is a `string.format` spec |
 | `gs.template(s)` | the compiled template, a function of an environment table |
 | `gs.bytes(v, w)` | a bytes value, big-endian; `gs.bytes("…")` the string's bytes |
