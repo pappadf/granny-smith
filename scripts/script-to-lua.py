@@ -80,7 +80,7 @@ METHOD_VERBS = {
     "remove", "reset", "reset_button", "restart", "restore", "rewind", "rm",
     "run", "save", "send", "sent", "set", "snapshot", "start", "stop", "str",
     "tex_offset", "trace", "translate", "type", "udif_info", "unmount", "up",
-    "usage", "validate", "verify", "walk", "quit", "script_run",
+    "usage", "validate", "verify", "walk", "quit", "script_run", "info", "off", "pattern",
 }
 
 # Methods whose named argument is an OBJ_ARG_TEMPLATE (fire-time template

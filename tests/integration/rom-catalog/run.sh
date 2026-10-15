@@ -18,10 +18,11 @@ ROMS_DIR="$TEST_DATA/roms"
 [ -d "$ROMS_DIR" ] || { echo "FAIL: $ROMS_DIR does not exist"; exit 1; }
 
 # Build the headless script: for each file emit a marker line naming the file,
-# then echo its identify JSON.  The shell prints values in an unquoted display
-# form, but the fields we key on (recognised / checksum / crc) are comma-free,
-# so they extract cleanly regardless of the free-text `name`.
-SCRIPT="$WORK_DIR/identify.script"
+# then echo its identify JSON.  The template splice prints the map as compact
+# JSON with its keys quoted (the Python below strips the quotes), and the
+# fields we key on (recognised / checksum / crc) are comma-free, so they
+# extract cleanly regardless of the free-text `name`.
+SCRIPT="$WORK_DIR/identify.lua"
 : > "$SCRIPT"
 count=0
 while IFS= read -r -d '' f; do
@@ -35,11 +36,11 @@ while IFS= read -r -d '' f; do
         README.md|*.md) continue ;;
         *) echo "FAIL: unexpected non-ROM/doc file in roms/: $base"; exit 1 ;;
     esac
-    printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
-    printf 'echo "${%s(\"%s\")}"\n' "$obj" "$f" >> "$SCRIPT"
+    printf 'echo("GSFILE %s")\n' "$base" >> "$SCRIPT"
+    printf 'echo(F"${%s(\\"%s\\")}")\n' "$obj" "$f" >> "$SCRIPT"
     count=$((count + 1))
 done < <(find "$ROMS_DIR" -maxdepth 1 -type f -print0 | sort -z)
-echo "quit" >> "$SCRIPT"
+echo "quit()" >> "$SCRIPT"
 
 [ "$count" -gt 0 ] || { echo "FAIL: no files found in $ROMS_DIR"; exit 1; }
 echo "rom-catalog: identifying $count file(s) in $ROMS_DIR"

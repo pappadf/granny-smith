@@ -203,7 +203,7 @@ local function row_iici_76_hd_addr32()
     mac.wait_stable(1800000000)
     assert(machine.id == "iici", "iici-76-hd-addr32: machine.id != iici")
     assert(boots.hit_count == 1, F"iici-76-hd-addr32: ${boots.hit_count} boots, want 1")
-    local _ = boots.remove
+    boots.remove()
     mac.assert_addr(true)
     mac.check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
     mac.report_row("7.6", "rbv", "hd-boot 5380 addr32 seeded")

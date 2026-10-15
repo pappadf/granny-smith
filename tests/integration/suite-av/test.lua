@@ -366,7 +366,7 @@ local function row_video_in(model, golden)
     assert(machine.videoin.fields == 0, F"video-in: ${machine.videoin.fields} fields written before any capture")
 
     -- Plug in the deterministic pattern source, then launch Video Monitor.
-    local _ = machine.videoin.pattern
+    machine.videoin.pattern()
     assert(machine.videoin.connected, "video-in: pattern source not connected")
     machine.adb.mouse.move(50, 50, "global")
     mac.run_ticks(30)

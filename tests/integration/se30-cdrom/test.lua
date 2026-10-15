@@ -16,13 +16,13 @@ scheduler.run(1942000000)
 machine.screen.match("finder.png")
 
 -- Verify cdrom info reports the attached disc
-local _ = machine.scsi.device[3].info
+machine.scsi.device[3].info()
 
 -- Eject the disc
 machine.scsi.device[3].eject()
 
 -- Verify cdrom info shows no disc after eject
-local _ = machine.scsi.device[3].info
+machine.scsi.device[3].info()
 
 -- Run briefly to let the OS process the SCSI bus change
 scheduler.run(100000000)

@@ -230,16 +230,16 @@ assert(machine.pci.slot[1].card.regs.fb_size == 0x400000, "...same 4 MB framebuf
 -- The card advertises one option, Rendering, whose WebGPU value is offered
 -- only where a WebGPU device exists: headless has none, so Software alone.
 -- The board memory stays unadvertised.
-local v2 = catalog.profile("pm7500").cards[1]
-assert(#v2.options == 1 and v2.options[0].id == "raster", "the card advertises Rendering, and only it")
-assert(#v2.options[0].values == 1 and v2.options[0].values[0].label == "Software", "without a WebGPU device, Software alone")
+local v2 = catalog.profile("pm7500").cards[2]
+assert(#v2.options == 1 and v2.options[1].id == "raster", "the card advertises Rendering, and only it")
+assert(#v2.options[1].values == 1 and v2.options[1].values[1].label == "Software", "without a WebGPU device, Software alone")
 
 -- --- The two kinds: "voodoo2" draws exactly, "voodoo2_webgpu" on the host GPU.
 -- The WebGPU variant is REGISTERED everywhere (a boot document or a
 -- checkpoint may name it) but OFFERED only where a WebGPU device exists:
 -- the tree lists the exact card alone: the WebGPU kind is its Rendering
 -- value, never a card of its own.
-assert(catalog.profile("pm7500").cards[1].id == "voodoo2", "the exact card is offered")
+assert(catalog.profile("pm7500").cards[2].id == "voodoo2", "the exact card is offered")
 assert(#catalog.profile("pm7500").cards == 2, "...and the WebGPU variant is not a second card")
 -- Named anyway, it comes up: the same card, whose rasteriser falls back
 -- to the thread backend at creation — honestly — and draws exactly.

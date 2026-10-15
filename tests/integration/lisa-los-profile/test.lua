@@ -178,7 +178,7 @@ mac.check("expected_desktop.png")
 -- FS_Shutdown (boot volume MDDF mountinfo := unmounted), and the screen blanks as
 -- the machine powers off.  After this the saved image cold-boots clean (no
 -- "startup disk was in use" scavenge).
-local _ = machine.power.off
+machine.power.off()
 mac.run_until_match("expected_poweroff.png", 40000000, 5000000)
 mac.check("expected_poweroff.png")
 

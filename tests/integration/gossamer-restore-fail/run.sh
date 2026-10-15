@@ -13,16 +13,16 @@ CHECKPOINT_FILE="$TEST_TMPDIR/g3.gs"
 TRUNCATED_FILE="$TEST_TMPDIR/g3-truncated.gs"
 
 echo "Step 1: save a checkpoint of a bare G3"
-cat > "$TEST_TMPDIR/step1.script" << EOF
-scheduler.run 100000000
-assert checkpoint.save("$CHECKPOINT_FILE") "step1 checkpoint save failed"
-quit
+cat > "$TEST_TMPDIR/step1.lua" << EOF
+scheduler.run(100000000)
+assert(checkpoint.save("$CHECKPOINT_FILE"), "step1 checkpoint save failed")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
-    script="$TEST_TMPDIR/step1.script" \
+    script="$TEST_TMPDIR/step1.lua" \
     --speed=turbo
 
 # The stream ends in the event queue, which is restored after the whole
@@ -32,34 +32,34 @@ truncate -s -8 "$TRUNCATED_FILE"
 
 echo ""
 echo "Step 2: boot 9.2.1 with an ATA disk, fail the restore, finish the boot"
-cat > "$TEST_TMPDIR/step2.script" << EOF
-assert files.hd_create("$TEST_TMPDIR/ata.img", "HD500SC") "create the ATA disk"
+cat > "$TEST_TMPDIR/step2.lua" << EOF
+assert(files.hd_create("$TEST_TMPDIR/ata.img", "HD500SC"), "create the ATA disk")
 machine.rtc.time = "2026-10-01T12:00:00"
-machine.scsi.attach_hd "$TEST_TMPDIR/hd.img" 0
-assert machine.ata.attach_hd("$TEST_TMPDIR/ata.img", 0) "attach the ATA disk"
-scheduler.run 1000000000
-assert !checkpoint.load("$TRUNCATED_FILE") "the truncated checkpoint loaded"
-assert machine.ata.devices == "hd - - -" "the running machine lost its ATA disk"
-let ata_reads = files.images[1].reads
-# Up to 11 G more, sampled every 250 M: done once the Finder is the current
-# application (CurApName, \$910, reads "Finder") and the ATA disk has been
-# read since the failed restore.
-let spent = 0
-while \$spent < 11000000000 && !(try(machine.cpu.mmu.peek(0x910, 4), 0) == 0x0646696E && try(machine.cpu.mmu.peek(0x914, 2), 0) == 0x6465 && files.images[1].reads > \$ata_reads) {
-    scheduler.run 250000000
-    \$spent = \$spent + 250000000
-}
-assert files.images[1].reads > \$ata_reads "the running machine did no ATA I/O after the failed restore"
-assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive is not the SCSI volume"
-assert debug.mac.globals.read("DSErrCode") == 0 "a system error during startup"
-echo "@@PERF {\\"row\\":\\"gossamer-restore-fail/finder\\",\\"instr\\":\${scheduler.instr_count}}"
-quit
+machine.scsi.attach_hd("$TEST_TMPDIR/hd.img", 0)
+assert(machine.ata.attach_hd("$TEST_TMPDIR/ata.img", 0), "attach the ATA disk")
+scheduler.run(1000000000)
+assert(not gs.truthy(function() return checkpoint.load("$TRUNCATED_FILE") end), "the truncated checkpoint loaded")
+assert(machine.ata.devices == "hd - - -", "the running machine lost its ATA disk")
+local ata_reads = files.images[1].reads
+-- Up to 11 G more, sampled every 250 M: done once the Finder is the current
+-- application (CurApName, \$910, reads "Finder") and the ATA disk has been
+-- read since the failed restore.
+local spent = 0
+while spent < 11000000000 and not (gs.try(function() return machine.cpu.mmu.peek(0x910, 4) end, 0) == 0x0646696E and gs.try(function() return machine.cpu.mmu.peek(0x914, 2) end, 0) == 0x6465 and files.images[1].reads > ata_reads) do
+    scheduler.run(250000000)
+    spent = spent + 250000000
+end
+assert(files.images[1].reads > ata_reads, "the running machine did no ATA I/O after the failed restore")
+assert(debug.mac.globals.read("BootDrive") == 0x8023, "BootDrive is not the SCSI volume")
+assert(debug.mac.globals.read("DSErrCode") == 0, "a system error during startup")
+echo(F"@@PERF {\\"row\\":\\"gossamer-restore-fail/finder\\",\\"instr\\":\${scheduler.instr_count}}")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
-    script="$TEST_TMPDIR/step2.script" \
+    script="$TEST_TMPDIR/step2.lua" \
     --speed=turbo
 
 rm -f "$CHECKPOINT_FILE" "$TRUNCATED_FILE"

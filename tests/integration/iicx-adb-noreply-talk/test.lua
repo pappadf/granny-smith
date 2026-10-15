@@ -75,7 +75,7 @@ assert(presses.hit_count >= 1, "quick click: the press never reached MBState")
 assert(releases.hit_count >= 1, "quick click: the release never reached MBState")
 assert(debug.mac.globals.read("MBState") == 0x80, "quick click: MBState != $80 after the release")
 echo(F"quick-click: ok, taken within ${spent} instructions")
-local _ = presses.remove
-local _ = releases.remove
+presses.remove()
+releases.remove()
 
 quit()
