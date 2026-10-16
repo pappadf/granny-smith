@@ -234,7 +234,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: integration-shard-*
           path: shards
