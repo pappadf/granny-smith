@@ -337,7 +337,11 @@ def taskset(core):
 def native_window(binary, row, executor, rnd, core, test_data):
     d = run_dir(binary, row, "B-%s-%d" % (executor, rnd))
     script = window_script(d, binary, row, executor, row["b_warm"], row["b_window"])
-    p, _ = run_emu(emu_cmd(binary, row, script, test_data), d, 1800, taskset(core))
+    # The translation tier runs unpinned: on one core the engine's background
+    # compile threads take the emulator's time (g3dt-boot 41 MIPS pinned
+    # against 72 unpinned, the same as the predecoded executor's)
+    pin = None if executor == "jit" else core
+    p, _ = run_emu(emu_cmd(binary, row, script, test_data), d, 1800, taskset(pin))
     w = window_result(p)
     why = window_validity(row, w, row["b_window"])
     if w is None:
