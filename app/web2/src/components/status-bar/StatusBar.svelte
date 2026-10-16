@@ -84,7 +84,7 @@
   // The CPU engine (the core names it with each perf push, em_main.c): the
   // switch interpreter, the predecoded one, or the PowerPC translation tier
   // with the share of the last second's instructions that ran translated.
-  // Right-click switches it.
+  // A click (or right-click, or Enter/Space) opens a menu that switches it.
   const engineLabel = $derived(
     machine.engine === 'jit'
       ? `JIT ${Math.round(machine.jitPct)}%`
@@ -96,13 +96,17 @@
   );
   const engineTitle = $derived(
     machine.engine === 'jit'
-      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${(machine.jitKb / 1024).toFixed(1)} MB compiled). Right-click to change.`
+      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${(machine.jitKb / 1024).toFixed(1)} MB compiled). Click to change.`
       : machine.engine === 'predecoded'
-        ? `CPU engine: predecoded interpreter${machine.ppc ? ' (the PowerPC JIT is off)' : ''}. Right-click to change.`
-        : 'CPU engine: the plain interpreter (predecoding off). Right-click to change.',
+        ? `CPU engine: predecoded interpreter${machine.ppc ? ' (the PowerPC JIT is off)' : ''}. Click to change.`
+        : 'CPU engine: the plain interpreter (predecoding off). Click to change.',
   );
   function engineMenu(ev: MouseEvent): void {
     ev.preventDefault();
+    // Open the menu off the chip itself, like a select; at the bottom bar
+    // there is no room below, so it opens upward from the chip's top edge.
+    const el = ev.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
     const jitOn = machine.engine === 'jit';
     openContextMenu(
       [
@@ -131,8 +135,9 @@
             ]
           : []),
       ],
-      ev.clientX,
-      ev.clientY,
+      r.left,
+      r.bottom,
+      { minWidth: r.width, returnFocus: el, above: r.top },
     );
   }
 
@@ -178,16 +183,17 @@
         </div>
       {/if}
       {#if engineLabel}
-        <div
-          class="gs-statusbar__item sb-item sb-engine"
+        <button
+          type="button"
+          class="gs-statusbar__item gs-statusbar__button sb-item sb-engine"
           data-engine={machine.engine}
           title={engineTitle}
-          role="button"
-          tabindex="-1"
+          aria-haspopup="menu"
+          onclick={engineMenu}
           oncontextmenu={engineMenu}
         >
           <span class="label">{engineLabel}</span>
-        </div>
+        </button>
       {/if}
       {#if machine.drives.hd}
         <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
@@ -337,12 +343,13 @@
     opacity: var(--gs-statusbar-meta-opacity);
   }
   .sb-engine {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
     font-variant-numeric: var(--gs-numeric);
     opacity: var(--gs-statusbar-meta-opacity);
-    cursor: context-menu;
-  }
-  .sb-engine:hover {
-    background: var(--gs-statusbar-item-hover);
   }
   .sb-upload {
     gap: var(--gs-space-1-5);
