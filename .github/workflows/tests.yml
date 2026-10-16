@@ -248,12 +248,16 @@ jobs:
         env:
           HAS_DATA: ${{ secrets.GS_TEST_DATA_TOKEN != '' }}
         run: |
-          n=$(ls shards/*/it-shard.log 2>/dev/null | wc -l)
           if [ "$HAS_DATA" != "true" ]; then
             echo "have=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No test data (no token): contracts skipped"
             exit 0
           fi
+          # Count with a glob, not `ls | wc -l`: with no logs, ls exits 2 and
+          # pipefail would fail the step before it reports anything.
+          shopt -s nullglob
+          logs=(shards/*/it-shard.log)
+          n=${#logs[@]}
           if [ "$n" -ne 4 ]; then
             echo "::error::expected 4 shard logs (the integration matrix), found $n"
             ls -R shards || true
