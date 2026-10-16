@@ -179,10 +179,21 @@ function stat(word: number, delta: number): void {
 
 // --- device setup --------------------------------------------------------
 
+// Why initDevice answered false, for the page's log (voodoo2Gpu.svelte.ts).
+let unavailableReason = '';
+
 async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
-  if (!('gpu' in navigator)) return false;
+  if (!('gpu' in navigator)) {
+    unavailableReason = 'no WebGPU in this browser (navigator.gpu is missing in workers)';
+    return false;
+  }
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return false;
+  if (!adapter) {
+    // The API is there but no GPU answers: blocklisted, off, or a stuck
+    // GPU process -- the last one clears only with a browser restart.
+    unavailableReason = 'navigator.gpu.requestAdapter() returned null';
+    return false;
+  }
   const d = await adapter.requestDevice();
   device = d;
   canvas = cv;
@@ -201,7 +212,10 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
     console.error('[voodoo2-gpu] uncaptured error:', (e as GPUUncapturedErrorEvent).error.message);
   });
   context = cv.getContext('webgpu') as GPUCanvasContext | null;
-  if (!context) return false;
+  if (!context) {
+    unavailableReason = 'getContext("webgpu") returned null on the overlay canvas';
+    return false;
+  }
   canvasFormat = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device: d, format: canvasFormat, alphaMode: 'opaque' });
   mainModule = d.createShaderModule({ label: 'voodoo2-pipe', code: VOODOO2_WGSL });
@@ -972,8 +986,9 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
   const msg = ev.data;
   if (msg.type === 'init') {
     void initDevice(msg.canvas).then(
-      (ok) => postMessage({ type: ok ? 'ready' : 'unavailable' }),
-      (e) => postMessage({ type: 'unavailable', reason: String(e) }),
+      (ok) =>
+        postMessage(ok ? { type: 'ready' } : { type: 'unavailable', reason: unavailableReason }),
+      (e) => postMessage({ type: 'unavailable', reason: `WebGPU device setup failed: ${e}` }),
     );
   } else if (msg.type === 'attach') {
     if (!device || lost) return; // the page never attaches without a device

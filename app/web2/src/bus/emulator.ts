@@ -469,6 +469,24 @@ export function markBridgeDead(reason: string): void {
   for (const cb of crashListeners) cb(reason);
 }
 
+// The renderer's failure (`state:renderer`, em_video.c): it has stopped
+// drawing for good and says why.  Kept, so a listener registered after the
+// event (main.ts registers once the module is ready, and the renderer comes
+// up right after) still hears it.
+let rendererFailed: { status: string; detail: string } | null = null;
+const rendererListeners: Array<(status: string, detail: string) => void> = [];
+
+export function onRendererFailure(cb: (status: string, detail: string) => void): void {
+  rendererListeners.push(cb);
+  if (rendererFailed) cb(rendererFailed.status, rendererFailed.detail);
+}
+
+function handleRendererFailure(status: string, detail: string): void {
+  if (rendererFailed) return;
+  rendererFailed = { status, detail };
+  for (const cb of rendererListeners) cb(status, detail);
+}
+
 // printErr hook: recognise the glue's crash lines, then route as usual.
 const WORKER_CRASH = /worker sent an error!|^Aborted\(/;
 export function isWorkerCrashLine(line: string): boolean {
@@ -759,6 +777,12 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'state:screen':
       handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
+      break;
+    case 'state:renderer':
+      handleRendererFailure(
+        typeof d.status === 'string' ? d.status : '',
+        typeof d.detail === 'string' ? d.detail : '',
+      );
       break;
     case 'state:perf':
       setPerfStats(

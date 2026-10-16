@@ -312,6 +312,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
 | `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms, engine, jit_pct, jit_sup, jit_regions, jit_kb, ppc}`: `engine` is `interpreter` (predecode off), `predecoded` or `jit` (the PowerPC translation tier on, a PowerPC machine); `jit_pct` the share of the sample's instructions that ran translated |
+| `state:renderer` | the core thread's display update, once, after the render thread gave up: no WebGL 2 context, one lost while it came up, one lost later (checked every animation frame, before any GL call), or display shaders the driver would not build; the page replaces the UI with the graphics error page | `{status, detail}`, `status` one of `no_context`, `context_dead`, `context_lost`, `shader_failed` |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
@@ -442,13 +443,25 @@ Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
      against the skin registry.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
-2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
-   creates an off-DOM canvas and asks for a `webgl2` context. If
-   missing (e.g. Chrome GPU process dead, hardware acceleration
-   disabled), the app renders a full-page error overlay via
-   [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts) and
-   does **not** mount Svelte. The error page is vanilla DOM so it
-   survives a degraded framework runtime.
+2. **Graphics check.** [`lib/gpuDiagnostics.ts`](../../app/web2/src/lib/gpuDiagnostics.ts)
+   checks each link the renderer needs, in order: WebGL at all, WebGL 2 on
+   an off-DOM canvas, OffscreenCanvas transfer, and WebGL 2 on an
+   OffscreenCanvas inside a worker
+   ([`lib/gpuProbe.worker.ts`](../../app/web2/src/lib/gpuProbe.worker.ts)),
+   as the emulator renders. Getting a context is not enough: each context
+   is probed ([`lib/gpuProbe.ts`](../../app/web2/src/lib/gpuProbe.ts)) for
+   being lost already and for drawing a known colour that reads back
+   right, because a browser whose GPU process is stuck (seen in Safari,
+   cleared only by a browser restart) hands out contexts that are lost from
+   the start or draw nothing. On a failure the app renders a full-page
+   error via [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts)
+   that names the failure (`data-failure`) and lists what to try, usually
+   quitting and restarting the browser, and does **not** mount Svelte. The
+   error page is vanilla DOM so it survives a degraded framework runtime.
+   A worker probe that cannot start or does not answer in 5 s is skipped,
+   never fatal. The verdict is left in `window.__gsGraphics`. WebGPU is
+   not checked here: only the Voodoo2's GPU mode uses it, and its absence
+   just withholds that option (the reason is logged to the console).
 3. Mount the Svelte tree.
 4. Post-mount async (after `App.svelte`'s effects have run):
    - `await whenModuleReady()` (resolved by `bus/emulator.ts::bootstrap`
