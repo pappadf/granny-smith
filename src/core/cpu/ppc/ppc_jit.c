@@ -54,13 +54,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+// On by default where there is a tier (jit.enabled); off where there is none
+#ifdef __EMSCRIPTEN__
+bool g_ppc_jit_on = true;
+#else
 bool g_ppc_jit_on;
+#endif
 
 // Tunables (the `jit` node; settable in every build so scripts run anywhere)
 static uint32_t g_threshold = 300000; // instructions run in a page (predecoded) before it joins its region
 static uint32_t g_cooldown = 64; // entries between two compiles of a region (0: none)
 static uint32_t g_quiet = 64; // entries after which a region with invalidated blocks is retranslated
-static uint32_t g_supervisor; // jit.supervisor: translate supervisor code that runs with data translation on
+static uint32_t g_supervisor = 1; // jit.supervisor: translate supervisor code that runs with data translation on
 static uint32_t g_chunk_cap = 1024; // instructions per translated function (a region may have several)
 static uint32_t g_budget_pct = 3; // jit.budget: the share of time translating may take
 #define JIT_BUDGET_START_MS 50.0
@@ -3011,6 +3016,14 @@ static struct {
     double compile_ms;
 } g_st;
 
+void ppc_jit_status(ppc_jit_status_t *out) {
+    *out = (ppc_jit_status_t){.on = g_ppc_jit_on,
+                              .supervisor = g_supervisor != 0,
+                              .insns = g_st.insns,
+                              .regions = g_st.regions,
+                              .bytes = g_st.bytes};
+}
+
 static uint32_t *g_free_slots;
 static uint32_t g_nfree, g_free_cap;
 static void release_fn(uint32_t fn) {
@@ -4287,6 +4300,9 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     (void)len;
 }
 void ppc_jit_reset(void) {}
+void ppc_jit_status(ppc_jit_status_t *out) {
+    *out = (ppc_jit_status_t){0};
+}
 
 #endif // __EMSCRIPTEN__
 

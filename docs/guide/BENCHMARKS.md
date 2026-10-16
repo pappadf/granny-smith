@@ -132,6 +132,10 @@ the window's wall time instead (`bench_window` reports both): the one that
 is fair to a wasm build whose engine compiles on background threads, such
 as the PowerPC translation tier's `jit` executor, where user CPU time
 would charge it for the optimizing compiles running beside the emulator.
+For the same reason the `jit` executor's windows run unpinned: on one core
+those compile threads take the emulator's time, and the tier measured 41
+MIPS on `g3dt-boot` pinned against 72 unpinned (the predecoded executor's
+own 72).
 
 B also sees what A cannot, including effects nobody wrote: two builds whose
 CPU code is identical differed by up to 4 % on single rows (the PowerPC rows

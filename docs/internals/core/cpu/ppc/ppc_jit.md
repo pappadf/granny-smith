@@ -3,7 +3,7 @@
 Hot PowerPC code runs as WebAssembly generated at run time, compiled by
 the host engine and called from the predecoded sprint loop.  It is a third
 tier above the predecoded executor ([../predecode.md](../predecode.md)),
-in the wasm builds only, behind `jit.enabled` (default 0).  A translation
+in the wasm builds only, behind `jit.enabled` (on by default there).  A translation
 runs only where its result is the predecoded tier's; for anything else it
 leaves, with the guest state committed, and the predecoded loop goes on.
 
@@ -51,7 +51,7 @@ instruction: it translates the shapes the predecoded loop specializes
 `isync` is a no-op there unless BAT writes are pending, when it leaves), plus a few the
 predecoded loop leaves generic (T1) that it decodes from the raw word
 (§3.3).  It does not run in little-endian mode, or with supervisor data
-translation unless `jit.supervisor` is set (and then not before the
+translation unless `jit.supervisor` is set (the default; and then not before the
 supervisor-translated SoA exists: every access would take the slow
 path), and it is never entered while an interrupt is deliverable.
 
@@ -282,13 +282,15 @@ or missing accesses leave); the non-OE `divw`/`divwu` (zero for a zero
 divisor and for `0x80000000 / -1`, as C), `mulhw`/`mulhwu`, `eqv` and
 `sraw` (CA as `ppc_do_sraw`).  Mode changes (`rfi`, `sc`, traps), DEC
 and the segment registers stay in C.  The kernel runs translated only
-with `jit.supervisor` set: on the Mac OS X 10.1 boot to the Finder
-(Node, 6.1 G instructions) 89 % of instructions then run translated,
-but the boot takes 92 s against 86 s user-only and 82 s with the JIT
-off -- the kernel leaves translated code every 60-85 instructions in
-its busiest stretches (exits to pages that have not joined a region,
-and, before chains crossed regions (§3.6), to other regions), so entry
-and exit cost more than translation saves.  It emits each block's instructions from the
+with `jit.supervisor` set, the default.  When it was introduced the
+kernel was a net loss translated: on the Mac OS X 10.1 boot to the
+Finder (Node, 6.1 G instructions) 89 % of instructions ran translated,
+but the boot took 92 s against 86 s user-only and 82 s with the JIT off,
+the kernel leaving translated code every 60-85 instructions in its
+busiest stretches.  Since then (chains across regions, §3.6; the store
+helpers; the 300 K threshold) the Mac OS X 10.0.3 boot to the settled
+Finder (Node, 6.1 G instructions) takes 66-67 s with it, 77-79 s
+user-only and 86-92 s with the JIT off.  It emits each block's instructions from the
 entry fields: registers as wasm locals, immediates and masks as
 constants, CR0 records and compares with XER[SO], XER[CA] and XER[OV] as
 bits of the XER local, the 601's `mtxer` mask.  A branch to a block of
@@ -405,15 +407,21 @@ Two runs compare only when they split the run into the same
 
 ## 6. Tunables and counters
 
+The defaults (`enabled` and `supervisor` on) against the predecoded
+executor, Node, metric B with `--clock wall`, unpinned: `pm8500-finder`
+61 -> 94 MIPS, `pm6100-68kemu` 67 -> 93, `g3dt-boot` 72 -> 72, and the
+Mac OS X 10.0.3 boot 86-92 s -> 66-67 s.  The one loss is the 7500's
+Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
+
 | `jit.` | |
 |---|---|
-| `enabled` | 1 = run translations (wasm builds) |
+| `enabled` | 1 = run translations (wasm builds; the default there) |
 | `available` | 1 when the build can generate code |
 | `threshold` | instructions the predecoded tier runs in a page before it joins its region (300000: against 100000, 13 % faster on the PM6100 row, the PM8500 row unchanged within its noise, and better on the Mac OS X scenario) |
 | `budget` | the share of wall time, in percent, translating may take (3; 100: no limit) |
 | `cooldown` | entries between two translations of a region, doubling per translation (64) |
 | `quiet` | entries after a code write before its region is retranslated (64) |
-| `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (0: Mac OS X's kernel is a net loss translated, §3.3) |
+| `supervisor` | 1 = also translate supervisor code running with data translation on, once the supervisor-translated SoA exists (the default: the Mac OS X boot is about 15 % faster with it than user-only, §3.3) |
 | `chunk_cap` | the most instructions one function translates (1024) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function |
 | `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |
