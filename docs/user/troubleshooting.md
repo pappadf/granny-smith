@@ -20,6 +20,8 @@ problem.
 |---|---|
 | New Machine says **No ROMs in storage** | Load a ROM first: **Back**, then **Load ROM...** ([Getting started](getting-started.md)). |
 | The model I want is not in the list | Its ROM is not loaded, or the file is not that ROM. ROMs are recognised by checksum — compare with [Supported machines](machines.md) §1. |
+| A link's notice says **Booted … without …** | A disk in the link could not be downloaded or is not valid for its slot; the notice (and the terminal) give the reason. See [URL parameters](url-parameters.md) §5.4. |
+| A link's notice says **speed=…** or **model=…** was ignored | The value is not one the page knows (`speed` is `paced`, `accelerated` or `turbo`), or the ROM cannot boot that model. The machine starts without that setting. |
 | A link shows **The machine could not be started** | The reason is under the ROM's row. A network or CORS error means the file's server does not allow other sites to read it; `http://` files cannot be used from an `https://` page; a 404 means the address is wrong. See [URL parameters](url-parameters.md) §5. |
 | The machine starts but shows a floppy with a blinking **?** | It found no startup disk. Check the notices: a disk from a link may have failed to download, or may not be bootable on this model. In the New Machine dialog, check **Start up from**. |
 | The Mac chimes twice and restarts at the start of System 7.6 or later | Set **Addressing** to **32-bit** (or `addressing=32` in a link). The system otherwise switches the mode itself and restarts — harmless, but slower. |
@@ -44,21 +46,12 @@ problem.
 | Symptom | Fix |
 |---|---|
 | No **Continue from saved checkpoint?** after the emulator was updated | Checkpoints belong to the build that made them; after an update they cannot be resumed. Start the machine again from its disks ([Saving and resuming](saving-and-resuming.md) §6). |
-| "Not enough browser storage" | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already. |
+| "Not enough browser storage", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
 | My changes to a disk are not in the file I saved from the Images panel | Stored images are never changed; the Mac's changes live with the machine. Use the shared folder or **Save State** ([Disks and images](disks-and-images.md) §6). |
 
 ## 5. Current limitations
 
 These are known and being worked on:
 
-- **Create Checkpoint** updates the machine's own checkpoint instead of
-  adding a separate, named entry, so it cannot yet keep several points in
-  time. Use **Save State** to keep a copy you can return to.
-- Opening a saved-state file can fail with **Checkpoint load failed** when
-  a disk it contains is already stored in the browser (for example after
-  restoring the same file once before). Opening it in a fresh browser
-  profile works.
-- **Save to computer…** in the Checkpoints panel is not available yet; use
-  **Save State**.
 - Text cannot be pasted from your computer into the Mac.
 - Remote files must be served with CORS headers to be used in links.

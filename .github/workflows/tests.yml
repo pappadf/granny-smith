@@ -100,13 +100,25 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      # The disasm corpus is tracked in the repo, so here its absence is a
+      # failure, not the skip a quick local run gets (tests/unit/README.md).
       - name: Run unit tests (native)
+        env:
+          REQUIRE_DISASM_CORPUS: 1
         run: make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
       # The parser and storage suites again under emcc + node: the shipping
       # build is wasm32, where size_t and long are 32 bits.
       - name: Run unit tests (wasm32)
         run: make -C tests/unit run-wasm32 WERROR=1
+
+      # The same suites through the other executor: the predecoded cores
+      # are the default (docs/internals/core/cpu/predecode.md),
+      # CPU_TEST_PREDECODE=0 routes the conformance vectors through the
+      # switch cores that remain the reference and the predecode.enabled=0
+      # fallback.
+      - name: Run unit tests (CPU, switch cores)
+        run: CPU_TEST_PREDECODE=0 make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
   # Every integration tier, as ONE longest-first -j pool, split across
   # runners.  tests/integration/test-weights.json orders the tests (longest

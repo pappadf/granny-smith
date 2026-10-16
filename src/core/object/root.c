@@ -20,6 +20,8 @@
 #include "log.h"
 #include "object.h"
 #include "platform_hooks.h"
+#include "ppc_jit.h"
+#include "predecode.h"
 #include "shell.h"
 #include "shell_funcs.h"
 #include "status.h"
@@ -374,6 +376,11 @@ void root_install(struct config *cfg) {
     // root_install_class; the call is repeated here so paths that skip
     // core_init still get the methods.
     root_install_class();
+
+    // `predecode`: the predecoded-core pool's switches and counters, a
+    // process singleton beside `scheduler`.
+    predecode_object_install();
+    ppc_jit_object_install();
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,

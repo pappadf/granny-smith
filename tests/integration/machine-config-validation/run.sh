@@ -11,6 +11,7 @@ Q900="$ROMS/q700-q900-420dbff3.rom"
 TNT="$ROMS/pm7500-pm8500-pm9500-96cd923d.rom"
 G3="$ROMS/pmg3dt-pmg3mt-78f57389.rom"
 ANS="$ROMS/ans500-ans700-962f6c13.rom"
+LISA="$ROMS/lisa2-revh-098917b2.rom"
 
 fail=0
 n=0
@@ -57,8 +58,8 @@ boot_case v3-unit iici "$IICI" '{"storage":[{"bus":"scsi","unit":7,"type":"hd"}]
 boot_case v3-shared q900 "$Q900" \
     '{"storage":[{"bus":"scsi","unit":1,"type":"hd"},{"bus":"scsi2","unit":1,"type":"hd"}]}' \
     'storage[1]: ID 1 · External on "External SCSI" is already used on "Internal SCSI" (shared ID space)'
-boot_case v3-type pmg3dt "$G3" '{"storage":[{"bus":"ata0","unit":0,"type":"cd"}]}' \
-    'storage[0]: "Primary ATA bus" takes no CD-ROM drive'
+boot_case v3-type lisa "$LISA" '{"storage":[{"bus":"profile","unit":0,"type":"cd"}]}' \
+    'storage[0]: "ProFile port" takes no CD-ROM drive'
 
 # V4: a slot the model has, a card that fits it, one card per slot.
 boot_case v4-slot iici "$IICI" '{"cards":[{"slot":"nubus_9","card":"mdc_8_24"}]}' \
@@ -96,12 +97,30 @@ boot_case v9-bus ans500 "$ANS" \
     '{"storage":[{"bus":"scsi2","unit":4,"type":"hd"}],"startup":{"bus":"scsi2","unit":4}}' \
     'startup: ID 4 · Front bay 4 on "Internal SCSI bus 1" — this machine'"'"'s startup record cannot name that bus'
 
+# V10: Open Firmware variables the model's NVRAM has, values they take.
+boot_case v10-model iici "$IICI" '{"nvram":{"auto-boot?":"true"}}' \
+    "nvram: model 'iici' has no Open Firmware NVRAM a configuration can set"
+boot_case v10-name pmg3dt "$G3" '{"nvram":{"bogus-var":"1"}}' 'nvram.bogus-var: no such Open Firmware variable'
+boot_case v10-value pmg3dt "$G3" '{"nvram":{"auto-boot?":"maybe"}}' 'nvram.auto-boot?: a boolean takes true or false'
+
 # The valid twins.
 boot_case ok-card iici "$IICI" \
     '{"cards":[{"slot":"nubus_c","card":"mdc_8_24"}],"displays":{"nubus_c":{"monitor":"13in_rgb","mode":"640x480x8"}}}' OK
 boot_case ok-shared q900 "$Q900" \
     '{"storage":[{"bus":"scsi","unit":1,"type":"hd"},{"bus":"scsi2","unit":2,"type":"hd"}],"startup":null}' OK
 boot_case ok-empty iici "$IICI" '{"storage":[],"cards":[],"startup":null}' OK
+
+# V10's twin: the variables are in the new machine's NVRAM before it runs.
+script="$WORK_DIR/v10-set.script"
+printf 'machine.boot model="pmg3dt" rom="%s" config="{\\"nvram\\":{\\"boot-command\\":\\"0 bootr\\",\\"use-nvramrc?\\":true,\\"load-base\\":\\"600000\\"}}"\n' "$G3" > "$script"
+printf '%s\n' 'echo "NV ${machine.nvram.getenv("boot-command")}|${machine.nvram.getenv("use-nvramrc?")}|${machine.nvram.getenv("load-base")}"' quit >> "$script"
+"$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/v10-set.out" 2>&1 || true
+n=$((n + 1))
+if ! grep -qx 'NV 0 bootr|true|600000' "$WORK_DIR/v10-set.out"; then
+    echo "FAIL: v10-set: expected the document's variables in NVRAM"
+    sed -n '/running/,$p' "$WORK_DIR/v10-set.out" | head -5
+    fail=1
+fi
 
 # V8, which needs a legacy argument beside the document.
 script="$WORK_DIR/v8.script"

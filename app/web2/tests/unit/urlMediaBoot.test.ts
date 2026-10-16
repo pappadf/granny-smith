@@ -35,6 +35,8 @@ vi.mock('@/bus/media', () => ({
   })),
   attachHardDisk: vi.fn(async (_p: string, n: number) => ({ ok: true, mount: { bay: n } })),
   attachCdrom: vi.fn(async () => ({ ok: true, mount: {} })),
+  attachMedia: vi.fn(async () => ({ ok: true, mount: {} })),
+  machineDevices: vi.fn(async () => []),
 }));
 
 const { processUrlMedia } = await import('@/bus/urlMedia');
@@ -374,5 +376,55 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:400k'))).toBe(true);
     expect(media.insertFloppy).not.toHaveBeenCalled();
     expect(toastText()).toMatch(/FD0: a blank 400K floppy cannot be created/);
+  });
+});
+
+describe("URL media: cd= is the configuration's CD-ROM drive", () => {
+  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify_cdrom sees it.
+  const DISC = new Uint8Array(4096).fill(0x43);
+  beforeEach(() => {
+    bridge.reply('machine.scsi.identify_cdrom', () => true);
+  });
+  afterEach(() => vi.mocked(media.machineDevices).mockImplementation(async () => []));
+
+  it("without config=, the default configuration's drive (machine.attach_cdrom)", async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&cd=disc.iso'))).toBe(true);
+    expect(media.attachCdrom).toHaveBeenCalledTimes(1);
+    expect(media.attachMedia).not.toHaveBeenCalled();
+  });
+
+  it("with config=, the drive the configuration places (a G3's on ATA)", async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    vi.mocked(media.machineDevices).mockImplementation(async (type) =>
+      type === 'cd'
+        ? [
+            {
+              bus: 'ata1',
+              busLabel: 'Secondary ATA bus',
+              unit: 0,
+              position: '',
+              type,
+              present: false,
+            },
+          ]
+        : [],
+    );
+    const config = btoa(JSON.stringify({ storage: [{ bus: 'ata1', unit: 0, type: 'cd' }] }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    expect(
+      await processUrlMedia(new URLSearchParams(`rom=plus.rom&cd=disc.iso&config=${config}`)),
+    ).toBe(true);
+    expect(media.attachCdrom).not.toHaveBeenCalled();
+    expect(media.attachMedia).toHaveBeenCalledWith(
+      'ata1',
+      0,
+      'cd',
+      expect.stringMatching(/^\/opfs\//),
+    );
   });
 });

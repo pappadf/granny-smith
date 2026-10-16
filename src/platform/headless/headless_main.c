@@ -342,6 +342,7 @@ static void print_usage(const char *program) {
     printf("                       (also settable with $GS_SHARED_DIR; created if missing)\n");
     printf("  --print-dir=DIR      Write each LaserWriter job's PDF as DIR/<job>-<title>.pdf\n");
     printf("                       (also $GS_PRINT_DIR; created if missing; needs a PLATEN=1 build)\n");
+    printf("  --calibrate     Time the host-yardstick kernels (CPU benchmarks, metric C) and exit\n");
     printf("  --framed        Core events as `@event <kind> <json>` lines, a job's output as `@out <json>`,\n");
     printf("                  an I/O job's progress as `@progress <json>`, and `@end ok|error` after each\n");
     printf("                  statement (for a client that parses)\n");
@@ -460,6 +461,36 @@ void platform_machine_attached(void) {
     s_count_rebase = true;
 }
 
+// --cycles: the instruction budget for the session (0 = none), and what has
+// been spent of it.  Counts across every machine the session runs: a
+// machine.boot or checkpoint.load replaces the one being counted, and the
+// count carries on from the new one's start (platform_machine_attached)
+// rather than subtracting across them.
+static uint64_t s_max_cycles;
+static uint64_t s_spent_cycles;
+static uint64_t s_last_cycles;
+static bool s_cycles_counting; // hl_cycles_start has run
+
+void hl_cycles_start(void) {
+    s_cycles_counting = true;
+    s_count_rebase = true; // count from here, not from the session's start
+}
+
+// True once the --cycles budget is spent (never without one).
+static bool cycle_budget_spent(void) {
+    if (!s_max_cycles || !s_cycles_counting)
+        return false;
+    uint64_t now = cpu_instr_count();
+    if (s_count_rebase) {
+        s_count_rebase = false;
+        s_last_cycles = now;
+    }
+    if (now > s_last_cycles)
+        s_spent_cycles += now - s_last_cycles;
+    s_last_cycles = now;
+    return s_spent_cycles >= s_max_cycles;
+}
+
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
 // One frame, when the machine runs.  Also what inline mode (job.h) calls
@@ -480,6 +511,13 @@ static void hl_inline_frame(void) {
 }
 
 bool hl_pump_once(void) {
+    // Every loop pumps here -- the REPL, the daemon, a statement holding the
+    // line with a run -- so this is where --cycles ends the session: as
+    // `quit` does, which each of them already honours.
+    if (!g_quit_requested && cycle_budget_spent()) {
+        fprintf(stderr, "\nReached cycle limit (%llu cycles)\n", (unsigned long long)s_max_cycles);
+        platform_quit();
+    }
     bool did = hl_run_frame();
     if (mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
@@ -1025,37 +1063,14 @@ static int too_many(const char *program, const char *what, int max, const char *
 }
 
 // The REPL: frame-units while the machine runs, a statement from stdin as
-// soon as it is complete, until quit, SIGTERM or --cycles.  --cycles counts
-// instructions run, across every machine the session runs: a machine.boot or
-// checkpoint.load replaces the one being counted, and the count carries on
-// from the new one's start (platform_machine_attached) rather than
-// subtracting across them.
-static void interactive_run(uint64_t max_cycles, int quiet) {
+// soon as it is complete, until quit, SIGTERM or --cycles (hl_pump_once ends
+// the session when the budget is spent).
+static void interactive_run(int quiet) {
     if (!quiet)
         printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
-
-    uint64_t spent_cycles = 0;
-    uint64_t last_cycles = cpu_instr_count();
-    s_count_rebase = false;
+    hl_cycles_start();
 
     while (g_running && !g_quit_requested) {
-        // Check for max cycles limit
-        if (max_cycles > 0) {
-            uint64_t now = cpu_instr_count();
-            if (s_count_rebase) {
-                s_count_rebase = false;
-                last_cycles = now;
-            }
-            if (now > last_cycles)
-                spent_cycles += now - last_cycles;
-            last_cycles = now;
-            if (spent_cycles >= max_cycles) {
-                if (!quiet)
-                    printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
-                break;
-            }
-        }
-
         // One frame-unit per iteration while the machine runs (the same
         // step web2's tick runs, unthrottled), then the drain; a REPL line
         // runs as a job, the loop pumping inside its wait.  Idle, the wait
@@ -1089,7 +1104,6 @@ int main(int argc, char *argv[]) {
     const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
-    uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
     const char *video_card_arg = NULL;
@@ -1119,6 +1133,10 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 0;
         }
+
+        // --calibrate: the host yardstick of the CPU benchmarks (calibrate.c)
+        if (strcmp(arg, "--calibrate") == 0)
+            return hl_calibrate();
 
         if (strcmp(arg, "--quiet") == 0 || strcmp(arg, "-q") == 0) {
             quiet = 1;
@@ -1183,7 +1201,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (strncmp(arg, "--cycles=", 9) == 0) {
-            max_cycles = strtoull(arg + 9, NULL, 10);
+            s_max_cycles = strtoull(arg + 9, NULL, 10);
             continue;
         }
 
@@ -1201,11 +1219,12 @@ int main(int argc, char *argv[]) {
         }
 
         // --var NAME=VALUE: set a shell variable before script execution
-        if (strncmp(arg, "--var", 5) == 0) {
+        // (exactly --var or --var=: a longer option such as --variant is not this one)
+        if (strcmp(arg, "--var") == 0 || strncmp(arg, "--var=", 6) == 0) {
             const char *def = NULL;
             if (arg[5] == '=') {
                 def = arg + 6;
-            } else if (arg[5] == '\0' && i + 1 < argc) {
+            } else if (i + 1 < argc) {
                 def = argv[++i];
             }
             if (!def || !strchr(def, '=')) {
@@ -1340,8 +1359,8 @@ int main(int argc, char *argv[]) {
         if (script_file)
             printf("Script: %s\n", script_file);
         printf("Speed:  %s\n", speed_mode);
-        if (max_cycles > 0)
-            printf("Cycles: %llu\n", (unsigned long long)max_cycles);
+        if (s_max_cycles > 0)
+            printf("Cycles: %llu\n", (unsigned long long)s_max_cycles);
         printf("\n");
     }
 
@@ -1363,14 +1382,25 @@ int main(int argc, char *argv[]) {
 
     // Apply --var definitions (after core_init, whose shell_init calls shell_var_init)
     for (int i = 0; i < var_count; i++) {
-        // Split NAME=VALUE at first '='
-        char buf[256];
-        strncpy(buf, var_defs[i], sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-        char *eq = strchr(buf, '=');
-        if (eq) {
-            *eq = '\0';
-            shell_var_set(buf, eq + 1);
+        // Split NAME=VALUE at first '=' (validated when parsed); the value is
+        // used in place, so a long one is not cut short
+        const char *eq = strchr(var_defs[i], '=');
+        size_t name_len = (size_t)(eq - var_defs[i]);
+        char *name = malloc(name_len + 1);
+        if (!name) {
+            fprintf(stderr, "Error: out of memory applying --var\n");
+            return 1;
+        }
+        memcpy(name, var_defs[i], name_len);
+        name[name_len] = '\0';
+        // A name `$name` could not read back (too long, not an identifier,
+        // reserved) is a startup error, not a binding that silently never matches
+        char err[160];
+        int rc = shell_var_set(name, eq + 1, err, sizeof(err));
+        free(name);
+        if (rc < 0) {
+            fprintf(stderr, "Error: --var %s\n", err);
+            return 1;
         }
     }
 
@@ -1643,7 +1673,7 @@ int main(int argc, char *argv[]) {
     } else {
         // Interactive mode: the REPL on stdin/stdout
         if (!g_quit_requested)
-            interactive_run(max_cycles, quiet);
+            interactive_run(quiet);
         if (!quiet)
             printf("\nShutting down...\n");
     }

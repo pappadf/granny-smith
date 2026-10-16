@@ -20,12 +20,25 @@ input, and compositing.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
   dispatch.
-- **Canvas:** transferred to the worker via `OffscreenCanvas` at boot —
-  `transferControlToOffscreen` is handled by Emscripten under
-  `OFFSCREENCANVASES_TO_PTHREAD='#screen'`. WebGL2 rendering happens on
-  the worker side. After the transfer, the main thread must NOT write
-  to the canvas's `width`/`height` attributes (Svelte reactive bindings
-  would throw `InvalidStateError`).
+- **Render thread:** a pthread of its own owns the canvas and the WebGL2
+  context (`em_video.c`).  Emscripten transfers the canvas to the emulator
+  thread at boot (`OFFSCREENCANVASES_TO_PTHREAD='#screen'`), and
+  `em_video_init` passes it on to the render thread (by element id,
+  `"screen"`: a pthread can only pass on a canvas it holds, keyed so).
+  The emulator thread publishes frames into a shared slot once per tick;
+  the render thread draws the newest one on every animation frame.  A
+  canvas drawn from a worker presents only when that worker returns to
+  its event loop, so the GL work and the presenting never hold up
+  emulation.  After the transfer, the main thread must NOT write to the
+  canvas's `width`/`height` attributes (Svelte reactive bindings would
+  throw `InvalidStateError`).
+- **Emulator thread's loop:** frame-locked (requestAnimationFrame) while
+  paced, accelerated or stopped; a running turbo machine re-enters at
+  once instead (`EM_TIMING_SETIMMEDIATE`, `scheduler.postTask` in a
+  worker) and fills each tick with a 16 ms slice
+  (`scheduler_set_turbo_slice`), so turbo uses nearly all of the thread.
+  Between ticks the thread still returns to its event loop, which runs the
+  proxied input events.
 - **Input:** mouse / keyboard events are picked up by Emscripten's
   built-in proxied callbacks on the worker side. The web2 UI does not
   install JS-side handlers on the canvas — each event would otherwise
@@ -298,8 +311,8 @@ callbacks is emitted at its source too; the page routes each in
 | `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
-| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
-| `state:renderer` | the renderer, once, when it gives up: no WebGL 2 context, one lost while it comes up, one lost later (checked every frame, before any GL call), or display shaders the driver would not build; the page replaces the UI with the graphics error page | `{status, detail}`, `status` one of `no_context`, `context_dead`, `context_lost`, `shader_failed` |
+| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms, engine, jit_pct, jit_sup, jit_regions, jit_kb, ppc}`: `engine` is `interpreter` (predecode off), `predecoded` or `jit` (the PowerPC translation tier on, a PowerPC machine); `jit_pct` the share of the sample's instructions that ran translated |
+| `state:renderer` | the core thread's display update, once, after the render thread gave up: no WebGL 2 context, one lost while it came up, one lost later (checked every animation frame, before any GL call), or display shaders the driver would not build; the page replaces the UI with the graphics error page | `{status, detail}`, `status` one of `no_context`, `context_dead`, `context_lost`, `shader_failed` |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
@@ -924,7 +937,11 @@ view; errors still toast.
   neither the download nor the expanded disk is ever stored whole), attached to the
   model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
   boot bay, on whatever bus it is — SCSI, a Network Server's second
-  channel, the Lisa's ProFile).  `hd0` is also named the startup device, as
+  channel, the Lisa's ProFile).  With a `config=`, the N-th hard disk is
+  that configuration's instead (`machine.storage`, its startup device
+  first, attached with `machine.attach_media`), so a link that moves the
+  disk to another bus — a G3's ATA, not its default SCSI ID 0 — gets it
+  there.  `hd0` is also named the startup device, as
   the New Machine dialog and Restart do (`bus/boot.ts::setStartupDisk`): on
   SCSI, PRAM's default device; on a Lisa's ProFile, `BootVol = 2` with the
   parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
@@ -979,7 +996,13 @@ view; errors still toast.
   also offers it to the core's ROM catalog, for later boots.
 - `config=<document>` — the whole configuration document, as the dialog
   holds it, base64url-encoded JSON; absent, the model's default
-  configuration.  A node it leaves out means that node's default.
+  configuration.  A node it leaves out means that node's default.  The
+  page passes the document through as it is: its `nvram` member (Open
+  Firmware variables) is the core's, which seeds them when it builds the
+  machine -- the page never writes PRAM or NVRAM itself
+  (`tests/lint/no-model-name-matching.test.ts`).  This is how a link
+  carries the NVRAM script a Mac OS X boot on an Old World machine needs
+  ([g3.md](../reference/machines/g3/g3.md) §2.8).
 - **Configuration edits by name** — every other parameter (not media, not
   one the page reads for something else) edits the configuration document
   the boot uses (`config=` if given, else the model's default), through the
@@ -1010,8 +1033,9 @@ view; errors still toast.
   restart (two startup chimes).
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
   start, set once on the page's run loop (`pacing.mode`); pacing is host
-  state, so every machine the page boots or restores runs under it (legacy
-  `max`/`realtime`/`hardware` are accepted as aliases).  The wasm module takes no command line.
+  state, so every machine the page boots or restores runs under it.  Any
+  other value (the retired aliases `max`/`realtime`/`hardware` included) is
+  ignored with a warning toast.  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 - `skin=<id>` — show this load in another skin (an id from
@@ -1085,7 +1109,9 @@ from in the image (`gs-origin`; `files.udif_open`, `files.convert` and
 the streamed import; a small disk (staged, then converted); a `.dmg` stored
 as downloaded (rewritten to carry it); and a Mac-archive member the
 streamed import refuses (a Disk Copy 6 / NDIF image), unpacked, then
-converted.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
+converted; and a QCOW2 image, which cannot be written as it arrives (its
+clusters need not be in disk order), staged as it is, then converted by the
+core (`files.convert`) and the staged copy removed.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
 that category's store and, when one's `origin` is the value exactly, attaches
 it instead: nothing is downloaded, and the progress view shows "Already
 stored".  A stored image is never written to (a machine's writes go to a

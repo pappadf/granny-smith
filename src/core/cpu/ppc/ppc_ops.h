@@ -200,7 +200,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // register writeback (a faulted access abandons with no side effects).
 // M601/M604 reject the other model's encodings with the illegal program
 // exception (decode-tree validity per model).
-// CHKA_* route through ppc_scalar_gate (per-model alignment + the 604's
+// CHKA_* route through ppc_scalar_gate_inl / ppc_scalar_gate (per-model alignment + the 604's
 // hardware-split page crossings): loads read their value via LDV(bits) —
 // the gate's byte-wise value when it split, a normal access at xa
 // otherwise — and stores capture the value into `sv_` up front so the
@@ -209,8 +209,8 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define FP()    if (ppc_fp_check(p)) break
 #define M601()  if (ppc_is_604(p)) { ppc_illegal_op(p, iw); break; }
 #define M604()  if (!ppc_is_604(p)) { ppc_illegal_op(p, iw); break; }
-#define CHKA_LD(ea, sz) uint32_t xa = ea; uint64_t lv_ = 0; int lg_ = ppc_scalar_gate(p, iw, &xa, sz, false, &lv_); if (lg_ < 0) break
-#define CHKA_ST(ea, sz, vexpr) uint32_t xa = ea; uint64_t sv_ = (vexpr); int sg_ = ppc_scalar_gate(p, iw, &xa, sz, true, &sv_); if (sg_ < 0) break
+#define CHKA_LD(ea, sz) uint32_t xa = ea; uint64_t lv_ = 0; int lg_ = ppc_scalar_gate_inl(p, iw, &xa, sz, false, &lv_); if (lg_ < 0) break
+#define CHKA_ST(ea, sz, vexpr) uint32_t xa = ea; uint64_t sv_ = (vexpr); int sg_ = ppc_scalar_gate_inl(p, iw, &xa, sz, true, &sv_); if (sg_ < 0) break
 #define LDV(bits)       (lg_ ? (uint##bits##_t)lv_ : READ(bits, xa))
 #define STV(bits)       do { if (!sg_) WRITE(bits, xa, (uint##bits##_t)sv_); } while (0) // gate already stored byte-wise when it split — but the op body (update forms) must still run
 // Byte accesses skip the scalar gate (no alignment class applies) but
@@ -262,6 +262,10 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // 5-22 — the POWER svc field, which §5.4.11's prose calls "undefined"; the
 // table is the specific rule and costs nothing to honour).
 #define OP_SC         OP(ppc_exception(p, PPC_VEC_SYSCALL, (iw & 0xFFFFu) << 16, p->pc))
+// sc in a POWER svc encoding: the 601 ignores bit 30 and, with LK set, also
+// loads LR with the address of the next instruction; the 604 rejects it.
+#define OP_SC_POWER                                                                                                    \
+    OP(M601(); if (iw & 1u) p->lr = p->pc; ppc_exception(p, PPC_VEC_SYSCALL, (iw & 0xFFFFu) << 16, p->pc))
 // rfi restores MSR[16-31] from SRR1; bits outside that half (the 604's POW)
 // are untouched — identical to the old whole-word form on the 601, whose
 // implemented bits all live in the low half.
@@ -436,7 +440,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // alignment exception handler will be invoked if the word loaded crosses a
 // page boundary, or the results may be undefined").  So these run the same
 // scalar check as every other word access.
-#define OP_LWARX      OP(EA_X(); CHKA_LD(ea, 4); p->reserve = 1; p->reserve_addr = xa; GPR(RT) = LDV(32))
+#define OP_LWARX      OP(EA_X(); CHKA_LD(ea, 4); p->reserve = 1; p->reserve_addr = ea; GPR(RT) = LDV(32))
 #define OP_STWCX_DOT  OP(ppc_do_stwcx(p, iw))
 
 // --- external control (EAR-gated, 601UM eciwx/ecowx pages; the 604 adds

@@ -78,8 +78,8 @@ Before overwriting a committed block in the delta, the storage engine appends th
 ```c
 int storage_new(const storage_config_t*, storage_t**);
 int storage_delete(storage_t*);
-int storage_read_block(storage_t*, size_t byte_offset, void* out_block);  // block_size bytes
-int storage_write_block(storage_t*, size_t byte_offset, const void* in_block);
+int storage_read_block(storage_t*, uint64_t byte_offset, void* out_block);  // block_size bytes
+int storage_write_block(storage_t*, uint64_t byte_offset, const void* in_block);
 int storage_tick(storage_t*);          // no-op
 int storage_checkpoint(storage_t*, checkpoint_t*);
 int storage_restore_from_checkpoint(storage_t*, checkpoint_t*);
@@ -124,7 +124,7 @@ A restore that has no disk to load a snapshot into skips it. It checks the snaps
 
 **Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The rollback comes first because the emulator may have kept running after the checkpoint was saved: the blocks it overwrote since are restored from their preimages and the slots it allocated are cut away, which leaves the delta's data exactly as it was at the commit the checkpoint made. The checkpoint's bitmap and table then name that data.
 
-**Restore from consolidated checkpoint:** `storage_load_state()` reads all blocks into the delta, sets all bitmap bits, and commits. The stream yields a block at a time, but the delta is written a run at a time (blocks whose delta positions are contiguous, up to the 4 MB streaming chunk): a seek and write per block was a filesystem call per 512 bytes, which under WasmFS/OPFS made opening a Save State with a hard disk take minutes.
+**Restore from consolidated checkpoint:** `storage_load_state()` reads every block from the stream and writes into the delta only those that differ from the base (zeros where there is no base), setting their bitmap bits and clearing the others, then commits. It used to write every block, so restoring a Save State cost the whole disk's size in storage, and a second restore of a large machine ran out of the browser's quota. The stream yields a block at a time, but the delta is written a run at a time (blocks whose delta positions are contiguous, up to the 4 MB streaming chunk): a seek and write per block was a filesystem call per 512 bytes, which under WasmFS/OPFS made opening a Save State with a hard disk take minutes.
 
 ## 8. Crash Recovery (Rollback)
 

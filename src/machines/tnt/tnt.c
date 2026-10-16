@@ -81,8 +81,8 @@ void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     // and are only ever cleared here.
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = writable ? adjusted : 0;
+    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
+        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
     if (g_user_read)
         g_user_read[page_index] = 0;
     if (g_user_write)
@@ -363,11 +363,16 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
     bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
         uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
-        if (!rev)
+        if (!rev) {
+            memory_host_written(ram + phys, len); // bus-master DMA over cached code
             memcpy(ram + phys, buf, len);
-        else
+        } else {
+            // Reversed lanes keep each byte within its aligned doubleword.
+            uint32_t lo = phys & ~7u;
+            memory_host_written(ram + lo, ((phys + len + 7u) & ~7u) - lo);
             for (uint32_t i = 0; i < len; i++)
                 ram[(phys + i) ^ 7u] = buf[i];
+        }
         return;
     }
     for (uint32_t i = 0; i < len; i++)
@@ -1034,6 +1039,14 @@ static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
     return system_media_present_std(cfg, bus, unit);
 }
 
+static image_t *tnt_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_image_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_image_std(cfg, bus, unit);
+}
+
 static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
     if (bus == MEDIA_BUS_SCSI2) {
         tnt_state_t *st = tnt_st(cfg);
@@ -1328,6 +1341,13 @@ static void tnt_seed(config_t *cfg) {
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->gc.nvram, id, &of_nvram_defaults_tnt);
+    // The configuration's own Open Firmware variables ("nvram"), last, so
+    // its boot-device wins over the record above.  machine_config_resolve
+    // set each on a factory store already; a failure here is a bug.
+    const char *bad = NULL;
+    const char *err = of_nvram_setenv_packed(st->gc.nvram, cfg->build_opts.n_of_vars, cfg->build_opts.of_vars, &bad);
+    if (err)
+        LOG(0, "configuration nvram %s: %s", bad, err);
 }
 
 const machine_substrate_t tnt_substrate = {
@@ -1346,4 +1366,5 @@ const machine_substrate_t tnt_substrate = {
     .media_attach = tnt_media_attach,
     .media_present = tnt_media_present,
     .media_eject = tnt_media_eject,
+    .media_image = tnt_media_image,
 };

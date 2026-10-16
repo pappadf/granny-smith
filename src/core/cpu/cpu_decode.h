@@ -23,7 +23,8 @@
 // past the opcode, and MOVES genuinely needs that word -- so this is a real
 // access, not the speculative one the manual says must not fault.  The
 // disassembler overrides it, having its own ext_word from the caller's buffer
-// and no live CPU to read through.  Three sites, all 68010+.
+// and no live CPU to read through, and the 68000 decoder overrides it with a
+// constant (no MOVES there).  Three sites, all 68010+.
 #ifndef CPU_MOVES_DIR
 #define CPU_MOVES_DIR() (memory_read_uint16(cpu->pc) & 0x0800)
 #endif
@@ -259,20 +260,17 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         break;
 
     case 0x6: // 0110.xxxx.xxxx.xxxx
-        // Note: 68000 only supports Bcc.B (8-bit) and Bcc.W (16-bit) displacements.
-        // The 0xFF case (32-bit displacement) is 68020+ only.  On a 68000, $xxFF
-        // is Bcc.B with displacement -1: an odd target, i.e. an address error,
-        // which this emulator does not model -- so every decoder executes the
-        // long form rather than branching to an odd PC.
+        // The 0xFF case is the 68020+ 32-bit displacement; the 68000 core binds
+        // the .L arms to the .B bodies (cpu_ops.h), where 0xFF is a displacement of -1.
         if ((((opcode) >> 8) & 0xF) == 0x1) {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BSR_L_LABEL; break; // 68020+ (see above for the 68000)
+            case 0xFF: OP_BSR_L_LABEL; break;
             case 0x00: OP_BSR_W_LABEL; break;
             default:   OP_BSR_B_LABEL; break;
             }
         } else {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BCC_L_DISPLACEMENT; break; // 68020+ (see above for the 68000)
+            case 0xFF: OP_BCC_L_DISPLACEMENT; break;
             case 0x00: OP_BCC_W_DISPLACEMENT; break;
             default:   OP_BCC_B_DISPLACEMENT; break;
             }

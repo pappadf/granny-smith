@@ -331,8 +331,9 @@ int gos_media_attach(config_t *cfg, const media_slot_t *slot) {
     if (!ata_attach_hd(ch, slot->unit & 1, slot->img))
         return -1;
     config_add_image(cfg, slot->img);
-    LOG(1, "ATA cell %d device %d: hard disk %s (%zu sectors)", slot->unit >> 1, slot->unit & 1,
-        image_get_filename(slot->img) ? image_get_filename(slot->img) : "(unnamed)", disk_size(slot->img) / 512u);
+    LOG(1, "ATA cell %d device %d: hard disk %s (%llu sectors)", slot->unit >> 1, slot->unit & 1,
+        image_get_filename(slot->img) ? image_get_filename(slot->img) : "(unnamed)",
+        (unsigned long long)(disk_size(slot->img) / 512u));
     return 0;
 }
 
@@ -345,6 +346,17 @@ bool gos_media_present(config_t *cfg, media_bus_t bus, int unit) {
     if (st->ata[unit >> 1].img[unit & 1])
         return true;
     return system_media_present_scsi_bus(st->atapi, unit);
+}
+
+image_t *gos_media_image(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus != MEDIA_BUS_ATA)
+        return system_media_image_std(cfg, bus, unit);
+    gossamer_state_t *st = gos_st(cfg);
+    if (!st || !st->ata_ready || !unit_ok(unit))
+        return NULL;
+    if (st->ata[unit >> 1].img[unit & 1])
+        return st->ata[unit >> 1].img[unit & 1];
+    return system_media_image_scsi_bus(st->atapi, unit);
 }
 
 int gos_media_eject(config_t *cfg, media_bus_t bus, int unit) {

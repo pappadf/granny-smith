@@ -233,6 +233,14 @@ double scheduler_time_ns(struct scheduler *restrict s);
 // and runs them via scheduler_run_frame(), under the host's `pacing`.
 void scheduler_main_loop(config_t *restrict config, double now_msecs, const host_pacing_t *pacing);
 
+// Turbo's slice: host seconds of emulation one scheduler_main_loop call
+// fills in unthrottled mode.  0 (the default) keeps the frame-locked rule
+// (TURBO_HOST_HEADROOM of the host loop period), for a run loop that shares
+// its thread or its frame with other work.  A run loop that re-enters at
+// once after each call (web2's core thread in turbo) sets a fixed slice, so
+// the thread emulates nearly all of the time.
+void scheduler_set_turbo_slice(double secs);
+
 // Run one VBL frame-unit: pulse the machine's VBL line (trigger_vbl) then run
 // exactly one VBL period of emulated time.  This is the atomic unit shared by
 // every target's run loop — web2's scheduler_main_loop() calls it once per

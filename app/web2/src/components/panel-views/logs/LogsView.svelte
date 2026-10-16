@@ -29,7 +29,7 @@
     {#if logs.entries.length === 0}
       <Hint class="logs-empty" inset="view">
         No log lines yet. Boot a machine and bring a category up with <code
-          >log &lt;cat&gt; &lt;level&gt;</code
+          >log.set &lt;category&gt; &lt;level&gt;</code
         >
         in the terminal, or use the <strong>Levels</strong> button above.
       </Hint>

@@ -20,4 +20,6 @@ EXTRA_CFLAGS  = -I$(EMU_ROOT)/core/peripherals -I$(EMU_ROOT)/core/storage
 
 # The real image_t accessors; the rest of the image layer is faked here
 EXTRA_SRCS += ../../../../src/core/storage/image_access.c
+# The SWIM, for its ISM write capture: driven through its register interface
+EXTRA_SRCS += ../../../../src/core/peripherals/floppy_swim.c
 include ../../common.mk

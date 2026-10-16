@@ -1155,9 +1155,9 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;
-    scsi_5380_t *chip = (scsi_5380_t *)malloc(sizeof(scsi_5380_t));
+    scsi_5380_t *chip = (scsi_5380_t *)calloc(1, sizeof(scsi_5380_t));
+    // Every board's construction uses the chip unconditionally: fail here
     GS_ASSERTF(chip != NULL, "scsi_5380_attach: out of memory");
-    memset(chip, 0, sizeof(*chip));
     chip->bus = bus;
     bus->chip5380 = chip;
 
@@ -1289,9 +1289,21 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
         // The meaningful staged region is [0 .. pos + size): data-out fills
         // [0..size); data-in keeps undelivered bytes at [pos..pos+size).  Grow
         // the buffer first so transfers larger than BUF_LIMIT round-trip.
+        //
+        // max/size/pos are file content, and the staging writes index
+        // data[size++] while size < max: the buffer must cover both the
+        // staged region and max, or a crafted checkpoint is an OOB heap
+        // write.  A phase never asks for more than INT_MAX (phase_data_in/out
+        // take an int), so anything beyond that is corrupt, not big.
         size_t used = scsi->buf.pos + scsi->buf.size;
-        if (used && scsi->buf.data) {
-            scsi_buf_ensure(scsi, used);
+        size_t need = used > scsi->buf.max ? used : scsi->buf.max;
+        if (used < scsi->buf.pos || scsi->buf.size > scsi->buf.max || need > INT_MAX || !scsi_buf_ensure(scsi, need)) {
+            LOG(0, "SCSI restore: transfer buffer max=%zu size=%zu pos=%zu is not valid", scsi->buf.max, scsi->buf.size,
+                scsi->buf.pos);
+            checkpoint_set_error(checkpoint);
+            scsi->buf.max = MAX_CMD_SIZE;
+            scsi->buf.size = scsi->buf.pos = 0;
+        } else if (used && scsi->buf.data) {
             system_read_checkpoint_data(checkpoint, scsi->buf.data, used);
         }
     }
@@ -1824,7 +1836,7 @@ static DEF_METHOD(scsi_dev_method_info) {
         return val_bool(true);
     }
     const char *fname = image_get_filename(img);
-    size_t sz = disk_size(img);
+    uint64_t sz = disk_size(img);
     double size_mb = (double)sz / (1024.0 * 1024.0);
     out_printf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
     return val_bool(true);
@@ -2111,42 +2123,40 @@ static DEF_SETTER(scsi_attr_loopback_set) {
 }
 
 // `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
-// it opens, isn't a floppy-sized image, and has a non-zero size. Prints a
-// closest-match drive model line for diagnostic context.
+// it opens, isn't a floppy-sized image, and has a non-zero size.  Why, and
+// the closest drive model, go to the scsi log category.
 static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        out_printf("invalid SCSI HD image: cannot open %s\n", path);
+        LOG(2, "identify_hd: cannot open %s", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        out_printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", image_get_raw_size(img));
+        LOG(2, "identify_hd: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
-    size_t sz = image_get_raw_size(img);
+    uint64_t sz = image_get_raw_size(img);
     const struct drive_model *best = drive_catalog_find_closest(sz);
-    if (sz == best->size)
-        out_printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
-    else
-        out_printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+    LOG(2, "identify_hd: %s is an HD image: %llu bytes, %s %s %s", path, (unsigned long long)sz,
+        sz == best->size ? "matches" : "nearest model", best->vendor, best->product);
     image_close(img);
     return val_bool(true);
 }
 
 // `scsi.identify_cdrom(path)` — true if the file is a recognised CD-ROM
-// image (ISO 9660, HFS, or Apple Partition Map). Prints a one-line
-// diagnostic describing what was matched.
+// image (ISO 9660, HFS, or Apple Partition Map).  What was matched, or why
+// nothing was, goes to the scsi log category.
 static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        out_printf("invalid CD-ROM image: cannot open %s\n", path);
+        LOG(2, "identify_cdrom: cannot open %s", path);
         return val_bool(false);
     }
     if (image_is_floppy(image_get_type(img))) {
-        out_printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", image_get_raw_size(img));
+        LOG(2, "identify_cdrom: %s is floppy-sized (%llu bytes)", path, (unsigned long long)image_get_raw_size(img));
         image_close(img);
         return val_bool(false);
     }
@@ -2154,7 +2164,7 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     // as a disk (a partition map, or a bare HFS / HFS+ / UFS volume).  The
     // image was opened through the registry already, so a .dmg or a Toast
     // image inside an archive is judged by the disk it holds.
-    size_t sz = disk_size(img);
+    uint64_t sz = disk_size(img);
     source_t *src = image_source(img);
     bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
     const format_t *f = format_contents(src, NULL);
@@ -2164,12 +2174,12 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *fmt = image_get_format(img);
     const char *enc = (fmt && strcmp(fmt, "raw") != 0) ? fmt : NULL;
     if (!is_iso && !is_disk) {
-        out_printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        LOG(2, "identify_cdrom: %s has no ISO 9660, HFS, or Apple Partition Map", path);
         image_close(img);
         return val_bool(false);
     }
-    out_printf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
-               is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
+    LOG(2, "identify_cdrom: %s is a CD-ROM image: %.1f MB, %s%s%s%s%s", path, size_mb, is_iso ? "ISO 9660" : "",
+        is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
 }

@@ -10,7 +10,7 @@
 // MODE records it consumes), so the pass-through switch is literally
 // which canvas is on top.
 
-import { getModule } from '@/bus/emulator';
+import { getModule, setGpuUnavailable } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
 
 // Reactive overlay state, read by ScreenView.
@@ -73,15 +73,14 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
         }
       } else if (m.type === 'lost') {
         console.warn('[voodoo2-gpu] device lost:', m.reason);
-        // Visible only when it was in use: a device lost while idle costs
-        // nothing until the next machine, where it is simply not offered.
-        if (gpuOverlay.visible)
-          showNotification(
-            'The browser lost the WebGPU device the Voodoo2 was drawing with. Reload the page; if WebGPU stays unavailable, quit and restart the browser.',
-            'warning',
-          );
         gpuOverlay.visible = false;
+        // An attached card reads the loss from the shared control block
+        // (the worker stores STATUS_LOST) and falls back to the thread
+        // backend; a card created later must not be offered the GPU.
+        if (deviceReady)
+          showNotification('WebGPU device lost: Voodoo2 3D falls back to software', 'warning');
         deviceReady = false;
+        setGpuUnavailable();
       }
     };
     worker.onerror = (e) => {
@@ -109,7 +108,8 @@ export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
     }, timeoutMs);
     void answer.then((ok) => {
       clearTimeout(timer);
-      resolve(ok);
+      // A device lost since it answered is no GPU to offer the core
+      resolve(ok && deviceReady);
     });
   });
 }
@@ -118,7 +118,11 @@ export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
 // `ctrl`; hand the worker the wasm memory and the address.
 export function onVoodooGpuAttach(ctrl: number): void {
   const mod = getModule();
-  if (!worker || !deviceReady || !mod) return;
+  if (!worker || !deviceReady || !mod) {
+    // The core times the attach out and uses the thread backend.
+    console.warn('[voodoo2-gpu] attach request with no GPU device: not attached');
+    return;
+  }
   const memory =
     (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
   if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) return;

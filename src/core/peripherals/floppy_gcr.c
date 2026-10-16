@@ -473,7 +473,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         size_t sector_count = (size_t)iwm_sectors_per_track(drive->track);
         size_t track_bytes = sector_count * 512u;
         size_t track_offset = iwm_disk_image_offset(drive->track, sel, num_sides);
-        size_t disk_sz = disk_size(img);
+        size_t disk_sz = (size_t)disk_size(img); // a floppy: far under 4 GB
 
         // Clamp to disk size for single-sided images
         if (track_offset + track_bytes > disk_sz) {
@@ -860,8 +860,11 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
     drive->write_hdr_start = -1;
 
+    // hdr_side is checked against the medium, not NUM_SIDES: a single-sided
+    // image has no side-1 block, and iwm_disk_image_offset ignores the side
+    // there, so a side-1 header would overwrite side 0 of the same track.
     int num_sides = iwm_image_num_sides(img);
-    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= NUM_SIDES || hdr_sector < 0 ||
+    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= num_sides || hdr_sector < 0 ||
         hdr_sector >= iwm_sectors_per_track(hdr_track))
         return;
     size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
@@ -870,7 +873,7 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
     disk_write_data(img, off, buf, 512);
     disk_write_tag(img, off / 512u, tag, sizeof tag);
-    t->modified = false; // this sector is in the image now
+    t->modified = false; // this sector is in the image now (a later nibble write re-marks it)
     LOG(5, "Drive %d: Wrote through track=%d side=%d sector=%d", drive_index, hdr_track, hdr_side, hdr_sector);
 }
 
@@ -930,7 +933,8 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                     // the start of its own track, into neighbouring tracks'
                     // data -- arbitrary corruption of a mounted writable image
                     // from one track write.
-                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES &&
+                    // hdr_side likewise: see iwm_write_through.
+                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < num_sides &&
                         hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
                         size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
                         if (off + 512 <= disk_size(img)) {

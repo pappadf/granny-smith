@@ -115,6 +115,10 @@ typedef struct machine_startup {
     unsigned type;
 } machine_startup_t;
 
+// Room for a document's Open Firmware variables, packed: twice the 2 KB
+// partition they are written into, which holds the values once each.
+#define MACHINE_OF_VARS_BYTES 4096
+
 typedef struct machine_build_opts {
     // RAM size in KB, already validated against the profile's ram_options and
     // defaulted by the caller; never 0 by the time system_create sees it.
@@ -155,6 +159,12 @@ typedef struct machine_build_opts {
         int slot; // 0: no mode chosen
         uint8_t record[8];
     } builtin_startup;
+    // The Open Firmware variables the document sets ("nvram"), checked
+    // against the model's NVRAM: the family's seeding step writes them as
+    // setenv would, after its own records.  n_of_vars pairs packed into
+    // of_vars -- name, NUL, value, NUL, back to back.
+    int n_of_vars;
+    char of_vars[MACHINE_OF_VARS_BYTES];
 } machine_build_opts_t;
 
 // A build with nothing chosen: every field at its "caller said nothing" value.
@@ -171,6 +181,8 @@ static inline machine_build_opts_t machine_build_opts_default(void) {
     o.builtin_sense = MACHINE_SENSE_NONE;
     o.builtin_connected = false;
     o.builtin_startup.slot = 0;
+    o.n_of_vars = 0;
+    o.of_vars[0] = '\0';
     return o;
 }
 

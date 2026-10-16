@@ -717,6 +717,54 @@ TEST(checkpoint_keeps_the_port_latches) {
     s_cp_buf = NULL;
 }
 
+// The latches are file content.  attr_index and dac_phase index fixed arrays
+// (attr[32], dac[256][3]), so a restored value out of range must be brought
+// back into it the way the live write paths keep it, not used as stored.
+TEST(checkpoint_latches_out_of_range_are_contained) {
+    s_cp_buf = (uint8_t *)malloc(CP_CAP);
+    ASSERT_TRUE(s_cp_buf != NULL);
+    s_cp_len = s_cp_pos = 0;
+
+    pci_device_t *a = seat();
+    port_out(P_SEQ_INDEX, 0x1D);
+    port_out(P_CRTC_INDEX, 0x3B);
+    port_out(P_GR_INDEX, 0x0E);
+    port_in(P_STATUS1);
+    port_out(P_ATTR, 0x13); // attribute index $13, flip-flop now at data
+    port_out(P_DAC_RINDEX, 0xB5);
+    port_out(P_DAC_WINDEX, 0xA7);
+    port_out(P_DAC_DATA, 0x01); // phase 1
+    a->ops->checkpoint_save(a, TEST_CP);
+    unseat(a);
+
+    // Find the latch block in the stream and corrupt the two indices.
+    static const uint8_t latches[8] = {0x1D, 0x3B, 0x0E, 0x13, 0x01, 0xA7, 0xB5, 0x01};
+    size_t at = SIZE_MAX;
+    for (size_t i = 0; i + sizeof latches <= s_cp_len; i++)
+        if (memcmp(s_cp_buf + i, latches, sizeof latches) == 0) {
+            at = i;
+            break;
+        }
+    ASSERT_TRUE(at != SIZE_MAX);
+    s_cp_buf[at + 3] = 0xFF; // attr_index
+    s_cp_buf[at + 7] = 0xFF; // dac_phase
+
+    pci_device_t *b = seat();
+    b->ops->checkpoint_restore(b, TEST_CP);
+    port_out(P_ATTR, 0x77); // data, into attr[$FF & $1F]
+    ASSERT_EQ_INT(port_in(P_ATTR_READ), 0x77);
+    port_out(P_DAC_DATA, 0x11); // a fresh entry: R, G, B
+    port_out(P_DAC_DATA, 0x12);
+    port_out(P_DAC_DATA, 0x13);
+    port_out(P_DAC_RINDEX, 0xA7);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x11);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x12);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x13);
+    unseat(b);
+    free(s_cp_buf);
+    s_cp_buf = NULL;
+}
+
 // The shared framebuffer node resolves to the live descriptor and reports
 // the CR0C/CR0D start address as a byte offset into display memory.
 TEST(framebuffer_node_resolves_the_descriptor) {
@@ -776,6 +824,7 @@ int main(void) {
     RUN(reset_withdraws_the_mode);
     RUN(checkpoint_round_trips_the_mode);
     RUN(checkpoint_keeps_the_port_latches);
+    RUN(checkpoint_latches_out_of_range_are_contained);
     RUN(framebuffer_node_resolves_the_descriptor);
     RUN(framebuffer_node_base_is_the_scanout_start);
     return 0;

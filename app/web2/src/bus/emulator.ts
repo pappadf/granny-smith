@@ -538,11 +538,14 @@ let foregroundJob: number | null = null;
 // Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
 // shell's new prompt when the job ends -- after every `scheduler.run` in
 // it has run to its stop -- or an error, which the interpreter has already
-// printed into the job's output.  Resolves when the job is over.
-export async function gsEvalLine(line: string): Promise<void> {
-  if (!moduleReady || !mailbox) return;
+// printed into the job's output.  Resolves when the job is over, to the
+// reason the line failed when the console has not already shown it (a
+// transport failure, a request the mailbox refused), else null.
+export async function gsEvalLine(line: string): Promise<string | null> {
+  if (bridgeDead) return `emulator crashed: ${bridgeDead}`;
+  if (!moduleReady || !mailbox) return 'emulator not ready';
   const text = (line ?? '').toString();
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   const stopWatch = watchRequest('terminal line');
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
@@ -553,12 +556,25 @@ export async function gsEvalLine(line: string): Promise<void> {
     // printed is in by now: the console ends the job (a last line without a
     // newline, a value whose marker never came).
     if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
-    if (r.ok) {
-      const prompt: unknown = JSON.parse(r.json);
-      if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
+    let res: unknown = r.json;
+    try {
+      res = JSON.parse(r.json);
+    } catch {
+      // Not JSON: keep the text as the reason.
     }
-  } catch {
-    // The request itself failed: the console shows nothing for it.
+    if (r.ok) {
+      if (typeof res === 'string') cachedPrompt = res.length ? res : null;
+      return null;
+    }
+    // A script error was printed by the interpreter, and a cancel is the
+    // user's own Ctrl-C; anything else never reached the job's output.
+    const why = gsErrorText(res);
+    return why === 'command failed' || why === 'cancelled' ? null : why;
+  } catch (e) {
+    if (e === 'deadline') return 'the line did not complete in time';
+    if (e === 'lost' || e === 'detached')
+      return `emulator crashed: ${bridgeDead ?? 'mailbox lost'}`;
+    return `request failed: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     foregroundJob = null;
     stopWatch();
@@ -769,11 +785,26 @@ function routeCoreEvent(ev: CoreEvent): void {
       );
       break;
     case 'state:perf':
-      setPerfStats(num(d.mips), num(d.tps), {
-        tickMaxMs: num(d.tick_max_ms),
-        tickP50Ms: num(d.tick_p50_ms),
-        pollMaxMs: num(d.poll_max_ms),
-      });
+      setPerfStats(
+        num(d.mips),
+        num(d.tps),
+        {
+          tickMaxMs: num(d.tick_max_ms),
+          tickP50Ms: num(d.tick_p50_ms),
+          pollMaxMs: num(d.poll_max_ms),
+        },
+        {
+          engine:
+            d.engine === 'interpreter' || d.engine === 'predecoded' || d.engine === 'jit'
+              ? d.engine
+              : '',
+          jitPct: num(d.jit_pct),
+          jitSupervisor: d.jit_sup === true,
+          jitRegions: num(d.jit_regions),
+          jitKb: num(d.jit_kb),
+          ppc: d.ppc === true,
+        },
+      );
       break;
     case 'notify:floppy':
       onFloppyDriveChange(num(d.drive), d.present === true);
@@ -866,6 +897,13 @@ export function getModule(): EmscriptenModule | null {
   return Module;
 }
 
+// The WebGPU device went away after startup: answer "no GPU" from now on,
+// so a Voodoo2 created later picks the thread backend at once instead of
+// waiting out an attach the page can no longer serve.
+export function setGpuUnavailable(): void {
+  mailbox?.setGpuAvailable(false);
+}
+
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
 // buffer can be replaced, so callers must never cache these.
@@ -889,19 +927,56 @@ export async function setCapsLock(on: boolean): Promise<void> {
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
+// The status bar's engine menu: the CPU engine the next instructions run on.
+// `jit-kernel` translates the PowerPC kernel's code too (jit.supervisor).
+// The perf push that follows reports what the core then runs.
+export type CpuEngineChoice = 'interpreter' | 'predecoded' | 'jit' | 'jit-kernel';
+export async function setCpuEngine(choice: CpuEngineChoice): Promise<void> {
+  if (!isModuleReady() || machine.status === 'no-machine') return;
+  const steps: [string, number][] =
+    choice === 'interpreter'
+      ? [['predecode.enabled', 0]]
+      : choice === 'predecoded'
+        ? [
+            ['predecode.enabled', 1],
+            ['jit.enabled', 0],
+          ]
+        : [
+            ['predecode.enabled', 1],
+            ['jit.supervisor', choice === 'jit-kernel' ? 1 : 0],
+            ['jit.enabled', 1],
+          ];
+  for (const [path, value] of steps) {
+    const r = await gsEval(path, [value]);
+    if (!gsOk(r)) {
+      showNotification(`CPU engine: ${gsErrorText(r)}`, 'warning');
+      return;
+    }
+  }
+  machine.engine = choice === 'jit-kernel' ? 'jit' : choice;
+  machine.jitSupervisor = choice === 'jit-kernel';
+  if (choice !== 'jit' && choice !== 'jit-kernel') machine.jitPct = 0;
+}
+
 export async function shutdownEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
+  const res = await gsEval('scheduler.stop');
+  if (!gsOk(res)) {
+    showNotification(`Stop failed: ${gsErrorText(res)}`, 'error');
+    return;
+  }
   machine.status = 'stopped' as MachineStatus;
   showNotification('Machine stopped', 'info');
 }
 
 export async function pauseEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
-  // The mode_ended event reflects the new state.
+  const res = await gsEval('scheduler.stop');
+  // On success the mode_ended event reflects the new state.
+  if (!gsOk(res)) showNotification(`Pause failed: ${gsErrorText(res)}`, 'error');
 }
 
 export async function resumeEmulator(): Promise<void> {
-  await gsEval('scheduler.run');
+  const res = await gsEval('scheduler.run');
+  if (!gsOk(res)) showNotification(`Resume failed: ${gsErrorText(res)}`, 'error');
 }
 
 // UI mode name → core `pacing.mode` value.
@@ -918,7 +993,7 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 // runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
   const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
-  if (res && typeof res === 'object' && 'error' in res) {
+  if (!gsOk(res)) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;
   }

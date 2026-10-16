@@ -13,6 +13,7 @@
 // own with createConsole().
 
 import { ConsoleModel, type ConsoleEntry } from '@/lib/consoleModel';
+import { bumpImagesRevision } from '@/state/images.svelte';
 import type { HlSpan } from '@/lib/highlight';
 import {
   gsEvalLine,
@@ -96,10 +97,15 @@ export function createConsole(): Console {
           continue;
         }
         state.runningSince = performance.now();
-        await gsEvalLine(text);
+        const failed = await gsEvalLine(text);
         if (disposed) return;
+        if (failed) notice(`Command failed: ${failed}`);
         state.runningSince = null;
         refreshPrompt();
+        // A line that may have changed the stored files (files.hd_create, cp,
+        // rm, …) re-scans the Images panel, which otherwise kept its old
+        // listing until it was reopened.
+        if (/\b(files\.|cp|mv|rm|mkdir)\b|\/opfs\/images/.test(text)) bumpImagesRevision();
         for (const cb of jobDone) cb();
       }
     } finally {

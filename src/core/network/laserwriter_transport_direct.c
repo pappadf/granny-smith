@@ -25,9 +25,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("laserwriter");
-
 #if GS_PLATEN
+
+// Inside the conditional: without the platen nothing here logs, and clang
+// warns about the category's unused helper.
+LOG_USE_CATEGORY_NAME("laserwriter");
 
 #include "platen.h"
 

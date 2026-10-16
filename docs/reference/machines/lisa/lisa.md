@@ -769,9 +769,16 @@ generator are described in [scc.md](../../hardware/scc.md); the Lisa specifics a
   | `$00D247` / `$00D207` | A | data |
 
 - **Interrupt:** **IPL 6**, autovectored (vector `$000078`).
-- **Clocks:** channel A's PCLK input is **4.000 MHz**, channel B's is **3.6864
-  MHz**. Baud time constants are `TC(A) = 4,000,000 / (2 × baud) − 2` and
-  `TC(B) = 3,686,400 / (2 × baud) − 2`. Port B is used for AppleBus (LocalTalk).
+- **Clocks:** the SCC's PCLK is **4.000 MHz**, derived from the floppy
+  controller's 16 MHz clock. A **3.6864 MHz** oscillator sits between
+  channel B's `/SYNC` and `RTxC` pins, and channel B's baud-rate generator
+  runs from it (Hardware Manual §6.4.1, §6.4.3). Baud time constants are
+  `TC(A) = 4,000,000 / (2 × baud) − 2` and
+  `TC(B) = 3,686,400 / (2 × baud) − 2`.
+- **Port B is the AppleBus (LocalTalk) port.** Port A has RS-232 drivers
+  (1488/1489), port B RS-422 drivers (26LS30/26LS32) (§6.4.2). The manual's
+  baud table (Fig. 2-10) ends with an AppleBus row: x1 clock, `TC(B) = 6`,
+  which is 3,686,400 / 16 = 230,400 bit/s (the table prints "224000").
 
 Because the address pins follow the same A1/A2 convention as the Macintosh, a
 generic SCC model that decodes `channel = ~(A1)` and `data = A2` works unchanged

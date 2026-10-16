@@ -167,12 +167,14 @@ bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional);
 #define FSAVE_IDLE_SIZE 0x38
 int fpu_fsave(fpu_state_t *fpu, uint32_t addr);
 
-// FRESTORE: read state frame from memory at addr. Returns frame size in bytes.
-// Null frame resets FPU. Idle/busy frames restore internal state.
+// FRESTORE: read state frame from memory at addr. Returns frame size in bytes,
+// or a negative value for a frame that is not this part's (the caller raises
+// a format error). Null frame resets FPU. Idle/busy frames restore internal state.
 int fpu_frestore(fpu_state_t *fpu, uint32_t addr);
 
 // MC68040 frame formats (single status longword; version $00 = NULL,
-// $41 = valid with size byte $00/$30/$60).  Used by cpu_68040.c.
+// $41 = valid with size byte $00/$30/$60; anything else returns a negative
+// value, as fpu_frestore).  Used by cpu_68040.c.
 int fpu_fsave040(fpu_state_t *fpu, uint32_t addr);
 int fpu_frestore040(fpu_state_t *fpu, uint32_t addr);
 

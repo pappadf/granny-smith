@@ -442,7 +442,7 @@ TEST(test_nested_volume_mounts_from_its_source) {
 // ---- The image.c entry points image_part.c links against -----------------
 // (its image-backed helpers are not used here: every mount reads a source)
 
-size_t disk_size(image_t *img) {
+uint64_t disk_size(image_t *img) {
     (void)img;
     return 0;
 }
@@ -450,7 +450,7 @@ uint32_t disk_block_size(image_t *img) {
     (void)img;
     return 512;
 }
-size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *img, uint64_t offset, uint8_t *buf, size_t size) {
     (void)img;
     (void)offset;
     (void)buf;

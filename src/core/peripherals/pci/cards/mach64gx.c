@@ -476,12 +476,10 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // (control.c).  Two independent circuits agreeing on one monitor is a good
 // sign the engine below is right.
 //
-// The multiple-scan entries come from Apple's table.  Which raster each
-// code actually selects is a driver decision we have not measured yet, and
-// the bit order WITHIN each extended pair is not stated by the note — so
-// mach64_sense_log() prints the primary and extended codes the engine
-// produced on the first run, and the table gets pinned from that.  Nothing
-// about enumeration depends on it: the card's FCode gives up only when
+// The multiple-scan entries are Apple's MSB1/2/3 extended codes.  A code
+// outside Apple's list reads as an unknown display, which the Rage Pro
+// driver under Mac OS X answers with 640x480 alone.  Enumeration itself
+// does not depend on it: the card's FCode gives up only when
 // primary == 7 AND extended == $3F together, i.e. when all three pins float
 // high in every configuration, which is what "no cable attached" looks
 // like.
@@ -502,10 +500,13 @@ typedef struct mach64_monitor_sense {
 static const mach64_monitor_sense_t mach64_sense[] = {
     // 14" AppleColor / 12" monochrome — no tie resistors; extended = $2B.
     {"14in_rgb",   6, STRAP_EXT01(6), STRAP_EXT02(6), STRAP_EXT12(6)},
-    // The multiple-scan displays answer the extended probe (Apple table 2-3).
-    {"15in_multi", 6, 3,              0,              0             },
-    {"17in_multi", 6, 3,              2,              0             },
-    {"20in_multi", 6, 3,              0,              2             },
+    // The multiple-scan displays answer the extended probe with Apple's
+    // MSB1/2/3 codes $03/$0B/$23 (Displays.h kESCSixMSB1..3), assembled
+    // "BC AC AB": drive A (pin 2) and read B,C into bits 5:4, and so on.
+    // Driving C reads back A,B = 1,1 -- the primary strap, as it must.
+    {"15in_multi", 6, 0,              0,              3             },
+    {"17in_multi", 6, 0,              2,              3             },
+    {"20in_multi", 6, 2,              0,              3             },
     // 21" colour — a primary-only code, like the 14".
     {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
     // No cable: every pin floats high in every configuration, the one answer
@@ -595,6 +596,10 @@ typedef struct mach64 {
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
+    // The cursor registers as the last frame latched them, and whether
+    // `compose` still has to be built from them (mach64_compose)
+    uint32_t cur_latch[5]; // CUR_HORZ_VERT_POSN, _OFF, CUR_OFFSET, CUR_CLR0, _CLR1
+    bool compose_stale;
     uint32_t scan_base; // VRAM byte offset the CRTC is scanning
     bool scan_blanked; // ...or nothing, because the raster is off
     bool clut_dirty; // palette changed since the last scanout refresh
@@ -1714,14 +1719,49 @@ static void mach64_engine_run(mach64_t *m) {
     uint32_t cntl = m->reg[DW_DST_CNTL];
     bool x_inc = (cntl & DST_X_DIR) != 0;
     bool y_inc = (cntl & DST_Y_DIR) != 0;
-    for (uint32_t row = 0; row < height; row++) {
+    // One DST_WIDTH write can start a 65535 x 65535 trajectory.  Iterate only
+    // the pixels mach64_emit would not reject outright -- inside the scissor,
+    // inside VRAM -- so a large operation clipped down to the screen costs the
+    // screen.  The per-pixel path is unchanged; the rejects are skipped and
+    // counted in bulk.  A surface whose pitch is smaller than its row can
+    // still overdraw the same VRAM without end, so the emitted pixels are also
+    // capped, at twice the pixels VRAM can hold.
+    uint64_t budget = 2u * ((uint64_t)m->vram_size / op.bpp);
+    for (uint32_t row = 0; row < height && budget; row++) {
         uint32_t y = y_inc ? dst_y + row : dst_y - row;
-        for (uint32_t col = 0; col < width; col++) {
+        // Columns [c0, c1) whose x lies in [sc_left, sc_right] and whose pixel
+        // is inside VRAM (the offset rises with x, so that is x < xlim).  The
+        // scissor is 16-bit, so a y or x that wrapped below 0 never passes.
+        uint64_t row_off = (uint64_t)op.dst.base + (uint64_t)y * op.dst.pitch;
+        uint64_t xlim = row_off + op.bpp <= m->vram_size ? (m->vram_size - op.bpp - row_off) / op.bpp + 1 : 0;
+        uint64_t lo = op.sc_left, hi = (uint64_t)op.sc_right + 1; // x range [lo, hi)
+        if (hi > xlim)
+            hi = xlim;
+        int64_t c0 = 0, c1 = 0;
+        if (y >= op.sc_top && y <= op.sc_bottom && lo < hi) {
+            if (x_inc) { // x = dst_x + col
+                c0 = (int64_t)lo - dst_x;
+                c1 = (int64_t)hi - dst_x;
+            } else { // x = dst_x - col
+                c0 = (int64_t)dst_x - (int64_t)hi + 1;
+                c1 = (int64_t)dst_x - (int64_t)lo + 1;
+            }
+            if (c0 < 0)
+                c0 = 0;
+            if (c1 > (int64_t)width)
+                c1 = width;
+        }
+        if (c1 < c0)
+            c1 = c0;
+        m->tally.scissor += width - (uint32_t)(c1 - c0); // off-VRAM folded in
+        for (uint32_t col = (uint32_t)c0; col < (uint32_t)c1 && budget; col++, budget--) {
             uint32_t x = x_inc ? dst_x + col : dst_x - col;
             bool mono = mach64_mono_bit(m, &op, x, y, col, row);
             mach64_emit(m, &op, x, y, col, row, mono);
         }
     }
+    if (!budget)
+        LOG(0, "Mach64: %ux%u operation overdraws VRAM past its pixel budget; the rest is dropped", width, height);
     m->blits++;
     m->display.fb_dirty = true;
     if (op.frgd_sel == DP_SRC_BLIT || op.bkgd_sel == DP_SRC_BLIT || op.mono_sel == DP_MONO_BLIT)
@@ -2846,38 +2886,64 @@ static void mach64_clut_changed(mach64_t *m) {
 // It costs a frame copy, and only while the cursor is enabled: with
 // GEN_CUR_EN clear (the reset state, and what Mac OS leaves it at, since
 // QuickDraw draws its own cursor into the framebuffer) the scanout is the
-// same straight pointer into VRAM it always was.
+// same straight pointer into VRAM it always was.  Mac OS X drives the
+// hardware cursor, so the copy is made lazily: a frame latches the cursor
+// registers and marks the composite stale, and the first reader of `bits`
+// after it (display_sync_pixels: the renderer, a checksum, a screenshot)
+// builds it -- at most once per frame, and not at all for frames nobody
+// reads (a turbo run's guest frames far outnumber the host's).
+static void mach64_compose(mach64_t *m);
+static void mach64_sync_pixels(void *ctx) {
+    mach64_t *m = (mach64_t *)ctx;
+    if (m->compose_stale && m->display.bits == m->compose)
+        mach64_compose(m);
+}
+
 static void mach64_present(mach64_t *m) {
+    m->display.sync_pixels = mach64_sync_pixels;
+    m->display.sync_ctx = m;
     if (m->scan_blanked) {
         m->display.bits = m->blank;
         return;
     }
+    if (!(m->reg[DW_GEN_TEST_CNTL] & GEN_CUR_EN)) {
+        m->display.bits = m->vram + m->scan_base;
+        return;
+    }
+    m->cur_latch[0] = m->reg[DW_CUR_HORZ_VERT_POSN];
+    m->cur_latch[1] = m->reg[DW_CUR_HORZ_VERT_OFF];
+    m->cur_latch[2] = m->reg[DW_CUR_OFFSET];
+    m->cur_latch[3] = m->reg[DW_CUR_CLR0];
+    m->cur_latch[4] = m->reg[DW_CUR_CLR1];
+    m->display.bits = m->compose;
+    m->compose_stale = true;
+}
+
+// Build the hardware-cursor composite: the frame, with the cursor the
+// last frame latched drawn over it
+static void mach64_compose(mach64_t *m) {
+    m->compose_stale = false;
     uint32_t bpp = mach64_bytes_per_pixel(m);
     uint32_t stride = m->display.stride;
     uint32_t height = m->display.height;
     uint32_t width = m->display.width;
     uint8_t *frame = m->vram + m->scan_base;
-    if (!(m->reg[DW_GEN_TEST_CNTL] & GEN_CUR_EN)) {
-        m->display.bits = frame;
-        return;
-    }
 
     // No clamp needed: mach64_update settled this geometry against vram_size
     // through display_set_scanout, and `compose` is vram_size, so the span
     // fits both by construction.
     size_t span = (size_t)stride * height;
     memcpy(m->compose, frame, span);
-    m->display.bits = m->compose;
 
     // "The mach64 will not display the cursor at all if either the
     // horizontal or vertical cursor position is negative" — the driver
     // saturates the position to zero and moves the offset instead, so a
     // clipped cursor arrives here as a larger CUR_HORZ_VERT_OFF.
-    uint32_t px = CUR_POSN_H(m->reg[DW_CUR_HORZ_VERT_POSN]);
-    uint32_t py = CUR_POSN_V(m->reg[DW_CUR_HORZ_VERT_POSN]);
-    uint32_t ox = CUR_OFF_H(m->reg[DW_CUR_HORZ_VERT_OFF]);
-    uint32_t oy = CUR_OFF_V(m->reg[DW_CUR_HORZ_VERT_OFF]);
-    uint32_t src = CUR_BASE(m->reg[DW_CUR_OFFSET]);
+    uint32_t px = CUR_POSN_H(m->cur_latch[0]);
+    uint32_t py = CUR_POSN_V(m->cur_latch[0]);
+    uint32_t ox = CUR_OFF_H(m->cur_latch[1]);
+    uint32_t oy = CUR_OFF_V(m->cur_latch[1]);
+    uint32_t src = CUR_BASE(m->cur_latch[2]);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > m->vram_size) {
         LOG(1, "Mach64: hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src,
             m->vram_size >> 20);
@@ -2888,8 +2954,8 @@ static void mach64_present(mach64_t *m) {
     // direct-colour mode they are 24-bit true colour in the upper bits
     // (RRG p. 3-27).  Only the 8 bpp case is exercised by anything today.
     bool indexed = m->display.format == PIXEL_8BPP;
-    uint32_t clr[2] = {indexed ? (m->reg[DW_CUR_CLR0] & 0xFFu) : (m->reg[DW_CUR_CLR0] >> 8),
-                       indexed ? (m->reg[DW_CUR_CLR1] & 0xFFu) : (m->reg[DW_CUR_CLR1] >> 8)};
+    uint32_t clr[2] = {indexed ? (m->cur_latch[3] & 0xFFu) : (m->cur_latch[3] >> 8),
+                       indexed ? (m->cur_latch[4] & 0xFFu) : (m->cur_latch[4] >> 8)};
     if (m->gp && indexed) {
         // The Rage Pro's integrated DAC overlays the cursor in TRUE colour at
         // every depth — the 24 bits above the index byte.  The ROM's ndrv
@@ -2898,7 +2964,7 @@ static void mach64_present(mach64_t *m) {
         // shows a black-outlined white arrow.  The composite is built in the
         // frame's own depth, so each colour becomes its nearest palette entry.
         for (int k = 0; k < 2; k++) {
-            uint32_t rgb = m->reg[k ? DW_CUR_CLR1 : DW_CUR_CLR0] >> 8;
+            uint32_t rgb = m->cur_latch[k ? 4 : 3] >> 8;
             int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
             uint32_t best = 0, best_d = 0xFFFFFFFFu;
             for (uint32_t i = 0; i < 256; i++) {
@@ -3287,7 +3353,7 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // scan is bounded by vram_size, so a buffer of that size can always hold
     // one.  Growing `vram` alone broke the invariant and turned the very next
     // mach64_update() -- which this function calls below -- into a 2 MB heap
-    // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
+    // WRITE overflow, twice over: memcpy into `compose` in mach64_compose and
     // memset of `blank` here.
     if (c.vram_size != m->vram_size) {
         uint8_t *v = (uint8_t *)calloc(1, c.vram_size);
@@ -3767,12 +3833,41 @@ const pci_card_kind_t mach64_gx_kind = {
 // and Mac OS loads the ROM's `ATY,RAGEIII` ndrv — and has 2 MB of SGRAM,
 // the shipping configuration.
 //
-// The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
-// 640 x 480 display whose code every Mac driver knows.
+// The monitor is the one the machine's built-in video port names
+// (mach64_ragepro_monitor_at, below): Apple's 14" RGB by default (sense 6,
+// extended from its straps), a 640 x 480 display whose code every Mac driver
+// knows, or one of the multiple-scan displays or the 21" -- the GX's own
+// sense rows.
+
+// The monitors the Rage Pro's machine offers on its built-in video port
+// (gossamer.c's builtin_video_desc_t), as monitor-catalogue ids: the first
+// five rows of mach64_sense, whose GP_IO sense the card already answers.
+// The byte that names one is its row index: the build resolves the
+// document's monitor to it (builtin_sense) and the PCI layer hands it back
+// as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
+// which every G3 built before this list existed carries, its checkpoints
+// included -- straps the 14", the monitor the Rage Pro always had.
+static const char *const ragepro_monitors[] = {"13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"};
+#define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
+
+bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i >= RAGEPRO_MONITORS)
+        return false;
+    *id = *monitor = ragepro_monitors[i];
+    return true;
+}
+
+bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (size_t i = 0; i < RAGEPRO_MONITORS; i++)
+        if (strcmp(ragepro_monitors[i], id) == 0) {
+            *out_sense = (uint8_t)i;
+            return true;
+        }
+    return false;
+}
 
 static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3799,7 +3894,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
         free(dev);
         return NULL;
     }
-    m->mon = &mach64_sense[0];
+    m->mon = &mach64_sense[opts && opts->sense < RAGEPRO_MONITORS ? opts->sense : 0];
     mach64_reset(dev, cfg);
 
     m->aper_if.read_uint8 = aper_read8;

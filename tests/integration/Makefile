@@ -21,6 +21,10 @@
 #   make build             - Build the headless emulator only
 #   make check-data        - Check if test data is available
 
+# Under -j, keep each test's output together: scripts/test-matrix.py credits
+# a "skip:" line to the test whose "=== Running ... ===" header precedes it.
+MAKEFLAGS += --output-sync=target
+
 # Paths
 ROOT_DIR := ../..
 HEADLESS_BIN := $(ROOT_DIR)/build/headless/gs-headless

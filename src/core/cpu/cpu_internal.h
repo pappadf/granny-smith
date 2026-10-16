@@ -372,6 +372,84 @@ static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restri
     }
 }
 
+// === Operand data accesses ==================================================
+// The 68000 takes an address error (group-0, vector 3) for a word or long
+// operand access at an odd address.  Its core raises that here like a
+// deferred data bus error — first fault of the instruction wins, the sprint
+// ends after the instruction, exception_bus_error builds the frame — so the
+// switch core and the predecoded executor share one delivery path.  The
+// access itself is suppressed (a read yields 0).  The 68020+ cores map these
+// straight to the accessors: they handle misalignment in hardware.
+// Only the 68000 core's own translation unit compiles the check
+// unconditionally; the shared units (fpu.c, cpu.c) test the model, since the
+// same helpers serve every core there.
+extern uint32_t g_m68k_fault_regs[16]; // the 68000 register file at an address error
+extern uint8_t g_m68k_fault_ccr;
+#if defined(CPU_DECODER_IS_68030)
+#define cpu_dread16(cpu, addr)     memory_read_uint16(addr)
+#define cpu_dread32(cpu, addr)     memory_read_uint32(addr)
+#define cpu_dwrite16(cpu, addr, x) memory_write_uint16(addr, x)
+#define cpu_dwrite32(cpu, addr, x) memory_write_uint32(addr, x)
+#else
+#ifdef CPU_DECODER_IS_68000
+#define CPU_IS_68000(cpu) 1
+#else
+#define CPU_IS_68000(cpu) ((cpu)->cpu_model == CPU_MODEL_68000)
+#endif
+// The register file and CCR as they stood at the fault: the instruction
+// stops there on hardware, but our op bodies run on (the suppressed read
+// yields 0), so delivery restores this snapshot and discards what the body
+// did after the fault — including the bus-error rollbacks, which are
+// 68030 retry semantics, not the 68000's.
+static inline void m68k_raise_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw, uint32_t fc) {
+    g_bus_error_pending = true;
+    g_bus_error_is_address = true;
+    g_bus_error_address = addr; // the full 32-bit access address, as the frame reports it
+    g_bus_error_rw = rw;
+    g_bus_error_fc = fc;
+    memcpy(g_m68k_fault_regs, cpu->d, sizeof g_m68k_fault_regs); // d[8] then a[8]
+    g_m68k_fault_ccr = read_ccr(cpu);
+    memory_end_sprint(g_bus_error_instr_ptr); // end the sprint after this instruction
+}
+static inline bool m68k_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw) {
+    if (__builtin_expect(!CPU_IS_68000(cpu), 0))
+        return false;
+    // Once an address error is pending the instruction has stopped: its
+    // later accesses (a store after a faulting read, the second operand of
+    // SUBX/CMPM) must not reach memory either.
+    if (__builtin_expect(g_bus_error_is_address, 0))
+        return true;
+    if (__builtin_expect(!(addr & 1u), 1))
+        return false;
+    if (!g_bus_error_pending)
+        m68k_raise_address_error(cpu, addr, rw, cpu->supervisor ? 5u : 1u);
+    return true;
+}
+// An instruction fetch at an odd PC (a control transfer to an odd address):
+// the frame carries the opcode that transferred (cpu->ir) and PC + 2, as
+// for the Lisa's fetch bus errors; the instruction at PC never starts.
+static inline void m68k_fetch_address_error(cpu_t *restrict cpu) {
+    cpu->instruction_pc = cpu->pc;
+    if (!g_bus_error_pending)
+        m68k_raise_address_error(cpu, cpu->pc, true, cpu->supervisor ? 6u : 2u);
+    cpu->pc += 2;
+}
+static inline uint16_t cpu_dread16(cpu_t *restrict cpu, uint32_t addr) {
+    return m68k_address_error(cpu, addr, true) ? 0 : memory_read_uint16(addr);
+}
+static inline uint32_t cpu_dread32(cpu_t *restrict cpu, uint32_t addr) {
+    return m68k_address_error(cpu, addr, true) ? 0 : memory_read_uint32(addr);
+}
+static inline void cpu_dwrite16(cpu_t *restrict cpu, uint32_t addr, uint16_t x) {
+    if (!m68k_address_error(cpu, addr, false))
+        memory_write_uint16(addr, x);
+}
+static inline void cpu_dwrite32(cpu_t *restrict cpu, uint32_t addr, uint32_t x) {
+    if (!m68k_address_error(cpu, addr, false))
+        memory_write_uint32(addr, x);
+}
+#endif
+
 // Read an 8-bit value from the effective address specified in the opcode.
 // The read_ea_* helpers trust the caller's VALID_EA check (an unvalidated
 // mode would read a dummy address); validating again here would put a
@@ -398,7 +476,7 @@ static inline __attribute__((always_inline)) uint16_t read_ea_16(cpu_t *restrict
     else if (mode == 1)
         return cpu->a[opcode & 7];
     else
-        return memory_read_uint16(calculate_ea(cpu, 2, mode, reg, increment));
+        return cpu_dread16(cpu, calculate_ea(cpu, 2, mode, reg, increment));
 }
 
 // Read a 32-bit value from the effective address specified in the opcode
@@ -411,7 +489,7 @@ static inline __attribute__((always_inline)) uint32_t read_ea_32(cpu_t *restrict
     else if (mode == 1)
         return cpu->a[opcode & 7];
     else
-        return memory_read_uint32(calculate_ea(cpu, 4, mode, reg, increment));
+        return cpu_dread32(cpu, calculate_ea(cpu, 4, mode, reg, increment));
 }
 
 // Write an 8-bit value to the effective address specified by mode and register
@@ -460,7 +538,7 @@ static inline __attribute__((always_inline)) void write_ea_16(cpu_t *restrict cp
                 cpu->a[reg] = saved_an;
             return;
         }
-        memory_write_uint16(ea, value);
+        cpu_dwrite16(cpu, ea, value);
         if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
             cpu->a[reg] = saved_an;
     }
@@ -482,7 +560,7 @@ static inline __attribute__((always_inline)) void write_ea_32(cpu_t *restrict cp
                 cpu->a[reg] = saved_an;
             return;
         }
-        memory_write_uint32(ea, value);
+        cpu_dwrite32(cpu, ea, value);
         if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
             cpu->a[reg] = saved_an;
     }
@@ -503,6 +581,9 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
+    // calculate_ea bumps An by 4 in (An)+ mode; the success path overwrites it
+    // with the final address below, but a fault return must put it back.
+    uint32_t saved_an = cpu->a[opcode & 7];
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
     unsigned d_mask = register_mask & 0xFFu; // D0-D7 in bits 0-7
     unsigned a_mask = register_mask >> 8; // A0-A7 in bits 8-15
@@ -512,18 +593,22 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint32_t new_d[8], new_a[8];
     for (unsigned m = d_mask; m; m &= m - 1) {
         int i = __builtin_ctz(m);
-        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)cpu_dread16(cpu, ea) : cpu_dread32(cpu, ea);
         ea += bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            cpu->a[opcode & 7] = saved_an;
             return;
+        }
         new_d[i] = v;
     }
     for (unsigned m = a_mask; m; m &= m - 1) {
         int i = __builtin_ctz(m);
-        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+        uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)cpu_dread16(cpu, ea) : cpu_dread32(cpu, ea);
         ea += bits >> 3;
-        if (g_bus_error_pending)
+        if (g_bus_error_pending) {
+            cpu->a[opcode & 7] = saved_an;
             return;
+        }
         new_a[i] = v;
     }
 
@@ -581,9 +666,9 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
             if (cpu->cpu_model >= CPU_MODEL_68030 && r == an)
                 val -= step;
             if (bits == 16)
-                memory_write_uint16(addr, val);
+                cpu_dwrite16(cpu, addr, val);
             else
-                memory_write_uint32(addr, val);
+                cpu_dwrite32(cpu, addr, val);
             if (g_bus_error_pending)
                 return; // leave cpu->a[an] unchanged so RTE-retry sees the original An
         }
@@ -591,9 +676,9 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
             int r = 7 - __builtin_ctz(m); // bit 8+i selects D(7-i)
             addr -= step;
             if (bits == 16)
-                memory_write_uint16(addr, cpu->d[r]);
+                cpu_dwrite16(cpu, addr, cpu->d[r]);
             else
-                memory_write_uint32(addr, cpu->d[r]);
+                cpu_dwrite32(cpu, addr, cpu->d[r]);
             if (g_bus_error_pending)
                 return;
         }
@@ -604,9 +689,9 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
         for (unsigned m = lo_mask; m; m &= m - 1) {
             int i = __builtin_ctz(m);
             if (bits == 16)
-                memory_write_uint16(ea, cpu->d[i]);
+                cpu_dwrite16(cpu, ea, cpu->d[i]);
             else
-                memory_write_uint32(ea, cpu->d[i]);
+                cpu_dwrite32(cpu, ea, cpu->d[i]);
             ea += step;
             if (g_bus_error_pending)
                 return;
@@ -614,9 +699,9 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
         for (unsigned m = hi_mask; m; m &= m - 1) {
             int i = __builtin_ctz(m);
             if (bits == 16)
-                memory_write_uint16(ea, cpu->a[i]);
+                cpu_dwrite16(cpu, ea, cpu->a[i]);
             else
-                memory_write_uint32(ea, cpu->a[i]);
+                cpu_dwrite32(cpu, ea, cpu->a[i]);
             ea += step;
             if (g_bus_error_pending)
                 return;
@@ -739,10 +824,16 @@ static inline void enter_exception_supervisor(cpu_t *restrict cpu) {
 // (a VBR or SSP pointing at unmapped memory).  Such a fault leaves
 // g_bus_error_pending set like any other access and is delivered through the
 // deferred-bus-error path as an ordinary bus error.  Only the bus-error entry
-// points (exception_bus_error_retry, and exception_bus_error's 68000 path)
-// treat a fault during their own frame push or vector fetch as the double
-// fault that halts the CPU.
+// points (exception_bus_error_retry and exception_bus_error) treat a fault
+// during their own frame push or vector fetch as the double fault that halts
+// the CPU (M68000PRM / MC68030UM: a bus error while processing a bus error,
+// address error or reset).
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
+    // A 68000 address error is pending: the instruction stopped at the
+    // faulting access, so whatever it would have raised after it (CHK, a
+    // divide by zero from the suppressed operand, TRAPV) never happens.
+    if (__builtin_expect(g_bus_error_is_address, 0))
+        return;
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
     // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
@@ -827,9 +918,10 @@ static inline void push_access_error_frame_040(cpu_t *restrict cpu, uint32_t sav
 // offset → it mis-classified the user-mode installer-segment fault as
 // e_hardsyscode and never loaded the segment, and the 92-byte frame
 // overflowed the 14-byte-expecting supervisor stack.
+// An address error (addr_err) clears I/N: it is not an instruction fetch fault.
 static inline void push_group0_frame_68000(cpu_t *restrict cpu, uint32_t saved_pc, uint16_t saved_sr,
-                                           uint32_t fault_addr, uint32_t rw, uint16_t fc) {
-    uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
+                                           uint32_t fault_addr, uint32_t rw, uint16_t fc, bool addr_err) {
+    uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | ((addr_err ? 0 : 1) << 3) | fc); // R/W, I/N, FC
     cpu->a[7] -= 14;
     uint32_t f0 = cpu->a[7];
     memory_write_uint16(f0 + 0x00, ssw0);
@@ -899,7 +991,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     uint16_t format;
     if (cpu->cpu_model == CPU_MODEL_68000) {
         format = 0;
-        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
+        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc, false);
     } else if (cpu->cpu_model >= CPU_MODEL_68040) {
         format = 0x7;
         push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
@@ -939,12 +1031,23 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // via f_trap), where a tight fetch loop genuinely makes no progress.
     // The faulting instruction's address (before PC was advanced by the decoder)
     uint32_t faulting_pc = cpu->instruction_pc;
-    if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
+    // A 68000 address error (cpu_68000.c) is not a bus timeout: vector 3,
+    // I/N clear in the special status word, and no same-PC halt heuristic --
+    // its handler may legitimately retry the instruction.
+    bool addr_err = g_bus_error_is_address;
+    g_bus_error_is_address = false;
+    if (addr_err) {
+        // Back to the state at the fault (see m68k_raise_address_error).
+        memcpy(cpu->d, g_m68k_fault_regs, sizeof g_m68k_fault_regs);
+        write_ccr(cpu, g_m68k_fault_ccr);
+    }
+    if (!addr_err && cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
         cpu->last_bus_error_pc = 0;
         bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, cpu_get_sr(cpu), 0xB, 1);
         return;
     }
-    cpu->last_bus_error_pc = faulting_pc;
+    if (!addr_err)
+        cpu->last_bus_error_pc = faulting_pc;
 
     uint16_t saved_sr = cpu_get_sr(cpu);
 
@@ -952,12 +1055,13 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
 
     if (cpu->cpu_model == CPU_MODEL_68000) {
-        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
+        uint32_t vec = addr_err ? 0x00Cu : 0x008u;
+        push_group0_frame_68000(cpu, saved_pc, saved_sr, fault_addr, rw, fc, addr_err);
         if (g_bus_error_pending) {
             bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, 0, 1);
             return;
         }
-        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        cpu->pc = memory_read_uint32(cpu->vbr + vec);
         if (g_bus_error_pending) {
             bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, 0, 2);
             return;
@@ -965,7 +1069,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         cpu->trace = 0;
         if (saved_pc != faulting_pc)
             cpu->last_bus_error_pc = 0;
-        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
+        exc_trace_record(vec, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
         return;
     }
 
@@ -980,8 +1084,19 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         format = 0xB;
         push_bus_fault_frame_b(cpu, saved_pc, saved_sr, fault_addr, rw, fc);
     }
+    // A fault while stacking the frame or fetching the vector is a double
+    // fault: the processor halts (MC68030UM 8.3, MC68040UM 8.4), as on the
+    // 68000 path above.
+    if (g_bus_error_pending) {
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 1);
+        return;
+    }
 
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    if (g_bus_error_pending) {
+        bus_error_double_fault(cpu, faulting_pc, saved_pc, fault_addr, rw, saved_sr, format, 2);
+        return;
+    }
     cpu->trace = 0;
 
     // Clear last_bus_error_pc for "skip" scenarios (normal data bus errors where
@@ -1011,6 +1126,29 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 // Update full status register including supervisor mode, M bit, and interrupt mask.
 // On 68030/68040, handles ISP/MSP switching when M bit changes and updates SoA
 // active pointers.
+// The same-PC retry latch (last_bus_error_pc, see exception_bus_error) is
+// cleared once the CPU runs a user-mode instruction at a PC other than the
+// latched one: a retry that faults again at the same PC is a true double
+// fault, but a different process faulting later at the same VA (two execs of
+// A/UX's /etc/init, both with crt0 at $148) is not.  Supervisor instructions
+// between the fault and the RTE retry never clear it.  Instead of testing that on every instruction, it is decided
+// where user mode can begin: at sprint entry, and in write_sr -- the one seam
+// that leaves supervisor mode -- after the interrupt check, given the PC of
+// the next instruction.  A return to the latched PC is the RTE retry: the
+// sprint is cut to that one instruction, so the next sprint entry decides
+// again once it has run (or a repeat fault at the same PC has halted).
+static inline void m68k_bus_error_latch_settle(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (cpu->supervisor || g_bus_error_pending)
+        return;
+    uint32_t pc = cpu->cpu_model >= CPU_MODEL_68030 ? cpu->pc : (cpu->pc & 0x00FFFFFFu);
+    if (pc != cpu->last_bus_error_pc)
+        cpu->last_bus_error_pc = 0;
+    else if (instructions && *instructions > 1) {
+        g_sprint_io.unrun_slots += *instructions - 1; // the rest of the plan is not run
+        *instructions = 1;
+    }
+}
+
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
@@ -1040,7 +1178,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
                 cpu->a[7] = cpu->ssp;
         }
         cpu->m = new_m;
-        cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // T1 in bit 1, T0 in bit 0.  Documented divergence: T0 (trace on change
+        // of flow, MC68030UM 8.1.7) is stored so SR reads back what was written,
+        // but nothing acts on it -- every trace decision tests T1 (bit 1) only,
+        // so T0-only mode never traces.  Implementing it needs a flow-change
+        // hook in every branch/jump/return/SR-write op.
+        cpu->trace = ((sr >> 14) & 3);
         // Switch SoA active pointers when supervisor bit changes
         if ((bool)new_s != old_s) {
             cpu_select_soa(new_s);
@@ -1106,6 +1249,8 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     if (__builtin_expect((cpu->trace & 2) != 0, 0))
         memory_end_sprint(g_bus_error_instr_ptr);
     cpu_check_interrupt(cpu);
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
+        m68k_bus_error_latch_settle(cpu, g_bus_error_instr_ptr);
 }
 
 // Exception helpers

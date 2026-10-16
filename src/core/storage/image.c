@@ -48,7 +48,7 @@ LOG_USE_CATEGORY_NAME("image")
 // Format detection
 // ============================================================================
 
-static enum image_type classify_image(size_t raw_size) {
+static enum image_type classify_image(uint64_t raw_size) {
     if (raw_size == 400 * 1024)
         return image_fd_ss;
     if (raw_size == 800 * 1024)
@@ -64,7 +64,7 @@ static enum image_type classify_image(size_t raw_size) {
 // Image lifecycle
 // ============================================================================
 
-size_t disk_size(image_t *disk) {
+uint64_t disk_size(image_t *disk) {
     if (!disk)
         return 0;
     return disk->raw_size;
@@ -305,7 +305,7 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // ============================================================================
 //
 // Every opener comes down to image_open_source: the caller's forks go
-// through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2,
+// through the format registry's wrapper loop (UDIF, NDIF, QCOW2, DiskCopy 4.2,
 // MacBinary, BinHex, gzip -- any depth), and the innermost source is the
 // storage's base.  The path openers first open the path's forks through the
 // installed path opener, so a path may continue through an image or an
@@ -327,14 +327,21 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     uint32_t block_size = geometry_block_size(geom);
     format_unwrapped_t u;
     format_unwrap(data, rsrc, &u);
-    // A UDIF or NDIF image that would not open is no disk: read raw it is
-    // its compressed payload, which no guest should see.  (DiskCopy 4.2 and
+    // A UDIF, NDIF or QCOW2 image that would not open is no disk: read raw
+    // it is its container, which no guest should see.  (DiskCopy 4.2 and
     // peeler's wrappers detect from content that a raw disk can also carry,
     // so their failure leaves the bytes as they are.)
-    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0)) {
+    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0 ||
+                            strcmp(u.failed_format, "qcow2") == 0)) {
+        bool qcow2 = strcmp(u.failed_format, "qcow2") == 0;
         out_printf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
-                   strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
-                   u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                   strcmp(u.failed_format, "udif") == 0   ? "UDIF"
+                   : strcmp(u.failed_format, "ndif") == 0 ? "NDIF"
+                                                          : "QCOW2",
+                   qcow2 && u.failed_rc == -ENOTSUP
+                       ? "it uses a backing file, encryption, an external data file or zstd compression"
+                   : qcow2 && u.failed_rc == -EFBIG ? "its cluster map is too fragmented"
+                   : u.failed_rc == -EFBIG   ? "a chunk is too large to decode on demand; import it to re-chunk it"
                    : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
                                              : strerror(-u.failed_rc));
         int frc = u.failed_rc;
@@ -343,7 +350,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         return NULL;
     }
     uint64_t raw = source_size(u.data);
-    if (raw == 0 || (raw % block_size) != 0 || raw > SIZE_MAX) {
+    if (raw == 0 || (raw % block_size) != 0) {
         format_unwrapped_free(&u);
         errno = EINVAL;
         return NULL;
@@ -365,8 +372,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
         uint64_t start = 0;
         uint64_t blocks = image_wrap_extended_blocks(source_read_cb, u.data, raw / block_size, &start);
         uint8_t hdr[STORAGE_BLOCK_SIZE];
-        if (blocks * block_size > raw && blocks * block_size <= SIZE_MAX &&
-            source_read_exact(u.data, (start + 2) * block_size, hdr, sizeof(hdr)) == 0) {
+        if (blocks * block_size > raw && source_read_exact(u.data, (start + 2) * block_size, hdr, sizeof(hdr)) == 0) {
             uint64_t alt = (blocks - 2) * block_size;
             padded = source_pad(u.data, blocks * block_size, alt, hdr, alt >= raw ? sizeof(hdr) : 0);
         }
@@ -380,9 +386,9 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     image->filename = gs_strdup(name);
     image->source_key = gs_strdup(source_key(data));
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
-    image->raw_size = (size_t)raw;
+    image->raw_size = raw;
     image->block_size = block_size;
-    image->type = classify_image((size_t)raw);
+    image->type = classify_image(raw);
     // A disc is told apart by its content, not its size: an ISO 9660 primary
     // volume descriptor at 32 KB (an HFS-only CD stays a hard disk -- nothing
     // in its bytes says CD).
@@ -440,7 +446,8 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     }
     if (image->writable)
         writable_register(image, name);
-    LOG(3, "opened '%s' (%s, %zu bytes%s)", name, image->format, image->raw_size, image->writable ? ", writable" : "");
+    LOG(3, "opened '%s' (%s, %llu bytes%s)", name, image->format, (unsigned long long)image->raw_size,
+        image->writable ? ", writable" : "");
     return image;
 }
 
@@ -527,7 +534,7 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     if (!image)
         return NULL;
     image->filename = NULL; // no backing base file: unwritten blocks read as zeros
-    image->raw_size = (size_t)block_count * block_size;
+    image->raw_size = block_count * block_size;
     image->block_size = block_size;
     image->type = image_hd;
     image->writable = true;
@@ -577,24 +584,24 @@ const char *image_path(const image_t *image) {
 
 // Bytes of synthesised wrapper prefix in front of the storage (0 unless
 // the image was wrapped — image_wrap.h).
-static size_t wrap_bytes(const image_t *disk) {
-    return (size_t)disk->wrap_blocks * disk->block_size;
+static uint64_t wrap_bytes(const image_t *disk) {
+    return (uint64_t)disk->wrap_blocks * disk->block_size;
 }
 
-static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
-static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+static size_t storage_read_range(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
+static size_t storage_write_range(image_t *disk, uint64_t offset, uint8_t *buf, size_t size);
 
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_read_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
     disk->reads++; // the activity light's only cost on this path
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
-    size_t pre = wrap_bytes(disk);
+    uint64_t pre = wrap_bytes(disk);
     if (offset < pre) {
         // The wrapper's prefix is served from memory; the rest of the
         // request continues on the volume's storage.
-        size_t n = pre - offset < size ? pre - offset : size;
+        size_t n = pre - offset < size ? (size_t)(pre - offset) : size;
         memcpy(buf, disk->wrap_prefix + offset, n);
         if (n == size)
             return size;
@@ -605,23 +612,23 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 
 // Read whole blocks at `offset` of the image's volume (past any wrapper
 // prefix; wrap_base bytes into the storage).  Returns `size`, or 0 on a backing failure.
-static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
-    size_t vol_size = disk->raw_size - wrap_bytes(disk);
+static size_t storage_read_range(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
+    uint64_t vol_size = disk->raw_size - wrap_bytes(disk);
     // An undersized / truncated image (a host file shorter than the media it
     // backs) can be read past its end — e.g. the Finder reading high tracks
     // while ejecting a 400K/800K-geometry floppy backed by a too-small file.
     // Serve the unbacked tail as blank media (zeroes) rather than asserting,
     // so the guest sees readable-but-empty sectors and the operation can
     // finish.  `backed` is the in-bounds, whole-block byte count.
-    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
-    if (backed > size)
-        backed = size;
+    uint64_t avail = (offset < vol_size) ? (vol_size - offset) : 0;
+    size_t backed = avail < size ? (size_t)avail : size;
     backed -= backed % disk->block_size;
     if (backed < size) {
         memset(buf + backed, 0, size - backed);
         LOG(1,
-            "disk_read_data: %zu-byte read at offset %zu runs past image end (raw_size=%zu); zero-filled %zu-byte tail",
-            size, offset, disk->raw_size, size - backed);
+            "disk_read_data: %zu-byte read at offset %llu runs past image end (raw_size=%llu); zero-filled %zu-byte "
+            "tail",
+            size, (unsigned long long)offset, (unsigned long long)disk->raw_size, size - backed);
     }
     if (backed) {
         status_t rc = storage_read_blocks(disk->storage, disk->wrap_base + offset, buf, backed / disk->block_size);
@@ -635,12 +642,13 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
         if (rc != STATUS_OK) {
             if (disk->read_errors++ == 0)
                 LOG(0,
-                    "%s: unreadable at offset %zu (%zu bytes): the backing image failed the read; the guest sees a "
+                    "%s: unreadable at offset %llu (%zu bytes): the backing image failed the read; the guest sees a "
                     "read error",
-                    disk->filename ? disk->filename : "image", offset, backed);
+                    disk->filename ? disk->filename : "image", (unsigned long long)offset, backed);
             else
-                LOG(1, "%s: unreadable at offset %zu (%zu bytes), read error %llu",
-                    disk->filename ? disk->filename : "image", offset, backed, (unsigned long long)disk->read_errors);
+                LOG(1, "%s: unreadable at offset %llu (%zu bytes), read error %llu",
+                    disk->filename ? disk->filename : "image", (unsigned long long)offset, backed,
+                    (unsigned long long)disk->read_errors);
             return 0;
         }
     }
@@ -648,20 +656,21 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
     return size;
 }
 
-size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+size_t disk_write_data(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
     disk->writes++;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
-    size_t pre = wrap_bytes(disk);
+    uint64_t pre = wrap_bytes(disk);
     if (offset < pre) {
         // A write into the wrapper's prefix (a partitioning tool rewriting
         // the map) lands in the in-memory prefix only: the volume file is
         // never given a partition map, and the prefix is rebuilt on reopen.
-        size_t n = pre - offset < size ? pre - offset : size;
+        size_t n = pre - offset < size ? (size_t)(pre - offset) : size;
         memcpy(disk->wrap_prefix + offset, buf, n);
-        LOG(1, "disk_write_data: %zu-byte write into the wrapper prefix at %zu kept in memory only", n, offset);
+        LOG(1, "disk_write_data: %zu-byte write into the wrapper prefix at %llu kept in memory only", n,
+            (unsigned long long)offset);
         if (n == size)
             return size;
         return n + storage_write_range(disk, 0, buf + n, size - n);
@@ -671,20 +680,19 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
 
 // Write whole blocks at `offset` of the image's volume (past any wrapper
 // prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes written before a backing failure.
-static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
-    size_t vol_size = disk->raw_size - wrap_bytes(disk);
+static size_t storage_write_range(image_t *disk, uint64_t offset, uint8_t *buf, size_t size) {
+    uint64_t vol_size = disk->raw_size - wrap_bytes(disk);
     // Symmetric with disk_read_data: a write past the end of an undersized
     // image targets sectors with no backing store.  Drop the unbacked tail
     // (it cannot be stored) rather than asserting, so the guest's volume
     // flush during eject completes; warn so the dropped write is visible.
-    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
-    if (backed > size)
-        backed = size;
+    uint64_t avail = (offset < vol_size) ? (vol_size - offset) : 0;
+    size_t backed = avail < size ? (size_t)avail : size;
     backed -= backed % disk->block_size;
     if (backed < size)
         LOG(1,
-            "disk_write_data: %zu-byte write at offset %zu runs past image end (raw_size=%zu); dropped %zu-byte tail",
-            size, offset, disk->raw_size, size - backed);
+            "disk_write_data: %zu-byte write at offset %llu runs past image end (raw_size=%llu); dropped %zu-byte tail",
+            size, (unsigned long long)offset, (unsigned long long)disk->raw_size, size - backed);
     size_t transferred = 0;
     while (transferred < backed) {
         status_t rc = storage_write_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
@@ -1017,7 +1025,7 @@ int image_export_to(image_t *image, const char *dest_path) {
 // Image creation
 // ============================================================================
 
-int image_create_empty(const char *filename, size_t size) {
+int image_create_empty(const char *filename, uint64_t size) {
     if (!filename || !*filename || size == 0)
         return -1;
     mkdir_parents(filename);

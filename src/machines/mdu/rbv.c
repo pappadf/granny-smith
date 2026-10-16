@@ -403,10 +403,11 @@ static uint32_t rbv_obj_pending(void *ctx) {
 static uint32_t rbv_obj_enabled(void *ctx) {
     return ((const rbv_t *)ctx)->reg_ier & 0x7Fu;
 }
-// One line to the CPU, at IPL 1 through VIA1's CA1 slot-interrupt input.
+// One line to the CPU: the combined interrupt the IIci and IIsi route to
+// IPL 2, where the VIA2 it replaces sat (iici_rbv_irq / iisi_rbv_irq).
 static int rbv_obj_ipl(void *ctx) {
     const rbv_t *rbv = (const rbv_t *)ctx;
-    return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 1 : 0;
+    return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 2 : 0;
 }
 
 static const irq_controller_ops_t rbv_irq_ops = {

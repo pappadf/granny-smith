@@ -28,6 +28,10 @@ extern volatile sig_atomic_t g_quit_requested; // `quit`
 // Returns whether anything happened.
 bool hl_pump_once(void);
 
+// Start counting the --cycles budget: the REPL and the daemon call it when
+// their loop starts, so a startup script does not spend it.
+void hl_cycles_start(void);
+
 // Runs one statement as a job for `client` and waits for its result, driving
 // the loop meanwhile.  Returns 0 (ok), -1 (the script failed or was cancelled).
 int hl_run_statement(uint32_t client, const char *src);
@@ -64,5 +68,11 @@ int daemon_run(int port, bool kill_existing);
 // client (and cancels its work) and answers control connections during a
 // run.  A no-op unless a daemon client is connected.
 void daemon_watch_statement(uint32_t client, bool running);
+
+// === Calibration (calibrate.c) ===
+
+// gs-headless --calibrate: times the host-yardstick kernels and prints one
+// @@CALIB line.  Returns the process exit status.
+int hl_calibrate(void);
 
 #endif // HEADLESS_H

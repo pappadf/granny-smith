@@ -59,15 +59,22 @@ shell_binding_kind_t shell_binding_classify(const char *name, const value_t **va
 int shell_binding_push_scope(void);
 void shell_binding_pop_scope(void);
 
-// Loop-variable support: save a duplicate of the top-scope
-// binding if present (returns true), and remove a name from the top
-// scope only.
-bool shell_binding_save_top(const char *name, value_t *saved_out);
+// Loop-variable support: detach the top-scope binding `name` (NULL when
+// there is none) so a loop variable can shadow it, and reattach it to the
+// top scope afterwards (replacing the loop variable).  A detached binding
+// keeps its object watch, so an object it holds that dies meanwhile comes
+// back stale -- a saved copy would not know.  remove_top removes a name
+// from the top scope only.
+struct binding *shell_binding_detach_top(const char *name);
+void shell_binding_reattach_top(struct binding *b);
 void shell_binding_remove_top(const char *name);
 
 // Legacy string API — process-start bindings (`--var FOO=BAR`) and
-// internal init code. Stores VK_STRING in the global scope.
-int shell_var_set(const char *name, const char *value);
+// internal init code. Stores VK_STRING in the global scope.  Returns 0, or
+// -1 with a message in err_buf (may be NULL) when the name is not a valid
+// binding name (object_validate_name: an identifier, not reserved, at most
+// OBJ_IDENT_MAX characters).
+int shell_var_set(const char *name, const char *value, char *err_buf, size_t err_size);
 const char *shell_var_get(const char *name);
 
 // Walk every scope binding, innermost scope first and, within a scope, in

@@ -79,6 +79,9 @@ static bool rd_have(rd_t *r, int at, int n) {
 static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int len, int depth);
 
 // One list or record body: count, prefix size, prefix, then the items (§5.4).
+// Zero-byte items allowed in a collection beyond one per descriptor byte
+#define AEVT_ZERO_ITEM_SLACK 256u
+
 static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool keyed, int depth) {
     if (len < 8)
         return (rd_fail(r, "a %s descriptor is shorter than its header", keyed ? "record" : "list"), val_none());
@@ -102,6 +105,18 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
     }
 
     int pos = 8 + round_up_even((int)prefix);
+
+    // Bound the count by the bytes behind it, so a tiny descriptor cannot
+    // ask for thousands of items: each item takes at least its keyword, type,
+    // length and fixed data.  Zero-byte items (an unkeyed list factored down
+    // to nothing) are legal but cost no bytes, so they get an allowance of
+    // AEVT_ZERO_ITEM_SLACK plus one per descriptor byte: real lists fit, and
+    // a stream of tiny descriptors cannot expand into millions of values.
+    uint32_t min_item = (keyed ? 4u : 0u) + (prefix == 0 ? 4u : 0u) + (prefix <= 4 ? 4u : (uint32_t)fixed_len);
+    uint32_t avail = pos < len ? (uint32_t)(len - pos) : 0u; // an odd prefix may pad one byte past len
+    if (min_item == 0 ? count > (uint32_t)len + AEVT_ZERO_ITEM_SLACK : (uint64_t)count * min_item > avail)
+        return (rd_fail(r, "item count %u exceeds the descriptor's %d bytes", (unsigned)count, len), val_none());
+
     value_map_builder_t *rec = keyed ? val_map_new() : NULL;
     value_t *items = NULL;
     size_t items_len = 0, items_cap = 0;

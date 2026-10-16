@@ -336,6 +336,88 @@ TEST(test_root_reset_leaves_a_fresh_root) {
     object_root_reset();
 }
 
+// === object_watch_value: every object a value holds ========================
+//
+// A list (or map, or nested list) holds raw object pointers just like a
+// VK_OBJECT does; the watch must cover each of them, at any depth.
+
+// A list of the given items (copied).
+static value_t list_of(const value_t *items, size_t n) {
+    value_t *a = (value_t *)calloc(n, sizeof(*a));
+    for (size_t i = 0; i < n; i++)
+        a[i] = items[i];
+    return val_list(a, n);
+}
+
+TEST(test_watch_nested_list_and_map) {
+    struct object *a = object_new(&toy_class, NULL, "a");
+    struct object *b = object_new(&toy_class, NULL, "b");
+    struct object *c = object_new(&toy_class, NULL, "c");
+    // [1, [a], {k: c}]
+    value_t inner = list_of((value_t[]){val_obj(a)}, 1);
+    struct value_entry *e = (struct value_entry *)calloc(1, sizeof(*e));
+    e->key = strdup("k");
+    e->val = val_obj(c);
+    value_t m = val_map(e, 1);
+    value_t v = list_of((value_t[]){val_int(1), inner, m}, 3);
+
+    object_watch_t w;
+    ASSERT_TRUE(object_watch_value(&w, &v));
+    ASSERT_EQ_INT(2, (int)w.n);
+    ASSERT_TRUE(!w.gone);
+
+    object_delete(b); // not in the value
+    ASSERT_TRUE(!w.gone);
+    object_delete(c); // inside the map
+    ASSERT_TRUE(w.gone);
+
+    // Disarm skips the fired slot (c is freed) and unregisters a's
+    object_unwatch(&w);
+    ASSERT_EQ_INT(0, (int)w.n);
+    ASSERT_TRUE(!w.gone);
+    // a's list holds no callback into the freed slots any more
+    listener_t l = {.count = 0, .p = NULL};
+    object_register_invalidator(a, listener_cb, &l);
+    object_delete(a);
+    ASSERT_EQ_INT(1, l.count);
+    value_free(&v);
+}
+
+// The same object twice gets two slots, each unregistered exactly once.
+TEST(test_watch_duplicate_object) {
+    struct object *a = object_new(&toy_class, NULL, "a");
+    value_t v = list_of((value_t[]){val_obj(a), val_obj(a)}, 2);
+    object_watch_t w;
+    ASSERT_TRUE(object_watch_value(&w, &v));
+    ASSERT_EQ_INT(2, (int)w.n);
+    object_unwatch(&w);
+    // Both registrations are gone: deleting a fires nothing into freed slots
+    listener_t l = {.count = 0, .p = NULL};
+    object_register_invalidator(a, listener_cb, &l);
+    object_delete(a);
+    ASSERT_EQ_INT(1, l.count);
+    value_free(&v);
+
+    // ...and both fire when it dies while armed
+    a = object_new(&toy_class, NULL, "a");
+    v = list_of((value_t[]){val_obj(a), val_obj(a)}, 2);
+    ASSERT_TRUE(object_watch_value(&w, &v));
+    object_delete(a);
+    ASSERT_TRUE(w.gone);
+    object_unwatch(&w); // touches neither (fired) slot
+    value_free(&v);
+}
+
+// A value with no objects needs no slots.
+TEST(test_watch_plain_value) {
+    value_t v = list_of((value_t[]){val_int(1), val_str("x")}, 2);
+    object_watch_t w;
+    ASSERT_TRUE(object_watch_value(&w, &v));
+    ASSERT_EQ_INT(0, (int)w.n);
+    object_unwatch(&w);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_register_fire_clears_pointer);
     RUN(test_unregister_prevents_fire);
@@ -346,5 +428,8 @@ int main(void) {
     RUN(test_held_node_invalidated_on_entry_remove);
     RUN(test_root_reset_fires_invalidators);
     RUN(test_root_reset_leaves_a_fresh_root);
+    RUN(test_watch_nested_list_and_map);
+    RUN(test_watch_duplicate_object);
+    RUN(test_watch_plain_value);
     return 0;
 }

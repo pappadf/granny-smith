@@ -211,6 +211,8 @@ domains:
 | 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
 | 20 | `checkpoint` | emulator | save / load / snapshot |
 | 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `max_speed`), there with or without a machine; advanced |
+| 22 | `predecode` | emulator | the predecoded executors' switch (`enabled`), tuning (`elide`, `pool_cap`, the thrash rule), counters and `hist` ([predecode.md](../cpu/predecode.md)); advanced |
+| 23 | `jit` | emulator | the PowerPC translation tier's switch (`enabled`), tuning, counters and `trace` ([ppc_jit.md](../cpu/ppc/ppc_jit.md)); `available` is 0 in native builds; advanced |
 | 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
 | 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
 | 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |
@@ -822,6 +824,13 @@ The document mirrors the tree:
                 "nubus_c": { "monitor": "13in_rgb", "mode": "640x480x8" } } }
 ```
 
+On the Open Firmware Macs (`hw_profile_t.of_nvram_check`: the Power Mac
+7500/8500/9500 and the G3s) the document may also carry `nvram`, Open
+Firmware variables by name -- `{"nvram": {"use-nvramrc?": true,
+"boot-command": "0 bootr", "nvramrc": "…"}}` -- each a string (booleans
+may be JSON `true`/`false`), as `setenv` takes it.  It has no counterpart
+in the tree and no default: absent, the board's factory store.
+
 Each top-level key, when present, is the complete set for its node; an
 absent key is the model's default, and within `options`, `floppies` and
 `displays` an absent member takes its default (an absent display device
@@ -833,8 +842,12 @@ position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
 n)` and `attach_cdrom(path)` name the default configuration's Nth hard
 disk and its CD-ROM drive).  `machine.storage` lists the devices the
 running machine was built with -- `{bus, bus_label, unit, position, type,
-present}` each, kept with the machine and in its checkpoint -- which is what
-the web app's Images panel offers an image to.
+present, media, filename}` each, kept with the machine and in its
+checkpoint -- which is what the web app's Images panel offers an image to.
+`media` is the device's bay as `attach_media` answers it (`{bus, id,
+label}`, what `machine.eject_media` takes) and `filename` the source path of
+the image in it (`""` when empty), so after a checkpoint restore the panel
+can tell which image is in which device (the substrate's `media_image`).
 
 The whole document is validated before anything is built, and a
 rejection names the node at fault: an option value the model does not
@@ -849,16 +862,20 @@ this configuration, a monitor the device does not take, a mode the
 monitor does not have, more than one connected monitor (V7); the legacy
 card or display arguments beside the document's `cards` / `displays`
 (V8); a startup device not in `storage`, or on a bus the machine's startup
-record cannot name (V9).  `tests/integration/machine-config-validation`
-pins one case per rule.
+record cannot name (V9); an `nvram` on a model without Open Firmware NVRAM,
+a variable the firmware does not have, a value it cannot take, or more
+than its 2 KB partition holds -- each set on a factory store to find out
+(V10).  `tests/integration/machine-config-validation` pins one case per
+rule.
 
 The document is a construction input only.  The **seeding step**
 (`machine_substrate_t.seed`, `src/machines/runtime/config_seed.h`) writes
 the parameter-memory records that follow from it -- AppleTalk's on/off
 state in SysParam (with the rest of SysParam as the machine's own ROM
 initialises it, `pram_defaults_t.sysparam`) and the default startup
-device -- once, when a new machine is built; never on a restore, a reset
-or a power cycle, after which the store is the guest's.
+device, then on the Open Firmware Macs the document's `nvram` variables
+(`of_nvram_setenv_packed`) -- once, when a new machine is built; never on
+a restore, a reset or a power cycle, after which the store is the guest's.
 
 A running machine keeps no record of the document it was built from: each
 fact is read from the object that holds it -- `machine.id`, `machine.ram`,

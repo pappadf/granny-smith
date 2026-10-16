@@ -328,8 +328,16 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
+                    bool init_ = fpu_->initialized;                                                                    \
+                    uint32_t mask_ = fpu_->pre_exc_mask;                                                               \
                     AY -= 4; /* both NULL and IDLE frames are one longword */                                          \
                     fpu_fsave040(fpu_, AY);                                                                            \
+                    /* Roll back An and the FPU state for the retry */                                                 \
+                    if (__builtin_expect(g_bus_error_pending, 0)) {                                                    \
+                        AY += 4;                                                                                       \
+                        fpu_->initialized = init_;                                                                     \
+                        fpu_->pre_exc_mask = mask_;                                                                    \
+                    }                                                                                                  \
                 } else {                                                                                               \
                     uint32_t ea_ = GET_EA;                                                                             \
                     fpu_fsave040(fpu_, ea_);                                                                           \
@@ -344,12 +352,13 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
         } else                                                                                                         \
             SUPER({                                                                                                    \
                 fpu_state_t *fpu_ = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 3) {                                                                                    \
-                    int sz_ = fpu_frestore040(fpu_, AY);                                                               \
-                    AY += (uint32_t)sz_;                                                                               \
-                } else {                                                                                               \
-                    uint32_t ea_ = GET_EA;                                                                             \
-                    fpu_frestore040(fpu_, ea_);                                                                        \
+                uint32_t ea_ = (EA_MODE == 3) ? AY : GET_EA;                                                           \
+                int sz_ = fpu_frestore040(fpu_, ea_);                                                                  \
+                if (sz_ < 0) {                                                                                         \
+                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
+                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
+                } else if (EA_MODE == 3 && __builtin_expect(!g_bus_error_pending, 1)) {                                \
+                    AY += (uint32_t)sz_; /* (An)+ steps by the frame the format word declared */                       \
                 }                                                                                                      \
             })                                                                                                         \
     })
@@ -398,7 +407,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 // Generate the cpu_run_68040 decoder function using the shared template.
 // Prologue/epilogue mirror cpu_68030.c; the model checks inside the shared
 // exception helpers select the 040 frame formats (Format $7 access error).
-#define CPU_DECODER_NAME        cpu_run_68040
+#define CPU_DECODER_NAME        cpu_run_68040_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
@@ -409,8 +418,12 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     cpu_select_soa(cpu->supervisor);                                                                                   \
-    cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    cpu_check_interrupt(cpu);                                                                                          \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t saved_trace_ = cpu->trace;                                                                                \
     if (__builtin_expect(saved_trace_ & 2, 0))                                                                         \
@@ -423,10 +436,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
         cpu->instruction_pc = cpu->pc;                                                                                 \
-        /* Double-fault tracking: clear the latch once user code has moved past */                                     \
-        /* it (cores.md, "The 68K decoder prologue", says why user mode only)  */                                      \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -447,7 +456,34 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
 
 #include "cpu_decode.h"
+#undef CPU_DECODER_NAME
+#undef CPU_DECODER_ARGS
+#undef CPU_DECODER_RETURN_TYPE
+#undef CPU_DECODER_PROLOGUE
+#undef CPU_DECODER_EPILOGUE
+
+// ============================================================================
+// The predecoded executor (docs/internals/core/cpu/predecode.md): the
+// one-instruction executor, the sprint loop over predecoded entries, and
+// the decode tree in its classifier role — three more instantiations of
+// the same template, sharing this file's macro bindings and op bodies.
+// ============================================================================
+#define PD_RUN_NAME      cpu_pd_run_68040
+#define PD_STEP_NAME     cpu_pd_step_68040
+#define PD_DECODE_NAME   cpu_pd_decode_68040
+#define PD_TREE_NAME     cpu_pd_tree_68040
+#define PD_CLASSIFY_NAME cpu_pd_classify_68040
+#define PD_HW_RESET(c)   cpu_hardware_reset_040(c)
+#include "cpu_pd_run.h"
+
+// The core's entry point: the predecoded executor when enabled, else the
+// switch core (kept for A/B from the shell: machine.cpu.predecode = 0).
+void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (predecode_enabled())
+        cpu_pd_run_68040(cpu, instructions);
+    else
+        cpu_run_68040_switch(cpu, instructions);
+}

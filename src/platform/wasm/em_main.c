@@ -52,6 +52,8 @@
 #include "mouse.h"
 #include "platform.h"
 #include "platform_hooks.h"
+#include "ppc_jit.h"
+#include "predecode.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"
@@ -286,6 +288,7 @@ host_pacing_t *platform_pacing(void) {
 
 // The instruction count at the last perf sample (MIPS is the delta).
 static uint64_t last_instr = 0;
+static uint64_t last_jit_insns = 0; // the translation tier's instruction total at the last sample
 // The activity lights' state and the counter baselines they compare against.
 static drive_activity_t lights;
 static double ticks_per_second = 0;
@@ -450,12 +453,34 @@ void em_main_tick(void) {
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
+            // The engine the status bar names: the switch cores with predecode
+            // off (the translation tier runs only from the predecoded loop),
+            // the tier on a PowerPC with it on, the predecoded cores
+            // otherwise; with the tier, the share of the interval's
+            // instructions that ran translated
+            ppc_jit_status_t js;
+            ppc_jit_status(&js);
+            const char *engine = !predecode_enabled()             ? "interpreter"
+                                 : (js.on && system_cpu_is_ppc()) ? "jit"
+                                                                  : "predecoded";
+            double jit_pct = 0;
+            if (engine[0] == 'j' && instr_now > last_instr && js.insns >= last_jit_insns) {
+                jit_pct = 100.0 * (double)(js.insns - last_jit_insns) / (double)(instr_now - last_instr);
+                if (jit_pct > 100)
+                    jit_pct = 100;
+            }
             event_emitf(GS_EVENT_STATE,
                         "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
-                        "\"poll_max_ms\":%.3f}",
-                        mips, ticks_per_second, tick_max, tick_p50, poll_max);
+                        "\"poll_max_ms\":%.3f,\"engine\":\"%s\",\"jit_pct\":%.1f,\"jit_sup\":%s,"
+                        "\"jit_regions\":%llu,\"jit_kb\":%llu,\"ppc\":%s}",
+                        mips, ticks_per_second, tick_max, tick_p50, poll_max, engine, jit_pct,
+                        js.supervisor ? "true" : "false", (unsigned long long)js.regions,
+                        (unsigned long long)(js.bytes / 1024), system_cpu_is_ppc() ? "true" : "false");
         }
 
+        ppc_jit_status_t js_now;
+        ppc_jit_status(&js_now);
+        last_jit_insns = js_now.insns;
         last_time = current_time;
         last_instr = instr_now;
     }
@@ -498,7 +523,9 @@ void em_main_tick(void) {
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
-    // one here (bounded) instead of at the next RAF.
+    // one here (bounded) instead of at the next RAF.  The poll may have
+    // swapped the machine, so ask for the scheduler again.
+    sched = system_scheduler();
     if (!(sched && scheduler_is_running(sched)))
         served += mailbox_idle_wait();
     tick_poll_ms_current = emscripten_get_now() - poll_t0;
@@ -554,6 +581,33 @@ void platform_machine_attached(void) {
 // The Emscripten main loop's callback: em_main_tick, timed.  Records the
 // whole tick, with the shell_poll share em_main_tick measured, into the
 // perf window (see tick_wall_ms).
+// Turbo's slice (scheduler_set_turbo_slice): host milliseconds of emulation
+// per tick while the loop runs back to back.  About one display frame, so
+// the screen, the mailbox and the proxied input events are still served at
+// least ~60 times a second.
+#define TURBO_SLICE_MS 16.0
+
+// The loop's timing follows what the machine is doing.  Paced and
+// accelerated runs, and a stopped machine, are frame-locked (RAF): their
+// pacing is wall-clock time.  A running turbo machine re-enters at once
+// (SETIMMEDIATE: scheduler.postTask in a worker), so the thread does not
+// wait out the rest of each frame -- the core has this worker to itself,
+// and returning to its event loop between ticks (input, presenting the
+// canvas) costs microseconds.  Changed only on a transition.
+static bool s_loop_immediate;
+
+static void em_update_loop_timing(void) {
+    scheduler_t *sched = system_scheduler();
+    bool want = sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled;
+    if (want == s_loop_immediate)
+        return;
+    s_loop_immediate = want;
+    if (want)
+        emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
+    else
+        emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
+}
+
 static void em_timed_tick(void) {
     double t0 = emscripten_get_now();
     tick_poll_ms_current = 0;
@@ -561,6 +615,7 @@ static void em_timed_tick(void) {
     int slot = tick_counter % PERF_UPDATE_INTERVAL;
     tick_wall_ms[slot] = emscripten_get_now() - t0;
     tick_poll_ms[slot] = tick_poll_ms_current;
+    em_update_loop_timing();
 }
 
 // Forward formatted log lines to the page as log events.
@@ -739,14 +794,16 @@ static void download_free(download_job_t *d) {
 static void download_done(bool ok, double ms, const char *error, void *ud) {
     (void)ms;
     download_job_t *d = (download_job_t *)ud;
-    if (ok) {
-        printf("download: requested '%s'\n", d->name);
-        if (d->token)
+    // A request's answer is its result (an error says why); nothing is
+    // printed.  Only a download no request asked for (a printer's output)
+    // has nobody to answer, so a failure of one is said on the console.
+    if (d->token) {
+        if (ok)
             mailbox_result_complete_ok(d->token);
-    } else {
-        printf("download: %s\n", error ? error : "failed");
-        if (d->token)
+        else
             mailbox_result_complete_error(d->token, error ? error : "download failed");
+    } else if (!ok) {
+        printf("download: %s\n", error ? error : "failed");
     }
     download_free(d);
 }
@@ -778,9 +835,10 @@ static int download_start(download_job_t *d) {
             mailbox_result_bind_io(d->token, d->io_id);
         return 0;
     }
-    printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     if (d->token)
         mailbox_result_complete_error(d->token, "the I/O worker is not running");
+    else
+        printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
     download_free(d);
     return -1;
 }
@@ -1065,6 +1123,7 @@ int main(void) {
 
     // RAF-driven; simulate_infinite_loop=1 unwinds main() here, so nothing
     // after this call runs (and main never returns).
+    scheduler_set_turbo_slice(TURBO_SLICE_MS / 1000.0); // used once the loop re-enters at once (em_update_loop_timing)
     emscripten_set_main_loop(em_timed_tick, 0, 1);
 }
 

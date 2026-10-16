@@ -132,13 +132,19 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
     const char *dir = argv[0].s;
     if (!dir || !*dir)
         return val_err("files.mkdir: expected a non-empty path");
+    // The result is the whole answer: no printout beside it.  A directory
+    // already there is success (mkdir -p), so a caller making sure a
+    // directory exists needs no check first; anything else in the way, or
+    // a refusal, is an error naming why.
     int rc = vfs_mkdir(dir);
-    if (rc == 0) {
-        out_printf("Directory '%s' created\n", dir);
-        return val_bool(true);
+    if (rc == -EEXIST) {
+        vfs_stat_t st;
+        if (vfs_stat(dir, &st) == 0 && (st.mode & VFS_MODE_DIR))
+            rc = 0;
     }
-    out_printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
-    return val_bool(false);
+    if (rc < 0)
+        return val_err("files.mkdir: cannot create directory '%s': %s", dir, strerror(-rc));
+    return val_bool(true);
 }
 
 value_t files_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {

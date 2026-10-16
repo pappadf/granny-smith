@@ -113,9 +113,10 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
 // $40000000 -- the MDU's ROMBase $40800000 is one of the ROM's mirrors).
 void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on);
 
-// Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,
-// TLB flushed).  `overlay_flag` points at the machine's rom_overlay bool;
-// `rom_start` is the ROM region base; `mmu` may be NULL.
+// Hardware RESET (the board's /RESET net): re-enable the ROM overlay and reset
+// the devices every board shares.  The 68030 PMMU is inside the CPU, not on the
+// net, so it is left to cpu_hardware_reset.  `overlay_flag` points at the
+// machine's rom_overlay bool; `rom_start` is the ROM region base.
 void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start);
 
 // Construct the GLUE peripheral set shared by se30/iicx/iix in canonical

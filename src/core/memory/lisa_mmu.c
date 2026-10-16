@@ -396,6 +396,37 @@ static uint8_t lisa_status_byte(lisa_mmu_t *m) {
     return in_retrace ? 0u : (uint8_t)(1u << 2); // active-low: 0 in retrace, bit-2 set otherwise
 }
 
+// Read `size` bytes from a registered device; a width the interface leaves
+// NULL is composed from byte accesses (as memory.c's dev_read* do) instead
+// of jumping through a NULL handler and taking the host down.
+static uint32_t lisa_io_dev_read(const lisa_io_dev_t *d, uint32_t off, unsigned size) {
+    const memory_interface_t *f = d->iface;
+    if (size == 2 && f->read_uint16)
+        return f->read_uint16(d->dev, off);
+    if (size == 4 && f->read_uint32)
+        return f->read_uint32(d->dev, off);
+    uint32_t v = 0;
+    for (unsigned i = 0; i < size; i++) // big-endian byte lanes; unclaimed lanes float high
+        v = (v << 8) | (f->read_uint8 ? f->read_uint8(d->dev, off + i) : 0xFFu);
+    return v;
+}
+
+// Write `size` bytes to a registered device, composing missing widths from
+// byte writes (a NULL byte handler drops the write).
+static void lisa_io_dev_write(const lisa_io_dev_t *d, uint32_t off, unsigned size, uint32_t value) {
+    const memory_interface_t *f = d->iface;
+    if (size == 2 && f->write_uint16) {
+        f->write_uint16(d->dev, off, (uint16_t)value);
+        return;
+    }
+    if (size == 4 && f->write_uint32) {
+        f->write_uint32(d->dev, off, value);
+        return;
+    }
+    for (unsigned i = 0; i < size && f->write_uint8; i++) // most significant byte first
+        f->write_uint8(d->dev, off + i, (uint8_t)(value >> ((size - 1 - i) * 8)));
+}
+
 // Dispatch an I/O-space read at physical I/O address `phys` (size bytes).
 static uint32_t lisa_io_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
     // Control / video / status block ($E000-$FFFF).
@@ -417,12 +448,7 @@ static uint32_t lisa_io_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
     for (int i = 0; i < m->io_count; i++) {
         lisa_io_dev_t *d = &m->io[i];
         if (phys >= d->base && phys < d->base + d->size) {
-            uint32_t off = phys - d->base;
-            if (size == 1)
-                return d->iface->read_uint8(d->dev, off);
-            if (size == 2)
-                return d->iface->read_uint16(d->dev, off);
-            return d->iface->read_uint32(d->dev, off);
+            return lisa_io_dev_read(d, phys - d->base, size);
         }
     }
     // Unmapped I/O outside the slot decodes (empty slots fault in
@@ -455,13 +481,7 @@ static void lisa_io_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t 
     for (int i = 0; i < m->io_count; i++) {
         lisa_io_dev_t *d = &m->io[i];
         if (phys >= d->base && phys < d->base + d->size) {
-            uint32_t off = phys - d->base;
-            if (size == 1)
-                d->iface->write_uint8(d->dev, off, (uint8_t)value);
-            else if (size == 2)
-                d->iface->write_uint16(d->dev, off, (uint16_t)value);
-            else
-                d->iface->write_uint32(d->dev, off, value);
+            lisa_io_dev_write(d, phys - d->base, size, value);
             return;
         }
     }

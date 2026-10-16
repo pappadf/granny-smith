@@ -27,7 +27,7 @@ struct image {
     char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
     char *delta_path; // Path to delta file (<instance_path>.delta)
     char *journal_path; // Path to preimage journal (<instance_path>.journal)
-    size_t raw_size; // Logical size of the image in bytes
+    uint64_t raw_size; // Logical size of the image in bytes
     uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
@@ -70,8 +70,8 @@ struct image {
     // other image.
     uint8_t *wrap_prefix;
     uint32_t wrap_blocks;
-    size_t wrap_base;
-    size_t wrap_storage_size;
+    uint64_t wrap_base;
+    uint64_t wrap_storage_size;
 };
 
 #endif // IMAGE_INTERNAL_H

@@ -107,12 +107,21 @@ layout never shifts between builds.
 | 0 | Driver Descriptor Map: `sbSig 'ER'`, `sbBlkSize 512`, `sbBlkCount` = 96 + volume, one descriptor `ddBlock 64`, `ddSize` = driver blocks, `ddType 1` (Mac OS 68k) |
 | 1 | map entry 1: `Apple` / `Apple_partition_map`, blocks 1–63 |
 | 2 | map entry 2: `Macintosh` / `Apple_Driver`, blocks 64–95; `pmBootSize` = driver bytes, `pmBootCksum`, `pmProcessor "68000"` |
-| 3 | map entry 3: `MacOS` / `Apple_HFS`, blocks 96… (the volume) |
+| 3 | map entry 3: `MacOS` / `Apple_HFS`, blocks 96… (the volume); for a driverless disk, its own entry's boot fields (`pmLgBootStart` through `pmProcessor`) and status bits carried over |
 | 64–95 | the GSDisk driver |
 | 96… | the volume, byte for byte |
 
 `image_wrap_build_prefix()` produces the 96 blocks; the unit suite
 (`tests/unit/suites/image_wrap`) checks them with the in-tree APM parser.
+
+A driverless disk's `Apple_HFS` entry may carry boot fields of its own:
+Mac OS X stores the XCOFF BootX of an Old World Mac in the HFS+ startup file
+and points `pmLgBootStart`/`pmBootSize`/`pmBootAddr`/`pmBootEntry` at it,
+and Open Firmware's `mac-parts` loads it from there
+([g3.md](../../../reference/machines/g3/g3.md) §2.8). The wrapper copies them
+(`image_wrap_build_prefix_boot()`): `pmLgBootStart` is relative to the
+partition, and the wrapped partition is the same volume, so they stay valid
+behind the new map.
 
 ### How the prefix is served
 

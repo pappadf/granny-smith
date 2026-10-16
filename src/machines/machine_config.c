@@ -127,7 +127,8 @@ static const config_option_decl_t k_imagewriter_option = {
     .values = k_imagewriter_values,
     .default_value = "none",
 };
-// The same on a machine without AppleTalk (the Lisa): Serial A.
+// The same on a machine with no AppleTalk option (the Lisa, whose AppleTalk
+// cable is always on Serial B): Serial A.
 static const config_option_decl_t k_imagewriter_option_serial_a = {
     .id = "imagewriter",
     .label = "ImageWriter",
@@ -1914,6 +1915,39 @@ static void legacy_displays(const hw_profile_t *p, const boot_config_t *legacy, 
     }
 }
 
+// nvram: Open Firmware variables by name, set as setenv sets them (V10).
+// Each is set here on the board's factory store, so a name the firmware
+// does not have, a value it cannot take, or a set the 2 KB partition cannot
+// hold is refused before anything is built; the seeding step writes them.
+static value_t read_nvram(const hw_profile_t *p, const value_t *m, machine_build_opts_t *out) {
+    if (m->kind != VK_MAP)
+        return bad("nvram: expected an object of Open Firmware variables");
+    if (!p->of_nvram_check)
+        return bad("nvram: model '%s' has no Open Firmware NVRAM a configuration can set", p->id);
+    size_t at = 0;
+    int n = 0;
+    for (size_t i = 0; i < m->map.len; i++) {
+        const char *k = m->map.entries[i].key;
+        const value_t *v = &m->map.entries[i].val;
+        const char *text = v->kind == VK_STRING ? v->s : v->kind == VK_BOOL ? (v->b ? "true" : "false") : NULL;
+        if (!text)
+            return bad("nvram.%s: expected a string (or true / false)", k);
+        size_t lk = strlen(k) + 1, lv = strlen(text) + 1;
+        if (at + lk + lv > sizeof out->of_vars)
+            return bad("nvram: the variables take more than %zu bytes", sizeof out->of_vars);
+        memcpy(out->of_vars + at, k, lk);
+        memcpy(out->of_vars + at + lk, text, lv);
+        at += lk + lv;
+        n++;
+    }
+    const char *name = "";
+    const char *err = p->of_nvram_check(n, out->of_vars, &name);
+    if (err)
+        return bad("nvram.%s: %s", name, err);
+    out->n_of_vars = n;
+    return val_none();
+}
+
 value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, const boot_config_t *legacy,
                                machine_build_opts_t *out) {
     doc_t *d = calloc(1, sizeof *d);
@@ -1928,6 +1962,7 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
     const value_t *v_start = have ? value_map_get(config, "startup") : NULL;
     const value_t *v_cards = have ? value_map_get(config, "cards") : NULL;
     const value_t *v_disp = have ? value_map_get(config, "displays") : NULL;
+    const value_t *v_nvram = have ? value_map_get(config, "nvram") : NULL;
     bool legacy_cards = (legacy->video_card && *legacy->video_card) || (legacy->pci_card && *legacy->pci_card) ||
                         (legacy->pci_option && *legacy->pci_option) || (legacy->slots && *legacy->slots) ||
                         (legacy->video_mode && *legacy->video_mode) || (legacy->custom_mode && *legacy->custom_mode);
@@ -2069,6 +2104,10 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
     out->n_storage = d->n_storage;
     memcpy(out->storage, d->storage, sizeof d->storage);
     out->startup = d->startup;
+    // Open Firmware variables (V10).
+    out->n_of_vars = 0;
+    if (v_nvram && (err = read_nvram(p, v_nvram, out), val_is_error(&err)))
+        goto done;
 done:
     free(d);
     return err;

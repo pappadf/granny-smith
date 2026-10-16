@@ -276,8 +276,11 @@ struct floppy {
     // ISM write capture state (persists sector writes to disk image)
     uint8_t ism_write_buf[512]; // captured sector data payload
     uint16_t ism_write_pos; // bytes captured so far (0-512)
-    uint8_t ism_write_state; // 0=scanning for data mark, 1=capturing data
+    uint8_t ism_write_state; // 0=scanning for an address mark, 1=capturing data, 2=capturing an ID field
     uint8_t ism_write_a1_count; // consecutive $A1 mark bytes seen
+    uint8_t ism_write_id[4]; // C/H/R/N of the ID field written ahead of the next data field
+    uint8_t ism_write_id_pos; // ID field bytes captured so far (0-4)
+    bool ism_write_id_valid; // ism_write_id is complete and addresses the next data field
 
     // === Pointers (not checkpointed) ===
     image_t *disk[NUM_DRIVES]; // disk image pointers

@@ -70,6 +70,14 @@ value_t parse_integer_literal(const char **p);
 // are decoded.
 value_t parse_string_literal(const char **p);
 
+// === Identifiers =============================================================
+
+// Longest identifier (binding, alias, function, parameter or member name) the
+// readers accept: every lexer that copies a name does so into a buffer of
+// OBJ_IDENT_MAX + 1 and fails on a longer one, and object_validate_name
+// refuses to bind one, so no name can be created that cannot be read back.
+#define OBJ_IDENT_MAX 63
+
 // === Keywords ================================================================
 
 // Reserved words may not be used as member names, alias names, or any

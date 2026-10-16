@@ -254,6 +254,71 @@ void object_unregister_invalidator(struct object *o, node_invalidate_fn cb, void
     }
 }
 
+// One watched object reference: the invalidator's user-data.
+struct object_watch_slot {
+    object_watch_t *owner;
+    struct object *obj; // NULL once fired (its registration is consumed)
+};
+
+// Invalidator for one slot: the object is being destroyed.
+static void watch_slot_gone(void *ud) {
+    struct object_watch_slot *s = (struct object_watch_slot *)ud;
+    s->obj = NULL;
+    s->owner->gone = true;
+}
+
+// Visit every object reference in v (list items and map values, at any
+// depth); count them, and fill `slots` when it is non-NULL.
+static size_t watch_collect(const value_t *v, struct object_watch_slot *slots, size_t n) {
+    if (v->kind == VK_OBJECT && v->obj) {
+        if (slots)
+            slots[n].obj = v->obj;
+        return n + 1;
+    }
+    if (v->kind == VK_LIST)
+        for (size_t i = 0; i < v->list.len; i++)
+            n = watch_collect(&v->list.items[i], slots, n);
+    else if (v->kind == VK_MAP)
+        for (size_t i = 0; i < v->map.len; i++)
+            n = watch_collect(&v->map.entries[i].val, slots, n);
+    return n;
+}
+
+bool object_watch_value(object_watch_t *w, const value_t *v) {
+    w->slots = NULL;
+    w->n = 0;
+    w->gone = false;
+    size_t n = v ? watch_collect(v, NULL, 0) : 0;
+    if (n == 0)
+        return true;
+    struct object_watch_slot *slots = (struct object_watch_slot *)calloc(n, sizeof(*slots));
+    if (!slots)
+        return false;
+    watch_collect(v, slots, 0);
+    // Slots are fully built before any is registered: a callback may run
+    // as soon as one is on its object's list
+    for (size_t i = 0; i < n; i++)
+        slots[i].owner = w;
+    w->slots = slots;
+    w->n = n;
+    for (size_t i = 0; i < n; i++)
+        object_register_invalidator(slots[i].obj, watch_slot_gone, &slots[i]);
+    return true;
+}
+
+void object_unwatch(object_watch_t *w) {
+    if (!w)
+        return;
+    // A fired slot is already off its (destroyed) object's list
+    for (size_t i = 0; i < w->n; i++)
+        if (w->slots[i].obj)
+            object_unregister_invalidator(w->slots[i].obj, watch_slot_gone, &w->slots[i]);
+    free(w->slots);
+    w->slots = NULL;
+    w->n = 0;
+    w->gone = false;
+}
+
 void object_fire_invalidators(struct object *o) {
     if (!o)
         return;
@@ -579,6 +644,13 @@ status_t object_validate_name(const char *name, char *err_buf, size_t err_size) 
     if (!is_valid_identifier(name)) {
         if (err_buf && err_size)
             snprintf(err_buf, err_size, "not a valid identifier: '%s'", name ? name : "(null)");
+        return STATUS_E_INVAL;
+    }
+    // Every reader of a name copies it into OBJ_IDENT_MAX + 1 bytes and
+    // refuses a longer one, so a longer name could be bound but never read
+    if (strlen(name) > OBJ_IDENT_MAX) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "identifier too long: '%.16s...' (max %d)", name, OBJ_IDENT_MAX);
         return STATUS_E_INVAL;
     }
     if (object_is_reserved_word(name)) {

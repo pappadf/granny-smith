@@ -41,8 +41,16 @@
 // a mode acknowledge that drops the bank's output latch, the latch is set
 // by any change of an enabled source (both edges) or an enabled event
 // edge, and DBDMA completions are held levels until their Clear bit is
-// written.  Before the first mode acknowledge (Linux, the BSDs) the line
-// is combinational ((events | levels) & mask).
+// written.  Before the first mode acknowledge (Mac OS X, Linux, the BSDs)
+// the line is the controller's own request: a latched event of an enabled
+// source, or the live level of an enabled level-type source (bank 1's
+// sources 20-28; bank 2 has none).  An edge-type source held high (an ATA
+// INTRQ nobody has serviced) requests nothing once its event is cleared.
+// Mac OS X's Heathrow driver is built on exactly that: it dispatches
+// (Events & ~$1FF00000) | (Levels & Mask & $1FF00000), clears with
+// $1FF00000 | events, and reads no Levels for bank 2; Linux notes that
+// enabling a source whose line is already high does not set its event or
+// request an interrupt (arch/powerpc/platforms/powermac/pic.c).
 
 #include "gossamer.h"
 
@@ -90,6 +98,10 @@ LOG_USE_CATEGORY_NAME("heathrow");
 // The mode acknowledge (see the file comment).
 #define INT_MODE_ACK 0x80000000u
 
+// Level-type sources per bank: their live level requests an interrupt
+// before the mode acknowledge; every other source only through its event.
+static const uint32_t hr_level_sources[2] = {0x1FF00000u, 0};
+
 // Control block, little-endian register view
 #define CTRL_MBCR 0x34u
 #define CTRL_FCR  0x38u
@@ -133,16 +145,16 @@ int gos_dbdma_source(int chan) {
 // Interrupt controller
 // ============================================================
 
+// The sources of bank `b` requesting the CPU interrupt.
+static uint32_t hr_request(const gos_heathrow_t *hr, int b) {
+    if (hr->mode1[b])
+        return hr->latch[b] & hr->mask[b];
+    return (hr->events[b] | (hr->levels[b] & hr_level_sources[b])) & hr->mask[b];
+}
+
 void gos_recompute_irq(config_t *cfg) {
     gos_heathrow_t *hr = &gos_st(cfg)->hr;
-    bool line = false;
-    for (int b = 0; b < 2; b++) {
-        if (hr->mode1[b])
-            line |= (hr->latch[b] & hr->mask[b]) != 0;
-        else
-            line |= ((hr->events[b] | hr->levels[b]) & hr->mask[b]) != 0;
-    }
-    ppc_set_ext_irq(cfg->ppc, line);
+    ppc_set_ext_irq(cfg->ppc, (hr_request(hr, 0) | hr_request(hr, 1)) != 0);
 }
 
 // An enabled source edge sets the bank's output latch.
@@ -684,13 +696,11 @@ static uint32_t hr_obj_enabled(void *ctx) {
     return hr_obj(ctx)->mask[0];
 }
 static uint32_t hr_obj_active(void *ctx) {
-    const gos_heathrow_t *hr = hr_obj(ctx);
-    return hr->mode1[0] ? (hr->latch[0] & hr->mask[0]) : ((hr->events[0] | hr->levels[0]) & hr->mask[0]);
+    return hr_request(hr_obj(ctx), 0);
 }
 static int hr_obj_ipl(void *ctx) {
     const gos_heathrow_t *hr = hr_obj(ctx);
-    uint32_t b2 = hr->mode1[1] ? (hr->latch[1] & hr->mask[1]) : ((hr->events[1] | hr->levels[1]) & hr->mask[1]);
-    return (hr_obj_active(ctx) || b2) ? 1 : 0;
+    return (hr_request(hr, 0) | hr_request(hr, 1)) ? 1 : 0;
 }
 
 static const irq_controller_ops_t hr_irq_ops = {

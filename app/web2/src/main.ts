@@ -23,6 +23,7 @@ import {
 import { claimScratch } from '@/bus/scratch';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
+import { showNotification } from '@/state/toasts.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -124,6 +125,13 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // boots or restores runs under it.
   const urlMode = urlSchedulerMode(mediaParams.speed);
   if (urlMode) setSchedulerMode(urlMode);
+  else if (mediaParams.speed !== null)
+    // An unknown value (or one of the retired aliases, `max`, `realtime`,
+    // `hardware`) used to be dropped without a word.
+    showNotification(
+      `speed=${mediaParams.speed}: speed is one of paced, accelerated, turbo; ignoring it`,
+      'warning',
+    );
   // A ROM in the URL means the page boots a machine by itself: it shows the
   // download progress instead of Welcome and asks nothing (no preview notice,
   // no resume prompt).  Media without a ROM only goes into a running machine.

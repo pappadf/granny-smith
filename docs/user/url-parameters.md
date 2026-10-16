@@ -31,8 +31,8 @@ https://<emulator page>/?rom=https://example.com/roms/MacIIci.rom&hd0=https://ex
 | `rom=<url>` | The machine's ROM. Required: a link without `rom=` opens the Home screen. |
 | `rom=<url>&rom=<url>` | A ROM dumped as two chip halves (the Lisa's and the Macintosh XL's boot ROMs). Order does not matter; the page tries both and keeps the one whose checksum is correct. |
 | `fd0=<url>`, `fd1=<url>` | Floppy for the first or second floppy drive (when the model has that drive). |
-| `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. |
-| `cd=<url>` | CD image for the CD-ROM drive, on a model that has one. |
+| `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. With `config=` (§3), the positions are that configuration's hard disks, its startup disk first — so a configuration that puts the disk on another bus gets it there. |
+| `cd=<url>` | CD image for the CD-ROM drive, on a model that has one. With `config=` (§3), the drive is that configuration's — on the G3, a configuration can put it on the secondary ATA bus, where Mac OS X 10.0 boots its install CD. |
 | `vrom=<url>` | A display card's declaration ROM, used for this boot ahead of any other stored revision (SE/30, IIcx, IIfx and other NuBus machines). |
 
 Short forms: `hd=` means `hd0=`, `fd=` means `fd0=`. Parameter names are
@@ -86,7 +86,7 @@ spaces.
 
 | Parameter | Example | Meaning |
 |---|---|---|
-| `model=` | `model=q900` | Which model to boot when the ROM serves several (here the Quadra 900 rather than the 700). Ids are in [Supported machines](machines.md). |
+| `model=` | `model=q900` | Which model to boot when the ROM serves several (here the Quadra 900 rather than the 700). Ids are in [Supported machines](machines.md). A model the ROM cannot boot is ignored, with a notice naming the models it can. |
 | `memory=` (or `ram=`) | `memory=32MB`, `memory=32768` | RAM size (MB with a unit, or KB as a number). |
 | `addressing=` | `addressing=32` | 24- or 32-bit addressing on 68K Macs that have the choice. Use `32` for Mac OS 7.6 and later, `24` for System 6 – 7.5. |
 | `appletalk=` | `appletalk=inactive` | Connect to the simulated AppleTalk network or not. |
@@ -95,7 +95,7 @@ spaces.
 | `mode=` | `mode=1152x870x8` | Startup video mode: width × height × bits per pixel; `1152x870` alone picks the deepest mode at that size. |
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |
 | model options | `keyswitch=service`, `power_supplies=two` | Any other option the model has. |
-| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. |
+| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. On the Open Firmware Macs (Power Mac 7500/8500/9500, the G3) its `nvram` member sets Open Firmware variables before the machine first runs — `{"nvram": {"boot-command": "0 bootr", "use-nvramrc?": true}}`: any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given (`nvramrc` may span lines). One the firmware does not have stops the boot with a message naming it. |
 
 A value the model does not offer is shown in a notice and left out — the
 machine boots without that change. An option the model does not have at
@@ -112,7 +112,7 @@ instruction, on a 21″ monitor at 1152 × 870 in 256 colours:
 
 | Parameter | Values | Meaning |
 |---|---|---|
-| `speed=` | `paced`, `accelerated`, `turbo` | Start in **Real**, **Faster** or **Max** speed (see [The interface](interface.md) §2). |
+| `speed=` | `paced`, `accelerated`, `turbo` | Start in **Real**, **Faster** or **Max** speed (see [The interface](interface.md) §2). Any other value is ignored, with a notice. |
 | `skin=` | `midnight`, `starlight`, `platinum`, `aqua`, `workbench`, `workbench-light` | Show this visit in another appearance. Not saved; an unknown name is ignored. |
 
 ## 5. Writing links that work
@@ -166,5 +166,6 @@ size (a 2 GB disk is several minutes on a fast connection).
   ![A link whose ROM could not be downloaded](images/boot-error.png)
 
 - **A disk** cannot be downloaded or is not valid for its slot (an 800K
-  floppy image given as `hd0=`): a notice gives the reason and the machine
-  boots without it.
+  floppy image given as `hd0=`): the machine boots without it, and says so
+  — "Booted plus without Hard disk 1: … not found" — in a notice and in the
+  terminal.

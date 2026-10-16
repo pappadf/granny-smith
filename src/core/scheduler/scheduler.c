@@ -72,6 +72,13 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // returning ~40% more turbo speed.
 #define TURBO_HOST_HEADROOM 0.7
 
+// scheduler_set_turbo_slice: 0 = the TURBO_HOST_HEADROOM rule above.
+static double g_turbo_slice_secs = 0.0;
+
+void scheduler_set_turbo_slice(double secs) {
+    g_turbo_slice_secs = (isnan(secs) || secs < 0.0) ? 0.0 : secs;
+}
+
 // Adaptive governor (accelerated mode with scheduler.speed = auto). AIMD on a
 // quantized speed ladder: additive rung-up only after dwelling at the current
 // speed (the slew limit — instruction-counted guest delays calibrated at
@@ -1433,6 +1440,11 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     // the run ends long before 2^56 cycles for some other reason.
     uint64_t remaining_cycles = (n > UINT64_MAX / s->cpi_eff_x256) ? (UINT64_MAX >> 8) : ((n * s->cpi_eff_x256) >> 8);
 
+    // The probes below run after each instruction: tell the debugger where
+    // the first one starts, for the breakpoint resume skip.
+    if (debugger_active)
+        debug_note_pc();
+
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
 
@@ -1473,8 +1485,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         }
 
         // Convert cycles to instructions for sprint (at least one whenever
-        // any cycles remain -- cycles_to_instructions rounds that case up)
-        uint32_t instr_to_exec = (uint32_t)cycles_to_instructions(s, cycles_to_execute);
+        // any cycles remain -- cycles_to_instructions rounds that case up).
+        // Clamp rather than cast: a huge budget must not wrap to a tiny sprint
+        uint64_t instr_budget = cycles_to_instructions(s, cycles_to_execute);
+        uint32_t instr_to_exec = instr_budget > UINT32_MAX ? UINT32_MAX : (uint32_t)instr_budget;
 
         // Single-step when debugger is active
         if (debugger_active) {
@@ -1488,7 +1502,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc_before = dif ? dif->get_pc(dif->ctx) : 0;
             cpu->poll_interrupt(cpu->ctx);
-            if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
+            if (dif && dif->get_pc(dif->ctx) != pc_before && (debug_note_pc(), debug_break_and_trace())) {
                 remaining_cycles = 0;
                 if (s->saved.running)
                     s->stop_reason = SCHED_STOP_BREAKPOINT;
@@ -1549,7 +1563,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // cycle-timestamped events and the peripheral divisors observe an
         // exact integer cycle timeline at every effective CPI.
         uint64_t advance_x256 = (uint64_t)executed_slots * s->cpi_eff_x256 + s->cycle_frac_x256;
-        uint32_t executed_cycles = (uint32_t)(advance_x256 >> 8);
+        uint64_t executed_cycles = advance_x256 >> 8; // 64-bit: a sprint may plan up to UINT32_MAX slots
         s->cycle_frac_x256 = (uint32_t)(advance_x256 & 0xFF);
 
         // Overshoot check.  The sprint can only run what it planned
@@ -1701,8 +1715,12 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
         // period. host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint
         // restore and mode switch); guard the first tick explicitly — a
         // float→int conversion of NaN is undefined behaviour.
+        // With a turbo slice set (the run loop re-enters at once), fill the
+        // slice instead.
         if (isnan(s->host_secs_per_vbl) || s->host_secs_per_vbl <= 0.0)
             vbls_to_execute = 1;
+        else if (g_turbo_slice_secs > 0.0)
+            vbls_to_execute = (int)(g_turbo_slice_secs / s->host_secs_per_vbl);
         else
             vbls_to_execute = (int)(s->host_secs_per_loop * TURBO_HOST_HEADROOM / s->host_secs_per_vbl);
         if (vbls_to_execute < 1)

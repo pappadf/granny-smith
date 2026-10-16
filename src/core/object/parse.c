@@ -439,11 +439,13 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
 
     // Identifier — match against enum_table if provided.
     if (isalpha((unsigned char)*q) || *q == '_') {
-        char ident[64];
+        char ident[OBJ_IDENT_MAX + 1];
         size_t i = 0;
         while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
-            if (i + 1 < sizeof(ident))
-                ident[i++] = *q;
+            // Fail rather than truncate (see lex_read_ident in expr.c)
+            if (i + 1 >= sizeof(ident))
+                return val_err("identifier too long (max %zu)", sizeof(ident) - 1);
+            ident[i++] = *q;
             q++;
         }
         ident[i] = '\0';

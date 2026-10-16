@@ -287,6 +287,10 @@ extern uintptr_t *g_supervisor_read; // supervisor-mode read mapping
 extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only)
 extern uintptr_t *g_user_read; // user-mode read mapping
 extern uintptr_t *g_user_write; // user-mode write mapping
+// A CPU-private logical write table outside the four SoA arrays (the
+// PowerPC MMU's supervisor-translated fills), NULL when there is none: a
+// code-page mark strips its entries for the page like theirs.
+extern uintptr_t *g_mem_extra_write;
 
 // SoA population tracking: the selected map lists the page indices written
 // into the SoA arrays since the last invalidation.  Every writer of a
@@ -313,6 +317,7 @@ extern uint32_t g_bus_error_address; // faulting logical address
 extern bool g_bus_error_rw; // true=read, false=write
 extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
+extern bool g_bus_error_is_address; // 68000 only: odd-address word/long operand access (vector 3, I/N clear)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // The running sprint's state shared with the slow paths: the one channel
@@ -559,11 +564,142 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page);
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page);
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
 
+// === Code-page coherence (predecoded interpreter cores) ===
+// A predecoded instruction cache (src/core/cpu/predecode.c) keeps a derived
+// image of guest code per 4 KB *host* page.  Keeping it honest costs nothing
+// on the fast path: a page that holds a block is a "code page", and its
+// WRITE SoA entries are suppressed (zeroed, and refused by every refill
+// site) so any store into it takes the slow path, which invalidates the
+// cached entries before completing the write.  Direct host-memory writers
+// (DMA engines, debug pokes, ROM installs) report through
+// memory_host_written().  The template is the memory-logpoint machinery
+// above; see docs/internals/core/cpu/predecode.md.
+
+// A host byte range that may carry code pages: region 0 is the flat
+// RAM+ROM image of the current memory map; unit tests register their own
+// buffers.  Marks are one byte per 4 KB page of the region.
+#define MEM_CODE_REGIONS_MAX 4
+typedef struct mem_code_region {
+    uint8_t *base; // host base of the region
+    uintptr_t size; // bytes
+    uint8_t *marks; // per page: nonzero = code page (write entries suppressed); one bit per owner (MEM_CODE_*)
+} mem_code_region_t;
+extern mem_code_region_t g_mem_code_regions[MEM_CODE_REGIONS_MAX];
+extern int g_mem_code_region_count;
+
+// Bumped by every memory_map_init: derived caches keyed by host pointers
+// (the predecode pool) compare it and reset themselves.
+extern uint32_t g_mem_map_generation;
+
+// Per 256-page chunk of the logical address space: nonzero once any write
+// SoA entry was ever planted in that chunk.  Lets memory_code_page_mark
+// find the logical aliases of a host page by scanning only populated
+// chunks instead of the whole (1M-entry) arrays.
+extern uint8_t *g_mem_soa_chunk;
+
+// Count of guest stores that hit a code page (took the slow path and
+// invalidated), for predecode.stats.
+extern uint64_t g_mem_code_write_count;
+
+// Slow-path access counter (memory.slowpath_count).  Every slow path
+// increments it, which makes it the exactness guard of the predecoded
+// cores' elided memory forms.
+extern uint64_t g_mem_slowpath_count;
+
+// Invalidation hook installed by the predecode pool: called with the host
+// range a store or host-side writer is about to change.  NULL = no cache.
+extern void (*g_mem_code_written_hook)(const uint8_t *host, uint32_t len);
+
+// Resolve a host pointer to its code region and page; -1 if outside every
+// region (device windows, card VRAM, declaration ROMs).
+static inline int memory_code_region_of(const uint8_t *host, uint32_t *page_out) {
+    for (int i = 0; i < g_mem_code_region_count; i++) {
+        uintptr_t off = (uintptr_t)host - (uintptr_t)g_mem_code_regions[i].base;
+        if (off < g_mem_code_regions[i].size) {
+            *page_out = (uint32_t)(off >> MEM_PAGE_SHIFT);
+            return i;
+        }
+    }
+    return -1;
+}
+
+// True when the host page holding `host` is a marked code page.
+static inline bool memory_host_is_code(const uint8_t *host) {
+    uint32_t page;
+    int r = memory_code_region_of(host, &page);
+    return r >= 0 && g_mem_code_regions[r].marks[page] != 0;
+}
+
+// Which write table(s) a fill or a refusal concerns (memory_write_fill).
+#define MEM_WT_SUPER 1u // g_supervisor_write
+#define MEM_WT_USER  2u // g_user_write
+
+// The refused-write record: one bit per page and write table, set exactly
+// where the switch core would hold a live write entry that the code-page
+// marks took away (a fill they refused, an entry they zeroed), and cleared
+// wherever the switch core would lose that entry (a TLB invalidation, a
+// fill that leaves the page read-only).  The 68K MMU slow path consults it
+// so a store into such a page completes as the cache hit it is on the
+// switch core -- without the table walk, and so without the walk's U/M and
+// MMUSR side effects.  Nothing sets a bit while predecode marks no page.
+void memory_write_refused_set(uint32_t page_index, unsigned tables);
+void memory_write_refused_clear(uint32_t page_index, unsigned tables);
+void memory_write_refused_reset(void);
+bool memory_write_refused(uint32_t page_index, bool supervisor);
+
+// The one way to plant a WRITE SoA entry: records the chunk for the
+// reverse scan and refuses the entry (returns 0) when the host page is a
+// code page, noting the refusal for `tables` (the write tables the caller
+// fills with the result: MEM_WT_*).  `host` is any pointer into the host
+// page being mapped.
+static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *host, uintptr_t adjusted,
+                                          unsigned tables) {
+    if (g_mem_soa_chunk)
+        g_mem_soa_chunk[page_index >> 8] = 1;
+    if (__builtin_expect(memory_host_is_code(host), 0)) {
+        memory_write_refused_set(page_index, tables);
+        return 0;
+    }
+    return adjusted;
+}
+
+// Register a host buffer as a code region (unit tests; region 0 is the
+// image and is registered by memory_map_init).  Returns the region index
+// or -1 when the table is full.
+int memory_code_region_register(uint8_t *base, uintptr_t size);
+
+// Who holds a code-page mark: the predecode pool (a block decoded from the
+// page) and the PowerPC translation tier (a translation of it).  A page is
+// a code page while either holds it; each drops only its own.
+#define MEM_CODE_PREDECODE 1u
+#define MEM_CODE_JIT       2u
+
+// Mark the host page as a code page for `owner`: sets the owner's bit and,
+// on the page's first mark, zeroes every write SoA entry (supervisor and
+// user) that currently maps to it.  Idempotent.
+void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner);
+// Drop `owner`'s mark; the write entries refill lazily once no owner is left.
+void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner);
+// The predecode pool's marks (block decoded / evicted or demoted).
+static inline void memory_code_page_mark(const uint8_t *host_page) {
+    memory_code_page_mark_owner(host_page, MEM_CODE_PREDECODE);
+}
+static inline void memory_code_page_unmark(const uint8_t *host_page) {
+    memory_code_page_unmark_owner(host_page, MEM_CODE_PREDECODE);
+}
+
+// A host-side writer (DMA, debug poke, ROM install, page-table R/C update)
+// changed `len` bytes at `host`: invalidate any cached code covering them.
+// Cheap when no page in the range is marked.
+void memory_host_written(const uint8_t *host, uint32_t len);
+
 // === Inline Accessors (SoA fast-path with adjusted-base trick) ===
 // Non-zero entry in g_active_read/write = adjusted host address.
 // Zero entry = slow path (device I/O, unmapped, or MMU TLB miss).
+// Always inlined: the interpreter loops are large enough that the compiler
+// otherwise outlines these, turning every guest load and store into a call.
 
-static inline uint8_t memory_read_uint8(uint32_t addr) {
+static inline __attribute__((always_inline)) uint8_t memory_read_uint8(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1))
@@ -571,7 +707,7 @@ static inline uint8_t memory_read_uint8(uint32_t addr) {
     return memory_read_uint8_slow(masked);
 }
 
-static inline uint16_t memory_read_uint16(uint32_t addr) {
+static inline __attribute__((always_inline)) uint16_t memory_read_uint16(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -580,7 +716,7 @@ static inline uint16_t memory_read_uint16(uint32_t addr) {
     return memory_read_uint16_slow(masked);
 }
 
-static inline uint32_t memory_read_uint32(uint32_t addr) {
+static inline __attribute__((always_inline)) uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -623,7 +759,7 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
     return (uint32_t)memory_read_uint16_slow(masked) << 16;
 }
 
-static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     if (__builtin_expect(base != 0, 1)) {
@@ -633,7 +769,7 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     memory_write_uint8_slow(masked, value);
 }
 
-static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
@@ -644,7 +780,7 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     memory_write_uint16_slow(masked, value);
 }
 
-static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
+static inline __attribute__((always_inline)) void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary

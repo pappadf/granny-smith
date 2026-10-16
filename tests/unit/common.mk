@@ -74,11 +74,11 @@ include $(WORKSPACE_ROOT)/src/sources.mk
 
 # The byte-source layer (src/core/storage/source.h) that storage.c and
 # image.c read through -- sources, the chunk cache, the format registry and
-# the NDIF/UDIF adapters -- and the peeler library it is built on.  A suite
+# the NDIF/UDIF/QCOW2 adapters -- and the peeler library it is built on.  A suite
 # linking storage.c or image.c sets USE_SOURCE_LAYER := 1 before including
 # this file.
 SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
-                       image_chunkmap.c image_ndif.c image_udif.c image_scratch.c adc.c inflate.c deflate.c \
+                       image_chunkmap.c image_ndif.c image_qcow2.c image_udif.c image_scratch.c adc.c inflate.c deflate.c \
                        udif_writer.c resource_fork.c \
                        rsrc_dcmp.c macroman.c storage_util.c) \
                      $(CORE_DIR)/crc32.c $(PEELER_SRC)
@@ -90,6 +90,13 @@ INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
+
+# The predecoded cores include generated T1 headers (scripts/gen_pd_cases.py);
+# they are produced once into $(WORKSPACE_ROOT)/build/gen for every suite.
+PDGEN_OUT := $(WORKSPACE_ROOT)/build/gen
+PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classify.h $(PDGEN_OUT)/cpu_pd_t1_cases.h $(PDGEN_OUT)/cpu_pd_t1_names.h
+PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h $(PDGEN_OUT)/ppc_pd_t1_names.h
+INCLUDE_FLAGS += -I$(PDGEN_OUT)
 
 SANITIZE ?=
 
@@ -139,6 +146,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/cpu_68000.c \
               $(EMU_ROOT)/core/cpu/cpu_68030.c \
               $(EMU_ROOT)/core/cpu/cpu_68040.c \
+              $(EMU_ROOT)/core/cpu/predecode.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
@@ -216,6 +224,16 @@ $(TARGET): $(OBJ)
 
 # Include auto-generated header dependency files
 -include $(DEP)
+
+# Generated T1 headers: every core object depends on its architecture's set.
+$(PDGEN_CPU_HEADERS) &: $(EMU_ROOT)/core/cpu/cpu_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
+	@mkdir -p $(PDGEN_OUT)
+	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/cpu_decode.h --prefix cpu --base 16 --out $(PDGEN_OUT)
+$(PDGEN_PPC_HEADERS) &: $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
+	@mkdir -p $(PDGEN_OUT)
+	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h --prefix ppc --base 16 --out $(PDGEN_OUT)
+$(OBJ_DIR)/src/core/cpu/cpu.o $(OBJ_DIR)/src/core/cpu/cpu_68000.o $(OBJ_DIR)/src/core/cpu/cpu_68030.o $(OBJ_DIR)/src/core/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
+$(OBJ_DIR)/src/core/cpu/ppc/ppc.o $(OBJ_DIR)/src/core/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
 
 # Run the test binary.  EXEC_WRAPPER lets the same suite run on wasm32 -- `make run
 # CC=emcc EXEC_WRAPPER=node` -- where size_t and long are 32 bits.  It is

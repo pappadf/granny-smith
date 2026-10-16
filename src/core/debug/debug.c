@@ -81,7 +81,15 @@ struct debug {
     bool active;
     int step;
     breakpoint_t *breakpoints;
-    uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
+    // A breakpoint stopped the machine at skip_pc: resuming lets that
+    // instruction execute once instead of stopping on it again.  The skip
+    // ends when that instruction has run (prev_pc, the start of the
+    // instruction just executed, equals skip_pc), or is spent at skip_pc
+    // itself when control comes back there before it ran (an interrupt
+    // taken at the resume).
+    bool skip_pending;
+    uint32_t skip_pc;
+    uint32_t prev_pc; // where the instruction the next probe follows started
     logpoint_t *logpoints;
     // Per-instruction / per-access fast paths, rebuilt by index_breakpoints
     // and index_logpoints after every add or remove.  The step hook skips the
@@ -345,7 +353,13 @@ static bool eval_breakpoint_condition(const char *expr) {
         .binding_ud = NULL,
     };
 
-    value_t v = expr_eval(expr, &ctx);
+    // Evaluate a private copy: the expression may remove the breakpoint
+    // that owns `expr` (e.g. debug.breakpoints.clear()).
+    char *copy = strdup(expr);
+    if (!copy)
+        return true;
+    value_t v = expr_eval(copy, &ctx);
+    free(copy);
     bool result;
     switch (v.kind) {
     case VK_BOOL:
@@ -609,7 +623,15 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
         .binding = lp_binding,
         .binding_ud = &lp,
     };
-    value_t v = expr_interpolate_body(msg, &ctx);
+    // Interpolate a private copy: the template may remove the logpoint that
+    // owns `msg` (e.g. ${debug.logpoints.clear()}).
+    char *copy = strdup(msg);
+    if (!copy) {
+        buf[0] = '\0';
+        return;
+    }
+    value_t v = expr_interpolate_body(copy, &ctx);
+    free(copy);
 
     const char *s = (v.kind == VK_STRING && v.s) ? v.s : (v.kind == VK_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
@@ -639,8 +661,10 @@ static log_category_t *exc_trace_get_category(void) {
     return s_exc_trace_category;
 }
 
-void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
-                      uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
+// Write one ring entry; the fields are in the 68K roles (see debug.h for
+// how PPC reuses them).
+static void exc_trace_push(uint8_t arch, uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr,
+                           uint32_t rw, uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
     uint32_t idx = s_exc_trace_head % EXC_TRACE_RING_SIZE;
     exc_trace_entry_t *e = &s_exc_trace_ring[idx];
     e->ts = cpu_instr_count();
@@ -653,10 +677,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     e->format_frame = format_frame;
     e->rw = (uint8_t)rw;
     e->double_fault_kind = (uint8_t)double_fault_kind;
-    e->arch = EXC_ARCH_M68K; // this entry point serves the 68K exception paths
+    e->arch = arch;
     s_exc_trace_head = (s_exc_trace_head + 1) % EXC_TRACE_RING_SIZE;
     s_exc_trace_count++;
+}
 
+void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
+                      uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind) {
+    exc_trace_push(EXC_ARCH_M68K, vector, faulting_pc, saved_pc, fault_addr, rw, vbr, sr, format_frame,
+                   double_fault_kind);
     // Stream to the log pipeline if the exceptions category is enabled.
     // The LOG_WITH macro short-circuits when level > threshold, so this adds
     // only a single memory load + branch when streaming is off.
@@ -672,6 +701,14 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
              double_fault_kind ? "  [DOUBLE FAULT]" : "");
+}
+
+// The PowerPC exception entry: MSR goes in the vbr slot, DAR in fault_addr
+// and the vector offset in format_frame, and the entry dumps in PPC form.
+void exc_trace_record_ppc(uint32_t vector, uint32_t resume_pc, uint32_t srr0, uint32_t dar, uint32_t msr) {
+    exc_trace_push(EXC_ARCH_PPC, vector, resume_pc, srr0, dar, 0, msr, 0, (uint16_t)vector, 0);
+    LOG_WITH(exc_trace_get_category(), 1, "[EXC] vec=$%05X dar=$%08X pc=$%08X srr0=$%08X msr=$%08X", vector, dar,
+             resume_pc, srr0, msr);
 }
 
 // Dump the exception trace ring buffer (most recent EXC_TRACE_RING_SIZE entries)
@@ -803,9 +840,17 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         }
         char formatted[256];
         if (lp->message) {
+            // The template may edit the logpoint list: keep what the log
+            // line needs, then re-find this entry before walking on.
+            int id = lp->id;
+            log_category_t *category = lp->category;
+            int level = lp->level;
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
-            LOG_WITH(lp->category, lp->level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
+            LOG_WITH(category, level, "logpoint %s $%08X.%c value=$%0*X: %s", is_write ? "WRITE" : "READ", addr,
                      access_width_letter(size), (int)(size * 2), value, formatted);
+            lp = debug_logpoint_by_id(debug, id);
+            if (!lp)
+                return;
         } else {
             const cpu_debug_if_t *dif = system_cpu_debug_if();
             uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
@@ -899,6 +944,67 @@ void debugger_disasm_pc(char *buf, size_t buf_size) {
     debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
+// Check the breakpoints at current_pc, the instruction about to execute.
+// A hit prints, counts, and arms the resume skip; returns true on a hit.
+static bool check_breakpoints(debug_t *debug, uint32_t current_pc) {
+    breakpoint_t *bp = debug->breakpoints;
+    while (bp != NULL) {
+        // A disabled breakpoint is kept but ignored.
+        if (bp->disabled) {
+            bp = bp->next;
+            continue;
+        }
+        bool hit = false;
+        if (bp->space == ADDR_SPACE_LOGICAL) {
+            // Logical breakpoint: compare directly with PC
+            hit = (bp->addr == current_pc);
+        } else {
+            // Physical breakpoint: translate PC to physical and compare
+            bool is_identity, valid;
+            uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &valid);
+            hit = valid && (bp->addr == phys_pc);
+        }
+        if (hit) {
+            // Evaluate optional condition — skip the break if false.
+            // The condition may edit the breakpoint list, so re-find
+            // this entry by id afterwards; gone means no break.
+            if (bp->condition) {
+                int id = bp->id;
+                bool pass = eval_breakpoint_condition(bp->condition);
+                bp = debug_breakpoint_by_id(debug, id);
+                if (!bp)
+                    break;
+                if (!pass) {
+                    bp = bp->next;
+                    continue;
+                }
+            }
+            bp->hit_count++;
+            if (bp->space == ADDR_SPACE_PHYSICAL) {
+                out_printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+            } else {
+                out_printf("breakpoint hit at $%08X\n", bp->addr);
+            }
+            event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc, bp->addr);
+            // The next run resumes past this instruction (struct debug)
+            debug->skip_pending = true;
+            debug->skip_pc = current_pc;
+            return true;
+        }
+        bp = bp->next;
+    }
+    return false;
+}
+
+// Record the PC the next instruction starts at: at the start of a run, and
+// after an interrupt moved the PC before anything executed (scheduler).
+void debug_note_pc(void) {
+    debug_t *debug = system_debug();
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (debug && dif)
+        debug->prev_pc = dif->get_pc(dif->ctx);
+}
+
 // Check if execution should break and trace current instruction
 int debug_break_and_trace(void) {
     debug_t *debug = system_debug();
@@ -915,53 +1021,24 @@ int debug_break_and_trace(void) {
         stop = true;
     }
 
-    // If we have a last_breakpoint_pc set, this means we need to skip checking
-    // for breakpoints at that specific PC address one time (to allow resuming execution)
-    if (debug->last_breakpoint_pc != 0 && current_pc == debug->last_breakpoint_pc) {
-        // Clear the flag after skipping once
-        debug->last_breakpoint_pc = 0;
-    } else if (debug->bp_any_physical || (debug->bp_pc_filter & bp_filter_bit(current_pc))) {
-        // Check for breakpoints at current PC (the filter rules out most
-        // PCs without walking the list)
-        breakpoint_t *bp = debug->breakpoints;
-        while (bp != NULL) {
-            // A disabled breakpoint is kept but ignored.
-            if (bp->disabled) {
-                bp = bp->next;
-                continue;
-            }
-            bool hit = false;
-            if (bp->space == ADDR_SPACE_LOGICAL) {
-                // Logical breakpoint: compare directly with PC
-                hit = (bp->addr == current_pc);
-            } else {
-                // Physical breakpoint: translate PC to physical and compare
-                bool is_identity, valid;
-                uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &valid);
-                hit = valid && (bp->addr == phys_pc);
-            }
-            if (hit) {
-                // Evaluate optional condition — skip the break if false
-                if (bp->condition && !eval_breakpoint_condition(bp->condition)) {
-                    bp = bp->next;
-                    continue;
-                }
-                bp->hit_count++;
-                if (bp->space == ADDR_SPACE_PHYSICAL) {
-                    out_printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
-                } else {
-                    out_printf("breakpoint hit at $%08X\n", bp->addr);
-                }
-                event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
-                            bp->addr);
-                // Remember this PC to skip it next time we check
-                debug->last_breakpoint_pc = current_pc;
-                stop = true;
-                break;
-            }
-            bp = bp->next;
+    // The resume skip (see struct debug): spent once the instruction it
+    // protects has executed, or used here if control is back at it first.
+    bool skip = false;
+    if (debug->skip_pending) {
+        if (debug->prev_pc == debug->skip_pc) {
+            debug->skip_pending = false;
+        } else if (current_pc == debug->skip_pc) {
+            debug->skip_pending = false;
+            skip = true;
         }
     }
+    debug->prev_pc = current_pc;
+
+    // Check for breakpoints at the current PC (the filter rules out most PCs
+    // without walking the list)
+    if (!skip && (debug->bp_any_physical || (debug->bp_pc_filter & bp_filter_bit(current_pc))) &&
+        check_breakpoints(debug, current_pc))
+        stop = true;
 
     // Check for logpoints at current PC (these don't stop execution).
     // Match on either the logical PC (install-time VA) or the exact physical
@@ -985,9 +1062,16 @@ int debug_break_and_trace(void) {
         if (hit) {
             lp->hit_count++;
             if (lp->message) {
+                // As in the memory hook: the template may edit the list
+                int id = lp->id;
+                log_category_t *category = lp->category;
+                int level = lp->level;
                 char formatted[256];
                 format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
-                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
+                LOG_WITH(category, level, "logpoint $%08X: %s", current_pc, formatted);
+                lp = debug_logpoint_by_id(debug, id);
+                if (!lp)
+                    break;
             } else {
                 LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc, lp->hit_count);
             }
@@ -1338,6 +1422,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     size_t idat_capacity = 0;
     while (pos + 12 <= (size_t)file_size) {
         uint32_t chunk_len = RD_BE32(file_data + pos);
+        // The chunk body plus its CRC must lie inside the file
+        if (chunk_len > (size_t)file_size - pos - 12) {
+            free(idat_data);
+            free(file_data);
+            out_printf("Error: Truncated PNG chunk.\n");
+            return -1;
+        }
         char chunk_type[5];
         memcpy(chunk_type, file_data + pos + 4, 4);
         chunk_type[4] = '\0';
@@ -1526,6 +1617,9 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
             bottom = (int)d->height;
         if (right > (int)d->width)
             right = (int)d->width;
+        // A rect wholly off-screen or inverted after clamping masks nothing
+        if (right <= left || bottom <= top)
+            continue;
         for (int y = top; y < bottom; y++) {
             size_t off = ((size_t)y * d->width + left) * 4;
             size_t span = (size_t)(right - left) * 4;
@@ -2718,6 +2812,9 @@ static DEF_METHOD(lp_method_add) {
     uint32_t end_addr = addr;
     if (argc > 3 && argv[3].kind == VK_UINT)
         end_addr = (uint32_t)argv[3].u;
+    // An inverted range could never fire
+    if (end_addr < addr)
+        return val_err("logpoints.add: end must not be below addr");
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
@@ -2753,11 +2850,11 @@ static DEF_METHOD(lp_method_add) {
     addr_space_t space =
         (argc > 8 && argv[8].kind == VK_ENUM && argv[8].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
 
+    // Every manifest category is registered at startup, so a miss is a
+    // user typo -- never hand it to log_register_category, which asserts.
     log_category_t *category = log_get_category(category_name);
     if (!category)
-        category = log_register_category(category_name);
-    if (!category)
-        return val_err("logpoints.add: cannot register category '%s'", category_name);
+        return val_err("logpoints.add: unknown log category '%s'", category_name);
 
     logpoint_t *lp;
     if (kind == LP_KIND_PC)

@@ -312,10 +312,12 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (g_user_read)
         g_user_read[page_index] = adjusted;
     if (writable) {
+        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted,
+                                           MEM_WT_SUPER | MEM_WT_USER); // 0 on a predecoded code page
         if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
+            g_supervisor_write[page_index] = wadj;
         if (g_user_write)
-            g_user_write[page_index] = adjusted;
+            g_user_write[page_index] = wadj;
     }
     // A direct fast-path entry must be on the TLB tracker like every other
     // one, or the next mmu_invalidate_tlb -- the guest enabling the PMMU --
@@ -349,7 +351,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     }
 }
 
-// Hardware RESET: ROM overlay back on, MMU disabled.
+// Hardware RESET: ROM overlay back on, shared devices reset.
 // The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
 // pulls Overlay high, so the memory controller uses the ROM overlay map
 // again (Guide p.256), plus the devices every board shares.

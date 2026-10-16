@@ -10,9 +10,9 @@ them, and how to manage the ones you have stored.
 |---|---|---|
 | ROM | the ROM chip's contents, any name | Recognised by its checksum; see [Supported machines](machines.md) §1 |
 | Video ROM (VROM) | a NuBus display card's declaration ROM | Optional: cards work with a substitute without it |
-| PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card |
+| PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card. A PCI ROM for a card Granny Smith does not emulate is refused with a message |
 | Floppy disk | 400K, 800K and 1.4 MB images: raw `.dsk`/`.img`/`.image`, Disk Copy 4.2 | Recognised by size |
-| Hard disk | raw `.img`/`.hda`/`.dsk`, Disk Copy 6 (NDIF), `.dmg` (UDIF) | Partitioned disks, and single-volume (HFS) images without a partition map, both boot |
+| Hard disk | raw `.img`/`.hda`/`.dsk`, Disk Copy 6 (NDIF), `.dmg` (UDIF), QCOW2 (`.qcow2`) | Partitioned disks, and single-volume (HFS) images without a partition map, both boot. QCOW2 is converted when it loads (§2.1) |
 | CD-ROM | `.iso`, `.toast`, `.cdr`, `.dmg` | ISO 9660, HFS or partitioned |
 | Lisa ProFile | raw ProFile images; Disk Copy 4.2 ProFile images with tag bytes | For the Lisa and Macintosh XL hard disk |
 
@@ -54,6 +54,15 @@ takes tens of MB. They are converted while they load (a zip or gzip is
 unpacked on the way), so the full-size disk never has to fit in storage.
 A `System 7.5.3.img` you add is stored as `System_7.5.3.dmg`.
 
+A **QCOW2** image, the disk format of the QEMU virtualiser, is converted <!-- lint-allow: QEMU -->
+too, whatever its size (QEMU is named here only because it defined the <!-- lint-allow: QEMU -->
+format; the images are read for compatibility). It is first stored as it
+arrives, then turned into a `.dmg` and the QCOW2 copy removed, so for a
+moment it needs room for both. An *overlay* (a QCOW2 that records only
+its changes to another image), an encrypted image, or one compressed with
+zstd cannot be read: make a standalone copy first with
+`qemu-img convert -O qcow2 overlay.qcow2 standalone.qcow2`.
+
 A `.dmg` you save to your computer opens in macOS (`hdiutil`), 7-Zip and
 `dmg2img`; **Export as raw image…** gives a plain image instead.
 
@@ -73,9 +82,11 @@ Setup, Drive Setup or the system installer.
 ![The Images panel, with the context menu of a mounted hard disk](images/panel-images.png)
 
 The **Images** tab lists what you have stored, in sections: **ROM**,
-**VROM**, **PCI ROM**, **Floppy Disk**, **Hard Disk** and **CD-ROM**. ROMs
-are listed by checksum. A disk the running machine is using is marked
-(**INSERTED · DRIVE 1**, **MOUNTED**).
+**VROM**, **PCI ROM**, **Floppy Disk**, **Hard Disk** and **CD-ROM**, each
+with its count. ROMs are listed by checksum, with the ROM's or card's name
+beside it. A disk the running machine is using is marked
+(**INSERTED · DRIVE 1**, **MOUNTED**); one being compacted shows its
+progress (**COMPACTING · 40 %**) and cannot be used until it is done.
 
 Right-click an image:
 
