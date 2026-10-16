@@ -19,16 +19,16 @@
   "dependencies": {
     "@codemirror/autocomplete": "~6.20.3",
     "@codemirror/commands": "~6.11.1",
-    "@codemirror/language": "~6.12.4",
+    "@codemirror/language": "~6.13.1",
     "@codemirror/state": "~6.7.6",
-    "@codemirror/view": "~6.43.13",
+    "@codemirror/view": "~6.43.14",
     "@lezer/common": "~1.5.3",
     "@lezer/highlight": "~1.2.5",
     "jszip": "^3.10.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/svelte": "^5.4.2",
     "@types/node": "^26.6.5",
@@ -44,7 +44,7 @@
     "svelte-eslint-parser": "^1.9.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.71.2",
-    "vite": "^6.0.7",
+    "vite": "^8.3.4",
     "vitest": "^5.0.4"
   }
 }
