@@ -164,6 +164,15 @@ shortly after boot.
 - **LocalTalk on the SCC through DBDMA** is exercised only as far as the
   boot needs.
 - Shut Down from the Finder ends in a system error.
+- **Open Firmware cannot read a SCSI CD-ROM over MESH.**  Its MESH
+  package (`do-cmd`) programs a transfer only while the bus still shows
+  COMMAND after the command sequence's CMDDONE, and its `wait-done` waits
+  for CMDDONE alone; the model's target is already in DATA IN by then, so
+  the REQUEST SENSE after the CD's unit attention ends in an exception the
+  firmware never sees, and `dir`/`boot` of `mesh@10000/@3` hang.  Mac OS 9
+  boots a SCSI CD through the ROM's own driver; Mac OS X's BootX needs Open
+  Firmware, so its install CD goes on ATA (`ata1` unit 0,
+  `ide@21000/@0:9`).
 
 ## 6. See also
 

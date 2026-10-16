@@ -11,6 +11,7 @@ Q900="$ROMS/q700-q900-420dbff3.rom"
 TNT="$ROMS/pm7500-pm8500-pm9500-96cd923d.rom"
 G3="$ROMS/pmg3dt-pmg3mt-78f57389.rom"
 ANS="$ROMS/ans500-ans700-962f6c13.rom"
+LISA="$ROMS/lisa2-revh-098917b2.rom"
 
 fail=0
 n=0
@@ -57,8 +58,8 @@ boot_case v3-unit iici "$IICI" '{"storage":[{"bus":"scsi","unit":7,"type":"hd"}]
 boot_case v3-shared q900 "$Q900" \
     '{"storage":[{"bus":"scsi","unit":1,"type":"hd"},{"bus":"scsi2","unit":1,"type":"hd"}]}' \
     'storage[1]: ID 1 · External on "External SCSI" is already used on "Internal SCSI" (shared ID space)'
-boot_case v3-type pmg3dt "$G3" '{"storage":[{"bus":"ata0","unit":0,"type":"cd"}]}' \
-    'storage[0]: "Primary ATA bus" takes no CD-ROM drive'
+boot_case v3-type lisa "$LISA" '{"storage":[{"bus":"profile","unit":0,"type":"cd"}]}' \
+    'storage[0]: "ProFile port" takes no CD-ROM drive'
 
 # V4: a slot the model has, a card that fits it, one card per slot.
 boot_case v4-slot iici "$IICI" '{"cards":[{"slot":"nubus_9","card":"mdc_8_24"}]}' \
