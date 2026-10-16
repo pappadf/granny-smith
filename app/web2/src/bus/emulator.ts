@@ -761,11 +761,26 @@ function routeCoreEvent(ev: CoreEvent): void {
       handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
       break;
     case 'state:perf':
-      setPerfStats(num(d.mips), num(d.tps), {
-        tickMaxMs: num(d.tick_max_ms),
-        tickP50Ms: num(d.tick_p50_ms),
-        pollMaxMs: num(d.poll_max_ms),
-      });
+      setPerfStats(
+        num(d.mips),
+        num(d.tps),
+        {
+          tickMaxMs: num(d.tick_max_ms),
+          tickP50Ms: num(d.tick_p50_ms),
+          pollMaxMs: num(d.poll_max_ms),
+        },
+        {
+          engine:
+            d.engine === 'interpreter' || d.engine === 'predecoded' || d.engine === 'jit'
+              ? d.engine
+              : '',
+          jitPct: num(d.jit_pct),
+          jitSupervisor: d.jit_sup === true,
+          jitRegions: num(d.jit_regions),
+          jitKb: num(d.jit_kb),
+          ppc: d.ppc === true,
+        },
+      );
       break;
     case 'notify:floppy':
       onFloppyDriveChange(num(d.drive), d.present === true);
@@ -886,6 +901,37 @@ export async function setCapsLock(on: boolean): Promise<void> {
     'capslock',
   ]);
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
+}
+
+// The status bar's engine menu: the CPU engine the next instructions run on.
+// `jit-kernel` translates the PowerPC kernel's code too (jit.supervisor).
+// The perf push that follows reports what the core then runs.
+export type CpuEngineChoice = 'interpreter' | 'predecoded' | 'jit' | 'jit-kernel';
+export async function setCpuEngine(choice: CpuEngineChoice): Promise<void> {
+  if (!isModuleReady() || machine.status === 'no-machine') return;
+  const steps: [string, number][] =
+    choice === 'interpreter'
+      ? [['predecode.enabled', 0]]
+      : choice === 'predecoded'
+        ? [
+            ['predecode.enabled', 1],
+            ['jit.enabled', 0],
+          ]
+        : [
+            ['predecode.enabled', 1],
+            ['jit.supervisor', choice === 'jit-kernel' ? 1 : 0],
+            ['jit.enabled', 1],
+          ];
+  for (const [path, value] of steps) {
+    const r = await gsEval(path, [value]);
+    if (!gsOk(r)) {
+      showNotification(`CPU engine: ${gsErrorText(r)}`, 'warning');
+      return;
+    }
+  }
+  machine.engine = choice === 'jit-kernel' ? 'jit' : choice;
+  machine.jitSupervisor = choice === 'jit-kernel';
+  if (choice !== 'jit' && choice !== 'jit-kernel') machine.jitPct = 0;
 }
 
 export async function shutdownEmulator(): Promise<void> {

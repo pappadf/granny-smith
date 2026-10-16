@@ -2,7 +2,7 @@
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity, bridgeBusy } from '@/state/activity.svelte';
   import { printer, reopenPrintedDocument } from '@/state/printer.svelte';
-  import { setCapsLock } from '@/bus/emulator';
+  import { setCapsLock, setCpuEngine } from '@/bus/emulator';
   import { shortModel } from '@/lib/machine';
   import Icon from '../common/Icon.svelte';
   import ToggleChip from '../ui/ToggleChip.svelte';
@@ -81,6 +81,61 @@
       printer.activity === 'printing',
   );
 
+  // The CPU engine (the core names it with each perf push, em_main.c): the
+  // switch interpreter, the predecoded one, or the PowerPC translation tier
+  // with the share of the last second's instructions that ran translated.
+  // Right-click switches it.
+  const engineLabel = $derived(
+    machine.engine === 'jit'
+      ? `JIT ${Math.round(machine.jitPct)}%`
+      : machine.engine === 'predecoded'
+        ? 'Predecoded'
+        : machine.engine === 'interpreter'
+          ? 'Interpreter'
+          : '',
+  );
+  const engineTitle = $derived(
+    machine.engine === 'jit'
+      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${(machine.jitKb / 1024).toFixed(1)} MB compiled). Right-click to change.`
+      : machine.engine === 'predecoded'
+        ? `CPU engine: predecoded interpreter${machine.ppc ? ' (the PowerPC JIT is off)' : ''}. Right-click to change.`
+        : 'CPU engine: the plain interpreter (predecoding off). Right-click to change.',
+  );
+  function engineMenu(ev: MouseEvent): void {
+    ev.preventDefault();
+    const jitOn = machine.engine === 'jit';
+    openContextMenu(
+      [
+        {
+          label: 'Interpreter',
+          checked: machine.engine === 'interpreter',
+          action: () => void setCpuEngine('interpreter'),
+        },
+        {
+          label: 'Predecoded',
+          checked: machine.engine === 'predecoded',
+          action: () => void setCpuEngine('predecoded'),
+        },
+        ...(machine.ppc
+          ? [
+              {
+                label: 'JIT (user code)',
+                checked: jitOn && !machine.jitSupervisor,
+                action: () => void setCpuEngine('jit'),
+              },
+              {
+                label: 'JIT + kernel code',
+                checked: jitOn && machine.jitSupervisor,
+                action: () => void setCpuEngine('jit-kernel'),
+              },
+            ]
+          : []),
+      ],
+      ev.clientX,
+      ev.clientY,
+    );
+  }
+
   // The bar's state: no machine reads as idle.
   const barState = $derived(machine.status === 'no-machine' ? 'idle' : machine.status);
 
@@ -120,6 +175,18 @@
           )} ms worst; bridge request {machine.pollMaxMs.toFixed(1)} ms worst"
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
+        </div>
+      {/if}
+      {#if engineLabel}
+        <div
+          class="gs-statusbar__item sb-item sb-engine"
+          data-engine={machine.engine}
+          title={engineTitle}
+          role="button"
+          tabindex="-1"
+          oncontextmenu={engineMenu}
+        >
+          <span class="label">{engineLabel}</span>
         </div>
       {/if}
       {#if machine.drives.hd}
@@ -268,6 +335,14 @@
   .sb-mips {
     font-variant-numeric: var(--gs-numeric);
     opacity: var(--gs-statusbar-meta-opacity);
+  }
+  .sb-engine {
+    font-variant-numeric: var(--gs-numeric);
+    opacity: var(--gs-statusbar-meta-opacity);
+    cursor: context-menu;
+  }
+  .sb-engine:hover {
+    background: var(--gs-statusbar-item-hover);
   }
   .sb-upload {
     gap: var(--gs-space-1-5);

@@ -92,8 +92,23 @@ interface MachineState {
   tickMaxMs: number;
   tickP50Ms: number;
   pollMaxMs: number;
+  // The CPU engine, pushed with the perf sample: the switch interpreter,
+  // the predecoded interpreter, or the PowerPC translation tier on top of
+  // it ('' until the first push).  The core decides it (em_main.c): never
+  // 'jit' with predecode off, nor on a 68K machine.  With the tier, the
+  // share of the last sample's instructions that ran translated, whether
+  // it translates kernel code, and its totals; `ppc` says whether the
+  // machine's CPU is a PowerPC (the tier's entries in the engine menu).
+  engine: CpuEngine;
+  jitPct: number;
+  jitSupervisor: boolean;
+  jitRegions: number;
+  jitKb: number;
+  ppc: boolean;
   zoom: number;
 }
+
+export type CpuEngine = '' | 'interpreter' | 'predecoded' | 'jit';
 
 export const machine: MachineState = $state({
   status: 'no-machine',
@@ -117,6 +132,12 @@ export const machine: MachineState = $state({
   tickMaxMs: 0,
   tickP50Ms: 0,
   pollMaxMs: 0,
+  engine: '',
+  jitPct: 0,
+  jitSupervisor: false,
+  jitRegions: 0,
+  jitKb: 0,
+  ppc: false,
   zoom: 200,
 });
 
@@ -171,12 +192,28 @@ export function setPerfStats(
   mips: number,
   ticksPerSecond: number,
   tick: { tickMaxMs: number; tickP50Ms: number; pollMaxMs: number },
+  cpu?: {
+    engine: CpuEngine;
+    jitPct: number;
+    jitSupervisor: boolean;
+    jitRegions: number;
+    jitKb: number;
+    ppc: boolean;
+  },
 ): void {
   machine.mips = mips;
   machine.ticksPerSecond = ticksPerSecond;
   machine.tickMaxMs = tick.tickMaxMs;
   machine.tickP50Ms = tick.tickP50Ms;
   machine.pollMaxMs = tick.pollMaxMs;
+  if (cpu) {
+    machine.engine = cpu.engine;
+    machine.jitPct = cpu.jitPct;
+    machine.jitSupervisor = cpu.jitSupervisor;
+    machine.jitRegions = cpu.jitRegions;
+    machine.jitKb = cpu.jitKb;
+    machine.ppc = cpu.ppc;
+  }
 }
 
 // Core-pushed quick-checkpoint completion (bus/emulator.ts

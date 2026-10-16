@@ -311,7 +311,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
-| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms, engine, jit_pct, jit_sup, jit_regions, jit_kb, ppc}`: `engine` is `interpreter` (predecode off), `predecoded` or `jit` (the PowerPC translation tier on, a PowerPC machine); `jit_pct` the share of the sample's instructions that ran translated |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |

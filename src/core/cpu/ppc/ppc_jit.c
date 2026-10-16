@@ -3016,6 +3016,14 @@ static struct {
     double compile_ms;
 } g_st;
 
+void ppc_jit_status(ppc_jit_status_t *out) {
+    *out = (ppc_jit_status_t){.on = g_ppc_jit_on,
+                              .supervisor = g_supervisor != 0,
+                              .insns = g_st.insns,
+                              .regions = g_st.regions,
+                              .bytes = g_st.bytes};
+}
+
 static uint32_t *g_free_slots;
 static uint32_t g_nfree, g_free_cap;
 static void release_fn(uint32_t fn) {
@@ -4292,6 +4300,9 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     (void)len;
 }
 void ppc_jit_reset(void) {}
+void ppc_jit_status(ppc_jit_status_t *out) {
+    *out = (ppc_jit_status_t){0};
+}
 
 #endif // __EMSCRIPTEN__
 
