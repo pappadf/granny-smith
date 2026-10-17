@@ -33,11 +33,12 @@
 // `config=` is the configuration document, base64url-encoded JSON (the
 // dialog's document; absent, the model's default configuration).  `hdN` and
 // `cd` mean that document's Nth hard disk and its CD-ROM drive (a G3 link
-// can put both on ATA), `fdN` floppy drive N; a floppy named for a position
+// can put both on ATA, with config= or storage=), `fdN` floppy drive N; a floppy named for a position
 // the default configuration leaves empty puts a drive there.  Every other
 // parameter is a configuration edit by name -- an option of the model's tree
-// (`addressing=32`, `memory=32768`) or the screen (`monitor=`, `mode=`,
-// `display=`) -- applied over that document (lib/urlConfig.ts).
+// (`addressing=32`, `memory=32768`), the screen (`monitor=`, `mode=`,
+// `display=`), the storage (`storage=`, `startup=`) or an Open Firmware
+// variable (`nvram.<name>=`) -- applied over that document (lib/urlConfig.ts).
 //
 // The ROM and a `vrom=` go into the one machine.boot document: the URL's
 // declaration ROM is the ROM of the slot whose card it provides, ahead of any
@@ -349,10 +350,11 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // ?hdN= is the default configuration's N-th hard disk (hd0 is the startup
   // disk, which the configuration names), on whatever bus it is -- not SCSI
   // id N on the first bus.
-  // With a config=, the N-th hard disk is that configuration's (its startup
-  // disk first): a link that puts the disk on another bus (a G3's ATA, not
-  // its default SCSI ID 0) gets it there.
-  const configured = params.config ? await configuredHardDisks(params.config) : null;
+  // With a config= or a storage=, the N-th hard disk is that configuration's
+  // (its startup disk first): a link that puts the disk on another bus (a
+  // G3's ATA, not its default SCSI ID 0) gets it there.
+  const ownStorage = !!params.config || params.settings.storage !== null;
+  const configured = ownStorage ? await configuredHardDisks(config ?? {}) : null;
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
@@ -368,7 +370,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // the default configuration's.
   const cdPath = paths.get('cd');
   if (cdPath) {
-    const cd = params.config ? (await machineDevices('cd'))[0] : undefined;
+    const cd = ownStorage ? (await machineDevices('cd'))[0] : undefined;
     report(
       'cd',
       cdPath,
