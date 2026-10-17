@@ -124,6 +124,7 @@ LOG_USE_CATEGORY_NAME("video");
 // expansion module.
 #define MACH64_VRAM_2MB 0x200000u
 #define MACH64_VRAM_4MB 0x400000u
+#define RAGEPRO_VRAM    0x600000u // the beige G3: 2 MB on board + a 4 MB SO-DIMM
 
 // Sparse I/O decode (RRG ch. 1).  The register file is selected by the top
 // six bits of a 16-bit I/O address; the bottom ten are the strapped base.
@@ -2471,6 +2472,14 @@ static uint32_t gp_aper_swap(const mach64_t *m) {
 // LITTLE-endian view that swaps: within each pixel of MEM_PIX_WIDTH, byte
 // k of the lower aperture is byte (w-1-k) of the upper one.  At 8 bpp,
 // which is what Open Firmware's console uses, the two are the same.
+//
+// Past the installed VRAM each view decodes to nothing -- writes are lost
+// and reads float high -- as the empty SO-DIMM socket of a 2 MB board
+// does.  It must not alias: the driver Mac OS X loads sizes VRAM by
+// writing the same 16 bytes at $FCE85 of each megabyte and reading them
+// back, so an alias passes every step, the driver believes in 4 MB and
+// offers 1024 x 768 in millions -- a 3 MB frame -- which blanks the
+// screen.  (The GX keeps its alias below: its driver's probe needs it.)
 static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
     if (offset < MACH64_APER_8MB) {
         if (offset >= MACH64_MMIO_OFF_8MB && !(m->reg[DW_BUS_CNTL] & BUS_APER_REG_DIS))
@@ -2478,9 +2487,17 @@ static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
         if (offset >= RAGEPRO_BLOCK1_OFF && offset < MACH64_MMIO_OFF_8MB && (m->reg[DW_BUS_CNTL] & BUS_EXT_REG_EN))
             return MACH64_APER_REGS1;
         offset ^= gp_aper_swap(m);
-        return (int64_t)(offset & (m->vram_size - 1u));
+    } else {
+        offset -= MACH64_APER_8MB;
     }
-    return (int64_t)((offset - MACH64_APER_8MB) & (m->vram_size - 1u));
+    return offset < m->vram_size ? (int64_t)offset : MACH64_APER_NONE;
+}
+
+// The byte `a` bytes into VRAM for the second and later bytes of a
+// multi-byte access that starts in it: past the end it wraps to the start.
+// Not a mask -- the Rage Pro's 6 MB is not a power of two.
+static inline uint32_t vram_wrap(const mach64_t *m, uint32_t a) {
+    return a < m->vram_size ? a : a - m->vram_size;
 }
 
 // `peek`: an inspection's decode, which does not trip the once-only log.
@@ -2561,7 +2578,7 @@ static uint16_t aper_rd16(void *ctx, uint32_t offset, bool peek) {
     // (The Rage Pro's little-endian half swaps within a pixel, so its
     // bytes are not consecutive in VRAM: it takes the byte path.)
     if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB))
-        return (uint16_t)(((uint16_t)m->vram[at] << 8) | m->vram[(at + 1) & (m->vram_size - 1u)]);
+        return (uint16_t)(((uint16_t)m->vram[at] << 8) | m->vram[vram_wrap(m, at + 1)]);
     return (uint16_t)((aper_rd8(ctx, offset, peek) << 8) | aper_rd8(ctx, offset + 1, peek));
 }
 
@@ -2570,7 +2587,7 @@ static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
     int64_t at = aper_map(m, offset, false);
     if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB)) {
         m->vram[at] = (uint8_t)(value >> 8);
-        m->vram[(at + 1) & (m->vram_size - 1u)] = (uint8_t)value;
+        m->vram[vram_wrap(m, at + 1)] = (uint8_t)value;
         return;
     }
     aper_write8(ctx, offset, (uint8_t)(value >> 8));
@@ -2591,8 +2608,8 @@ static uint32_t aper_rd32(void *ctx, uint32_t offset, bool peek) {
     if (m->gp && offset < MACH64_APER_8MB)
         return ((uint32_t)aper_rd8(ctx, offset, peek) << 24) | ((uint32_t)aper_rd8(ctx, offset + 1, peek) << 16) |
                ((uint32_t)aper_rd8(ctx, offset + 2, peek) << 8) | aper_rd8(ctx, offset + 3, peek);
-    return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[(at + 1) & (m->vram_size - 1u)] << 16) |
-           ((uint32_t)m->vram[(at + 2) & (m->vram_size - 1u)] << 8) | m->vram[(at + 3) & (m->vram_size - 1u)];
+    return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[vram_wrap(m, at + 1)] << 16) |
+           ((uint32_t)m->vram[vram_wrap(m, at + 2)] << 8) | m->vram[vram_wrap(m, at + 3)];
 }
 MACH64_READ_FACE(aper)
 
@@ -2616,9 +2633,9 @@ static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
         return;
     }
     m->vram[at] = (uint8_t)(value >> 24);
-    m->vram[(at + 1) & (m->vram_size - 1u)] = (uint8_t)(value >> 16);
-    m->vram[(at + 2) & (m->vram_size - 1u)] = (uint8_t)(value >> 8);
-    m->vram[(at + 3) & (m->vram_size - 1u)] = (uint8_t)value;
+    m->vram[vram_wrap(m, at + 1)] = (uint8_t)(value >> 16);
+    m->vram[vram_wrap(m, at + 2)] = (uint8_t)(value >> 8);
+    m->vram[vram_wrap(m, at + 3)] = (uint8_t)value;
 }
 
 // ============================================================
@@ -3903,7 +3920,12 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     m->dev = dev;
     m->cfg = cfg;
     m->gp = true;
-    m->vram_size = MACH64_VRAM_2MB;
+    // The board's 2 MB of SGRAM plus Apple's 4 MB SO-DIMM -- the largest
+    // configuration sold, and a superset of every other: the only modes it
+    // adds are deeper ones (millions at 1024 x 768 and 1152 x 870, 32-bit
+    // at 1280 x 1024; developer note Table 3-2), and nothing in a guest
+    // depends on having less.
+    m->vram_size = RAGEPRO_VRAM;
     m->vram = (uint8_t *)calloc(1, m->vram_size);
     m->blank = (uint8_t *)calloc(1, m->vram_size);
     m->compose = (uint8_t *)calloc(1, m->vram_size);

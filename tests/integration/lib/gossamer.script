@@ -106,7 +106,13 @@ def gos_boot_prompt(model, ram_kb) {
     machine.adb.keyboard.up "Option"
     machine.adb.keyboard.up "Command"
     assert gos_in_of() "${$model}: Command-Option-O-F did not stop the boot in Open Firmware (pc ${machine.cpu.pc:08x})"
+    # A Return first: a key that arrives while the firmware is still
+    # drawing its prompt can be lost (the `t` of `ttya`, when the Rage Pro's
+    # VRAM probe moved the prompt a little later), and a lost Return costs
+    # nothing.  The command follows once the prompt is up.
     scheduler.run 20000000
+    machine.adb.keyboard.type "\n"
+    scheduler.run 100000000
     machine.adb.keyboard.type "ttya io\n"
     scheduler.run 200000000
     let drained = machine.scc.a.sent()
