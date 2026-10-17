@@ -171,11 +171,15 @@ static inline uint32_t cpi_eff_x256_max(uint32_t cpi) {
 // at whichever CPI is larger -- the authentic one the invariants were written
 // against, or the effective one the sprint is actually sized in, which the
 // governor can raise above it.  Rounded up: the effective CPI is fractional.
+// Only the asserts read it, so GS_FAST (which compiles them out) has no
+// caller and -Werror=unused-function would reject the definition.
+#ifndef GS_FAST
 static inline uint32_t max_overshoot_cycles(struct scheduler *s) {
     uint32_t eff = (s->cpi_eff_x256 + 255) >> 8;
     uint32_t cpi = avg_cycles_per_instr(s);
     return eff > cpi ? eff : cpi;
 }
+#endif
 
 // Whether the governor is choosing the speed: an auto speed in a mode whose
 // frame-units are aligned to the host clock.  Turbo aligns nothing, and a
