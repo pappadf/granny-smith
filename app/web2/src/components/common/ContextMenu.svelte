@@ -31,11 +31,14 @@
 
   // A menu standing in for a control's own list (a select's options): as
   // wide as the control, keyboard on the current entry, focus handed back
-  // to the control when it closes.
+  // to the control when it closes.  `above` is the control's top edge: a
+  // menu that does not fit below y opens upward from there instead of
+  // being pushed up over the control.
   export interface ContextMenuOptions {
     minWidth?: number;
     highlight?: number;
     returnFocus?: HTMLElement;
+    above?: number;
   }
 
   export function openContextMenu(
@@ -53,7 +56,15 @@
     };
     const instance = mount(Self, {
       target,
-      props: { items, x, y, onClose, minWidth: options.minWidth, initial: options.highlight },
+      props: {
+        items,
+        x,
+        y,
+        onClose,
+        minWidth: options.minWidth,
+        initial: options.highlight,
+        above: options.above,
+      },
     });
     current = { instance, target };
   }
@@ -74,8 +85,9 @@
     onClose: () => void;
     minWidth?: number;
     initial?: number;
+    above?: number;
   }
-  let { items, x, y, onClose, minWidth, initial }: Props = $props();
+  let { items, x, y, onClose, minWidth, initial, above }: Props = $props();
 
   let cardEl = $state<HTMLDivElement | null>(null);
   // Highlight index — set on hover or arrow-key. Skip separators.
@@ -128,7 +140,9 @@
       let left = x;
       let top = y;
       if (left + r.width > vw - 4) left = Math.max(4, vw - r.width - 4);
-      if (top + r.height > vh - 4) top = Math.max(4, vh - r.height - 4);
+      if (top + r.height > vh - 4 && above !== undefined && above - r.height >= 4)
+        top = above - r.height;
+      else if (top + r.height > vh - 4) top = Math.max(4, vh - r.height - 4);
       pos = { left, top };
       cardEl.focus();
       cardEl.querySelector('.highlight')?.scrollIntoView({ block: 'nearest' });

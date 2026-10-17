@@ -32,7 +32,7 @@ https://<emulator page>/?rom=https://example.com/roms/MacIIci.rom&hd0=https://ex
 | `rom=<url>&rom=<url>` | A ROM dumped as two chip halves (the Lisa's and the Macintosh XL's boot ROMs). Order does not matter; the page tries both and keeps the one whose checksum is correct. |
 | `fd0=<url>`, `fd1=<url>` | Floppy for the first or second floppy drive (when the model has that drive). |
 | `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. With `config=` (§3), the positions are that configuration's hard disks, its startup disk first — so a configuration that puts the disk on another bus gets it there. |
-| `cd=<url>` | CD image for the CD-ROM drive, on a model that has one. |
+| `cd=<url>` | CD image for the CD-ROM drive, on a model that has one. With `config=` (§3), the drive is that configuration's — on the G3, a configuration can put it on the secondary ATA bus, where Mac OS X 10.0 boots its install CD. |
 | `vrom=<url>` | A display card's declaration ROM, used for this boot ahead of any other stored revision (SE/30, IIcx, IIfx and other NuBus machines). |
 
 Short forms: `hd=` means `hd0=`, `fd=` means `fd0=`. Parameter names are

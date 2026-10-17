@@ -52,6 +52,8 @@
 #include "mouse.h"
 #include "platform.h"
 #include "platform_hooks.h"
+#include "ppc_jit.h"
+#include "predecode.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"
@@ -286,6 +288,7 @@ host_pacing_t *platform_pacing(void) {
 
 // The instruction count at the last perf sample (MIPS is the delta).
 static uint64_t last_instr = 0;
+static uint64_t last_jit_insns = 0; // the translation tier's instruction total at the last sample
 // The activity lights' state and the counter baselines they compare against.
 static drive_activity_t lights;
 static double ticks_per_second = 0;
@@ -456,12 +459,34 @@ void em_main_tick(void) {
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
+            // The engine the status bar names: the switch cores with predecode
+            // off (the translation tier runs only from the predecoded loop),
+            // the tier on a PowerPC with it on, the predecoded cores
+            // otherwise; with the tier, the share of the interval's
+            // instructions that ran translated
+            ppc_jit_status_t js;
+            ppc_jit_status(&js);
+            const char *engine = !predecode_enabled()             ? "interpreter"
+                                 : (js.on && system_cpu_is_ppc()) ? "jit"
+                                                                  : "predecoded";
+            double jit_pct = 0;
+            if (engine[0] == 'j' && instr_now > last_instr && js.insns >= last_jit_insns) {
+                jit_pct = 100.0 * (double)(js.insns - last_jit_insns) / (double)(instr_now - last_instr);
+                if (jit_pct > 100)
+                    jit_pct = 100;
+            }
             event_emitf(GS_EVENT_STATE,
                         "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
-                        "\"poll_max_ms\":%.3f}",
-                        mips, ticks_per_second, tick_max, tick_p50, poll_max);
+                        "\"poll_max_ms\":%.3f,\"engine\":\"%s\",\"jit_pct\":%.1f,\"jit_sup\":%s,"
+                        "\"jit_regions\":%llu,\"jit_kb\":%llu,\"ppc\":%s}",
+                        mips, ticks_per_second, tick_max, tick_p50, poll_max, engine, jit_pct,
+                        js.supervisor ? "true" : "false", (unsigned long long)js.regions,
+                        (unsigned long long)(js.bytes / 1024), system_cpu_is_ppc() ? "true" : "false");
         }
 
+        ppc_jit_status_t js_now;
+        ppc_jit_status(&js_now);
+        last_jit_insns = js_now.insns;
         last_time = current_time;
         last_instr = instr_now;
     }

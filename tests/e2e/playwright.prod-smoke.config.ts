@@ -47,8 +47,8 @@ export default defineConfig({
       use: {
         browserName: 'chromium',
         // Headless Chromium has no GPU by default — force software
-        // WebGL via swiftshader so the new UI's `checkWebGL2Available`
-        // probe succeeds. Mirrors the args scripts/ui2-diag.mjs uses.
+        // WebGL via swiftshader so the UI's startup graphics
+        // check (lib/gpuDiagnostics.ts) passes. Mirrors the args scripts/ui2-diag.mjs uses.
         launchOptions: {
           args: ['--use-gl=angle', '--use-angle=swiftshader-webgl', '--ignore-gpu-blocklist'],
         },

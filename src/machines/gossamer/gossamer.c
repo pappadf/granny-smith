@@ -640,11 +640,12 @@ static bool gossamer_fd_present(config_t *cfg, int drive) {
 
 // The board's storage: the MESH SCSI bus (the internal 50-pin cable and the
 // external DB-25 on one bus, with no named bay) and Heathrow's two ATA
-// buses.  A stock machine has its hard disk and CD-ROM drive on ATA; here
-// they stay on SCSI until the ROM's expected ATA placement is checked, and
-// an ATA bus takes hard disks (an ATAPI CD-ROM drive there is not yet a
-// construction input).  The startup record names a SCSI ID, so only the SCSI
-// bus can hold the startup device.
+// buses.  A stock machine has its hard disk and CD-ROM drive on ATA; the
+// default configuration keeps them on SCSI until the ROM's expected ATA
+// placement is checked.  An ATA bus takes hard disks and ATAPI CD-ROM
+// drives: the Mac OS X 10.0 install CD boots and installs from the secondary
+// bus's master (Open Firmware's ide@21000/@0).  The startup record names a
+// SCSI ID, so only the SCSI bus can hold the startup device.
 const storage_bus_decl_t gossamer_storage[] = {
     {.id = "scsi",
      .label = "SCSI",
@@ -662,14 +663,14 @@ const storage_bus_decl_t gossamer_storage[] = {
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 0,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {.id = "ata1",
      .label = "Secondary ATA bus",
      .kind = STORAGE_KIND_ATA,
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 2,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {0},
 };
 

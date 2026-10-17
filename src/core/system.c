@@ -508,6 +508,11 @@ bool system_is_initialized(void) {
     return global_emulator != NULL;
 }
 
+// Whether the current machine's main CPU is a PowerPC (false with none)
+bool system_cpu_is_ppc(void) {
+    return global_emulator && global_emulator->cpu_arch == CPU_ARCH_PPC;
+}
+
 // Return the id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void) {
     if (!global_emulator || !global_emulator->machine)

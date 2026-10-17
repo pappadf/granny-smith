@@ -2,7 +2,7 @@
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity, bridgeBusy } from '@/state/activity.svelte';
   import { printer, reopenPrintedDocument } from '@/state/printer.svelte';
-  import { setCapsLock } from '@/bus/emulator';
+  import { setCapsLock, setCpuEngine } from '@/bus/emulator';
   import { shortModel } from '@/lib/machine';
   import Icon from '../common/Icon.svelte';
   import ToggleChip from '../ui/ToggleChip.svelte';
@@ -81,6 +81,66 @@
       printer.activity === 'printing',
   );
 
+  // The CPU engine (the core names it with each perf push, em_main.c): the
+  // switch interpreter, the predecoded one, or the PowerPC translation tier
+  // with the share of the last second's instructions that ran translated.
+  // A click (or right-click, or Enter/Space) opens a menu that switches it.
+  const engineLabel = $derived(
+    machine.engine === 'jit'
+      ? `JIT ${Math.round(machine.jitPct)}%`
+      : machine.engine === 'predecoded'
+        ? 'Predecoded'
+        : machine.engine === 'interpreter'
+          ? 'Interpreter'
+          : '',
+  );
+  const engineTitle = $derived(
+    machine.engine === 'jit'
+      ? `CPU engine: predecoded interpreter + PowerPC JIT (${machine.jitSupervisor ? 'kernel code included' : 'user code only'}). ${machine.jitPct.toFixed(0)}% of the last second's instructions ran as translated code (${machine.jitRegions} regions, ${(machine.jitKb / 1024).toFixed(1)} MB compiled). Click to change.`
+      : machine.engine === 'predecoded'
+        ? `CPU engine: predecoded interpreter${machine.ppc ? ' (the PowerPC JIT is off)' : ''}. Click to change.`
+        : 'CPU engine: the plain interpreter (predecoding off). Click to change.',
+  );
+  function engineMenu(ev: MouseEvent): void {
+    ev.preventDefault();
+    // Open the menu off the chip itself, like a select; at the bottom bar
+    // there is no room below, so it opens upward from the chip's top edge.
+    const el = ev.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const jitOn = machine.engine === 'jit';
+    openContextMenu(
+      [
+        {
+          label: 'Interpreter',
+          checked: machine.engine === 'interpreter',
+          action: () => void setCpuEngine('interpreter'),
+        },
+        {
+          label: 'Predecoded',
+          checked: machine.engine === 'predecoded',
+          action: () => void setCpuEngine('predecoded'),
+        },
+        ...(machine.ppc
+          ? [
+              {
+                label: 'JIT (user code)',
+                checked: jitOn && !machine.jitSupervisor,
+                action: () => void setCpuEngine('jit'),
+              },
+              {
+                label: 'JIT + kernel code',
+                checked: jitOn && machine.jitSupervisor,
+                action: () => void setCpuEngine('jit-kernel'),
+              },
+            ]
+          : []),
+      ],
+      r.left,
+      r.bottom,
+      { minWidth: r.width, returnFocus: el, above: r.top },
+    );
+  }
+
   // The bar's state: no machine reads as idle.
   const barState = $derived(machine.status === 'no-machine' ? 'idle' : machine.status);
 
@@ -121,6 +181,19 @@
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>
+      {/if}
+      {#if engineLabel}
+        <button
+          type="button"
+          class="gs-statusbar__item gs-statusbar__button sb-item sb-engine"
+          data-engine={machine.engine}
+          title={engineTitle}
+          aria-haspopup="menu"
+          onclick={engineMenu}
+          oncontextmenu={engineMenu}
+        >
+          <span class="label">{engineLabel}</span>
+        </button>
       {/if}
       {#if machine.drives.hd}
         <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
@@ -266,6 +339,15 @@
     opacity: var(--gs-statusbar-icon-opacity);
   }
   .sb-mips {
+    font-variant-numeric: var(--gs-numeric);
+    opacity: var(--gs-statusbar-meta-opacity);
+  }
+  .sb-engine {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
     font-variant-numeric: var(--gs-numeric);
     opacity: var(--gs-statusbar-meta-opacity);
   }

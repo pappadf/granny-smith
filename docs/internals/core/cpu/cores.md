@@ -1,7 +1,7 @@
 # CPU cores — the module contract
 
 How Granny Smith executes more than one CPU per machine: exactly one
-**main CPU** that owns emulated time (the 68K today), plus any number of
+**main CPU** that owns emulated time (a 68K or a PowerPC), plus any number of
 **auxiliary cores** — peripheral processors that execute real guest code
 but do not control time.  The first auxiliary core is the AV family's
 DSP3210 (`src/core/cpu/dsp3210/`, wired by `src/machines/av/dsp.c`;
@@ -39,8 +39,9 @@ the burst at the next cycle and calls `cpu_reschedule()`.
 The scheduler holds a four-entry `sched_cpu_if_t`
 (`ctx`/`run_sprint`/`is_stopped`/`poll_interrupt`) instead of a
 `struct cpu *`; `cpu_sched_if()` in cpu.c is the 68K adapter.  One
-indirect call per sprint.  This is the seam a future main-CPU
-architecture (PowerPC) plugs into without touching the scheduler.
+indirect call per sprint.  This is the seam the PowerPC core
+(`ppc_sched_if`, [ppc.md](ppc.md)) plugs into without touching the
+scheduler.
 
 ## The core-module contract
 
@@ -49,7 +50,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 
 | Requirement | Contract |
 |---|---|
-| Interpreter | big-switch decode **or the predecoded executor** (`docs/internals/core/cpu/predecode.md`: a decode cache keyed by host page, plain C handlers — the switch core stays as the reference and the `predecode.enabled=0` fallback).  **Generated code is allowed above them, for performance:** the PowerPC may gain a translation tier that turns hot guest pages into WebAssembly at run time, compiled by the browser's engine, in the WebAssembly build only.  The decision (2026-10-12) relaxes the earlier "plain C, no JIT" rule because the interpreter tiers cannot reach the speed of the PowerPC hardware the emulator models; what the rule protected is kept: the translator itself is portable C, it emits portable, engine-validated WebAssembly rather than host machine code, native builds keep running the interpreter tiers, and the predecoded executor stays the tier every translation is verified against (identical guest state at every sprint boundary) and falls back to.  Not for the 68K cores, which already run faster than the hardware they model.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
+| Interpreter | big-switch decode **or the predecoded executor** (`docs/internals/core/cpu/predecode.md`: a decode cache keyed by host page, plain C handlers — the switch core stays as the reference and the `predecode.enabled=0` fallback).  **Generated code is allowed above them, for performance:** the PowerPC has a translation tier that turns hot guest pages into WebAssembly at run time, compiled by the browser's engine, in the WebAssembly builds only (`docs/internals/core/cpu/ppc/ppc_jit.md`; `jit.enabled` and `jit.supervisor` are on by default there, and native builds have no tier).  The decision (2026-10-12) relaxes the earlier "plain C, no JIT" rule because the interpreter tiers cannot reach the speed of the PowerPC hardware the emulator models; what the rule protected is kept: the translator itself is portable C, it emits portable, engine-validated WebAssembly rather than host machine code, native builds keep running the interpreter tiers, and the predecoded executor stays the tier every translation is verified against (identical guest state at every sprint boundary) and falls back to.  Not for the 68K cores, which already run faster than the hardware they model.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
 | Execution ABI | `void <arch>_run(<arch>_t *, uint32_t *instructions)` — burn-down counter; returns with it 0 (budget spent) or >0 (went idle) |
 | Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins.  When guest code polls a pin's *level* (not just its latched request), the entry point must model both — e.g. `dsp3210_ext_pulse(s, vector, slots)` latches the request and asserts the live pin for `slots` of core time, and the status-register pin bits reflect the level, not the latch |
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
@@ -63,7 +64,10 @@ checkpoint as POD, object class) with these core-specific requirements:
 
 **Rule.** A sprint loop is left by one condition and one only — the burn-down
 counter reaching zero. Anything that wants the loop to stop says so by
-**setting `*instructions = 0`**, and then does its work either in the
+**zeroing `*instructions` through `memory_end_sprint()`**, which also books
+the slots it did not run (`g_sprint_io.unrun_slots`; a bare
+`*instructions = 0` makes the scheduler charge for instructions that never
+ran, `scheduler.md` §6.4), and then does its work either in the
 instruction that triggered it or in the epilogue, which runs once per sprint
 after the loop closes. No `break`, no second exit test, and above all **no
 per-instruction inspection of state that only a rare path ever sets**.
@@ -90,8 +94,7 @@ so the next one begins with the new T1 — deliberately, instead of re-sampling
 ```c
 /* in the op that detects it */
 cpu->my_exception_pending = 1;      /* or a global, if the memory layer raises it */
-if (g_bus_error_instr_ptr)
-    *g_bus_error_instr_ptr = 0;     /* the loop's own condition now ends it */
+memory_end_sprint(g_bus_error_instr_ptr);  /* the loop's own condition now ends it */
 
 /* in CPU_DECODER_EPILOGUE, once per sprint, outside the loop */
 if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
@@ -175,9 +178,10 @@ the same virtual address (two execs of A/UX `/etc/init`, both with crt0 at
 `$148`) would be flagged as a double fault. It is deliberately not cleared
 in supervisor mode: the kernel instructions that run between the first fault
 and the RTE retry must not reset the tracking, or a user retry that faults
-again at the same PC would be missed. The test sits in the per-instruction
-prologue today; the "Known deviations" table above lists moving it out of
-the loop.
+again at the same PC would be missed. The test no longer sits in the
+per-instruction prologue: `m68k_bus_error_latch_settle` decides it where
+user mode can begin (each sprint's entry and `write_sr`), as the "decided
+where it can change" paragraph above describes.
 
 ### Deferred bus errors: skip or retry
 

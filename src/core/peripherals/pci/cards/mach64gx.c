@@ -596,6 +596,10 @@ typedef struct mach64 {
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
+    // The cursor registers as the last frame latched them, and whether
+    // `compose` still has to be built from them (mach64_compose)
+    uint32_t cur_latch[5]; // CUR_HORZ_VERT_POSN, _OFF, CUR_OFFSET, CUR_CLR0, _CLR1
+    bool compose_stale;
     uint32_t scan_base; // VRAM byte offset the CRTC is scanning
     bool scan_blanked; // ...or nothing, because the raster is off
     bool clut_dirty; // palette changed since the last scanout refresh
@@ -2882,38 +2886,64 @@ static void mach64_clut_changed(mach64_t *m) {
 // It costs a frame copy, and only while the cursor is enabled: with
 // GEN_CUR_EN clear (the reset state, and what Mac OS leaves it at, since
 // QuickDraw draws its own cursor into the framebuffer) the scanout is the
-// same straight pointer into VRAM it always was.
+// same straight pointer into VRAM it always was.  Mac OS X drives the
+// hardware cursor, so the copy is made lazily: a frame latches the cursor
+// registers and marks the composite stale, and the first reader of `bits`
+// after it (display_sync_pixels: the renderer, a checksum, a screenshot)
+// builds it -- at most once per frame, and not at all for frames nobody
+// reads (a turbo run's guest frames far outnumber the host's).
+static void mach64_compose(mach64_t *m);
+static void mach64_sync_pixels(void *ctx) {
+    mach64_t *m = (mach64_t *)ctx;
+    if (m->compose_stale && m->display.bits == m->compose)
+        mach64_compose(m);
+}
+
 static void mach64_present(mach64_t *m) {
+    m->display.sync_pixels = mach64_sync_pixels;
+    m->display.sync_ctx = m;
     if (m->scan_blanked) {
         m->display.bits = m->blank;
         return;
     }
+    if (!(m->reg[DW_GEN_TEST_CNTL] & GEN_CUR_EN)) {
+        m->display.bits = m->vram + m->scan_base;
+        return;
+    }
+    m->cur_latch[0] = m->reg[DW_CUR_HORZ_VERT_POSN];
+    m->cur_latch[1] = m->reg[DW_CUR_HORZ_VERT_OFF];
+    m->cur_latch[2] = m->reg[DW_CUR_OFFSET];
+    m->cur_latch[3] = m->reg[DW_CUR_CLR0];
+    m->cur_latch[4] = m->reg[DW_CUR_CLR1];
+    m->display.bits = m->compose;
+    m->compose_stale = true;
+}
+
+// Build the hardware-cursor composite: the frame, with the cursor the
+// last frame latched drawn over it
+static void mach64_compose(mach64_t *m) {
+    m->compose_stale = false;
     uint32_t bpp = mach64_bytes_per_pixel(m);
     uint32_t stride = m->display.stride;
     uint32_t height = m->display.height;
     uint32_t width = m->display.width;
     uint8_t *frame = m->vram + m->scan_base;
-    if (!(m->reg[DW_GEN_TEST_CNTL] & GEN_CUR_EN)) {
-        m->display.bits = frame;
-        return;
-    }
 
     // No clamp needed: mach64_update settled this geometry against vram_size
     // through display_set_scanout, and `compose` is vram_size, so the span
     // fits both by construction.
     size_t span = (size_t)stride * height;
     memcpy(m->compose, frame, span);
-    m->display.bits = m->compose;
 
     // "The mach64 will not display the cursor at all if either the
     // horizontal or vertical cursor position is negative" — the driver
     // saturates the position to zero and moves the offset instead, so a
     // clipped cursor arrives here as a larger CUR_HORZ_VERT_OFF.
-    uint32_t px = CUR_POSN_H(m->reg[DW_CUR_HORZ_VERT_POSN]);
-    uint32_t py = CUR_POSN_V(m->reg[DW_CUR_HORZ_VERT_POSN]);
-    uint32_t ox = CUR_OFF_H(m->reg[DW_CUR_HORZ_VERT_OFF]);
-    uint32_t oy = CUR_OFF_V(m->reg[DW_CUR_HORZ_VERT_OFF]);
-    uint32_t src = CUR_BASE(m->reg[DW_CUR_OFFSET]);
+    uint32_t px = CUR_POSN_H(m->cur_latch[0]);
+    uint32_t py = CUR_POSN_V(m->cur_latch[0]);
+    uint32_t ox = CUR_OFF_H(m->cur_latch[1]);
+    uint32_t oy = CUR_OFF_V(m->cur_latch[1]);
+    uint32_t src = CUR_BASE(m->cur_latch[2]);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > m->vram_size) {
         LOG(1, "Mach64: hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src,
             m->vram_size >> 20);
@@ -2924,8 +2954,8 @@ static void mach64_present(mach64_t *m) {
     // direct-colour mode they are 24-bit true colour in the upper bits
     // (RRG p. 3-27).  Only the 8 bpp case is exercised by anything today.
     bool indexed = m->display.format == PIXEL_8BPP;
-    uint32_t clr[2] = {indexed ? (m->reg[DW_CUR_CLR0] & 0xFFu) : (m->reg[DW_CUR_CLR0] >> 8),
-                       indexed ? (m->reg[DW_CUR_CLR1] & 0xFFu) : (m->reg[DW_CUR_CLR1] >> 8)};
+    uint32_t clr[2] = {indexed ? (m->cur_latch[3] & 0xFFu) : (m->cur_latch[3] >> 8),
+                       indexed ? (m->cur_latch[4] & 0xFFu) : (m->cur_latch[4] >> 8)};
     if (m->gp && indexed) {
         // The Rage Pro's integrated DAC overlays the cursor in TRUE colour at
         // every depth — the 24 bits above the index byte.  The ROM's ndrv
@@ -2934,7 +2964,7 @@ static void mach64_present(mach64_t *m) {
         // shows a black-outlined white arrow.  The composite is built in the
         // frame's own depth, so each colour becomes its nearest palette entry.
         for (int k = 0; k < 2; k++) {
-            uint32_t rgb = m->reg[k ? DW_CUR_CLR1 : DW_CUR_CLR0] >> 8;
+            uint32_t rgb = m->cur_latch[k ? 4 : 3] >> 8;
             int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
             uint32_t best = 0, best_d = 0xFFFFFFFFu;
             for (uint32_t i = 0; i < 256; i++) {
@@ -3323,7 +3353,7 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // scan is bounded by vram_size, so a buffer of that size can always hold
     // one.  Growing `vram` alone broke the invariant and turned the very next
     // mach64_update() -- which this function calls below -- into a 2 MB heap
-    // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
+    // WRITE overflow, twice over: memcpy into `compose` in mach64_compose and
     // memset of `blank` here.
     if (c.vram_size != m->vram_size) {
         uint8_t *v = (uint8_t *)calloc(1, c.vram_size);

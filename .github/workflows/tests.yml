@@ -112,13 +112,13 @@ jobs:
       - name: Run unit tests (wasm32)
         run: make -C tests/unit run-wasm32 WERROR=1
 
-      # The same suites through the other executor: the predecoded cores
-      # are the default (docs/internals/core/cpu/predecode.md),
-      # CPU_TEST_PREDECODE=0 routes the conformance vectors through the
-      # switch cores that remain the reference and the predecode.enabled=0
-      # fallback.
-      - name: Run unit tests (CPU, switch cores)
-        run: CPU_TEST_PREDECODE=0 make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
+      # The CPU suites through the other executor.  The harness runs the
+      # switch cores (the reference and the predecode.enabled=0 fallback)
+      # unless CPU_TEST_PREDECODE=1, so the run above covers them; this one
+      # routes every sprint through the predecoded cores, the emulator's
+      # default (docs/internals/core/cpu/predecode.md §6).
+      - name: Run unit tests (CPU, predecoded cores)
+        run: CPU_TEST_PREDECODE=1 make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
   # Every integration tier, as ONE longest-first -j pool, split across
   # runners.  tests/integration/test-weights.json orders the tests (longest
@@ -234,7 +234,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: integration-shard-*
           path: shards
@@ -248,12 +248,16 @@ jobs:
         env:
           HAS_DATA: ${{ secrets.GS_TEST_DATA_TOKEN != '' }}
         run: |
-          n=$(ls shards/*/it-shard.log 2>/dev/null | wc -l)
           if [ "$HAS_DATA" != "true" ]; then
             echo "have=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No test data (no token): contracts skipped"
             exit 0
           fi
+          # Count with a glob, not `ls | wc -l`: with no logs, ls exits 2 and
+          # pipefail would fail the step before it reports anything.
+          shopt -s nullglob
+          logs=(shards/*/it-shard.log)
+          n=${#logs[@]}
           if [ "$n" -ne 4 ]; then
             echo "::error::expected 4 shard logs (the integration matrix), found $n"
             ls -R shards || true

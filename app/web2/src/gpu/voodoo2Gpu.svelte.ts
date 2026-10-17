@@ -61,6 +61,9 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
         deviceReady = true;
         resolve(true);
       } else if (m.type === 'unavailable') {
+        // Not an error: only the Voodoo2's GPU mode needs WebGPU, and its
+        // absence just withholds that option.  Logged for bug reports.
+        console.info(`[voodoo2-gpu] WebGPU unavailable: ${m.reason ?? 'no reason given'}`);
         resolve(false);
       } else if (m.type === 'mode') {
         gpuOverlay.visible = !!m.engaged;
