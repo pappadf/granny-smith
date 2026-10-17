@@ -79,24 +79,72 @@ void scheduler_set_turbo_slice(double secs) {
     g_turbo_slice_secs = (isnan(secs) || secs < 0.0) ? 0.0 : secs;
 }
 
-// Adaptive governor (accelerated mode with scheduler.speed = auto). AIMD on a
-// quantized speed ladder: additive rung-up only after dwelling at the current
-// speed (the slew limit — instruction-counted guest delays calibrated at
-// one speed must not be replayed at a glided-away one), multiplicative
-// rung-down (each rung is ~x1.5) as soon as sustained utilization threatens
-// the real-time deadline. Utilization = host seconds spent emulating one
-// frame-unit / MAC_VBL_PERIOD; overrunning it stalls the paced accumulator,
-// which surfaces as audio underruns and stutter — hence the headroom target.
-#define GOV_UTIL_TARGET  0.80 // climb only if the *projected* post-climb utilization stays below this
-#define GOV_UTIL_CEILING 0.90 // sustained above → back off one rung
-#define GOV_DWELL_SECS   2.0 // minimum residence at a rung before climbing
-#define GOV_HOLDOFF_SECS 1.0 // after a back-off, no climb attempts for this long
-#define GOV_AUDIO_LOW    0.5 // audio ring below half its target depth = pressure (optional signal)
+// Adaptive speed governor (paced and accelerated with scheduler.speed =
+// auto). AIMD on a quantized speed ladder: additive rung-up only after
+// dwelling at the current speed (the slew limit — instruction-counted guest
+// delays calibrated at one speed must not be replayed at a glided-away one),
+// multiplicative rung-down (each rung is ~x1.5) as soon as sustained
+// utilization threatens the real-time deadline. Utilization = host seconds
+// spent emulating one frame-unit / MAC_VBL_PERIOD; overrunning it stalls the
+// paced accumulator, which surfaces as audio underruns and stutter — hence
+// the headroom target.  Below 1x the same loop is what keeps a host that
+// cannot emulate a whole frame-unit per VBL period on the real-time clock:
+// fewer instructions per frame-unit, the frame-units themselves on time.
+#define GOV_UTIL_TARGET     0.85 // climb (or land a back-off) only where the *projected* utilization stays below this
+#define GOV_UTIL_CEILING    0.90 // no climb attempts while the smoothed utilization sits above this
+#define GOV_DWELL_SECS      2.0 // minimum residence at a rung before climbing, at and above 1x
+#define GOV_DWELL_SLOW_SECS 0.5 // ...and below 1x, where getting back to the authentic speed is the point
+#define GOV_HOLDOFF_SECS    1.0 // after a back-off, no climb attempts for this long
+#define GOV_AUDIO_LOW       0.5 // audio ring below half its target depth = draining (optional signal)
+// A draining ring blocks climbing at once, but backs the guest off only once
+// it has stayed below for this long: the ring also sits below half while it
+// fills from empty at a sound's start and while it drains at a sound's end
+// (the signal stays live for half a second after the last push), neither of
+// which a slower guest CPU would help.  A real overload shows up first in
+// the accumulator anyway; this is the safety net behind it.
+#define GOV_AUDIO_SECS 0.75
+// Utilization EWMA gains: pressure registers fast, relief a little slower.
+#define GOV_EWMA_UP   0.35
+#define GOV_EWMA_DOWN 0.25
+// Largest utilization one sample may feed the EWMA.  A sample past this says
+// only "far over" -- the back-off lands by projection, and 0.85 / 2 already
+// lands below the lowest rung -- and unclipped, one hitch drove the EWMA so
+// high that it took the decay many ticks to come back under the ceiling.
+#define GOV_UTIL_SAMPLE_MAX 2.0
+// A back-off needs the host to be *behind* real time: the paced accumulator
+// capped at PACED_MAX_CATCHUP with the debt still growing on this many
+// consecutive governor ticks, or for this long of consecutive host time --
+// whichever comes first.  One capped
+// tick is a hitch the next tick or two repay -- the JIT translating a fresh
+// page, a disk burst; three in a row, at the 50-100 ms a capped tick lasts
+// on a somewhat overloaded host, is a quarter second of lagging, which is
+// what breaks sound up; on a badly overloaded host (the interpreter in
+// early boot) a capped tick alone lasts several hundred ms, and the time
+// bound keeps the reaction at a fraction of a second there too.  Being
+// behind counts only while the frame loop's own cost is a real share of the
+// budget: a host whose *ticks* are slow (a 10 Hz RAF, a throttled tab) caps
+// the accumulator too, and a slower guest CPU helps nothing there.
+// When the frame loop *alone* is already over the budget (EWMA above
+// GOV_UTIL_OVER), the first behind tick is enough: that is not a hitch the
+// next bursts repay but the host unable to fit even one frame-unit per VBL
+// -- the interpreter under the boot chime -- and every further tick at this
+// speed is audible.  A lone over-budget tick does not get the EWMA there
+// (0.3 -> 0.9 on a clipped sample), two in a row with the accumulator still
+// catching up do not count as behind.
+#define GOV_BACKOFF_TICKS 3
+#define GOV_BACKOFF_SECS  0.25
+#define GOV_UTIL_RELEVANT 0.5
+#define GOV_UTIL_OVER     1.0
 
-// Quantized speed steps (x256): 1x, 1.5x, 2x, 3x, 4x, 6x, 8x. Rung 0 is the
-// authentic floor — the mode never runs the guest slower than real hardware.
-static const uint32_t gov_ladder_x256[] = {256, 384, 512, 768, 1024, 1536, 2048};
+// Quantized speed steps (x256): 0.25x, 0.375x, 0.5x, 0.625x, 0.75x, 0.875x,
+// 1x, 1.5x, 2x, 3x, 4x, 6x, 8x -- every value exact in x256.  Eighths below
+// 1x, so a host that falls short runs the guest close to what it can do;
+// ~1.33-1.5 apart above it.  Rung GOV_RUNG_ONE is the authentic speed: where
+// every reset starts, paced mode's ceiling, and the floor unless the host
+// falls behind.
+static const uint32_t gov_ladder_x256[] = {64, 96, 128, 160, 192, 224, 256, 384, 512, 768, 1024, 1536, 2048};
 #define GOV_NUM_RUNGS ((int)(sizeof(gov_ladder_x256) / sizeof(gov_ladder_x256[0])))
+#define GOV_RUNG_ONE  6 // the ladder's ends are SPEED_X256_MIN / _MAX and this rung 1x (checked in scheduler_init)
 
 // Host-timing estimators (paced main loop): weight of the newest sample in
 // the exponentially weighted moving averages of the host loop period and the
@@ -142,35 +190,93 @@ static inline uint32_t min_u32(uint32_t a, uint32_t b) {
 }
 
 // Returns the per-machine cycles-per-instruction constant (mode-independent).
-// This is the *authentic* CPI — invariant tolerances and event-restore checks
-// key off it because the effective CPI below never exceeds it.
+// This is the *authentic* CPI; the effective CPI the sprints run on is
+// derived from it and the speed in force.
 static inline uint32_t avg_cycles_per_instr(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     return s->saved.cpi;
 }
 
-// The speed multiplier (x256) accelerated mode runs at right now: the pinned
-// setting if one is set, else the governor's current rung — clamped to the
-// user cap either way.
+// The largest effective CPI (x256) any speed can derive from an authentic
+// one: the governor's floor, SPEED_X256_MIN, raises it by 256/SPEED_X256_MIN.
+static inline uint32_t cpi_eff_x256_max(uint32_t cpi) {
+    return (cpi << 8) * (SPEED_X256_ONE / SPEED_X256_MIN);
+}
+
+// How far past a due event one sprint may run, in cycles: one instruction,
+// at whichever CPI is larger -- the authentic one the invariants were written
+// against, or the effective one the sprint is actually sized in, which the
+// governor can raise above it.  Rounded up: the effective CPI is fractional.
+// Only the asserts read it, so GS_FAST (which compiles them out) has no
+// caller and -Werror=unused-function would reject the definition.
+#ifndef GS_FAST
+static inline uint32_t max_overshoot_cycles(struct scheduler *s) {
+    uint32_t eff = (s->cpi_eff_x256 + 255) >> 8;
+    uint32_t cpi = avg_cycles_per_instr(s);
+    return eff > cpi ? eff : cpi;
+}
+#endif
+
+// Whether the governor is choosing the speed: an auto speed in a mode whose
+// frame-units are aligned to the host clock.  Turbo aligns nothing, and a
+// pinned speed is the user's fixed choice.
+static bool gov_active(const struct scheduler *s) {
+    return s->pacing.speed_x256 == SPEED_X256_AUTO &&
+           (s->pacing.mode == schedule_paced || s->pacing.mode == schedule_accelerated);
+}
+
+// The governor's range on the ladder under the current pacing: the lowest
+// rung at or above the floor, and the highest rung at or below the cap --
+// the cap being 1x in paced mode, whose CPU never runs faster than the
+// original.  lo <= GOV_RUNG_ONE <= hi always holds (the floor is clamped to
+// at most 1x, the cap to at least 1x).
+static void gov_rung_bounds(const struct scheduler *s, int *lo, int *hi) {
+    int l = GOV_RUNG_ONE;
+    while (l > 0 && gov_ladder_x256[l - 1] >= s->pacing.min_speed_x256)
+        l--;
+    int h = GOV_RUNG_ONE;
+    if (s->pacing.mode == schedule_accelerated)
+        while (h + 1 < GOV_NUM_RUNGS && gov_ladder_x256[h + 1] <= s->pacing.max_speed_x256)
+            h++;
+    *lo = l;
+    *hi = h;
+}
+
+// The speed multiplier (x256) the CPU runs at right now under paced or
+// accelerated pacing: the pinned setting if one is set (1x in paced, where a
+// pin is inert), else the governor's current rung — clamped to the user's
+// floor and cap either way.
 uint32_t scheduler_current_speed_x256(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->gov_rung >= 0 && s->gov_rung < GOV_NUM_RUNGS);
-    uint32_t sp = (s->pacing.speed_x256 != SPEED_X256_AUTO) ? s->pacing.speed_x256 : gov_ladder_x256[s->gov_rung];
+    uint32_t sp;
+    if (s->pacing.speed_x256 != SPEED_X256_AUTO) {
+        // A pin: the accelerated multiplier, never below authentic
+        sp = (s->pacing.mode == schedule_accelerated) ? s->pacing.speed_x256 : SPEED_X256_ONE;
+        if (sp < SPEED_X256_ONE)
+            sp = SPEED_X256_ONE;
+    } else {
+        sp = gov_ladder_x256[s->gov_rung];
+        if (sp < s->pacing.min_speed_x256)
+            sp = s->pacing.min_speed_x256;
+    }
     if (sp > s->pacing.max_speed_x256)
         sp = s->pacing.max_speed_x256;
-    if (sp < SPEED_X256_ONE)
-        sp = SPEED_X256_ONE;
+    if (s->pacing.mode != schedule_accelerated && sp > SPEED_X256_ONE)
+        sp = SPEED_X256_ONE; // paced tops out at the original's speed
     return sp;
 }
 
 // Re-derive the effective CPI (x256) from mode, authentic CPI and the current
 // speed (pinned or governed), and clear the sub-cycle remainder so no
 // fractional carry leaks across a mode/CPI/speed change. The effective CPI
-// equals the authentic CPI everywhere except accelerated mode, where it is
-// lowered — never raised — so more instructions fit in the same (real-time)
-// cycle budget. Holding the cycle rate and tuning CPI is what keeps every
-// cycle-derived peripheral clock (VIA φ2, sound scan, SCC fallback) real-time
-// for free.
+// equals the authentic CPI at 1x; accelerated mode lowers it so more
+// instructions fit in the same (real-time) cycle budget, and the governor
+// raises it -- in paced and accelerated alike -- when the host cannot emulate
+// a whole frame-unit per VBL period, so fewer instructions fit and the
+// frame-units stay on time. Holding the cycle rate and tuning CPI is what
+// keeps every cycle-derived peripheral clock (VIA φ2, sound scan, SCC
+// fallback) real-time for free, in both directions.
 //
 // Only between sprints: current_cpu_cycles derives mid-sprint "now" from the
 // slots run so far times cpi_eff_x256 plus cycle_frac_x256, so changing
@@ -183,14 +289,15 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     GS_ASSERT(s->saved.cpi > 0);
     GS_ASSERTF(s->sprint_total == 0, "effective CPI changed mid-sprint (%u slots planned)", s->sprint_total);
     uint32_t eff = s->saved.cpi << 8;
-    if (s->pacing.mode == schedule_accelerated) {
+    if (s->pacing.mode != schedule_unthrottled) {
         uint32_t sp = scheduler_current_speed_x256(s);
-        if (sp > SPEED_X256_ONE) {
+        if (sp != SPEED_X256_ONE) {
             eff = (uint32_t)(((uint64_t)s->saved.cpi << 16) / sp);
             if (eff == 0)
                 eff = 1; // never a zero divisor (cpi 1 at the 8x cap is still 32)
         }
     }
+    GS_ASSERT(eff <= cpi_eff_x256_max(s->saved.cpi));
     s->cpi_eff_x256 = eff;
     s->cycle_frac_x256 = 0;
     // The effective speed changed (a governor step, a pin, a mode switch):
@@ -206,38 +313,78 @@ void scheduler_announce_speed(struct scheduler *s) {
     event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)s->speed_reported_x256);
 }
 
-// Reset the adaptive governor to the authentic floor with fresh estimators.
-// Called wherever its measurements go stale: mode switches, pin/unpin, cap
-// changes, init and checkpoint restore — the controller re-learns the host's
-// headroom from scratch rather than acting on stale utilization.
+// Reset the adaptive governor to the authentic speed with fresh estimators.
+// Called wherever its measurements go stale: mode switches, pin/unpin, floor
+// and cap changes, init and checkpoint restore — the controller re-learns the
+// host's headroom from scratch rather than acting on stale utilization.
 static void scheduler_governor_reset(struct scheduler *s) {
     GS_ASSERT(s != NULL);
-    s->gov_rung = 0;
+    s->gov_rung = GOV_RUNG_ONE;
     s->gov_util_ewma = 0.0;
     s->gov_dwell_secs = 0.0;
     s->gov_holdoff_secs = 0.0;
+    s->gov_pressure_ticks = 0;
+    s->gov_pressure_secs = 0.0;
+    s->gov_audio_secs = 0.0;
+    s->gov_primed = false;
 }
 
-// One adaptive-governor evaluation (accelerated mode, speed = auto). Fed from
-// the paced main loop with the measured host cost of one frame-unit and the
-// elapsed host time since the previous tick. AIMD on the quantized ladder:
-//   - back off one rung immediately when sustained utilization crosses the
-//     ceiling or the (optional) audio ring drains below half target — the
-//     multiplicative decrease that keeps a spike from becoming a spiral;
-//   - climb one rung only after GOV_DWELL_SECS of residence, outside the
-//     post-back-off holdoff, and only if the utilization *projected* at the
-//     next rung stays under the target — the slew limit required so
-//     instruction-counted guest delays see a stable speed, plus headroom.
+// One adaptive-governor evaluation (paced or accelerated, speed = auto). Fed
+// from the paced main loop with the measured host cost of one frame-unit, the
+// elapsed host time since the previous tick, and whether the paced
+// accumulator is *behind* real time (a capped burst that still left the debt
+// growing). AIMD on the quantized ladder:
+//   - back off once the host has fallen behind on GOV_BACKOFF_TICKS
+//     consecutive ticks or for GOV_BACKOFF_SECS of consecutive host time
+//     while the frame loop itself is a real share of the budget (EWMA above
+//     GOV_UTIL_RELEVANT) -- on the first such tick where the frame loop
+//     alone is over the budget (above GOV_UTIL_OVER) -- or the audio ring
+//     has drained for GOV_AUDIO_SECS,
+//     straight to the highest rung the measurement projects under the target
+//     -- the multiplicative decrease that keeps a spike from becoming a
+//     spiral, without a lone hitch costing anything;
+//   - climb only after the dwell (GOV_DWELL_SECS at and above 1x,
+//     GOV_DWELL_SLOW_SECS below it), outside the post-back-off holdoff, with
+//     no pressure and the EWMA under the ceiling, and only as far as the
+//     utilization *projected* at the rung climbed to stays under the target
+//     -- the slew limit required so instruction-counted guest delays see a
+//     stable speed, plus headroom.
+// Below 1x a climb goes straight to the highest rung projected under the
+// target, up to the authentic speed: the governor *starts* at the floor on
+// its first tick (a fresh boot, a pacing change) and the first dwell there
+// shows what fits, so a host that keeps up is at 1x after one dwell and a
+// host that cannot never ran 1x at all -- the boot chime on an interpreter
+// is the case: at 1x the first bursts run late before anything is known.
+// Above 1x it stays one rung per dwell.  The ladder's resting rung is 1x
+// until that first tick, which is what keeps the headless pump (no main
+// loop, no governor ticks) at the authentic CPI.
 // The utilization EWMA is rescaled on every step (utilization is proportional
 // to instructions per frame), so the estimator stays meaningful across steps.
-static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs) {
+static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs, bool behind) {
     GS_ASSERT(s != NULL);
-    GS_ASSERT(s->pacing.mode == schedule_accelerated && s->pacing.speed_x256 == SPEED_X256_AUTO);
+    GS_ASSERT(gov_active(s));
+
+    if (!s->gov_primed) {
+        // First tick since the reset: drop to the floor and let the first
+        // dwell show what fits.  The sample just taken was at the resting
+        // rung; scale it to the one the estimator now tracks.
+        s->gov_primed = true;
+        int lo, hi;
+        gov_rung_bounds(s, &lo, &hi);
+        if (lo != s->gov_rung) {
+            host_secs_this_vbl *= (double)gov_ladder_x256[lo] / gov_ladder_x256[s->gov_rung];
+            s->gov_rung = lo;
+            s->gov_dwell_secs = 0.0;
+            scheduler_update_cpi_eff(s);
+        }
+    }
 
     // Utilization of the real-time frame budget, smoothed. Pressure registers
-    // fast (protect the deadline); optimism accumulates slowly.
+    // fast (protect the deadline); relief a little slower.
     double u = host_secs_this_vbl / MAC_VBL_PERIOD;
-    double alpha = (u > s->gov_util_ewma) ? 0.35 : 0.10;
+    if (u > GOV_UTIL_SAMPLE_MAX)
+        u = GOV_UTIL_SAMPLE_MAX;
+    double alpha = (u > s->gov_util_ewma) ? GOV_EWMA_UP : GOV_EWMA_DOWN;
     s->gov_util_ewma += alpha * (u - s->gov_util_ewma);
 
     s->gov_dwell_secs += elapsed_secs;
@@ -249,25 +396,56 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     // exist (headless, audio idle). A draining ring means the deadline is
     // already being missed where it hurts first.
     double fill = platform_audio_ring_fill();
-    bool audio_pressure = (fill >= 0.0 && fill < GOV_AUDIO_LOW);
+    bool audio_low = (fill >= 0.0 && fill < GOV_AUDIO_LOW);
+    s->gov_audio_secs = audio_low ? s->gov_audio_secs + elapsed_secs : 0.0;
 
-    // Highest rung the user cap allows
-    int max_rung = 0;
-    while (max_rung + 1 < GOV_NUM_RUNGS && gov_ladder_x256[max_rung + 1] <= s->pacing.max_speed_x256)
-        max_rung++;
+    // Pressure = behind real time with the frame loop a real share of the
+    // budget (a slow host *tick* with a cheap frame loop is not the guest's
+    // fault), or the audio ring drained for long enough to be overload rather
+    // than a sound starting or ending. Counted in consecutive ticks so a lone
+    // hitch never triggers, and in host time so a badly overloaded host (few,
+    // long ticks) is answered just as promptly.
+    bool pressure = (behind && s->gov_util_ewma > GOV_UTIL_RELEVANT) || s->gov_audio_secs >= GOV_AUDIO_SECS;
+    s->gov_pressure_ticks = pressure ? s->gov_pressure_ticks + 1 : 0;
+    s->gov_pressure_secs = pressure ? s->gov_pressure_secs + elapsed_secs : 0.0;
+
+    // The rungs the floor and the cap allow under this pacing
+    int min_rung, max_rung;
+    gov_rung_bounds(s, &min_rung, &max_rung);
 
     int new_rung = s->gov_rung;
-    if ((s->gov_util_ewma > GOV_UTIL_CEILING || audio_pressure) && new_rung > 0) {
-        new_rung--; // back off fast
+    bool over = behind && s->gov_util_ewma > GOV_UTIL_OVER; // the frame loop alone does not fit
+    if ((s->gov_pressure_ticks >= GOV_BACKOFF_TICKS || s->gov_pressure_secs >= GOV_BACKOFF_SECS || over) &&
+        new_rung > min_rung) {
+        // Back off to the highest rung projected under the target -- at
+        // least one rung, since the host said this one does not fit
+        new_rung--;
+        while (new_rung > min_rung &&
+               s->gov_util_ewma * (double)gov_ladder_x256[new_rung] / gov_ladder_x256[s->gov_rung] >= GOV_UTIL_TARGET)
+            new_rung--;
+        s->gov_pressure_ticks = 0;
+        s->gov_pressure_secs = 0.0;
+        s->gov_audio_secs = 0.0;
         s->gov_holdoff_secs = GOV_HOLDOFF_SECS;
-    } else if (new_rung < max_rung && s->gov_holdoff_secs <= 0.0 && s->gov_dwell_secs >= GOV_DWELL_SECS) {
-        // Climb only with headroom at the *next* rung, not just the current one
-        double projected = s->gov_util_ewma * (double)gov_ladder_x256[new_rung + 1] / gov_ladder_x256[new_rung];
-        if (projected < GOV_UTIL_TARGET)
-            new_rung++;
+    } else if (!pressure && !audio_low && s->gov_util_ewma < GOV_UTIL_CEILING && new_rung < max_rung &&
+               s->gov_holdoff_secs <= 0.0 &&
+               s->gov_dwell_secs >= (new_rung < GOV_RUNG_ONE ? GOV_DWELL_SLOW_SECS : GOV_DWELL_SECS)) {
+        // Climb only with headroom at the rung climbed to, not just the
+        // current one: below 1x as far as the authentic speed in one step,
+        // above it one rung
+        int reach = new_rung < GOV_RUNG_ONE ? GOV_RUNG_ONE : new_rung + 1;
+        if (reach > max_rung)
+            reach = max_rung;
+        for (int r = new_rung + 1; r <= reach; r++) {
+            if (s->gov_util_ewma * (double)gov_ladder_x256[r] / gov_ladder_x256[s->gov_rung] >= GOV_UTIL_TARGET)
+                break;
+            new_rung = r;
+        }
     }
     if (new_rung > max_rung)
         new_rung = max_rung; // cap lowered mid-run
+    if (new_rung < min_rung)
+        new_rung = min_rung; // floor raised mid-run
 
     if (new_rung != s->gov_rung) {
         // Rescale the estimator to the new speed and require a fresh dwell
@@ -323,15 +501,16 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
                    s->pacing.mode == schedule_accelerated,
                "[%s] invalid mode (%d)", context, s->pacing.mode);
 
-    // Effective CPI: derived, nonzero, and never above the authentic CPI
-    GS_ASSERTF(s->cpi_eff_x256 > 0 && s->cpi_eff_x256 <= (s->saved.cpi << 8), "[%s] cpi_eff_x256 out of range (%u)",
-               context, s->cpi_eff_x256);
+    // Effective CPI: derived, nonzero, and never above what the governor's
+    // floor can raise the authentic CPI to
+    GS_ASSERTF(s->cpi_eff_x256 > 0 && s->cpi_eff_x256 <= cpi_eff_x256_max(s->saved.cpi),
+               "[%s] cpi_eff_x256 out of range (%u)", context, s->cpi_eff_x256);
     GS_ASSERTF(s->cycle_frac_x256 < 256, "[%s] cycle_frac_x256 out of range (%u)", context, s->cycle_frac_x256);
 
-    // Event queue: first event must not be too far in the past (allow CPI overshoot)
+    // Event queue: first event must not be too far in the past (allow one instruction's overshoot)
     if (s->cpu_events != NULL) {
         uint64_t now = current_cpu_cycles(s);
-        uint32_t max_past = avg_cycles_per_instr(s);
+        uint32_t max_past = max_overshoot_cycles(s);
         GS_ASSERTF(s->cpu_events->timestamp + max_past >= now, "[%s] first event too far in past: ts=%llu now=%llu",
                    context, (unsigned long long)s->cpu_events->timestamp, (unsigned long long)now);
     }
@@ -403,7 +582,7 @@ static inline void validate_cpu_events(struct scheduler *s) {
 static void validate_cpu_events(struct scheduler *s) {
     GS_ASSERT(s != NULL);
 
-    uint32_t max_past = avg_cycles_per_instr(s);
+    uint32_t max_past = max_overshoot_cycles(s);
     uint64_t prev_ts = 0;
     int count = 0;
 
@@ -786,7 +965,10 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     // Derive the transient governor + effective-CPI state (fresh boot and
     // restore alike — neither is checkpointed) before anything can size a
-    // sprint or read cycles.
+    // sprint or read cycles.  The ladder's shape is what the speed bounds
+    // and GOV_RUNG_ONE assume.
+    GS_ASSERT(gov_ladder_x256[GOV_RUNG_ONE] == SPEED_X256_ONE && gov_ladder_x256[0] == SPEED_X256_MIN &&
+              gov_ladder_x256[GOV_NUM_RUNGS - 1] == SPEED_X256_MAX);
     scheduler_governor_reset(s);
     scheduler_update_cpi_eff(s);
 
@@ -976,10 +1158,12 @@ void scheduler_restore_events(struct scheduler *restrict s, checkpoint_t *checkp
             checkpoint_set_error(checkpoint);
             break;
         }
-        // The documented invariant: timestamp + CPI >= cpu_cycles (so an
-        // event that legitimately fired on the same cycle the checkpoint was
-        // taken can still be restored).
-        if (saved.timestamp + avg_cycles_per_instr(s) < s->saved.cpu_cycles) {
+        // The documented invariant: timestamp + one instruction >= cpu_cycles
+        // (so an event that legitimately fired on the same cycle the
+        // checkpoint was taken can still be restored).  The instruction is
+        // measured at the largest effective CPI the saving machine could
+        // have run at: its speed is host state the checkpoint does not carry.
+        if (saved.timestamp + (cpi_eff_x256_max(avg_cycles_per_instr(s)) >> 8) < s->saved.cpu_cycles) {
             LOG(0, "Error: checkpoint's '%s.%s' event is due at cycle %llu, before the saved clock (%llu)",
                 saved.source_name, saved.event_name, (unsigned long long)saved.timestamp,
                 (unsigned long long)s->saved.cpu_cycles);
@@ -1331,28 +1515,38 @@ __attribute__((weak)) host_pacing_t *platform_pacing(void) {
     return &pacing;
 }
 
-// A speed multiplier clamped to [1x, 8x], as x256 fixed point.
-static uint32_t speed_x256_clamped(double multiplier) {
+// A speed multiplier clamped to [lo, hi] (x256), as x256 fixed point.
+static uint32_t speed_x256_clamped(double multiplier, uint32_t lo, uint32_t hi) {
     double clamped = multiplier;
-    if (clamped < (double)SPEED_X256_ONE / 256.0)
-        clamped = (double)SPEED_X256_ONE / 256.0;
-    if (clamped > (double)SPEED_X256_MAX / 256.0)
-        clamped = (double)SPEED_X256_MAX / 256.0;
+    if (clamped < (double)lo / 256.0)
+        clamped = (double)lo / 256.0;
+    if (clamped > (double)hi / 256.0)
+        clamped = (double)hi / 256.0;
     return (uint32_t)(clamped * 256.0 + 0.5);
 }
 
-// Pin the accelerated speed (0 = auto, the governor picks).
+// Pin the accelerated speed (0 = auto, the governor picks), 1x..8x.
 void host_pacing_set_speed(host_pacing_t *p, double multiplier) {
     if (!p || isnan(multiplier))
         return;
-    p->speed_x256 = (multiplier == 0.0) ? SPEED_X256_AUTO : speed_x256_clamped(multiplier);
+    p->speed_x256 =
+        (multiplier == 0.0) ? SPEED_X256_AUTO : speed_x256_clamped(multiplier, SPEED_X256_ONE, SPEED_X256_MAX);
 }
 
-// Cap the accelerated speed (the governor's ceiling; a pin is clamped to it).
+// Floor the governor (how far it may slow an overloaded host's guest),
+// 0.25x..1x; 1x keeps the guest at the authentic speed whatever the host does.
+void host_pacing_set_min_speed(host_pacing_t *p, double multiplier) {
+    if (!p || isnan(multiplier))
+        return;
+    p->min_speed_x256 = speed_x256_clamped(multiplier, SPEED_X256_MIN, SPEED_X256_ONE);
+}
+
+// Cap the accelerated speed (the governor's ceiling; a pin is clamped to it),
+// 1x..8x.
 void host_pacing_set_max_speed(host_pacing_t *p, double multiplier) {
     if (!p || isnan(multiplier))
         return;
-    p->max_speed_x256 = speed_x256_clamped(multiplier);
+    p->max_speed_x256 = speed_x256_clamped(multiplier, SPEED_X256_ONE, SPEED_X256_MAX);
 }
 
 // Run under the host's pacing from now on.  Nothing to do when it is what
@@ -1361,7 +1555,7 @@ void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *p
     if (!s || !pacing)
         return;
     if (s->pacing.mode == pacing->mode && s->pacing.speed_x256 == pacing->speed_x256 &&
-        s->pacing.max_speed_x256 == pacing->max_speed_x256)
+        s->pacing.min_speed_x256 == pacing->min_speed_x256 && s->pacing.max_speed_x256 == pacing->max_speed_x256)
         return;
     if (s->pacing.mode != pacing->mode) {
         // Estimator hygiene: reset the pacing estimators on every mode switch
@@ -1373,22 +1567,23 @@ void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *p
         s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
     }
     s->pacing = *pacing;
-    // Entering or leaving accelerated, or changing its speed, symmetrically
-    // re-derives the effective CPI and clears the sub-cycle remainder, so no
-    // accelerated-mode speed leaks into paced/unthrottled (or vice versa).
-    // The governor restarts from the authentic floor with fresh estimators.
+    // Any change of mode, speed, floor or cap symmetrically re-derives the
+    // effective CPI and clears the sub-cycle remainder, so no governed or
+    // accelerated speed leaks across the change.  The governor restarts from
+    // the authentic speed with fresh estimators.
     scheduler_governor_reset(s);
     scheduler_update_cpi_eff(s);
 }
 
 // The speed multiplier actually applied to the CPU right now, x256 fixed point
-// (256 = 1x = authentic). This is 1x in paced/unthrottled and, in accelerated
-// mode, the live multiplier (pinned or the governor's current rung). It is
-// what a UI should display as "how much faster than the original this CPU is
+// (256 = 1x = authentic). This is 1x in unthrottled; in paced the governor's
+// pick (1x unless the host fell behind); in accelerated mode the live
+// multiplier (pinned or the governor's current rung). It is what a UI should
+// display as "how much faster (or slower) than the original this CPU is
 // running" — a slowly-varying, core-driven signal (the governor steps it on a
 // ≥2 s dwell), suited to a push-on-change notification rather than polling.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s) {
-    if (!s || s->pacing.mode != schedule_accelerated)
+    if (!s || s->pacing.mode == schedule_unthrottled)
         return SPEED_X256_ONE;
     return scheduler_current_speed_x256(s);
 }
@@ -1459,11 +1654,17 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             // skip past (and clear) that window, dropping the heartbeat.
             cpu->poll_interrupt(cpu->ctx);
             if (cpu->is_stopped(cpu->ctx)) { // still halted: sleep until the next event
-                if (s->cpu_events == NULL)
-                    break; // nothing scheduled can ever wake it; end the run
-                uint64_t cte = (s->cpu_events->timestamp > s->saved.cpu_cycles)
-                                   ? (s->cpu_events->timestamp - s->saved.cpu_cycles)
-                                   : 0;
+                // With nothing queued, sleep out the budget instead: the
+                // frame then completes and the next one pulses the VBL,
+                // which is what wakes a STOP'd Mac whose queue has run dry.
+                // Ending the run here left the frame open (advanced == 0,
+                // frame_cycles_left unchanged), so no VBL ever came and the
+                // machine stood still while reporting running.
+                uint64_t cte = remaining_cycles;
+                if (s->cpu_events != NULL)
+                    cte = (s->cpu_events->timestamp > s->saved.cpu_cycles)
+                              ? (s->cpu_events->timestamp - s->saved.cpu_cycles)
+                              : 0;
                 uint64_t advance = min_u64(cte, remaining_cycles);
                 remaining_cycles -= advance;
                 s->saved.cpu_cycles += advance;
@@ -1571,10 +1772,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // that is the bound that matters, so it is checked on the slots
         // themselves.  The plan is at most one instruction (the round-up of a
         // sub-instruction remainder, or a debugger single-step) past the
-        // clamped cycle budget, so cycles overshoot by under one CPI.
+        // clamped cycle budget, so cycles overshoot by under one effective CPI.
         GS_ASSERTF(executed_slots <= instr_to_exec, "sprint ran %u slots, planned %u", executed_slots, instr_to_exec);
         if (s->cpu_events != NULL) {
-            GS_ASSERT(executed_cycles <= cycles_to_execute + avg_cycles_per_instr(s));
+            GS_ASSERT(executed_cycles <= cycles_to_execute + max_overshoot_cycles(s));
         }
 
         s->saved.total_instructions += (executed_slots > phantom) ? (executed_slots - phantom) : 0;
@@ -1591,10 +1792,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         s->saved.cpu_cycles += executed_cycles;
 
         // Verify event queue integrity after advancing cycles.  Relaxed by
-        // one CPI: the sprint may have overshot a due event by part of an
-        // instruction, and that event has not fired yet.
+        // one instruction: the sprint may have overshot a due event by part
+        // of one, and that event has not fired yet.
         if (s->cpu_events != NULL) {
-            GS_ASSERT(s->cpu_events->timestamp + avg_cycles_per_instr(s) >= s->saved.cpu_cycles);
+            GS_ASSERT(s->cpu_events->timestamp + max_overshoot_cycles(s) >= s->saved.cpu_cycles);
         }
 
         // Handle debugger single-step
@@ -1707,6 +1908,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     GS_ASSERT(!isnan(s->host_secs_per_loop));
 
     int vbls_to_execute = 0;
+    bool behind = false; // paced accumulator still owes frame-units after a capped burst
     s->previous_time = now;
 
     switch (s->pacing.mode) {
@@ -1743,6 +1945,13 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
             if (vbls_to_execute > PACED_MAX_CATCHUP)
                 vbls_to_execute = PACED_MAX_CATCHUP;
             s->vbl_acc_error -= vbls_to_execute * MAC_VBL_PERIOD;
+            // Behind real time: the capped burst left more than the saturated
+            // debt owed, i.e. this tick the host fell a further whole
+            // frame-unit behind.  The governor's cue -- under overload the
+            // host's tick comes late and the accumulator pins at the cap.
+            // (A steady owed remainder below that is a constant lag the host
+            // is holding, not a growing one: not a cue.)
+            behind = s->vbl_acc_error >= (PACED_MAX_CATCHUP + 1) * MAC_VBL_PERIOD;
             // Saturate the debt a sustained-slow host can accumulate: the
             // emulator lags real time by at most one capped burst instead of
             // banking unbounded catch-up work (the death spiral).
@@ -1779,10 +1988,16 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     else
         s->host_secs_per_vbl = s->host_secs_per_vbl * (1.0 - HOST_EWMA_ALPHA) + (delta * HOST_EWMA_ALPHA) / denom;
 
-    // Adaptive governor: accelerated mode with speed = auto learns the host's
-    // headroom from the measured per-frame emulation cost. Evaluated only on
-    // ticks that actually ran frame-units (no new cost sample otherwise) —
-    // and never on the headless path, which doesn't come through this loop.
-    if (s->pacing.mode == schedule_accelerated && s->pacing.speed_x256 == SPEED_X256_AUTO && executed_vbls > 0)
-        scheduler_governor_tick(s, delta / denom, current_period);
+    // Adaptive governor: paced and accelerated with speed = auto learn the
+    // host's headroom from the measured per-frame emulation cost. Evaluated
+    // only on ticks that actually ran frame-units (no new cost sample
+    // otherwise) — and never on the headless path, which doesn't come
+    // through this loop.  Whether the host keeps up comes from the paced
+    // accumulator (behind = a capped burst still left frame-units owed); the
+    // measurement is the frame loop's own cost, on purpose: a slow host
+    // *tick* (a busy page, a throttled tab) is debt the accumulator catches
+    // up, not load a slower guest CPU would relieve, and the cost is what
+    // tells the two apart.
+    if (gov_active(s) && executed_vbls > 0)
+        scheduler_governor_tick(s, delta / denom, current_period, behind);
 }

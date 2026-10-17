@@ -30,6 +30,7 @@
 
 import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
+import { gsEvalInPage } from "../helpers/web2-eval";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { terminalRun } from "../helpers/terminal";
 
@@ -181,6 +182,12 @@ test("record from the browser microphone in the Sound control panel", async ({
   await expect
     .poll(async () => probe(page, "machine.id"), { timeout: 30_000 })
     .toBe("q840av");
+
+  // The guest runs in real time from here and the GUI drives below are paced
+  // in guest ticks, so it must run at 1x: floor the adaptive governor there
+  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
+  // and every wait comes up short.
+  await gsEvalInPage(page, "scheduler.min_speed", [1]);
 
   // --- 2. Boot to the Finder, accelerated. ---------------------------------
   // Accelerated only for the boot: the microphone is a REAL-TIME stream, and a
