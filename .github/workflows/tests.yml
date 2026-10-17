@@ -112,13 +112,13 @@ jobs:
       - name: Run unit tests (wasm32)
         run: make -C tests/unit run-wasm32 WERROR=1
 
-      # The same suites through the other executor: the predecoded cores
-      # are the default (docs/internals/core/cpu/predecode.md),
-      # CPU_TEST_PREDECODE=0 routes the conformance vectors through the
-      # switch cores that remain the reference and the predecode.enabled=0
-      # fallback.
-      - name: Run unit tests (CPU, switch cores)
-        run: CPU_TEST_PREDECODE=0 make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
+      # The CPU suites through the other executor.  The harness runs the
+      # switch cores (the reference and the predecode.enabled=0 fallback)
+      # unless CPU_TEST_PREDECODE=1, so the run above covers them; this one
+      # routes every sprint through the predecoded cores, the emulator's
+      # default (docs/internals/core/cpu/predecode.md §6).
+      - name: Run unit tests (CPU, predecoded cores)
+        run: CPU_TEST_PREDECODE=1 make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
   # Every integration tier, as ONE longest-first -j pool, split across
   # runners.  tests/integration/test-weights.json orders the tests (longest
