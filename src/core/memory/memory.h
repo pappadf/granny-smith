@@ -292,6 +292,13 @@ extern uintptr_t *g_user_write; // user-mode write mapping
 // code-page mark strips its entries for the page like theirs.
 extern uintptr_t *g_mem_extra_write;
 
+// Arrays the installed globals do not name (a parked CPU's logical SoA
+// arrays, see ppc_mmu.c): a code-page mark calls the hook after stripping
+// the installed arrays, and the hook strips its own arrays' write entries
+// for the page with memory_zero_write_aliases.
+extern void (*g_mem_code_marked_hook)(const uint8_t *host_page);
+void memory_zero_write_aliases(uintptr_t *arr, const uint8_t *host_page);
+
 // SoA population tracking: the selected map lists the page indices written
 // into the SoA arrays since the last invalidation.  Every writer of a
 // fast-path entry outside a plain layout fill calls tlb_track_page (after the

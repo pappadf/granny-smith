@@ -1481,6 +1481,12 @@ static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *ho
     }
 }
 
+void memory_zero_write_aliases(uintptr_t *arr, const uint8_t *host_page) {
+    zero_write_aliases(arr, 0, host_page);
+}
+
+void (*g_mem_code_marked_hook)(const uint8_t *host_page);
+
 void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
@@ -1495,6 +1501,8 @@ void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
     zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
     zero_write_aliases(g_mem_extra_write, 0, host_page);
+    if (g_mem_code_marked_hook)
+        g_mem_code_marked_hook(host_page); // arrays not installed now (a parked CPU's)
 }
 
 void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {

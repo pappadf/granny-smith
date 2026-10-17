@@ -81,7 +81,6 @@ typedef struct {
     uint32_t pa_page; // physical page base
     uint32_t w_ok; // store permitted with no walk side effects
 } xtlb_entry_t;
-static xtlb_entry_t g_xtlb[XTLB_SIZE];
 
 // Fetch cache: a one-page window (checked inline in ppc_run.c via the
 // extern below) backed by a small direct-mapped TLB of page→host maps.
@@ -100,8 +99,45 @@ typedef struct {
     uint16_t n[16];
     uint32_t over; // segments whose list overflowed
 } fill_track_t;
-static fill_track_t g_ut = {.over = 0xFFFFu}; // the user fills (conservative until the first invalidation)
-static fill_track_t g_svt = {.over = 0xFFFFu}; // the supervisor-translated fills
+
+// One core's translation state (ppc_internal.h).  A machine with one PPC has
+// exactly one, the primary context below, whose user SoA arrays are the
+// memory map's own g_user_read/g_user_write.  A peer core (the second 604 of
+// the dual-processor TNT boards) owns a second context with PRIVATE user
+// arrays: its logical fills are its own address space's.  The translation
+// TLB and the fill trackers are reached through the running context (the
+// macros below); everything else this file keeps in globals -- the fetch
+// window and TLB (whose address the JIT bakes into its code), the user and
+// supervisor-translated SoA arrays, the user write-ok array -- holds the
+// RUNNING core's, and ppc_mmu_activate parks and reinstalls it at burst
+// boundaries.
+struct ppc_mmu_ctx {
+    xtlb_entry_t xtlb[XTLB_SIZE];
+    fill_track_t ut; // the user fills (conservative until the first invalidation)
+    fill_track_t svt; // the supervisor-translated fills
+    // Parked copies of the globals while this context is not the running one.
+    ppc_ftlb_entry_t ftlb[PPC_FTLB_SIZE];
+    ppc_fetch_window_t fetch;
+    uintptr_t *user_read, *user_write;
+    uintptr_t *sv_read, *sv_write;
+    uint32_t sv_pages;
+    uintptr_t *user_wok;
+    uint32_t user_wok_pages;
+    // A peer context's private user arrays (owned, user_pages entries).
+    bool owns_user_arrays;
+    uint32_t user_pages;
+};
+
+#define PPC_MMU_MAX_CTX 4
+static ppc_mmu_ctx_t g_ctx_primary = {.ut = {.over = 0xFFFFu}, .svt = {.over = 0xFFFFu}};
+ppc_mmu_ctx_t *g_ppc_mmu_cur = &g_ctx_primary;
+static ppc_mmu_ctx_t *g_ctx_all[PPC_MMU_MAX_CTX] = {&g_ctx_primary};
+static int g_ctx_count = 1;
+
+// The running context's state, under the names the single-core code uses.
+#define g_xtlb (g_ppc_mmu_cur->xtlb)
+#define g_ut   (g_ppc_mmu_cur->ut)
+#define g_svt  (g_ppc_mmu_cur->svt)
 
 static inline void track_add(fill_track_t *t, uint32_t pg) {
     uint32_t sg = pg >> 16;
@@ -116,8 +152,8 @@ static inline void track_add(fill_track_t *t, uint32_t pg) {
 // translation tier reads it, so builds without one keep it NULL and skip
 // the upkeep.
 uintptr_t *g_ppc_user_wok;
-#ifdef __EMSCRIPTEN__
 static uint32_t g_ppc_user_wok_pages;
+#ifdef __EMSCRIPTEN__
 static void user_wok_clear_all(void) {
     if (g_ppc_user_wok)
         memset(g_ppc_user_wok, 0, (size_t)g_ppc_user_wok_pages * sizeof(uintptr_t));
@@ -249,6 +285,147 @@ static bool sv_soa_ready(ppc_t *p) {
     return true;
 }
 
+// ============================================================
+// Contexts
+// ============================================================
+
+ppc_mmu_ctx_t *ppc_mmu_ctx_primary(void) {
+    return &g_ctx_primary;
+}
+
+static void code_marked(const uint8_t *host_page);
+
+ppc_mmu_ctx_t *ppc_mmu_ctx_new(void) {
+    if (g_ctx_count >= PPC_MMU_MAX_CTX)
+        return NULL;
+    ppc_mmu_ctx_t *c = (ppc_mmu_ctx_t *)calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->ut.over = 0xFFFFu;
+    c->svt.over = 0xFFFFu;
+    c->owns_user_arrays = true;
+    g_ctx_all[g_ctx_count++] = c;
+    g_mem_code_marked_hook = code_marked; // parked cores' write entries go too
+    return c;
+}
+
+void ppc_mmu_ctx_free(ppc_mmu_ctx_t *c) {
+    if (!c || c == &g_ctx_primary)
+        return;
+    if (g_ppc_mmu_cur == c)
+        g_ppc_mmu_cur = &g_ctx_primary; // never left live: the burst glue restores first
+    for (int i = 0; i < g_ctx_count; i++) {
+        if (g_ctx_all[i] == c) {
+            g_ctx_all[i] = g_ctx_all[--g_ctx_count];
+            break;
+        }
+    }
+    if (g_ctx_count == 1)
+        g_mem_code_marked_hook = NULL;
+    free(c->user_read);
+    free(c->user_write);
+    free(c->sv_read);
+    free(c->sv_write);
+    free(c->user_wok);
+    free(c);
+}
+
+// A peer context's user arrays follow the memory map's page count (they are
+// allocated lazily, and re-made zeroed if the map was rebuilt).
+static void ctx_ensure_arrays(ppc_mmu_ctx_t *c) {
+    if (!c->owns_user_arrays || (c->user_read && c->user_pages == g_page_count))
+        return;
+    free(c->user_read);
+    free(c->user_write);
+    c->user_read = (uintptr_t *)calloc(g_page_count ? g_page_count : 1, sizeof(uintptr_t));
+    c->user_write = (uintptr_t *)calloc(g_page_count ? g_page_count : 1, sizeof(uintptr_t));
+    c->user_pages = c->user_read && c->user_write ? g_page_count : 0;
+    memset(c->ut.n, 0, sizeof c->ut.n);
+    c->ut.over = 0; // freshly zeroed
+}
+
+static void zero_arr(uintptr_t *a, uint32_t lo, uint32_t hi) {
+    if (a && lo < hi)
+        memset(a + lo, 0, (size_t)(hi - lo) * sizeof(uintptr_t));
+}
+
+// Drop everything a PARKED context caches (it may describe a physical map,
+// segment or page table that no longer holds): its translation and fetch
+// TLBs, every logical fill in its arrays.  Rare -- a map change, a
+// logpoint install, a context change or segment write aimed at a parked
+// core -- so whole-array clears are fine.
+static void ctx_drop_all(ppc_mmu_ctx_t *c) {
+    uint32_t up = c->owns_user_arrays ? c->user_pages : g_page_count;
+    memset(c->xtlb, 0, sizeof(c->xtlb));
+    memset(c->ftlb, 0, sizeof(c->ftlb));
+    c->fetch.span = 0;
+    c->fetch.blk = NULL;
+    c->fetch.fe = NULL;
+    zero_arr(c->user_read, 0, up);
+    zero_arr(c->user_write, 0, up);
+    zero_arr(c->sv_read, 0, c->sv_pages);
+    zero_arr(c->sv_write, 0, c->sv_pages);
+    zero_arr(c->user_wok, 0, c->user_wok_pages);
+    memset(c->ut.n, 0, sizeof c->ut.n);
+    c->ut.over = 0;
+    memset(c->svt.n, 0, sizeof c->svt.n);
+    c->svt.over = 0;
+}
+
+// A code page was marked: memory.c stripped its write entries from the
+// running core's arrays; a parked core's arrays lose them here, or its next
+// store into the page would bypass the predecoded-code invalidation.
+static void code_marked(const uint8_t *host_page) {
+    for (int i = 0; i < g_ctx_count; i++) {
+        ppc_mmu_ctx_t *c = g_ctx_all[i];
+        if (c == g_ppc_mmu_cur)
+            continue;
+        if (c->user_write && (!c->owns_user_arrays || c->user_pages == g_page_count))
+            memory_zero_write_aliases(c->user_write, host_page);
+        if (c->sv_write && c->sv_pages == g_page_count)
+            memory_zero_write_aliases(c->sv_write, host_page);
+    }
+}
+
+// Make p's context the running one: park the current context's live state
+// and install p's, then select the active SoA pair from p's MSR.  Called
+// only between sprints/bursts.
+void ppc_mmu_activate(ppc_t *p) {
+    ppc_mmu_ctx_t *c = p->mmu_ctx;
+    if (!c || c == g_ppc_mmu_cur)
+        return;
+    ppc_mmu_ctx_t *o = g_ppc_mmu_cur;
+    o->fetch = g_ppc_fetch;
+    memcpy(o->ftlb, g_ppc_ftlb, sizeof(g_ppc_ftlb));
+    o->user_read = g_user_read;
+    o->user_write = g_user_write;
+    o->sv_read = g_ppc_sv_read;
+    o->sv_write = g_ppc_sv_write;
+    o->sv_pages = g_sv_pages;
+    o->user_wok = g_ppc_user_wok;
+    o->user_wok_pages = g_ppc_user_wok_pages;
+    ctx_ensure_arrays(c);
+    g_ppc_mmu_cur = c;
+    // The predecoded blocks the parked entries name may have been evicted or
+    // freed meanwhile: they are looked up afresh.
+    memcpy(g_ppc_ftlb, c->ftlb, sizeof(g_ppc_ftlb));
+    for (int i = 0; i < PPC_FTLB_SIZE; i++)
+        g_ppc_ftlb[i].blk = NULL;
+    g_ppc_fetch = c->fetch;
+    g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
+    g_ppc_fetch.fe = NULL;
+    g_user_read = c->user_read;
+    g_user_write = c->user_write;
+    g_ppc_sv_read = c->sv_read;
+    g_ppc_sv_write = c->sv_write;
+    g_sv_pages = c->sv_pages;
+    g_mem_extra_write = c->sv_write;
+    g_ppc_user_wok = c->user_wok;
+    g_ppc_user_wok_pages = c->user_wok_pages;
+    ppc_update_active_maps(p);
+}
+
 // tlbie congruence class: 601 EA[13-19] = 128 classes (601UM Figure 6-15);
 // 604 EA[14-19] = 64 classes (604UM §5.4.3.2).
 static inline uint32_t tlbie_class_mask(const ppc_t *p) {
@@ -272,6 +449,9 @@ void ppc_mmu_flush_fetch(void) {
 // everything) and the caches refill.  The supervisor-translated arrays are
 // this file's own: their host pointers belong to the old map, so they go now.
 void ppc_mmu_caches_unknown(void) {
+    for (int i = 0; i < g_ctx_count; i++)
+        if (g_ctx_all[i] != g_ppc_mmu_cur)
+            ctx_drop_all(g_ctx_all[i]); // every core's: the physical map is shared
     memset(g_ut.n, 0, sizeof g_ut.n);
     g_ut.over = 0xFFFFu;
     g_svt.over = 0xFFFFu;
@@ -287,6 +467,9 @@ void ppc_mmu_caches_unknown(void) {
 // (The installer zeroes the four SoA arrays itself; the supervisor-
 // translated ones go whole here.)
 void ppc_mmu_logpoints_changed(void) {
+    for (int i = 0; i < g_ctx_count; i++)
+        if (g_ctx_all[i] != g_ppc_mmu_cur)
+            ctx_drop_all(g_ctx_all[i]); // the installer zeroes only the running core's arrays
     g_svt.over = 0xFFFFu;
     sv_soa_invalidate_all();
     memset(g_xtlb, 0, sizeof(g_xtlb));
@@ -294,13 +477,61 @@ void ppc_mmu_logpoints_changed(void) {
 }
 
 // Full invalidation: context change (BAT/SDR1 value change, HMC bank
-// remap, checkpoint restore).
+// remap, checkpoint restore).  The translation state is p's own, so it is
+// p's context that drops it.
 void ppc_mmu_invalidate_all(ppc_t *p) {
-    (void)p;
+    if (p->mmu_ctx && p->mmu_ctx != g_ppc_mmu_cur) {
+        ctx_drop_all(p->mmu_ctx);
+        return;
+    }
     user_soa_invalidate_all();
     sv_soa_invalidate_all();
     memset(g_xtlb, 0, sizeof(g_xtlb));
     ppc_mmu_flush_fetch();
+}
+
+// A parked context's fills in tlbie's congruence class (track_tlbie below
+// for the running one; this one names the context's own arrays).
+static void ctx_track_tlbie(fill_track_t *t, uintptr_t *r, uintptr_t *w, uintptr_t *wok, uint32_t wok_pages,
+                            uint32_t pages, uint32_t mask, uint32_t cls) {
+    for (uint32_t sg = 0; sg < 16; sg++) {
+        if (t->over & (1u << sg)) {
+            uint32_t lo = sg << 16, hi = lo + 0x10000u;
+            uint32_t h = hi > pages ? pages : hi;
+            zero_arr(r, lo, h);
+            zero_arr(w, lo, h);
+            zero_arr(wok, lo, hi > wok_pages ? wok_pages : hi);
+            t->n[sg] = 0;
+            t->over &= ~(1u << sg);
+            continue;
+        }
+        uint32_t k = 0;
+        for (uint32_t i = 0; i < t->n[sg]; i++) {
+            uint32_t pg = t->page[sg][i];
+            if ((pg & mask) != cls) {
+                t->page[sg][k++] = pg;
+                continue;
+            }
+            if (pg < pages && r && w)
+                r[pg] = w[pg] = 0;
+            if (wok && pg < wok_pages)
+                wok[pg] = 0;
+        }
+        t->n[sg] = (uint16_t)k;
+    }
+}
+
+static void ctx_tlbie(ppc_mmu_ctx_t *c, uint32_t mask, uint32_t cls) {
+    uint32_t up = c->owns_user_arrays ? c->user_pages : g_page_count;
+    ctx_track_tlbie(&c->ut, c->user_read, c->user_write, c->user_wok, c->user_wok_pages, up, mask, cls);
+    ctx_track_tlbie(&c->svt, c->sv_read, c->sv_write, NULL, 0, c->sv_pages, mask, cls);
+    for (int i = 0; i < XTLB_SIZE; i++)
+        if (((c->xtlb[i].tag >> MEM_PAGE_SHIFT) & mask) == cls)
+            c->xtlb[i].tag = 0;
+    for (int i = 0; i < PPC_FTLB_SIZE; i++)
+        if (((c->ftlb[i].tag >> MEM_PAGE_SHIFT) & mask) == cls)
+            c->ftlb[i].tag = 0;
+    c->fetch.span = 0;
 }
 
 // Drop a tracker's fills in tlbie's congruence class, keeping the rest
@@ -336,10 +567,17 @@ static void track_tlbie(fill_track_t *t, uintptr_t *r, uintptr_t *w, uint32_t pa
 // whose page index matches modulo the model's class count (128 on the
 // 601, 64 on the 604).  Over-invalidation relative to the hardware's
 // two-way class is fine; under-invalidation would break the kernel's
-// flush loops (one tlbie per class).
+// flush loops (one tlbie per class).  The 60x bus BROADCASTS tlbie (PEM
+// §7.6.3.2.1; the 604's snoop logic invalidates its own TLB on a
+// bus-observed tlbie), so on a multiprocessor every core's caches drop the
+// class -- a peer left holding the stale mapping is the classic SMP remap
+// bug.
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
     uint32_t mask = tlbie_class_mask(p);
     uint32_t cls = (ea >> MEM_PAGE_SHIFT) & mask;
+    for (int i = 0; i < g_ctx_count; i++)
+        if (g_ctx_all[i] != g_ppc_mmu_cur)
+            ctx_tlbie(g_ctx_all[i], mask, cls);
     if (g_user_read)
         track_tlbie(&g_ut, g_user_read, g_user_write, g_page_count, true, mask, cls);
     if (g_ppc_sv_read)
@@ -382,6 +620,10 @@ void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v) {
         return;
     p->sr[n] = v;
     ppc_recompute_sr_t_mask(p);
+    if (p->mmu_ctx && p->mmu_ctx != g_ppc_mmu_cur) {
+        ctx_drop_all(p->mmu_ctx); // a parked core (the shell, a restore): its caches go whole
+        return;
+    }
     user_zero_seg(n);
     sv_zero_seg(n);
     for (int i = 0; i < XTLB_SIZE; i++)
