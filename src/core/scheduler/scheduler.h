@@ -48,38 +48,53 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 //                          instructions per frame-unit — "the same Mac with a
 //                          CPU accelerator card"; scheduler.speed picks the
 //                          multiplier (1x..8x)
-// Pacing only affects how many frame-units a host tick batches. In paced and
-// unthrottled the guest's execution timeline is a pure function of the
-// frame-unit count: CPI is a per-machine constant and never depends on the
-// mode. Accelerated deliberately gives that up (it is excluded from
-// budget-pinned tests): the cycle timebase stays real-time, but instructions
-// per frame-unit scale with the speed setting.
+// Pacing only affects how many frame-units a host tick batches, and -- on a
+// host that cannot emulate one frame-unit per VBL period -- how many
+// instructions each one holds: paced and accelerated share one speed
+// governor that RAISES the effective CPI when the host falls behind, so the
+// guest's clock, timers and sound stay on real time and only its CPU gets
+// slower (a slower Mac, not a slow-motion one).  Its range is the mode's:
+// paced min_speed..1x, accelerated min_speed..max_speed; turbo is not
+// governed, nothing there is aligned to the host clock.  With min_speed at
+// 1x (and no accelerated speed) the guest's execution timeline is a pure
+// function of the frame-unit count: CPI is a per-machine constant and never
+// depends on the mode.  Governed time deliberately gives that up (it is
+// excluded from budget-pinned tests): the cycle timebase stays real-time,
+// but instructions per frame-unit scale with the speed in force.
 enum schedule_mode { schedule_paced, schedule_unthrottled, schedule_accelerated };
 
-// Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
-// Floor 1x = authentic (the mode never runs the guest slower than real
-// hardware); the 8x cap keeps instruction-timed guest code (TimeDBRA-derived
-// busy-waits) from drifting absurdly far on fast hosts.
+// Bounds for the speed multiplier, x256 fixed point.  1x = authentic.  The
+// governor may go down to SPEED_X256_MIN (0.25x) on an overloaded host -- below
+// that the machine is unusable anyway, and the floor bounds how far
+// instruction-timed guest code (TimeDBRA-derived busy-waits) can drift; the
+// 8x cap bounds the same drift on fast hosts.  A pinned speed is 1x..8x: the
+// floor is the governor's alone.
+#define SPEED_X256_MIN 64
 #define SPEED_X256_ONE 256
 #define SPEED_X256_MAX (8 * 256)
 // scheduler.speed == 0 means "auto": the adaptive governor picks the speed.
 #define SPEED_X256_AUTO 0
 
 // Pacing: how the HOST runs the guest timeline -- the mode, the pinned
-// accelerated speed (SPEED_X256_AUTO lets the governor pick) and the cap on
-// it.  Host policy: it lives in the platform's run loop (em_main, the
-// headless daemon), outlives every machine and is never in a checkpoint.  It
-// reaches a machine only as an argument of the scheduler's run step, so a new
-// or restored machine simply runs under whatever the host says.
+// accelerated speed (SPEED_X256_AUTO lets the governor pick) and the floor
+// and cap on the governor.  Host policy: it lives in the platform's run loop
+// (em_main, the headless daemon), outlives every machine and is never in a
+// checkpoint.  It reaches a machine only as an argument of the scheduler's
+// run step, so a new or restored machine simply runs under whatever the host
+// says.
 typedef struct host_pacing {
     enum schedule_mode mode;
     uint32_t speed_x256; // pinned accelerated multiplier, or SPEED_X256_AUTO
+    uint32_t min_speed_x256; // floor the governor may slow to on an overloaded host (1x = never)
     uint32_t max_speed_x256; // cap on the accelerated multiplier
 } host_pacing_t;
 
-// The host's pacing as a process starts: paced, governor auto, 8x cap.
+// The host's pacing as a process starts: paced, governor auto, 0.25x..8x.
 #define HOST_PACING_DEFAULT                                                                                            \
-    ((host_pacing_t){.mode = schedule_paced, .speed_x256 = SPEED_X256_AUTO, .max_speed_x256 = SPEED_X256_MAX})
+    ((host_pacing_t){.mode = schedule_paced,                                                                           \
+                     .speed_x256 = SPEED_X256_AUTO,                                                                    \
+                     .min_speed_x256 = SPEED_X256_MIN,                                                                 \
+                     .max_speed_x256 = SPEED_X256_MAX})
 
 // The platform's pacing setting (its run loop owns the one instance).  A weak
 // default serves a build with no run loop (the unit suites).  scheduler.mode,
@@ -91,11 +106,14 @@ host_pacing_t *platform_pacing(void);
 void pacing_init(void);
 
 // Set the pinned accelerated speed (0 = auto: the adaptive governor picks,
-// bounded by the cap; otherwise clamped to 1x..8x) or the cap (clamped to
-// 1x..8x) of a pacing setting.  Only accelerated mode uses either; paced and
-// turbo always run the authentic CPI.  The governor needs the paced main
-// loop's host-timing signal, so headless accelerated runs pin a speed.
+// bounded by the floor and the cap; otherwise clamped to 1x..8x), the
+// governor's floor (clamped to 0.25x..1x; 1x disables slowing down) or the
+// cap (clamped to 1x..8x) of a pacing setting.  Turbo uses none of them and
+// always runs the authentic CPI.  The governor needs the paced main loop's
+// host-timing signal, so headless runs are never governed: headless
+// accelerated runs pin a speed.
 void host_pacing_set_speed(host_pacing_t *p, double multiplier);
+void host_pacing_set_min_speed(host_pacing_t *p, double multiplier);
 void host_pacing_set_max_speed(host_pacing_t *p, double multiplier);
 
 struct scheduler;
@@ -312,8 +330,9 @@ bool scheduler_is_running(struct scheduler *restrict s);
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
 
 // The speed multiplier actually applied to the CPU right now, x256 fixed point
-// (256 = 1x). 1x in paced/unthrottled; in accelerated mode the live pinned or
-// governed multiplier. Divide by 256.0 for the display value.
+// (256 = 1x). 1x in unthrottled; the governor's pick (at most 1x) in paced; in
+// accelerated mode the live pinned or governed multiplier. Divide by 256.0 for
+// the display value.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
 
 // Emit the speed event for the current effective speed, whether or not it

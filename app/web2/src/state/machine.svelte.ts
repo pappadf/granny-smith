@@ -77,9 +77,10 @@ interface MachineState {
   // re-asserted after every boot/restart (bus/emulator.ts).
   capsLock: boolean;
   // Effective CPU speed multiplier the core is currently applying (1 = the
-  // original Mac's speed). Only meaningful — and only shown — in `accel` mode,
-  // where the adaptive governor moves it; pushed from the core on change
-  // (bus/emulator.ts handleSchedulerSpeed). 1 in every other mode.
+  // original Mac's speed). The adaptive governor moves it: above 1 in `accel`
+  // mode, below 1 in `accel` and `live` alike when this computer cannot
+  // emulate a frame per VBL period; pushed from the core on change
+  // (bus/emulator.ts handleSchedulerSpeed). Always 1 in `max`.
   acceleratedSpeed: number;
   // Live performance readout, pushed from the core ~1 Hz:
   // emulated MIPS from instruction-count deltas, and the RAF tick rate the

@@ -136,7 +136,7 @@ struct scheduler {
     // Adaptive-governor state — live controller state, never checkpointed
     // (like the host-timing estimators outside the saved block): a restored
     // or mode-switched machine re-learns its speed from fresh measurements.
-    int gov_rung; // current index into gov_ladder_x256 (0 = authentic 1x)
+    int gov_rung; // current index into gov_ladder_x256 (GOV_RUNG_ONE = authentic 1x)
     double gov_util_ewma; // smoothed utilization (host secs per frame / VBL period)
     double gov_dwell_secs; // host seconds spent at the current rung
     double gov_holdoff_secs; // remaining post-back-off climb holdoff

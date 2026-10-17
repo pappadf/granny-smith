@@ -30,8 +30,8 @@ The speed and zoom controls are active only while a machine is running.
 
 | Mode | Behaviour |
 |---|---|
-| **Real** | Runs at the original Mac's speed. |
-| **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). |
+| **Real** | Runs at the original Mac's speed. If your computer cannot keep up, the processor is slowed down (as far as 0.25×) so that the clock, sound and animations stay at the correct speed; the status bar shows the factor, and it goes back to 1× once the computer keeps up again. |
+| **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). Slows down the same way as Real when your computer cannot keep up. |
 | **Max** | Runs everything as fast as possible to skip ahead; games and sound run fast too. Useful for long installs and boots. |
 
 The mode applies to every machine you run in this page; a link can preset
@@ -56,7 +56,7 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 | Item | Meaning |
 |---|---|
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
-| Speed | In Faster mode, the speed factor (for example **3×**). |
+| Speed | The processor's speed factor when it is not the original's: in Faster mode (for example **3×**), or when your computer cannot keep up (for example **0.5×**, see §2). |
 | MIPS | Emulated instructions per second, in millions. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |

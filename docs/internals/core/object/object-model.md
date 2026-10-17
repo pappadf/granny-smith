@@ -208,9 +208,9 @@ domains:
 | Order | Node | Domain | Holds |
 |---|---|---|---|
 | 0 | `machine` | machine | the emulated computer that exists now |
-| 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
+| 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `min_speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
 | 20 | `checkpoint` | emulator | save / load / snapshot |
-| 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `max_speed`), there with or without a machine; advanced |
+| 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `min_speed`, `max_speed`), there with or without a machine; advanced |
 | 22 | `predecode` | emulator | the predecoded executors' switch (`enabled`), tuning (`elide`, `pool_cap`, the thrash rule), counters and `hist` ([predecode.md](../cpu/predecode.md)); advanced |
 | 23 | `jit` | emulator | the PowerPC translation tier's switch (`enabled`), tuning, counters and `trace` ([ppc_jit.md](../cpu/ppc/ppc_jit.md)); `available` is 0 in native builds; advanced |
 | 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
@@ -688,7 +688,7 @@ the level contract over every model in the registry.
 | Mounted media | None. The old machine's images are closed (`system_destroy`); a CD bay is registered empty | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
 | Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
-| Host pacing (`pacing.mode`, `.speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
+| Host pacing (`pacing.mode`, `.speed`, `.min_speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
 | A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the card's part of the checkpoint, which carries the ROM's bytes (a checkpoint restores without the file) |
 | Each display device's monitor (the document's displays; `monitor=`, `video_sense=`) | The document's, an argument of the device: the built-in port's sense code, each card's monitor row and sense code in its slot entry | Unchanged | Unchanged | From the device's part of the checkpoint (a card's from the bus's slot table) |
