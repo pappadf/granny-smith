@@ -91,7 +91,7 @@ uint16_t bmac_read(bmac_t *b, uint32_t off);
 uint16_t bmac_peek(bmac_t *b, uint32_t off);
 void bmac_write(bmac_t *b, uint32_t off, uint16_t value);
 
-// The link the transceiver reports (default up).
+// The link the transceiver reports (default down: no cable).
 void bmac_set_link(bmac_t *b, bool up);
 bool bmac_link(const bmac_t *b);
 
