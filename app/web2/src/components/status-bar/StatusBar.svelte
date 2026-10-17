@@ -171,10 +171,7 @@
           />{/if}<span class="label">{stateLabel[machine.status]}</span>
       </div>
       {#if showSpeed}
-        <div
-          class="gs-statusbar__item sb-item sb-speed"
-          title={speedTitle}
-        >
+        <div class="gs-statusbar__item sb-item sb-speed" title={speedTitle}>
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
       {/if}
