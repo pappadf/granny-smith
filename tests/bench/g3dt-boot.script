@@ -12,6 +12,11 @@ def bench_boot() {
     machine.boot model="pmg3dt" ram=65536 rom="${$TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom"
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
+    # The cable in, as the checkpoint was placed with: with no cable (the
+    # BMAC's default since it reports one only on request) the boot naps
+    # past 4.8 G.  Written only when it reads down -- an older binary has
+    # the cable in already, and its `link` setter asserts.
+    if try(machine.bmac.link, true) == false { machine.bmac.link = true }
     scheduler.run 4800000000
     bench_guard()
 }
