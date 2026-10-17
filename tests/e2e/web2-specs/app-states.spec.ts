@@ -240,6 +240,13 @@ for (const skin of SKINS) {
       const zoom = page.getByRole("textbox", { name: "Zoom level" });
       await zoom.fill("200%");
       await zoom.press("Enter");
+      // In Real mode the speed governor slows the CPU when the host falls
+      // behind, and a loaded CI runner does during the boot: the status bar
+      // then carries a speed readout (0.88x) that moves everything after it.
+      // Floor the governor at 1x -- the setting a budget-pinned run uses --
+      // so the shot has the same status bar whatever the runner's load.
+      await gsEvalInPage(page, "scheduler.min_speed", [1]);
+      await expect(page.locator(".gs-statusbar .sb-speed")).toHaveCount(0);
       await gsEvalInPage(page, "scheduler.stop");
       await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
         "Paused",

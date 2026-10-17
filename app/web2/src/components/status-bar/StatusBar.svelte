@@ -43,6 +43,11 @@
         ? `${machine.acceleratedSpeed.toFixed(2).replace(/0$/, '')}×`
         : `${machine.acceleratedSpeed.toFixed(1)}×`,
   );
+  const speedTitle = $derived(
+    machine.acceleratedSpeed < 1
+      ? `CPU slowed to ${speedLabel} the original Mac's speed because this computer cannot keep up; the clock, sound and animation stay real-time`
+      : `CPU running at ${speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time`,
+  );
 
   // Background-checkpoint heartbeat — same flash idiom as the drive
   // lights; each core push (state/machine setCheckpointSaved stores a
@@ -168,7 +173,7 @@
       {#if showSpeed}
         <div
           class="gs-statusbar__item sb-item sb-speed"
-          title="CPU running at {speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time"
+          title={speedTitle}
         >
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
