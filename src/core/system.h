@@ -258,6 +258,9 @@ bool system_is_initialized(void);
 // Return the model_id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void);
 
+// Whether the current machine's main CPU is a PowerPC (false with none)
+bool system_cpu_is_ppc(void);
+
 // Create a blank floppy image at `path` and auto-mount it. high_density
 // chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
 // -1 to let the system pick the first free drive). Returns 0 on success

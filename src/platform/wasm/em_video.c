@@ -517,6 +517,29 @@ static uint32_t s_refused_logged;
 // The render thread is up and owns the canvas (0 until init_gl ran there).
 static _Atomic int s_renderer_up;
 
+// Why the renderer gave up for good, set once by the render thread and
+// reported once by the core thread (report_render_failure): events and the
+// log belong to the core.  A WebGL context the browser has lost answers
+// every query with null, and Emscripten's canvas resize dereferences that
+// null and kills the thread -- so the renderer stops before any GL work
+// instead.  Safari can hand out contexts that are lost from the start, a
+// state only restarting the browser clears.
+typedef enum render_failure {
+    RENDER_OK = 0,
+    RENDER_NO_CONTEXT, // emscripten_webgl_create_context failed
+    RENDER_CONTEXT_DEAD, // lost while the renderer came up
+    RENDER_CONTEXT_LOST, // lost later, between frames
+    RENDER_SHADER_FAILED, // the driver would not build the display shaders
+} render_failure_t;
+static _Atomic int s_render_failure;
+static bool s_render_failure_reported;
+
+// (render thread) Record why the renderer gave up; the first reason stays.
+static void render_failed(render_failure_t why) {
+    int none = RENDER_OK;
+    atomic_compare_exchange_strong(&s_render_failure, &none, (int)why);
+}
+
 // ---- render thread: GL uploads -------------------------------------------
 
 static void upload_fb(pixel_format_t format, uint32_t stride, uint32_t height) {
@@ -582,9 +605,14 @@ static void init_gl(void) {
         // No newline on the old printf here, so this one ran into whatever came
         // next in the output.  LOG ends its own lines.
         LOG(0, "WebGL 2 not supported - cannot run");
+        render_failed(RENDER_NO_CONTEXT);
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
+    if (emscripten_is_webgl_context_lost(s_ctx)) { // created, but dead on arrival
+        render_failed(RENDER_CONTEXT_DEAD);
+        return;
+    }
 
     s_upload_scratch = calloc(1, MAX_FB_BYTES);
     if (!s_upload_scratch) {
@@ -632,6 +660,18 @@ static void init_gl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Every shader is plain GLSL ES 3.00: one the driver refuses means its
+    // WebGL is broken (a lost context fails every compile the same way).
+    if (emscripten_is_webgl_context_lost(s_ctx)) {
+        render_failed(RENDER_CONTEXT_DEAD);
+        return;
+    }
+    for (int f = 0; f < NUM_FORMATS; f++)
+        if (!s_progs[f]) {
+            render_failed(RENDER_SHADER_FAILED);
+            return;
+        }
 }
 
 // Bind the program for `format` and point its uniforms at the geometry and
@@ -691,6 +731,12 @@ static bool s_shape_ok; // the current shape has a program (apply_shape succeede
 
 static void render_frame(void) {
     static uint8_t clut[256 * 4], response[3 * 256];
+    // A lost context: stop drawing for good, before any GL call.
+    if (emscripten_is_webgl_context_lost(s_ctx)) {
+        render_failed(RENDER_CONTEXT_LOST);
+        emscripten_cancel_main_loop();
+        return;
+    }
     pthread_mutex_lock(&s_slot.lock);
     bool fresh = s_slot.seq != s_drawn_seq;
     bool hide = s_slot.hide_overlay;
@@ -744,8 +790,8 @@ static void render_frame(void) {
 static void *render_thread_main(void *arg) {
     (void)arg;
     init_gl();
-    if (!s_upload_scratch)
-        return NULL; // no WebGL: nothing renders (init_gl said why)
+    if (!s_upload_scratch || atomic_load(&s_render_failure) != RENDER_OK)
+        return NULL; // no working WebGL: nothing renders (init_gl said why)
     atomic_store(&s_renderer_up, 1);
     emscripten_set_main_loop(render_frame, 0, 1); // does not return
     return NULL;
@@ -838,6 +884,39 @@ static void request_overlay_hide(void) {
     pthread_mutex_unlock(&s_slot.lock);
 }
 
+// (core thread) Report the renderer's failure, once: log it and tell the
+// page (a `state:renderer` event), which replaces the UI with an
+// explanation and what to try -- usually restarting the browser.
+static void report_render_failure(void) {
+    if (s_render_failure_reported)
+        return;
+    const char *status, *detail;
+    switch ((render_failure_t)atomic_load(&s_render_failure)) {
+    case RENDER_NO_CONTEXT:
+        status = "no_context";
+        detail = "no WebGL 2 context for the screen canvas in the render thread";
+        break;
+    case RENDER_CONTEXT_DEAD:
+        status = "context_dead";
+        detail = "the WebGL 2 context was lost as soon as it was created";
+        break;
+    case RENDER_CONTEXT_LOST:
+        status = "context_lost";
+        detail = "the browser lost the WebGL 2 context";
+        break;
+    case RENDER_SHADER_FAILED:
+        status = "shader_failed";
+        detail = "the WebGL driver would not build the display shaders";
+        break;
+    default:
+        return; // rendering fine
+    }
+    s_render_failure_reported = true;
+    LOG(0, "renderer: %s -- %s", status, detail);
+    // Both strings are literals without quotes or backslashes: valid JSON as is.
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"renderer\",\"status\":\"%s\",\"detail\":\"%s\"}", status, detail);
+}
+
 static void log_refused_formats(void) {
     uint32_t refused = atomic_load(&s_refused_formats) & ~s_refused_logged;
     for (int f = 0; refused; f++, refused >>= 1)
@@ -881,6 +960,7 @@ void em_video_init(void) {
 void em_video_update(void) {
     if (!s_slot.pixels)
         return; // no frame slot (allocation failed)
+    report_render_failure();
     log_refused_formats();
     display_t *d = system_display();
     if (!d || !d->bits) {
@@ -908,6 +988,10 @@ void em_video_update(void) {
         return;
     }
 
+    // A card that builds its frame on demand (the Mach64's hardware-cursor
+    // composite) builds it now
+    display_sync_pixels(d);
+
     // The producer-side dirty flags are undercomplete: pixel writes from
     // emulated CPU code (the ROM's RAM test, the OS painting between
     // vsyncs, any direct framebuffer poke) never trip fb_dirty, and
@@ -933,6 +1017,8 @@ void em_video_force_redraw(void) {
     display_t *d = system_display();
     if (!d || !d->bits || !fb_fits_scratch(d))
         return;
+    if (!d->presented_externally)
+        display_sync_pixels(d);
     publish(d, /*full*/ true, false);
 }
 

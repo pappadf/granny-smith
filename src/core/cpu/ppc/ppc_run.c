@@ -234,12 +234,13 @@ void ppc_do_divs(ppc_t *p, uint32_t iw) {
 }
 
 // sraw: rB bit 26 selects the >=32 case (fill with sign bits); CA set when
-// 1-bits shift out of a negative value.
+// 1-bits shift out of a negative value.  From 32 on every bit is shifted
+// out, so CA is the sign (-1 included).
 void ppc_do_sraw(ppc_t *p, uint32_t iw) {
     uint32_t s = p->gpr[PPC_RT(iw)], b = p->gpr[PPC_RB(iw)], n = b & 31u, r;
     if (b & 0x20u) {
         r = (uint32_t)((int32_t)s >> 31);
-        ppc_set_ca(p, ((int32_t)s < 0) && s != r);
+        ppc_set_ca(p, (int32_t)s < 0);
     } else {
         r = (uint32_t)((int32_t)s >> n);
         ppc_set_ca(p, ((int32_t)s < 0) && n != 0 && (s & ((1u << n) - 1u)) != 0);

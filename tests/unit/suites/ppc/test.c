@@ -273,6 +273,19 @@ static void test_shifts(void) {
     step1_valid(e_x(4, 3, 5, 792, 0));
     CHECK_EQ(P->gpr[3], 0xFFFFFFFFu);
     CHECK(P->xer & PPC_XER_CA);
+    // -1 shifted by 32: every bit, all of them 1s, shifts out, so CA is set
+    // although the result equals the source
+    P->gpr[4] = 0xFFFFFFFFu;
+    P->gpr[5] = 32;
+    step1_valid(e_x(4, 3, 5, 792, 0));
+    CHECK_EQ(P->gpr[3], 0xFFFFFFFFu);
+    CHECK(P->xer & PPC_XER_CA);
+    // positive, 32 or more: zero, no CA
+    P->gpr[4] = 0x7FFFFFFFu;
+    P->gpr[5] = 63;
+    step1_valid(e_x(4, 3, 5, 792, 0));
+    CHECK_EQ(P->gpr[3], 0);
+    CHECK(!(P->xer & PPC_XER_CA));
 }
 
 static void test_rotates(void) {

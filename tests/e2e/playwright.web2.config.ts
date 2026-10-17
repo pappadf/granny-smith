@@ -27,6 +27,7 @@ const SERIAL = [
   'perf-bench.spec.ts',
   'perf-headbase.spec.ts',
   'perf-jit.spec.ts',
+  'perf-osx-interactive.spec.ts',
   'av-camera.spec.ts',
   'av-microphone.spec.ts',
   'av-sound-record.spec.ts',

@@ -469,6 +469,24 @@ export function markBridgeDead(reason: string): void {
   for (const cb of crashListeners) cb(reason);
 }
 
+// The renderer's failure (`state:renderer`, em_video.c): it has stopped
+// drawing for good and says why.  Kept, so a listener registered after the
+// event (main.ts registers once the module is ready, and the renderer comes
+// up right after) still hears it.
+let rendererFailed: { status: string; detail: string } | null = null;
+const rendererListeners: Array<(status: string, detail: string) => void> = [];
+
+export function onRendererFailure(cb: (status: string, detail: string) => void): void {
+  rendererListeners.push(cb);
+  if (rendererFailed) cb(rendererFailed.status, rendererFailed.detail);
+}
+
+function handleRendererFailure(status: string, detail: string): void {
+  if (rendererFailed) return;
+  rendererFailed = { status, detail };
+  for (const cb of rendererListeners) cb(status, detail);
+}
+
 // printErr hook: recognise the glue's crash lines, then route as usual.
 const WORKER_CRASH = /worker sent an error!|^Aborted\(/;
 export function isWorkerCrashLine(line: string): boolean {
@@ -760,12 +778,33 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'state:screen':
       handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
       break;
+    case 'state:renderer':
+      handleRendererFailure(
+        typeof d.status === 'string' ? d.status : '',
+        typeof d.detail === 'string' ? d.detail : '',
+      );
+      break;
     case 'state:perf':
-      setPerfStats(num(d.mips), num(d.tps), {
-        tickMaxMs: num(d.tick_max_ms),
-        tickP50Ms: num(d.tick_p50_ms),
-        pollMaxMs: num(d.poll_max_ms),
-      });
+      setPerfStats(
+        num(d.mips),
+        num(d.tps),
+        {
+          tickMaxMs: num(d.tick_max_ms),
+          tickP50Ms: num(d.tick_p50_ms),
+          pollMaxMs: num(d.poll_max_ms),
+        },
+        {
+          engine:
+            d.engine === 'interpreter' || d.engine === 'predecoded' || d.engine === 'jit'
+              ? d.engine
+              : '',
+          jitPct: num(d.jit_pct),
+          jitSupervisor: d.jit_sup === true,
+          jitRegions: num(d.jit_regions),
+          jitKb: num(d.jit_kb),
+          ppc: d.ppc === true,
+        },
+      );
       break;
     case 'notify:floppy':
       onFloppyDriveChange(num(d.drive), d.present === true);
@@ -886,6 +925,37 @@ export async function setCapsLock(on: boolean): Promise<void> {
     'capslock',
   ]);
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
+}
+
+// The status bar's engine menu: the CPU engine the next instructions run on.
+// `jit-kernel` translates the PowerPC kernel's code too (jit.supervisor).
+// The perf push that follows reports what the core then runs.
+export type CpuEngineChoice = 'interpreter' | 'predecoded' | 'jit' | 'jit-kernel';
+export async function setCpuEngine(choice: CpuEngineChoice): Promise<void> {
+  if (!isModuleReady() || machine.status === 'no-machine') return;
+  const steps: [string, number][] =
+    choice === 'interpreter'
+      ? [['predecode.enabled', 0]]
+      : choice === 'predecoded'
+        ? [
+            ['predecode.enabled', 1],
+            ['jit.enabled', 0],
+          ]
+        : [
+            ['predecode.enabled', 1],
+            ['jit.supervisor', choice === 'jit-kernel' ? 1 : 0],
+            ['jit.enabled', 1],
+          ];
+  for (const [path, value] of steps) {
+    const r = await gsEval(path, [value]);
+    if (!gsOk(r)) {
+      showNotification(`CPU engine: ${gsErrorText(r)}`, 'warning');
+      return;
+    }
+  }
+  machine.engine = choice === 'jit-kernel' ? 'jit' : choice;
+  machine.jitSupervisor = choice === 'jit-kernel';
+  if (choice !== 'jit' && choice !== 'jit-kernel') machine.jitPct = 0;
 }
 
 export async function shutdownEmulator(): Promise<void> {

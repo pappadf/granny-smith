@@ -69,4 +69,13 @@ void ppc_jit_reset(void);
 // The `jit` node (object root).
 void ppc_jit_object_install(void);
 
+// The tier's state for the web status bar: whether it runs, whether it
+// translates supervisor code, and its running totals (instructions run
+// translated, regions, bytes generated).  All zero where there is no tier.
+typedef struct ppc_jit_status {
+    bool on, supervisor;
+    uint64_t insns, regions, bytes;
+} ppc_jit_status_t;
+void ppc_jit_status(ppc_jit_status_t *out);
+
 #endif // PPC_JIT_H

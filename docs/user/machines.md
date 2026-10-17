@@ -101,7 +101,7 @@ you can connect to your camera and microphone — see
 | Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays | PCI A1–C1 |
 | Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays | PCI A1–C1 |
 | Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays | PCI A1–F2 |
-| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM, two ATA buses | PCI A1–C1 |
+| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM; two ATA buses (hard disks, ATAPI CD-ROM) | PCI A1–C1 |
 | Power Mac G3 Minitower | `pmg3mt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | as the Desktop | PCI A1–C1 |
 
 Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have no CD-ROM
