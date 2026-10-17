@@ -264,12 +264,13 @@ TEST(test_registers) {
     // No PHY drives MDIO: DataIn reads 0 whatever is written.
     bmac_write(s_b, BMAC_MIFCSR, 0x000F);
     ASSERT_EQ_INT(bmac_read(s_b, BMAC_MIFCSR), 0x0007);
-    // Link up reads 0 in bit 8; the rest of XCVRIF is the driver's.
+    // Bit 8 is the link, 1 = down, and a fresh cell has no cable; the rest
+    // of XCVRIF is the driver's.
+    ASSERT_TRUE(!bmac_link(s_b));
     bmac_write(s_b, BMAC_XCVRIF, 0x000E);
-    ASSERT_EQ_INT(bmac_read(s_b, BMAC_XCVRIF), 0x000E);
-    bmac_set_link(s_b, false);
     ASSERT_EQ_INT(bmac_read(s_b, BMAC_XCVRIF), 0x010E);
     bmac_set_link(s_b, true);
+    ASSERT_EQ_INT(bmac_read(s_b, BMAC_XCVRIF), 0x000E);
     // Plain scratch registers read back.
     bmac_write(s_b, BMAC_TXTH, 0xFF);
     ASSERT_EQ_INT(bmac_read(s_b, BMAC_TXTH), 0xFF);

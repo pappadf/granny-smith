@@ -2446,6 +2446,22 @@ static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek);
 
 #define MACH64_APER_REGS1 (-3)
 
+// The byte swap between the Rage Pro's two views of VRAM: the XOR that
+// turns an offset in one into the same byte in the other, per
+// MEM_PIX_WIDTH (0 at 8 bpp, 1 at 15/16 bpp, 3 at 24/32 bpp).
+static uint32_t gp_aper_swap(const mach64_t *m) {
+    switch ((m->reg[DW_MEM_CNTL] >> 24) & 7u) { // MEM_PIX_WIDTH
+    case CRTC_PIX_15BPP:
+    case CRTC_PIX_16BPP:
+        return 1;
+    case CRTC_PIX_24BPP:
+    case CRTC_PIX_32BPP:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
 // The Rage Pro's BAR0: the little-endian aperture in the lower 8 MB with
 // block 1 (when BUS_EXT_REG_EN) and block 0 (unless BUS_APER_REG_DIS) in
 // its last 2 KB, and the big-endian aperture in the upper 8 MB (PRG p. 30).
@@ -2461,20 +2477,7 @@ static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
             return MACH64_APER_REGS;
         if (offset >= RAGEPRO_BLOCK1_OFF && offset < MACH64_MMIO_OFF_8MB && (m->reg[DW_BUS_CNTL] & BUS_EXT_REG_EN))
             return MACH64_APER_REGS1;
-        uint32_t w = 1;
-        switch ((m->reg[DW_MEM_CNTL] >> 24) & 7u) { // MEM_PIX_WIDTH
-        case CRTC_PIX_15BPP:
-        case CRTC_PIX_16BPP:
-            w = 2;
-            break;
-        case CRTC_PIX_24BPP:
-        case CRTC_PIX_32BPP:
-            w = 4;
-            break;
-        default:
-            break;
-        }
-        offset ^= (w - 1u);
+        offset ^= gp_aper_swap(m);
         return (int64_t)(offset & (m->vram_size - 1u));
     }
     return (int64_t)((offset - MACH64_APER_8MB) & (m->vram_size - 1u));
@@ -2952,7 +2955,7 @@ static void mach64_compose(mach64_t *m) {
 
     // In a pseudo-colour mode the cursor colours are palette INDICES; in a
     // direct-colour mode they are 24-bit true colour in the upper bits
-    // (RRG p. 3-27).  Only the 8 bpp case is exercised by anything today.
+    // (RRG p. 3-27).
     bool indexed = m->display.format == PIXEL_8BPP;
     uint32_t clr[2] = {indexed ? (m->cur_latch[3] & 0xFFu) : (m->cur_latch[3] >> 8),
                        indexed ? (m->cur_latch[4] & 0xFFu) : (m->cur_latch[4] >> 8)};
@@ -2979,6 +2982,24 @@ static void mach64_compose(mach64_t *m) {
         }
     }
 
+    // At 15/16 bpp a direct colour is packed to the frame's own pixel; the
+    // 24/32 bpp frame takes the 24 bits as they are.
+    if (!indexed && bpp == 2) {
+        bool g6 = m->display.format == PIXEL_16BPP_565;
+        for (int k = 0; k < 2; k++) {
+            uint32_t r = (clr[k] >> 16) & 0xFFu, g = (clr[k] >> 8) & 0xFFu, b = clr[k] & 0xFFu;
+            clr[k] = g6 ? ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3) : ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+        }
+    }
+
+    // The cursor engine fetches its definition in the chip's own byte order
+    // -- the little-endian aperture's -- and VRAM here is held in the
+    // big-endian view (gp_aper_map), swapped within each MEM_PIX_WIDTH
+    // pixel.  At 8 bpp the two agree; at 32 bpp, read straight, each dword's
+    // four bytes of 2-bit pixels come out reversed and the arrow is drawn in
+    // shuffled 4-pixel pieces.
+    uint32_t swap = m->gp ? gp_aper_swap(m) : 0;
+
     for (uint32_t row = oy; row < CUR_SIZE; row++) {
         uint32_t y = py + (row - oy);
         if (y >= height)
@@ -2987,7 +3008,7 @@ static void mach64_compose(mach64_t *m) {
             uint32_t x = px + (col - ox);
             if (x >= width)
                 break;
-            uint8_t byte = m->vram[src + row * CUR_LINE_BYTES + (col >> 2)];
+            uint8_t byte = m->vram[(src + row * CUR_LINE_BYTES + (col >> 2)) ^ swap];
             uint32_t v = (byte >> (2u * (col & 3u))) & 3u;
             if (v == 2u)
                 continue; // transparent

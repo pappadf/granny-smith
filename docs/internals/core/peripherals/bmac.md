@@ -16,7 +16,11 @@ hardware page is [bmac.md](../../../reference/machines/g3/bmac.md).
   - `STATUS` clears when it is read.
   - `TXRST` reads back 0.
   - `MIFCSR` bit 3 reads 0: no PHY drives MDIO.
-  - `XCVRIF` bit 8 is the link, 0 = up.
+  - `XCVRIF` bit 8 is the link, 0 = up. It reads 1, no cable, unless
+    `machine.bmac.link` is set: with no host network, a link that reads
+    up only makes Mac OS X wait for a DHCP answer at "Initializing
+    network". Apple's driver finds no PHY and takes the link from this
+    bit.
 - **The serial EEPROM** behind `SROMCSR`, a 64 × 16 Microwire part.
   - The station address is in words 10–12, each byte bit-reversed.
   - The READ command and sequential reads are modelled; other opcodes are
