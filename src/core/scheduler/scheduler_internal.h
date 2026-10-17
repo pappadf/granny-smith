@@ -143,6 +143,7 @@ struct scheduler {
     int gov_pressure_ticks; // consecutive governor ticks under pressure (behind real time, or audio drained)
     double gov_pressure_secs; // ...and the host seconds those ticks spanned
     double gov_audio_secs; // consecutive host seconds the audio ring has reported below GOV_AUDIO_LOW
+    bool gov_primed; // first governor tick since the reset seen (it starts the ladder at the floor)
 
     // Sprint execution counters (previously file-scope globals)
     uint32_t sprint_total; // instructions planned for current sprint

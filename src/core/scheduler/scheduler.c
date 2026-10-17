@@ -124,9 +124,17 @@ void scheduler_set_turbo_slice(double secs) {
 // behind counts only while the frame loop's own cost is a real share of the
 // budget: a host whose *ticks* are slow (a 10 Hz RAF, a throttled tab) caps
 // the accumulator too, and a slower guest CPU helps nothing there.
+// When the frame loop *alone* is already over the budget (EWMA above
+// GOV_UTIL_OVER), the first behind tick is enough: that is not a hitch the
+// next bursts repay but the host unable to fit even one frame-unit per VBL
+// -- the interpreter under the boot chime -- and every further tick at this
+// speed is audible.  A lone over-budget tick does not get the EWMA there
+// (0.3 -> 0.9 on a clipped sample), two in a row with the accumulator still
+// catching up do not count as behind.
 #define GOV_BACKOFF_TICKS 3
 #define GOV_BACKOFF_SECS  0.25
 #define GOV_UTIL_RELEVANT 0.5
+#define GOV_UTIL_OVER     1.0
 
 // Quantized speed steps (x256): 0.25x, 0.375x, 0.5x, 0.625x, 0.75x, 0.875x,
 // 1x, 1.5x, 2x, 3x, 4x, 6x, 8x -- every value exact in x256.  Eighths below
@@ -318,6 +326,7 @@ static void scheduler_governor_reset(struct scheduler *s) {
     s->gov_pressure_ticks = 0;
     s->gov_pressure_secs = 0.0;
     s->gov_audio_secs = 0.0;
+    s->gov_primed = false;
 }
 
 // One adaptive-governor evaluation (paced or accelerated, speed = auto). Fed
@@ -328,21 +337,47 @@ static void scheduler_governor_reset(struct scheduler *s) {
 //   - back off once the host has fallen behind on GOV_BACKOFF_TICKS
 //     consecutive ticks or for GOV_BACKOFF_SECS of consecutive host time
 //     while the frame loop itself is a real share of the budget (EWMA above
-//     GOV_UTIL_RELEVANT), or the audio ring has drained for GOV_AUDIO_SECS,
+//     GOV_UTIL_RELEVANT) -- on the first such tick where the frame loop
+//     alone is over the budget (above GOV_UTIL_OVER) -- or the audio ring
+//     has drained for GOV_AUDIO_SECS,
 //     straight to the highest rung the measurement projects under the target
 //     -- the multiplicative decrease that keeps a spike from becoming a
 //     spiral, without a lone hitch costing anything;
-//   - climb one rung only after the dwell (GOV_DWELL_SECS at and above 1x,
+//   - climb only after the dwell (GOV_DWELL_SECS at and above 1x,
 //     GOV_DWELL_SLOW_SECS below it), outside the post-back-off holdoff, with
-//     no pressure and the EWMA under the ceiling, and only if the utilization
-//     *projected* at the next rung stays under the target -- the slew limit
-//     required so instruction-counted guest delays see a stable speed, plus
-//     headroom.
+//     no pressure and the EWMA under the ceiling, and only as far as the
+//     utilization *projected* at the rung climbed to stays under the target
+//     -- the slew limit required so instruction-counted guest delays see a
+//     stable speed, plus headroom.
+// Below 1x a climb goes straight to the highest rung projected under the
+// target, up to the authentic speed: the governor *starts* at the floor on
+// its first tick (a fresh boot, a pacing change) and the first dwell there
+// shows what fits, so a host that keeps up is at 1x after one dwell and a
+// host that cannot never ran 1x at all -- the boot chime on an interpreter
+// is the case: at 1x the first bursts run late before anything is known.
+// Above 1x it stays one rung per dwell.  The ladder's resting rung is 1x
+// until that first tick, which is what keeps the headless pump (no main
+// loop, no governor ticks) at the authentic CPI.
 // The utilization EWMA is rescaled on every step (utilization is proportional
 // to instructions per frame), so the estimator stays meaningful across steps.
 static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs, bool behind) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(gov_active(s));
+
+    if (!s->gov_primed) {
+        // First tick since the reset: drop to the floor and let the first
+        // dwell show what fits.  The sample just taken was at the resting
+        // rung; scale it to the one the estimator now tracks.
+        s->gov_primed = true;
+        int lo, hi;
+        gov_rung_bounds(s, &lo, &hi);
+        if (lo != s->gov_rung) {
+            host_secs_this_vbl *= (double)gov_ladder_x256[lo] / gov_ladder_x256[s->gov_rung];
+            s->gov_rung = lo;
+            s->gov_dwell_secs = 0.0;
+            scheduler_update_cpi_eff(s);
+        }
+    }
 
     // Utilization of the real-time frame budget, smoothed. Pressure registers
     // fast (protect the deadline); relief a little slower.
@@ -379,7 +414,8 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     gov_rung_bounds(s, &min_rung, &max_rung);
 
     int new_rung = s->gov_rung;
-    if ((s->gov_pressure_ticks >= GOV_BACKOFF_TICKS || s->gov_pressure_secs >= GOV_BACKOFF_SECS) &&
+    bool over = behind && s->gov_util_ewma > GOV_UTIL_OVER; // the frame loop alone does not fit
+    if ((s->gov_pressure_ticks >= GOV_BACKOFF_TICKS || s->gov_pressure_secs >= GOV_BACKOFF_SECS || over) &&
         new_rung > min_rung) {
         // Back off to the highest rung projected under the target -- at
         // least one rung, since the host said this one does not fit
@@ -394,10 +430,17 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     } else if (!pressure && !audio_low && s->gov_util_ewma < GOV_UTIL_CEILING && new_rung < max_rung &&
                s->gov_holdoff_secs <= 0.0 &&
                s->gov_dwell_secs >= (new_rung < GOV_RUNG_ONE ? GOV_DWELL_SLOW_SECS : GOV_DWELL_SECS)) {
-        // Climb only with headroom at the *next* rung, not just the current one
-        double projected = s->gov_util_ewma * (double)gov_ladder_x256[new_rung + 1] / gov_ladder_x256[new_rung];
-        if (projected < GOV_UTIL_TARGET)
-            new_rung++;
+        // Climb only with headroom at the rung climbed to, not just the
+        // current one: below 1x as far as the authentic speed in one step,
+        // above it one rung
+        int reach = new_rung < GOV_RUNG_ONE ? GOV_RUNG_ONE : new_rung + 1;
+        if (reach > max_rung)
+            reach = max_rung;
+        for (int r = new_rung + 1; r <= reach; r++) {
+            if (s->gov_util_ewma * (double)gov_ladder_x256[r] / gov_ladder_x256[s->gov_rung] >= GOV_UTIL_TARGET)
+                break;
+            new_rung = r;
+        }
     }
     if (new_rung > max_rung)
         new_rung = max_rung; // cap lowered mid-run

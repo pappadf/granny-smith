@@ -207,18 +207,29 @@ not governed). Per paced main-loop tick that executed frame-units, it:
    the burst (its debt is growing, not held) — on three consecutive governor
    ticks or for 0.25 s of consecutive host time (whichever comes first), and only
    while the frame loop's own smoothed utilization is above 0.5 (so the debt is
-   the guest's cost, not a slow host tick); or the optional audio ring has sat
+   the guest's cost, not a slow host tick) — or on the first such tick while that
+   utilization is above 1.0, since a frame loop that alone does not fit is no
+   hitch; or the optional audio ring has sat
    below half its target depth for 0.75 s (longer than a sound's start or end
    keeps it there). Then it drops in one step to the highest rung whose projected
-   utilization is under the 0.85 target. **Up** one rung only after a dwell at the
-   current rung (2 s at and above 1×, 0.5 s below it), outside a 1 s post-back-off
+   utilization is under the 0.85 target. **Up** only after a dwell at the current
+   rung (2 s at and above 1×, 0.5 s below it), outside a 1 s post-back-off
    holdoff, with no pressure, the ring not draining, and the smoothed utilization
-   under the 0.90 ceiling, and only if the utilization *projected at the next
-   rung* stays under the 0.85 target.
+   under the 0.90 ceiling, and only as far as the utilization *projected at the
+   rung climbed to* stays under the 0.85 target: below 1× that is one step to the
+   highest fitting rung up to the authentic speed, above 1× one rung.
 3. **Bounds**: floor = `scheduler.min_speed` (default 0.25×; 1× keeps the guest at
    the authentic speed whatever the host does); ceiling = 1× in `paced` (the
    original's speed, never faster) and `scheduler.max_speed` (default 8×) in
-   `accelerated`. Every reset starts at 1×.
+   `accelerated`.
+4. **Start**: the ladder rests at 1× from every reset (boot, restore, any pacing
+   change), which is what the headless pump — no main loop, so no governor ticks —
+   runs at. The first main-loop tick drops it to the floor, and the first 0.5 s
+   dwell there shows what fits: a host that keeps up is at 1× after half a second,
+   a host that cannot never ran 1× at all. Starting slow and climbing on evidence
+   beats starting at 1× and relying on the back-off: at 1× the first catch-up
+   bursts run before anything is known, and on an interpreter-only CPU that is the
+   boot chime's first half second.
 
 Below 1× the governor is what keeps a host that cannot emulate a whole frame-unit
 per VBL period on the real-time clock: fewer instructions per frame-unit, the
@@ -235,15 +246,17 @@ every tick — a direct, binary observation of falling behind that no threshold 
 smoothed cost has to approximate (a utilization-only rule was either too eager on
 a bursty boot or deaf to a sustained overload the chime could hear). A host far
 over budget (the boot chime on an interpreter-only CPU) is behind on the first
-ticks — the time bound matters there, since a capped burst alone then lasts
-several hundred milliseconds — and lands on the fitting rung in about half a
-second; a host
+ticks and lands on the fitting rung within a few hundred milliseconds (its
+smoothed cost alone is over the budget by the second tick, so the first behind
+tick triggers; the time bound covers a host just under that, where a capped burst
+alone lasts several hundred milliseconds); a host
 barely over falls behind more slowly, which costs little because the lag is still
 bounded. A short hitch — one ~100 ms tick while the JIT translates a fresh page, a
 disk burst — is caught up by the next couple of bursts and costs nothing, and a
 constant owed remainder the host is holding (not growing) is not a cue either.
-Recovery below 1× is quick (one rung per 0.5 s dwell, 0.25× → 1× in about three
-seconds once the host keeps up); above 1× the 2 s dwell holds. The 0.85 climb target against the 0.90 drop ceiling forms a band the
+Recovery below 1× is quick (one step to the highest fitting rung after a 0.5 s
+dwell, so back at 1× within a second of the host keeping up); above 1× the 2 s
+dwell holds. The 0.85 climb target against the 0.90 drop ceiling forms a band the
 controller cannot oscillate in: a rung it climbs to and finds over the ceiling is
 left again, and the rescaled estimator then projects it over the target, so it is not
 re-tried until the load eases.
