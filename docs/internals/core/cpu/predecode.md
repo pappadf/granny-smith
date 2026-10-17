@@ -80,6 +80,20 @@ The cache saves three things: the decode-tree walk, the effective-address
 decode, and the fetch, which becomes an array index.  Everything the
 handlers do to architectural state is the same as on the switch core.
 
+On the PowerPC in the wasm builds, a third tier sits above this one: hot
+pages are translated to WebAssembly at run time
+([ppc/ppc_jit.md](ppc/ppc_jit.md)).  That tier is a cache over this
+executor, not a replacement: it is entered only from this loop's relookup
+(§3.10), every translated page keeps its block here, and it hooks the
+same coherence machinery (§3.11).  With `predecode.enabled = 0` nothing is
+translated, whatever `jit.enabled` says.
+
+The interpretive loop rejected threaded dispatch for the one flat
+`switch`.  Wasm has no computed goto; tail-call threading becomes
+`return_call_indirect`, which checks the signature on every dispatch and
+lost 16-59 % against a `br_table` switch on V8, and plain call threading
+lost 26-35 %.  Natively the best threaded variant won only 6 %.
+
 ### 1.2 Design rules
 
 These invariants keep the two executors byte-identical (§6):
@@ -118,6 +132,18 @@ These invariants keep the two executors byte-identical (§6):
 | 68040 (Quadra, 840AV) | yes | shares the 030 template (`CPU_DECODER_IS_68030` is set for both) |
 | PowerPC 601 / 604 / 750 | yes | little-endian mode (MSR[LE]) runs on the generic tier (§3.10) |
 | auxiliary cores (DSP3210, …) | no | outside `cores.md`'s main-CPU seam |
+
+What it buys, in host instructions per guest instruction (callgrind,
+metric A in `docs/guide/BENCHMARKS.md`; switch → predecoded):
+se30-finder-idle 112 → 82, q840av-finder 112 → 81, iici-aux 107 → 72,
+plus-boot 124 → 103.  On the 68K the wall-clock gain is 2.0-2.8×.  On the
+PowerPC metric A understates it: the two executors run about the same
+number of host instructions, but the switch core's are mispredicted
+dispatches, and the wall clock is about 2× (pm6100 89 → 185 MIPS).  Under
+wasm the gain is smaller than natively (wasm runs at 0.49-0.72× of
+native); before the page-transition work of §3.1 and §3.10, page-crossing
+workloads (the 6100's 68K emulator and Open Firmware cross a page every 3-4
+instructions) ran slower predecoded than on the switch core.
 
 ## 2. Key types & files
 
@@ -218,7 +244,7 @@ Current sizes:
 | | 68K | PowerPC |
 |---|---|---|
 | T1 leaves | 313 | 216 |
-| T0 ids | family list in `cpu_pd_ids.h`; roughly 2,000 ids, mostly MOVE (6 destination families × 7 source shapes × 2 × 3 sizes) | 82 (`PPC_PD_T0` in `ppc_pd_ids.h`) |
+| T0 ids | family list in `cpu_pd_ids.h`; roughly 2,000 ids, mostly MOVE (6 destination families × 7 source shapes × 2 × 3 sizes) | 94 (`PPC_PD_T0` in `ppc_pd_ids.h`) |
 
 **68K T0 families** (`PD_FAMILIES` in `cpu_pd_ids.h`).  A family is one
 operation at one size over a fixed list of operand shapes.  The shapes are:
@@ -273,9 +299,16 @@ they are never overwriters and never elided.
 | SPR and CR moves | `mflr`, `mtlr`, `mfctr`, `mtctr`, `mfxer`, `mtxer`, `mfcr`, `mtcrf` |
 | CR logic | the eight CR logical ops, `mcrf` |
 | Sync and cache | a shared `NOP` (`sync`, `eieio`, `icbi`, `dcbt`, `dcbtst`, `dcbst`, `dcbf`), `isync` |
+| Loads and stores | the D-form integer accesses with rA ≠ 0: `lwz`/`lwzu`, `lbz`/`lbzu`, `lhz`/`lhzu`, `lha`/`lhau`, `stw`/`stwu`, `stb`/`stbu`, `sth`/`sthu` (§3.10) |
 
-Loads and stores are **T1** on the PowerPC: their exception paths (DSI,
-alignment) need the raw word, and the T1 path already avoids the decode.
+The other loads and stores stay **T1**: the X-forms, the D-forms with
+rA = 0, `lmw`/`stmw`, and floating point.  The T0 forms keep the T1
+exception paths (DSI, alignment) by reading the raw word from the shadow
+when they need it.  `mtxer` masks as the 601 does there (only SO, OV, CA
+and the byte count and compare byte survive; the reserved bits 3-15 and 24
+read as zero), as `ppc_mtspr` does.  That bug hid behind demotion until
+PowerPC pages stopped being demoted: running the PowerPC unit suite with
+nothing demoted found it.
 On the PowerPC, a T0 `_RC` id sits next to its base id like a 68K pair, but
 it is the architectural record form, not an elision twin.
 
@@ -892,15 +925,20 @@ demotion, current memory map); taking it ticks the lookup clock as the
 lookup it replaces.  A page transition to a page seen before therefore
 costs neither a call nor a pool lookup.  The entry's block is reset when
 the entry is refilled, and the whole TLB is flushed by
-`ppc_mmu_flush_fetch` (BAT changes at a context synchronization, `mtsr`,
-SDR1, logpoints, a map change) and per congruence class by `tlbie`.
+`ppc_mmu_flush_fetch` (a BAT change at a context synchronization, an SDR1
+change or another full invalidation, logpoints, a map change) and per
+congruence class by `tlbie`.  A segment-register write that changes the
+value (`ppc_set_sr`) drops only that segment's fetch-TLB and
+translation-TLB entries and the window (`ppc.md`, MMU).
 `predecode_set_pool_cap` frees the blocks, so it calls
 `g_pd_pool_freed_hook`, which the PowerPC core points at
 `ppc_mmu_flush_fetch`.
 
 An MSR write (every exception, `rfi`, `mtmsr`) drops only the window
 (`ppc_mmu_flush_fetch_window`), not the fetch TLB: the tag carries MSR[PR],
-and no other MSR bit changes an instruction translation.
+and no other MSR bit changes an instruction translation.  Wiping the TLB
+there cost the DR 68K emulator a full translation on 15 % of its page
+transitions.
 
 **Interrupts are polled at every instruction boundary**, as in the switch
 loop.  At `top`, if `ext_irq` or `dec_pending` is set and `MSR[EE]` is
@@ -928,7 +966,15 @@ instructions 4, so `page_lo + (cur - blk->e) * 4` equals
 Arithmetic is modulo 2^32.
 
 **Register-only T0 handlers do not materialize the PC.**  None of them can
-fault.  `PPD_CASE` is audit + body + `cur++` → `retire`.  T1 bodies set
+fault.  `PPD_CASE` is audit + body + `cur++` → `retire_plain`
+(`PPD_ADVANCE`).  An entry that is not a branch cannot fold, so
+`retire_plain` skips the fold test: it reads the budget once for the
+saturating decrement and the zero test and jumps to `dispatch`, past
+`top`'s own budget test (the interrupt test at `dispatch` still runs).
+Only the branch handlers set `p->fold` and retire through `retire` /
+`retire_relookup`; the T0 loads and stores take `retire_plain` on
+success.  The split cut 2.4-3.8 % of host instructions on every PowerPC
+row.  T1 bodies set
 `instruction_pc` and `pc = ipc + 4` and run the leaf, then go to
 `retire_relookup`.
 
@@ -958,11 +1004,13 @@ through `retire_relookup`, as T1 does.
    window still stands behind the block (`span == 4K`, `lo == page_lo`,
    `g_ppc_fetch.blk == blk`), set `cur` and go to `top`.
 
-   Several things flush the window (`ppc_mmu_flush_fetch`), because the
-   same logical page may now fetch from another physical page:
-   - an `rfi` or `mtmsr` that changes IR or PR;
-   - a TLB invalidation;
-   - setting `MSR[LE]`.
+   Several things flush the window, because the same logical page may now
+   fetch from another physical page:
+   - every MSR write (an exception, `rfi`, `mtmsr`; it also covers setting
+     `MSR[LE]`), through `ppc_update_active_maps` →
+     `ppc_mmu_flush_fetch_window`;
+   - a segment-register value change;
+   - a TLB invalidation (`tlbie`, or a full flush).
 
    The switch loop re-resolves on every fetch; this check is its
    equivalent.
@@ -1007,9 +1055,15 @@ from.  The memory layer guarantees that without a check on any fast path
 
 1. **Marking.** When the pool allocates a block it calls
    `memory_code_page_mark(host_page)`:
-   - this sets a per-page byte in the code region's `marks[]`;
+   - this sets the predecode owner bit (`MEM_CODE_PREDECODE`) of a
+     per-page byte in the code region's `marks[]`.  The PowerPC
+     translation tier sets its own bit (`MEM_CODE_JIT`) through
+     `memory_code_page_mark_owner`; a page stays marked while either
+     owner holds it, and `memory_code_page_mark` / `unmark` are the
+     predecode owner's wrappers;
    - it zeroes every **write** SoA entry, supervisor and user, that
-     currently maps to that host page.
+     currently maps to that host page, and the PowerPC
+     supervisor-translated write table through `g_mem_extra_write`.
 
    To find the logical aliases, the reverse scan walks only the 256-page
    chunks flagged in `g_mem_soa_chunk` (chunks where a write entry was
@@ -1019,7 +1073,8 @@ from.  The memory layer guarantees that without a check on any fast path
    and **returns 0 for a marked page**, so the refill leaves the store on
    the slow path.  The sites are:
    - `rebuild_soa_page`, `memory_populate_pages`, `memory_populate_ram_mirror`;
-   - the 030 PMMU fill, the 68040 fill, the PowerPC `user_soa_fill`;
+   - the 030 PMMU fill, the 68040 fill, the PowerPC `user_soa_fill` and
+     `sv_soa_fill`;
    - the PDM / TNT / Gossamer / Mac II glue.
 
    Read entries are untouched, so **fetches and loads stay on the fast
@@ -1028,8 +1083,11 @@ from.  The memory layer guarantees that without a check on any fast path
    `code_write_notify(host, len)` **before** the store lands.  If the
    target is marked, this counts `g_mem_code_write_count` (exposed as
    `predecode.suppressed_writes`) and calls `g_mem_code_written_hook`,
-   which is `predecode_invalidate_host`.  The store then completes through
-   the host pointer as usual.
+   which is `predecode_invalidate_host`.  In the wasm builds that calls
+   the translation tier's hook first (`g_pd_tier_written_hook`), so it
+   invalidates its own blocks; `predecode_reset` likewise calls
+   `g_pd_tier_reset_hook`.  The store then completes through the host
+   pointer as usual.
 4. **Direct host writers notify themselves.**  DMA engines, debug pokes,
    the PowerPC HTAB R/C write-back, and `machine.restart` all call
    `memory_host_written(host, len)`.  It splits the range per region page
@@ -1091,7 +1149,10 @@ current block is `g_pd_current`.
 1. If more than `thrash_window` lookups have passed since the window
    opened, open a fresh window: zero `writes` and `execs`, and re-base the
    current block's `enter_budget`.
-2. `execs` is the block's retired instructions this window, plus the
+2. `execs` is the block's budget slots spent this window (retired
+   instructions, plus the slots I/O penalties burned and the slots an ended
+   sprint left unrun; the `PD_PROFILE` page-heat profiler takes those off,
+   the rule does not), plus the
    current visit's if the block is current.  The current visit is read
    through `g_bus_error_instr_ptr`, and only while that block is current:
    between sprints the pointer is stale.
@@ -1228,6 +1289,10 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 | `predecode.relookup_nomap` / `relookup_nopool` | RO | page transitions that found no fast-path read entry / that the pool declined (split into `lookup_noregion`, `lookup_held`) |
 | `predecode.hist([top])` | method | print the most-decoded ids per architecture with names and share (consumes the counts) |
 | `predecode.reset()` | method | drop every block and zero the counters |
+| `predecode.profile(path)` / `profile_reset()` | method | only in a `PD_PROFILE` build (`EXTRA_CFLAGS=-DPD_PROFILE`): write / restart the page-heat profile (per page: visits, instructions, runs per visit), read by `scripts/bench/page_heat.py` (`docs/guide/BENCHMARKS.md`) |
+
+`predecode.enabled` switches at any time, mid-run, in every build; the
+two executors give the same guest timeline whichever ran which sprint.
 
 Typical uses:
 
@@ -1258,10 +1323,12 @@ the memory map:
 | `tests/unit/suites/cpu_predecode` | the 68K executor in isolation: a basic loop, a differential run against the switch core, self-modifying code, the invalidation look-back, `memory_host_written`, page-crossing instructions, entry into the middle of an instruction, a logpointed page, eviction, demotion, the page-end sentinel, the generation reset; `PD_BENCH=1` adds a loop microbenchmark |
 | `tests/unit/suites/memory_codepage` | the memory half: marks and every refill site, the reverse alias scan, the refused-write record |
 | every CPU unit suite with `CPU_TEST_PREDECODE=1` (`CPU_TEST_ELIDE=<level>`) | the 68000 single-step vectors (236,266), the 030/040 suites, the `m68k_vectors` and `ppc_vectors` conformance replays (m68k-test / powerpc-test vectors with unlisted state randomized), the PowerPC, PowerPC FPU and PowerPC MMU suites.  `m68k_vectors` runs every vector through **both** executors and fails on any difference.  These suites set `thrash_ratio = 0`: every vector rewrites its own page and retires about one instruction, which the thrash rule would otherwise demote to the generic tier, leaving the T0/T1 handlers untested |
-| CI | runs the unit suites with the predecoded default and again with `CPU_TEST_PREDECODE=0` |
-| `tests/integration/predecode-diff` (matrix tier) | the differential definition of "same guest timeline": boot each machine with predecode off and on (at each elision level), checkpoint at fixed instruction counts chosen to land mid-boot, and compare guest state block by block (`scripts/cmp-checkpoints.py`, which masks host pointers and storage bookkeeping).  Rows: Plus (68000), IIcx (68030 + PMMU), 840AV (68040, the ROM-overlay alias), 6100 (601), 7500 (604) |
+| CI | runs the unit suites twice, once with `CPU_TEST_PREDECODE` unset and once with it 0.  The CPU harness and the PowerPC suites enable predecode only for `CPU_TEST_PREDECODE=1`, so both runs use the switch cores; only `m68k_vectors`, which runs every vector through both executors, compares the predecoded 68K in CI.  The `=1` run is a local step (Appendix A) |
+| `tests/integration/predecode-diff` (matrix tier) | the differential definition of "same guest timeline": boot each machine with predecode off and on (at each elision level), checkpoint at fixed instruction counts chosen to land mid-boot, and compare guest state block by block (`scripts/cmp-checkpoints.py`, which masks host pointers and storage bookkeeping).  Rows: Plus (68000), IIcx (68030 + PMMU), 840AV (68040, the ROM-overlay alias), 6100 (601), 7500 (601).  With the JIT available (the Node wasm build) each PowerPC row runs a third time with the translation tier on (`ppc/ppc_jit.md` §5) |
 | `tests/integration/perf-pdm`, the floors on `suite-pdm` / `tnt-hd-boot` / `ans-aix-boot` | throughput floors |
-| `tests/e2e/web2-specs/perf-predecode.spec.ts` | the in-browser A/B (`PERFBENCH` lines, sanity asserts only) |
+| `tests/e2e/web2-specs/perf-predecode.spec.ts` | the in-browser A/B (`PERFBENCH` lines, sanity asserts only).  The SE/30 row boots System 7.5.3 to the Finder and measures it idle (`settleFinder`: `ApplZone != SysZone`, then 150 M instructions); the IIcx row runs Marathon on an 8•24 GC.  A media-free SE/30 row was dropped: it measured the ROM's SCSI scan busy-waiting on the 5380, half slow path, where both executors tie |
+| `tests/e2e/web2-specs/perf-headbase.spec.ts` | the browser A/B of a branch against a base build: PowerPC rows pm6100, pm6100desk and pm8500 (no G3: the 750 naps during the boot).  Its predecode probes are wrapped so a base without them still runs.  The ROM-only pm6100 row measures the ROM's wait for a boot disk; pm6100desk is the like-for-like row for pm8500 |
+| `tests/e2e/web2-specs/perf-jit.spec.ts`, `perf-osx-interactive.spec.ts` | the browser rows of the translation tier (`ppc/ppc_jit.md` §5).  An arm that means "predecoded only" must set `jit.enabled = 0`, since the tier is on by default there |
 | every other integration and e2e test | runs predecoded, since that is the default |
 
 To run the differential locally:
@@ -1276,6 +1343,24 @@ When the two executors diverge on a full boot, bisect by instruction count:
 3. with the switch core's state as the oracle, the first differing
    instruction is the bug.
 
+What hides or fakes a divergence:
+- single steps (or steps of a few thousand instructions) hide elision
+  bugs, since the last slot never elides; bisect with large
+  `scheduler.run` steps, and where the sprints end decides whether it
+  shows at all;
+- rerun at `predecode.elide` 0, 1 and 2 to tell an E1 bug from an E2 one;
+- trigger a trace on a sprint's start cycle, not its index: sprint
+  numbering shifts between runs.  Once a divergent sprint is found,
+  compare every Nth sprint through the boot;
+- mid-sprint CCR differences are expected with elision on;
+- compare full checkpoints, not registers: registers can still agree
+  while memory has diverged;
+- a checkpoint loads only in the build that wrote it (its build-id block
+  differs between builds, and `cmp-checkpoints` masks it), so every
+  rebuilt binary needs fresh checkpoints;
+- parallel `make test-*` runs relink the binary under each other ("Text
+  file busy").
+
 The RTC is reseeded from the host clock at `machine.boot`, so pin
 `machine.rtc.time` after the boot (as the predecode-diff scripts do), or
 start both runs at the same moment.
@@ -1288,9 +1373,29 @@ start both runs at the same moment.
   suppress.  A Lisa fast path would need a `lisa_resolve`-based relookup
   and a suppression hook inside `lisa_mmu_write*`.
 - **PowerPC little-endian mode** runs on the generic tier (§3.10).
-- **No PowerPC T0 loads or stores.**  They are T1 (decode-free but not
-  operand-specialized).  A T0 form would have to reproduce the DSI and
-  alignment paths exactly.
+- **Only the D-form PowerPC loads and stores are T0.**  The X-forms, rA = 0,
+  floating point and `lmw`/`stmw` are T1.  `lmw`/`stmw` have no
+  predecoded handler and take 2.4 % of the native time on the Mac OS X
+  scenario through the generic path (the translation tier has one).
+- **The loop overhead.**  On the G3 boot (about 86 host instructions per
+  guest instruction) the loop itself is 35-40 %: dispatch about 7.8, the
+  entry load and `ipc` 9.3, the budget counter 7 (it stays in memory,
+  because slow paths zero it through `g_bus_error_instr_ptr`), the
+  interrupt test 3.5, the fold test 3.2, the same-page test 1.6.  Ideas
+  not built: the budget in a local with a "sprint stopped" flag tested
+  after slow-path and T1 entries; branch entries that remember their
+  target block (page changes run about 299 per 1000 instructions on the
+  6100's interpretive 68K emulator, 66 on the DR emulator); `cmpwi` + `bc`
+  fusion.
+- **Segment switches on Mac OS X** (native callgrind profile of the
+  interactive scenario, where `ppc_pd_run` is 82 %): about 9 % goes to
+  them (`zero_write_aliases` 3.8 %, `ppc_set_sr` 2.3 %, the fetch-window
+  lookup 1.5 %, `ppc_context_sync` 1.1 %).  A per-address-space
+  translation cache was proposed, not built.
+- **Code-page marks are per page.**  The PM8500 DR emulator's inline-cache
+  stores (about 1.6 % of its instructions) land on code pages and take the
+  slow path in both tiers, about 7 % of the time.  Per-word tracking was
+  proposed, not built.
 - **No PowerPC elision.**
 - **68K elision is single-successor and in-page.**  A definer whose
   overwriter is two instructions away, on the next page, or T1, keeps its
@@ -1307,6 +1412,36 @@ start both runs at the same moment.
   still compared against the switch core, but through the shared tree
   rather than a predecoded handler.
 
+### 7.1 Tried and dropped
+
+Measured, then reverted; recorded so they are not retried blind:
+
+- **The inline load/store gate widened to misaligned in-page accesses:**
+  3-7 % slower on every PowerPC row, from the code growth at every access
+  site.
+- **Interrupts polled only at sprint entry**, with the paths that make one
+  deliverable ending the sprint: 3.5-4 % faster, but it changed the guest
+  timeline (sprint boundaries are not timing-neutral).  A variant that
+  borrowed budget diverged too: the I/O penalty of the device store that
+  raised the interrupt saturated against the borrowed budget.
+- **A derived `irq_ready` flag** for the interrupt test: equivalent, no
+  measurable gain.
+- **Reading the 68K budget once at `top`** (a local `last_slot`): 1.5-2.4 %
+  slower on every 68K row, from register pressure.
+- **An alias record for code-page marks** (up to four logical pages per
+  code page, noted by `memory_write_fill`, so marking needs no chunk
+  scan): 0.7 % on g3dt-boot, nothing elsewhere; not worth the memory
+  layer's complexity.  (It first needed the 68030 refused-write restore
+  to plant through `memory_write_fill`, which it now does.)
+- **A PowerPC demotion ratio of 8:** it ran 1.4 % generic at the bench
+  checkpoint but did not help past 4 G instructions on the pm8500 desktop;
+  superseded by no demotion at all (§3.13).
+- **Refused-write shortcuts for A/UX:** skipping the walk when the read
+  entry exists and the translation allows writes with M set (no fix, and
+  it changed the switch core's behaviour); re-planting write entries when
+  a page is unmarked (approximate); skipping U/M updates on code-page
+  walks (changes MMU semantics).
+
 ## 8. See also
 
 - `docs/internals/core/cpu/cores.md`: the core-module contract, the sprint
@@ -1315,6 +1450,10 @@ start both runs at the same moment.
   writer inventory and the PowerPC user-mode fallback.
 - `docs/internals/core/cpu/ppc.md`: the fetch window, folding, and the
   601/604/750 models.
+- `docs/internals/core/cpu/ppc/ppc_jit.md`: the PowerPC translation tier
+  above this executor (wasm builds).
+- `docs/guide/BENCHMARKS.md`: the bench rows, metrics A and B, and their
+  pitfalls.
 - `docs/internals/core/scheduler/scheduler.md`: sprints, budgets and I/O
   penalties.
 - `docs/internals/core/object/object-model.md`: the root-node table (order
