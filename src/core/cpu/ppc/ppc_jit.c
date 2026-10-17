@@ -2129,14 +2129,12 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             op(W_XOR);
             break;
         case XK_SRAW: // ppc_do_sraw: a shift of 32 or more gives the sign
-            // CA = negative and any 1 bit shifted out; from 32 on, as C has
-            // it, negative and not -1
+            // CA = negative and any 1 bit shifted out; from 32 on every bit
+            // is shifted out, so the whole value
             lget(RD(b));
             iconst(0);
             op(W_LT_S);
             lget(RD(b));
-            iconst(~0u);
-            op(W_XOR);
             lget(RD(b));
             iconst(~0u);
             lget(RD(src));
