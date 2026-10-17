@@ -140,6 +140,7 @@ struct scheduler {
     double gov_util_ewma; // smoothed utilization (host secs per frame / VBL period)
     double gov_dwell_secs; // host seconds spent at the current rung
     double gov_holdoff_secs; // remaining post-back-off climb holdoff
+    double gov_over_util_secs; // integral of the EWMA's excess over the ceiling while it stays over
 
     // Sprint execution counters (previously file-scope globals)
     uint32_t sprint_total; // instructions planned for current sprint

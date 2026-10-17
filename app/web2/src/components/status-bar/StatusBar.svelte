@@ -32,8 +32,9 @@
   // CPU speed readout: the multiplier the core applies. Shown in Faster mode
   // always, and in any mode whenever it is not 1x — the governor slows the
   // CPU below 1x in Real mode too when this computer cannot keep up. The
-  // governor's ladder gives 0.25/0.375/0.5/0.75/1/1.5/2/3/4/6/8x — one decimal
-  // above 1x, two below (0.38x, not 0.4x), dropping trailing zeros.
+  // governor's ladder gives eighths below 1x (0.25 … 0.875) and 1.5/2/3/4/6/8x
+  // above — one decimal above 1x, two below (0.38x, not 0.4x), dropping
+  // trailing zeros.
   const showSpeed = $derived(machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1);
   const speedLabel = $derived(
     Number.isInteger(machine.acceleratedSpeed)

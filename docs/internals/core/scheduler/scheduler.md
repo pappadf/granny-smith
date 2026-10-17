@@ -198,15 +198,18 @@ not governed). Per paced main-loop tick that executed frame-units, it:
 
 1. **Measures** utilization `u = host seconds to emulate one frame-unit /
    MAC_VBL_PERIOD` (the same measurement the pacing EWMA already makes), clipped
-   to 2.0 per sample (a sample past that says only "far over", and one lone hitch
-   must not cascade down several rungs), smoothed with a fast-up/slow-down EWMA so
-   pressure registers quickly.
-2. **AIMD on a quantized ladder** (0.25×, 0.375×, 0.5×, 0.75×, 1×, 1.5×, 2×, 3×, 4×,
-   6×, 8× — every value exact in x256): one rung **down** immediately when the
-   smoothed utilization crosses 0.90 or the (optional) audio ring drains below half
-   its target depth; one rung **up** only after ≥2 s of residence at the current
-   rung, outside a 1 s post-back-off holdoff, and only if the utilization
-   *projected at the next rung* stays under the 0.80 target.
+   to 2.0 per sample (a sample past that says only "far over"), smoothed with an
+   EWMA (α = 0.35 rising, 0.25 falling) so pressure registers quickly.
+2. **AIMD on a quantized ladder** (eighths below 1×: 0.25×, 0.375×, 0.5×, 0.625×,
+   0.75×, 0.875×; then 1×, 1.5×, 2×, 3×, 4×, 6×, 8× — every value exact in x256).
+   **Down** once overload is *sustained*: the smoothed utilization's excess over the
+   0.90 ceiling (or a fixed 0.5 while the optional audio ring sits below half its
+   target depth) is integrated for as long as it stays over, and when the integral
+   reaches 0.08 utilization-seconds the governor drops in one step to the highest
+   rung whose projected utilization is under the 0.85 target. **Up** one rung only
+   after a dwell at the current rung (2 s at and above 1×, 0.5 s below it), outside
+   a 1 s post-back-off holdoff, under the ceiling, and only if the utilization
+   *projected at the next rung* stays under the 0.85 target.
 3. **Bounds**: floor = `scheduler.min_speed` (default 0.25×; 1× keeps the guest at
    the authentic speed whatever the host does); ceiling = 1× in `paced` (the
    original's speed, never faster) and `scheduler.max_speed` (default 8×) in
@@ -218,14 +221,21 @@ frame-units themselves — VBL, VIA, sound, the clock — on time. The guest see
 slower Mac, not a slow-motion one. Without it the paced accumulator (§10.3) pins at
 its 4-frame cap and every tick runs four frames back to back: at 1.2× the real cost
 the screen updates about 12 times a second and audio underruns continuously.
-Reaction is fast — the rising EWMA (α = 0.35) crosses the ceiling on the second tick
-of sustained overload, and the governor drops one rung per tick until the load fits,
-so 1× → 0.5× takes well under half a second. Recovery is deliberately slower — the
-falling EWMA (α = 0.10) plus the 2 s dwell per rung — and the 0.80 climb target
-against the 0.90 drop ceiling, with rungs ~1.5 apart, forms a band the controller
-cannot oscillate in.
+Reaction scales with severity: a host far over budget (the boot chime on an
+interpreter-only CPU) reaches the integral in about a dozen ticks and lands on the
+fitting rung in one step, so 1× → 0.375× takes a quarter of a second; a host barely
+over takes a second or more, which costs little because the accumulator is still
+keeping up. A short hitch — three ticks far over budget while the JIT translates a
+fresh page, a disk burst — decays before the integral fills and costs nothing; the
+earlier one-rung-per-slow-tick rule ratcheted a bursty boot down to 0.25× and then
+needed 8 s of calm to climb back. Recovery below 1× is quick (one rung per 0.5 s
+dwell, 0.25× → 1× in about three seconds once the host keeps up); above 1× the 2 s
+dwell holds. The 0.85 climb target against the 0.90 drop ceiling forms a band the
+controller cannot oscillate in: a rung it climbs to and finds over the ceiling is
+left again, and the rescaled estimator then projects it over the target, so it is not
+re-tried until the load eases.
 
-The dwell/holdoff slew limit and the coarse quantization are **correctness
+The dwell/holdoff slew limit and the quantization are **correctness
 requirements**, not tuning niceties: the guest calibrates
 instruction-counted delays (`TimeDBRA` etc.) against the VIA at boot, so the
 machine must dwell at stable speeds rather than glide. The utilization EWMA is
