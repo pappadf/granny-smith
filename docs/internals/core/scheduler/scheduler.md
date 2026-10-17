@@ -202,14 +202,19 @@ not governed). Per paced main-loop tick that executed frame-units, it:
    EWMA (α = 0.35 rising, 0.25 falling) so pressure registers quickly.
 2. **AIMD on a quantized ladder** (eighths below 1×: 0.25×, 0.375×, 0.5×, 0.625×,
    0.75×, 0.875×; then 1×, 1.5×, 2×, 3×, 4×, 6×, 8× — every value exact in x256).
-   **Down** once overload is *sustained*: the smoothed utilization's excess over the
-   0.90 ceiling (or a fixed 0.5 while the optional audio ring sits below half its
-   target depth) is integrated for as long as it stays over, and when the integral
-   reaches 0.08 utilization-seconds the governor drops in one step to the highest
-   rung whose projected utilization is under the 0.85 target. **Up** one rung only
-   after a dwell at the current rung (2 s at and above 1×, 0.5 s below it), outside
-   a 1 s post-back-off holdoff, under the ceiling, and only if the utilization
-   *projected at the next rung* stays under the 0.85 target.
+   **Down** once the host is *behind real time*: the paced accumulator (§10.3)
+   hit its 4-frame burst cap and still had a further whole frame-unit owed after
+   the burst (its debt is growing, not held) — on three consecutive governor
+   ticks or for 0.25 s of consecutive host time (whichever comes first), and only
+   while the frame loop's own smoothed utilization is above 0.5 (so the debt is
+   the guest's cost, not a slow host tick); or the optional audio ring has sat
+   below half its target depth for 0.75 s (longer than a sound's start or end
+   keeps it there). Then it drops in one step to the highest rung whose projected
+   utilization is under the 0.85 target. **Up** one rung only after a dwell at the
+   current rung (2 s at and above 1×, 0.5 s below it), outside a 1 s post-back-off
+   holdoff, with no pressure, the ring not draining, and the smoothed utilization
+   under the 0.90 ceiling, and only if the utilization *projected at the next
+   rung* stays under the 0.85 target.
 3. **Bounds**: floor = `scheduler.min_speed` (default 0.25×; 1× keeps the guest at
    the authentic speed whatever the host does); ceiling = 1× in `paced` (the
    original's speed, never faster) and `scheduler.max_speed` (default 8×) in
@@ -221,16 +226,24 @@ frame-units themselves — VBL, VIA, sound, the clock — on time. The guest see
 slower Mac, not a slow-motion one. Without it the paced accumulator (§10.3) pins at
 its 4-frame cap and every tick runs four frames back to back: at 1.2× the real cost
 the screen updates about 12 times a second and audio underruns continuously.
-Reaction scales with severity: a host far over budget (the boot chime on an
-interpreter-only CPU) reaches the integral in about a dozen ticks and lands on the
-fitting rung in one step, so 1× → 0.375× takes a quarter of a second; a host barely
-over takes a second or more, which costs little because the accumulator is still
-keeping up. A short hitch — three ticks far over budget while the JIT translates a
-fresh page, a disk burst — decays before the integral fills and costs nothing; the
-earlier one-rung-per-slow-tick rule ratcheted a bursty boot down to 0.25× and then
-needed 8 s of calm to climb back. Recovery below 1× is quick (one rung per 0.5 s
-dwell, 0.25× → 1× in about three seconds once the host keeps up); above 1× the 2 s
-dwell holds. The 0.85 climb target against the 0.90 drop ceiling forms a band the
+The cue is the accumulator rather than the utilization estimate because the
+estimate alone cannot tell "can't keep up" from "busy": in a browser the next tick
+(`requestAnimationFrame`) comes at the first vsync *after* the previous one
+finished, so an over-budget frame loop makes ticks longer, the accumulator earns
+more frame-units than the capped burst can run, and its debt overflows the cap on
+every tick — a direct, binary observation of falling behind that no threshold on a
+smoothed cost has to approximate (a utilization-only rule was either too eager on
+a bursty boot or deaf to a sustained overload the chime could hear). A host far
+over budget (the boot chime on an interpreter-only CPU) is behind on the first
+ticks — the time bound matters there, since a capped burst alone then lasts
+several hundred milliseconds — and lands on the fitting rung in about half a
+second; a host
+barely over falls behind more slowly, which costs little because the lag is still
+bounded. A short hitch — one ~100 ms tick while the JIT translates a fresh page, a
+disk burst — is caught up by the next couple of bursts and costs nothing, and a
+constant owed remainder the host is holding (not growing) is not a cue either.
+Recovery below 1× is quick (one rung per 0.5 s dwell, 0.25× → 1× in about three
+seconds once the host keeps up); above 1× the 2 s dwell holds. The 0.85 climb target against the 0.90 drop ceiling forms a band the
 controller cannot oscillate in: a rung it climbs to and finds over the ceiling is
 left again, and the rescaled estimator then projects it over the target, so it is not
 re-tried until the load eases.
@@ -244,13 +257,20 @@ keeping the estimator meaningful across steps.
 
 The measurement brackets the frame loop only, on purpose: a slow host *tick* (a
 busy page, a throttled tab) is debt the accumulator catches up in a burst, not load
-a slower guest CPU would relieve, so it must not drive the governor.
+a slower guest CPU would relieve, so it must not drive the governor — which is why
+being behind counts only while the frame loop's own cost is a real share (above
+half) of the budget. A 10 Hz host with a cheap frame loop sits on the cap forever
+and is never slowed.
 
 **Audio feedback** (§11.3): `platform_audio_ring_fill()` reports the host ring's
 fill fraction against its target depth, or `< 0` where the signal doesn't exist —
 headless, or audio idle. On wasm the worklet publishes periodic fill reports in the
 ring header, which the emulator thread reads atomically — no round trips. The
-governor treats the signal as strictly optional.
+governor treats the signal as strictly optional — and as the safety net behind
+the accumulator cue, not the primary one: the ring also reads below half while it
+fills at a sound's start and drains at its end (the signal stays live for half a
+second after the last push), so a draining ring blocks climbing at once but backs
+the guest off only after 0.75 s.
 
 **Headless**: the governor's input is the paced main loop's host-timing signal,
 which the budget-driven headless path never produces — so headless always runs the

@@ -140,7 +140,9 @@ struct scheduler {
     double gov_util_ewma; // smoothed utilization (host secs per frame / VBL period)
     double gov_dwell_secs; // host seconds spent at the current rung
     double gov_holdoff_secs; // remaining post-back-off climb holdoff
-    double gov_over_util_secs; // integral of the EWMA's excess over the ceiling while it stays over
+    int gov_pressure_ticks; // consecutive governor ticks under pressure (behind real time, or audio drained)
+    double gov_pressure_secs; // ...and the host seconds those ticks spanned
+    double gov_audio_secs; // consecutive host seconds the audio ring has reported below GOV_AUDIO_LOW
 
     // Sprint execution counters (previously file-scope globals)
     uint32_t sprint_total; // instructions planned for current sprint

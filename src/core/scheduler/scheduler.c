@@ -91,27 +91,42 @@ void scheduler_set_turbo_slice(double secs) {
 // cannot emulate a whole frame-unit per VBL period on the real-time clock:
 // fewer instructions per frame-unit, the frame-units themselves on time.
 #define GOV_UTIL_TARGET     0.85 // climb (or land a back-off) only where the *projected* utilization stays below this
-#define GOV_UTIL_CEILING    0.90 // sustained above → back off
+#define GOV_UTIL_CEILING    0.90 // no climb attempts while the smoothed utilization sits above this
 #define GOV_DWELL_SECS      2.0 // minimum residence at a rung before climbing, at and above 1x
 #define GOV_DWELL_SLOW_SECS 0.5 // ...and below 1x, where getting back to the authentic speed is the point
 #define GOV_HOLDOFF_SECS    1.0 // after a back-off, no climb attempts for this long
-#define GOV_AUDIO_LOW       0.5 // audio ring below half its target depth = pressure (optional signal)
+#define GOV_AUDIO_LOW       0.5 // audio ring below half its target depth = draining (optional signal)
+// A draining ring blocks climbing at once, but backs the guest off only once
+// it has stayed below for this long: the ring also sits below half while it
+// fills from empty at a sound's start and while it drains at a sound's end
+// (the signal stays live for half a second after the last push), neither of
+// which a slower guest CPU would help.  A real overload shows up first in
+// the accumulator anyway; this is the safety net behind it.
+#define GOV_AUDIO_SECS 0.75
 // Utilization EWMA gains: pressure registers fast, relief a little slower.
 #define GOV_EWMA_UP   0.35
 #define GOV_EWMA_DOWN 0.25
 // Largest utilization one sample may feed the EWMA.  A sample past this says
-// only "far over", and the response is the same at 2 as at 20; unclipped,
-// one hitch drove the EWMA so high that it took the decay many ticks to
-// come back under the ceiling.
+// only "far over" -- the back-off lands by projection, and 0.85 / 2 already
+// lands below the lowest rung -- and unclipped, one hitch drove the EWMA so
+// high that it took the decay many ticks to come back under the ceiling.
 #define GOV_UTIL_SAMPLE_MAX 2.0
-// A back-off needs *sustained* overload: the EWMA's excess over the ceiling
-// is integrated while it stays over (utilization-seconds; any tick under the
-// ceiling clears it), and the back-off comes when the integral reaches this.
-// Far over, that is a dozen ticks; barely over, a second or more; a lone
-// 50 ms hitch (the JIT translating a fresh page, a disk burst) decays before
-// it adds up.  Audio pressure counts as a fixed excess of GOV_AUDIO_EXCESS.
-#define GOV_BACKOFF_EXCESS 0.08
-#define GOV_AUDIO_EXCESS   0.5
+// A back-off needs the host to be *behind* real time: the paced accumulator
+// capped at PACED_MAX_CATCHUP with the debt still growing on this many
+// consecutive governor ticks, or for this long of consecutive host time --
+// whichever comes first.  One capped
+// tick is a hitch the next tick or two repay -- the JIT translating a fresh
+// page, a disk burst; three in a row, at the 50-100 ms a capped tick lasts
+// on a somewhat overloaded host, is a quarter second of lagging, which is
+// what breaks sound up; on a badly overloaded host (the interpreter in
+// early boot) a capped tick alone lasts several hundred ms, and the time
+// bound keeps the reaction at a fraction of a second there too.  Being
+// behind counts only while the frame loop's own cost is a real share of the
+// budget: a host whose *ticks* are slow (a 10 Hz RAF, a throttled tab) caps
+// the accumulator too, and a slower guest CPU helps nothing there.
+#define GOV_BACKOFF_TICKS 3
+#define GOV_BACKOFF_SECS  0.25
+#define GOV_UTIL_RELEVANT 0.5
 
 // Quantized speed steps (x256): 0.25x, 0.375x, 0.5x, 0.625x, 0.75x, 0.875x,
 // 1x, 1.5x, 2x, 3x, 4x, 6x, 8x -- every value exact in x256.  Eighths below
@@ -300,26 +315,32 @@ static void scheduler_governor_reset(struct scheduler *s) {
     s->gov_util_ewma = 0.0;
     s->gov_dwell_secs = 0.0;
     s->gov_holdoff_secs = 0.0;
-    s->gov_over_util_secs = 0.0;
+    s->gov_pressure_ticks = 0;
+    s->gov_pressure_secs = 0.0;
+    s->gov_audio_secs = 0.0;
 }
 
 // One adaptive-governor evaluation (paced or accelerated, speed = auto). Fed
-// from the paced main loop with the measured host cost of one frame-unit and
-// the elapsed host time since the previous tick. AIMD on the quantized
-// ladder:
-//   - back off once overload is *sustained* (the integral of the EWMA's
-//     excess over the ceiling, or audio-ring pressure, reaches
-//     GOV_BACKOFF_EXCESS), straight to the highest rung the measurement
-//     projects under the target -- the multiplicative decrease that keeps a
-//     spike from becoming a spiral, without a lone hitch costing anything;
+// from the paced main loop with the measured host cost of one frame-unit, the
+// elapsed host time since the previous tick, and whether the paced
+// accumulator is *behind* real time (a capped burst that still left the debt
+// growing). AIMD on the quantized ladder:
+//   - back off once the host has fallen behind on GOV_BACKOFF_TICKS
+//     consecutive ticks or for GOV_BACKOFF_SECS of consecutive host time
+//     while the frame loop itself is a real share of the budget (EWMA above
+//     GOV_UTIL_RELEVANT), or the audio ring has drained for GOV_AUDIO_SECS,
+//     straight to the highest rung the measurement projects under the target
+//     -- the multiplicative decrease that keeps a spike from becoming a
+//     spiral, without a lone hitch costing anything;
 //   - climb one rung only after the dwell (GOV_DWELL_SECS at and above 1x,
-//     GOV_DWELL_SLOW_SECS below it), outside the post-back-off holdoff, and
-//     only if the utilization *projected* at the next rung stays under the
-//     target -- the slew limit required so instruction-counted guest delays
-//     see a stable speed, plus headroom.
+//     GOV_DWELL_SLOW_SECS below it), outside the post-back-off holdoff, with
+//     no pressure and the EWMA under the ceiling, and only if the utilization
+//     *projected* at the next rung stays under the target -- the slew limit
+//     required so instruction-counted guest delays see a stable speed, plus
+//     headroom.
 // The utilization EWMA is rescaled on every step (utilization is proportional
 // to instructions per frame), so the estimator stays meaningful across steps.
-static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs) {
+static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs, bool behind) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(gov_active(s));
 
@@ -340,29 +361,38 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     // exist (headless, audio idle). A draining ring means the deadline is
     // already being missed where it hurts first.
     double fill = platform_audio_ring_fill();
-    bool audio_pressure = (fill >= 0.0 && fill < GOV_AUDIO_LOW);
+    bool audio_low = (fill >= 0.0 && fill < GOV_AUDIO_LOW);
+    s->gov_audio_secs = audio_low ? s->gov_audio_secs + elapsed_secs : 0.0;
 
-    // Overload integral: how far over the ceiling, for how long
-    double excess = s->gov_util_ewma - GOV_UTIL_CEILING;
-    if (audio_pressure && excess < GOV_AUDIO_EXCESS)
-        excess = GOV_AUDIO_EXCESS;
-    s->gov_over_util_secs = excess > 0.0 ? s->gov_over_util_secs + excess * elapsed_secs : 0.0;
+    // Pressure = behind real time with the frame loop a real share of the
+    // budget (a slow host *tick* with a cheap frame loop is not the guest's
+    // fault), or the audio ring drained for long enough to be overload rather
+    // than a sound starting or ending. Counted in consecutive ticks so a lone
+    // hitch never triggers, and in host time so a badly overloaded host (few,
+    // long ticks) is answered just as promptly.
+    bool pressure = (behind && s->gov_util_ewma > GOV_UTIL_RELEVANT) || s->gov_audio_secs >= GOV_AUDIO_SECS;
+    s->gov_pressure_ticks = pressure ? s->gov_pressure_ticks + 1 : 0;
+    s->gov_pressure_secs = pressure ? s->gov_pressure_secs + elapsed_secs : 0.0;
 
     // The rungs the floor and the cap allow under this pacing
     int min_rung, max_rung;
     gov_rung_bounds(s, &min_rung, &max_rung);
 
     int new_rung = s->gov_rung;
-    if (s->gov_over_util_secs >= GOV_BACKOFF_EXCESS && new_rung > min_rung) {
+    if ((s->gov_pressure_ticks >= GOV_BACKOFF_TICKS || s->gov_pressure_secs >= GOV_BACKOFF_SECS) &&
+        new_rung > min_rung) {
         // Back off to the highest rung projected under the target -- at
-        // least one rung, since the measurement said this one does not fit
+        // least one rung, since the host said this one does not fit
         new_rung--;
         while (new_rung > min_rung &&
                s->gov_util_ewma * (double)gov_ladder_x256[new_rung] / gov_ladder_x256[s->gov_rung] >= GOV_UTIL_TARGET)
             new_rung--;
-        s->gov_over_util_secs = 0.0;
+        s->gov_pressure_ticks = 0;
+        s->gov_pressure_secs = 0.0;
+        s->gov_audio_secs = 0.0;
         s->gov_holdoff_secs = GOV_HOLDOFF_SECS;
-    } else if (excess <= 0.0 && new_rung < max_rung && s->gov_holdoff_secs <= 0.0 &&
+    } else if (!pressure && !audio_low && s->gov_util_ewma < GOV_UTIL_CEILING && new_rung < max_rung &&
+               s->gov_holdoff_secs <= 0.0 &&
                s->gov_dwell_secs >= (new_rung < GOV_RUNG_ONE ? GOV_DWELL_SLOW_SECS : GOV_DWELL_SECS)) {
         // Climb only with headroom at the *next* rung, not just the current one
         double projected = s->gov_util_ewma * (double)gov_ladder_x256[new_rung + 1] / gov_ladder_x256[new_rung];
@@ -1835,6 +1865,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     GS_ASSERT(!isnan(s->host_secs_per_loop));
 
     int vbls_to_execute = 0;
+    bool behind = false; // paced accumulator still owes frame-units after a capped burst
     s->previous_time = now;
 
     switch (s->pacing.mode) {
@@ -1871,6 +1902,13 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
             if (vbls_to_execute > PACED_MAX_CATCHUP)
                 vbls_to_execute = PACED_MAX_CATCHUP;
             s->vbl_acc_error -= vbls_to_execute * MAC_VBL_PERIOD;
+            // Behind real time: the capped burst left more than the saturated
+            // debt owed, i.e. this tick the host fell a further whole
+            // frame-unit behind.  The governor's cue -- under overload the
+            // host's tick comes late and the accumulator pins at the cap.
+            // (A steady owed remainder below that is a constant lag the host
+            // is holding, not a growing one: not a cue.)
+            behind = s->vbl_acc_error >= (PACED_MAX_CATCHUP + 1) * MAC_VBL_PERIOD;
             // Saturate the debt a sustained-slow host can accumulate: the
             // emulator lags real time by at most one capped burst instead of
             // banking unbounded catch-up work (the death spiral).
@@ -1911,9 +1949,12 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     // host's headroom from the measured per-frame emulation cost. Evaluated
     // only on ticks that actually ran frame-units (no new cost sample
     // otherwise) — and never on the headless path, which doesn't come
-    // through this loop.  The measurement is the frame loop's own cost, on
-    // purpose: a slow host *tick* (a busy page, a throttled tab) is debt the
-    // accumulator catches up, not load a slower guest CPU would relieve.
+    // through this loop.  Whether the host keeps up comes from the paced
+    // accumulator (behind = a capped burst still left frame-units owed); the
+    // measurement is the frame loop's own cost, on purpose: a slow host
+    // *tick* (a busy page, a throttled tab) is debt the accumulator catches
+    // up, not load a slower guest CPU would relieve, and the cost is what
+    // tells the two apart.
     if (gov_active(s) && executed_vbls > 0)
-        scheduler_governor_tick(s, delta / denom, current_period);
+        scheduler_governor_tick(s, delta / denom, current_period, behind);
 }

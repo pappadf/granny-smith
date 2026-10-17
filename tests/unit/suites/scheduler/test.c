@@ -51,12 +51,13 @@
 //   - paced never runs faster than 1x however fast the host
 //   - recovery: once the host keeps up again the guest climbs back to 1x,
 //     one rung per (short, below-1x) dwell
-//   - a short hitch (a few slow ticks) costs nothing: back-offs need
-//     sustained overload
-//   - load spike: multiplicative back-off once the overload is sustained,
-//     straight to the highest rung whose utilization clears the ceiling
-//   - audio-ring pressure (optional signal) forces a back-off even at low
-//     measured utilization; signal absence (< 0) is ignored
+//   - a short hitch (one ~100 ms tick) costs nothing: back-offs need the
+//     host to fall behind real time on consecutive ticks
+//   - load spike: multiplicative back-off once the host falls behind,
+//     straight to the highest rung whose utilization clears the target
+//   - audio-ring pressure (optional signal) sustained forces a back-off even
+//     at low measured utilization, a brief dip does not; signal absence (< 0)
+//     is ignored
 //   - max_speed caps both the governor and pinned speeds
 //   - pin/unpin: writing a speed pins (governor off), 0 returns to auto and
 //     restarts from the authentic speed
@@ -883,6 +884,10 @@ typedef struct {
     uint64_t max_pf; // largest per-frame count ever observed
 } gov_trace_t;
 
+// Host model: a 60 Hz vsync-aligned tick (requestAnimationFrame) -- the next
+// tick comes at the first vsync *after* the previous one finished, so an
+// over-budget tick delays the next and the accumulator falls behind, exactly
+// the cue the governor backs off on.
 static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     gov_trace_t t = {0, 0, 1e9, 0};
     uint64_t prev_instr = cpu_instr_count();
@@ -890,6 +895,8 @@ static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     double last_change = *now;
     for (int i = 0; i < ticks; i++) {
         *now += 1.0 / 60.0;
+        if (g_now > *now)
+            *now += ceil((g_now - *now) * 60.0) / 60.0;
         tick_at(*now);
         uint64_t vd = g_vbls - prev_vbls;
         uint64_t id = cpu_instr_count() - prev_instr;
@@ -915,6 +922,21 @@ static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     return t;
 }
 
+// Drive 60 Hz ticks until the host clock passes `until`.
+static void gov_drive_until(double *now, double until) {
+    while (*now < until)
+        gov_drive(now, 1, false);
+}
+
+// The current speed rung's observable: instructions one frame-unit retires
+// right now (one frame-unit run outside the main loop, so the accumulator
+// is untouched -- usable while the host is behind and no tick is clean).
+static double speed_now(scheduler_t *s, uint64_t pf1) {
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
+    return (double)(cpu_instr_count() - i0) / (double)pf1;
+}
+
 // Steady fast host: the governor climbs the ladder one rung at a time —
 // monotonically, each step after at least the dwell time — and settles at
 // the 8x cap without ever overshooting it.
@@ -938,10 +960,10 @@ TEST(test_governor_climbs_to_cap) {
 }
 
 // Steady slow host: one authentic frame-unit costs 1.3 VBL periods, so the
-// host cannot keep up at 1x.  The governor slows the guest -- fewer
+// host falls behind at 1x.  The governor slows the guest -- fewer
 // instructions per frame-unit, the frame-units themselves on time -- to the
-// highest rung whose utilization clears the ceiling: 0.625x (0.81; 0.75x
-// would be 0.975).  Within a second, in paced and in accelerated alike.
+// highest rung projected under the target: 0.625x (0.81; 0.75x would be
+// 0.975).  Within a second, in paced and in accelerated alike.
 static void slow_host_slows_to_fit(enum schedule_mode mode) {
     uint64_t pf1 = authentic_per_frame();
 
@@ -950,14 +972,13 @@ static void slow_host_slows_to_fit(enum schedule_mode mode) {
     g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1; // 1x utilization 1.3
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(&now, 60, false);
-    double settled = (double)t.final_pf / (double)pf1;
+    gov_drive_until(&now, 1.0);
+    double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled > 0.615 && settled < 0.635); // 0.625x within a second
 
     // ...and stays there: no oscillation, nothing below
-    gov_trace_t hold = gov_drive(&now, 10 * 60, false);
-    ASSERT_TRUE(hold.changes == 0);
-    ASSERT_TRUE(hold.final_pf == t.final_pf);
+    gov_drive_until(&now, now + 10.0);
+    ASSERT_TRUE(speed_now(s, pf1) == settled);
     teardown(s);
 }
 TEST(test_governor_slow_host_slows_to_fit_paced) {
@@ -977,8 +998,8 @@ TEST(test_governor_min_speed_floor) {
     test_set_min_speed(s, 0.5);
     g_secs_per_instr = 3.0 * VBL_PERIOD / (double)pf1;
     double now = 0.0;
-    gov_trace_t t = gov_drive(&now, 5 * 60, false);
-    double settled = (double)t.final_pf / (double)pf1;
+    gov_drive_until(&now, 5.0);
+    double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled > 0.49 && settled < 0.51);
     teardown(s);
 
@@ -986,9 +1007,8 @@ TEST(test_governor_min_speed_floor) {
     test_set_min_speed(s, 1.0);
     g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
     now = 0.0;
-    t = gov_drive(&now, 5 * 60, false);
-    ASSERT_TRUE(t.changes == 0);
-    ASSERT_TRUE(t.final_pf == pf1);
+    gov_drive_until(&now, 5.0);
+    ASSERT_TRUE(speed_now(s, pf1) == 1.0);
     teardown(s);
 }
 
@@ -1016,19 +1036,18 @@ TEST(test_governor_recovers_to_authentic) {
     scheduler_t *s = fresh_scheduler(false);
     g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
     double now = 0.0;
-    gov_trace_t slow = gov_drive(&now, 5 * 60, false);
-    ASSERT_TRUE((double)slow.final_pf / (double)pf1 < 0.63);
+    gov_drive_until(&now, 5.0);
+    ASSERT_TRUE(speed_now(s, pf1) < 0.63);
 
     // The host keeps up again.  The first climb comes at once (the dwell
     // was served at 0.625x, the holdoff is long over), the next ones each
     // after a fresh below-1x dwell (0.5 s).
     g_secs_per_instr = 0.3 * VBL_PERIOD / (double)pf1;
-    gov_trace_t up1 = gov_drive(&now, 10, true);
-    ASSERT_TRUE(up1.changes == 1);
-    double mid = (double)up1.final_pf / (double)pf1;
+    gov_drive(&now, 10, true);
+    double mid = speed_now(s, pf1);
     ASSERT_TRUE(mid > 0.74 && mid < 0.76); // 0.625x -> 0.75x
-    gov_trace_t hold = gov_drive(&now, 15, false);
-    ASSERT_TRUE(hold.changes == 0); // still dwelling a quarter second later
+    gov_drive(&now, 15, false);
+    ASSERT_TRUE(speed_now(s, pf1) == mid); // still dwelling a quarter second later
     gov_trace_t up2 = gov_drive(&now, 3 * 60, true);
     ASSERT_TRUE(up2.changes == 2); // 0.75x -> 0.875x -> 1x, one per dwell
     ASSERT_TRUE(up2.final_pf == pf1); // back at authentic
@@ -1036,9 +1055,10 @@ TEST(test_governor_recovers_to_authentic) {
     teardown(s);
 }
 
-// A short hitch (three ticks far over budget: the JIT translating a fresh
-// page, a disk burst) costs nothing -- back-offs need sustained overload --
-// while the same overload sustained does slow the guest.
+// A short hitch (one tick six times over budget, ~100 ms: the JIT
+// translating a fresh page, a disk burst) costs nothing -- the accumulator
+// catches the debt up within a couple of ticks and never falls further
+// behind -- while a host that then stays over budget does slow the guest.
 TEST(test_governor_short_hitch_costs_nothing) {
     uint64_t pf1 = authentic_per_frame();
 
@@ -1048,22 +1068,24 @@ TEST(test_governor_short_hitch_costs_nothing) {
     gov_drive(&now, 3 * 60, false);
 
     g_secs_per_instr *= 20.0; // 6x the budget...
-    gov_drive(&now, 3, false); // ...for three ticks
+    gov_drive(&now, 1, false); // ...for one tick
     g_secs_per_instr /= 20.0;
     gov_trace_t after = gov_drive(&now, 2 * 60, false);
     ASSERT_TRUE(after.changes == 0);
     ASSERT_TRUE(after.final_pf == pf1); // never left 1x
+    ASSERT_TRUE(speed_now(s, pf1) == 1.0);
 
-    g_secs_per_instr *= 20.0; // the same overload, sustained
-    gov_trace_t sustained = gov_drive(&now, 30, false);
-    ASSERT_TRUE(sustained.final_pf < pf1); // slowed within half a second
+    g_secs_per_instr = 1.5 * VBL_PERIOD / (double)pf1; // over budget, sustained
+    gov_drive_until(&now, now + 1.0);
+    double settled = speed_now(s, pf1);
+    ASSERT_TRUE(settled > 0.49 && settled < 0.51); // 0.5x (0.75) within a second
     teardown(s);
 }
 
-// Load spike: after climbing on a fast host, a 4x cost spike drives
-// utilization far past the ceiling; once that is sustained the governor
-// backs off in one step — no dwell on the way down — to the highest rung
-// whose utilization clears the ceiling (3x here: 0.06 * 4 * 3 = 0.72).
+// Load spike: after climbing on a fast host, a 4x cost spike puts the host
+// behind real time; the governor backs off — no dwell on the way down — to
+// the highest rung whose utilization clears the target (3x here:
+// 0.06 * 4 * 3 = 0.72), in one step or a couple.
 TEST(test_governor_spike_backoff) {
     uint64_t pf1 = authentic_per_frame();
 
@@ -1076,15 +1098,16 @@ TEST(test_governor_spike_backoff) {
     ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
 
     g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
-    gov_trace_t back = gov_drive(&now, 12 * 60, false);
-    double settled = (double)back.final_pf / (double)pf1;
+    gov_drive_until(&now, now + 12.0);
+    double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
-    ASSERT_TRUE(back.changes >= 1); // in one step, or a couple
     teardown(s);
 }
 
-// Audio-ring pressure: a draining host ring forces a back-off even when the
-// measured utilization is comfortable; a recovered ring lets it climb again.
+// Audio-ring pressure: a host ring that stays drained forces a back-off even
+// when the measured utilization is comfortable -- but not a ring briefly
+// below half (a sound starting or ending); a recovered ring lets it climb
+// again.
 TEST(test_governor_audio_pressure) {
     uint64_t pf1 = authentic_per_frame();
 
@@ -1097,7 +1120,13 @@ TEST(test_governor_audio_pressure) {
     ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
 
     uint64_t before = t.final_pf;
-    g_audio_fill = 0.2; // ring draining: pressure regardless of utilization
+    g_audio_fill = 0.2; // ring briefly below half: a sound starting
+    gov_trace_t brief = gov_drive(&now, 30, false);
+    g_audio_fill = 1.0;
+    ASSERT_TRUE(brief.changes == 0 && brief.final_pf == before); // no back-off
+    gov_drive(&now, 30, false);
+
+    g_audio_fill = 0.2; // ring drained: pressure regardless of utilization
     gov_trace_t drop = gov_drive(&now, 3 * 60, false);
     ASSERT_TRUE(drop.final_pf < before); // backed off
 
