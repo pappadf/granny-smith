@@ -19,14 +19,19 @@ vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
 }));
-// Two floppy drives, both present in the default configuration.
+// Two floppy drives, both present in the default configuration, and one
+// hard disk (SCSI ID 0).
 vi.mock('@/bus/profile', () => ({
   getProfile: vi.fn(async () => ({
     floppies: [
       { id: 'fd0', label: 'Internal floppy drive', types: [{ id: '800k' }], default: '800k' },
       { id: 'fd1', label: 'External floppy drive', types: [{ id: '800k' }], default: '800k' },
     ],
-    defaults: { floppies: { fd0: '800k', fd1: '800k' } },
+    storage: [{ id: 'scsi', blank_disks: [] }],
+    defaults: {
+      floppies: { fd0: '800k', fd1: '800k' },
+      storage: [{ bus: 'scsi', unit: 0, type: 'hd' }],
+    },
   })),
 }));
 vi.mock('@/bus/media', () => ({
@@ -147,6 +152,22 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(stored).toBeDefined();
     expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
     expect(scratchLeft()).toEqual([]);
+  });
+
+  it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disk.img'] = new Uint8Array(4096).fill(0x11);
+    const { beginUrlBoot, urlBoot, _resetUrlBootForTests } = await import('@/state/urlBoot.svelte');
+    beginUrlBoot(null);
+    try {
+      expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd1=disk.img'))).toBe(true);
+      expect(urlBoot.files.find((f) => f.slot === 'hd1')?.status).toBe('failed');
+    } finally {
+      _resetUrlBootForTests();
+    }
+    expect(media.attachHardDisk).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/Booted plus without Hard disk 2: this machine has no hard disk 2/);
+    expect(toastText()).not.toMatch(/machine\.attach_hd/);
   });
 
   it('two ROM halves of different sizes are both discarded', async () => {

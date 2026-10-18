@@ -379,6 +379,12 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
     const dev = configured?.[n];
+    // A position the model does not have, said as fd1= says it (the core's
+    // refusal names its 0-based shell argument).
+    if (!dev && !ownStorage && profile && !hardDiskBus(profile, n)) {
+      notAttached(hd.slot, `this machine has no hard disk ${n + 1}`);
+      continue;
+    }
     report(
       hd.slot,
       p,
@@ -540,7 +546,7 @@ async function insertUrlFloppies(
     if (!p) continue;
     const n = parseInt(fd.slot.replace('fd', ''), 10);
     if (n >= drives) {
-      showNotification(`${fd.slot}: this machine has no floppy drive ${n + 1}`, 'error');
+      notAttached(fd.slot, `this machine has no floppy drive ${n + 1}`);
       continue;
     }
     report(fd.slot, p, await insertFloppy(p, true, n));
@@ -550,7 +556,15 @@ async function insertUrlFloppies(
 // Record where a URL medium went, or say that it did not go in.
 function report(slot: string, path: string, r: MediaResult): void {
   if (r.ok) setMounted(path, r.mount);
-  else showNotification(`${slot}: not attached: ${r.reason}`, 'error');
+  else notAttached(slot, r.reason);
+}
+
+// A URL medium that was had but could not go in: its row is marked failed,
+// so a URL boot's closing message names it with the media it went without;
+// outside a URL boot, a toast says so.
+function notAttached(slot: string, why: string): void {
+  updateUrlFile(slot, { status: 'failed', error: why });
+  if (!urlBoot.requested) showNotification(`${slot}: not attached: ${why}`, 'error');
 }
 
 // An image of `category` an earlier download of `url` stored: one whose
