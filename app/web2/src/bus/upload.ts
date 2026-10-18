@@ -36,6 +36,7 @@
 // through the worker (files.mv/files.rm).
 
 import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
+import { routePrintLine } from './logSink';
 import { xferChunkBytes, xferReadAll, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -234,6 +235,11 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
   if (!single) {
     const { msg, severity } = dropSummary(names, outcomes);
     showNotification(msg, severity);
+    // The one-line toast cuts the reasons off after the first: each file
+    // that was not stored, and why, goes to the terminal too.
+    outcomes.forEach((o, i) => {
+      if (!o.stored) routePrintLine(`upload: '${names[i]}' ${o.reason}`);
+    });
   } else if (!outcomes[0].stored && !outcomes[0].told) {
     showNotification(`'${names[0]}' ${outcomes[0].reason}`, outcomes[0].severity);
   }

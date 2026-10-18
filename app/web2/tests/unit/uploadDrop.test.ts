@@ -19,6 +19,11 @@ vi.mock('@/bus/boot', () => ({
   prepareFreshMachine: vi.fn(async () => {}),
   recordRecentBoot: vi.fn(async () => {}),
 }));
+// The terminal: a drop's rejections are printed there too (S1018-66).
+const printed = vi.hoisted(() => [] as string[]);
+vi.mock('@/bus/logSink', () => ({
+  routePrintLine: (line: string) => printed.push(line),
+}));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
   mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
@@ -114,6 +119,10 @@ describe('a drop of several files', () => {
     );
     // No per-file "added" messages: the summary is the account.
     expect(toastText().some((m) => / added$/.test(m))).toBe(false);
+    // The toast is one line; each rejection is in the terminal in full.
+    expect(printed).toContain(
+      "upload: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
+    );
   });
 
   it("boots the drop's only ROM and mounts only the first floppy, into an empty drive", async () => {

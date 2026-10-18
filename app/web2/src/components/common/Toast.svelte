@@ -35,7 +35,8 @@
   <span class="gs-toast__icon sev-icon {toast.severity}" data-icon={SEV_ICON[toast.severity]}
     ><Icon name={SEV_ICON[toast.severity]} /></span
   >
-  <span class="gs-toast__msg msg">{toast.msg}</span>
+  <!-- One line, cut at the edge: the whole message on hover. -->
+  <span class="gs-toast__msg msg" title={toast.msg}>{toast.msg}</span>
   <IconButton
     class="gs-toast__close close-btn"
     icon="close"
