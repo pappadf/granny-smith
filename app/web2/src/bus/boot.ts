@@ -12,7 +12,7 @@ import { images, setMounted, clearMounts } from '@/state/images.svelte';
 import { reapplyCameraSource } from '@/state/camera.svelte';
 import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
-import { resetDebugSections } from '@/state/debug.svelte';
+import { debug, resetDebugSections } from '@/state/debug.svelte';
 import { formatRamKb } from '@/lib/machine';
 import { recentLabel } from '@/lib/recentMachines';
 import { addRecentMachine } from '@/state/recent.svelte';
@@ -173,10 +173,6 @@ export async function recordRecentBoot(config: MachineConfig): Promise<void> {
 // machine's: neither origin touches it.
 export type MachineOrigin = 'boot' | 'restore';
 
-// The model the UI last reconciled with: a restore of another model resets
-// the Debug layout, a restore of the same one keeps it.
-let reconciledModel: string | null = null;
-
 export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<void> {
   const id = await gsEval('machine.id');
   const model = typeof id === 'string' && id ? id : null;
@@ -203,11 +199,12 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   await reapplyMicrophoneSource();
   // Every new machine starts with the Debug sections collapsed (a user
   // request: each new machine gets a clean debug layout); a restore of the
-  // same model keeps the layout the user had.
-  if (origin === 'boot' || (origin === 'restore' && model !== reconciledModel)) {
+  // same model keeps the layout the user had (debug.sectionsModel, which
+  // outlives a reload: a Resume after one keeps it too).
+  if (origin === 'boot' || (origin === 'restore' && model !== debug.sectionsModel)) {
     resetDebugSections();
   }
-  reconciledModel = model;
+  debug.sectionsModel = model;
   // Every restore entry point (background resume, Open Checkpoint, a drop,
   // the Checkpoints tab) brings the page's run state into line here.
   if (origin === 'restore' && model) {

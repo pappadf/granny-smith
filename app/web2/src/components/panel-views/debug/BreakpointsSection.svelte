@@ -8,7 +8,7 @@
   import { listBreakpoints, addBreakpoint, removeBreakpoint, type Breakpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { debug, toggleSection } from '@/state/debug.svelte';
+  import { debug, toggleSection, bumpBreakpoints } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import Button from '@/components/ui/Button.svelte';
@@ -34,8 +34,11 @@
     void refresh();
   });
 
+  // Also after a breakpoint is added or removed elsewhere (the Disassembly
+  // pane's context menu).
   $effect(() => {
     void machine.status;
+    void debug.breakpointsGen;
     if (debug.sections.breakpoints) void refresh();
   });
 
@@ -63,6 +66,7 @@
     addAddr = '';
     addCond = '';
     showAdd = false;
+    bumpBreakpoints();
     await refresh();
   }
 
@@ -90,6 +94,7 @@
       showNotification('Failed to remove breakpoint', 'error');
       return;
     }
+    bumpBreakpoints();
     await refresh();
   }
 

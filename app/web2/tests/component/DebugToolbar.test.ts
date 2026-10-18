@@ -45,6 +45,18 @@ describe('DebugToolbar', () => {
     expect(container.querySelector('button[title="Continue"]')).toBeNull();
   });
 
+  it('Continue, Step Into, Stop and Restart are disabled with no machine (S1018-76)', () => {
+    for (const status of ['no-machine', 'stopped'] as const) {
+      machine.status = status;
+      const { container, unmount } = render(DebugToolbar);
+      for (const label of ['Continue', 'Step Into', 'Stop', 'Restart'])
+        expect(
+          (container.querySelector(`button[title="${label}"]`) as HTMLButtonElement).disabled,
+        ).toBe(true);
+      unmount();
+    }
+  });
+
   it('Step Into is disabled while running', () => {
     machine.status = 'running';
     const { container } = render(DebugToolbar);

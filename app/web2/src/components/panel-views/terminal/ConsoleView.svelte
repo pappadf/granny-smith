@@ -164,12 +164,12 @@
     const selText = outputSelection();
     const touched = selectedEntries();
     const copy = (text: string) => () => void copyText(text);
+    // No command among what was selected or clicked (an output line):
+    // nothing to copy as commands, so the item is greyed (S1018-80).
+    const commands = commandsText(touched.length ? touched : clicked ? [clicked] : []);
     const items: ContextMenuItem[] = [
       { label: 'Copy', action: copy(selText || clicked?.text || '') },
-      {
-        label: 'Copy as commands',
-        action: copy(commandsText(touched.length ? touched : clicked ? [clicked] : [])),
-      },
+      { label: 'Copy as commands', disabled: !commands, action: copy(commands) },
     ];
     if (clicked && clicked.job !== null)
       items.push({

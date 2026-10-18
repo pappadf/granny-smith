@@ -211,6 +211,15 @@ describe('one post-boot reconciliation, every path', () => {
     expect(debug.sections.registers).toBe(false);
   });
 
+  it('a Resume after a reload keeps the layout saved with its model (S1018-83)', async () => {
+    se30();
+    // As loaded from localStorage on a fresh page: the layout and its model.
+    debug.sections.registers = true;
+    debug.sectionsModel = 'se30';
+    await reconcileUiWithMachine('restore');
+    expect(debug.sections.registers).toBe(true);
+  });
+
   it('a restore sets the run state from the core, from Welcome too (#239)', async () => {
     se30();
     machine.status = 'no-machine';

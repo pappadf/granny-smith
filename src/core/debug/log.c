@@ -56,6 +56,10 @@ static const log_context_hooks_t *s_hooks = NULL;
 static log_sink_fn s_sink_fn = NULL;
 static void *s_sink_user = NULL;
 
+// Optional replacement for stdout (the stdout=on categories). Not set by default.
+static log_sink_fn s_stdout_fn = NULL;
+static void *s_stdout_user = NULL;
+
 #define LOG_MAX_INDENT_SPACES 64
 static int s_indent_spaces = 0;
 
@@ -341,6 +345,12 @@ void log_set_sink(log_sink_fn fn, void *user) {
     s_sink_user = user;
 }
 
+// Sends the stdout=on lines to `fn` instead of stdout (NULL: stdout again).
+void log_set_stdout_sink(log_sink_fn fn, void *user) {
+    s_stdout_fn = fn;
+    s_stdout_user = user;
+}
+
 // Sets the indentation width (in spaces) applied before each message body.
 void log_indent_set(int spaces) {
     s_indent_spaces = clamp_indent(spaces);
@@ -486,7 +496,9 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     const char *line = b.p;
 
     // Emit to configured sinks
-    if (c->to_stdout) {
+    if (c->to_stdout && s_stdout_fn) {
+        s_stdout_fn(line, s_stdout_user);
+    } else if (c->to_stdout) {
         fputs(line, stdout);
         fflush(stdout);
     }

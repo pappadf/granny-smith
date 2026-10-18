@@ -274,7 +274,10 @@
     showNotification(`Exporting to ${dest}…`, 'info');
     const ok = await gsEval(`${target}.export`, [dest]);
     if (ok !== true) {
-      showNotification(`export failed — ${dest} may already exist; see the console`, 'error');
+      // The core's reason (an existing file, a full disk), in the toast:
+      // nothing reaches the console (S1018-77).
+      const why = isGsError(ok) ? gsErrorText(ok) : `${dest} may already exist`;
+      showNotification(`Export failed — ${why}`, 'error');
       return;
     }
     consoleEcho(callStatement(`${target}.export`, [dest]));

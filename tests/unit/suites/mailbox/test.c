@@ -564,6 +564,21 @@ TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
     ASSERT_TRUE(mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
 }
 
+TEST(a_flood_of_log_events_leaves_half_the_ring_for_other_events) {
+    fresh();
+    char big[2000];
+    memset(big, 'e', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    while (mailbox_emit(&g_m, GS_MBX_EVT_LOG, big))
+        ;
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_DROPPED], 1);
+    // The log lines stopped at half the ring: state events still fit.
+    int others = 0;
+    while (mailbox_emit(&g_m, GS_MBX_EVT_STATE, big))
+        others++;
+    ASSERT_TRUE(others >= 1);
+}
+
 TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
     fresh();
     ASSERT_TRUE(!job_thread_running());
@@ -1151,6 +1166,7 @@ int main(void) {
     RUN(both_rings_wrap_across_thousands_of_round_trips);
     RUN(an_event_is_published_at_once_and_ordered_before_the_result);
     RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
+    RUN(a_flood_of_log_events_leaves_half_the_ring_for_other_events);
     RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
     RUN(the_in_process_client_posts_and_reads_like_the_page);

@@ -7,6 +7,7 @@
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { machine } from '@/state/machine.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import { showNotification } from '@/state/toasts.svelte';
   import { formatEntry } from '@/lib/mmu';
 
   // Raw descriptors decoded by the core's machine.cpu.mmu.descriptor: PMMU
@@ -68,7 +69,10 @@
 
   function read() {
     const v = isLisa ? Number.parseInt(addrInput, 10) : parseHex(addrInput);
-    if (v === null || Number.isNaN(v)) return;
+    if (v === null || Number.isNaN(v)) {
+      showNotification(`Invalid ${isLisa ? 'segment' : 'address'}`, 'error');
+      return;
+    }
     at = v;
   }
 

@@ -3,12 +3,17 @@
   import Badge from '@/components/ui/Badge.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import { tick } from 'svelte';
-  import { addBreakpoint, removeBreakpointAt, type DebugFrameRow } from '@/bus/debug';
+  import {
+    addBreakpoint,
+    listBreakpoints,
+    removeBreakpointAt,
+    type DebugFrameRow,
+  } from '@/bus/debug';
   import { debugFrame, ROWS_BEFORE_PC } from '@/state/debugFrame.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
-  import { debug, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
+  import { debug, bumpBreakpoints, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import { readMetric } from '@/lib/tokens';
@@ -44,6 +49,25 @@
     paneEl.scrollTop = Math.max(0, target);
   }
 
+  // The breakpoints by address (true: enabled), for the row markers and
+  // the context menu; listed again with each frame and after any add or
+  // remove.  Only the latest listing is kept.
+  let bps = $state<Map<number, boolean>>(new Map());
+  let bpGen = 0;
+  $effect(() => {
+    void debugFrame.current;
+    void debug.breakpointsGen;
+    const gen = ++bpGen;
+    void listBreakpoints().then((list) => {
+      if (gen === bpGen) bps = new Map(list.map((b) => [b.addr, b.enabled]));
+    });
+  });
+
+  function bpState(addr: number): 'breakpoint' | 'breakpoint-off' | undefined {
+    const on = bps.get(addr >>> 0);
+    return on === undefined ? undefined : on ? 'breakpoint' : 'breakpoint-off';
+  }
+
   function bannerLabel(): string {
     const model = machine.model ?? 'Machine';
     // The frame is read while paused; running, there is no current PC to
@@ -73,21 +97,29 @@
   function onRowContext(row: DebugFrameRow, ev: MouseEvent) {
     ev.preventDefault();
     const mmuOn = machine.mmuEnabled;
+    // Add on a row without a breakpoint, Remove on one with.
     const items: ContextMenuItem[] = [
-      {
-        label: `Add breakpoint at $${fmtHex32(row.addr)}`,
-        action: async () => {
-          const ok = await addBreakpoint(row.addr);
-          if (!ok) showNotification('Failed to add breakpoint', 'error');
-        },
-      },
-      {
-        label: `Remove breakpoint at $${fmtHex32(row.addr)}`,
-        action: async () => {
-          const ok = await removeBreakpointAt(row.addr);
-          if (!ok) showNotification('Failed to remove breakpoint', 'error');
-        },
-      },
+      bps.has(row.addr >>> 0)
+        ? {
+            label: `Remove breakpoint at $${fmtHex32(row.addr)}`,
+            action: async () => {
+              const ok = await removeBreakpointAt(row.addr);
+              if (!ok) showNotification('Failed to remove breakpoint', 'error');
+              bumpBreakpoints();
+            },
+          }
+        : {
+            label: `Add breakpoint at $${fmtHex32(row.addr)}`,
+            action: async () => {
+              const ok = await addBreakpoint(row.addr);
+              if (!ok) {
+                showNotification('Failed to add breakpoint', 'error');
+                return;
+              }
+              showNotification(`Breakpoint set at $${fmtHex32(row.addr)}`, 'info');
+              bumpBreakpoints();
+            },
+          },
       { sep: true },
       {
         label: 'Copy logical address',
@@ -191,10 +223,14 @@
         class="row"
         class:pc={isPc}
         class:selected={selectedIdx === i}
+        data-state={bpState(row.addr)}
         oncontextmenu={(ev) => onRowContext(row, ev)}
       >
         <span class="marker"
-          >{#if isPc}<Icon name="debug-stackframe" size="md" />{/if}</span
+          >{#if isPc}<Icon name="debug-stackframe" size="md" />{:else if bpState(row.addr)}<Icon
+              name="circle-filled"
+              size="xs"
+            />{/if}</span
         >
         <!-- Address group is one grid cell so the mnem/ops columns
              stay aligned across rows even when addr-p / tag are
@@ -290,8 +326,12 @@
   .ops {
     color: var(--gs-code-operand);
   }
-  /* A breakpoint row (a hook for the breakpoint gutter; not set yet). */
+  /* A breakpoint row: its marker (the PC's, on the PC row) in the
+     breakpoint colour. */
   .row:global([data-state='breakpoint']) .marker {
     color: var(--gs-code-breakpoint);
+  }
+  .row:global([data-state='breakpoint-off']) .marker {
+    color: var(--gs-code-breakpoint-off);
   }
 </style>

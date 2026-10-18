@@ -4,7 +4,7 @@
   // pick) commits, Esc cancels.  `onCommit` answers an error message to show
   // under the field (the value then reverts), or null.  Used by SYSTEM's rows
   // and by the method-argument forms.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { TypeDescriptor } from '@/bus/systemTree';
   import Select from '@/components/ui/Select.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
@@ -44,6 +44,16 @@
 
   const kind = $derived(type?.kind ?? 'any');
   const choices = $derived(kind === 'enum' && type?.enum?.length ? type.enum : null);
+
+  // A toggle shows the value as it is now: one written another way (Enter
+  // on a SYSTEM row, the terminal) arrives as a new `value` (S1018-75).  A
+  // text field keeps what is being typed.
+  $effect(() => {
+    const v = value;
+    untrack(() => {
+      if (kind === 'bool' && !busy) text = v;
+    });
+  });
 
   onMount(() => {
     if (!autofocus || !inputEl) return;

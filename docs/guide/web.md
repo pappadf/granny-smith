@@ -268,7 +268,8 @@ printout reads as it did when stdout reached the terminal directly. A
 job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
 "client":c,"text":...}` records in the order the job produced it, before
 the job's result. Outside any request — boot messages, a breakpoint hit —
-text still goes to stdout and `Module.print`.
+text still goes to stdout and `Module.print`, except log lines, which come
+as `log:print` events (below).
 
 **Transfer buffers.** Bulk data reaches the page through a buffer in the
 core's heap that an I/O job owns: the job publishes it under a handle,
@@ -326,6 +327,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}`; a printed document adds `kind: "document", printer, job, pages, title` |
 | `log:log` | the log sink, every line | `{line}` |
+| `log:print` | the log's stdout sink, every line of a category with `stdout` on (in place of stdout, whose one-`postMessage`-per-line road could bury the page) | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
 What still crosses as a `Module.on*` callback is a platform transport

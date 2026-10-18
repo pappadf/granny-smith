@@ -172,6 +172,7 @@ function fakeInput() {
     writes,
     replaceToken: vi.fn((t: string) => void writes.push(t)),
     focusEnd: vi.fn(),
+    focus: vi.fn(),
   };
   registerConsoleInput(api as ConsoleInputApi);
   return api;
@@ -310,7 +311,9 @@ describe('CommandBrowser (structural, model-generated)', () => {
     await fireEvent.click((await row(container, 'step')).querySelector('.cmd-line')!);
     await fireEvent.click(await waitFor(() => getByText('Insert')));
     expect(input.writes).toEqual(['machine.cpu.step ']);
-    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    // The cursor stays after the insert (S1018-74).
+    expect(input.focus).toHaveBeenCalledTimes(1);
+    expect(input.focusEnd).not.toHaveBeenCalled();
   });
 });
 
@@ -387,9 +390,9 @@ describe('CommandBrowser ↔ console', () => {
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
     await fireEvent.keyDown(tree, { key: 'Enter' });
     expect(input.writes).toEqual(['machine.cpu.pc']);
-    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    expect(input.focus).toHaveBeenCalledTimes(1);
     await fireEvent.keyDown(tree, { key: 'Tab' });
-    expect(input.focusEnd).toHaveBeenCalledTimes(2);
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
   });
 
   it('follows the typed token: opens its levels, marks and selects the match, dims the rest', async () => {

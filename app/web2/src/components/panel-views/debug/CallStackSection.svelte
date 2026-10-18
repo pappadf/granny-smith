@@ -24,7 +24,10 @@
   //   68K: the A6 link chain — [fp] is the caller's fp, [fp+4] the return.
   //   PPC: the r1 back-chain — [sp] is the caller's sp, and the saved LR
   //        sits at 8 bytes into the caller's frame; LR itself is frame #0.
-  // Reads are of LOGICAL addresses on both (peekLogicalL).
+  // Reads are of LOGICAL addresses on both (peekLogicalL).  The walk stops
+  // at a link that cannot be the caller's frame -- not above this one (the
+  // stack grows down) or misaligned -- or at a misaligned return address,
+  // instead of decoding whatever memory follows as frames (S1018-85).
   async function walk(): Promise<Frame[]> {
     const f = debugFrame.current;
     if (!f) return [];
@@ -36,9 +39,9 @@
       while (sp && out.length < MAX_DEPTH && !seen[sp]) {
         seen[sp] = true;
         const caller = await peekLogicalL(sp, 'ppc');
-        if (!caller) break;
+        if (!caller || caller & 3 || caller >>> 0 <= sp) break;
         const ret = await peekLogicalL(caller + 8, 'ppc');
-        if (ret === null) break;
+        if (ret === null || ret & 3) break;
         out.push({ ret: ret >>> 0, frame: caller >>> 0 });
         sp = caller >>> 0;
       }
@@ -48,10 +51,10 @@
     while (fp && out.length < MAX_DEPTH && !seen[fp]) {
       seen[fp] = true;
       const ret = await peekLogicalL(fp + 4, f.arch);
-      if (ret === null) break;
+      if (ret === null || ret & 1) break;
       const next = await peekLogicalL(fp, f.arch);
       out.push({ ret: ret >>> 0, frame: fp });
-      if (next === null) break;
+      if (next === null || next & 1 || next >>> 0 <= fp) break;
       fp = next >>> 0;
     }
     return out;
