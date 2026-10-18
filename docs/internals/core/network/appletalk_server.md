@@ -1343,6 +1343,7 @@ _The reply doesn't carry any payload_
    - To rename a directory: search access to all ancestors (including parent), and write access to the parent directory.
    - To rename a file: search access to all ancestors except the parent, and read & write access to the parent directory.
 - The user must have previously called `FPOpenVol` for the volume.
+- **On the host:** the object and its sidecar are renamed together (the sidecar's failure puts the object back). A directory the host filesystem will not rename -- WasmFS's OPFS backend renames files only -- is recreated under the new name and its entries moved into it one by one, subdirectories the same way; a failure part-way moves them back. `FPMoveAndRename` does the same.
 
 ---
 

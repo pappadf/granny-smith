@@ -62,3 +62,21 @@ void atalk_asp_broadcast_attention(uint16_t code) {
     g_attentions++;
 }
 void atalk_asp_close_all_sessions(void) {}
+
+// rename() as the server sees it (the suite links with --wrap=rename).  With
+// stub_refuse_dir_rename set, a directory is refused as WasmFS's OPFS backend
+// refuses it, which renames files only (S1018-23).
+#include <errno.h>
+#include <sys/stat.h>
+
+int stub_refuse_dir_rename;
+int __real_rename(const char *from, const char *to);
+int __wrap_rename(const char *from, const char *to);
+int __wrap_rename(const char *from, const char *to) {
+    struct stat st;
+    if (stub_refuse_dir_rename && stat(from, &st) == 0 && S_ISDIR(st.st_mode)) {
+        errno = EXDEV;
+        return -1;
+    }
+    return __real_rename(from, to);
+}
