@@ -23,7 +23,8 @@ vi.mock('@/bus/media', () => ({
   mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
 }));
 
-const { acceptFiles, acceptFilesRaw, dropSummary } = await import('@/bus/upload');
+const { acceptFiles, acceptFilesRaw, acceptFilesIntoCategory, dropSummary } =
+  await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
@@ -196,5 +197,19 @@ describe('a drop into the Filesystem tab', () => {
     expect(files.has('/opfs/shared/a_b.txt')).toBe(true);
     expect(toastText()).toContain("'Read Me café.txt' saved to /opfs/shared");
     expect(toastText()).toContain("'a:b.txt' saved to /opfs/shared as 'a_b.txt'");
+  });
+});
+
+// S1018-73 (IM-09): a drop of several files on one Images section stored the
+// first and ignored the rest.
+describe('a drop of several files on an Images section', () => {
+  it('stores every file, and inserts only the first', async () => {
+    expect(await acceptFilesIntoCategory([floppy('a.dsk'), floppy('b.dsk')], 'fd')).toBe(true);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/a.dsk',
+      '/opfs/images/fd/b.dsk',
+    ]);
+    expect(media.insertFloppy).toHaveBeenCalledTimes(1);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
   });
 });

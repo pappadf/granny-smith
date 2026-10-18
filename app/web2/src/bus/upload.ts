@@ -296,6 +296,28 @@ async function actOnStored(
   }
 }
 
+// Several files dropped on one Images section: each is stored as that
+// category (acceptFilesAsCategory), a Lisa ROM's two chips as one ROM, and
+// only the first stored goes into the machine.  A drop used to store the
+// first file and ignore the rest without a word.  True when any was stored.
+export async function acceptFilesIntoCategory(
+  files: File[],
+  category: MediaTypeId,
+): Promise<boolean> {
+  let stored = false;
+  for (let i = 0; i < files.length;) {
+    const pair =
+      category === 'rom' &&
+      files[i].size === LISA_CHIP_BYTES &&
+      files[i + 1]?.size === LISA_CHIP_BYTES;
+    const take = files.slice(i, i + (pair ? 2 : 1));
+    i += take.length;
+    if ((await acceptFilesAsCategory(take, category, { autoMount: !stored })) !== null)
+      stored = true;
+  }
+  return stored;
+}
+
 // Category-strict entry — used by the New Machine dialog dropdowns and
 // the Images-tab per-category drop targets. Validates the staged file
 // AS THIS SPECIFIC category only; rejects (with a toast) anything that

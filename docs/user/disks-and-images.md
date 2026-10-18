@@ -37,7 +37,7 @@ other non-empty image.
 | New Machine dialog | A drive's menu → **Load image...** ([Creating a machine](new-machine.md)) |
 | Home screen | **Load ROM...** (several files at once) |
 | The display | Drop files on the screen: ROMs are stored; floppies and CDs go into the running machine's drives |
-| Images panel | The add button of a section, or drop a file on the section (checked strictly against that kind) |
+| Images panel | The add button of a section, or drop files on the section (each checked strictly against that kind; only the first goes into the machine) |
 | Filesystem panel | Drop files into a folder (§5) |
 | A link | `rom=`, `fd0=`, `hd0=`, `cd=` … ([URL parameters](url-parameters.md)) |
 

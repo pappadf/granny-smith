@@ -7,7 +7,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
-  import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
+  import { pickAndUploadAs, acceptFilesIntoCategory } from '@/bus/upload';
   import {
     insertFloppy,
     detectFdDriveCount,
@@ -155,7 +155,7 @@
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
-    if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
+    if (await acceptFilesIntoCategory(files, mediaIdFor(cat))) await refresh();
   }
 
   async function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
