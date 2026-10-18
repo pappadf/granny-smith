@@ -84,7 +84,11 @@ an exported wasm function is still callable from the browser main thread
 runs the core on the main thread, with the main thread's pthread context,
 while the worker is inside `em_main_tick`. Only the handful of built-in
 Emscripten callbacks (pointer lock, mouse, keyboard, visibility) are
-proxied to the worker for us. Calling into the core from the main thread
+proxied to the worker for us. A proxied callback's return value is never
+seen by the DOM listener, so it cannot `preventDefault()` an event: browser
+shortcuts are suppressed on the main thread instead, while the screen holds
+the pointer lock (`app/web2/src/lib/screenKeys.ts`, #352), which also asks
+before a page with a live machine unloads. Calling into the core from the main thread
 races the worker for scheduler, machine and device state, uses WasmFS/OPFS
 handles from a thread that did not open them, and can deadlock or stall on
 the runtime's mutexes. So every JS→C request goes through the mailbox, and
