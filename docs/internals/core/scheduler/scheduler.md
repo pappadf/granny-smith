@@ -5,8 +5,11 @@ how emulated time advances, how CPU execution is organized into sprints, how eve
 queued and fired, and how the various counters stay consistent with each other.
 
 The source lives in [src/core/scheduler/scheduler.c](../../../../src/core/scheduler/scheduler.c) and
-[src/core/scheduler/scheduler.h](../../../../src/core/scheduler/scheduler.h); the private state
-shared with the object-model glue
+[src/core/scheduler/scheduler.h](../../../../src/core/scheduler/scheduler.h); the adaptive speed
+governor (§2.3) is its own module,
+[governor.c](../../../../src/core/scheduler/governor.c) /
+[governor.h](../../../../src/core/scheduler/governor.h), which the scheduler embeds and
+feeds; the private state shared with those and the object-model glue
 ([scheduler_class.c](../../../../src/core/scheduler/scheduler_class.c): the `scheduler` and
 `pacing` nodes) is in
 [scheduler_internal.h](../../../../src/core/scheduler/scheduler_internal.h).
@@ -194,7 +197,12 @@ With `scheduler.speed = 0`, a closed-loop governor picks the highest speed the
 host can sustain *without missing the real-time deadline* — overrunning it stalls
 the paced accumulator, which surfaces as audio underruns and stutter. It runs in
 `paced` and `accelerated` alike (turbo aligns nothing to the host clock, so it is
-not governed). Per paced main-loop tick that executed frame-units, it:
+not governed). The controller lives in
+[governor.c](../../../../src/core/scheduler/governor.c): it sees only the pacing
+settings, the host's per-frame cost and two pressure signals, and answers with a rung
+on the speed ladder; the scheduler turns that rung into the effective CPI
+(`scheduler_update_cpi_eff`) when a tick reports a step. Per paced main-loop tick that
+executed frame-units, it:
 
 1. **Measures** utilization `u = host seconds to emulate one frame-unit /
    MAC_VBL_PERIOD` (the same measurement the pacing EWMA already makes), clipped
@@ -309,6 +317,7 @@ struct scheduler {
                                      //   frame_cycles_left, total_instructions
     uint32_t frequency;              // CPU clock in Hz
     host_pacing_t pacing;            // The host's pacing it runs under (mode, speed; not checkpointed)
+    governor_t governor;             // The adaptive speed governor's live state (§2.3; not checkpointed)
 
     uint32_t cpi_eff_x256;           // Effective CPI, x256 (derived; not checkpointed)
     uint32_t cycle_frac_x256;        // Sub-cycle sprint remainder (transient)
