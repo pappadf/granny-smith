@@ -571,12 +571,12 @@ static int sys_fd_count(config_t *cfg) {
 static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
     int n = sys_fd_count(cfg);
     if (preferred < -1 || preferred >= n) {
-        out_printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        out_printf("%s: no machine.floppy.drive[%d] (this machine has %d).\n", who, preferred, n);
         return -1;
     }
     if (preferred != -1) {
         if (sys_fd_is_inserted(cfg, preferred)) {
-            out_printf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            out_printf("%s: machine.floppy.drive[%d] is already occupied.\n", who, preferred);
             return -1;
         }
         return preferred;
@@ -613,12 +613,14 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // insert's result and printed "inserted" whatever the drive said, so a
     // drive that refused left an orphan on the image list and a success claim.
     if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd insert: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd insert: machine.floppy.drive[%d] refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    out_printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
+    // The drive by its object path, 0-based like the path: the page's own
+    // messages number drives from 1, and a bare "drive 0" read as another one.
+    out_printf("fd insert: inserted %s into machine.floppy.drive[%d].\n", path, target);
     return 0;
 }
 
@@ -685,13 +687,13 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
     }
 
     if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd create: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd create: machine.floppy.drive[%d] refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    out_printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K",
-               target);
+    out_printf("fd create: created %s (%s) and inserted into machine.floppy.drive[%d].\n", path,
+               high_density ? "1440K" : "800K", target);
     return 0;
 }
 
