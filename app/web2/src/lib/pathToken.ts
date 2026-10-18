@@ -16,13 +16,18 @@ export function pathTokenAt(text: string, cursor: number): { start: number; end:
 }
 
 // `text` with the token at `cursor` replaced by `insert`; the cursor lands
-// after the insert.
+// after the insert.  A cursor at the start of a token is not in it: the
+// insert goes in front, a space apart, and the token stays (S1018-74).
 export function replaceTokenAt(
   text: string,
   cursor: number,
   insert: string,
 ): { text: string; cursor: number } {
-  const { start, end } = pathTokenAt(text, cursor);
+  let { start, end } = pathTokenAt(text, cursor);
+  if (start === cursor && end > cursor) {
+    end = cursor;
+    if (!/\s$/.test(insert)) insert += ' ';
+  }
   return { text: text.slice(0, start) + insert + text.slice(end), cursor: start + insert.length };
 }
 
