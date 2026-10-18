@@ -40,6 +40,7 @@ static const av_board_desc_t q840av_board_desc = {
     .ram_onboard = 0, // all RAM on SIMMs
     .simm_slots = 4, // slot k = banks 2k/2k+1
     .simm_first_bank = 0,
+    .uncached_read_cycles = 6, // single read, 60 ns DRAM at 40 MHz
 };
 
 static const av_board_t q840av_board = {

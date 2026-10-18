@@ -70,6 +70,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, 
 // Link stubs
 // ============================================================
 
+// The 53C96's data-out wait charges memory_io_penalty; cpi_x256 == 0 makes
+// it a no-op.
+sprint_io_t g_sprint_io;
+
 // The active machine, as scsi.c asks for it: none in this suite.
 config_t *system_config(void) {
     return NULL;

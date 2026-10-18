@@ -836,6 +836,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     // Shared core (memory_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the single VIA (there is no VIA2 chip on this platform).
     mac030_build_core(cfg, &board->desc->common, cp);
+    g_uncached_read_cycles = board->desc->uncached_read_cycles;
     machine_part_irq(cfg, cp);
 
     mac030_build_lowspeed(cfg, cp, av_scc_irq);

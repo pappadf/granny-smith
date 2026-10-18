@@ -50,7 +50,7 @@ LOG_USE_CATEGORY_NAME("scheduler");
 #define MAC_CPU_FREQUENCY 7833600.0
 #define MAX_SANE_EVENTS   10000 // upper bound for event queue length sanity checks
 // Bounds for plain-data fields restored from a checkpoint.  Real machines use
-// a cpi of 1, 2, 4 or 10 (pdm, tnt, mac030/lisa, plus), so 255 is the same
+// a cpi of 1, 2, 4 or 10 (pdm/68040, tnt, 68030/lisa, plus), so 255 is the same
 // ceiling scheduler.cpi already enforces on the writable attribute; the cycle
 // bound is the one the old assert used.
 #define MAX_SANE_CPI        255
