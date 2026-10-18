@@ -264,30 +264,45 @@ let persistAsked = false;
 // Refuse up front when even the compressed source will not fit, and ask once
 // that the origin's storage not be evicted under pressure (nothing else in
 // the app asks, and an evicted origin loses every image and checkpoint).
-async function preflight(name: string, sourceBytes: number | null): Promise<boolean> {
+// `free`: the storage free when it started (null when unknown), which a
+// failed write is measured against.
+async function preflight(
+  name: string,
+  sourceBytes: number | null,
+): Promise<{ ok: boolean; free: number | null }> {
   const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
-  if (!storage) return true;
+  if (!storage) return { ok: true, free: null };
   if (!persistAsked && storage.persist) {
     persistAsked = true;
     storage.persist().catch(() => undefined);
   }
-  if (sourceBytes === null || !storage.estimate) return true;
+  if (!storage.estimate) return { ok: true, free: null };
   try {
     const est = await storage.estimate();
-    const free = (est.quota ?? Infinity) - (est.usage ?? 0);
+    const free = est.quota !== undefined ? est.quota - (est.usage ?? 0) : null;
     // The stored image is at most about the decoded size, at least what the
     // source compresses to; the source's own size is the cheap bound.
-    if (free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
+    if (free !== null && sourceBytes !== null && free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
       showNotification(
         `Not enough browser storage for ${name}: ${sizeText(Math.max(0, free))} free`,
         'error',
       );
-      return false;
+      return { ok: false, free };
     }
+    return { ok: true, free };
   } catch {
     /* no estimate: try anyway */
+    return { ok: true, free: null };
   }
-  return true;
+}
+
+// Why a failed import failed, when it is the storage: it had written about
+// all that was free when it started.  The write itself fails with a bare
+// error, and its partial file is gone by the time the failure is reported,
+// so an estimate then shows space again.
+export function storageFullHint(free: number | null, stored: number): string {
+  if (free === null || stored < 0.9 * free) return '';
+  return ` (the browser's storage is full: it had ${sizeText(Math.max(0, free))} free)`;
 }
 
 // --- The pipeline ----------------------------------------------------------------
@@ -625,9 +640,12 @@ export async function importImage(
   });
   const total = src.kind === 'blob' ? src.blob.size : src.total;
   const report = opts.onProgress;
+  let storedSoFar = 0;
+  let free: number | null = null;
   opts = {
     ...opts,
     onProgress(read, t, stored) {
+      storedSoFar = Math.max(storedSoFar, stored);
       setActivityDetail(
         `${sizeText(read)}${t ? ` of ${sizeText(t)}` : ''} read, ${sizeText(stored)} stored`,
       );
@@ -635,7 +653,9 @@ export async function importImage(
     },
   };
   try {
-    if (!(await preflight(name, total))) return { handled: true, path: null };
+    const pre = await preflight(name, total);
+    free = pre.free;
+    if (!pre.ok) return { handled: true, path: null };
     const peeked = await headOf(src, 512);
     src = peeked.src;
     const kind = sniffContainer(peeked.head);
@@ -705,7 +725,10 @@ export async function importImage(
       showNotification(`Import of ${name} cancelled`, 'info');
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      showNotification(`Could not import ${name}: ${msg}`, 'error');
+      showNotification(
+        `Could not import ${name}: ${msg}${storageFullHint(free, storedSoFar)}`,
+        'error',
+      );
       console.error('[importImage]', e);
     }
     return { handled: true, path: null };

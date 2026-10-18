@@ -48,7 +48,7 @@ problem.
 | Symptom | Fix |
 |---|---|
 | No **Continue from saved checkpoint?** after the emulator was updated | Checkpoints belong to the build that made them; after an update they cannot be resumed. Start the machine again from its disks ([Saving and resuming](saving-and-resuming.md) §6). |
-| "Not enough browser storage", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
+| "Not enough browser storage", "Could not import … (the browser's storage is full …)", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
 | My changes to a disk are not in the file I saved from the Images panel | Stored images are never changed; the Mac's changes live with the machine. Use the shared folder or **Save State** ([Disks and images](disks-and-images.md) §6). |
 
 ## 5. Current limitations
