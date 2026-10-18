@@ -56,10 +56,10 @@ const rom = (name: string, id: number) => {
 // Nor stream().
 if (!Blob.prototype.stream) {
   Blob.prototype.stream = function (this: Blob) {
-    const blob = this;
+    const read = () => this.arrayBuffer();
     return new ReadableStream<Uint8Array>({
       async start(c) {
-        c.enqueue(new Uint8Array(await blob.arrayBuffer()));
+        c.enqueue(new Uint8Array(await read()));
         c.close();
       },
     });
