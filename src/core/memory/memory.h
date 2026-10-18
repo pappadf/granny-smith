@@ -439,6 +439,12 @@ static inline void memory_io_esync_penalty(void) {
     memory_io_penalty(memory_esync_penalty_cycles(now, g_sprint_io.esync_period_x256));
 }
 
+// Bus cycles a 68040 read of a cache-inhibited RAM page costs beyond the CPI
+// (0 = not priced: such pages read on the fast path like any other).  The
+// machine sets it from its memory controller's single-read time; the 040 MMU
+// keeps those pages off the read fast path while it is non-zero.
+extern uint32_t g_uncached_read_cycles;
+
 // Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses
 // taken through the slow path since process start, and a histogram of them by
 // address bucket (memory.c's MEM_SLOWPATH_BUCKET).

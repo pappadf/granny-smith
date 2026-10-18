@@ -84,16 +84,21 @@ cleanup* stopped the DSP.)  There is no `$81` timeout on a healthy
 boot.  `suite-av` rows `av-dsp-boot` and `av-dsp-determinism` assert
 all of this.
 
-**Why the 840AV runs at CPI 2.**  The `boot` selector's stage-3 poll
-(`$4099C95C`) waits for `data+$198` bit 1 in a fixed loop of $80000
-iterations, five instructions each.  The kernel takes about 1.98 M DSP
-instructions (118 ms at 66.7 MHz) to set the bit, so the loop must cost at
-least 9 cycles per iteration at 40 MHz.  On the real machine the uncached read
-of the shared kernel data supplies that; this emulator charges no memory cost
-for it, so at CPI 1 the loop ends in 65 ms, the poll gives up and calls `stop`,
-and the DSP is held in reset for the session.  The 840AV therefore takes CPI 2
-(131 ms) from its board descriptor.  The 660AV keeps the 68040's 1: at 25 MHz
-the same loop lasts 105 ms, which is enough there.
+**Uncached reads and the boot handshake.**  The `boot` selector's stage-3
+poll (`$4099C95C`) waits for `data+$198` bit 1 in a fixed loop of $80000
+iterations, five instructions each, reading a page the system maps
+cache-inhibited (page descriptor CM = 2).  The kernel takes roughly 85–135 ms
+to set the bit, so the loop's cost per iteration decides whether the host
+waits long enough.  At CPI 1 the five instructions alone give 65 ms on the
+840AV, and the poll would give up, call `stop` and hold the DSP in reset for
+the session.  What makes the real loop long enough is the read itself: an
+uncached access goes to DRAM, a single read taking 6 bus clocks on the 840AV
+and 4 on the 660AV (Apple, *Macintosh Quadra 840AV and Macintosh Centris
+660AV Developer Note*, Table 2-3, p. 20).  The boards set
+`uncached_read_cycles` to those values; the 040 MMU then keeps cache-inhibited
+RAM pages off the read fast path, and the slow path charges the cycles as an
+I/O penalty.  That gives the loop 144 ms on the 840AV and 189 ms on the 660AV;
+measured headless, the kernel answers after 95 ms and 126 ms.
 
 **Known limit — accelerated boot.**  The DSP's budget is per main-CPU
 *cycle* (`ratio_x256`), so under accelerated pacing the 68040 runs more

@@ -257,7 +257,7 @@
       "tolerance": 0.2
     },
     "scsi-bare-volume/q840av-71": {
-      "instr": 644989911,
+      "instr": 568506756,
       "tolerance": 0.2
     },
     "scsi-bare-volume/se30-753": {
@@ -277,91 +277,91 @@
       "tolerance": 0.2
     },
     "suite-av/av-audio-in-device": {
-      "instr": 5787067,
+      "instr": 5180983,
       "tolerance": 0.2
     },
     "suite-av/av-beep": {
-      "instr": 1283423625,
+      "instr": 1830559559,
       "tolerance": 0.2
     },
     "suite-av/av-checkpoint": {
-      "instr": 338951547,
+      "instr": 391684226,
       "tolerance": 0.2
     },
     "suite-av/av-chime": {
-      "instr": 77999104,
+      "instr": 147767204,
       "tolerance": 0.2
     },
     "suite-av/av-dsp-boot": {
-      "instr": 253984298,
+      "instr": 246805948,
       "tolerance": 0.2
     },
     "suite-av/av-dsp-determinism": {
-      "instr": 373939568,
+      "instr": 306762657,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-800k": {
-      "instr": 400337450,
+      "instr": 382832185,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-boot": {
-      "instr": 1254206019,
+      "instr": 1856601327,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-format": {
-      "instr": 2271491783,
+      "instr": 3575513178,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-mount": {
-      "instr": 424402584,
+      "instr": 494840432,
       "tolerance": 0.2
     },
     "suite-av/av-floppy-write-eject": {
-      "instr": 1140509000,
+      "instr": 2978179677,
       "tolerance": 0.2
     },
     "suite-av/av-identity": {
-      "instr": 60466919,
+      "instr": 60387771,
       "tolerance": 0.2
     },
     "suite-av/av-ram-sizing": {
-      "instr": 120467393,
+      "instr": 120436326,
       "tolerance": 0.2
     },
     "suite-av/av-sound-in": {
-      "instr": 1721121023,
+      "instr": 2574536418,
       "tolerance": 0.2
     },
     "suite-av/av-sr-command": {
-      "instr": 2305014061,
+      "instr": 3791655330,
       "tolerance": 0.2
     },
     "suite-av/av-sr-macro": {
-      "instr": 2252097066,
+      "instr": 3990196885,
       "tolerance": 0.2
     },
     "suite-av/av-tts": {
-      "instr": 1704603701,
+      "instr": 2672233230,
       "tolerance": 0.2
     },
     "suite-av/av-video": {
-      "instr": 377886563,
+      "instr": 347578441,
       "tolerance": 0.2
     },
     "suite-av/q660av-71-hd-desktop": {
-      "instr": 396561217,
+      "instr": 381073891,
       "tolerance": 0.2
     },
     "suite-av/q660av-71-video-in": {
-      "instr": 902636662,
+      "instr": 881216292,
       "tolerance": 0.2
     },
     "suite-av/q840av-71-hd-desktop": {
-      "instr": 347938560,
+      "instr": 491768447,
       "tolerance": 0.2
     },
     "suite-av/q840av-71-video-in": {
-      "instr": 864722797,
+      "instr": 994156541,
       "tolerance": 0.2
     },
     "suite-gossamer/g3dt-floppy": {

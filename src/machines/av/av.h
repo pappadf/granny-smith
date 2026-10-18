@@ -100,10 +100,11 @@ typedef struct av_board_desc {
     uint32_t ram_onboard;
     uint8_t simm_slots;
     uint8_t simm_first_bank;
-    // Cycles per instruction when the 68040 default of 1 does not hold (0 =
-    // keep it).  See docs/internals/machines/av/dsp.md on why the 840AV runs
-    // at 2.
-    uint8_t cpi;
+    // Bus clocks of a single DRAM read by the main processor, which a read of
+    // a cache-inhibited page costs (840AV/660AV Developer Note, Table 2-3).
+    // The RTM's DSP boot handshake polls such a page in a counted loop; see
+    // docs/internals/machines/av/dsp.md.
+    uint8_t uncached_read_cycles;
 } av_board_desc_t;
 
 // Decompose `ram` bytes into the board's YMCA banks: the soldered bank,

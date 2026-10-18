@@ -44,6 +44,7 @@ static const av_board_desc_t q660av_board_desc = {
     .ram_onboard = 0x400000, // 4 MB soldered, YMCA bank 0
     .simm_slots = 2, // banks 2/3 and 4/5
     .simm_first_bank = 2,
+    .uncached_read_cycles = 4, // single read at 25 MHz
 };
 
 static const av_board_t q660av_board = {

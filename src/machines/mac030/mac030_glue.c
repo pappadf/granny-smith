@@ -277,6 +277,7 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     // integer.  The 68040 machines build on this core too, and used to
     // inherit the 68030's 4, which ran a Quadra at a quarter of its speed.
     scheduler_set_cpi(cfg->scheduler, cfg->machine->cpu_model == CPU_MODEL_68040 ? 1 : 4);
+    g_uncached_read_cycles = 0; // a board that prices uncached reads sets it after this
 }
 
 void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
