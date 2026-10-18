@@ -169,6 +169,10 @@ describe('ConsoleView', () => {
     await waitFor(() => expect(clip).toEqual(['let a = 1']));
 
     await fireEvent.contextMenu(container.querySelector('.entry.text') as HTMLElement);
+    // An output line holds no command: nothing to copy as one (S1018-80).
+    expect(
+      (await waitFor(() => findMenuItem('Copy as commands'))).getAttribute('aria-disabled'),
+    ).toBe('true');
     await fireEvent.click(await waitFor(() => findMenuItem('Copy output')));
     await waitFor(() => expect(clip[1]).toBe('one\ntwo'));
 
