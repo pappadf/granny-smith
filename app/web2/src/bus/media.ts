@@ -124,7 +124,8 @@ export async function attachCdrom(path: string): Promise<MediaResult> {
 
 // Insert a floppy into `drive`, or, with no drive, into the first empty one
 // of the machine's drives — the physical
-// metaphor of dropping a disk into a Mac.
+// metaphor of dropping a disk into a Mac.  Every UI path inserts writable,
+// as a drop does; `writable` false inserts the disk locked.
 export async function insertFloppy(
   path: string,
   writable: boolean,

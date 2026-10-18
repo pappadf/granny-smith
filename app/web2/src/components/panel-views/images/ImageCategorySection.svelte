@@ -212,7 +212,7 @@
   async function mount(entry: OpfsEntry, device?: MachineDevice, drive?: number) {
     const r =
       cat === 'fd'
-        ? await insertFloppy(entry.path, false, drive)
+        ? await insertFloppy(entry.path, true, drive)
         : await mountImage(cat === 'hd' ? 'hd' : 'cd', entry.path, device);
     if (!r.ok) {
       showNotification(
