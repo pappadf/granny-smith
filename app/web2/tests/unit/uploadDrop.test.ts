@@ -129,7 +129,7 @@ describe('a drop of several files', () => {
     expect(bridge.paths()).not.toContain('checkpoint.load');
     expect(files.has('/opfs/images/fd/a.dsk')).toBe(true);
     expect(toastText()).toContain(
-      "1 stored (1 floppy), 1 rejected: 'state.checkpoint' is a checkpoint: drop a checkpoint on its own",
+      "1 stored (1 floppy), 1 rejected: 'state.checkpoint' is a checkpoint: load a checkpoint on its own",
     );
     expect(scratchLeft()).toEqual([]);
   });

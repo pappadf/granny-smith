@@ -54,6 +54,14 @@ describe('BreakpointsSection', () => {
     });
   });
 
+  it('+ on a collapsed section opens it, so the add row can be seen', async () => {
+    debug.sections.breakpoints = false;
+    const { container } = render(BreakpointsSection);
+    await fireEvent.click(container.querySelector('.add-btn') as HTMLElement);
+    expect(debug.sections.breakpoints).toBe(true);
+    await waitFor(() => expect(container.querySelector('.add-row')).not.toBeNull());
+  });
+
   it('renders one row per breakpoint in the list', async () => {
     bpList = [
       { id: 1, addr: 0x400000, enabled: true, hits: 0 },

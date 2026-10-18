@@ -11,7 +11,7 @@
   import { listWatchpoints, addWatchpoint, removeWatchpoint, type Watchpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { debug, toggleSection } from '@/state/debug.svelte';
+  import { debug, setSection, toggleSection } from '@/state/debug.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import Button from '@/components/ui/Button.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
@@ -113,7 +113,11 @@
       rest="faded"
       iconSize="md"
       label="Add watchpoint"
-      onclick={() => (showAdd = true)}
+      onclick={() => {
+        // The form is in the section's body: a collapsed section opens to show it.
+        setSection('watchpoints', true);
+        showAdd = true;
+      }}
     />
   {/snippet}
   {#if showAdd}

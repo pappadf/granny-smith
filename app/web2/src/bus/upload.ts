@@ -221,7 +221,7 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
         (await fileHasCheckpointSignature(file))
           ? {
               stored: false,
-              reason: 'is a checkpoint: drop a checkpoint on its own',
+              reason: 'is a checkpoint: load a checkpoint on its own',
               severity: 'error',
             }
           : await acceptOne(file, !single),
