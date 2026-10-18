@@ -35,7 +35,13 @@ import { onDownloadChunk } from './download';
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { audioTargetLatencyFromQuery } from '@/audio/latency';
 import { getOrCreateMachine } from '@/lib/machineId';
-import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
+import {
+  routePrintLine,
+  routeErrorLine,
+  routeConsole,
+  routeLogEmit,
+  routeLogPrint,
+} from './logSink';
 import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
 import { bridgeBusy } from '@/state/activity.svelte';
 import {
@@ -824,6 +830,10 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'log:log':
       if (typeof d.line === 'string') routeLogEmit(d.line);
+      break;
+    case 'log:print':
+      // A log line of a stdout=on category: the console shows it.
+      if (typeof d.line === 'string') routeLogPrint(d.line);
       break;
     case 'log:output':
       // A job's printed text, in order: the console shows it.

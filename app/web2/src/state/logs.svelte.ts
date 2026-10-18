@@ -32,9 +32,21 @@ export const logs: LogsState = $state({
 // Pending emits waiting for the next frame flush.
 let pendingEmits: LogEntry[] = [];
 let scheduled = false;
-// One-shot sentinel — emitted on the first overflow after a fresh boot
-// so the user knows oldest entries were dropped.
-let overflowAnnounced = false;
+// Lines dropped since the last clear.  Once any are, the first entry is a
+// notice saying how many (kept there, its count updated, on every later
+// overflow: S1018-87).
+let dropped = 0;
+let noticeShown = false; // entries[0] is the notice
+
+// The notice row for `dropped` lines.
+function droppedNotice(): LogEntry {
+  return {
+    ts: Date.now(),
+    cat: 'logs',
+    level: 0,
+    msg: `[${dropped} older entries dropped — buffer capped at ${MAX} lines]`,
+  };
+}
 
 function scheduleFlush(): void {
   if (scheduled) return;
@@ -49,33 +61,44 @@ function scheduleFlush(): void {
 function flushPending(): void {
   scheduled = false;
   if (!pendingEmits.length) return;
-  const batch = pendingEmits;
+  let batch = pendingEmits;
   pendingEmits = [];
-  const overflow = logs.entries.length + batch.length - MAX;
+  // More than the buffer holds: only the newest MAX can be kept.
+  if (batch.length > MAX) {
+    dropped += batch.length - MAX;
+    batch = batch.slice(batch.length - MAX);
+  }
+  // The notice (when there is one) sits before the lines it is about.
+  const first = noticeShown ? 1 : 0;
+  const overflow = logs.entries.length - first + batch.length - MAX;
   if (overflow > 0) {
-    logs.entries.splice(0, overflow);
-    if (!overflowAnnounced) {
-      overflowAnnounced = true;
-      logs.entries.unshift({
-        ts: Date.now(),
-        cat: 'logs',
-        level: 0,
-        msg: `[${overflow} older entries dropped — buffer capped at ${MAX} lines]`,
-      });
-    }
+    logs.entries.splice(first, overflow);
+    dropped += overflow;
+  }
+  if (dropped > 0) {
+    if (noticeShown) logs.entries[0] = droppedNotice();
+    else logs.entries.unshift(droppedNotice());
+    noticeShown = true;
   }
   logs.entries.push(...batch);
 }
 
 export function appendLog(e: LogEntry): void {
-  pendingEmits.push(e);
+  // A frame can be long in coming (a hidden tab has none): hold at most
+  // twice the buffer, dropping the oldest, so a flood cannot grow it
+  // without bound (S1018-04).
+  if (pendingEmits.push(e) > 2 * MAX) {
+    dropped += pendingEmits.length - MAX;
+    pendingEmits = pendingEmits.slice(pendingEmits.length - MAX);
+  }
   scheduleFlush();
 }
 
 export function clearLogs(): void {
   logs.entries.length = 0;
   pendingEmits.length = 0;
-  overflowAnnounced = false;
+  dropped = 0;
+  noticeShown = false;
 }
 
 export function setAutoscroll(on: boolean): void {

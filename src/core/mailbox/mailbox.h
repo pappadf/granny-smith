@@ -268,7 +268,8 @@ bool mailbox_has_requests(const mailbox_t *m);
 // Emulator thread only, from anywhere in a leaf or the tick: no record is
 // ever half-written across a call, so publishing mid-drain is safe.  False
 // when the event ring has no room: the event is dropped and counted
-// (STAT_DROPPED) -- an event never blocks the emulator thread.
+// (STAT_DROPPED) -- an event never blocks the emulator thread.  A LOG event
+// is dropped already when it would leave less than half the ring free.
 bool mailbox_emit(mailbox_t *m, uint32_t kind, const char *json);
 
 // The client whose request is being served, 0 outside a drain.

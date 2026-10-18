@@ -632,6 +632,19 @@ static void js_log_sink(const char *line, void *user) {
     event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
+// The stdout copy of a log line (its category has stdout on), for the
+// Terminal console.  On stdout each line would be one postMessage from this
+// pthread to the page, unbounded: a verbose category at Max speed queued
+// them faster than the page could take them and hung it for good
+// (S1018-04).  The event ring is bounded and drops what the page cannot
+// keep up with.
+static void js_log_stdout_sink(const char *line, void *user) {
+    (void)user;
+    if (!line)
+        return;
+    event_emit_text(GS_EVENT_LOG, "print", "line", line);
+}
+
 // ============================================================================
 // Filesystem Commands
 // ============================================================================
@@ -1096,6 +1109,8 @@ int main(void) {
     // process-wide, so it also forwards any categories registered later
     // (system_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
+    // ... and the console's copy (stdout=on) the same road, not stdout.
+    log_set_stdout_sink(js_log_stdout_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on
     // READY so requests issued during the boot window don't dispatch

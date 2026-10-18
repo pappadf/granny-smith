@@ -103,6 +103,9 @@ export interface MailboxResult {
 
 export type MailboxFailure = 'deadline' | 'lost' | 'detached';
 
+// The longest the reader drains the event ring before yielding to the page.
+const READ_SLICE_MS = 8;
+
 // A core event as it comes off the ring: the record kind and its JSON text.
 export type EventListener = (kind: number, json: string) => void;
 
@@ -370,10 +373,15 @@ export class Mailbox {
 
   // Drains the event ring into the pending promises, then parks on
   // EVT_HEAD until there is more, for as long as something is pending.
+  // A core that refills the ring as fast as it is drained (verbose logging
+  // at Max speed) would keep this loop from ever parking, so after
+  // READ_SLICE_MS of draining it yields a task to the page; the ring fills
+  // meanwhile and the core drops its log events instead (S1018-04).
   private async readLoop(): Promise<void> {
     if (this.reading) return;
     this.reading = true;
     try {
+      let sliceStart = performance.now();
       while ((this.pending.size > 0 || this.listeners.size > 0) && !this.failed) {
         const head = Atomics.load(this.ctrl, C_EVT_HEAD) >>> 0;
         if (head === this.rd) {
@@ -382,10 +390,17 @@ export class Mailbox {
             return;
           }
           const w = Atomics.waitAsync(this.ctrl, C_EVT_HEAD, head | 0, 1000);
-          if (w.async) await w.value;
+          if (w.async) {
+            await w.value;
+            sliceStart = performance.now(); // parked: a fresh slice
+          }
           continue;
         }
         this.drainEvents(head);
+        if (performance.now() - sliceStart >= READ_SLICE_MS) {
+          await new Promise((r) => setTimeout(r, 0));
+          sliceStart = performance.now();
+        }
       }
     } finally {
       this.reading = false;

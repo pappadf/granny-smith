@@ -122,6 +122,31 @@ describe('core events on the mailbox', () => {
     off();
   });
 
+  it('a core that refills the ring as fast as it drains does not starve the page', async () => {
+    const l = layout();
+    const mb = new Mailbox(l.heap, l.ctrlPtr, 1);
+    let wr = 0;
+    let flooding = true;
+    let seen = 0;
+    // Each event read makes the "core" publish another, so the ring is
+    // never empty while the flood lasts (S1018-04).
+    mb.on(() => {
+      seen++;
+      if (flooding) wr = emit(l, wr, EVT_STATE, '{"event":"flood"}');
+    });
+    wr = emit(l, wr, EVT_STATE, '{"event":"flood"}');
+    // A page task queued behind the reader: it runs only if the reader yields.
+    await new Promise<void>((r) =>
+      setTimeout(() => {
+        flooding = false;
+        r();
+      }, 0),
+    );
+    expect(seen).toBeGreaterThan(1);
+    for (let i = 0; i < 20 && (Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0) !== wr; i++) await tick();
+    expect(Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0).toBe(wr);
+  });
+
   it('a listener that throws does not desynchronise the reader', async () => {
     const l = layout();
     const mb = new Mailbox(l.heap, l.ctrlPtr, 1);
