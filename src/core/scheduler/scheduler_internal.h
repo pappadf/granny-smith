@@ -14,6 +14,7 @@
 
 #include "governor.h"
 #include "scheduler.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -187,5 +188,21 @@ extern uint64_t g_sched_events_fired;
 struct object *scheduler_object_new(struct scheduler *s);
 // Detach and free a node made by scheduler_object_new (NULL is a no-op).
 void scheduler_object_delete(struct object *obj);
+
+// --- The host's pacing (pacing.c) -------------------------------------------
+// One owner for reading, validating and writing the setting: the `pacing`
+// node applies a write to the running machine (system_running_scheduler),
+// the scheduler.* mirrors to their own.  `attr` names the attribute in the
+// error an out-of-range write returns; `s` may be NULL (no machine to apply
+// to).  pacing_write_mode takes `in` over and frees it.
+#define PACING_NUM_MODES 3
+extern const char *const pacing_mode_names[]; // paced, accelerated, turbo, NULL
+value_t pacing_read_mode(const char *attr);
+value_t pacing_read_min_speed(void);
+value_t pacing_read_max_speed(void);
+value_t pacing_write_mode(scheduler_t *s, const char *attr, value_t in);
+value_t pacing_write_speed(scheduler_t *s, const char *attr, double multiplier);
+value_t pacing_write_min_speed(scheduler_t *s, const char *attr, double multiplier);
+value_t pacing_write_max_speed(scheduler_t *s, const char *attr, double multiplier);
 
 #endif // SCHEDULER_INTERNAL_H

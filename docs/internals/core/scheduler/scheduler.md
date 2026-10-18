@@ -9,9 +9,11 @@ The source lives in [src/core/scheduler/scheduler.c](../../../../src/core/schedu
 governor (§2.3) is its own module,
 [governor.c](../../../../src/core/scheduler/governor.c) /
 [governor.h](../../../../src/core/scheduler/governor.h), which the scheduler embeds and
-feeds; the private state shared with those and the object-model glue
-([scheduler_class.c](../../../../src/core/scheduler/scheduler_class.c): the `scheduler` and
-`pacing` nodes) is in
+feeds; the host's pacing setting (§10) and the root `pacing` node are
+[pacing.c](../../../../src/core/scheduler/pacing.c); the private state shared with
+those and the object-model glue
+([scheduler_class.c](../../../../src/core/scheduler/scheduler_class.c): the `scheduler`
+node) is in
 [scheduler_internal.h](../../../../src/core/scheduler/scheduler_internal.h).
 
 ---

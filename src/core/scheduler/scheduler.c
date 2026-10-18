@@ -95,7 +95,8 @@ void scheduler_set_turbo_slice(double secs) {
 // Type Definitions
 // ============================================================================
 // struct event, event_type_t and struct scheduler live in scheduler_internal.h,
-// shared with the object-model glue in scheduler_class.c.
+// shared with the scheduler's other translation units (the object-model
+// glue, pacing, the governor).
 
 // Checkpoint-friendly representation of an event (names instead of pointers)
 typedef struct {
@@ -1268,47 +1269,6 @@ bool scheduler_is_running(struct scheduler *restrict s) {
     if (!s)
         return false;
     return s->saved.running;
-}
-
-// The pacing a build with no run loop of its own runs under (the unit
-// suites); every platform defines platform_pacing over its run loop's setting.
-__attribute__((weak)) host_pacing_t *platform_pacing(void) {
-    static host_pacing_t pacing = HOST_PACING_DEFAULT;
-    return &pacing;
-}
-
-// A speed multiplier clamped to [lo, hi] (x256), as x256 fixed point.
-static uint32_t speed_x256_clamped(double multiplier, uint32_t lo, uint32_t hi) {
-    double clamped = multiplier;
-    if (clamped < (double)lo / 256.0)
-        clamped = (double)lo / 256.0;
-    if (clamped > (double)hi / 256.0)
-        clamped = (double)hi / 256.0;
-    return (uint32_t)(clamped * 256.0 + 0.5);
-}
-
-// Pin the accelerated speed (0 = auto, the governor picks), 1x..8x.
-void host_pacing_set_speed(host_pacing_t *p, double multiplier) {
-    if (!p || isnan(multiplier))
-        return;
-    p->speed_x256 =
-        (multiplier == 0.0) ? SPEED_X256_AUTO : speed_x256_clamped(multiplier, SPEED_X256_ONE, SPEED_X256_MAX);
-}
-
-// Floor the governor (how far it may slow an overloaded host's guest),
-// 0.25x..1x; 1x keeps the guest at the authentic speed whatever the host does.
-void host_pacing_set_min_speed(host_pacing_t *p, double multiplier) {
-    if (!p || isnan(multiplier))
-        return;
-    p->min_speed_x256 = speed_x256_clamped(multiplier, SPEED_X256_MIN, SPEED_X256_ONE);
-}
-
-// Cap the accelerated speed (the governor's ceiling; a pin is clamped to it),
-// 1x..8x.
-void host_pacing_set_max_speed(host_pacing_t *p, double multiplier) {
-    if (!p || isnan(multiplier))
-        return;
-    p->max_speed_x256 = speed_x256_clamped(multiplier, SPEED_X256_ONE, SPEED_X256_MAX);
 }
 
 // Run under the host's pacing from now on.  Nothing to do when it is what

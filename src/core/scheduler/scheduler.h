@@ -97,8 +97,8 @@ typedef struct host_pacing {
                      .max_speed_x256 = SPEED_X256_MAX})
 
 // The platform's pacing setting (its run loop owns the one instance).  A weak
-// default serves a build with no run loop (the unit suites).  scheduler.mode,
-// scheduler.speed and scheduler.max_speed read and write it.
+// default serves a build with no run loop (the unit suites).  The `pacing`
+// node and its scheduler.* mirrors read and write it (pacing.c).
 host_pacing_t *platform_pacing(void);
 
 // The root `pacing` object: the host's setting, there with or without a
