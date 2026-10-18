@@ -27,7 +27,7 @@ describe('URL configuration parameters', () => {
   it('media and page parameters are not configuration edits', () => {
     const p = parseUrlMediaParams(
       new URLSearchParams(
-        'rom=/r&HD0=/h&fd1=/f&model=iix&speed=turbo&skin=x&config=e30&addressing=32',
+        'rom=/r&HD0=/h&fd1=/f&model=iix&speed=turbo&audio_latency=80&skin=x&config=e30&addressing=32',
       ),
     );
     expect(p.settings.options).toEqual([{ id: 'addressing', value: '32', name: 'addressing' }]);

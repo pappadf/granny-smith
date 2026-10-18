@@ -3,6 +3,7 @@
   import Button from '../ui/Button.svelte';
   import Link from '../ui/Link.svelte';
   import { urlBoot } from '@/state/urlBoot.svelte';
+  import { machine } from '@/state/machine.svelte';
 
   // Bump the version suffix to re-prompt users after a significant
   // update (e.g. moving from preview to GA).
@@ -13,8 +14,10 @@
 
   $effect(() => {
     // A page opened to boot a machine from its URL asks nothing: the
-    // notice waits for a visit to the start screen.
-    if (urlBoot.requested) return;
+    // notice waits for a visit to the start screen (after a Shut down, or a
+    // boot that failed), which it used to wait for until the next load.
+    const live = machine.status === 'running' || machine.status === 'paused';
+    if (urlBoot.requested && (urlBoot.showProgress || live)) return;
     try {
       if (localStorage.getItem(DISMISS_KEY) !== '1') open = true;
     } catch {
