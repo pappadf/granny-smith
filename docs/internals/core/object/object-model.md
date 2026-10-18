@@ -684,7 +684,7 @@ the level contract over every model in the registry.
 | CPU registers | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
 | PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | **Kept** | **Kept** | Restored |
 | NVRAM (`machine.nvram`: Grand Central on TNT/ANS, Heathrow on the beige G3) | Blank | **Kept** | **Kept** | From the checkpoint |
-| RTC time | Host wall clock at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | **Keeps counting** | **Keeps counting** | The saved value |
+| RTC time | Host wall clock (local time) at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | **Keeps counting** | **Keeps counting** | The saved value |
 | Mounted media | None. The old machine's images are closed (`system_destroy`); a CD bay is registered empty | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
 | Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
