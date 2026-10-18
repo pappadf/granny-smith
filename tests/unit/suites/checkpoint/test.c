@@ -226,6 +226,23 @@ TEST(foreign_build_id_is_refused) {
     cp_unlink();
 }
 
+// checkpoint.load names the reason for a file from another build: the page
+// showed only "the operation reported failure".
+TEST(load_method_says_a_foreign_build_saved_it) {
+    write_valid(CHECKPOINT_KIND_CONSOLIDATED);
+    checkpoint_init();
+    memcpy(g_build_id, "unit-test-build-0002", BUILD_ID_LEN);
+    value_t arg = val_str(CP_PATH);
+    value_t r = node_call(object_resolve(object_root(), "checkpoint.load"), 1, &arg);
+    memcpy(g_build_id, "unit-test-build-0001", BUILD_ID_LEN);
+    ASSERT_EQ_INT((int)r.kind, (int)VK_ERROR);
+    ASSERT_TRUE(r.err && strstr(r.err, "another version of the emulator") != NULL);
+    value_free(&r);
+    value_free(&arg);
+    checkpoint_delete();
+    cp_unlink();
+}
+
 // === Truncation =============================================================
 
 TEST(truncated_stream_sets_error_not_garbage) {
@@ -651,6 +668,7 @@ int main(void) {
     RUN(consolidated_round_trip);
     RUN(quick_round_trip);
     RUN(foreign_build_id_is_refused);
+    RUN(load_method_says_a_foreign_build_saved_it);
     RUN(truncated_stream_sets_error_not_garbage);
     RUN(block_size_divergence_is_caught_in_v2);
     RUN(failed_read_zeroes_its_destination_consolidated);
