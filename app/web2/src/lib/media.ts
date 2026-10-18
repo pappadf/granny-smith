@@ -47,8 +47,6 @@ const FD_720 = 720 * 1024; // MFM double density (PC Exchange / DOS)
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
 const DC42_TAGS = (data: number) => (data / 512) * 12;
-// The smallest file taken as a hard disk: the smallest floppy's size.
-const MIN_HD_BYTES = FD_400;
 
 // Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
 // `id` is the ROM's own stored checksum, the only thing a ROM file is ever
@@ -326,11 +324,10 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      // Smaller than the smallest floppy is no hard disk: a ROM, a card's
-      // ROM or a cut-short dump, which identify_hd (anything that opens and
-      // is not floppy-sized) would otherwise take.
-      const size = await gsEval('files.path_size', [path]);
-      if (typeof size === 'number' && size < MIN_HD_BYTES) return { valid: false };
+      // identify_hd refuses a disk smaller than the smallest floppy (a ROM, a
+      // card's ROM or a cut-short dump, S1018-26).  It measures the disk, not
+      // the file: a UDIF or QCOW2 of a mostly empty disk is far smaller than
+      // the disk it holds, so the file's size says nothing here.
       if ((await gsEval('machine.scsi.identify_hd', [path])) === true) return { valid: true };
       return { valid: false, reject: await containerRefusal(path, gsEval) };
     },

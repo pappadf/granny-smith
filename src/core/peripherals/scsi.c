@@ -2122,9 +2122,15 @@ static DEF_SETTER(scsi_attr_loopback_set) {
     return val_none();
 }
 
+// The smallest disk taken as a hard disk: the smallest floppy's size.
+#define IDENTIFY_HD_MIN_BYTES (400u * 1024u)
+
 // `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
-// it opens, isn't a floppy-sized image, and has a non-zero size.  Why, and
-// the closest drive model, go to the scsi log category.
+// it opens, isn't a floppy-sized image, and its disk is at least as large as
+// the smallest floppy.  Smaller is a ROM, a card's ROM or a cut-short dump
+// (S1018-26).  The size is the disk's, not the file's: a UDIF or QCOW2 of a
+// mostly empty disk is far smaller than the disk it holds.  Why, and the
+// closest drive model, go to the scsi log category.
 static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
@@ -2138,6 +2144,11 @@ static DEF_METHOD(scsi_method_identify_hd) {
         return val_bool(false);
     }
     uint64_t sz = image_get_raw_size(img);
+    if (sz < IDENTIFY_HD_MIN_BYTES) {
+        LOG(2, "identify_hd: %s is smaller than the smallest floppy (%llu bytes)", path, (unsigned long long)sz);
+        image_close(img);
+        return val_bool(false);
+    }
     const struct drive_model *best = drive_catalog_find_closest(sz);
     LOG(2, "identify_hd: %s is an HD image: %llu bytes, %s %s %s", path, (unsigned long long)sz,
         sz == best->size ? "matches" : "nearest model", best->vendor, best->product);

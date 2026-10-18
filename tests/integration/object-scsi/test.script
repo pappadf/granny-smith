@@ -59,6 +59,14 @@ assert files.fd_create("${$WORK_DIR}/ident-fd.img") "fd_create failed"
 assert machine.scsi.identify_hd("${$WORK_DIR}/ident-hd.img") == true "HD image not identified as HD"
 assert machine.scsi.identify_hd("${$WORK_DIR}/ident-fd.img") == false "floppy wrongly identified as HD"
 assert machine.scsi.identify_hd("${$WORK_DIR}/does-not-exist.img") == false "missing file identified as HD"
+# A disk smaller than the smallest floppy is no hard disk (S1018-26): a
+# 32 KB PCI card ROM opens and is not floppy-sized, but is refused.
+assert machine.scsi.identify_hd("../../data/roms/mach64-gx-104-437584e0.prom") == false "a 32 KB card ROM identified as HD"
+# The floor is the disk's size, not the file's: the UDIF of the blank 20 MB
+# disk above is a few KB, and still a hard disk.
+assert files.convert("${$WORK_DIR}/ident-hd.img", "${$WORK_DIR}/ident-hd.dmg") "convert to UDIF failed"
+assert files.path_size("${$WORK_DIR}/ident-hd.dmg") < 409600 "the blank disk's UDIF is not smaller than a floppy"
+assert machine.scsi.identify_hd("${$WORK_DIR}/ident-hd.dmg") == true "a compact UDIF of a 20 MB disk not identified as HD"
 
 # CD-ROM: requires a recognised filesystem (ISO 9660 / HFS / APM). The
 # retail A/UX install disc is the positive case; a blank (all-zero) HD

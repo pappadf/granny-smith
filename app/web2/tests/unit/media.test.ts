@@ -130,15 +130,20 @@ describe('rom media descriptor — a cut-short dump', () => {
 
 describe('hd media descriptor', () => {
   const core =
-    (size: number): GsEval =>
+    (size: number, isHd: boolean): GsEval =>
     async (path: string) =>
-      path === 'files.path_size' ? size : path === 'machine.scsi.identify_hd';
+      path === 'files.path_size' ? size : path === 'machine.scsi.identify_hd' ? isHd : '';
 
-  // S1018-26: a 32 KB PCI ROM opens and is not floppy-sized, which was all
-  // identify_hd asked.
-  it('refuses a file smaller than the smallest floppy', async () => {
-    expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024))).valid).toBe(false);
-    expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024))).valid).toBe(true);
+  // S1018-26: a 32 KB PCI ROM is refused by identify_hd, which measures the
+  // disk (src/core/peripherals/scsi.c).  The file's size is not the disk's:
+  // the UDIF the import stores for a mostly empty 64 MB disk is a few
+  // hundred KB, and it is a hard disk.
+  it("takes identify_hd's verdict, not the file's size", async () => {
+    expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024, false))).valid).toBe(false);
+    expect((await MEDIA_TYPES.hd.validate('/x.dmg', core(300 * 1024, true))).valid).toBe(true);
+    expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024, true))).valid).toBe(
+      true,
+    );
   });
 
   // S1018-43: a QCOW2 / UDIF the core cannot read said only "is not a valid
