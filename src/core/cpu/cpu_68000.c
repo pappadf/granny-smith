@@ -54,6 +54,10 @@
         system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
         cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
     }                                                                                                                  \
+    /* Set SoA active pointers based on current supervisor mode, as the 68030 and   */                                 \
+    /* 68040 do: map selection (a checkpoint restore) resets them to supervisor,    */                                 \
+    /* and the Lisa MMU picks its context from them (#325).                         */                                 \
+    cpu_select_soa(cpu->supervisor);                                                                                   \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
      * error is delivered at the FAULTING instruction's epilogue.  The 68030 decoder                                   \

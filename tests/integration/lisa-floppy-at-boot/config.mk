@@ -7,9 +7,13 @@
 # disk-inserted event keeps FDIR up and the level-1 handler runs forever: the
 # boot hung at the ROM's hourglass.  With the mask honoured LOS reaches the
 # desktop and, once its driver is up, reports the diskette.
+#
+# The row then saves and restores a checkpoint with the diskette still in the
+# drive (#325): the restore must not re-insert it (no interrupt pending after
+# the load) and the restored desktop must still answer the mouse.
 
 TEST_NAME := Apple Lisa 2 LOS 3.1 with a diskette at power-on
-TEST_DESC := Boots LOS 3.1 off the ProFile with a floppy already inserted; it must reach the desktop
+TEST_DESC := Boots LOS 3.1 off the ProFile with a floppy already inserted; it must reach the desktop and survive a checkpoint round trip
 
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 

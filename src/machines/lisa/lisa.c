@@ -1155,6 +1155,12 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (!checkpoint) {
         cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
+    } else {
+        // Level 1's sub-sources are not checkpointed: recompute each from its
+        // device's restored state so cfg->rt.irq agrees with the hardware (#325).
+        ls->l1_via2 = (via_get_ifr(cfg->via2) & 0x80) != 0; // VIA2 aggregate IRQ
+        ls->l1_vbl = lisa_mmu_vbl_active(ls->mmu); // latched, unacknowledged VBL
+        lisa_fdc_update_int(ls->fdc); // FDIR -> PB4 and l1_floppy, then level 1
     }
     return 0;
 }

@@ -91,6 +91,15 @@ IMsk powers up as `$88` (both drives enabled), and a checkpoint from before
 the mask was modelled (byte 44 = 0) restores as `$88`. Either way, flows
 that never disable a drive behave exactly as before.
 
+A checkpoint restore **reattaches** the diskette that was in the drive; it
+does not insert it. The restored shared RAM already holds the true IST and
+IMsk, so a fresh disk-in event ($90) would be a phantom insertion nothing
+acknowledges: FDIR and level 1 would stay up and LOS would hang on the
+hourglass (#325). FDIR is re-derived from that RAM once the machine is built
+(`lisa_fdc_update_int`), alongside the other level-1 sources (VIA2's IRQ, the
+latched VBL), which are recomputed from their devices rather than saved
+(`tests/integration/lisa-floppy-at-boot` does the round trip).
+
 > Note: a faithful `STOP` instruction is a prerequisite for the deferred model to
 > matter — the OS scheduler's idle `Pause` is `STOP #$2000`, and the CPU must
 > actually halt there until the floppy IPL-1 interrupt arrives. See docs/reference/machines/lisa/lisa.md
