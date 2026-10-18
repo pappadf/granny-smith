@@ -25,6 +25,9 @@
     crashed: 'Crashed',
   };
 
+  // Every non-empty label, laid invisibly under the shown one to size the field.
+  const stateSizers = Object.values(stateLabel).filter((l) => l);
+
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
@@ -164,12 +167,39 @@
 {#if visible}
   <div class="gs-statusbar" data-state={barState} role="status">
     <div class="statusbar-left">
+      <!-- Fixed width (the widest label sizes it) so the indicators that
+           follow never shift when the state changes. -->
       <div class="gs-statusbar__item sb-item sb-state" title="Machine state">
-        {#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
-            class="dot"
-            state={barState}
-          />{/if}<span class="label">{stateLabel[machine.status]}</span>
+        <span class="glyph"
+          >{#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
+              class="dot"
+              state={barState}
+            />{/if}</span
+        ><span class="text"
+          ><span class="label">{stateLabel[machine.status]}</span>{#each stateSizers as s (s)}<span
+              class="sizer"
+              aria-hidden="true">{s}</span
+            >{/each}</span
+        >
       </div>
+      {#if machine.drives.hd}
+        <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
+      {/if}
+      {#if machine.drives.fd}
+        <DriveLight label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
+      {/if}
+      {#if machine.drives.cd}
+        <DriveLight label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {/if}
+      <DriveLight label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
+      <ToggleChip
+        class="gs-statusbar__item sb-item sb-caps"
+        pressed={machine.capsLock}
+        label="Caps Lock"
+        title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
+        icon="arrow-up"
+        onToggle={() => void setCapsLock(!machine.capsLock)}
+      />
       {#if showSpeed}
         <div class="gs-statusbar__item sb-item sb-speed" title={speedTitle}>
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
@@ -202,24 +232,6 @@
           <span class="label">{engineLabel}</span>
         </button>
       {/if}
-      {#if machine.drives.hd}
-        <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
-      {/if}
-      {#if machine.drives.fd}
-        <DriveLight label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
-      {/if}
-      {#if machine.drives.cd}
-        <DriveLight label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
-      {/if}
-      <DriveLight label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
-      <ToggleChip
-        class="gs-statusbar__item sb-item sb-caps"
-        pressed={machine.capsLock}
-        label="Caps Lock"
-        title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
-        icon="arrow-up"
-        onToggle={() => void setCapsLock(!machine.capsLock)}
-      />
     </div>
     <div class="statusbar-right">
       {#if bridgeBusy.path}
@@ -338,6 +350,20 @@
   .gs-statusbar__button:focus-visible {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);
+  }
+  .sb-state .glyph {
+    display: inline-flex;
+    justify-content: center;
+    width: var(--gs-size-icon-sm);
+  }
+  .sb-state .text {
+    display: inline-grid;
+  }
+  .sb-state .text > * {
+    grid-area: 1 / 1;
+  }
+  .sb-state .sizer {
+    visibility: hidden;
   }
   .sb-speed {
     font-variant-numeric: var(--gs-numeric);
