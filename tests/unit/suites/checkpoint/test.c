@@ -416,7 +416,7 @@ TEST(large_block_round_trips_across_rle_pieces) {
     // a run of 0xAA from 3.5 MB to 4.5 MB: across the first piece boundary
     memset(big + (size_t)7 * 512 * 1024, 0xAA, (size_t)1024 * 1024);
     // short runs and single literals near the end
-    for (size_t i = n - 4096; i < n; i += 5)
+    for (size_t i = n - 4096; i + 4 <= n; i += 5)
         memset(big + i, 0x55, i % 2 ? 1 : 4);
     checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
