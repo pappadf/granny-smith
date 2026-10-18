@@ -389,15 +389,18 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
         endActivity();
       }
     }
-    const safe = sanitizeName(file.name) || 'file.bin';
+    // Only what OPFS cannot hold is replaced (a ':' or '/'); spaces and
+    // accented letters are kept, and a changed name is said.
+    const safe = opfsSafeName(file.name);
     const finalPath = `${targetDir}/${safe}`;
     startActivity(file.name);
     try {
       // Write straight to the chosen folder on the worker (Safari-safe, coherent
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
       const ok = await streamToOpfs(finalPath, file);
+      const as = safe === file.name ? '' : ` as '${safe}'`;
       showNotification(
-        ok ? `'${file.name}' saved to ${targetDir}` : `Could not load ${file.name}`,
+        ok ? `'${file.name}' saved to ${targetDir}${as}` : `Could not load ${file.name}`,
         ok ? 'info' : 'error',
       );
     } finally {

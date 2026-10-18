@@ -23,7 +23,7 @@ vi.mock('@/bus/media', () => ({
   mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
 }));
 
-const { acceptFiles, dropSummary } = await import('@/bus/upload');
+const { acceptFiles, acceptFilesRaw, dropSummary } = await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
@@ -183,5 +183,18 @@ describe('dropSummary', () => {
         ],
       ),
     ).toEqual({ msg: '2 stored (1 hard disk, 1 CD-ROM)', severity: 'info' });
+  });
+});
+
+// S1018-25: a Filesystem-tab drop keeps the file's name; only what OPFS
+// cannot hold is replaced, and then the toast says what it was saved as.
+describe('a drop into the Filesystem tab', () => {
+  it('keeps spaces and accents, and names a changed name', async () => {
+    const text = (name: string) => new File([new TextEncoder().encode('hi')], name);
+    await acceptFilesRaw([text('Read Me café.txt'), text('a:b.txt')], '/opfs/shared');
+    expect(files.has('/opfs/shared/Read Me café.txt')).toBe(true);
+    expect(files.has('/opfs/shared/a_b.txt')).toBe(true);
+    expect(toastText()).toContain("'Read Me café.txt' saved to /opfs/shared");
+    expect(toastText()).toContain("'a:b.txt' saved to /opfs/shared as 'a_b.txt'");
   });
 });
