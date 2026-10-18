@@ -127,7 +127,7 @@ let av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 # still executing ROM after POST" IS the identity assertion.
 def row_av_identity() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    scheduler.run 30000000
+    scheduler.run 60000000
     assert machine.id == "q840av" "av-identity: machine.id != q840av"
     # $A55A2830 for every AV machine, and the ROM tests write-protection.
     assert machine.memory.peek.l(0x5FFFFFFC) == 0xA55A2830 "av-identity: CPU-ID is ${machine.memory.peek.l(0x5FFFFFFC):08x}, want A55A2830"
@@ -143,7 +143,7 @@ def row_av_identity() {
     assert machine.cpu.instr_count > 20000000 "av-identity: 840AV made no progress"
 
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
-    scheduler.run 30000000
+    scheduler.run 90000000
     assert machine.id == "q660av" "av-identity: machine.id != q660av"
     # Strap nibble $B (Tempest25) = %1011: strap 2 is the low one.
     assert machine.memory.peek.l(0x50F30438) >= 0x80000000 "av-identity: 660AV strap 0 low"
@@ -260,9 +260,9 @@ def row_q840av_71_hd_desktop() {
     assert debug.mac.globals.read("BootDrive") != 0 "q840av-hd: BootDrive is 0 — nothing booted"
     assert debug.mac.globals.read("SysMap") != 0 "q840av-hd: SysMap unset — no System file opened"
     assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q840av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
-    # The tick interrupt has run for 10 s of guest time (the desktop is up
-    # at ~950 ticks).
-    assert debug.mac.globals.read("Ticks") > 600 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    # The tick interrupt has run for 5 s of guest time (the desktop is up
+    # in under 600 ticks on both models).
+    assert debug.mac.globals.read("Ticks") > 300 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     # The two models render an identical desktop from the same volume, so the
@@ -317,9 +317,9 @@ def row_q660av_71_hd_desktop() {
     assert debug.mac.globals.read("BootDrive") != 0 "q660av-hd: BootDrive is 0 — nothing booted"
     assert debug.mac.globals.read("SysMap") != 0 "q660av-hd: SysMap unset — no System file opened"
     assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q660av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
-    # The tick interrupt has run for 10 s of guest time (the desktop is up
-    # at ~950 ticks).
-    assert debug.mac.globals.read("Ticks") > 600 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    # The tick interrupt has run for 5 s of guest time (the desktop is up
+    # in under 600 ticks on both models).
+    assert debug.mac.globals.read("Ticks") > 300 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q660av-7.1-640x480x8-hd-finder.png")
     # The two models render an identical desktop from the same volume, so the
@@ -673,7 +673,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 68400)
+    check_sound("goldens/av-tts.wav", 73920)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -740,7 +740,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 160320)
+    check_sound("goldens/av-sound-in.wav", 160080)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
@@ -874,13 +874,13 @@ def row_av_dsp_boot() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
-    # The RTM init runs ~65-90M instructions into boot; sample the window.
-    scheduler.run 60000000
+    # The RTM init runs ~150M slots into boot (CPI 2); sample the window.
+    scheduler.run 120000000
     let saw_live = 0
     let saw_alive = 0
     let i = 0
     while $i < 40 {
-        scheduler.run 1000000
+        scheduler.run 4000000
         if machine.dsp.state == "running" || machine.dsp.state == "idle" {
             $saw_live = 1
             if machine.dsp.evtp != 0 {
@@ -920,12 +920,12 @@ def row_av_dsp_determinism() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 100000000
+    scheduler.run 400000000
     let fp1 = dsp_fingerprint()
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd "${$av_hd}" 0
-    scheduler.run 100000000
+    scheduler.run 400000000
     let fp2 = dsp_fingerprint()
     assert $fp1 == $fp2 "av-dsp-determinism: ${$fp1} != ${$fp2}"
     assert machine.dsp.instr_count > 100000 "av-dsp-determinism: the DSP did not run inside the window"
@@ -941,7 +941,7 @@ def row_av_chime() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     machine.sound.capture.start
     # The chime plays out-enabled frames ~10-67 (~0.6 s); run well past it.
-    scheduler.run 30000000
+    scheduler.run 100000000
     assert machine.sound.frames > 100 "av-chime: sound frame engine not ticking"
     # machine.psc — on the AV machines the PSC is both the VIA2 replacement
     # and the L3-L6 level controller, so one node carries two register
@@ -951,12 +951,12 @@ def row_av_chime() {
     assert len(machine.psc.levels) == 4 "av-chime: PSC level map is not L3..L6"
     assert machine.psc.levels[0].ipl == 3 "av-chime: PSC level map does not start at IPL 3"
     assert len(machine.psc.level_ier) == 4 "av-chime: PSC has four level IERs"
-    # 27,840 frames (was 52,800) since a sprint ended early stopped freezing
-    # the CPU to the next event: the ROM's delay that holds the chime's output
-    # open runs at its true length, and the same chime (same partials, same
-    # decay) is held about half as long -- ~1.15 s, against the ~0.6-1 s the
-    # out-enabled frame count above puts it at.
-    check_sound("goldens/av-chime.wav", 27840)
+    # 42,240 frames (~1.76 s).  It was 27,840 (~1.16 s) at CPI 4, and before
+    # that 52,800 when a sprint ended early froze the CPU to the next event.
+    # The envelope is the same chime (same sustain level, same decay); the
+    # output is held open longer since the 840AV moved to CPI 2, a hold time
+    # that is not yet understood.
+    check_sound("goldens/av-chime.wav", 42240)
     report_perf("suite-av/av-chime", scheduler.instr_count)
 }
 

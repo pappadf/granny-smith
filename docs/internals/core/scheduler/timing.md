@@ -35,9 +35,15 @@ execution timeline is a pure function of the frame-unit count — identical in
 the paced and unthrottled pacing modes and on both targets.
 
 Current values: the Plus uses 10 (calibrated against its 7.8336 MHz 68000 —
-real hardware sustains ~0.7 MIPS); the 030 machines use 4 (4-clock bus cycle at
-15.6672 MHz with 1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing
-effective value).
+real hardware sustains ~0.7 MIPS); the 68030 machines use 4 and the 68040
+machines 1 (Apple's MIPS ratings read as MHz / MIPS give about 4.0 for every
+68030 Mac and 1.14 for the 68040 Quadras; the shared core in
+`mac030_build_core` picks by CPU model), except the Quadra 840AV at 2 (its
+board descriptor overrides it: the ROM's DSP handshake poll counts iterations,
+and at 40 MHz and 1 it times out before the DSP kernel answers; see
+[dsp.md](../../machines/av/dsp.md)); the Lisa/Mac XL uses 4 (its
+long-standing effective value); the 601 PDM machines use 1 and the TNT and
+Gossamer machines 2 (see `tnt.c`).
 
 ### Effective CPI (the speed governor and accelerated mode)
 
@@ -366,9 +372,19 @@ Each machine sets its CPU clock frequency via `scheduler_set_frequency()`:
 
 | Machine | CPU | Frequency | CPI |
 |---------|-----|-----------|-----|
+| Lisa 2 / Mac XL | 68000 @ 5.09375 MHz | 5,093,750 Hz | 4 |
 | Plus | 68000 @ 7.8336 MHz | 7,833,600 Hz | 10 |
-| SE/30 | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
-| IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
+| SE/30, IIx, IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
+| IIsi | 68030 @ 20 MHz | 20,000,000 Hz | 4 |
+| IIci | 68030 @ 25 MHz | 25,000,000 Hz | 4 |
+| IIfx | 68030 @ 40 MHz | 40,000,000 Hz | 4 |
+| Quadra 700, 900, 660AV | 68040 @ 25 MHz | 25,000,000 Hz | 1 |
+| Quadra 950 | 68040 @ 33.33 MHz | 33,333,333 Hz | 1 |
+| Quadra 840AV | 68040 @ 40 MHz | 40,000,000 Hz | 2 |
+| Power Mac 6100, 7100, 8100 | 601 @ 60, 66, 80 MHz | profile | 1 |
+| Power Mac 7500 | 601 @ 100 MHz | 100,000,000 Hz | 2 |
+| Power Mac 8500, 9500; ANS 500, 700 | 604 @ 120, 132, 132, 150 MHz | profile | 2 |
+| Power Mac G3 Desktop, Minitower | 750 @ 267.28, 300.69 MHz | profile | 2 |
 
 The frequency is used to convert between cycles and wall-clock time (for
 nanosecond-based event scheduling and the `scheduler_time_ns()` query).

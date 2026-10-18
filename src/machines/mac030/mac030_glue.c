@@ -268,7 +268,15 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4);
+    // CPI by CPU, both from Apple's "Macintosh Family: MIPS Ratings" (Tech
+    // Info Library, Oct 1996) read as MHz / MIPS, which folds in the memory
+    // system's wait states as this one constant must.  The 68030 machines sit
+    // at 4.0 (IIx/IIcx/SE/30 3.9 MIPS at 15.67 MHz, IIfx 10 MIPS at 40 MHz).
+    // The 68040 sits at 1.14 (22 MIPS at 25 MHz, 35 at 40 MHz), and Apple's
+    // 68040 description states 1.3 cycles per instruction; 1 is the nearest
+    // integer.  The 68040 machines build on this core too, and used to
+    // inherit the 68030's 4, which ran a Quadra at a quarter of its speed.
+    scheduler_set_cpi(cfg->scheduler, cfg->machine->cpu_model == CPU_MODEL_68040 ? 1 : 4);
 }
 
 void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
