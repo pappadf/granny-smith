@@ -187,8 +187,10 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.
-    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
-    if (resumed) return;
+    // A link without a ROM still offers the saved machine; its media then go
+    // into whichever machine is running (the resumed one), or are stored and
+    // said to be unused -- Resume used to drop them silently.
+    if (!urlBoots) await maybeOfferBackgroundCheckpoint();
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
     // be ignored.

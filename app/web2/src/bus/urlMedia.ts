@@ -55,7 +55,7 @@ import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { routePrintLine } from './logSink';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import type { SchedulerMode } from '@/state/machine.svelte';
+import { machine, type SchedulerMode } from '@/state/machine.svelte';
 import {
   urlBoot,
   queueUrlFile,
@@ -269,8 +269,22 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   if (!params.rom) {
     // Without a ROM there's no machine to boot; insert floppies into the
-    // existing machine if one is running (matches url-media.js:230-237).
-    await insertUrlFloppies(params, paths);
+    // existing machine if one is running (a resumed one included).  Whatever
+    // does not go in is stored only, and said so: it used to be dropped
+    // without a word, or reported as a drive the absent machine lacked.
+    const live = machine.status === 'running' || machine.status === 'paused';
+    if (live) await insertUrlFloppies(params, paths);
+    const unused = [...paths]
+      .filter(([slot, p]) => p && !(live && slot.startsWith('fd')))
+      .map(([slot]) => slot);
+    if (unused.length)
+      showNotification(
+        `${unused.join(', ')}: stored in Images, not attached: ` +
+          (live
+            ? 'a link without rom= only inserts floppies into the running machine'
+            : 'no machine is running, and a link without rom= boots none'),
+        'warning',
+      );
     return false;
   }
 

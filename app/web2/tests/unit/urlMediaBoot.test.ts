@@ -45,6 +45,7 @@ const { processUrlMedia } = await import('@/bus/urlMedia');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
+const { machine } = await import('@/state/machine.svelte');
 
 // A ROM the fake core recognises: 64 KB whose first byte is 'R'.
 const PLUS_ROM = new Uint8Array(64 * 1024).fill(0x52);
@@ -182,6 +183,32 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(written).not.toContain(firstPath);
     expect(files.get(firstPath)).toBe(mounted);
     expect(scratchLeft()).toEqual([]);
+  });
+});
+
+describe('URL media without rom=: into the running machine, or said to be unused', () => {
+  afterEach(() => {
+    machine.status = 'no-machine';
+  });
+
+  it('with a machine running (a resumed one), the floppy goes into it', async () => {
+    machine.status = 'running';
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/opfs\/images\/fd\/fd0_/),
+      true,
+      0,
+    );
+    expect(toastText()).not.toMatch(/not attached/);
+  });
+
+  it('with no machine, the floppy is stored and the toast says why it is not inserted', async () => {
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/fd0: stored in Images, not attached: no machine is running/);
+    expect(toastText()).not.toMatch(/no floppy drive/);
   });
 });
 
