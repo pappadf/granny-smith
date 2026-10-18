@@ -111,6 +111,17 @@ void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, s
 // *out_size bytes, or NULL on read/size failure.
 uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_size);
 
+// Which chip of a two-chip Lisa / Macintosh XL boot ROM a file is.
+typedef enum {
+    ROM_LISA_CHIP_NONE, // not one chip of a Lisa ROM
+    ROM_LISA_CHIP_HIGH, // the high-byte chip (the image's even bytes)
+    ROM_LISA_CHIP_LOW, // the low-byte chip (the image's odd bytes)
+} rom_lisa_chip_t;
+
+// Which Lisa/XL ROM chip `data` is, by the reset vectors every Lisa ROM opens
+// with; ROM_LISA_CHIP_NONE unless it is exactly half a Lisa ROM.
+rom_lisa_chip_t rom_lisa_chip(const uint8_t *data, size_t size);
+
 // Number of entries in info->compatible (NULL-terminated walk).
 int rom_info_compatible_count(const rom_info_t *info);
 
@@ -121,6 +132,7 @@ typedef struct rom_file_info {
     const rom_info_t *info; // NULL if the ROM is not known
     rom_identity_t identity;
     size_t size;
+    rom_lisa_chip_t lisa_chip; // one chip of a two-chip Lisa / Macintosh XL ROM
 } rom_file_info_t;
 
 // Probe a file at `path`. Returns 0 on success (file readable, *out filled),

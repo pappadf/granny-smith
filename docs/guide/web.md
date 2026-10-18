@@ -696,7 +696,13 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    drop's only ROM, and per category only the first file goes into an empty
    drive.  A checkpoint is loaded only when dropped on its own; in a drop
    with other files it is rejected ("drop a checkpoint on its own"), since
-   loading it would replace the machine they were meant for.
+   loading it would replace the machine they were meant for.  The two
+   8 KB chip dumps of a Lisa / Macintosh XL boot ROM (`341-0175`/`341-0176`,
+   `341-0346`/`341-0347`) are told apart first (`machine.rom.identify`'s
+   `lisa_chip`): two of one drop or pick are interleaved, in whichever order
+   verifies, and stored as the one ROM (`storeRomPair`, which `rom=…&rom=…`
+   uses too); a chip on its own is refused as half a ROM, never stored as a
+   disk.
 3. **Drag-and-drop onto the Filesystem tab** —
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls

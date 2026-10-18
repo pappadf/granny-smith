@@ -152,7 +152,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['a.bin'] = new Uint8Array(32 * 1024).fill(0x52);
     served['b.bin'] = new Uint8Array(16 * 1024).fill(0x52);
     expect(await processUrlMedia(new URLSearchParams('rom=a.bin&rom=b.bin'))).toBe(false);
-    expect(toastText()).toMatch(/the two halves differ in size/);
+    expect(toastText()).toMatch(/two halves that differ in size/);
     expect(scratchLeft()).toEqual([]);
   });
 

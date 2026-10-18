@@ -71,7 +71,6 @@ import {
   planMediaFetch,
   findMember,
   MediaUrlError,
-  interleaveHalves,
   decodeConfigParam,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
@@ -83,7 +82,13 @@ import {
   isUrlConfigParam,
   type UrlConfigParams,
 } from '@/lib/urlConfig';
-import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
+import {
+  persistAs,
+  storeRomPair,
+  streamToOpfs,
+  discardStaging,
+  stagedArchiveFormat,
+} from './upload';
 import { scratchPath, FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 import {
   parseBlankValue,
@@ -763,12 +768,11 @@ async function fetchAndImport(
   return out.path;
 }
 
-// Fetch the two chips of a ROM dumped as byte-wide halves, interleave them
-// into one image, and persist it as a ROM.  Which chip holds the even bytes
-// is not for the URL to say: both orders are tried and the one whose own
-// checksum verifies (machine.rom.identify) is kept.  Returns the persisted
-// path, or undefined (with a message) when the pair is not a ROM.  Both
-// halves' scratch files are discarded on every exit.
+// Fetch the two chips of a ROM dumped as byte-wide halves, and store them
+// interleaved as one ROM, in whichever order verifies (upload.ts
+// storeRomPair, which uploaded chips pair through too).  Returns the
+// persisted path, or undefined (with a message) when the pair is not a ROM.
+// Both halves' scratch files are discarded on every exit.
 async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefined> {
   const a = await fetchAndStage('rom', urlA);
   if (!a) return undefined;
@@ -776,33 +780,10 @@ async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefi
   try {
     b = await fetchAndStage('rom2', urlB);
     if (!b) return undefined;
-    const bytesA = await xferReadAll(a.path);
-    const bytesB = await xferReadAll(b.path);
-    if (bytesA.length !== bytesB.length) {
-      showNotification(
-        `ROM: the two halves differ in size (${bytesA.length} and ${bytesB.length} bytes)`,
-        'error',
-      );
-      return undefined;
-    }
-    for (const [even, odd] of [
-      [bytesA, bytesB],
-      [bytesB, bytesA],
-    ]) {
-      if (!(await streamToOpfs(a.path, interleaveHalves(even, odd)))) return undefined;
-      const id = (await gsEval('machine.rom.identify', [a.path])) as { intact?: boolean } | null;
-      if (id?.intact) {
-        const name = `${a.name}+${b.name}`;
-        const stored = await persistAs(a.path, name, 'rom');
-        if (stored.ok) return stored.path;
-        rejectDownload('rom', name, stored.reason);
-        return undefined;
-      }
-    }
-    showNotification(
-      `ROM: ${a.name} and ${b.name} do not interleave into a ROM whose checksum verifies`,
-      'error',
-    );
+    const name = `${a.name}+${b.name}`;
+    const stored = await storeRomPair(a.path, b.path, name);
+    if (stored.ok) return stored.path;
+    rejectDownload('rom', name, stored.reason);
     return undefined;
   } finally {
     await discardStaging(a.path);
