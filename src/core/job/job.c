@@ -349,6 +349,7 @@ static void *job_thread_main(void *arg) {
         pthread_mutex_unlock(&g_mu);
 
         job_seam_set_current(j, j->client, &j->cancel);
+        job_call_take_failure(NULL, 0); // a failure the last job never took is not this one's
         j->rc = job_glue_run_source(j->src, true);
         job_seam_set_current(NULL, 0, NULL);
 
@@ -555,6 +556,19 @@ int job_layer_service(struct mailbox *m) {
     void (*fn)(void *) = g_call.fn;
     void *ud = g_call.ud;
     uint32_t client = g_call.client;
+    // A job cancelled after it left the queue but before its call was
+    // served: cancel_matching found no mode to stop (the call had not run),
+    // so serving it now would start a mode nothing ends and hold the job
+    // forever.  Release it unserved, failed as a cancelled deferred call
+    // fails, and the job unwinds.  Cancel and service both run on this
+    // thread, so a later cancel sees the mode this call records below.
+    if (run_call && g_active && __atomic_load_n(&g_active->cancel, __ATOMIC_ACQUIRE)) {
+        job_seam_note_failure("cancelled");
+        g_call.served = true;
+        g_call.done = true;
+        pthread_cond_signal(&g_cv_call);
+        run_call = false;
+    }
     pthread_mutex_unlock(&g_mu);
     if (run_call) {
         uint32_t mode_before = job_glue_mode_id();
