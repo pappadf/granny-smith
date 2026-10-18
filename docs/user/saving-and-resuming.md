@@ -86,7 +86,8 @@ To restore it:
 
 - **Kept between visits:** stored ROMs and images, checkpoints, the shared
   folder — everything under `/opfs` — plus your preferences (appearance,
-  panel layout, zoom, recent machines).
+  panel layout, recent machines). The zoom is not kept: after a reload the
+  screen is fitted to the display area again.
 - **Lost** when you clear the site's data in the browser settings, or in a
   private window when it closes.
 - **Checkpoints belong to one version of the emulator.** A checkpoint or

@@ -9,7 +9,9 @@ problem.
 | Symptom | Fix |
 |---|---|
 | The page reloads once on the first visit | Normal: it installs a helper that enables the multi-threaded features the emulator needs. |
-| **Hardware acceleration required** / **WebGL is unavailable** | The emulator needs WebGL 2. Turn on hardware acceleration in the browser settings ("Use hardware acceleration when available"), restart the browser, update the graphics driver, then click **Retry**. `chrome://gpu` (or `about:support` in Firefox) shows what the browser reports. |
+| **The browser’s graphics stopped working**, **WebGL 2 is unavailable in background workers**, **The emulator could not get its graphics context**, **The browser took the emulator’s graphics away** | The browser’s graphics (GPU) process is stuck. Quit the browser completely and open it again — closing the window is not enough (on a Mac, use **Quit** or ⌘Q) — then click **Reload**. If it persists, check `chrome://gpu` (or `about:support` in Firefox) and update the graphics driver. |
+| **WebGL is unavailable** / **WebGL 2 is required** | The emulator needs WebGL 2. Turn on hardware acceleration in the browser settings ("Use hardware acceleration when available"), restart the browser, and update it if it is old. |
+| **This browser is too old for the emulator** | Update the browser (Safari 17 or later), or use a current Chrome, Edge or Firefox. |
 | **Browser storage is unavailable** | Allow site data for the page, or leave private/incognito browsing, then reload. |
 | **The emulator could not start** | Click **Reload** — especially right after the emulator has been updated. |
 | Odd drawing or no sound in Safari or Firefox | Use a Chromium-based browser (Chrome, Edge, Brave). Safari is not supported yet; Firefox works only partly. |

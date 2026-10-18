@@ -63,7 +63,7 @@ WebGPU falls back to software rendering.
 ## 4. Display requirements
 
 The emulator draws the Mac's screen with WebGL 2. If the browser cannot
-provide it, the page says **Hardware acceleration required** (or **WebGL is
-unavailable**) with suggestions — turn on hardware acceleration in the
-browser's settings, restart the browser, update graphics drivers — and a
-**Retry** button. See [Troubleshooting](troubleshooting.md).
+provide it, or its graphics stop working, the page is replaced by a short
+explanation — for example **WebGL 2 is required** or **The browser’s
+graphics stopped working** — with what to try and a **Reload** button. See
+[Troubleshooting](troubleshooting.md) §1 for each message.

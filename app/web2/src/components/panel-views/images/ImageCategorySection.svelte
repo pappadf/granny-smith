@@ -10,6 +10,7 @@
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
   import {
     insertFloppy,
+    detectFdDriveCount,
     ejectMedia,
     mountImage,
     machineDevices,
@@ -181,6 +182,15 @@
             disabled: d.present,
             action: () => mount(entry, d),
           });
+      // With several floppy drives, each one by number (as the badge names it).
+      const drives = !mounted && cat === 'fd' ? await detectFdDriveCount(true) : 0;
+      if (drives > 1)
+        for (let d = 0; d < drives; d++)
+          items.push({
+            label: `Insert into drive ${d + 1}`,
+            disabled: (await gsEval(`machine.floppy.drive[${d}].present`)) === true,
+            action: () => mount(entry, undefined, d),
+          });
       items.push({ sep: true });
     }
     items.push({ label: 'Save to computer…', action: () => doDownload(entry) });
@@ -194,15 +204,15 @@
   }
 
   // Mount / insert and unmount / eject through the one attach helper
-  // (bus/media.ts): a floppy into the first empty drive the machine has, a
-  // hard disk or a CD into `device`, or the running machine's first empty
+  // (bus/media.ts): a floppy into `drive` (by default the first empty drive
+  // the machine has), a hard disk or a CD into `device`, or the running machine's first empty
   // device that takes it (machine.storage: the devices its configuration
   // built, on whatever bus).  Every result is checked; an unmount ejects from
   // where the mount put it.
-  async function mount(entry: OpfsEntry, device?: MachineDevice) {
+  async function mount(entry: OpfsEntry, device?: MachineDevice, drive?: number) {
     const r =
       cat === 'fd'
-        ? await insertFloppy(entry.path, false)
+        ? await insertFloppy(entry.path, false, drive)
         : await mountImage(cat === 'hd' ? 'hd' : 'cd', entry.path, device);
     if (!r.ok) {
       showNotification(

@@ -25,7 +25,7 @@ disk images.
 |---|---|
 | [Creating a machine](new-machine.md) | The New Machine dialog, option by option: memory, addressing, monitors, cards, drives, startup disk |
 | [The interface](interface.md) | Toolbar, display, status bar, panels, appearance and full screen |
-| [Mouse and keyboard](mouse-and-keyboard.md) | Capturing the mouse, the key map, Caps Lock, Lisa keys |
+| [Mouse and keyboard](mouse-and-keyboard.md) | Capturing the mouse, the key map, Caps Lock, Plus and Lisa keys |
 | [Disks and images](disks-and-images.md) | Image formats, loading and creating disks, the Images and Filesystem panels, compact storage |
 | [Saving and resuming](saving-and-resuming.md) | Automatic checkpoints, resuming after a reload, saved-state files |
 | [Sharing files with the Mac](sharing-files.md) | Getting files into and out of the emulated Mac |
