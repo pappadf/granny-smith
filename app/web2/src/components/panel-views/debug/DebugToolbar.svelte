@@ -8,6 +8,8 @@
   const isRunning = $derived(machine.status === 'running');
   const isPaused = $derived(machine.status === 'paused');
   const stepDisabled = $derived(!isPaused);
+  // Continue, Stop and Restart need a machine (S1018-76).
+  const noMachine = $derived(!isRunning && !isPaused);
 
   async function onContinueOrPause() {
     if (isRunning) await pauseExec();
@@ -32,6 +34,7 @@
       icon="play"
       iconSize="md"
       label="Continue"
+      disabled={noMachine}
       onclick={onContinueOrPause}
     />
   {/if}
@@ -50,6 +53,7 @@
     icon="stop"
     iconSize="md"
     label="Stop"
+    disabled={noMachine}
     onclick={() => void confirmThen('shutdown', stopMachine)}
   />
   <IconButton
@@ -58,6 +62,7 @@
     icon="restart"
     iconSize="md"
     label="Restart"
+    disabled={noMachine}
     onclick={() => void confirmThen('restart', restart)}
   />
 </Toolbar>
