@@ -189,6 +189,21 @@ test("record from the browser microphone in the Sound control panel", async ({
   // and every wait comes up short.
   await gsEvalInPage(page, "scheduler.min_speed", [1]);
 
+  // Stay in real time until the 840AV's DSP kernel is up and idling (emr
+  // $8000): its bring-up, in the Enabler's RTM init a few guest seconds into
+  // boot, is a 68040<->DSP handshake that holds at 1x and is lost above it --
+  // at 2x the guest gives up on the DSP in about one boot in three, at a
+  // pinned 4x or 8x every time -- and a DSP held in reset means no sound
+  // input for the rest of the session (docs/internals/machines/av/dsp.md).
+  // Only then accelerate the rest of the boot.
+  await expect
+    .poll(
+      async () =>
+        `${await gsEvalInPage(page, "machine.dsp.state")}/${await gsEvalInPage(page, "machine.dsp.emr")}`,
+      { timeout: 120_000, intervals: [500] },
+    )
+    .toBe("running/0x8000");
+
   // --- 2. Boot to the Finder, accelerated. ---------------------------------
   // Accelerated only for the boot: the microphone is a REAL-TIME stream, and a
   // guest running faster than wall-clock drains the ring quicker than the
