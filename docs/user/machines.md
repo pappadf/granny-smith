@@ -46,14 +46,15 @@ built-in video where it has one.
 |---|---|---|---|---|---|
 | Macintosh Plus | `plus` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | 800K internal + 800K external | SCSI (external connector); CD-ROM possible |
 | Macintosh SE/30 | `se30` | 8 MB; 1–128 MB | built-in 9″ | 1.4 MB SuperDrive (+ optional external) | SCSI; CD-ROM |
-| Lisa 2 | `lisa` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364 | one internal drive | ProFile on the parallel port |
-| Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364 | one internal drive | internal ProFile |
+| Lisa 2 | `lisa` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364, tall pixels | one internal drive | ProFile on the parallel port |
+| Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 608×431, square pixels | one internal drive | internal ProFile |
 
-The Lisa's screen has tall pixels; Granny Smith draws them 1.5 times taller
-than wide so the picture has the right proportions. The Lisa and XL have no
-AppleTalk setting: Serial B, the port the Lisa was built to use for AppleBus,
-is always on the emulated AppleTalk network, for software that drives it as
-LocalTalk. Their ImageWriter connects to Serial A.
+The Lisa 2's screen has tall pixels; Granny Smith draws them 1.5 times taller
+than wide so the picture has the right proportions. The Macintosh XL has the
+screen modification MacWorks XL expects: 608×431 with square pixels. The
+Lisa and XL have no AppleTalk setting: Serial B, the port the Lisa was built
+to use for AppleBus, is always on the emulated AppleTalk network, for
+software that drives it as LocalTalk. Their ImageWriter connects to Serial A.
 
 ## 3. Macintosh II family
 

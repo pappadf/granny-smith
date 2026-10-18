@@ -46,11 +46,23 @@ shortcuts (for example Windows-key combinations handled by the operating
 system) never reach the page; keys the Mac does not have are left to the
 browser.
 
-### 2.1 Lisa and Macintosh XL
+### 2.1 Macintosh Plus
+
+The Plus has the Macintosh Plus keyboard: the main keys, arrow keys and a
+numeric keypad, but no Control, function keys, Help, Page Up, Page
+Down, Home, End, forward Delete or the international key left of Z. Those
+keys do nothing on the Plus; the Mac never sees them.
+
+### 2.2 Lisa and Macintosh XL
 
 The Lisa keyboard has no Control key. Ctrl is sent as the Apple
 (Command) key instead, so Ctrl-D works as Apple-D — for example to end
-input in Xenix — and the browser does not act on it.
+input in Xenix.
+
+The Lisa also has no function keys, backquote (`` ` ``), backslash (`\`),
+or keypad `*`, `+`, `/` and `=`. These keys are left to the browser, so
+browser shortcuts on them still work: **F5 reloads the page** and ends the
+session. Save State first if you might press it.
 
 ## 3. Caps Lock
 

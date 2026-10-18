@@ -13,7 +13,9 @@ and so on. [Supported machines](machines.md) lists what each model offers.
 
 ## 1. Machine
 
-1. **Model** — every model whose ROM you have loaded, oldest first. If the list is empty
+1. **Model** — every model whose ROM you have loaded, in family order: the compact
+   Macs, then the Macintosh II, Quadra, Power Macintosh, Network Server and G3
+   families, then the Lisa 2 and Macintosh XL. If the list is empty
    ("No ROMs in storage"), go **Back** and use **Load ROM...** first.
 2. **Memory** — the RAM installed. The default is a typical configuration
    for the model.
