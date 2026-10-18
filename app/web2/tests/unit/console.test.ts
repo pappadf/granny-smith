@@ -12,6 +12,11 @@ vi.mock('@/bus/emulator', () => ({
   isModuleReady: () => true,
   whenModuleReady: async () => {},
   shellInterrupt: async () => 'nothing',
+  // shell.highlight: the first word is a method.
+  gsEval: async (path: string, args: unknown[]) =>
+    path === 'shell.highlight'
+      ? [{ start: 0, end: String(args[0]).indexOf(' '), class: 'method' }]
+      : null,
   gsEvalLine: async (line: string) => {
     runs.push(line);
     await new Promise<void>((r) => (release = r));
@@ -62,6 +67,19 @@ describe('createConsole', () => {
       ['command', 'echo one'],
       ['command', 'echo two'],
     ]);
+  });
+
+  it('a line run before its colours came back gets them (S1018-78)', async () => {
+    const own = [{ from: 0, to: 4, cls: 'keyword' }];
+    c.submit('echo "fast" 42');
+    c.submit('echo two', own);
+    await vi.waitFor(() => expect(runs).toEqual(['echo "fast" 42']));
+    release?.();
+    await vi.waitFor(() => expect(runs).toEqual(['echo "fast" 42', 'echo two']));
+    release?.();
+    await nextFrame();
+    const spans = c.state.entries.filter((e) => e.kind === 'command').map((e) => e.spans);
+    expect(spans).toEqual([[{ from: 0, to: 4, cls: 'method' }], own]);
   });
 
   it('shows why a line failed when the core did not print it', async () => {
