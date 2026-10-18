@@ -8,7 +8,8 @@ dialogs, the debugger — the rest of the time.
 
 1. **Click the Mac's screen** while the machine is running. The browser
    hides your pointer and the Mac's pointer follows your mouse. The click
-   that captures is not passed on to the Mac.
+   that captures is not passed on to the Mac. Only the main (left) button
+   captures; a right-click opens the browser's menu as elsewhere on the page.
 2. Use the mouse and keyboard as on a real Mac.
 3. **Press Esc** to release them. The browser uses Esc for this, so to
    send Esc to the Mac use the terminal (§4).
