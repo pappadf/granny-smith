@@ -11,6 +11,7 @@
 #include "byte_fifo.h"
 #include "checkpoint.h"
 #include "log.h"
+#include "memory.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
@@ -142,6 +143,7 @@ static void refresh_phase(scsi_53c96_t *c) {
 }
 
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
+static void push_data_out(scsi_53c96_t *c, uint8_t value);
 static uint8_t pdma_in_byte(scsi_53c96_t *c);
 static uint8_t pdma_in_peek(const scsi_53c96_t *c, unsigned n);
 
@@ -442,10 +444,10 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                     // against the transfer counter: the driver already took
                     // it off the count before writing it.
                     while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
-                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
+                        push_data_out(c, fifo_pop(c));
                 } else {
                     while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
-                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
+                        push_data_out(c, fifo_pop(c));
                     refresh_phase(c);
                     post_interrupt(c, IR_BUS_SERVICE);
                 }
@@ -817,6 +819,20 @@ static uint8_t pdma_in_peek(const scsi_53c96_t *c, unsigned n) {
     }
 }
 
+// Hand the target one DATA OUT byte from the chip.  The 53C96 never offers a
+// byte the target is not asking for: it holds it in the FIFO until REQ, and a
+// pseudo-DMA write waits on DREQ meanwhile, so the wait is charged to the CPU
+// as bus time rather than the byte being dropped.  (Dropping it lost the first
+// bytes of a block whenever a fast CPU reached the transfer inside the
+// target's settle window, and System 7.1's SCSI Manager then retried every
+// write.)
+static void push_data_out(scsi_53c96_t *c, uint8_t value) {
+    uint64_t wait = scsi_bus_await_data_out_req(c->bus);
+    if (wait)
+        memory_io_penalty(wait > MEMORY_IO_PENALTY_MAX ? MEMORY_IO_PENALTY_MAX : (uint32_t)wait);
+    scsi_push_data_out_byte(c->bus, value);
+}
+
 // One payload byte through the aperture, write side (data-out or the CDB
 // tail of a DMA select).
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value) {
@@ -835,7 +851,7 @@ static void pdma_out_byte(scsi_53c96_t *c, uint8_t value) {
     }
     if (c->xfer_mode != XFER_DATA_OUT)
         return;
-    scsi_push_data_out_byte(c->bus, value);
+    push_data_out(c, value);
     if (c->counter_live > 0)
         c->counter_live--;
     c->xfer_counter = (uint16_t)c->counter_live;

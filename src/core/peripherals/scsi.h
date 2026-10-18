@@ -406,6 +406,9 @@ static inline uint8_t scsi_phase_wire_bits(int phase) {
 // by more than one chip.
 bool scsi_bus_req(const scsi_t *scsi);
 bool scsi_bus_bsy(const scsi_t *scsi);
+// A FIFO initiator (the 53C96) about to hand the target a DATA OUT byte: ends
+// the target's settle window and returns the cycles the CPU waits for REQ.
+uint64_t scsi_bus_await_data_out_req(scsi_t *scsi);
 int scsi_get_bus_target(const scsi_t *scsi);
 int scsi_get_bus_initiator(const scsi_t *scsi);
 
