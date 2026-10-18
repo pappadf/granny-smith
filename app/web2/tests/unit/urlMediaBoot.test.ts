@@ -6,6 +6,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
+import { tree } from '../helpers/configTree';
+import type { MachineProfile } from '@/bus/profile';
 
 const heap = fakeHeap();
 
@@ -418,6 +420,30 @@ describe("URL media: cd= is the configuration's CD-ROM drive", () => {
       .replace(/=+$/, '');
     expect(
       await processUrlMedia(new URLSearchParams(`rom=plus.rom&cd=disc.iso&config=${config}`)),
+    ).toBe(true);
+    expect(media.attachCdrom).not.toHaveBeenCalled();
+    expect(media.attachMedia).toHaveBeenCalledWith(
+      'ata1',
+      0,
+      'cd',
+      expect.stringMatching(/^\/opfs\//),
+    );
+  });
+  it('with storage=, likewise', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    // The G3's tree, its secondary ATA bus taking a CD-ROM drive.
+    const g3 = tree('pmg3dt') as unknown as MachineProfile;
+    g3.storage.find((b) => b.id === 'ata1')!.accepts.push({ id: 'cd', label: 'CD-ROM drive' });
+    const profile = await import('@/bus/profile');
+    vi.mocked(profile.getProfile).mockResolvedValueOnce(g3);
+    vi.mocked(media.machineDevices).mockImplementation(async (type) =>
+      type === 'cd'
+        ? [{ bus: 'ata1', busLabel: '', unit: 0, position: '', type, present: false }]
+        : [],
+    );
+    expect(
+      await processUrlMedia(new URLSearchParams('rom=plus.rom&cd=disc.iso&storage=ata1:0:cd')),
     ).toBe(true);
     expect(media.attachCdrom).not.toHaveBeenCalled();
     expect(media.attachMedia).toHaveBeenCalledWith(

@@ -111,4 +111,66 @@ describe('URL configuration parameters', () => {
     expect(config).not.toHaveProperty('startup');
     expect(base.options).toEqual({ appletalk: 'inactive' });
   });
+
+  it('storage= replaces the list; the core picks the startup disk', () => {
+    const { config, warnings } = apply('pmg3dt', 'storage=ata0:0:hd,SCSI:3:cd');
+    expect(warnings).toEqual([]);
+    expect(config).toMatchObject({
+      storage: [
+        { bus: 'ata0', unit: 0, type: 'hd' },
+        { bus: 'scsi', unit: 3, type: 'cd' },
+      ],
+    });
+    expect(config).not.toHaveProperty('startup');
+  });
+
+  it('storage= takes the headless drive= separator too, and startup=', () => {
+    const { config } = apply('pmg3dt', 'storage=scsi:0:hd;scsi:1:hd&startup=scsi:1');
+    expect(config).toMatchObject({
+      storage: [
+        { bus: 'scsi', unit: 0, type: 'hd' },
+        { bus: 'scsi', unit: 1, type: 'hd' },
+      ],
+      startup: { bus: 'scsi', unit: 1 },
+    });
+    expect((apply('pmg3dt', 'startup=none').config as { startup: unknown }).startup).toBeNull();
+  });
+
+  it('a storage= the model cannot take is reported and left out', () => {
+    expect(apply('pmg3dt', 'storage=ide9:0:hd')).toEqual({
+      config: null,
+      warnings: ["storage=ide9:0:hd: Power Macintosh G3 Desktop's buses are scsi, ata0, ata1"],
+    });
+    expect(apply('pmg3dt', 'storage=scsi:0:tape').warnings).toEqual([
+      'storage=scsi:0:tape: scsi takes hd, cd',
+    ]);
+    expect(apply('pmg3dt', 'storage=scsi-0-hd').warnings).toEqual([
+      'storage=scsi-0-hd: scsi-0-hd is not <bus>:<unit>:<type>',
+    ]);
+    expect(apply('pmg3dt', 'startup=scsi').warnings).toEqual([
+      'startup=scsi: a startup device is <bus>:<unit>, or none',
+    ]);
+  });
+
+  it('nvram.<name>= sets an Open Firmware variable, name as given', () => {
+    const qs = new URLSearchParams();
+    qs.set('nvram.use-nvramrc?', 'true');
+    qs.set('nvram.boot-command', '0 bootr');
+    qs.set('nvram.nvramrc', 'hex\n: $D find-device ;');
+    const base = { model: 'pmg3dt', nvram: { 'load-base': '600000' } };
+    const { config } = apply('pmg3dt', qs.toString(), base);
+    expect((config as { nvram: unknown }).nvram).toEqual({
+      'load-base': '600000',
+      'use-nvramrc?': 'true',
+      'boot-command': '0 bootr',
+      nvramrc: 'hex\n: $D find-device ;',
+    });
+    expect(base.nvram).toEqual({ 'load-base': '600000' });
+  });
+
+  it('storage, startup and nvram names are not options', () => {
+    for (const id of TREE_IDS)
+      for (const o of profile(id).options)
+        expect(['storage', 'startup'].includes(o.id) || o.id.startsWith('nvram.')).toBe(false);
+  });
 });

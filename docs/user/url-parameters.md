@@ -95,7 +95,10 @@ spaces.
 | `mode=` | `mode=1152x870x8` | Startup video mode: width × height × bits per pixel; `1152x870` alone picks the deepest mode at that size. |
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |
 | model options | `keyswitch=service`, `power_supplies=two` | Any other option the model has. |
-| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. On the Open Firmware Macs (Power Mac 7500/8500/9500, the G3) its `nvram` member sets Open Firmware variables before the machine first runs — `{"nvram": {"boot-command": "0 bootr", "use-nvramrc?": true}}`: any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given (`nvramrc` may span lines). One the firmware does not have stops the boot with a message naming it. |
+| `storage=` | `storage=ata0:0:hd,ata1:0:cd` | The drives, replacing the model's default list: `bus:unit:type` entries (`hd` or `cd`), separated by commas. Bus ids are the ones the New Machine dialog's storage section lists (`scsi`, `ata0`, `ata1`, …). `hd0=`, `hd1=` and `cd=` then go to these drives. |
+| `startup=` | `startup=ata0:0`, `startup=none` | The startup device, as `bus:unit`. Without it, a `storage=` starts up from its first hard disk on a bus the startup record can name. |
+| `nvram.<variable>=` | `nvram.boot-command=0 bootr` | An Open Firmware variable, set before the machine first runs (Power Mac 7500/8500/9500, the G3): any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given. `nvram.nvramrc=` may span lines (`%0A`). One the firmware does not have stops the boot with a message naming it. |
+| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other parameters then edit it. Everything but the expansion cards can be said with the readable parameters above, so links rarely need it. |
 
 A value the model does not offer is shown in a notice and left out — the
 machine boots without that change. An option the model does not have at
@@ -106,6 +109,14 @@ instruction, on a 21″ monitor at 1152 × 870 in 256 colours:
 
 ```
 ?rom=https://example.com/roms/MacIIfx.rom&vrom=https://example.com/roms/824-card.rom&hd0=https://example.com/disks/MacOS81.img&memory=16MB&addressing=32&monitor=21in_rgb&mode=1152x870x8
+```
+
+Example — a Power Macintosh G3 booting Mac OS X from a disk on the primary
+ATA bus, with the CD-ROM drive on the secondary bus and the boot command set
+in Open Firmware:
+
+```
+?rom=https://example.com/roms/G3.rom&hd0=https://example.com/disks/MacOSX.img&model=pmg3dt&storage=ata0:0:hd,ata1:0:cd&nvram.use-nvramrc?=true&nvram.boot-command=0+bootr
 ```
 
 ## 4. Page settings

@@ -23,11 +23,20 @@
 // - mode=<W>x<H>x<D> (or <W>x<H>, the deepest mode at that size): the
 //   startup video mode.  Without monitor=, the device's monitors are searched
 //   for it, the plugged-in one first.
+// - storage=<bus>:<unit>:<type>[,…]: the whole storage list, as the
+//   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`).
+// - startup=<bus>:<unit> (or `none`): the startup device.  Without it, a
+//   storage= boots from its first hard disk, as the core picks.
+// - nvram.<variable>=<value>: an Open Firmware variable, as setenv sets it
+//   (`nvram.boot-command=0 bootr`, `nvram.use-nvramrc?=true`).
+//
+// Together these say everything config= says but the cards, so a link can
+// be read and edited as text; config= is still the document they edit.
 //
 // A parameter that names nothing in the tree, or a value it does not offer,
 // is reported and left out: the machine boots without that edit.
 
-import type { ConfigDocument, ConfigOption, MachineProfile } from '@/bus/profile';
+import type { ConfigDocument, ConfigOption, MachineProfile, StorageDevice } from '@/bus/profile';
 import * as mc from './machineConfig';
 
 // Names the page reads for something else: the media and boot parameters
@@ -40,6 +49,11 @@ const PAGE_PARAM =
 // The display edits' names.
 const DISPLAY_PARAMS = ['display', 'monitor', 'mode'] as const;
 
+// The edits of the document's list nodes, and the prefix of an NVRAM
+// variable's name.
+const STORAGE_PARAMS = ['storage', 'startup'] as const;
+const NVRAM_PREFIX = 'nvram.';
+
 // Other spellings of an option id.
 const OPTION_ALIASES: Record<string, string> = { ram: 'memory' };
 
@@ -50,14 +64,30 @@ export interface UrlConfigParams {
   display: string | null;
   monitor: string | null;
   mode: string | null;
+  storage: string | null;
+  startup: string | null;
+  // Open Firmware variables; the name as given (they are case-sensitive).
+  nvram: Array<{ name: string; value: string }>;
 }
 
 export function emptyUrlConfigParams(): UrlConfigParams {
-  return { options: [], display: null, monitor: null, mode: null };
+  return {
+    options: [],
+    display: null,
+    monitor: null,
+    mode: null,
+    storage: null,
+    startup: null,
+    nvram: [],
+  };
 }
 
 export function hasUrlConfigParams(p: UrlConfigParams): boolean {
-  return p.options.length > 0 || !!(p.display || p.monitor || p.mode);
+  return (
+    p.options.length > 0 ||
+    p.nvram.length > 0 ||
+    !!(p.display || p.monitor || p.mode || p.storage || p.startup)
+  );
 }
 
 // Whether `name` (lower case) is a configuration parameter: not one the page
@@ -73,6 +103,20 @@ export function addUrlConfigParam(p: UrlConfigParams, rawName: string, value: st
   if ((DISPLAY_PARAMS as readonly string[]).includes(name)) {
     const key = name as (typeof DISPLAY_PARAMS)[number];
     if (p[key] === null) p[key] = value;
+    return;
+  }
+  if ((STORAGE_PARAMS as readonly string[]).includes(name)) {
+    const key = name as (typeof STORAGE_PARAMS)[number];
+    if (p[key] === null) p[key] = value;
+    return;
+  }
+  if (name.startsWith(NVRAM_PREFIX)) {
+    const variable = rawName.slice(NVRAM_PREFIX.length);
+    if (!variable || p.nvram.some((v) => v.name === variable)) {
+      console.warn(`[urlConfig] ignoring ${rawName}=`);
+      return;
+    }
+    p.nvram.push({ name: variable, value });
     return;
   }
   const id = OPTION_ALIASES[name] ?? name;
@@ -95,6 +139,33 @@ function optionValueId(option: ConfigOption, value: string): string | null {
   if (byId) return byId.id;
   const byLabel = option.values.find((c) => squash(c.label) === squash(v));
   return byLabel ? byLabel.id : null;
+}
+
+// storage=: "<bus>:<unit>:<type>" entries, separated by commas (or by
+// semicolons, as the headless drive= separates them).  Returns the list, or
+// why it is not one; the core checks the units and their sharing.
+function parseStorage(profile: MachineProfile, s: string): StorageDevice[] | string {
+  const out: StorageDevice[] = [];
+  for (const raw of s.split(/[,;]/)) {
+    const e = raw.trim();
+    if (!e) continue;
+    const m = /^([^:\s]+):(\d+):([^:\s]+)$/.exec(e);
+    if (!m) return `${e} is not <bus>:<unit>:<type>`;
+    const bus = profile.storage.find((b) => b.id.toLowerCase() === m[1].toLowerCase());
+    if (!bus) return `${profile.name}'s buses are ${profile.storage.map((b) => b.id).join(', ')}`;
+    const type = bus.accepts.find((a) => a.id.toLowerCase() === m[3].toLowerCase());
+    if (!type) return `${bus.id} takes ${bus.accepts.map((a) => a.id).join(', ')}`;
+    out.push({ bus: bus.id, unit: Number(m[2]), type: type.id });
+  }
+  return out;
+}
+
+// startup=: "<bus>:<unit>", or "none" for no startup device; undefined when
+// it is neither.
+function parseStartup(s: string): { bus: string; unit: number } | null | undefined {
+  if (s.trim().toLowerCase() === 'none') return null;
+  const m = /^\s*([^:\s]+):(\d+)\s*$/.exec(s);
+  return m ? { bus: m[1], unit: Number(m[2]) } : undefined;
 }
 
 // "1152x870x8" → [1152, 870, 8]; "1152x870" → [1152, 870, null]; else null.
@@ -172,6 +243,36 @@ export function applyUrlConfig(
       continue;
     }
     doc = mc.setOption(doc, option.id, id);
+    changed = true;
+  }
+
+  // Storage and the startup device.
+  if (params.storage !== null) {
+    const parsed = parseStorage(profile, params.storage);
+    if (typeof parsed === 'string') warnings.push(`storage=${params.storage}: ${parsed}`);
+    else {
+      doc.storage = parsed;
+      // The default's startup device may be gone; the core points the
+      // startup record at the new list's first hard disk.
+      if (params.startup === null) delete (doc as Partial<ConfigDocument>).startup;
+      changed = true;
+    }
+  }
+  if (params.startup !== null) {
+    const parsed = parseStartup(params.startup);
+    if (parsed === undefined)
+      warnings.push(`startup=${params.startup}: a startup device is <bus>:<unit>, or none`);
+    else {
+      doc.startup = parsed;
+      changed = true;
+    }
+  }
+
+  // Open Firmware variables: the core checks them against the firmware's.
+  if (params.nvram.length > 0) {
+    const d = doc as ConfigDocument & { nvram?: Record<string, unknown> };
+    d.nvram = { ...(d.nvram ?? {}) };
+    for (const v of params.nvram) d.nvram[v.name] = v.value;
     changed = true;
   }
 
