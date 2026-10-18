@@ -318,6 +318,25 @@ TEST(test_device_hears_async_bytes) {
     scc_delete(scc);
 }
 
+// A byte sent in local loopback (WR14 bit 4) comes back on the channel's own
+// receiver and never reaches the cable: the IIci ROM's self-test sends 255
+// such bytes at every boot, which a plugged-in ImageWriter printed (S1018-11).
+TEST(test_local_loopback_stays_off_the_line) {
+    scc_t *scc = make_async();
+    g_dev_n = 0;
+    scc_attach_port_device(scc, 0, &test_device, NULL);
+    wr(scc, CH_A_CTL, 14, 0x10); // local loopback
+    send_a(scc, 0xFE);
+    ASSERT_EQ_INT(g_dev_n, 0);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & 0x01); // received on the chip
+    wr(scc, CH_A_CTL, 14, 0x00); // back on the line
+    send_a(scc, 0x41);
+    ASSERT_EQ_INT(g_dev_n, 1);
+    ASSERT_EQ_INT(g_dev_bytes[0], 0x41);
+    scc_attach_port_device(scc, 0, NULL, NULL);
+    scc_delete(scc);
+}
+
 // The wired ready line follows the device's ready state; unwiring leaves the
 // input undriven and not asserted.
 TEST(test_ready_line_follows_device) {
@@ -402,6 +421,7 @@ int main(void) {
     RUN(test_wr1_enables_gate_int);
     RUN(test_reset_tx_pending_holds_until_next_char);
     RUN(test_device_hears_async_bytes);
+    RUN(test_local_loopback_stays_off_the_line);
     RUN(test_ready_line_follows_device);
     RUN(test_device_rx_byte);
     RUN(test_line_send_is_paced);

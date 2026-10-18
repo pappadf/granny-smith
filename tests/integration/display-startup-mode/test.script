@@ -12,6 +12,8 @@ def startup(model, rom, monitor, mode, n, at, saved, depth) {
 }
 
 startup("iici", "iici-368cadfe.rom", "13in_rgb", "640x480x8", 60000000, 0x56, 0x83, 8)
+# The 15" Portrait on the RBV, which has no 8 bpp mode (S1018-15)
+startup("iisi", "iisi-36b7fb6c.rom", "15in_portrait", "640x870x4", 60000000, 0x6E, 0x82, 4)
 startup("q700", "q700-q900-420dbff3.rom", "16in_rgb", "832x624x4", 120000000, 0x46, 0x82, 4)
 startup("q950", "q950-3dc27823.rom", "12in_rgb", "512x384x16", 120000000, 0x46, 0x84, 16)
 startup("q840av", "q840av-q660av-5bf10fd1.rom", "13in_rgb", "640x480x1", 200000000, 0x46, 0x80, 1)

@@ -414,6 +414,72 @@ TEST(corrupt_quick_payload_is_refused) {
     cp_unlink();
 }
 
+// A v2 block larger than one RLE piece (4 MB) is encoded piece by piece and
+// decoded straight from the file (S1018-05: a 768 MB machine's RAM block used
+// to cost a second RAM-sized buffer each way).  The content mixes literals
+// with a run that spans the piece boundary, and a block written after it
+// must still be read in step.
+TEST(large_block_round_trips_across_rle_pieces) {
+    cp_unlink();
+    size_t n = (size_t)9 * 1024 * 1024 + 123;
+    uint8_t *big = (uint8_t *)malloc(n);
+    uint8_t *back = (uint8_t *)malloc(n);
+    ASSERT_TRUE(big && back);
+    uint32_t x = 12345u;
+    for (size_t i = 0; i < n; i++) {
+        x = x * 1103515245u + 12345u;
+        big[i] = (uint8_t)(x >> 24);
+    }
+    // a run of 0xAA from 3.5 MB to 4.5 MB: across the first piece boundary
+    memset(big + (size_t)7 * 512 * 1024, 0xAA, (size_t)1024 * 1024);
+    // short runs and single literals near the end
+    for (size_t i = n - 4096; i + 4 <= n; i += 5)
+        memset(big + i, 0x55, i % 2 ? 1 : 4);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t after = BLOCK_A;
+    system_write_checkpoint_data(cp, big, n);
+    system_write_checkpoint_data(cp, &after, sizeof(after));
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_TRUE(checkpoint_close(cp));
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t got = 0;
+    system_read_checkpoint_data(cp, back, n);
+    system_read_checkpoint_data(cp, &got, sizeof(got));
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_TRUE(memcmp(big, back, n) == 0);
+    ASSERT_TRUE(got == BLOCK_A);
+    checkpoint_close(cp);
+    free(big);
+    free(back);
+    cp_unlink();
+}
+
+// A truncated large block is refused, not decoded into a partial buffer.
+TEST(truncated_large_block_is_refused) {
+    cp_unlink();
+    size_t n = (size_t)5 * 1024 * 1024;
+    uint8_t *big = (uint8_t *)calloc(1, n);
+    ASSERT_TRUE(big != NULL);
+    for (size_t i = 0; i < n; i += 7)
+        big[i] = (uint8_t)i;
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
+    ASSERT_TRUE(cp != NULL);
+    system_write_checkpoint_data(cp, big, n);
+    ASSERT_TRUE(checkpoint_close(cp));
+    truncate_to(CP_PATH, file_size(CP_PATH) - 1000);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    system_read_checkpoint_data(cp, big, n);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    free(big);
+    cp_unlink();
+}
+
 // === Bounded reads ===========================================================
 //
 // checkpoint_read_count() and checkpoint_read_string() are the shape that
@@ -675,6 +741,8 @@ int main(void) {
     RUN(failed_read_zeroes_its_destination_quick);
     RUN(rle_length_guard_wraps_on_32bit_targets);
     RUN(corrupt_quick_payload_is_refused);
+    RUN(large_block_round_trips_across_rle_pieces);
+    RUN(truncated_large_block_is_refused);
     RUN(bounded_count_accepts_within_cap);
     RUN(bounded_count_refuses_over_cap);
     RUN(bounded_string_terminates_what_the_writer_did_not);

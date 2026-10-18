@@ -9,6 +9,9 @@
 TEST_NAME := afp_asan
 TEST_SRCS := ../afp/test.c ../afp/stub_atalk.c
 TEST_HARNESS := isolated
+# rename() goes through stub_atalk.c, which can refuse directories as
+# the browser's OPFS backend does.
+EXTRA_LDFLAGS := -Wl,--wrap=rename
 EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_volume.c \
               ../../../../src/core/network/afp_params.c \
