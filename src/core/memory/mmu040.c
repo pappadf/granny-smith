@@ -161,6 +161,7 @@ typedef struct m040_walk_result {
     bool write_protected; // W accumulated across all levels
     bool supervisor_only; // S bit from the page descriptor
     bool modified; // M bit state after any update
+    bool cache_inhibited; // CM = 2 or 3: accesses bypass the caches
 } m040_walk_result_t;
 
 // Fetch a descriptor longword from physical memory via the shared resolver.
@@ -331,6 +332,7 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
     r.write_protected = wp;
     r.supervisor_only = s_only;
     r.modified = modified;
+    r.cache_inhibited = ((pgdesc >> 5) & 3u) >= 2;
 
     // MMUSR image: PA plus the page attributes (G, U1/U0, S, CM carried
     // through at their descriptor positions), M, W, R.
@@ -342,6 +344,20 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
 // ============================================================================
 // TLB-miss handling (dispatched from mmu_handle_fault)
 // ============================================================================
+
+// A cache-inhibited RAM page, when the machine prices uncached reads: drop
+// its read fast-path entries so every read reaches the slow path, which
+// charges the bus cycles (memory_uncached_read_cycles).  The write entries
+// stay; only reads are priced.
+static void mmu040_uncached_read_page(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page) {
+    uint32_t page_index = emu_page >> MEM_PAGE_SHIFT;
+    if (!g_uncached_read_cycles || page_index >= g_page_count || !mmu_phys_to_host(bus, phys_page))
+        return;
+    if (g_supervisor_read)
+        g_supervisor_read[page_index] = 0;
+    if (g_user_read)
+        g_user_read[page_index] = 0;
+}
 
 bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool write, bool supervisor) {
     mmu040_state_t *mmu = bus ? bus->m040 : NULL;
@@ -360,6 +376,8 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
             return false;
         }
         mmu_fill_soa_page(bus, emu_page, emu_page, supervisor, !supervisor, !TT040_W(tt));
+        if (TT040_CM(tt) >= 2)
+            mmu040_uncached_read_page(bus, emu_page, emu_page);
         // Unmapped physical under a TTR: bus-error only inside the NuBus
         // window on reads; silent otherwise (same policy as the PMMU path).
         if (!write) {
@@ -409,7 +427,10 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     bool fill_user = (!supervisor || shared_roots) && !r.supervisor_only;
 
     mmu_fill_soa_page(bus, emu_page, phys_page, fill_super, fill_user, writable);
-    return mmu_fault_epilogue(bus, emu_page, phys_page, write, supervisor);
+    bool ok = mmu_fault_epilogue(bus, emu_page, phys_page, write, supervisor);
+    if (r.cache_inhibited)
+        mmu040_uncached_read_page(bus, emu_page, phys_page);
+    return ok;
 }
 
 // Side-effect-free translation for debugger reads and memory.c dispatch

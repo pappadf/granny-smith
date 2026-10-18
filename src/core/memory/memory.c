@@ -144,6 +144,7 @@ void *g_mem_logical_xlate_ctx = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
+uint32_t g_uncached_read_cycles = 0;
 // 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
 // Slow-path histogram bucket.  The old single `(addr >> 20) & 0xF` indexed
 // address bits 20-23 only, so buckets aliased every 16 MB and $50F00000 (an
@@ -619,6 +620,15 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
                 if (g_mem_logpoint_hook)
                     g_mem_logpoint_hook(addr, size, v, false);
                 return v;
+            }
+            // A cache-inhibited RAM page the 040 MMU kept off the fast path:
+            // the read goes to the bus, so it pays the memory controller.
+            if (g_uncached_read_cycles) {
+                uint8_t *host = mmu_phys_to_host(g_mmu, phys);
+                if (host) {
+                    memory_io_penalty(g_uncached_read_cycles);
+                    return load_be_n(host, size);
+                }
             }
         } else if (!g_bus_error_pending) {
             // MMU fault: invalid descriptor, unmapped physical, permission.

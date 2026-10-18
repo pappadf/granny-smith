@@ -290,6 +290,26 @@ void scsi_bus_settle_poll(scsi_t *scsi) {
     scsi->bus.req = true;
 }
 
+// A FIFO initiator offering a DATA OUT byte while the target is still settling.
+// Unlike the 5380, whose CPU writes go straight to the wire, the 53C96 holds
+// what the CPU writes in its FIFO and paces pseudo-DMA writes with DREQ, so
+// nothing is lost to the settle window: the CPU waits instead.  Returns the
+// cycles that wait lasts (0 when REQ is already up) and ends the window, so
+// the byte that follows is transferred.
+uint64_t scsi_bus_await_data_out_req(scsi_t *scsi) {
+    if (!scsi || !scsi->bus.data_out_pending)
+        return 0;
+    uint64_t wait = 0;
+    if (scsi->sched) {
+        uint64_t now = scheduler_cpu_cycles(scsi->sched);
+        if (now < scsi->bus.data_out_ready_cy)
+            wait = scsi->bus.data_out_ready_cy - now;
+    }
+    scsi->bus.data_out_pending = false;
+    scsi->bus.req = true;
+    return wait;
+}
+
 // Transition SCSI bus to data-out phase (initiator to target).
 //
 // The phase does NOT change here -- see bus.data_out_pending in
