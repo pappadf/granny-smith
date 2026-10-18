@@ -12,6 +12,7 @@
     insertFloppy,
     detectFdDriveCount,
     ejectMedia,
+    imageInUseUnder,
     mountImage,
     machineDevices,
     deviceLabel,
@@ -314,33 +315,51 @@
     }
   }
 
+  // A mounted image keeps its name and its file: the machine reads and writes
+  // it by path, and its checkpoints name it, so a rename or delete under it
+  // made every later checkpoint, Save State and Resume fail.
+  async function refuseInUse(entry: OpfsEntry, what: string): Promise<boolean> {
+    if (!(await imageInUseUnder([entry.path]))) return false;
+    showNotification(
+      `Can't ${what} '${entry.name}' while the machine is using it. ${isRemovable ? 'Eject' : 'Unmount'} it first.`,
+      'warning',
+    );
+    return true;
+  }
+
   async function doRename(entry: OpfsEntry) {
+    if (await refuseInUse(entry, 'rename')) return;
     const next = await askText({
       title: 'Rename',
       label: 'New name',
       initial: entry.name,
       submitText: 'Rename',
-      validate: validateName,
+      validate: (v) =>
+        validateName(v) ||
+        (v !== entry.name && entries.some((e) => e.name === v) ? `'${v}' already exists` : ''),
     });
     if (!next || next === entry.name) return;
+    // Asked again: the machine may have taken the image while the dialog was open.
+    if (await refuseInUse(entry, 'rename')) return;
     try {
       await opfs.rename(entry.path, next);
       await refresh();
       bumpImagesRevision();
       showNotification(`Renamed to '${next}'`, 'info');
-    } catch {
-      showNotification('Rename failed', 'error');
+    } catch (err) {
+      showNotification(`Rename failed: ${err instanceof Error ? err.message : err}`, 'error');
     }
   }
 
   async function doDelete(entry: OpfsEntry) {
+    if (await refuseInUse(entry, 'delete')) return;
     const ok = await askConfirm({
       title: 'Delete',
       message: `Delete '${entry.name}'?`,
       confirmText: 'Delete',
       danger: true,
     });
-    if (!ok) return;
+    if (!ok || (await refuseInUse(entry, 'delete'))) return;
     try {
       await opfs.delete(entry.path);
       await refresh();

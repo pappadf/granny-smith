@@ -97,8 +97,8 @@ Right-click an image:
 | **Save to computer…** | Download the stored file. |
 | **Export as raw image…** | Download a `.dmg` as a plain, uncompressed image. |
 | **Compact (store as .dmg)** | Convert a large raw hard-disk or CD image to compact storage and remove the raw file. Saved machines that use the raw file will no longer find it. |
-| **Rename** | Rename the stored file. |
-| **Delete** | Remove it (asks first). |
+| **Rename** | Rename the stored file. Not while it is inserted or mounted: eject or unmount it first. |
+| **Delete** | Remove it (asks first). Not while it is inserted or mounted. |
 
 ## 5. The Filesystem panel
 
@@ -126,6 +126,9 @@ What you can do:
   **Insert into CD-ROM drive**.
 - **Drop files** from your computer onto a folder to copy them in. Drag
   items within the panel to move them; drag them out of an image to copy.
+- The folders in the table above stay where they are: they cannot be
+  renamed, moved or deleted (what is in them can). Nor can an image the
+  running machine is using, or a folder holding one: eject it first.
 
 ## 6. Your stored images are never changed
 

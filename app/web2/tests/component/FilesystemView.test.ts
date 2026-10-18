@@ -91,6 +91,27 @@ describe('FilesystemView', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(document.querySelector('.context-menu')).toBeNull();
   });
+
+  // S1018-72: the app's own folders are not deleted, moved or renamed.
+  it('refuses to delete an app folder', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    const row = await waitFor(() => {
+      const r = Array.from(container.querySelectorAll('.tree-row')).find(
+        (e) => e.querySelector('.label')?.textContent === 'images',
+      );
+      expect(r).toBeTruthy();
+      return r as HTMLElement;
+    });
+    await fireEvent.contextMenu(row);
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const del = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Delete',
+    ) as HTMLElement;
+    await fireEvent.click(del);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(container.querySelector('.modal-actions')).toBeNull();
+  });
 });
 
 // A backend whose /opfs listing carries one peeler-recognised archive, one
