@@ -43,6 +43,7 @@
 #include "shell.h"
 #include "sound.h"
 #include "status.h"
+#include "storage_util.h"
 #include "via.h"
 #include "vrom.h"
 #include "event/event.h"
@@ -571,12 +572,12 @@ static int sys_fd_count(config_t *cfg) {
 static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
     int n = sys_fd_count(cfg);
     if (preferred < -1 || preferred >= n) {
-        out_printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        out_printf("%s: no machine.floppy.drive[%d] (this machine has %d).\n", who, preferred, n);
         return -1;
     }
     if (preferred != -1) {
         if (sys_fd_is_inserted(cfg, preferred)) {
-            out_printf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            out_printf("%s: machine.floppy.drive[%d] is already occupied.\n", who, preferred);
             return -1;
         }
         return preferred;
@@ -613,12 +614,14 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // insert's result and printed "inserted" whatever the drive said, so a
     // drive that refused left an orphan on the image list and a success claim.
     if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd insert: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd insert: machine.floppy.drive[%d] refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    out_printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
+    // The drive by its object path, 0-based like the path: the page's own
+    // messages number drives from 1, and a bare "drive 0" read as another one.
+    out_printf("fd insert: inserted %s into machine.floppy.drive[%d].\n", path, target);
     return 0;
 }
 
@@ -685,13 +688,13 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
     }
 
     if (sys_fd_insert(config, target, disk) != 0) {
-        out_printf("fd create: floppy drive %d refused %s.\n", target, path);
+        out_printf("fd create: machine.floppy.drive[%d] refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
     config_add_image(config, disk);
-    out_printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K",
-               target);
+    out_printf("fd create: created %s (%s) and inserted into machine.floppy.drive[%d].\n", path,
+               high_density ? "1440K" : "800K", target);
     return 0;
 }
 
@@ -854,6 +857,28 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
+// Say that a quick checkpoint (an autosave) was not written: without it the
+// page never learns, and a reload resumes an older state.  `error` is the
+// reason in words.
+static void quick_checkpoint_failed_event(const char *error) {
+    char esc[256];
+    if (json_escape(error ? error : "", esc, sizeof esc) < 0)
+        snprintf(esc, sizeof esc, "the checkpoint could not be written");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_failed\",\"error\":\"%s\"}", esc);
+}
+
+// A quick checkpoint's failure in words.
+static const char *quick_checkpoint_status_text(status_t rc) {
+    switch (rc) {
+    case STATUS_E_NOMEM:
+        return "out of memory";
+    case STATUS_E_IO:
+        return "the file could not be written";
+    default:
+        return "the state could not be saved";
+    }
+}
+
 status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // No machine configured → nothing to save, like the idle and
     // no-directory cases below (a hidden tab before any boot lands here).
@@ -918,6 +943,9 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
         unlink(tmp_path);
         if (verbose)
             out_printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+        else
+            // An autosave (an explicit snapshot answers its caller instead).
+            quick_checkpoint_failed_event(quick_checkpoint_status_text(rc));
         return rc;
     }
     g_last_quick_checkpoint_ms = now;
@@ -931,6 +959,8 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
             out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
         out_printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
+        // The write runs after the caller had its answer: say it, always.
+        quick_checkpoint_failed_event(error ? error : "the file could not be written");
     }
 }
 

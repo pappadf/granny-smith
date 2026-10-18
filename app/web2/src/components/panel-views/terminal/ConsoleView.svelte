@@ -20,6 +20,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { ConsoleHistory } from '@/lib/consoleHistory';
   import { copyText } from '@/lib/clipboard';
+  import { showNotification } from '@/state/toasts.svelte';
   import { highlightParts } from '@/lib/highlight';
   import { stickToBottom } from '@/lib/stickToBottom.svelte';
   import { revealInSystem } from '@/state/system.svelte';
@@ -163,10 +164,14 @@
     const clicked = entryOf(ev.target as Element);
     const selText = outputSelection();
     const touched = selectedEntries();
-    const copy = (text: string) => () => void copyText(text);
     // No command among what was selected or clicked (an output line):
     // nothing to copy as commands, so the item is greyed (S1018-80).
     const commands = commandsText(touched.length ? touched : clicked ? [clicked] : []);
+    // A refused copy is said, not dropped without a word.
+    const copy = (text: string) => async () => {
+      if (!(await copyText(text)))
+        showNotification('Could not copy: the browser did not allow the clipboard', 'warning');
+    };
     const items: ContextMenuItem[] = [
       { label: 'Copy', action: copy(selText || clicked?.text || '') },
       { label: 'Copy as commands', disabled: !commands, action: copy(commands) },

@@ -418,6 +418,11 @@
   let createDisks = $state<BlankDisk[]>([]);
   let createTarget = $state(''); // "fd0" or "scsi:0"
   let createHighDensity = $state(true); // the floppy drive reads 1.4 MB disks
+  // The picker the dialog was opened from, and the value it showed: the
+  // dialog's every close puts both back (the picker showed "Create blank
+  // image..." or nothing, and focus went to the hidden Home slide).
+  let createSelect: HTMLSelectElement | null = null;
+  let createPrevious = '';
 
   // The new value of an image picker: the pick, or for "Upload image…" the
   // uploaded file -- or, when that was cancelled, the previous value (and
@@ -443,7 +448,7 @@
   async function onFloppyImage(e: Event, id: string): Promise<void> {
     const select = e.target as HTMLSelectElement;
     if (select.value === CREATE_SENTINEL) {
-      select.value = floppyImages[id] ?? NO_DISK;
+      openCreate(select, floppyImages[id] || NO_DISK);
       createKind = 'fd';
       createTarget = id;
       // The 400K / 800K drives (FLOPPY_MAX) read no high-density disk.
@@ -452,7 +457,7 @@
       createOpen = true;
       return;
     }
-    const v = await pickImage(select, floppyImages[id] ?? NO_DISK, 'fd');
+    const v = await pickImage(select, floppyImages[id] || NO_DISK, 'fd');
     floppyImages = { ...floppyImages, [id]: v === NO_DISK ? '' : v };
   }
 
@@ -460,7 +465,7 @@
     const select = e.target as HTMLSelectElement;
     const empty = type === 'cd' ? NO_DISC : CHOOSE_IMAGE;
     if (select.value === CREATE_SENTINEL) {
-      select.value = mediaImages[key] || empty;
+      openCreate(select, mediaImages[key] || empty);
       createKind = 'hd';
       createDisks = disks;
       createTarget = key;
@@ -471,11 +476,30 @@
     mediaImages = { ...mediaImages, [key]: v === empty ? '' : v };
   }
 
+  function openCreate(select: HTMLSelectElement, previous: string): void {
+    select.value = previous;
+    createSelect = select;
+    createPrevious = previous;
+  }
+
+  // The dialog closed (Cancel, Esc, or a disk made): the picker shows its
+  // value -- the new disk, or what it showed before -- and has the focus.
+  async function closeCreate(value: string): Promise<void> {
+    createOpen = false;
+    await tick();
+    const select = createSelect;
+    createSelect = null;
+    if (!select?.isConnected) return;
+    select.value = value;
+    select.focus();
+  }
+
   async function onImageCreated(name: string) {
     createOpen = false;
     await refreshOpfs();
     if (createKind === 'fd') floppyImages = { ...floppyImages, [createTarget]: name };
     else mediaImages = { ...mediaImages, [createTarget]: name };
+    await closeCreate(name);
   }
 
   // --- Start ---------------------------------------------------------------------
@@ -886,7 +910,7 @@
   kind={createKind}
   disks={createDisks}
   highDensity={createHighDensity}
-  onClose={() => (createOpen = false)}
+  onClose={() => void closeCreate(createPrevious)}
   onCreated={onImageCreated}
 />
 

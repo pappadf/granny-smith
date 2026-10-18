@@ -51,6 +51,11 @@ static DEF_METHOD(checkpoint_method_clear) {
 static DEF_METHOD(checkpoint_method_load) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     checkpoint_quick_wait(); // load the file the publish in flight is about to complete
+    // A file from another build is the common refusal: say so, rather than
+    // the bare false that reached the page as "the operation reported failure".
+    if (path && checkpoint_check_build_id(path) == CHECKPOINT_BUILD_MISMATCH)
+        return val_err("checkpoint.load: this state was saved by another version of the emulator; "
+                       "only the version that made it can restore it");
     return val_bool(system_checkpoint_load(path) == 0);
 }
 

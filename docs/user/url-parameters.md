@@ -28,7 +28,7 @@ https://<emulator page>/?rom=https://example.com/roms/MacIIci.rom&hd0=https://ex
 
 | Parameter | What it does |
 |---|---|
-| `rom=<url>` | The machine's ROM. Required: a link without `rom=` opens the Home screen. |
+| `rom=<url>` | The machine's ROM. Required to boot: a link without `rom=` opens the Home screen (offering **Resume** as usual); its floppies go into the running or resumed machine, and any other media are only stored in Images, with a notice saying so. |
 | `rom=<url>&rom=<url>` | A ROM dumped as two chip halves (the Lisa's and the Macintosh XL's boot ROMs). Order does not matter; the page tries both and keeps the one whose checksum is correct. |
 | `fd0=<url>`, `fd1=<url>` | Floppy for the first or second floppy drive (when the model has that drive). |
 | `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. With `config=` (§3), the positions are that configuration's hard disks, its startup disk first — so a configuration that puts the disk on another bus gets it there. |

@@ -6,6 +6,7 @@
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
   import DialogHost from './components/dialogs/DialogHost.svelte';
+  import StorageWarning from './components/common/StorageWarning.svelte';
   import { applyAppearance } from '@/state/appearance.svelte';
   import { layout, chromeHidden } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
@@ -36,6 +37,8 @@
   startScreenKeyGuard();
 </script>
 
+<!-- Above everything, also with the chrome hidden: /opfs is on memory. -->
+<StorageWarning />
 <Workbench />
 {#if !chromeHidden()}
   <StatusBar />

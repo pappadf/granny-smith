@@ -21,6 +21,7 @@ import {
   applySchedulerMode,
 } from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
+import { checkStoragePersistence } from '@/bus/storageHealth';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
@@ -181,14 +182,20 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     installEvalHookForAutomation();
     installUiHookForAutomation();
 
+    // Before anything else: if the worker had to put /opfs on memory, say
+    // so now and keep saying so (the banner), before the user adds anything.
+    await checkStoragePersistence();
+
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
     if (urlMode) await applySchedulerMode(urlMode);
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.
-    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
-    if (resumed) return;
+    // A link without a ROM still offers the saved machine; its media then go
+    // into whichever machine is running (the resumed one), or are stored and
+    // said to be unused -- Resume used to drop them silently.
+    if (!urlBoots) await maybeOfferBackgroundCheckpoint();
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
     // be ignored.

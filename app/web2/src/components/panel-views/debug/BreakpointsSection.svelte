@@ -8,7 +8,7 @@
   import { listBreakpoints, addBreakpoint, removeBreakpoint, type Breakpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { debug, toggleSection, bumpBreakpoints } from '@/state/debug.svelte';
+  import { debug, setSection, toggleSection, bumpBreakpoints } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import Button from '@/components/ui/Button.svelte';
@@ -126,7 +126,11 @@
       rest="faded"
       iconSize="md"
       label="Add breakpoint"
-      onclick={() => (showAdd = true)}
+      onclick={() => {
+        // The form is in the section's body: a collapsed section opens to show it.
+        setSection('breakpoints', true);
+        showAdd = true;
+      }}
     />
   {/snippet}
   {#if showAdd}

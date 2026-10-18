@@ -43,6 +43,23 @@ describe('StatusBar', () => {
     expect(bar.querySelector('.sb-state .label')?.textContent).toBe(label);
   });
 
+  it('shows the CPU speed for a running machine, not a stopped one', () => {
+    machine.scheduler = 'accel';
+    machine.acceleratedSpeed = 8;
+    try {
+      machine.status = 'running';
+      const running = render(StatusBar);
+      expect(running.container.querySelector('.sb-speed .label')?.textContent).toBe('8×');
+      running.unmount();
+      machine.status = 'stopped';
+      const stopped = render(StatusBar);
+      expect(stopped.container.querySelector('.sb-speed')).toBeNull();
+    } finally {
+      machine.scheduler = 'live';
+      machine.acceleratedSpeed = 1;
+    }
+  });
+
   it('shows machine description (model · ram) on the right', () => {
     machine.status = 'running';
     machine.model = 'Macintosh SE/30';

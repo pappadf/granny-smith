@@ -20,14 +20,19 @@ vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
 }));
-// Two floppy drives, both present in the default configuration.
+// Two floppy drives, both present in the default configuration, and one
+// hard disk (SCSI ID 0).
 vi.mock('@/bus/profile', () => ({
   getProfile: vi.fn(async () => ({
     floppies: [
       { id: 'fd0', label: 'Internal floppy drive', types: [{ id: '800k' }], default: '800k' },
       { id: 'fd1', label: 'External floppy drive', types: [{ id: '800k' }], default: '800k' },
     ],
-    defaults: { floppies: { fd0: '800k', fd1: '800k' } },
+    storage: [{ id: 'scsi', blank_disks: [] }],
+    defaults: {
+      floppies: { fd0: '800k', fd1: '800k' },
+      storage: [{ bus: 'scsi', unit: 0, type: 'hd' }],
+    },
   })),
 }));
 vi.mock('@/bus/media', () => ({
@@ -46,6 +51,7 @@ const { processUrlMedia } = await import('@/bus/urlMedia');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
+const { machine } = await import('@/state/machine.svelte');
 
 // A ROM the fake core recognises: 64 KB whose first byte is 'R'.
 const PLUS_ROM = new Uint8Array(64 * 1024).fill(0x52);
@@ -176,6 +182,22 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(scratchLeft()).toEqual([]);
   });
 
+  it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disk.img'] = new Uint8Array(4096).fill(0x11);
+    const { beginUrlBoot, urlBoot, _resetUrlBootForTests } = await import('@/state/urlBoot.svelte');
+    beginUrlBoot(null);
+    try {
+      expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd1=disk.img'))).toBe(true);
+      expect(urlBoot.files.find((f) => f.slot === 'hd1')?.status).toBe('failed');
+    } finally {
+      _resetUrlBootForTests();
+    }
+    expect(media.attachHardDisk).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/Booted plus without Hard disk 2: this machine has no hard disk 2/);
+    expect(toastText()).not.toMatch(/machine\.attach_hd/);
+  });
+
   it('two ROM halves of different sizes are both discarded', async () => {
     served['a.bin'] = new Uint8Array(32 * 1024).fill(0x52);
     served['b.bin'] = new Uint8Array(16 * 1024).fill(0x52);
@@ -210,6 +232,32 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(written).not.toContain(firstPath);
     expect(files.get(firstPath)).toBe(mounted);
     expect(scratchLeft()).toEqual([]);
+  });
+});
+
+describe('URL media without rom=: into the running machine, or said to be unused', () => {
+  afterEach(() => {
+    machine.status = 'no-machine';
+  });
+
+  it('with a machine running (a resumed one), the floppy goes into it', async () => {
+    machine.status = 'running';
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/opfs\/images\/fd\/fd0_/),
+      true,
+      0,
+    );
+    expect(toastText()).not.toMatch(/not attached/);
+  });
+
+  it('with no machine, the floppy is stored and the toast says why it is not inserted', async () => {
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/fd0: stored in Images, not attached: no machine is running/);
+    expect(toastText()).not.toMatch(/no floppy drive/);
   });
 });
 

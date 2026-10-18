@@ -772,6 +772,12 @@ static const arg_decl_t files_cp_args[] = {
 #define STORAGE_XFER_BYTES (2u << 20)
 static uint8_t g_xfer[STORAGE_XFER_BYTES];
 
+// `files.persistent` — whether what is written under /opfs outlives the page
+// (false when the browser's storage could not be opened).
+static DEF_GETTER(files_attr_persistent) {
+    return val_bool(platform_storage_persistent());
+}
+
 static DEF_GETTER(files_attr_xfer_buffer) {
     return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
 }
@@ -1532,6 +1538,10 @@ static DEF_METHOD(files_method_download) {
 }
 
 static const member_t files_members[] = {
+    {.kind = MK_ATTR,
+     .name = "persistent",
+     .doc = "True when files under /opfs outlive the page; false when the browser's storage could not be opened",
+     .attr = {.type = VK_BOOL, .get = files_attr_persistent, .set = NULL}},
     {.kind = MK_ATTR,
      .name = "xfer_buffer",
      .flags = M_CAT_INTERNAL,

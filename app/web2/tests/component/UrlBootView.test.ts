@@ -1,5 +1,5 @@
 import { render, fireEvent } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import UrlBootView from '@/components/display/UrlBootView.svelte';
 import DisplayContent from '@/components/display/DisplayContent.svelte';
@@ -181,6 +181,18 @@ describe('PreviewNoticeDialog with a URL boot', () => {
     beginUrlBoot('iici');
     const { queryByText } = render(PreviewNoticeDialog);
     expect(queryByText(/preview build/)).toBeNull();
+  });
+
+  it('opens on the start screen after the URL-booted machine is shut down', async () => {
+    beginUrlBoot('iici');
+    const { queryByText } = render(PreviewNoticeDialog);
+    machine.status = 'running';
+    urlBoot.showProgress = false;
+    await tick();
+    expect(queryByText(/preview build/)).toBeNull();
+    machine.status = 'stopped';
+    await tick();
+    expect(queryByText(/preview build/)).not.toBeNull();
   });
 
   it('opens on an ordinary first visit', () => {

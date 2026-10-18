@@ -298,7 +298,8 @@
 
   function methodItem(path: string, m: MemberInfo, prefix = ''): ContextMenuItem {
     const verb = m.verb ?? m.name;
-    const dots = argsOf(m).length ? '…' : '';
+    // A verb label the core already ends with an ellipsis keeps just that one.
+    const dots = argsOf(m).length && !/(…|\.\.\.)$/.test(verb) ? '…' : '';
     return {
       label: `${prefix}${verb}${dots}`,
       danger: !!m.destructive,
