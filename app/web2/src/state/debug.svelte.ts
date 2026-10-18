@@ -32,6 +32,10 @@ interface DebugState {
    *  (paused → paused, no mode event), so we need a
    *  reactive signal of "PC moved, re-fetch" to trigger refreshes. */
   refreshGen: number;
+  /** Bumped after every breakpoint add or remove, so each surface that
+   *  shows them (the Breakpoints section, the Disassembly markers) lists
+   *  them again. */
+  breakpointsGen: number;
 }
 
 export const debug: DebugState = $state({
@@ -57,10 +61,15 @@ export const debug: DebugState = $state({
   auxOpen: {},
   registersPrev: {},
   refreshGen: 0,
+  breakpointsGen: 0,
 });
 
 export function bumpDebugRefresh(): void {
   debug.refreshGen++;
+}
+
+export function bumpBreakpoints(): void {
+  debug.breakpointsGen++;
 }
 
 export function toggleSection(name: keyof DebugState['sections']): void {
