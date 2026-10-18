@@ -13,9 +13,8 @@ vi.mock('@/bus/mmu', () => ({
   addrLabel: (addr: number) => `$${addr.toString(16)}`,
 }));
 
-const { default: CallStackSection } = await import(
-  '@/components/panel-views/debug/CallStackSection.svelte'
-);
+const { default: CallStackSection } =
+  await import('@/components/panel-views/debug/CallStackSection.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { debugFrame } = await import('@/state/debugFrame.svelte');
 const { machine } = await import('@/state/machine.svelte');

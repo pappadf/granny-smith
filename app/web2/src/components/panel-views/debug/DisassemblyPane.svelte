@@ -13,12 +13,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
-  import {
-    debug,
-    bumpBreakpoints,
-    inspectMmuWalk,
-    inspectMemoryAt,
-  } from '@/state/debug.svelte';
+  import { debug, bumpBreakpoints, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import { readMetric } from '@/lib/tokens';

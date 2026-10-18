@@ -23,7 +23,9 @@ export function replaceTokenAt(
   cursor: number,
   insert: string,
 ): { text: string; cursor: number } {
-  let { start, end } = pathTokenAt(text, cursor);
+  const tok = pathTokenAt(text, cursor);
+  const start = tok.start;
+  let end = tok.end;
   if (start === cursor && end > cursor) {
     end = cursor;
     if (!/\s$/.test(insert)) insert += ' ';

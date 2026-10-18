@@ -143,7 +143,7 @@ describe('core events on the mailbox', () => {
       }, 0),
     );
     expect(seen).toBeGreaterThan(1);
-    for (let i = 0; i < 20 && (Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0) !== wr; i++) await tick();
+    for (let i = 0; i < 20 && Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0 !== wr; i++) await tick();
     expect(Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0).toBe(wr);
   });
 

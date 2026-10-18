@@ -28,9 +28,8 @@ vi.mock('@/components/common/ContextMenu.svelte', () => ({
   },
 }));
 
-const { default: DisassemblyPane } = await import(
-  '@/components/panel-views/debug/DisassemblyPane.svelte'
-);
+const { default: DisassemblyPane } =
+  await import('@/components/panel-views/debug/DisassemblyPane.svelte');
 const { debugFrame } = await import('@/state/debugFrame.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { machine } = await import('@/state/machine.svelte');
@@ -76,7 +75,9 @@ describe('DisassemblyPane breakpoints', () => {
     const { container } = render(DisassemblyPane);
     const gen = debug.breakpointsGen;
     await fireEvent.contextMenu(container.querySelectorAll('.row')[2]);
-    const add = menu.find((i) => 'label' in i && i.label.startsWith('Add breakpoint')) as {
+    const add = menu.find(
+      (i) => 'label' in i && i.label.startsWith('Add breakpoint'),
+    ) as unknown as {
       action: () => Promise<void>;
     };
     await add.action();
