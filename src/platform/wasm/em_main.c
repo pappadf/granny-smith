@@ -222,10 +222,13 @@ static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud)
     // boot/restart (app/web2 lib/capslock.ts).
     if (k < 0 || k == 0x39)
         return EM_FALSE;
-    // A key the machine refuses is left to the browser -- except Control,
-    // which host_keys retries as Command where the keyboard has no Control
-    // (the Lisa: SCO Xenix reads Apple-D as Control-D), so Control-D is not
-    // left for the browser to take as "bookmark".
+    // Control is retried as Command where the keyboard has no Control (the
+    // Lisa: SCO Xenix reads Apple-D as Control-D).  The return value only
+    // reports whether the machine took the key: this callback is proxied to
+    // the emulator pthread, so Emscripten never acts on it with
+    // preventDefault().  While the screen has the keyboard, the browser's
+    // defaults are suppressed on the main thread instead (app/web2
+    // lib/screenKeys.ts, #352), whether the machine took the key or not.
     return host_keys_down(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 

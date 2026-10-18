@@ -460,7 +460,7 @@
 
   async function attachMedium(target: string, kind: 'fd' | 'hd' | 'cd') {
     const name = target.split('/').pop() ?? target;
-    const r = kind === 'fd' ? await insertFloppy(target, false) : await mountImage(kind, target);
+    const r = kind === 'fd' ? await insertFloppy(target, true) : await mountImage(kind, target);
     const verb = kind === 'hd' ? 'attach' : 'insert';
     if (!r.ok) {
       showNotification(`Couldn't ${verb} '${name}': ${r.reason}`, r.full ? 'warning' : 'error');

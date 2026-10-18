@@ -11,6 +11,11 @@
 //      floppy? archive? something else?); move it into the right
 //      /opfs/images/<category>/ or refuse it; discard the staging copy,
 //      whatever came of it.
+//   2a. Except the chips of a Lisa / Macintosh XL boot ROM, dumped as two
+//      byte-wide halves: they are staged and told apart first (stageLisaChips),
+//      and two of one drop are interleaved and stored as one ROM
+//      (storeLisaChips).  A chip that arrives alone is refused, as the half
+//      of a ROM it is, not stored as a tiny "hard disk".
 //   3. Then, as a single drop would: boot a default machine from a ROM that
 //      is the drop's only ROM, and put the first file of each category into
 //      an empty drive.  A drop of several files ends with one summary.
@@ -31,13 +36,14 @@
 // through the worker (files.mv/files.rm).
 
 import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
-import { xferChunkBytes, xferWrite } from './xfer';
+import { xferChunkBytes, xferReadAll, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
+import { interleaveHalves } from '@/lib/mediaUrl';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
 import {
   MEDIA_TYPES,
@@ -199,9 +205,17 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
     return;
   }
 
+  // The Lisa ROM chips first: a pair is one ROM, named after both files.
+  const { chips, rest } = await stageLisaChips(files);
+  const names: string[] = [];
   const outcomes: FileOutcome[] = [];
-  for (const file of files) {
+  for (const { name, outcome } of await storeLisaChips(chips, !single)) {
+    names.push(name);
+    outcomes.push(outcome);
+  }
+  for (const file of rest) {
     startActivity(file.name);
+    names.push(file.name);
     try {
       outcomes.push(
         (await fileHasCheckpointSignature(file))
@@ -218,13 +232,10 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
   }
 
   if (!single) {
-    const { msg, severity } = dropSummary(
-      files.map((f) => f.name),
-      outcomes,
-    );
+    const { msg, severity } = dropSummary(names, outcomes);
     showNotification(msg, severity);
   } else if (!outcomes[0].stored && !outcomes[0].told) {
-    showNotification(`'${files[0].name}' ${outcomes[0].reason}`, outcomes[0].severity);
+    showNotification(`'${names[0]}' ${outcomes[0].reason}`, outcomes[0].severity);
   }
   await actOnStored(
     outcomes.flatMap((o) => (o.stored ? [o] : [])),
@@ -305,6 +316,21 @@ export async function acceptFilesAsCategory(
     return null;
   }
   const file = files[0];
+  // A ROM dumped as two Lisa chips is one file of two: the first file and,
+  // when it is a chip, the second as its partner.
+  if (category === 'rom' && file.size === LISA_CHIP_BYTES) {
+    const { chips } = await stageLisaChips(files.slice(0, 2));
+    if (chips[0]?.file === file) {
+      const [first] = await storeLisaChips(chips, false);
+      if (!first.outcome.stored) {
+        showNotification(`'${first.name}' ${first.outcome.reason}`, 'error');
+        return null;
+      }
+      if (autoMount) await maybeBootFromRom(first.outcome.path);
+      return first.outcome.path;
+    }
+    await Promise.all(chips.map((c) => discardStaging(c.path)));
+  }
   startActivity(file.name);
   try {
     if (
@@ -474,6 +500,12 @@ async function probeAs(
   opts: { quiet: boolean; inArchive?: boolean },
 ): Promise<FileOutcome | null> {
   for (const id of order) {
+    // Half a Lisa ROM is never a disk, though the permissive hd probe would
+    // take it (a chip inside an archive: a drop's own chips are paired first).
+    if (id === 'hd') {
+      const chip = await lisaChipOf(path);
+      if (chip) return { stored: false, reason: loneChipReason(chip), severity: 'error' };
+    }
     const descriptor = MEDIA_TYPES[id];
     const result = await descriptor.validate(path, gsEval);
     // This IS that kind of file, refused: say why and stop, rather than
@@ -664,14 +696,159 @@ export async function persistAs(
   sourcePath: string,
   originalName: string,
   category: MediaTypeId,
+  // quiet: no "added" message (a drop of several files ends with a summary).
+  opts: { quiet?: boolean } = {},
 ): Promise<PersistOutcome> {
   const descriptor = MEDIA_TYPES[category];
   const result = await descriptor.validate(sourcePath, gsEval);
   // A refusal says why; anything else is simply not this kind of file.
   if (!result.valid)
     return { ok: false, reason: result.reject ?? `is not a valid ${descriptor.label}` };
-  const path = await persist(sourcePath, originalName, descriptor, result.info);
+  const path = await persist(sourcePath, originalName, descriptor, result.info, opts);
   return path ? { ok: true, path } : { ok: false, reason: 'could not be stored' };
+}
+
+// Interleave the two byte-wide chips of a ROM dumped as halves, staged at
+// `pathA` and `pathB`, into one image and store it as a ROM named `name`
+// (stored by content id, as every ROM is).  Which chip holds the even bytes
+// is not for the caller to say: both orders are tried and the one whose own
+// checksum verifies (machine.rom.identify) is stored.  Uploads and URL media
+// (rom=…&rom=…) both pair through here.  The staged chips are the caller's
+// to discard.
+export async function storeRomPair(
+  pathA: string,
+  pathB: string,
+  name: string,
+  opts: { quiet?: boolean } = {},
+): Promise<PersistOutcome> {
+  const bytesA = await xferReadAll(pathA);
+  const bytesB = await xferReadAll(pathB);
+  if (bytesA.length !== bytesB.length)
+    return {
+      ok: false,
+      reason: `are two halves that differ in size (${bytesA.length} and ${bytesB.length} bytes)`,
+    };
+  // The image is built at a scratch path of its own: the chips stay as they
+  // are, so a caller can still try one with another partner.
+  const combined = scratchPath(sanitizeName(name) || 'rom.bin');
+  try {
+    for (const [even, odd] of [
+      [bytesA, bytesB],
+      [bytesB, bytesA],
+    ]) {
+      if (!(await streamToOpfs(combined, interleaveHalves(even, odd))))
+        return { ok: false, reason: 'could not be stored' };
+      const id = (await gsEval('machine.rom.identify', [combined])) as { intact?: boolean } | null;
+      if (id?.intact) return await persistAs(combined, name, 'rom', opts);
+    }
+    return { ok: false, reason: 'do not interleave into a ROM whose checksum verifies' };
+  } finally {
+    await discardStaging(combined);
+  }
+}
+
+// Which chip of a two-chip Lisa ROM: the high-byte one holds the even bytes.
+type LisaChip = 'high' | 'low';
+
+// One chip of a Lisa / Macintosh XL boot ROM, staged for pairing.
+interface StagedChip {
+  file: File;
+  path: string;
+  chip: LisaChip;
+}
+
+// Every Lisa / Macintosh XL ROM chip is half the 16 KB image.  Only a file of
+// this size is staged to ask the core (rom.identify's lisa_chip) what it is.
+const LISA_CHIP_BYTES = 8 * 1024;
+
+// Which Lisa ROM chip the file at `path` is, or null when it is none -- the
+// core's call, from the reset vectors every Lisa ROM opens with.
+async function lisaChipOf(path: string): Promise<LisaChip | null> {
+  const r = await gsEval('machine.rom.identify', [path]);
+  const chip = r && typeof r === 'object' ? (r as { lisa_chip?: unknown }).lisa_chip : undefined;
+  return chip === 'high' || chip === 'low' ? chip : null;
+}
+
+// Why one Lisa ROM chip on its own is not stored (completes "'<name>' …").
+function loneChipReason(chip: LisaChip): string {
+  return (
+    `is one of the two chips of a Lisa / Macintosh XL boot ROM (the ${chip}-byte chip): ` +
+    'add it together with the other chip, and the two are combined into the ROM'
+  );
+}
+
+// Stage each of `files` that is one chip of a Lisa ROM, for storeLisaChips to
+// pair; every other file is left, in order, for the single-file flow.
+async function stageLisaChips(files: File[]): Promise<{ chips: StagedChip[]; rest: File[] }> {
+  const chips: StagedChip[] = [];
+  const rest: File[] = [];
+  for (const file of files) {
+    if (file.size !== LISA_CHIP_BYTES) {
+      rest.push(file);
+      continue;
+    }
+    const path = await stageUpload(file);
+    const chip = path ? await lisaChipOf(path) : null;
+    if (path && chip) {
+      chips.push({ file, path, chip });
+      continue;
+    }
+    // Not a chip: the single-file flow stages it again on its own.
+    if (path) await discardStaging(path);
+    rest.push(file);
+  }
+  return { chips, rest };
+}
+
+// Pair the staged Lisa ROM chips -- each high-byte chip with the first
+// low-byte one it interleaves with into a ROM -- and store each pair as one
+// ROM, named after both files ("a+b").  A chip left without a partner is
+// refused as the half of a ROM it is.  Every staged chip is discarded.
+async function storeLisaChips(
+  chips: StagedChip[],
+  quiet: boolean,
+): Promise<Array<{ name: string; outcome: FileOutcome }>> {
+  const out: Array<{ name: string; outcome: FileOutcome }> = [];
+  const used = new Set<StagedChip>();
+  // The last refusal of a pair a chip was in, said instead of "alone".
+  const failed = new Map<StagedChip, { partner: StagedChip; reason: string }>();
+  try {
+    for (const hi of chips.filter((c) => c.chip === 'high')) {
+      for (const lo of chips.filter((c) => c.chip === 'low' && !used.has(c))) {
+        const name = `${hi.file.name}+${lo.file.name}`;
+        startActivity(name);
+        let stored: PersistOutcome;
+        try {
+          stored = await storeRomPair(hi.path, lo.path, name, { quiet });
+        } finally {
+          endActivity();
+        }
+        if (stored.ok) {
+          used.add(hi).add(lo);
+          out.push({ name, outcome: { stored: true, category: 'rom', path: stored.path } });
+          break;
+        }
+        failed.set(hi, { partner: lo, reason: stored.reason });
+        failed.set(lo, { partner: hi, reason: stored.reason });
+      }
+    }
+    // What is left over: a lone chip, or one whose pairing failed.
+    for (const c of chips) {
+      if (used.has(c)) continue;
+      const f = failed.get(c);
+      out.push({
+        name: c.file.name,
+        outcome: {
+          stored: false,
+          reason: f ? `and '${f.partner.file.name}' ${f.reason}` : loneChipReason(c.chip),
+          severity: 'error',
+        },
+      });
+    }
+  } finally {
+    await Promise.all(chips.map((c) => discardStaging(c.path)));
+  }
+  return out;
 }
 
 // If the user dropped a ROM and no machine is running yet, boot a default
@@ -813,7 +990,8 @@ export async function pickAndUploadAs(
   accept = '',
   opts: { autoMount?: boolean } = {},
 ): Promise<string | null> {
-  const files = await openFilePicker(accept, false);
+  // A ROM may be picked as its two Lisa chips (acceptFilesAsCategory).
+  const files = await openFilePicker(accept, category === 'rom');
   if (!files.length) return null;
   return acceptFilesAsCategory(files, category, opts);
 }

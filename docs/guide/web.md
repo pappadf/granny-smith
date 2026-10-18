@@ -84,7 +84,11 @@ an exported wasm function is still callable from the browser main thread
 runs the core on the main thread, with the main thread's pthread context,
 while the worker is inside `em_main_tick`. Only the handful of built-in
 Emscripten callbacks (pointer lock, mouse, keyboard, visibility) are
-proxied to the worker for us. Calling into the core from the main thread
+proxied to the worker for us. A proxied callback's return value is never
+seen by the DOM listener, so it cannot `preventDefault()` an event: browser
+shortcuts are suppressed on the main thread instead, while the screen holds
+the pointer lock (`app/web2/src/lib/screenKeys.ts`, #352), which also asks
+before a page with a live machine unloads. Calling into the core from the main thread
 races the worker for scheduler, machine and device state, uses WasmFS/OPFS
 handles from a thread that did not open them, and can deadlock or stall on
 the runtime's mutexes. So every JS→C request goes through the mailbox, and
@@ -692,7 +696,13 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    drop's only ROM, and per category only the first file goes into an empty
    drive.  A checkpoint is loaded only when dropped on its own; in a drop
    with other files it is rejected ("drop a checkpoint on its own"), since
-   loading it would replace the machine they were meant for.
+   loading it would replace the machine they were meant for.  The two
+   8 KB chip dumps of a Lisa / Macintosh XL boot ROM (`341-0175`/`341-0176`,
+   `341-0346`/`341-0347`) are told apart first (`machine.rom.identify`'s
+   `lisa_chip`): two of one drop or pick are interleaved, in whichever order
+   verifies, and stored as the one ROM (`storeRomPair`, which `rom=…&rom=…`
+   uses too); a chip on its own is refused as half a ROM, never stored as a
+   disk.
 3. **Drag-and-drop onto the Filesystem tab** —
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls

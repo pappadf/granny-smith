@@ -384,11 +384,21 @@ static void one_second_interrupt(void *source, uint64_t data) {
 // runtime assert it replaces was.
 static_assert(sizeof(time_t) >= 4, "time_t must hold at least 32 bits for the Mac epoch conversion");
 
+// The host's current local time as Mac seconds.  The Mac RTC holds local
+// time, not UTC: the OS shows the counter as-is and keeps the zone separately
+// (the Map control panel's offset in extended PRAM), so a counter seeded from
+// UTC shows a clock hours off everywhere but Greenwich (#351).
 static uint32_t wall_clock_seconds(void) {
-    // Promote to uint64_t before the cast so the wrap point is visible (Mac
+    time_t now = time(NULL);
+    // The host's offset from UTC right now, DST included.  Under Emscripten
+    // localtime_r runs JS Date in the calling thread, so this is the
+    // browser's time zone in the worker too; natively it honours TZ.
+    struct tm local;
+    int64_t offset = localtime_r(&now, &local) ? (int64_t)local.tm_gmtoff : 0;
+    // Promote to 64 bits before the cast so the wrap point is visible (Mac
     // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
     // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
-    return (uint32_t)((uint64_t)time(NULL) + MAC_TO_UNIX_EPOCH);
+    return (uint32_t)((int64_t)now + offset + MAC_TO_UNIX_EPOCH);
 }
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {

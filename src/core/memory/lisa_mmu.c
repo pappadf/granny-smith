@@ -273,6 +273,10 @@ void lisa_mmu_set_vbl_active(lisa_mmu_t *m, bool active) {
         m->vbl_active = active;
 }
 
+bool lisa_mmu_vbl_active(const lisa_mmu_t *m) {
+    return m && m->vbl_active;
+}
+
 void lisa_mmu_set_vbl_ack(lisa_mmu_t *m, void (*cb)(void *), void *ctx) {
     if (m) {
         m->vbl_ack_cb = cb;

@@ -10,6 +10,7 @@
   import { layout, chromeHidden } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
   import { startCapsLockSync } from '@/lib/capslock';
+  import { startScreenKeyGuard } from '@/lib/screenKeys';
 
   // Keep <html data-skin> in sync with the appearance state.  The first
   // write happens in main.ts before mount; this effect follows every skin
@@ -30,6 +31,9 @@
 
   startPersistEffects();
   startCapsLockSync();
+  // Keys the grabbed screen gets do nothing in the browser, and a live
+  // machine asks before the page is reloaded or closed (#352).
+  startScreenKeyGuard();
 </script>
 
 <Workbench />

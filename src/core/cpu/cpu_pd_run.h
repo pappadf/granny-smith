@@ -975,9 +975,9 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
         cpu->halted = 0;
         PD_HW_RESET(cpu);
     }
-#ifdef CPU_DECODER_IS_68030
+    // Active SoA pair from the current mode: a restored or swapped-in machine
+    // arrives with the supervisor pair selected whatever its SR says.
     cpu_select_soa(cpu->supervisor);
-#endif
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
     cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per

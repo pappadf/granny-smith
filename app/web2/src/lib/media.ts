@@ -43,6 +43,7 @@ export type GsEval = (path: string, args?: unknown[]) => Promise<unknown>;
 // Copy writes none for a 1.44 MB MFM disk).
 const FD_400 = 400 * 1024;
 const FD_800 = 800 * 1024;
+const FD_720 = 720 * 1024; // MFM double density (PC Exchange / DOS)
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
 const DC42_TAGS = (data: number) => (data / 512) * 12;
@@ -274,7 +275,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       // The Configuration slide validates before machine.boot, so the
       // per-machine `floppy` object isn't on the root yet. Use the size-
       // based classifier (same as image.c::classify_image + detect_diskcopy).
-      // All floppy densities — 400 KB / 800 KB / 1.44 MB, with or without a
+      // All floppy densities — 400 KB / 800 KB / 720 KB / 1.44 MB, with or without a
       // DiskCopy 4.2 header — live together under FD_DIR so the Images tab's
       // single "fd" section lists them all. (An earlier revision split HD
       // floppies into a separate /opfs/images/fdhd/ that no category ever
@@ -289,6 +290,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         size === FD_800 + DC42_HEADER ||
         size === FD_400 + DC42_TAGS(FD_400) + DC42_HEADER ||
         size === FD_800 + DC42_TAGS(FD_800) + DC42_HEADER ||
+        size === FD_720 ||
+        size === FD_720 + DC42_HEADER ||
         size === FD_HD ||
         size === FD_HD + DC42_HEADER;
       if (!recognised) return { valid: false };

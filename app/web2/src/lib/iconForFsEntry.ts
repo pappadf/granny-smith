@@ -51,12 +51,3 @@ export const CATEGORY_LABELS: Record<'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd
   hd: 'Hard Disk',
   cd: 'CD-ROM',
 };
-
-export const CATEGORY_ACCEPT: Record<'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd', string> = {
-  rom: '.rom,.bin',
-  vrom: '.rom,.bin',
-  prom: '.prom,.rom,.bin',
-  fd: '.dsk,.img,.dc42',
-  hd: '.img,.hda',
-  cd: '.iso,.toast,.cdr',
-};
