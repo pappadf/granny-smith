@@ -30,91 +30,28 @@
 // (3) is the one that matters. Steps 1-2 passed the whole time the feature
 // was completely dead.
 
-import { test, expect, type Page } from "../helpers/test";
-import * as path from "node:path";
-import { gsEvalInPage } from "../helpers/web2-eval";
+import { test, expect } from "../helpers/test";
+import { gsCallInPage } from "../helpers/web2-eval";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
-import { terminalRun as typeLine } from "../helpers/terminal";
+import {
+  AV_ROM,
+  FAKE_MEDIA_ARGS,
+  MIC_BUTTON,
+  PLUS_ROM,
+  holdRealTime,
+  micGraph,
+  micStats,
+  probe,
+  probeNumber,
+  shutDown,
+  startMachine,
+} from "../helpers/av";
 
-// A per-key delay: this machine keeps the main thread busy (a live
-// AudioWorklet), and a burst typed into it can lose characters.
-const terminalRun = (page: Page, line: string) =>
-  typeLine(page, line, { delay: 10 });
-
-const DATA = path.resolve(__dirname, "../../data");
-const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
-const PLUS_ROM = path.join(DATA, "roms", "plus-v3-4d1f8172.rom");
-
-// Per-spec launchOptions REPLACE the config array, so the swiftshader flags
-// (web2 will not mount without WebGL2) are re-listed alongside the fake
-// capture device.
 test.use({
   // Real-time media feeds the guest: keep web2's default pacing.
   gsSpeed: null,
-  launchOptions: {
-    args: [
-      "--use-gl=angle",
-      "--use-angle=swiftshader-webgl",
-      "--ignore-gpu-blocklist",
-      "--disable-dev-shm-usage",
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
-    ],
-  },
+  launchOptions: { args: FAKE_MEDIA_ARGS },
 });
-
-// See av-camera.spec.ts for why the answer is bracketed on both sides.
-async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".console-output").innerText();
-  const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
-  for (const line of text.split("\n")) {
-    const m = line.trim().match(re);
-    if (m) return m[1];
-  }
-  return null;
-}
-
-let probeSeq = 0;
-async function probe(
-  page: Page,
-  expr: string,
-  timeoutMs = 10_000,
-): Promise<string | null> {
-  const key = `q${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}=${key}"`);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await readKey(page, key);
-    if (v !== null) return v;
-    if (Date.now() > deadline) return null;
-    await page.waitForTimeout(250);
-  }
-}
-
-async function bootModel(
-  page: Page,
-  romFile: string,
-  model: string,
-): Promise<void> {
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(romFile);
-
-  await page.getByRole("button", { name: "New Machine..." }).click();
-  const sel = page.locator("#cfg-model");
-  await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, {
-    timeout: 30_000,
-  });
-  await sel.selectOption(model);
-  await page.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(
-    page.locator(".toast .msg").filter({ hasText: "Machine started" }),
-  ).toBeVisible({
-    timeout: 60_000,
-  });
-}
 
 test("AV microphone control delivers browser audio into guest RAM", async ({
   page,
@@ -132,28 +69,16 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   );
 
   // --- 1. Capability gating: a Plus has no Singer, so no microphone button.
-  await bootModel(page, PLUS_ROM, "plus");
-  const micBtn = page.locator('.gs-toolbar button[aria-label*="icrophone"]');
+  await startMachine(page, PLUS_ROM, "plus");
+  const micBtn = page.locator(MIC_BUTTON);
   await expect(micBtn).toHaveCount(0);
 
   // --- 2. The 840AV has one.
-  await page.getByRole("button", { name: "Shut down" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Shut Down" }).click();
-  await bootModel(page, AV_ROM, "q840av");
+  await shutDown(page);
+  await startMachine(page, AV_ROM, "q840av");
   await expect(micBtn).toHaveCount(1, { timeout: 30_000 });
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");
-
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
-  await expect
-    .poll(async () => probe(page, "machine.id"), { timeout: 30_000 })
-    .toBe("q840av");
-
-  // The guest runs in real time from here and the GUI drives below are paced
-  // in guest ticks, so it must run at 1x: floor the adaptive governor there
-  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
-  // and every wait comes up short.
-  await gsEvalInPage(page, "scheduler.min_speed", [1]);
+  await holdRealTime(page);
 
   expect(await probe(page, "machine.audioin.source")).toBe("none");
   expect(await probe(page, "machine.audioin.connected")).toBe("false");
@@ -175,66 +100,30 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   // makes the guest actually pull, and it is also what flips pSndInEn, so
   // the browser track attaches (the mic is live only while the guest is
   // genuinely recording).
-  // EACH poke is verified individually and retried until its own register
-  // reads back.  Retrying the block as a whole is not enough: a line the
-  // terminal ate is silently skipped, and the block then re-runs the two
-  // pokes that DID land while the mangled one stays unwritten every time —
-  // which is how all five attempts failed identically in CI #636.  The
-  // readback is a comparison rather than a value so it does not depend on
-  // how the shell formats the number.
-  for (const [cmd, check] of [
-    [
-      "machine.memory.poke.l 0x50F31210 0x10000",
-      "machine.memory.peek.l(0x50F31210) == 0x10000",
-    ],
-    [
-      "machine.memory.poke.w 0x50F31218 240",
-      "machine.memory.peek.w(0x50F31218) == 240",
-    ],
-    ["machine.memory.poke.w 0x50F31200 0x0080", "machine.sound.in_enabled"],
-  ] as const) {
-    let landed = false;
-    for (let attempt = 0; attempt < 6 && !landed; attempt++) {
-      await terminalRun(page, cmd);
-      landed = (await probe(page, check)) === "true";
-    }
-    expect(landed, `the shell never accepted: ${cmd}`).toBe(true);
+  // The ROM is still booting at this point (no disk: it ends at the
+  // flashing "?"), and its own sound init writes the Singer's control
+  // register on the way, which switches the input engine back off.  So arm
+  // it, hold for a few seconds, and re-arm until it sticks; each poke is
+  // read back so a failure names the one that did not land.
+  let armed = false;
+  for (let attempt = 0; attempt < 15 && !armed; attempt++) {
+    await gsCallInPage(page, "machine.memory.poke.l", [0x50f31210, 0x10000]);
+    expect(await probeNumber(page, "machine.memory.peek.l", [0x50f31210])).toBe(0x10000);
+    await gsCallInPage(page, "machine.memory.poke.w", [0x50f31218, 240]);
+    expect(await probeNumber(page, "machine.memory.peek.w", [0x50f31218])).toBe(240);
+    await gsCallInPage(page, "machine.memory.poke.w", [0x50f31200, 0x0080]);
+    expect(await probe(page, "machine.sound.in_enabled")).toBe("true");
+    await page.waitForTimeout(4000);
+    armed = (await probe(page, "machine.sound.in_enabled")) === "true";
   }
   // Log the whole picture BEFORE asserting: a failed assertion that takes
   // the diagnostics down with it is what made the last three rounds guesswork.
-  await page.waitForTimeout(4000);
-  console.log(
-    "  micStats AFTER pSndInEn:",
-    await page.evaluate(() =>
-      JSON.stringify(
-        (
-          globalThis as unknown as { __micStats?: () => unknown }
-        ).__micStats?.() ?? "n/a",
-      ),
-    ),
-  );
-  console.log(
-    "  graph:",
-    await page.evaluate(() =>
-      JSON.stringify(
-        (
-          globalThis as unknown as { __micLive?: () => unknown }
-        ).__micLive?.() ?? "n/a",
-      ),
-    ),
-  );
+  console.log("  micStats AFTER pSndInEn:", JSON.stringify(await micStats(page)));
+  console.log("  graph:", JSON.stringify(await micGraph(page)));
   expect(await probe(page, "machine.sound.in_enabled")).toBe("true");
   // The worklet, not the deprecated fallback: addModule() from a blob: URL
   // is rejected under cross-origin isolation and fails SILENTLY into it.
-  const graph = JSON.parse(
-    (await page.evaluate(() =>
-      JSON.stringify(
-        (
-          globalThis as unknown as { __micLive?: () => unknown }
-        ).__micLive?.() ?? "{}",
-      ),
-    )) as string,
-  ) as { node: string; live: boolean };
+  const graph = await micGraph(page);
   expect(graph.node, "fell back off the AudioWorklet path").toBe(
     "AudioWorkletNode",
   );
@@ -242,7 +131,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
 
   // The seam is pulled: the frame engine takes samples from the host source.
   await expect
-    .poll(async () => Number(await probe(page, "machine.audioin.samples")), {
+    .poll(async () => probeNumber(page, "machine.audioin.samples"), {
       timeout: 30_000,
     })
     .toBeGreaterThan(0);
@@ -256,17 +145,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   //     the Singer's DMA. This is the assertion that would have caught the
   //     original bug (the worklet was never rendered, so `produced` stayed
   //     at 0 forever).
-  const stats = async () =>
-    JSON.parse(
-      (await page.evaluate(() =>
-        JSON.stringify(
-          (
-            globalThis as unknown as { __micStats?: () => unknown }
-          ).__micStats?.() ?? "{}",
-        ),
-      )) as string,
-    ) as { produced: number; consumed: number; overruns: number };
-  const s1 = await stats();
+  const s1 = await micStats(page);
   expect(s1.produced, "the worklet is not producing samples").toBeGreaterThan(
     10_000,
   );
@@ -274,7 +153,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
     10_000,
   );
   await page.waitForTimeout(2000);
-  const s2 = await stats();
+  const s2 = await micStats(page);
   expect(s2.produced, "production stalled").toBeGreaterThan(s1.produced);
   expect(s2.consumed, "consumption stalled").toBeGreaterThan(s1.consumed);
 
@@ -285,14 +164,14 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   //     LSB dither, which is exactly what a dead capture path would leave
   //     here (and what came back as full-scale white noise).
   let peak = 0;
-  for (let round = 0; round < 12 && peak <= 16; round++) {
+  const peakDeadline = Date.now() + 30_000;
+  while (Date.now() < peakDeadline && peak <= 16) {
     for (let i = 0; i < 8; i++) {
-      const w = Number(
-        await probe(page, `machine.memory.peek.w(0x10000 + ${i} * 244)`),
-      );
+      const w = await probeNumber(page, "machine.memory.peek.w", [0x10000 + i * 244]);
       const sgn = w > 32767 ? w - 65536 : w;
       peak = Math.max(peak, Math.abs(sgn));
     }
+    await page.waitForTimeout(250);
   }
   console.log("  peak sample seen in the guest double buffer:", peak);
   expect(

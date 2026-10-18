@@ -3,9 +3,10 @@
 
 // scheduler_class.c
 // Object-model glue for the scheduler: the `scheduler` node (run, stop, the
-// pacing attributes, the event queue, the cycle and instruction counters)
-// and the root `pacing` node.  Kept out of scheduler.c so the event queue and
-// sprint loop sit in a TU of their own.
+// pacing attributes, the event queue, the cycle and instruction counters).
+// Kept out of scheduler.c so the event queue and sprint loop sit in a TU of
+// their own.  The pacing attributes are mirrors of the host's setting, whose
+// reads, validation and writes live in pacing.c with the root `pacing` node.
 
 #include "scheduler.h"
 #include "scheduler_internal.h"
@@ -14,9 +15,7 @@
 #include "system.h"
 #include "value.h"
 
-#include <math.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 // Read a POSIX clock as nanoseconds.  CLOCK_PROCESS_CPUTIME_ID measures
@@ -78,42 +77,12 @@ static DEF_GETTER(sched_attr_running) {
     return val_bool(scheduler_is_running(sched_self_from(self)));
 }
 
-// scheduler.mode values, in enum-index order.  The legacy aliases (real,
-// realtime, hw, hardware → paced; accel → accelerated; max → turbo) are gone
-// everywhere: the attribute, --speed= and ?speed= take these three only.
-static const char *const sched_mode_names[] = {"paced", "accelerated", "turbo", NULL};
-static const enum schedule_mode sched_mode_values[] = {schedule_paced, schedule_accelerated, schedule_unthrottled};
-
 static DEF_GETTER(sched_attr_mode_get) {
-    (void)self;
-    enum schedule_mode mode = platform_pacing()->mode;
-    for (size_t i = 0; i < 3; i++)
-        if (sched_mode_values[i] == mode)
-            return val_enum((int)i, sched_mode_names, 3);
-    return val_err("scheduler.mode: unknown internal mode %d", (int)mode);
-}
-
-bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
-    for (size_t i = 0; name && i < 3; i++) {
-        if (strcmp(name, sched_mode_names[i]) == 0) {
-            *out = sched_mode_values[i];
-            return true;
-        }
-    }
-    return false;
+    return pacing_read_mode("scheduler.mode");
 }
 
 static DEF_SETTER(sched_attr_mode_set) {
-    // node_set has already coerced a name to VK_ENUM against the table.
-    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
-        value_free(&in);
-        return val_err("scheduler.mode: expected paced, accelerated or turbo");
-    }
-    host_pacing_t *pacing = platform_pacing();
-    pacing->mode = sched_mode_values[in.enm.idx];
-    scheduler_apply_pacing(sched_self_from(self), pacing); // shows at once, not at the next frame
-    value_free(&in);
-    return val_none();
+    return pacing_write_mode(sched_self_from(self), "scheduler.mode", in);
 }
 
 static DEF_GETTER(sched_attr_cpi) {
@@ -140,11 +109,7 @@ static DEF_GETTER(sched_attr_speed) {
     return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
 }
 static DEF_SETTER(sched_attr_speed_set) {
-    if (isnan(in.f) || (in.f != 0.0 && (in.f < 1.0 || in.f > 8.0)))
-        return val_err("scheduler.speed: %g out of range (0 = auto, or 1.0 .. 8.0)", in.f);
-    host_pacing_set_speed(platform_pacing(), in.f);
-    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
-    return val_none();
+    return pacing_write_speed(sched_self_from(self), "scheduler.speed", in.f);
 }
 
 // Whether the adaptive governor is choosing the speed (scheduler.speed = 0)
@@ -157,29 +122,19 @@ static DEF_GETTER(sched_attr_speed_auto) {
 // cannot emulate a frame-unit per VBL period (1.0 = never). The host's
 // setting, like the speed.
 static DEF_GETTER(sched_attr_min_speed) {
-    (void)self;
-    return val_float((double)platform_pacing()->min_speed_x256 / 256.0);
+    return pacing_read_min_speed();
 }
 static DEF_SETTER(sched_attr_min_speed_set) {
-    if (isnan(in.f) || in.f < 0.25 || in.f > 1.0)
-        return val_err("scheduler.min_speed: %g out of range (0.25 .. 1.0)", in.f);
-    host_pacing_set_min_speed(platform_pacing(), in.f);
-    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
-    return val_none();
+    return pacing_write_min_speed(sched_self_from(self), "scheduler.min_speed", in.f);
 }
 
 // User cap on the accelerated-mode multiplier (governor ceiling; also clamps
 // a pinned speed). The host's setting, like the speed.
 static DEF_GETTER(sched_attr_max_speed) {
-    (void)self;
-    return val_float((double)platform_pacing()->max_speed_x256 / 256.0);
+    return pacing_read_max_speed();
 }
 static DEF_SETTER(sched_attr_max_speed_set) {
-    if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
-        return val_err("scheduler.max_speed: %g out of range (1.0 .. 8.0)", in.f);
-    host_pacing_set_max_speed(platform_pacing(), in.f);
-    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
-    return val_none();
+    return pacing_write_max_speed(sched_self_from(self), "scheduler.max_speed", in.f);
 }
 
 static DEF_GETTER(sched_attr_cycles) {
@@ -251,7 +206,7 @@ static const member_t scheduler_members[] = {
      .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
      .flags = 0,
      .attr =
-         {.type = VK_ENUM, .enum_values = sched_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
+         {.type = VK_ENUM, .enum_values = pacing_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
     {.kind = MK_ATTR,
      .name = "cpi",
      .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",
@@ -349,126 +304,4 @@ void scheduler_object_delete(struct object *obj) {
         return;
     object_detach(obj);
     object_delete(obj);
-}
-
-// === pacing =================================================================
-//
-// The host's pacing setting -- what the toolbar, ?speed= and --speed= choose
-// -- as an object of its own, there with or without a machine: a page sets
-// it before it boots anything, and every machine it builds or restores runs
-// under it (system_swap_in).  scheduler.mode / speed / max_speed are the same
-// setting, reached through the running machine.
-
-// Apply the setting to the running machine, if there is one.
-static void pacing_reaches_machine(void) {
-    scheduler_t *running = system_running_scheduler();
-    if (running)
-        scheduler_apply_pacing(running, platform_pacing());
-}
-
-static DEF_GETTER(pacing_attr_mode_get) {
-    (void)self;
-    enum schedule_mode mode = platform_pacing()->mode;
-    for (size_t i = 0; i < 3; i++)
-        if (sched_mode_values[i] == mode)
-            return val_enum((int)i, sched_mode_names, 3);
-    return val_err("pacing.mode: unknown internal mode %d", (int)mode);
-}
-
-static DEF_SETTER(pacing_attr_mode_set) {
-    (void)self;
-    if (in.kind != VK_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
-        value_free(&in);
-        return val_err("pacing.mode: expected paced, accelerated or turbo");
-    }
-    platform_pacing()->mode = sched_mode_values[in.enm.idx];
-    value_free(&in);
-    pacing_reaches_machine();
-    return val_none();
-}
-
-// The setting, not the governor's live pick: 0 is auto.
-static DEF_GETTER(pacing_attr_speed_get) {
-    (void)self;
-    uint32_t x = platform_pacing()->speed_x256;
-    return val_float(x == SPEED_X256_AUTO ? 0.0 : (double)x / 256.0);
-}
-
-static DEF_SETTER(pacing_attr_speed_set) {
-    (void)self;
-    if (isnan(in.f) || (in.f != 0.0 && (in.f < 1.0 || in.f > 8.0)))
-        return val_err("pacing.speed: %g out of range (0 = auto, or 1.0 .. 8.0)", in.f);
-    host_pacing_set_speed(platform_pacing(), in.f);
-    pacing_reaches_machine();
-    return val_none();
-}
-
-static DEF_GETTER(pacing_attr_min_speed_get) {
-    (void)self;
-    return val_float((double)platform_pacing()->min_speed_x256 / 256.0);
-}
-
-static DEF_SETTER(pacing_attr_min_speed_set) {
-    (void)self;
-    if (isnan(in.f) || in.f < 0.25 || in.f > 1.0)
-        return val_err("pacing.min_speed: %g out of range (0.25 .. 1.0)", in.f);
-    host_pacing_set_min_speed(platform_pacing(), in.f);
-    pacing_reaches_machine();
-    return val_none();
-}
-
-static DEF_GETTER(pacing_attr_max_speed_get) {
-    (void)self;
-    return val_float((double)platform_pacing()->max_speed_x256 / 256.0);
-}
-
-static DEF_SETTER(pacing_attr_max_speed_set) {
-    (void)self;
-    if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
-        return val_err("pacing.max_speed: %g out of range (1.0 .. 8.0)", in.f);
-    host_pacing_set_max_speed(platform_pacing(), in.f);
-    pacing_reaches_machine();
-    return val_none();
-}
-
-static const member_t pacing_members[] = {
-    {.kind = MK_ATTR,
-     .name = "mode",
-     .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
-     .attr =
-         {.type = VK_ENUM, .enum_values = sched_mode_names, .get = pacing_attr_mode_get, .set = pacing_attr_mode_set}},
-    {.kind = MK_ATTR,
-     .name = "speed",
-     .doc = "Speed: 0 for auto (the adaptive governor, between min_speed and max_speed) or 1.0..8.0 pinned",
-     .attr = {.type = VK_FLOAT, .get = pacing_attr_speed_get, .set = pacing_attr_speed_set}                          },
-    {.kind = MK_ATTR,
-     .name = "min_speed",
-     .doc = "Floor on the governor's multiplier (0.25..1.0; 1.0 never slows the CPU on an overloaded host)",
-     .attr = {.type = VK_FLOAT, .get = pacing_attr_min_speed_get, .set = pacing_attr_min_speed_set}                  },
-    {.kind = MK_ATTR,
-     .name = "max_speed",
-     .doc = "Cap on the accelerated-mode multiplier (1.0..8.0)",
-     .attr = {.type = VK_FLOAT, .get = pacing_attr_max_speed_get, .set = pacing_attr_max_speed_set}                  },
-};
-
-static const class_desc_t pacing_class = {
-    .name = "pacing",
-    .members = pacing_members,
-    .n_members = sizeof(pacing_members) / sizeof(pacing_members[0]),
-    .doc = "The host's pacing: how fast every machine runs, set with or without one",
-};
-
-static struct object *s_pacing_object = NULL;
-
-void pacing_init(void) {
-    if (s_pacing_object)
-        return;
-    s_pacing_object = object_new(&pacing_class, NULL, "pacing");
-    if (s_pacing_object) {
-        object_set_order(s_pacing_object, 21);
-        // The toolbar's mode buttons are its everyday interface; in a tree it
-        // is an advanced node, like the vrom and prom registries.
-        object_set_category(s_pacing_object, M_CAT_ADVANCED);
-        object_attach(object_root(), s_pacing_object);
-    }
 }

@@ -2,16 +2,19 @@
 // Copyright (c) pappadf
 
 // scheduler_internal.h
-// The scheduler's private state, shared by its two translation units only:
-// scheduler.c (the event queue, the sprint loop, pacing) and
-// scheduler_class.c (the scheduler / pacing object-model nodes).  Nothing
+// The scheduler's private state, shared by its translation units only:
+// scheduler.c (the event queue, the sprint loop, the main loop, pacing),
+// scheduler_class.c (the scheduler / pacing object-model nodes) and
+// governor.c (the adaptive speed governor the struct embeds).  Nothing
 // outside src/core/scheduler/ includes this -- struct scheduler is opaque
 // everywhere else.
 
 #ifndef SCHEDULER_INTERNAL_H
 #define SCHEDULER_INTERNAL_H
 
+#include "governor.h"
 #include "scheduler.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -133,17 +136,10 @@ struct scheduler {
     // and nothing is dropped; reset on mode/CPI/speed changes and on restore.
     uint32_t cycle_frac_x256;
 
-    // Adaptive-governor state — live controller state, never checkpointed
-    // (like the host-timing estimators outside the saved block): a restored
-    // or mode-switched machine re-learns its speed from fresh measurements.
-    int gov_rung; // current index into gov_ladder_x256 (GOV_RUNG_ONE = authentic 1x)
-    double gov_util_ewma; // smoothed utilization (host secs per frame / VBL period)
-    double gov_dwell_secs; // host seconds spent at the current rung
-    double gov_holdoff_secs; // remaining post-back-off climb holdoff
-    int gov_pressure_ticks; // consecutive governor ticks under pressure (behind real time, or audio drained)
-    double gov_pressure_secs; // ...and the host seconds those ticks spanned
-    double gov_audio_secs; // consecutive host seconds the audio ring has reported below GOV_AUDIO_LOW
-    bool gov_primed; // first governor tick since the reset seen (it starts the ladder at the floor)
+    // The adaptive speed governor (governor.h) -- live controller state,
+    // never checkpointed: it picks the speed rung behind cpi_eff_x256 when
+    // the pacing's speed is auto.
+    governor_t governor;
 
     // Sprint execution counters (previously file-scope globals)
     uint32_t sprint_total; // instructions planned for current sprint
@@ -192,5 +188,21 @@ extern uint64_t g_sched_events_fired;
 struct object *scheduler_object_new(struct scheduler *s);
 // Detach and free a node made by scheduler_object_new (NULL is a no-op).
 void scheduler_object_delete(struct object *obj);
+
+// --- The host's pacing (pacing.c) -------------------------------------------
+// One owner for reading, validating and writing the setting: the `pacing`
+// node applies a write to the running machine (system_running_scheduler),
+// the scheduler.* mirrors to their own.  `attr` names the attribute in the
+// error an out-of-range write returns; `s` may be NULL (no machine to apply
+// to).  pacing_write_mode takes `in` over and frees it.
+#define PACING_NUM_MODES 3
+extern const char *const pacing_mode_names[]; // paced, accelerated, turbo, NULL
+value_t pacing_read_mode(const char *attr);
+value_t pacing_read_min_speed(void);
+value_t pacing_read_max_speed(void);
+value_t pacing_write_mode(scheduler_t *s, const char *attr, value_t in);
+value_t pacing_write_speed(scheduler_t *s, const char *attr, double multiplier);
+value_t pacing_write_min_speed(scheduler_t *s, const char *attr, double multiplier);
+value_t pacing_write_max_speed(scheduler_t *s, const char *attr, double multiplier);
 
 #endif // SCHEDULER_INTERNAL_H

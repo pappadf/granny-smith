@@ -28,112 +28,28 @@
 // Runs against Chromium's fake capture device (a periodic beep), so no
 // hardware is involved.
 
-import { test, expect, type Page } from "../helpers/test";
-import * as path from "node:path";
-import { gsEvalInPage } from "../helpers/web2-eval";
+import { test, expect } from "../helpers/test";
+import { gsCallInPage } from "../helpers/web2-eval";
 import { gotoWeb2 } from "../helpers/web2-fs";
-import { terminalRun } from "../helpers/terminal";
-
-const DATA = path.resolve(__dirname, "../../data");
-const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
-const AV_HD = path.join(DATA, "systems", "system_7_1_77mb_av.img");
-// A disk this large is stored compressed, as UDIF, under a .dmg name.
-const AV_HD_NAME = "system_7_1_77mb_av.dmg";
+import {
+  FAKE_MEDIA_ARGS,
+  MIC_BUTTON,
+  bootAVToFinder,
+  click,
+  doubleClick,
+  micStats,
+  mouseButton,
+  moveTo,
+  probe,
+  probeNumber,
+  ticksMs,
+} from "../helpers/av";
 
 test.use({
   // Real-time media feeds the guest: keep web2's default pacing.
   gsSpeed: null,
-  launchOptions: {
-    args: [
-      "--use-gl=angle",
-      "--use-angle=swiftshader-webgl",
-      "--ignore-gpu-blocklist",
-      "--disable-dev-shm-usage",
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
-    ],
-  },
+  launchOptions: { args: FAKE_MEDIA_ARGS },
 });
-
-// --- terminal plumbing (see av-camera.spec.ts for why answers are bracketed) --
-
-async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".console-output").innerText();
-  const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
-  for (const line of text.split("\n")) {
-    const m = line.trim().match(re);
-    if (m) return m[1];
-  }
-  return null;
-}
-
-let probeSeq = 0;
-async function probe(
-  page: Page,
-  expr: string,
-  timeoutMs = 10_000,
-): Promise<string | null> {
-  const key = `p${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}=${key}"`);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await readKey(page, key);
-    if (v !== null) return v;
-    if (Date.now() > deadline) return null;
-    await page.waitForTimeout(250);
-  }
-}
-
-// --- guest GUI driving -------------------------------------------------------
-//
-// suite-av measures its settle times in Mac ticks via run_ticks(); in the
-// browser the machine runs on wall-clock, so the same counts convert directly
-// at 60 Hz. The floor keeps the very short waits from being swallowed by
-// scheduling jitter.
-function ticksMs(n: number): number {
-  return Math.max(120, Math.round((n / 60) * 1000));
-}
-
-async function moveTo(page: Page, x: number, y: number): Promise<void> {
-  await terminalRun(page, `machine.adb.mouse.move ${x} ${y} "global"`);
-}
-
-async function click(page: Page, x: number, y: number): Promise<void> {
-  await moveTo(page, x, y);
-  await page.waitForTimeout(ticksMs(20));
-  await terminalRun(page, "machine.adb.mouse.click true");
-  await page.waitForTimeout(ticksMs(4));
-  await terminalRun(page, "machine.adb.mouse.click false");
-  await page.waitForTimeout(ticksMs(6));
-}
-
-async function doubleClick(page: Page, x: number, y: number): Promise<void> {
-  await moveTo(page, x, y);
-  await page.waitForTimeout(ticksMs(20));
-  for (let i = 0; i < 2; i++) {
-    await terminalRun(page, "machine.adb.mouse.click true");
-    await page.waitForTimeout(ticksMs(4));
-    await terminalRun(page, "machine.adb.mouse.click false");
-    await page.waitForTimeout(ticksMs(6));
-  }
-}
-
-// The Finder is up once the screen stops changing. Polling the checksum is
-// what suite-av's wait_stable() does; here the scheduler is free-running, so
-// the poll is on wall-clock instead of budgeted instructions.
-async function waitForStableScreen(page: Page, timeoutMs: number) {
-  const deadline = Date.now() + timeoutMs;
-  let previous = "";
-  let stable = 0;
-  while (Date.now() < deadline) {
-    const now = await probe(page, "machine.screen.checksum()", 15_000);
-    stable = now !== null && now === previous ? stable + 1 : 0;
-    previous = now ?? "";
-    if (stable >= 3) return;
-    await page.waitForTimeout(2000);
-  }
-  throw new Error("the guest screen never settled — no Finder");
-}
 
 test("record from the browser microphone in the Sound control panel", async ({
   page,
@@ -144,79 +60,11 @@ test("record from the browser microphone in the Sound control panel", async ({
 
   await gotoWeb2(page);
 
-  // --- 1. Configure and start the 840AV with its System 7.1 disk. -----------
-  // The ROM goes in through the Welcome button, not straight into OPFS:
-  // the upload pipeline is what identifies the ROM and offers 'q840av' in the
-  // model list. Dropping the file in behind it leaves the list empty.
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(AV_ROM);
-
-  await page.getByRole("button", { name: "New Machine..." }).click();
-  const model = page.locator("#cfg-model");
-  await expect(model.locator('option[value="q840av"]')).toHaveCount(1, {
-    timeout: 30_000,
-  });
-  await model.selectOption("q840av");
-
-  const hd = page.locator("#cfg-media-scsi-0");
-  const [hdChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    hd.selectOption("Load image..."),
-  ]);
-  await hdChooser.setFiles(AV_HD);
-  await expect(hd.locator("option", { hasText: AV_HD_NAME })).toHaveCount(1, {
-    timeout: 120_000,
-  });
-  await hd.selectOption(AV_HD_NAME);
-
-  await page.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(
-    page.locator(".toast .msg").filter({ hasText: "Machine started" }),
-  ).toBeVisible({ timeout: 60_000 });
-
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
-  await expect
-    .poll(async () => probe(page, "machine.id"), { timeout: 30_000 })
-    .toBe("q840av");
-
-  // The guest runs in real time from here and the GUI drives below are paced
-  // in guest ticks, so it must run at 1x: floor the adaptive governor there
-  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
-  // and every wait comes up short.
-  await gsEvalInPage(page, "scheduler.min_speed", [1]);
-
-  // Stay in real time until the 840AV's DSP kernel is up and idling (emr
-  // $8000): its bring-up, in the Enabler's RTM init a few guest seconds into
-  // boot, is a 68040<->DSP handshake that holds at 1x and is lost above it --
-  // at 2x the guest gives up on the DSP in about one boot in three, at a
-  // pinned 4x or 8x every time -- and a DSP held in reset means no sound
-  // input for the rest of the session (docs/internals/machines/av/dsp.md).
-  // Only then accelerate the rest of the boot.
-  await expect
-    .poll(
-      async () =>
-        `${await gsEvalInPage(page, "machine.dsp.state")}/${await gsEvalInPage(page, "machine.dsp.emr")}`,
-      { timeout: 120_000, intervals: [500] },
-    )
-    .toBe("running/0x8000");
-
-  // --- 2. Boot to the Finder, accelerated. ---------------------------------
-  // Accelerated only for the boot: the microphone is a REAL-TIME stream, and a
-  // guest running faster than wall-clock drains the ring quicker than the
-  // browser fills it. Back to paced before anything touches audio.
-  await page.getByRole("button", { name: "Faster", exact: true }).click();
-  await waitForStableScreen(page, 420_000);
-  await page.getByRole("button", { name: "Real", exact: true }).click();
-  await expect
-    .poll(async () => probe(page, "scheduler.mode"), { timeout: 30_000 })
-    .toBe("paced");
+  // --- 1. Boot the 840AV with its System 7.1 disk to the Finder. ----------
+  await bootAVToFinder(page);
 
   // --- 3. Connect the browser microphone. ----------------------------------
-  const micBtn = page.locator('.gs-toolbar button[aria-label*="icrophone"]');
+  const micBtn = page.locator(MIC_BUTTON);
   await expect(micBtn).toHaveCount(1);
   await micBtn.click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "true");
@@ -229,11 +77,11 @@ test("record from the browser microphone in the Sound control panel", async ({
   await page.waitForTimeout(ticksMs(30));
   await moveTo(page, 14, 8);
   await page.waitForTimeout(ticksMs(20));
-  await terminalRun(page, "machine.adb.mouse.click true");
+  await mouseButton(page, true);
   await page.waitForTimeout(ticksMs(40));
   await moveTo(page, 70, 150); // Control Panels
   await page.waitForTimeout(ticksMs(30));
-  await terminalRun(page, "machine.adb.mouse.click false");
+  await mouseButton(page, false);
   await page.waitForTimeout(ticksMs(400));
   await doubleClick(page, 104, 131); // the Sound cdev icon
   await page.waitForTimeout(ticksMs(600));
@@ -242,20 +90,20 @@ test("record from the browser microphone in the Sound control panel", async ({
   // reason that has nothing to do with the recording.
   await moveTo(page, 173, 205);
   await page.waitForTimeout(ticksMs(20));
-  await terminalRun(page, "machine.adb.mouse.click true");
+  await mouseButton(page, true);
   await page.waitForTimeout(ticksMs(15));
   await moveTo(page, 173, 165);
   await page.waitForTimeout(ticksMs(15));
   await moveTo(page, 173, 128);
   await page.waitForTimeout(ticksMs(15));
-  await terminalRun(page, "machine.adb.mouse.click false");
+  await mouseButton(page, false);
   await page.waitForTimeout(ticksMs(300));
 
   // --- 5. "Add…" opens the standard SndRecord dialog. ----------------------
   await click(page, 261, 240);
   await page.waitForTimeout(ticksMs(600));
 
-  const samplesBefore = Number(await probe(page, "machine.audioin.samples"));
+  const samplesBefore = await probeNumber(page, "machine.audioin.samples");
   await click(page, 138, 152); // Record
   await page.waitForTimeout(ticksMs(400));
 
@@ -269,7 +117,7 @@ test("record from the browser microphone in the Sound control panel", async ({
     "the DSP kernel died during recording",
   ).toBe("0x8000");
   expect(
-    Number(await probe(page, "machine.audioin.samples")),
+    await probeNumber(page, "machine.audioin.samples"),
     "the frame engine pulled nothing from the host source",
   ).toBeGreaterThan(samplesBefore);
 
@@ -280,18 +128,11 @@ test("record from the browser microphone in the Sound control panel", async ({
   // amplifies into the "aggressive static" this test exists to catch.
   let peak = 0;
   for (let i = 0; i < 20 && peak <= 64; i++) {
-    peak = Math.max(peak, Number(await probe(page, "machine.audioin.peak")));
+    peak = Math.max(peak, await probeNumber(page, "machine.audioin.peak"));
     await page.waitForTimeout(500);
   }
   console.log(`  machine.audioin.peak while recording: ${peak}`);
-  const stats = await page.evaluate(() =>
-    JSON.stringify(
-      (
-        globalThis as unknown as { __micStats?: () => unknown }
-      ).__micStats?.() ?? "n/a",
-    ),
-  );
-  console.log(`  micStats: ${stats}`);
+  console.log(`  micStats: ${JSON.stringify(await micStats(page))}`);
   expect(
     peak,
     `browser audio peaks at ${peak} counts — at or below the codec's dither, so the microphone delivered silence`,
@@ -303,16 +144,13 @@ test("record from the browser microphone in the Sound control panel", async ({
   // --- 6. Listen back. -----------------------------------------------------
   // Play sends the recorded sound out through the Sound Manager and the DSP to
   // the sdev; capturing the producer side is the host's ear on it.
-  await terminalRun(page, "machine.sound.capture.start");
+  await gsCallInPage(page, "machine.sound.capture.start");
   await click(page, 248, 152); // Play
   await page.waitForTimeout(ticksMs(400));
 
   let outPeak = 0;
   for (let i = 0; i < 12 && outPeak <= 256; i++) {
-    outPeak = Math.max(
-      outPeak,
-      Number(await probe(page, "machine.sound.capture.peak")),
-    );
+    outPeak = Math.max(outPeak, await probeNumber(page, "machine.sound.capture.peak"));
     await page.waitForTimeout(500);
   }
   console.log(`  playback capture peak: ${outPeak}`);

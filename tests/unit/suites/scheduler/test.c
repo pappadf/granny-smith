@@ -87,27 +87,45 @@
 #define PACED_MAX_CATCHUP 4
 #define DEFAULT_CPI       12
 
-// --- Fake host clock -------------------------------------------------------
+// --- The fake host ------------------------------------------------------------
+//
+// Everything the scheduler sees of its host, and what the stubs count, in
+// one struct: the clock, the cost it charges per emulated instruction, the
+// audio ring's fill, and the stub CPU's behaviour.  fresh_scheduler resets
+// it whole, so no test inherits another's host.
 
-static double g_now; // seconds; host_time_ms() returns it in milliseconds
-static double g_secs_per_instr; // simulated emulation cost (0 = free)
+// The stub CPU's behaviours (see cpu_run_sprint below).
+enum { FAKE_RUN_ALL, FAKE_FAULT, FAKE_STOP, FAKE_STALL };
+
+typedef struct {
+    double now; // seconds; host_time_ms() returns it in milliseconds
+    double secs_per_instr; // simulated emulation cost per instruction (0 = free)
+    double audio_fill; // the audio ring's fill fraction; < 0 = no signal (the default contract)
+    uint64_t vbls; // frame-units executed (trigger_vbl calls)
+    uint64_t pings; // ping events fired
+    // The stub CPU
+    int cpu_mode; // FAKE_*
+    uint32_t cpu_k; // instructions FAKE_FAULT / FAKE_STOP run before ending the sprint
+    uint32_t cpu_stall_cycles; // FAKE_STALL: the first sprint's I/O stall
+    uint64_t cpu_executed; // instructions the stub actually ran
+    bool cpu_stopped; // FAKE_STOP: STOPped until an event fires
+    uint64_t cpu_stop_pings; // pings when the stub last stopped
+} host_model_t;
+
+static const host_model_t HOST_MODEL_DEFAULT = {.audio_fill = -1.0, .cpu_mode = FAKE_RUN_ALL};
+static host_model_t g_host;
 
 double host_time_ms(void) {
-    return g_now * 1000.0;
+    return g_host.now * 1000.0;
 }
 
-// --- Fake audio-ring signal (governor feedback) ----------------------------
-
-static double g_audio_fill = -1.0; // < 0 = no signal (the default contract)
-
 double platform_audio_ring_fill(void) {
-    return g_audio_fill;
+    return g_host.audio_fill;
 }
 
 // --- Stubs ------------------------------------------------------------------
 
 static scheduler_t *g_sched;
-static uint64_t g_vbls; // frame-units executed (trigger_vbl calls)
 
 scheduler_t *system_running_scheduler(void) {
     return NULL;
@@ -150,56 +168,48 @@ uint32_t platform_current_client(void) {
 
 void trigger_vbl(config_t *restrict config) {
     (void)config;
-    g_vbls++;
+    g_host.vbls++;
 }
 
 // Stub CPU.  By default every sprint retires all its instructions instantly,
 // advancing the fake host clock by the configured per-instruction cost.  The
 // other behaviours end a sprint early the ways the real cores do, for the
 // sprint-accounting tests:
-//   FAKE_FAULT -- run g_fake_k instructions, then take an exception
+//   FAKE_FAULT -- run cpu_k instructions, then take an exception
 //                 (memory_end_sprint, as a page fault or bus error does);
-//   FAKE_STOP  -- run g_fake_k instructions, then STOP until an event fires;
+//   FAKE_STOP  -- run cpu_k instructions, then STOP until an event fires;
 //   FAKE_STALL -- the first sprint opens with an I/O access stalling for
-//                 g_fake_stall_cycles, then everything runs normally.
-enum { FAKE_RUN_ALL, FAKE_FAULT, FAKE_STOP, FAKE_STALL };
-static int g_fake_mode;
-static uint32_t g_fake_k;
-static uint32_t g_fake_stall_cycles;
-static uint64_t g_fake_executed; // instructions the stub actually ran
-static bool g_fake_stopped;
-static uint64_t g_fake_stop_pings; // g_pings when the stub last stopped
-static uint64_t g_pings;
+//                 cpu_stall_cycles, then everything runs normally.
 
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
     (void)cpu;
-    if (g_fake_mode == FAKE_STALL && g_fake_stall_cycles) {
-        memory_io_penalty(g_fake_stall_cycles);
-        g_fake_stall_cycles = 0;
+    if (g_host.cpu_mode == FAKE_STALL && g_host.cpu_stall_cycles) {
+        memory_io_penalty(g_host.cpu_stall_cycles);
+        g_host.cpu_stall_cycles = 0;
     }
-    if (g_fake_mode == FAKE_FAULT || g_fake_mode == FAKE_STOP) {
-        uint32_t run = *instructions < g_fake_k ? *instructions : g_fake_k;
-        g_fake_executed += run;
+    if (g_host.cpu_mode == FAKE_FAULT || g_host.cpu_mode == FAKE_STOP) {
+        uint32_t run = *instructions < g_host.cpu_k ? *instructions : g_host.cpu_k;
+        g_host.cpu_executed += run;
         *instructions -= run;
-        if (g_fake_mode == FAKE_STOP) {
-            g_fake_stopped = true;
-            g_fake_stop_pings = g_pings;
+        if (g_host.cpu_mode == FAKE_STOP) {
+            g_host.cpu_stopped = true;
+            g_host.cpu_stop_pings = g_host.pings;
         }
         memory_end_sprint(instructions);
         return;
     }
-    g_fake_executed += *instructions;
-    g_now += (double)*instructions * g_secs_per_instr;
+    g_host.cpu_executed += *instructions;
+    g_host.now += (double)*instructions * g_host.secs_per_instr;
     *instructions = 0;
 }
 bool cpu_is_stopped(cpu_t *restrict cpu) {
     (void)cpu;
-    return g_fake_stopped;
+    return g_host.cpu_stopped;
 }
 void cpu_poll_interrupt(cpu_t *restrict cpu) {
     (void)cpu;
-    if (g_fake_stopped && g_pings != g_fake_stop_pings)
-        g_fake_stopped = false; // an event fired since the STOP: it is the wake-up
+    if (g_host.cpu_stopped && g_host.pings != g_host.cpu_stop_pings)
+        g_host.cpu_stopped = false; // an event fired since the STOP: it is the wake-up
 }
 
 // The sprint state (memory.h): normally stored in memory.c, which this
@@ -389,7 +399,7 @@ static const sched_cpu_if_t g_test_cpu_if = {&g_dummy_cpu, test_run_sprint, test
 // clamped at event boundaries and the interleaving is non-trivial.
 static void ping_event(void *source, uint64_t data) {
     (void)data;
-    g_pings++;
+    g_host.pings++;
     scheduler_new_cpu_event(g_sched, ping_event, source, 0, 77777, 0);
 }
 
@@ -422,15 +432,7 @@ static void test_set_min_speed(scheduler_t *s, double multiplier) {
 
 static scheduler_t *fresh_scheduler(bool with_ping) {
     *platform_pacing() = HOST_PACING_DEFAULT; // each test starts from the host default
-    g_now = 0.0;
-    g_secs_per_instr = 0.0;
-    g_audio_fill = -1.0;
-    g_vbls = 0;
-    g_pings = 0;
-    g_fake_mode = FAKE_RUN_ALL;
-    g_fake_executed = 0;
-    g_fake_stopped = false;
-    g_fake_stall_cycles = 0;
+    g_host = HOST_MODEL_DEFAULT;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(s != NULL);
     g_sched = s;
@@ -449,11 +451,11 @@ static void teardown(scheduler_t *s) {
 // Advance the synthetic host clock to `now_s` and run one main-loop tick.
 // Returns the number of frame-units the tick executed.
 static int tick_at(double now_s) {
-    uint64_t before = g_vbls;
-    if (now_s > g_now)
-        g_now = now_s; // keep host_time_ms() >= the tick timestamps we feed
+    uint64_t before = g_host.vbls;
+    if (now_s > g_host.now)
+        g_host.now = now_s; // keep host_time_ms() >= the tick timestamps we feed
     scheduler_main_loop(TEST_CFG, now_s * 1000.0, platform_pacing());
-    return (int)(g_vbls - before);
+    return (int)(g_host.vbls - before);
 }
 
 // Drive a fixed-rate host clock for `ticks` ticks at `hz`, starting at
@@ -480,7 +482,7 @@ static void paced_rate_at(double host_hz) {
     int max_burst = run_fixed_rate(&now, host_hz, ticks);
 
     double expected = now * VBL_HZ;
-    double error = (double)g_vbls - expected;
+    double error = (double)g_host.vbls - expected;
     ASSERT_TRUE(fabs(error) <= 2.0);
     ASSERT_TRUE(max_burst <= PACED_MAX_CATCHUP);
     teardown(s);
@@ -548,7 +550,7 @@ TEST(test_turbo_first_tick_and_batching) {
     test_set_mode(s, schedule_unthrottled);
     // Simulated emulation speed: ~2 ms of host time per frame-unit's worth
     // of instructions, so ~4 frame-units fit in half of a 60 Hz tick.
-    g_secs_per_instr = 0.002 / 10852.0;
+    g_host.secs_per_instr = 0.002 / 10852.0;
 
     double now = 0.0;
     now += 1.0 / 60.0;
@@ -559,7 +561,7 @@ TEST(test_turbo_first_tick_and_batching) {
     for (int i = 0; i < 200; i++) {
         // The fake clock advances during emulation; keep host ticks 16.7 ms
         // apart in host time (as a real RAF would).
-        now = g_now + 1.0 / 60.0;
+        now = g_host.now + 1.0 / 60.0;
         int n = tick_at(now);
         if (n > max_burst)
             max_burst = n;
@@ -575,17 +577,17 @@ TEST(test_turbo_first_tick_and_batching) {
 TEST(test_mode_switch_estimator_reset) {
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, schedule_unthrottled);
-    g_secs_per_instr = 0.002 / 10852.0;
+    g_host.secs_per_instr = 0.002 / 10852.0;
 
     double now = 0.0;
     for (int i = 0; i < 100; i++) {
-        now = g_now + 1.0 / 60.0;
+        now = g_host.now + 1.0 / 60.0;
         tick_at(now);
     }
 
     uint64_t cycles_at_switch = scheduler_cpu_cycles(s);
     test_set_mode(s, schedule_paced);
-    g_secs_per_instr = 0.0;
+    g_host.secs_per_instr = 0.0;
 
     for (int i = 0; i < 50; i++) {
         now += 1.0 / 60.0;
@@ -607,34 +609,34 @@ TEST(test_single_timeline_across_modes) {
     static const double jitter[3] = {0.013, 0.020, 0.017};
     double now = 0.0;
     int i = 0;
-    while (g_vbls < 500) {
+    while (g_host.vbls < 500) {
         now += jitter[i++ % 3];
         tick_at(now);
     }
-    uint64_t frames = g_vbls; // may have overshot 500 inside a burst
+    uint64_t frames = g_host.vbls; // may have overshot 500 inside a burst
     uint64_t paced_cycles = scheduler_cpu_cycles(s);
     uint64_t paced_instr = cpu_instr_count();
-    uint64_t paced_pings = g_pings;
+    uint64_t paced_pings = g_host.pings;
     teardown(s);
 
     // (b) turbo until the same frame count
     s = fresh_scheduler(true);
     test_set_mode(s, schedule_unthrottled);
-    g_secs_per_instr = 0.002 / 10852.0;
+    g_host.secs_per_instr = 0.002 / 10852.0;
     now = 0.0;
-    while (g_vbls < frames) {
-        now = g_now + 1.0 / 60.0;
+    while (g_host.vbls < frames) {
+        now = g_host.now + 1.0 / 60.0;
         tick_at(now);
         // A turbo batch may overshoot the target; compare on the actual
         // count instead and drop the (now mismatched) paced reference.
-        if (g_vbls > frames) {
-            frames = g_vbls;
+        if (g_host.vbls > frames) {
+            frames = g_host.vbls;
             paced_cycles = 0; // flag: paced reference no longer comparable
         }
     }
     uint64_t turbo_cycles = scheduler_cpu_cycles(s);
     uint64_t turbo_instr = cpu_instr_count();
-    uint64_t turbo_pings = g_pings;
+    uint64_t turbo_pings = g_host.pings;
     teardown(s);
 
     // (c) headless-style: exactly `frames` back-to-back frame-units
@@ -643,7 +645,7 @@ TEST(test_single_timeline_across_modes) {
         scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t headless_cycles = scheduler_cpu_cycles(s);
     uint64_t headless_instr = cpu_instr_count();
-    uint64_t headless_pings = g_pings;
+    uint64_t headless_pings = g_host.pings;
     teardown(s);
 
     ASSERT_TRUE(headless_cycles == turbo_cycles);
@@ -695,7 +697,7 @@ TEST(test_short_runs_dont_multiply_vbls) {
     for (int f = 0; f < frames; f++)
         scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t whole_cycles = scheduler_cpu_cycles(s);
-    uint64_t whole_vbls = g_vbls;
+    uint64_t whole_vbls = g_host.vbls;
     teardown(s);
     ASSERT_TRUE(whole_vbls == (uint64_t)frames);
     ASSERT_TRUE(whole_cycles > 0);
@@ -713,7 +715,7 @@ TEST(test_short_runs_dont_multiply_vbls) {
         scheduler_run_frame(s, TEST_CFG, platform_pacing());
         calls++;
     }
-    uint64_t chopped_vbls = g_vbls;
+    uint64_t chopped_vbls = g_host.vbls;
     teardown(s);
 
     // The chopping really happened (many more calls than frame-units)...
@@ -740,7 +742,7 @@ TEST(test_accelerated_timebase_invariant) {
         scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t ref_cycles = scheduler_cpu_cycles(s);
     uint64_t ref_instr = cpu_instr_count();
-    uint64_t ref_pings = g_pings;
+    uint64_t ref_pings = g_host.pings;
     teardown(s);
 
     static const double speeds[] = {1.0, 2.0, 3.0, 4.0, 8.0};
@@ -757,7 +759,7 @@ TEST(test_accelerated_timebase_invariant) {
         ASSERT_TRUE(drift >= -tol && drift <= tol);
 
         // Event cadence: the cycle-timestamped event stays real-time
-        int64_t dpings = (int64_t)g_pings - (int64_t)ref_pings;
+        int64_t dpings = (int64_t)g_host.pings - (int64_t)ref_pings;
         ASSERT_TRUE(dpings >= -1 && dpings <= 1);
 
         // Throughput: instructions per frame scale with the multiplier
@@ -861,7 +863,7 @@ TEST(test_accelerated_paced_pacing) {
     int max_burst = run_fixed_rate(&now, 60.0, ticks);
 
     double expected = now * VBL_HZ;
-    ASSERT_TRUE(fabs((double)g_vbls - expected) <= 2.0);
+    ASSERT_TRUE(fabs((double)g_host.vbls - expected) <= 2.0);
     ASSERT_TRUE(max_burst <= PACED_MAX_CATCHUP);
     teardown(s);
 }
@@ -896,16 +898,16 @@ typedef struct {
 static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     gov_trace_t t = {0, 0, 1e9, 0};
     uint64_t prev_instr = cpu_instr_count();
-    uint64_t prev_vbls = g_vbls;
+    uint64_t prev_vbls = g_host.vbls;
     double last_change = *now;
     for (int i = 0; i < ticks; i++) {
         *now += 1.0 / 60.0;
-        if (g_now > *now)
-            *now += ceil((g_now - *now) * 60.0) / 60.0;
+        if (g_host.now > *now)
+            *now += ceil((g_host.now - *now) * 60.0) / 60.0;
         tick_at(*now);
-        uint64_t vd = g_vbls - prev_vbls;
+        uint64_t vd = g_host.vbls - prev_vbls;
         uint64_t id = cpu_instr_count() - prev_instr;
-        prev_vbls = g_vbls;
+        prev_vbls = g_host.vbls;
         prev_instr = cpu_instr_count();
         if (vd != 1)
             continue; // only clean single-frame ticks give a per-frame sample
@@ -952,7 +954,7 @@ static void starts_at_floor(enum schedule_mode mode) {
 
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, mode);
-    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
     ASSERT_TRUE(speed_now(s, pf1) == 1.0); // resting, no tick yet
 
     double now = 0.0;
@@ -990,7 +992,7 @@ TEST(test_governor_climbs_to_cap) {
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, schedule_accelerated); // speed defaults to auto
     // 1x utilization ~0.05: plenty of headroom all the way to 8x (~0.40)
-    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
     gov_drive(&now, 32, false); // the start: floor, then 1x right after the 0.5 s dwell
@@ -1016,7 +1018,7 @@ static void slow_host_slows_to_fit(enum schedule_mode mode) {
 
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, mode);
-    g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1; // 1x utilization 1.3
+    g_host.secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1; // 1x utilization 1.3
 
     double now = 0.0;
     gov_drive_until(&now, 1.0);
@@ -1043,7 +1045,7 @@ TEST(test_governor_min_speed_floor) {
 
     scheduler_t *s = fresh_scheduler(false);
     test_set_min_speed(s, 0.5);
-    g_secs_per_instr = 3.0 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 3.0 * VBL_PERIOD / (double)pf1;
     double now = 0.0;
     gov_drive_until(&now, 5.0);
     double settled = speed_now(s, pf1);
@@ -1052,7 +1054,7 @@ TEST(test_governor_min_speed_floor) {
 
     s = fresh_scheduler(false);
     test_set_min_speed(s, 1.0);
-    g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
     now = 0.0;
     gov_drive_until(&now, 5.0);
     ASSERT_TRUE(speed_now(s, pf1) == 1.0);
@@ -1065,7 +1067,7 @@ TEST(test_governor_paced_tops_out_at_authentic) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1; // plenty of headroom
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1; // plenty of headroom
     double now = 0.0;
     gov_drive(&now, 60, false); // the start: floor, then 1x
     gov_trace_t t = gov_drive(&now, 10 * 60, false);
@@ -1082,7 +1084,7 @@ TEST(test_governor_recovers_to_authentic) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    g_secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 1.3 * VBL_PERIOD / (double)pf1;
     double now = 0.0;
     gov_drive_until(&now, 5.0);
     ASSERT_TRUE(speed_now(s, pf1) < 0.63);
@@ -1090,7 +1092,7 @@ TEST(test_governor_recovers_to_authentic) {
     // The host keeps up again.  The climb starts at once (the dwell was
     // served at 0.625x, no back-off holdoff is pending) and reaches 1x
     // within a dwell -- in one step or two, as the estimator relaxes.
-    g_secs_per_instr = 0.3 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.3 * VBL_PERIOD / (double)pf1;
     gov_drive(&now, 10, false);
     ASSERT_TRUE(speed_now(s, pf1) > 0.63); // climbing
     gov_drive(&now, 50, false);
@@ -1109,19 +1111,19 @@ TEST(test_governor_short_hitch_costs_nothing) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    g_secs_per_instr = 0.3 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.3 * VBL_PERIOD / (double)pf1;
     double now = 0.0;
     gov_drive(&now, 3 * 60, false);
 
-    g_secs_per_instr *= 20.0; // 6x the budget...
+    g_host.secs_per_instr *= 20.0; // 6x the budget...
     gov_drive(&now, 1, false); // ...for one tick
-    g_secs_per_instr /= 20.0;
+    g_host.secs_per_instr /= 20.0;
     gov_trace_t after = gov_drive(&now, 2 * 60, false);
     ASSERT_TRUE(after.changes == 0);
     ASSERT_TRUE(after.final_pf == pf1); // never left 1x
     ASSERT_TRUE(speed_now(s, pf1) == 1.0);
 
-    g_secs_per_instr = 1.5 * VBL_PERIOD / (double)pf1; // over budget, sustained
+    g_host.secs_per_instr = 1.5 * VBL_PERIOD / (double)pf1; // over budget, sustained
     gov_drive_until(&now, now + 1.0);
     double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled > 0.49 && settled < 0.51); // 0.5x (0.75) within a second
@@ -1137,14 +1139,14 @@ TEST(test_governor_spike_backoff) {
 
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, schedule_accelerated);
-    g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
     gov_drive(&now, 60, false); // the start: floor, then 1x
     gov_trace_t t = gov_drive(&now, 25 * 60, true);
     ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
 
-    g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
+    g_host.secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
     gov_drive_until(&now, now + 12.0);
     double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
@@ -1160,7 +1162,7 @@ TEST(test_governor_audio_pressure) {
 
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, schedule_accelerated);
-    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
     gov_drive(&now, 60, false); // the start: floor, then 1x
@@ -1168,17 +1170,17 @@ TEST(test_governor_audio_pressure) {
     ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
 
     uint64_t before = t.final_pf;
-    g_audio_fill = 0.2; // ring briefly below half: a sound starting
+    g_host.audio_fill = 0.2; // ring briefly below half: a sound starting
     gov_trace_t brief = gov_drive(&now, 30, false);
-    g_audio_fill = 1.0;
+    g_host.audio_fill = 1.0;
     ASSERT_TRUE(brief.changes == 0 && brief.final_pf == before); // no back-off
     gov_drive(&now, 30, false);
 
-    g_audio_fill = 0.2; // ring drained: pressure regardless of utilization
+    g_host.audio_fill = 0.2; // ring drained: pressure regardless of utilization
     gov_trace_t drop = gov_drive(&now, 3 * 60, false);
     ASSERT_TRUE(drop.final_pf < before); // backed off
 
-    g_audio_fill = 1.0; // ring healthy again: climbing resumes
+    g_host.audio_fill = 1.0; // ring healthy again: climbing resumes
     gov_trace_t re = gov_drive(&now, 10 * 60, false);
     ASSERT_TRUE(re.final_pf > drop.final_pf);
     teardown(s);
@@ -1191,7 +1193,7 @@ TEST(test_governor_max_speed_cap) {
     scheduler_t *s = fresh_scheduler(false);
     test_set_mode(s, schedule_accelerated);
     test_set_max_speed(s, 3.0);
-    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
     gov_drive(&now, 60, false); // the start: floor, then 1x
@@ -1401,7 +1403,7 @@ TEST(test_forget_source_drops_events_and_types) {
 TEST(test_checkpoint_carries_no_host_timing) {
     g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
 
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     g_cp_slot = 0;
     scheduler_t *a = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(a != NULL);
@@ -1411,7 +1413,7 @@ TEST(test_checkpoint_carries_no_host_timing) {
     ASSERT_TRUE(g_cp_w[0] > 0);
 
     // A different host "now" for the restoring instance -- the whole point.
-    g_now = 987654.0;
+    g_host.now = 987654.0;
     g_cp_r = 0;
     g_cp_slot = 1;
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
@@ -1485,7 +1487,7 @@ static void cp_poke_u32(size_t off, uint32_t v) {
 static void cp_save_valid(uint32_t cpi) {
     g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
     g_cp_slot = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *a = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(a != NULL);
     scheduler_set_frequency(a, 16000000);
@@ -1576,7 +1578,7 @@ static int g_restore_owner;
 static void cp_save_with_one_event(void) {
     g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
     g_cp_slot = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *a = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(a != NULL);
     scheduler_set_frequency(a, 16000000);
@@ -1619,7 +1621,7 @@ TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
 // say WHICH event leaked did not exist, while machine_teardown's backstop
 // reported only a count.
 TEST(test_pending_event_counts_track_the_queue) {
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(s != NULL);
     ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
@@ -1666,7 +1668,7 @@ static void periodic_event(void *source, uint64_t data) {
 
 TEST(test_periodic_repeats_without_self_rearm) {
     int owner = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     g_periodic_sched = s;
     g_periodic_fires = 0;
@@ -1690,7 +1692,7 @@ TEST(test_periodic_repeats_without_self_rearm) {
 // delivers them.  A handler re-arming itself from "now" cannot do this.
 TEST(test_periodic_does_not_drift) {
     int owner = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     g_periodic_sched = s;
     g_periodic_fires = 0;
@@ -1713,7 +1715,7 @@ TEST(test_periodic_does_not_drift) {
 // and the cancel would be silently reinstated.
 TEST(test_periodic_can_be_cancelled_from_its_own_handler) {
     int owner = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     g_periodic_sched = s;
     g_periodic_fires = 0;
@@ -1732,7 +1734,7 @@ TEST(test_periodic_can_be_cancelled_from_its_own_handler) {
 // whole argument for not introducing a handle type.
 TEST(test_periodic_is_cancelled_by_forget_source) {
     int owner = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     g_periodic_sched = s;
     g_periodic_fires = 0;
@@ -1754,7 +1756,7 @@ TEST(test_periodic_is_cancelled_by_forget_source) {
 // all 128 existing call sites.
 TEST(test_one_shot_still_fires_once) {
     int owner = 0;
-    g_now = 1000.0;
+    g_host.now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     g_periodic_sched = s;
     g_periodic_fires = 0;
@@ -1828,13 +1830,13 @@ TEST(test_a_mode_reports_its_owner_and_its_reason) {
 TEST(test_an_early_exit_spends_only_what_ran) {
     scheduler_t *s = fresh_scheduler(true);
     scheduler_set_cpi(s, 4);
-    g_fake_mode = FAKE_FAULT;
-    g_fake_k = 10;
+    g_host.cpu_mode = FAKE_FAULT;
+    g_host.cpu_k = 10;
     uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
     scheduler_run_instructions(s, 100000);
-    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
-    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), (long long)(g_fake_executed * 4));
-    ASSERT_EQ_INT((long long)g_fake_executed, 100000); // the whole budget ran, fault after fault
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_host.cpu_executed);
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), (long long)(g_host.cpu_executed * 4));
+    ASSERT_EQ_INT((long long)g_host.cpu_executed, 100000); // the whole budget ran, fault after fault
     teardown(s);
 }
 
@@ -1843,13 +1845,13 @@ TEST(test_an_early_exit_spends_only_what_ran) {
 TEST(test_a_stop_counts_no_instructions_while_asleep) {
     scheduler_t *s = fresh_scheduler(true);
     scheduler_set_cpi(s, 4);
-    g_fake_mode = FAKE_STOP;
-    g_fake_k = 10;
+    g_host.cpu_mode = FAKE_STOP;
+    g_host.cpu_k = 10;
     uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
     scheduler_run_instructions(s, 1000000);
-    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_host.cpu_executed);
     ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 4000000); // the budget passed as time
-    ASSERT_TRUE(g_fake_executed <= 10 * (g_pings + 1)); // ten instructions per wake-up, no more
+    ASSERT_TRUE(g_host.cpu_executed <= 10 * (g_host.pings + 1)); // ten instructions per wake-up, no more
     teardown(s);
 }
 
@@ -1860,17 +1862,17 @@ TEST(test_a_stop_counts_no_instructions_while_asleep) {
 TEST(test_a_stop_with_an_empty_queue_still_sees_the_next_vbl) {
     scheduler_t *s = fresh_scheduler(false); // no events at all
     scheduler_set_cpi(s, 4);
-    g_fake_mode = FAKE_STOP;
-    g_fake_k = 10;
+    g_host.cpu_mode = FAKE_STOP;
+    g_host.cpu_k = 10;
     uint64_t c0 = scheduler_cpu_cycles(s);
     scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t frame_cycles = scheduler_cpu_cycles(s) - c0;
     ASSERT_TRUE(frame_cycles > 0);
     scheduler_run_frame(s, TEST_CFG, platform_pacing());
     scheduler_run_frame(s, TEST_CFG, platform_pacing());
-    ASSERT_EQ_INT((long long)g_vbls, 3); // one VBL per frame, the sleeping frames included
+    ASSERT_EQ_INT((long long)g_host.vbls, 3); // one VBL per frame, the sleeping frames included
     ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), (long long)(3 * frame_cycles)); // time passed
-    ASSERT_EQ_INT((long long)g_fake_executed, 10); // the CPU ran only until its STOP
+    ASSERT_EQ_INT((long long)g_host.cpu_executed, 10); // the CPU ran only until its STOP
     teardown(s);
 }
 
@@ -1879,13 +1881,13 @@ TEST(test_a_stop_with_an_empty_queue_still_sees_the_next_vbl) {
 TEST(test_a_stall_past_an_event_is_carried_not_dropped) {
     scheduler_t *s = fresh_scheduler(true); // events every 77,777 cycles
     scheduler_set_cpi(s, 4);
-    g_fake_mode = FAKE_STALL;
-    g_fake_stall_cycles = 200000; // crosses two ping boundaries
+    g_host.cpu_mode = FAKE_STALL;
+    g_host.cpu_stall_cycles = 200000; // crosses two ping boundaries
     uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
     scheduler_run_instructions(s, 100000); // 400,000 cycles
     ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 400000);
-    ASSERT_EQ_INT((long long)g_fake_executed, 100000 - 200000 / 4); // the stall's slots ran no code
-    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
+    ASSERT_EQ_INT((long long)g_host.cpu_executed, 100000 - 200000 / 4); // the stall's slots ran no code
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_host.cpu_executed);
     teardown(s);
 }
 
