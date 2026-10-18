@@ -130,11 +130,12 @@ static DEF_SETTER(sched_attr_cpi_set) {
     return val_none();
 }
 
-// Accelerated-mode speed multiplier. Reads back the multiplier currently in
-// force for accelerated mode — the pinned value, or the adaptive governor's
-// live speed when the setting is auto (so it moves on its own). Writing 0
-// selects auto; 1.0..8.0 pins. The setting is the host's: it outlives
-// machines, is never checkpointed, and only applies in 'accelerated'.
+// Speed multiplier. Reads back the multiplier currently in force under paced
+// or accelerated pacing — the pinned value, or the adaptive governor's live
+// speed when the setting is auto (so it moves on its own; below 1 when the
+// host cannot keep up). Writing 0 selects auto; 1.0..8.0 pins the
+// accelerated multiplier. The setting is the host's: it outlives machines
+// and is never checkpointed.
 static DEF_GETTER(sched_attr_speed) {
     return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
 }
@@ -150,6 +151,21 @@ static DEF_SETTER(sched_attr_speed_set) {
 static DEF_GETTER(sched_attr_speed_auto) {
     (void)self;
     return val_bool(platform_pacing()->speed_x256 == SPEED_X256_AUTO);
+}
+
+// User floor on the governor: how far it may slow the guest when the host
+// cannot emulate a frame-unit per VBL period (1.0 = never). The host's
+// setting, like the speed.
+static DEF_GETTER(sched_attr_min_speed) {
+    (void)self;
+    return val_float((double)platform_pacing()->min_speed_x256 / 256.0);
+}
+static DEF_SETTER(sched_attr_min_speed_set) {
+    if (isnan(in.f) || in.f < 0.25 || in.f > 1.0)
+        return val_err("scheduler.min_speed: %g out of range (0.25 .. 1.0)", in.f);
+    host_pacing_set_min_speed(platform_pacing(), in.f);
+    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
+    return val_none();
 }
 
 // User cap on the accelerated-mode multiplier (governor ceiling; also clamps
@@ -243,14 +259,20 @@ static const member_t scheduler_members[] = {
      .attr = {.type = VK_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
     {.kind = MK_ATTR,
      .name = "speed",
-     .doc = "Accelerated-mode CPU speed multiplier in force (live). Write 0 for auto (adaptive governor, "
-            "capped by max_speed) or 1.0..8.0 to pin a fixed multiplier. Only takes effect while mode is "
-            "'accelerated'; timebase (VBL/VIA/sound) stays real-time regardless", .flags = 0,
+     .doc = "CPU speed multiplier in force (live): below 1 when the host cannot keep up in paced or "
+            "accelerated, above 1 in accelerated. Write 0 for auto (adaptive governor, between min_speed "
+            "and max_speed) or 1.0..8.0 to pin a fixed accelerated multiplier. Timebase (VBL/VIA/sound) "
+            "stays real-time regardless", .flags = 0,
      .attr = {.type = VK_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
     {.kind = MK_ATTR,
      .name = "speed_auto",
-     .doc = "True while the adaptive governor is choosing the accelerated-mode speed (scheduler.speed = 0)",
+     .doc = "True while the adaptive governor is choosing the speed (scheduler.speed = 0)",
      .attr = {.type = VK_BOOL, .get = sched_attr_speed_auto, .set = NULL}},
+    {.kind = MK_ATTR,
+     .name = "min_speed",
+     .doc = "Floor on the governor's multiplier (0.25..1.0): how far the CPU may slow when the host cannot "
+            "emulate a frame per VBL period; 1.0 never slows it. The host's setting (pacing.min_speed)", .flags = 0,
+     .attr = {.type = VK_FLOAT, .get = sched_attr_min_speed, .set = sched_attr_min_speed_set}},
     {.kind = MK_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0): the adaptive governor's ceiling, and pinned "
@@ -381,6 +403,20 @@ static DEF_SETTER(pacing_attr_speed_set) {
     return val_none();
 }
 
+static DEF_GETTER(pacing_attr_min_speed_get) {
+    (void)self;
+    return val_float((double)platform_pacing()->min_speed_x256 / 256.0);
+}
+
+static DEF_SETTER(pacing_attr_min_speed_set) {
+    (void)self;
+    if (isnan(in.f) || in.f < 0.25 || in.f > 1.0)
+        return val_err("pacing.min_speed: %g out of range (0.25 .. 1.0)", in.f);
+    host_pacing_set_min_speed(platform_pacing(), in.f);
+    pacing_reaches_machine();
+    return val_none();
+}
+
 static DEF_GETTER(pacing_attr_max_speed_get) {
     (void)self;
     return val_float((double)platform_pacing()->max_speed_x256 / 256.0);
@@ -403,8 +439,12 @@ static const member_t pacing_members[] = {
          {.type = VK_ENUM, .enum_values = sched_mode_names, .get = pacing_attr_mode_get, .set = pacing_attr_mode_set}},
     {.kind = MK_ATTR,
      .name = "speed",
-     .doc = "Accelerated-mode speed: 0 for auto (the adaptive governor, capped by max_speed) or 1.0..8.0 pinned",
+     .doc = "Speed: 0 for auto (the adaptive governor, between min_speed and max_speed) or 1.0..8.0 pinned",
      .attr = {.type = VK_FLOAT, .get = pacing_attr_speed_get, .set = pacing_attr_speed_set}                          },
+    {.kind = MK_ATTR,
+     .name = "min_speed",
+     .doc = "Floor on the governor's multiplier (0.25..1.0; 1.0 never slows the CPU on an overloaded host)",
+     .attr = {.type = VK_FLOAT, .get = pacing_attr_min_speed_get, .set = pacing_attr_min_speed_set}                  },
     {.kind = MK_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0)",

@@ -40,6 +40,7 @@
 import { test, expect, type Page } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { gsEvalInPage } from "../helpers/web2-eval";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { buildFakeCaptureWav } from "../helpers/fake-audio";
 import { terminalRun as typeLine } from "../helpers/terminal";
@@ -247,6 +248,27 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => probe(page, "machine.id"), { timeout: 30_000 }).toBe("q840av");
+
+  // The guest runs in real time from here and the GUI drives below are paced
+  // in guest ticks, so it must run at 1x: floor the adaptive governor there
+  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
+  // and every wait comes up short.
+  await gsEvalInPage(page, "scheduler.min_speed", [1]);
+
+  // Stay in real time until the 840AV's DSP kernel is up and idling (emr
+  // $8000): its bring-up, in the Enabler's RTM init a few guest seconds into
+  // boot, is a 68040<->DSP handshake that holds at 1x and is lost above it --
+  // at 2x the guest gives up on the DSP in about one boot in three, at a
+  // pinned 4x or 8x every time -- and a DSP held in reset means no sound
+  // input for the rest of the session (docs/internals/machines/av/dsp.md).
+  // Only then accelerate the rest of the boot.
+  await expect
+    .poll(
+      async () =>
+        `${await gsEvalInPage(page, "machine.dsp.state")}/${await gsEvalInPage(page, "machine.dsp.emr")}`,
+      { timeout: 120_000, intervals: [500] },
+    )
+    .toBe("running/0x8000");
 
   // --- 2. Boot to the Finder, accelerated; then back to real time. ---------
   // The microphone is a real-time stream: a guest running faster than wall

@@ -29,14 +29,24 @@
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
 
-  // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
-  // (1x in every other mode), so gate on the mode too. The governor's ladder
-  // gives 1/1.5/2/3/4/6/8x — show up to one decimal, dropping a trailing .0.
-  const showSpeed = $derived(machine.scheduler === 'accel');
+  // CPU speed readout: the multiplier the core applies. Shown in Faster mode
+  // always, and in any mode whenever it is not 1x — the governor slows the
+  // CPU below 1x in Real mode too when this computer cannot keep up. The
+  // governor's ladder gives eighths below 1x (0.25 … 0.875) and 1.5/2/3/4/6/8x
+  // above — one decimal above 1x, two below (0.38x, not 0.4x), dropping
+  // trailing zeros.
+  const showSpeed = $derived(machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1);
   const speedLabel = $derived(
     Number.isInteger(machine.acceleratedSpeed)
       ? `${machine.acceleratedSpeed}×`
-      : `${machine.acceleratedSpeed.toFixed(1)}×`,
+      : machine.acceleratedSpeed < 1
+        ? `${machine.acceleratedSpeed.toFixed(2).replace(/0$/, '')}×`
+        : `${machine.acceleratedSpeed.toFixed(1)}×`,
+  );
+  const speedTitle = $derived(
+    machine.acceleratedSpeed < 1
+      ? `CPU slowed to ${speedLabel} the original Mac's speed because this computer cannot keep up; the clock, sound and animation stay real-time`
+      : `CPU running at ${speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time`,
   );
 
   // Background-checkpoint heartbeat — same flash idiom as the drive
@@ -161,10 +171,7 @@
           />{/if}<span class="label">{stateLabel[machine.status]}</span>
       </div>
       {#if showSpeed}
-        <div
-          class="gs-statusbar__item sb-item sb-speed"
-          title="CPU running at {speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time"
-        >
+        <div class="gs-statusbar__item sb-item sb-speed" title={speedTitle}>
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
       {/if}
