@@ -4,28 +4,31 @@
   import { logsPanelHeader } from './logsHeader.svelte';
   import LogLine from './LogLine.svelte';
   import CategoryLevelsPopover from './CategoryLevelsPopover.svelte';
+  import { stickToBottom } from '@/lib/stickToBottom.svelte';
 
   // Zebra rows (--gs-row-alt): off by default.
   let { striped = false }: { striped?: boolean } = $props();
 
-  let listEl = $state<HTMLDivElement | null>(null);
   const showPopover = $derived(logsPanelHeader.popoverOpen);
 
-  // Autoscroll: any time the entries array changes (push or splice) and
-  // autoscroll is on, snap the list to the bottom.
+  // Autoscroll: while it is on and the list is at the bottom, new lines
+  // keep it there; scrolling up unpins it until the user scrolls back
+  // down, as in the Terminal (lib/stickToBottom).  Turning it on jumps to
+  // the bottom.
+  const scroll = stickToBottom(() => logs.entries.length);
   $effect(() => {
-    void logs.entries.length;
-    if (!logs.autoscroll || !listEl) return;
-    queueMicrotask(() => {
-      if (listEl) listEl.scrollTop = listEl.scrollHeight;
-    });
+    if (logs.autoscroll) scroll.follow();
   });
 
   const catCount = $derived(new Set(logs.entries.map((e) => e.cat)).size);
 </script>
 
 <div class="logs-view">
-  <div class="logs-scroll" data-striped={striped || undefined} bind:this={listEl}>
+  <div
+    class="logs-scroll"
+    data-striped={striped || undefined}
+    {@attach logs.autoscroll ? scroll.attach : undefined}
+  >
     {#if logs.entries.length === 0}
       <Hint class="logs-empty" inset="view">
         No log lines yet. Boot a machine and bring a category up with <code
