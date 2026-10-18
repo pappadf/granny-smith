@@ -108,6 +108,40 @@ describe('rom media descriptor', () => {
   });
 });
 
+// S1018-26: a known ROM's id at the wrong size (the first 64 KB of a Plus
+// ROM) is refused as a damaged dump, not stored as a hard disk.
+describe('rom media descriptor — a cut-short dump', () => {
+  it('names the ROM and both sizes', async () => {
+    const result = await MEDIA_TYPES.rom.validate(
+      '/opfs/upload/plus-trunc.rom',
+      romIdentify({
+        recognised: false,
+        size: 64 * 1024,
+        expected_name: 'Macintosh Plus (Rev 3, Loud Harmonicas)',
+        expected_size: 128 * 1024,
+      }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reject).toBe(
+      'looks like the Macintosh Plus (Rev 3, Loud Harmonicas), but it is 64 KB where that ROM is 128 KB — the dump is probably damaged',
+    );
+  });
+});
+
+describe('hd media descriptor', () => {
+  const core =
+    (size: number): GsEval =>
+    async (path: string) =>
+      path === 'files.path_size' ? size : path === 'machine.scsi.identify_hd';
+
+  // S1018-26: a 32 KB PCI ROM opens and is not floppy-sized, which was all
+  // identify_hd asked.
+  it('refuses a file smaller than the smallest floppy', async () => {
+    expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024))).valid).toBe(false);
+    expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024))).valid).toBe(true);
+  });
+});
+
 describe('fd media descriptor', () => {
   const sized = (size: number) =>
     (async (path: string) => (path === 'files.path_size' ? size : null)) as unknown as GsEval;

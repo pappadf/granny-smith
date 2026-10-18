@@ -87,6 +87,10 @@ void rom_identity_compute(const uint8_t *data, size_t size, rom_identity_t *out)
 // The table row for `id` whose size is `size`, or NULL if not known.
 const rom_info_t *rom_lookup(const char *id, size_t size);
 
+// A table row for `id` whose size is NOT `size` (the file is that ROM cut
+// short or padded), or NULL.
+const rom_info_t *rom_lookup_other_size(const char *id, size_t size);
+
 // Identify raw ROM bytes: compute the identity, look it up, and re-verify
 // with the matched row's exceptions (checksum_span, ROM_F_NO_SUM64).
 // `out` may be NULL.  Returns the row, or NULL if the ROM is not known.

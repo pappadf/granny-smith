@@ -218,6 +218,17 @@ TEST(test_ppc_foreign_half_not_recognised) {
     free(d);
 }
 
+// A known ROM's id at another size is that ROM cut short (or padded): found
+// by rom_lookup_other_size, so rom.identify can name it; never at its own size.
+TEST(test_lookup_other_size) {
+    const rom_info_t *plus = rom_lookup_other_size("4d1f8172", 64 * 1024);
+    ASSERT_TRUE(plus != NULL);
+    ASSERT_EQ_INT((int)plus->rom_size, 128 * 1024);
+    ASSERT_TRUE(rom_lookup_other_size("4d1f8172", 128 * 1024) == NULL);
+    ASSERT_TRUE(rom_lookup_other_size("00000000", 64 * 1024) == NULL);
+    ASSERT_TRUE(rom_lookup_other_size("", 64 * 1024) == NULL);
+}
+
 // Non-ROM inputs are kind NONE with no id.
 TEST(test_not_a_rom) {
     uint8_t b[7] = {0};
@@ -347,6 +358,7 @@ int main(void) {
     RUN(test_68k_identity);
     RUN(test_ppc_identity);
     RUN(test_ppc_foreign_half_not_recognised);
+    RUN(test_lookup_other_size);
     RUN(test_not_a_rom);
     RUN(test_table_integrity);
     RUN(test_variants_tell_shared_models_apart);
