@@ -8,6 +8,7 @@ import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
 import { tree } from '../helpers/configTree';
 import type { MachineProfile } from '@/bus/profile';
+import { gzipSync } from 'node:zlib';
 
 const heap = fakeHeap();
 
@@ -135,6 +136,33 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(toastText()).toMatch(/HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/);
     expect(scratchLeft()).toEqual([]);
     expect([...files.keys()].some((p) => p.startsWith('/opfs/images/hd/'))).toBe(false);
+  });
+
+  // S1018-31: a gzip body went to jszip (its Content-Type has "zip" in it),
+  // whose "Can't find end of central directory" was the row's error.
+  it('a gzipped floppy is unpacked, stored and inserted', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['sys.dsk.gz'] = gzipSync(FLOPPY) as Uint8Array<ArrayBuffer>;
+    bridge.reply('files.archive.identify', (args: unknown) => {
+      const f = files.get((args as [string])[0]);
+      return f && f[0] === 0x1f && f[1] === 0x8b ? 'gz' : '';
+    });
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk.gz'));
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_'));
+    expect(stored).toBeDefined();
+    expect(files.get(stored!)?.length).toBe(819200);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  // S1018-44: a file that is not a zip, named as one with a member path.
+  it('a member of a file that is not a zip says so, not jszip', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disks.zip'] = JUNK;
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=disks.zip/sys.dsk'));
+    expect(toastText()).toMatch(/disks[.]zip is not a zip archive this page can read/);
+    expect(toastText()).not.toMatch(/central directory/);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
   });
 
   it('a valid floppy is stored and inserted from its store, not from scratch', async () => {

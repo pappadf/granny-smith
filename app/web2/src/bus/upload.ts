@@ -54,7 +54,7 @@ import {
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
 import { opfsSafeName } from './fsOps';
-import { importImage, isQcow2File, type DiskCategory } from './importImage';
+import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -251,8 +251,8 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   // A large file is a disk image (or an archive holding one): streamed into
   // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
   // there; it falls through to the staged flow below.  A QCOW2 image of any
-  // size is converted there too.
-  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file))) {
+  // size is converted there too, and a gzip of any size unpacked.
+  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)) || (await isGzipFile(file))) {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],

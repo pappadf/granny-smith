@@ -127,6 +127,15 @@ export async function isQcow2File(blob: Blob): Promise<boolean> {
   return isQcow2Head(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
 }
 
+// True when `blob` is gzip-compressed: a small one goes to importImage too,
+// which unpacks it and hands what it holds (a floppy, a ROM) to the staged
+// flow.  Staged as it is, it reached the core's archive probe, which sees
+// through the gzip into the disk's volume and found "no mountable media".
+export async function isGzipFile(blob: Blob): Promise<boolean> {
+  if (blob.size < 2) return false;
+  return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
+}
+
 function sizeText(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;

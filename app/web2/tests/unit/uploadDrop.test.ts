@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
+import { gzipSync } from 'node:zlib';
 
 const heap = fakeHeap();
 
@@ -47,6 +48,19 @@ const rom = (name: string, id: number) => {
   b[1] = id;
   return new File([b], name);
 };
+// Nor stream().
+if (!Blob.prototype.stream) {
+  Blob.prototype.stream = function (this: Blob) {
+    const blob = this;
+    return new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new Uint8Array(await blob.arrayBuffer()));
+        c.close();
+      },
+    });
+  } as typeof Blob.prototype.stream;
+}
+
 // An 800 KB floppy image.
 const floppy = (name: string) => new File([new Uint8Array(819200).fill(0xa5)], name);
 const notes = () => new File([new TextEncoder().encode('just some notes\n')], 'notes.txt');
@@ -211,5 +225,18 @@ describe('a drop of several files on an Images section', () => {
     ]);
     expect(media.insertFloppy).toHaveBeenCalledTimes(1);
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+  });
+});
+
+// S1018-31: a gzipped floppy was staged as it is and found to hold "no
+// mountable media"; it is unpacked, and what it holds stored.
+describe('a gzipped floppy', () => {
+  it('is unpacked and stored as the floppy it holds', async () => {
+    const gz = new File([gzipSync(new Uint8Array(819200).fill(0xa5))], 'sys608.dsk.gz');
+    await acceptFiles([gz]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/sys608.dsk',
+    ]);
+    expect(scratchLeft()).toEqual([]);
   });
 });
