@@ -81,6 +81,14 @@ export function installFakeCoreFs(
     const f = files.get((args as [string])[0]);
     return f ? f.length : { error: 'no such file' };
   });
+  // -1 when identical, else the offset of the first difference.
+  bridge.reply('files.path_compare', (args: unknown) => {
+    const [a, b] = (args as [string, string]).map((p) => files.get(p));
+    if (!a || !b) return { error: 'no such file' };
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
+    return a.length === b.length ? -1 : n;
+  });
   // Nothing is an archive.
   bridge.reply('files.archive.identify', '');
   return files;

@@ -65,7 +65,7 @@ import {
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted, clearMounts } from '@/state/images.svelte';
-import { unzipAll } from '@/lib/archive';
+import { unzipAll, type UnzippedFile } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -112,6 +112,7 @@ import {
   type MediaResult,
 } from './media';
 import { importImage, type DiskCategory, type ImportSource } from './importImage';
+import { decompressor } from '@/lib/zipStream';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -868,10 +869,23 @@ async function fetchAndStage(
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
       if (!(await extractMember(slot, staged, plan))) return null;
-    } else if (archive === 'zip' || /zip/i.test(ct)) {
+    } else if (archive === 'gz' || (!archive && /gzip/i.test(ct))) {
+      // A gzip body: what it holds (a floppy, a ROM).  Not a zip, though its
+      // Content-Type ("application/gzip") says "zip" too.
+      updateUrlFile(slot, { status: 'unpacking' });
+      const gz = await xferReadAll(staged);
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(gz);
+          c.close();
+        },
+      }).pipeThrough(decompressor('gzip'));
+      await discardStaging(staged);
+      if (!(await streamToOpfs(staged, body))) return null;
+    } else if (archive === 'zip' || /\bzip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
-      const first = (await unzipAll(await xferReadAll(staged)))[0];
+      const first = (await unzipStaged(staged, plan.fileName))[0];
       if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
     } else if (archive) {
@@ -918,7 +932,9 @@ function progressReporter(slot: string): (bytes: number) => void {
 async function extractMember(slot: string, staged: string, plan: MediaFetchPlan): Promise<boolean> {
   const member = plan.member ?? '';
   if (plan.container === 'zip') {
-    const entries = (await unzipAll(await xferReadAll(staged))).filter((f) => f.name);
+    const entries = (await unzipStaged(staged, plan.containerName ?? plan.fileName)).filter(
+      (f) => f.name,
+    );
     const hit = findMember(
       entries.map((f) => f.name),
       member,
@@ -932,6 +948,18 @@ async function extractMember(slot: string, staged: string, plan: MediaFetchPlan)
     return !!data && (await streamToOpfs(staged, data));
   }
   return unpackMacArchive(slot, staged, member, plan);
+}
+
+// The files of the zip staged at `staged` (named `name`), or a MediaUrlError
+// saying it is not one: jszip's own message ("Can't find end of central
+// directory : is this a zip file ?" and a link to its documentation) reached
+// the user as it was.
+async function unzipStaged(staged: string, name: string): Promise<UnzippedFile[]> {
+  try {
+    return await unzipAll(await xferReadAll(staged));
+  } catch {
+    throw new MediaUrlError(`${name} is not a zip archive this page can read`);
+  }
 }
 
 // Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,

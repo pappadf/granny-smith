@@ -27,15 +27,20 @@ vi.mock('@/bus/media', () => ({
   mountImage: vi.fn(),
   machineDevices: async () => [],
   deviceLabel: () => '',
+  imageInUseUnder: async (paths: string[]) => paths.find((p) => images.mounted[p]) ?? null,
 }));
 
 import ImageCategorySection from '@/components/panel-views/images/ImageCategorySection.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { images } from '@/state/images.svelte';
+import { dialogs } from '@/state/dialogs.svelte';
+import { toasts, _resetForTests as resetToasts } from '@/state/toasts.svelte';
 
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
+  dialogs.current = null;
+  resetToasts();
   images.mounted = {};
   drives.count = 2;
   drives.present = [false, false];
@@ -96,5 +101,31 @@ describe('ImageCategorySection — floppy drive choice', () => {
     const items = labelsOf(await menuFor('Disk_Tools.dsk'));
     expect(items).toContain('Insert');
     expect(items.some((l) => l.startsWith('Insert into drive'))).toBe(false);
+  });
+});
+
+describe('ImageCategorySection — rename and delete', () => {
+  const click = (items: HTMLElement[], label: string) =>
+    fireEvent.click(items.find((e) => e.textContent?.trim() === label)!);
+
+  // S1018-02: a rename or delete under a running machine made every later
+  // checkpoint, Save State and Resume fail.
+  it.each(['Rename', 'Delete'])('refuses %s of a mounted image', async (label) => {
+    images.mounted['/opfs/images/fd/Disk_Tools.dsk'] = { kind: 'fd', bus: 'floppy', drive: 0 };
+    await click(await menuFor('Disk_Tools.dsk'), label);
+    await waitFor(() =>
+      expect(toasts.active.some((t) => /while the machine is using it/.test(t.msg))).toBe(true),
+    );
+    expect(dialogs.current).toBeNull();
+  });
+
+  // S1018-70: a name another image has is refused under the field.
+  it('refuses a name another image already has', async () => {
+    await click(await menuFor('Disk_Tools.dsk'), 'Rename');
+    await waitFor(() => expect(dialogs.current?.kind).toBe('text'));
+    const q = dialogs.current as { validate: (v: string) => string };
+    expect(q.validate('System_7.0_Install.dsk')).toMatch(/already exists/);
+    expect(q.validate('Disk_Tools.dsk')).toBe('');
+    expect(q.validate('fresh.dsk')).toBe('');
   });
 });

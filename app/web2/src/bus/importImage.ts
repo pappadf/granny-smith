@@ -127,6 +127,15 @@ export async function isQcow2File(blob: Blob): Promise<boolean> {
   return isQcow2Head(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
 }
 
+// True when `blob` is gzip-compressed: a small one goes to importImage too,
+// which unpacks it and hands what it holds (a floppy, a ROM) to the staged
+// flow.  Staged as it is, it reached the core's archive probe, which sees
+// through the gzip into the disk's volume and found "no mountable media".
+export async function isGzipFile(blob: Blob): Promise<boolean> {
+  if (blob.size < 2) return false;
+  return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
+}
+
 function sizeText(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -255,30 +264,45 @@ let persistAsked = false;
 // Refuse up front when even the compressed source will not fit, and ask once
 // that the origin's storage not be evicted under pressure (nothing else in
 // the app asks, and an evicted origin loses every image and checkpoint).
-async function preflight(name: string, sourceBytes: number | null): Promise<boolean> {
+// `free`: the storage free when it started (null when unknown), which a
+// failed write is measured against.
+async function preflight(
+  name: string,
+  sourceBytes: number | null,
+): Promise<{ ok: boolean; free: number | null }> {
   const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
-  if (!storage) return true;
+  if (!storage) return { ok: true, free: null };
   if (!persistAsked && storage.persist) {
     persistAsked = true;
     storage.persist().catch(() => undefined);
   }
-  if (sourceBytes === null || !storage.estimate) return true;
+  if (!storage.estimate) return { ok: true, free: null };
   try {
     const est = await storage.estimate();
-    const free = (est.quota ?? Infinity) - (est.usage ?? 0);
+    const free = est.quota !== undefined ? est.quota - (est.usage ?? 0) : null;
     // The stored image is at most about the decoded size, at least what the
     // source compresses to; the source's own size is the cheap bound.
-    if (free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
+    if (free !== null && sourceBytes !== null && free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
       showNotification(
         `Not enough browser storage for ${name}: ${sizeText(Math.max(0, free))} free`,
         'error',
       );
-      return false;
+      return { ok: false, free };
     }
+    return { ok: true, free };
   } catch {
     /* no estimate: try anyway */
+    return { ok: true, free: null };
   }
-  return true;
+}
+
+// Why a failed import failed, when it is the storage: it had written about
+// all that was free when it started.  The write itself fails with a bare
+// error, and its partial file is gone by the time the failure is reported,
+// so an estimate then shows space again.
+export function storageFullHint(free: number | null, stored: number): string {
+  if (free === null || stored < 0.9 * free) return '';
+  return ` (the browser's storage is full: it had ${sizeText(Math.max(0, free))} free)`;
 }
 
 // --- The pipeline ----------------------------------------------------------------
@@ -309,10 +333,14 @@ async function placeUdif(
   name: string,
   categories: DiskCategory[],
 ): Promise<{ path: string; category: DiskCategory } | null> {
+  let reject: string | undefined;
   for (const cat of categories) {
     const d = MEDIA_TYPES[cat];
     const v = await d.validate(part, gsEval);
-    if (!v.valid) continue;
+    if (!v.valid) {
+      reject ??= v.reject;
+      continue;
+    }
     await gsEval('files.mkdir', [d.persistDir]);
     const dest = await uniquePath(d.persistDir, storedDmgName(name));
     const moved = await gsEval('files.mv', [part, dest]);
@@ -326,7 +354,9 @@ async function placeUdif(
   }
   await rmQuiet(part);
   const what = categories.map((c) => MEDIA_TYPES[c].label).join(' or ');
-  showNotification(`'${name}' is not a valid ${what}`, 'error');
+  // The reason, when the core has one (a UDIF in a compression it cannot
+  // decode), in place of the bare verdict.
+  showNotification(`'${name}' ${reject ?? `is not a valid ${what}`}`, 'error');
   return null;
 }
 
@@ -484,8 +514,9 @@ async function importDecoded(
               `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
             ),
         );
+        // The reason names the staged copy; the user knows the file by its name.
         if (!r || typeof r !== 'object' || 'error' in (r as object))
-          throw new Error(gsErrorText(r));
+          throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
         await rmQuiet(staged);
       }
@@ -616,9 +647,12 @@ export async function importImage(
   });
   const total = src.kind === 'blob' ? src.blob.size : src.total;
   const report = opts.onProgress;
+  let storedSoFar = 0;
+  let free: number | null = null;
   opts = {
     ...opts,
     onProgress(read, t, stored) {
+      storedSoFar = Math.max(storedSoFar, stored);
       setActivityDetail(
         `${sizeText(read)}${t ? ` of ${sizeText(t)}` : ''} read, ${sizeText(stored)} stored`,
       );
@@ -626,7 +660,9 @@ export async function importImage(
     },
   };
   try {
-    if (!(await preflight(name, total))) return { handled: true, path: null };
+    const pre = await preflight(name, total);
+    free = pre.free;
+    if (!pre.ok) return { handled: true, path: null };
     const peeked = await headOf(src, 512);
     src = peeked.src;
     const kind = sniffContainer(peeked.head);
@@ -696,7 +732,10 @@ export async function importImage(
       showNotification(`Import of ${name} cancelled`, 'info');
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      showNotification(`Could not import ${name}: ${msg}`, 'error');
+      showNotification(
+        `Could not import ${name}: ${msg}${storageFullHint(free, storedSoFar)}`,
+        'error',
+      );
       console.error('[importImage]', e);
     }
     return { handled: true, path: null };

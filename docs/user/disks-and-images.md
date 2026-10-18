@@ -37,7 +37,7 @@ other non-empty image.
 | New Machine dialog | A drive's menu → **Load image...** ([Creating a machine](new-machine.md)) |
 | Home screen | **Load ROM...** (several files at once) |
 | The display | Drop files on the screen: ROMs are stored; floppies and CDs go into the running machine's drives |
-| Images panel | The add button of a section, or drop a file on the section (checked strictly against that kind) |
+| Images panel | The add button of a section, or drop files on the section (each checked strictly against that kind; only the first goes into the machine) |
 | Filesystem panel | Drop files into a folder (§5) |
 | A link | `rom=`, `fd0=`, `hd0=`, `cd=` … ([URL parameters](url-parameters.md)) |
 
@@ -97,8 +97,8 @@ Right-click an image:
 | **Save to computer…** | Download the stored file. |
 | **Export as raw image…** | Download a `.dmg` as a plain, uncompressed image. |
 | **Compact (store as .dmg)** | Convert a large raw hard-disk or CD image to compact storage and remove the raw file. Saved machines that use the raw file will no longer find it. |
-| **Rename** | Rename the stored file. |
-| **Delete** | Remove it (asks first). |
+| **Rename** | Rename the stored file. Not while it is inserted or mounted: eject or unmount it first. |
+| **Delete** | Remove it (asks first). Not while it is inserted or mounted. |
 
 ## 5. The Filesystem panel
 
@@ -121,11 +121,18 @@ What you can do:
 - **Right-click** an item: **Rename**, **Save to computer…** (several
   selected: **Save files…**), **Export as raw image…**, **Unpack** (extract
   an archive into a folder next to it), **Delete**.
+- **Save to computer…** on a Mac file inside an image saves its data fork
+  only: a browser download has no place for the resource fork, and you are
+  told when one is left out. A 68K application keeps all its code there,
+  so it comes out empty.
 - Inside an image or archive, a disk image found there can be put straight
   into the machine: **Insert into floppy drive**, **Attach as hard disk**,
   **Insert into CD-ROM drive**.
 - **Drop files** from your computer onto a folder to copy them in. Drag
   items within the panel to move them; drag them out of an image to copy.
+- The folders in the table above stay where they are: they cannot be
+  renamed, moved or deleted (what is in them can). Nor can an image the
+  running machine is using, or a folder holding one: eject it first.
 
 ## 6. Your stored images are never changed
 

@@ -47,6 +47,8 @@ const FD_720 = 720 * 1024; // MFM double density (PC Exchange / DOS)
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
 const DC42_TAGS = (data: number) => (data / 512) * 12;
+// The smallest file taken as a hard disk: the smallest floppy's size.
+const MIN_HD_BYTES = FD_400;
 
 // Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
 // `id` is the ROM's own stored checksum, the only thing a ROM file is ever
@@ -63,6 +65,10 @@ interface RomIdentifyResult {
   id?: string;
   intact?: boolean;
   reason?: string;
+  // The known ROM whose id the file carries at another size (a truncated
+  // dump); "" / 0 otherwise.
+  expected_name?: string;
+  expected_size?: number;
 }
 
 // Shape returned by C-side `catalog.vroms.identify`. Identity is keyed off the
@@ -174,6 +180,15 @@ export async function identifyCardRom(
   };
 }
 
+// Why a disk image that did not validate cannot be read, when it is a UDIF,
+// NDIF or QCOW2 image the core cannot read ("is a QCOW2 image that cannot
+// be read in place (it uses ...)"), else undefined: the upload said only
+// "is not a valid Hard Disk image", the reason was in the terminal.
+async function containerRefusal(path: string, gsEval: GsEval): Promise<string | undefined> {
+  const why = await gsEval('files.image_error', [path]);
+  return typeof why === 'string' && why ? `is ${why}` : undefined;
+}
+
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
   rom: {
     id: 'rom',
@@ -181,6 +196,13 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     persistDir: ROMS_DIR,
     async validate(path, gsEval) {
       const info = await parseRomIdentify(gsEval, path);
+      // A known ROM's id at the wrong size: a dump cut short.  It used to fall
+      // through to the permissive hard-disk probe and be stored as a disk.
+      if (!info?.recognised && info?.expected_size && info.size)
+        return {
+          valid: false,
+          reject: `looks like the ${info.expected_name}, but it is ${info.size / 1024} KB where that ROM is ${info.expected_size / 1024} KB — the dump is probably damaged`,
+        };
       if (!info?.recognised) return { valid: false };
       // A known ROM that fails its own checksum is never stored: its id is
       // the good dump's, and a damaged ROM in the picker helps nobody.
@@ -304,7 +326,13 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_hd', [path])) === true };
+      // Smaller than the smallest floppy is no hard disk: a ROM, a card's
+      // ROM or a cut-short dump, which identify_hd (anything that opens and
+      // is not floppy-sized) would otherwise take.
+      const size = await gsEval('files.path_size', [path]);
+      if (typeof size === 'number' && size < MIN_HD_BYTES) return { valid: false };
+      if ((await gsEval('machine.scsi.identify_hd', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 
@@ -313,7 +341,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_cdrom', [path])) === true };
+      if ((await gsEval('machine.scsi.identify_cdrom', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 };

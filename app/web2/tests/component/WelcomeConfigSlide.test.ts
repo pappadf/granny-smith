@@ -176,6 +176,20 @@ describe('WelcomeConfigSlide: storage', () => {
     await waitFor(() => expect(c.querySelector('[data-position="scsi:4"]')).not.toBeNull());
   });
 
+  // S1018-27: one image at two SCSI ids is two targets writing one file.
+  it('a hard-disk image another device has is not offered', async () => {
+    const c = await open('plus');
+    await fireEvent.click(c.querySelector('[data-testid="cfg-add-device-scsi"]')!);
+    choose($(c, '#cfg-add-type-scsi')!, 'hd');
+    choose($(c, '#cfg-add-unit-scsi')!, '4');
+    await fireEvent.click(button(c, 'Add'));
+    await waitFor(() => expect($(c, '#cfg-media-scsi-4')).not.toBeNull());
+    choose($(c, '#cfg-media-scsi-0')!, 'hd1.img');
+    await waitFor(() => expect(labels($(c, '#cfg-media-scsi-4'))).not.toContain('hd1.img'));
+    expect(labels($(c, '#cfg-media-scsi-4'))).toContain('hd2.img');
+    expect(labels($(c, '#cfg-media-scsi-0'))).toContain('hd1.img');
+  });
+
   it('removing the startup disk moves the startup choice', async () => {
     const c = await open('plus');
     const remove = c.querySelector('[data-position="scsi:0"] button') as HTMLButtonElement;

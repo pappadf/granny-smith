@@ -184,6 +184,16 @@ const rom_info_t *rom_lookup(const char *id, size_t size) {
     return NULL;
 }
 
+const rom_info_t *rom_lookup_other_size(const char *id, size_t size) {
+    if (!id || !*id)
+        return NULL;
+    for (size_t i = 0; i < rom_table_count; i++) {
+        if (rom_table[i].rom_size != size && strcmp(rom_table[i].id, id) == 0)
+            return &rom_table[i];
+    }
+    return NULL;
+}
+
 const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, rom_identity_t *out) {
     rom_identity_t local;
     rom_identity_t *id = out ? out : &local;
@@ -403,14 +413,16 @@ static DEF_GETTER(rom_attr_name) {
 
 // rom.identify(path) → typed info map describing the ROM file:
 //   { recognised, supported, compatible, name, variant, size, kind, id, intact,
-//     reason, lisa_chip }
+//     reason, lisa_chip, expected_name, expected_size }
 // recognised: the id is in the ROM table; supported: its row names at least
 // one emulated model (compatible).  An unrecognised file still reports its
 // kind, id, intact and reason.  id is the only field anything names a file by,
 // and only when intact.  lisa_chip is "high" or "low" when the file is one chip
 // of a two-chip Lisa / Macintosh XL ROM (half the image: never a ROM on its
-// own), else "".  Returns VK_ERROR if the path can not be opened (caller
-// treats that as "no info, skip this entry").
+// own), else "".  expected_name / expected_size name the known ROM whose id
+// the file carries at another size (a truncated dump), else "" / 0.  Returns
+// VK_ERROR if the path can not be opened (caller treats that as "no info,
+// skip this entry").
 static DEF_METHOD(rom_method_identify) {
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
@@ -438,6 +450,12 @@ static DEF_METHOD(rom_method_identify) {
     // Which chip of a two-chip Lisa ROM the file is, if any.
     const char *chip = fi.lisa_chip == ROM_LISA_CHIP_HIGH ? "high" : fi.lisa_chip == ROM_LISA_CHIP_LOW ? "low" : "";
     val_map_put(b, "lisa_chip", val_str(chip));
+    // A file that carries a known ROM's id at another size: a dump cut short
+    // or padded.  The ROM's name and size, so the refusal can say what the
+    // file was meant to be (it is not recognised, and never stored as a ROM).
+    const rom_info_t *near = fi.info ? NULL : rom_lookup_other_size(fi.identity.id, fi.size);
+    val_map_put(b, "expected_name", val_str(near ? near->family_name : ""));
+    val_map_put(b, "expected_size", val_int(near ? (int64_t)near->rom_size : 0));
     return val_map_finish(b);
 }
 
@@ -473,7 +491,7 @@ static const member_t rom_members[] = {
     {.kind = MK_METHOD,
      .name = "identify",
      .doc = "Return a typed info map for a ROM file (recognised/supported/compatible/name/"
-            "variant/size/kind/id/intact/reason/lisa_chip)",                                .method = {.args = rom_path_arg, .nargs = 1, .result = VK_MAP, .fn = rom_method_identify}},
+            "variant/size/kind/id/intact/reason/lisa_chip/expected_name/expected_size)",    .method = {.args = rom_path_arg, .nargs = 1, .result = VK_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {

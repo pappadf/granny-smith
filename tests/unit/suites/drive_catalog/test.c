@@ -46,6 +46,10 @@ TEST(decimal_sizes_snap_to_a_model) {
     ASSERT_EQ_INT(drive_catalog_parse_size("22mb"), 40061952);
     ASSERT_EQ_INT(drive_catalog_parse_size("40mb"), 40061952);
     ASSERT_EQ_INT(drive_catalog_parse_size("1gb"), 1084489728);
+    // Past the largest model there is none to snap to: refused, not the
+    // largest (blank:3gb made a 1 GB disk).
+    ASSERT_EQ_INT(drive_catalog_parse_size("3gb"), 0);
+    ASSERT_EQ_INT(drive_catalog_parse_size("1100mb"), 0);
 }
 
 // A label names one model; the two HD20SC mechanisms share theirs, and the

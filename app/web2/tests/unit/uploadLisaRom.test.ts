@@ -155,7 +155,7 @@ describe('one Lisa ROM chip on its own', () => {
   });
 
   it('beside other media is refused while they are stored', async () => {
-    const hd = new File([new Uint8Array(8192).fill(0x11)], 'tiny.img');
+    const hd = new File([new Uint8Array(1024 * 1024).fill(0x11)], 'tiny.img');
     await acceptFiles([chip('hi.bin', HIGH), hd]);
     expect(stored()).toEqual(['/opfs/images/hd/tiny.img']);
     expect(toastText().some((m) => /1 rejected: 'hi\.bin' is one of the two chips/.test(m))).toBe(

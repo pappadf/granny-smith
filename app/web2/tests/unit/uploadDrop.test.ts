@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
+import { gzipSync } from 'node:zlib';
 
 const heap = fakeHeap();
 
@@ -18,12 +19,18 @@ vi.mock('@/bus/boot', () => ({
   prepareFreshMachine: vi.fn(async () => {}),
   recordRecentBoot: vi.fn(async () => {}),
 }));
+// The terminal: a drop's rejections are printed there too (S1018-66).
+const printed = vi.hoisted(() => [] as string[]);
+vi.mock('@/bus/logSink', () => ({
+  routePrintLine: (line: string) => printed.push(line),
+}));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
   mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
 }));
 
-const { acceptFiles, dropSummary } = await import('@/bus/upload');
+const { acceptFiles, acceptFilesRaw, acceptFilesIntoCategory, dropSummary } =
+  await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
@@ -46,6 +53,19 @@ const rom = (name: string, id: number) => {
   b[1] = id;
   return new File([b], name);
 };
+// Nor stream().
+if (!Blob.prototype.stream) {
+  Blob.prototype.stream = function (this: Blob) {
+    const read = () => this.arrayBuffer();
+    return new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new Uint8Array(await read()));
+        c.close();
+      },
+    });
+  } as typeof Blob.prototype.stream;
+}
+
 // An 800 KB floppy image.
 const floppy = (name: string) => new File([new Uint8Array(819200).fill(0xa5)], name);
 const notes = () => new File([new TextEncoder().encode('just some notes\n')], 'notes.txt');
@@ -99,6 +119,10 @@ describe('a drop of several files', () => {
     );
     // No per-file "added" messages: the summary is the account.
     expect(toastText().some((m) => / added$/.test(m))).toBe(false);
+    // The toast is one line; each rejection is in the terminal in full.
+    expect(printed).toContain(
+      "upload: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
+    );
   });
 
   it("boots the drop's only ROM and mounts only the first floppy, into an empty drive", async () => {
@@ -183,5 +207,71 @@ describe('dropSummary', () => {
         ],
       ),
     ).toEqual({ msg: '2 stored (1 hard disk, 1 CD-ROM)', severity: 'info' });
+  });
+});
+
+// S1018-25: a Filesystem-tab drop keeps the file's name; only what OPFS
+// cannot hold is replaced, and then the toast says what it was saved as.
+describe('a drop into the Filesystem tab', () => {
+  it('keeps spaces and accents, and names a changed name', async () => {
+    const text = (name: string) => new File([new TextEncoder().encode('hi')], name);
+    await acceptFilesRaw([text('Read Me café.txt'), text('a:b.txt')], '/opfs/shared');
+    expect(files.has('/opfs/shared/Read Me café.txt')).toBe(true);
+    expect(files.has('/opfs/shared/a_b.txt')).toBe(true);
+    expect(toastText()).toContain("'Read Me café.txt' saved to /opfs/shared");
+    expect(toastText()).toContain("'a:b.txt' saved to /opfs/shared as 'a_b.txt'");
+  });
+});
+
+// S1018-73 (IM-09): a drop of several files on one Images section stored the
+// first and ignored the rest.
+describe('a drop of several files on an Images section', () => {
+  it('stores every file, and inserts only the first', async () => {
+    expect(await acceptFilesIntoCategory([floppy('a.dsk'), floppy('b.dsk')], 'fd')).toBe(true);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/a.dsk',
+      '/opfs/images/fd/b.dsk',
+    ]);
+    expect(media.insertFloppy).toHaveBeenCalledTimes(1);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+  });
+});
+
+// S1018-31: a gzipped floppy was staged as it is and found to hold "no
+// mountable media"; it is unpacked, and what it holds stored.
+describe('a gzipped floppy', () => {
+  it('is unpacked and stored as the floppy it holds', async () => {
+    const gz = new File([gzipSync(new Uint8Array(819200).fill(0xa5))], 'sys608.dsk.gz');
+    await acceptFiles([gz]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/sys608.dsk',
+    ]);
+    expect(scratchLeft()).toEqual([]);
+  });
+});
+
+// S1018-28: adding a file stored already copied it over itself, which failed
+// ("could not be stored") once a drive had held it.  It is left as it is; a
+// different file of that name is stored beside it.
+describe('adding a file of a name stored already', () => {
+  it('leaves the same file as it is, and stores a different one beside it', async () => {
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    bridge.calls.length = 0;
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    const writes = bridge.calls.filter(
+      (c) =>
+        (c.path === 'files.cp' || c.path === 'files.mv') &&
+        (c.args as string[])[1] === '/opfs/images/fd/sys.dsk',
+    );
+    expect(writes).toEqual([]);
+    expect(toastText().some((m) => /Failed|could not/.test(m))).toBe(false);
+    expect(scratchLeft()).toEqual([]);
+
+    const other = new File([new Uint8Array(819200).fill(0x5a)], 'sys.dsk');
+    await acceptFilesIntoCategory([other], 'fd');
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/sys 2.dsk',
+      '/opfs/images/fd/sys.dsk',
+    ]);
   });
 });

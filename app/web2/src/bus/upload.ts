@@ -36,6 +36,7 @@
 // through the worker (files.mv/files.rm).
 
 import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
+import { routePrintLine } from './logSink';
 import { xferChunkBytes, xferReadAll, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -54,7 +55,7 @@ import {
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
 import { opfsSafeName } from './fsOps';
-import { importImage, isQcow2File, type DiskCategory } from './importImage';
+import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -234,6 +235,11 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
   if (!single) {
     const { msg, severity } = dropSummary(names, outcomes);
     showNotification(msg, severity);
+    // The one-line toast cuts the reasons off after the first: each file
+    // that was not stored, and why, goes to the terminal too.
+    outcomes.forEach((o, i) => {
+      if (!o.stored) routePrintLine(`upload: '${names[i]}' ${o.reason}`);
+    });
   } else if (!outcomes[0].stored && !outcomes[0].told) {
     showNotification(`'${names[0]}' ${outcomes[0].reason}`, outcomes[0].severity);
   }
@@ -251,8 +257,8 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   // A large file is a disk image (or an archive holding one): streamed into
   // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
   // there; it falls through to the staged flow below.  A QCOW2 image of any
-  // size is converted there too.
-  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file))) {
+  // size is converted there too, and a gzip of any size unpacked.
+  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)) || (await isGzipFile(file))) {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],
@@ -294,6 +300,28 @@ async function actOnStored(
     mounted.add(s.category);
     await autoMountIfEmpty(s.path, s.category);
   }
+}
+
+// Several files dropped on one Images section: each is stored as that
+// category (acceptFilesAsCategory), a Lisa ROM's two chips as one ROM, and
+// only the first stored goes into the machine.  A drop used to store the
+// first file and ignore the rest without a word.  True when any was stored.
+export async function acceptFilesIntoCategory(
+  files: File[],
+  category: MediaTypeId,
+): Promise<boolean> {
+  let stored = false;
+  for (let i = 0; i < files.length;) {
+    const pair =
+      category === 'rom' &&
+      files[i].size === LISA_CHIP_BYTES &&
+      files[i + 1]?.size === LISA_CHIP_BYTES;
+    const take = files.slice(i, i + (pair ? 2 : 1));
+    i += take.length;
+    if ((await acceptFilesAsCategory(take, category, { autoMount: !stored })) !== null)
+      stored = true;
+  }
+  return stored;
 }
 
 // Category-strict entry — used by the New Machine dialog dropdowns and
@@ -389,15 +417,18 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
         endActivity();
       }
     }
-    const safe = sanitizeName(file.name) || 'file.bin';
+    // Only what OPFS cannot hold is replaced (a ':' or '/'); spaces and
+    // accented letters are kept, and a changed name is said.
+    const safe = opfsSafeName(file.name);
     const finalPath = `${targetDir}/${safe}`;
     startActivity(file.name);
     try {
       // Write straight to the chosen folder on the worker (Safari-safe, coherent
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
       const ok = await streamToOpfs(finalPath, file);
+      const as = safe === file.name ? '' : ` as '${safe}'`;
       showNotification(
-        ok ? `'${file.name}' saved to ${targetDir}` : `Could not load ${file.name}`,
+        ok ? `'${file.name}' saved to ${targetDir}${as}` : `Could not load ${file.name}`,
         ok ? 'info' : 'error',
       );
     } finally {
@@ -570,17 +601,21 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
   return null;
 }
 
-// Where to store `name` in `dir`: its own name when nothing is there or the
-// file there is byte-identical to `source`, else the first "name N.ext"
-// free.
-async function freeStorePath(dir: string, name: string, source: string): Promise<string> {
+// Where to store `name` in `dir`: its own name when nothing is there, the
+// file there when it is byte-identical to `source` (`same`: it is stored
+// already), else the first "name N.ext" free.
+async function freeStorePath(
+  dir: string,
+  name: string,
+  source: string,
+): Promise<{ path: string; same: boolean }> {
   const dot = name.lastIndexOf('.');
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : '';
   for (let n = 1; ; n++) {
     const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
-    if ((await gsEval('files.path_exists', [path])) !== true) return path;
-    if ((await gsEval('files.path_compare', [source, path])) === -1) return path;
+    if ((await gsEval('files.path_exists', [path])) !== true) return { path, same: false };
+    if ((await gsEval('files.path_compare', [source, path])) === -1) return { path, same: true };
   }
 }
 
@@ -644,14 +679,17 @@ async function persist(
   // place and this one is stored beside it ("name 2.ext"), so two media of
   // one name -- two floppies of a URL, two uploads -- never overwrite each
   // other.
-  const finalPath = await freeStorePath(targetDir, finalName, sourcePath);
-  // Moved, not copied, so storing never holds the file twice.
-  const exists = (await gsEval('files.path_exists', [finalPath])) === true;
-  const verb = exists || inArchive ? 'files.cp' : 'files.mv';
-  const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;
-  if (!ok) {
-    if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
-    return null;
+  const { path: finalPath, same } = await freeStorePath(targetDir, finalName, sourcePath);
+  // The same file stored already is left as it is: copying over it failed
+  // ("could not be stored") when a drive had it open.  Anything else is
+  // moved, not copied, so storing never holds the file twice.
+  if (!same) {
+    const ok =
+      (await gsEval(inArchive ? 'files.cp' : 'files.mv', [sourcePath, finalPath])) === true;
+    if (!ok) {
+      if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
+      return null;
+    }
   }
   if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.
