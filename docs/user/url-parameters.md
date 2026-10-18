@@ -53,8 +53,9 @@ system software on:
 ```
 
 - A hard disk takes an Apple drive model (`HD20SC` … `HD1000SC`), a size in
-  MB or GB rounded up to the next model (`40mb`, `1gb`), or an exact size
-  (`100m`, `512k`), up to 2 GB. On a Lisa: `blank:5mb` or `blank:10mb`
+  MB or GB rounded up to the next model (`40mb`, `1gb`; a size past the
+  largest model, about 1 GB, is refused), or an exact size (`100m`,
+  `512k`, `2048m`), up to 2 GB. On a Lisa: `blank:5mb` or `blank:10mb`
   (ProFile and Widget sizes).
 - The disk is unformatted, like a new drive: initialise it from the
   installer or with the disk setup utility.
