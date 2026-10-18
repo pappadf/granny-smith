@@ -17,6 +17,7 @@ import {
 } from './emulator';
 import { restartEmulator } from './boot';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
+import { isTaggedEnum } from '@/lib/taggedValue';
 
 export interface Registers {
   d: number[]; // [D0..D7]
@@ -311,7 +312,9 @@ export async function listWatchpoints(): Promise<Watchpoint[]> {
     const addr = await gsEval(`${base}.addr`);
     if (isGsError(addr)) continue; // removed between the listing and this read
     const end = await gsEval(`${base}.end_addr`);
-    const mode = await gsEval(`${base}.mode`);
+    // An enum attribute: {enum, index}, its label in `enum`.
+    const modeVal = await gsEval(`${base}.mode`);
+    const mode = isTaggedEnum(modeVal) ? modeVal.enum : modeVal;
     const enabled = await gsEval(`${base}.enabled`);
     const hits = await gsEval(`${base}.hit_count`);
     out.push({

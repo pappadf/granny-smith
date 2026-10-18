@@ -11,6 +11,7 @@ const {
   writeRegister,
   stepInto,
   loadDebugFrame,
+  listWatchpoints,
 } = await import('@/bus/debug');
 const { debug } = await import('@/state/debug.svelte');
 
@@ -60,6 +61,24 @@ describe('bus/debug against the real object-model paths', () => {
     expect(await removeBreakpoint(9)).toBe(false);
     // Nothing ever calls add to remove.
     expect(bridge.paths()).not.toContain('debug.breakpoints.add');
+  });
+
+  it('lists each watchpoint with the mode the core holds (S1018-38)', async () => {
+    bridge.reply('debug.watchpoints.meta.indices', (args: unknown[] | undefined) =>
+      args?.[0] === 'entries' ? [1, 2, 3] : { error: 'x' },
+    );
+    // `mode` is an enum attribute: the core answers it tagged.
+    const modes = { 1: ['write', 1], 2: ['read', 2], 3: ['rw', 3] } as const;
+    for (const [id, [label, index]] of Object.entries(modes)) {
+      const base = `debug.watchpoints.entries[${id}]`;
+      bridge.reply(`${base}.addr`, 0x400);
+      bridge.reply(`${base}.end_addr`, 0x401);
+      bridge.reply(`${base}.mode`, { enum: label, index });
+      bridge.reply(`${base}.enabled`, true);
+      bridge.reply(`${base}.hit_count`, 0);
+    }
+    const list = await listWatchpoints();
+    expect(list.map((w) => w.mode)).toEqual(['write', 'read', 'rw']);
   });
 
   it('removes by address by finding the id first', async () => {
