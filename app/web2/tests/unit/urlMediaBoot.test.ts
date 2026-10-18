@@ -184,7 +184,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
 
   it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
     served['plus.rom'] = PLUS_ROM;
-    served['disk.img'] = new Uint8Array(4096).fill(0x11);
+    served['disk.img'] = new Uint8Array(1 << 20).fill(0x11); // over the 400 KB floor
     const { beginUrlBoot, urlBoot, _resetUrlBootForTests } = await import('@/state/urlBoot.svelte');
     beginUrlBoot(null);
     try {

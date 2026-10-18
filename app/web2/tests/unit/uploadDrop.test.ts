@@ -245,6 +245,7 @@ describe('a drop into the Filesystem tab', () => {
 // first and ignored the rest.
 describe('a drop of several files on an Images section', () => {
   it('stores every file, and inserts only the first', async () => {
+    machine.status = 'running'; // with no machine the files are only stored
     expect(await acceptFilesIntoCategory([floppy('a.dsk'), floppy('b.dsk')], 'fd')).toBe(true);
     expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
       '/opfs/images/fd/a.dsk',
