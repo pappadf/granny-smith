@@ -59,8 +59,9 @@ The Lisa keyboard has no Control key. Ctrl is sent as the Apple
 (Command) key instead, so Ctrl-D works as Apple-D — for example to end
 input in Xenix.
 
-The Lisa also has no function keys, backquote (`` ` ``), backslash (`\`),
-or keypad `*`, `+`, `/` and `=`. These keys are left to the browser, so
+Alt is the Lisa's Option key, and backquote (`` ` ``) its `` ` ``/`~` key.
+The Lisa has no function keys, backslash (`\`), or keypad `*`, `+`, `/`
+and `=`. These keys are left to the browser, so
 browser shortcuts on them still work: **F5 reloads the page** and ends the
 session. Save State first if you might press it.
 

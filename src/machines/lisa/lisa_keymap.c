@@ -54,10 +54,18 @@ const unsigned char lisa_rom_ascii_table[96] = {
 // ROM-table-inverting resolver this replaces sent keyboard.press "5" to the
 // KEYPAD 5 rather than the main row.)
 //
+// The ROM's names are the Old US keyboard's.  On the Final US keyboard the
+// COPS reports (COPS_KBD_ID) the OS's legends put `~ at $68 -- the ROM's
+// "Option" -- (libhw-LEGENDS.TEXT, docs/reference/machines/lisa/cops.md
+// section 4.7), and Option is $7C, a code the ROM's table leaves unnamed.
+// Measured under MacWorks XL: $68 sets the Mac's backquote in KeyMap and $7C
+// its Option; with host Option sent as $68, Option typed "`" and Option-8
+// gave "8" (S1018-60).
+//
 // Keys on one side and not the other are left out, and an unmapped code is
 // reported rather than silently substituted.  The Lisa has no Control and no
-// function keys; it has no backquote and no backslash.  The ADB keypad's
-// *, +, / and = have no Lisa equivalent.
+// function keys, and no backslash.  The ADB keypad's *, +, / and = have no
+// Lisa equivalent.
 uint8_t lisa_keycode_for_adb(int adb) {
     static const uint8_t map[128] = {
         // Letters, ADB's Apple-II-descended numbering on the left.
@@ -111,6 +119,7 @@ uint8_t lisa_keycode_for_adb(int adb) {
         [0x2F] = 0x5E, // ; \' , .
         [0x2C] = 0x4C,
         [0x31] = 0x5C, // / space
+        [0x32] = 0x68, // `~ (Final US)
 
         // Editing and navigation.
         [0x24] = 0x48,
@@ -123,7 +132,7 @@ uint8_t lisa_keycode_for_adb(int adb) {
 
         // Modifiers.  No Control on a Lisa keyboard.
         [0x38] = 0x7E,
-        [0x3A] = 0x68,
+        [0x3A] = 0x7C, // left Option (Final US)
         [0x37] = 0x7F,
         [0x39] = 0x7D,
 
