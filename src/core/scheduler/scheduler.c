@@ -91,6 +91,8 @@ void scheduler_set_turbo_slice(double secs) {
 // EWMA converges on the real period within a few dozen ticks at any rate.
 #define HOST_LOOP_PERIOD_SEED (1.0 / 60.0)
 
+static void host_timing_reset(struct scheduler *s);
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -665,10 +667,8 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
     s->cpu = *cpu;
     s->cpu_events = NULL;
     s->saved.running = false;
-    s->vbl_acc_error = 0;
     s->previous_time = host_time_ms() / 1000.0; // seconds
-    s->host_secs_per_vbl = NAN;
-    s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
+    host_timing_reset(s);
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
     s->saved.cpi = CYCLES_PER_INSTR_DEFAULT;
     // The host's pacing reaches the machine when it becomes the active one
@@ -1284,9 +1284,7 @@ void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *p
         // so burst-shaped estimates from one mode don't leak into the first
         // ticks of the other (e.g. turbo's host_secs_per_vbl into paced
         // catch-up math).
-        s->vbl_acc_error = 0.0;
-        s->host_secs_per_vbl = NAN;
-        s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
+        host_timing_reset(s);
     }
     s->pacing = *pacing;
     // Any change of mode, speed, floor or cap symmetrically re-derives the
@@ -1601,6 +1599,75 @@ void scheduler_run_frame(struct scheduler *restrict s, config_t *config, const h
     close_mode_if_stopped(s);
 }
 
+// The paced main loop's host-timing state, fresh: no accumulated debt, no
+// per-frame cost known yet (the first tick measures it), the loop period
+// seeded at 60 Hz.  Init and every mode switch, so burst-shaped estimates
+// from one mode never leak into the first ticks of another.
+static void host_timing_reset(struct scheduler *s) {
+    s->vbl_acc_error = 0.0;
+    s->host_secs_per_vbl = NAN;
+    s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
+}
+
+// What one host tick earned: the frame-units to run, and -- under paced or
+// accelerated pacing -- whether the accumulator says the host is *behind*
+// real time (a capped burst that still left a further whole frame-unit
+// owed), which is the governor's cue.
+typedef struct {
+    int vbls;
+    bool behind;
+} tick_budget_t;
+
+// Turbo: as many VBLs as fit in TURBO_HOST_HEADROOM of the host loop period.
+// host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint restore and
+// mode switch); guard the first tick explicitly -- a float->int conversion
+// of NaN is undefined behaviour.  With a turbo slice set (the run loop
+// re-enters at once), fill the slice instead.
+static tick_budget_t turbo_tick_budget(const struct scheduler *s) {
+    tick_budget_t b = {1, false};
+    if (isnan(s->host_secs_per_vbl) || s->host_secs_per_vbl <= 0.0)
+        b.vbls = 1;
+    else if (g_turbo_slice_secs > 0.0)
+        b.vbls = (int)(g_turbo_slice_secs / s->host_secs_per_vbl);
+    else
+        b.vbls = (int)(s->host_secs_per_loop * TURBO_HOST_HEADROOM / s->host_secs_per_vbl);
+    if (b.vbls < 1)
+        b.vbls = 1;
+    return b;
+}
+
+// Paced and accelerated: the wall-clock accumulator earns one frame-unit per
+// accumulated VBL period.  At a ~60 Hz host this is 1 per tick in steady
+// state (one repeat/skip every ~7 s of oscillator drift); on 59.94/75/120/144
+// Hz and VRR displays the long-term rate converges to 60.147 Hz exactly.
+// Accelerated shares the accumulator by design: it differs from paced only
+// in the effective CPI *inside* each frame-unit, never in how many
+// frame-units a host tick earns -- that is what keeps its timebase
+// (VBL/VIA/sound) locked to real time.
+static tick_budget_t paced_tick_budget(struct scheduler *s, double current_period) {
+    tick_budget_t b = {0, false};
+    s->vbl_acc_error += current_period;
+    if (s->vbl_acc_error >= MAC_VBL_PERIOD) {
+        b.vbls = (int)(s->vbl_acc_error / MAC_VBL_PERIOD);
+        if (b.vbls > PACED_MAX_CATCHUP)
+            b.vbls = PACED_MAX_CATCHUP;
+        s->vbl_acc_error -= b.vbls * MAC_VBL_PERIOD;
+        // Behind real time: the capped burst left more than the saturated
+        // debt owed, i.e. this tick the host fell a further whole frame-unit
+        // behind.  Under overload the host's tick comes late and the
+        // accumulator pins at the cap.  (A steady owed remainder below that
+        // is a constant lag the host is holding, not a growing one: not a
+        // cue.)
+        b.behind = s->vbl_acc_error >= (PACED_MAX_CATCHUP + 1) * MAC_VBL_PERIOD;
+        // Saturate the debt a sustained-slow host can accumulate: the
+        // emulator lags real time by at most one capped burst instead of
+        // banking unbounded catch-up work (the death spiral).
+        if (s->vbl_acc_error > PACED_MAX_CATCHUP * MAC_VBL_PERIOD)
+            s->vbl_acc_error = PACED_MAX_CATCHUP * MAC_VBL_PERIOD;
+    }
+    return b;
+}
+
 // Main loop iteration for real-time emulation with VBL-based timing
 void scheduler_main_loop(config_t *restrict config, double now_msecs, const host_pacing_t *pacing) {
     GS_ASSERT(config != NULL);
@@ -1629,63 +1696,9 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     s->host_secs_per_loop = s->host_secs_per_loop * (1.0 - HOST_EWMA_ALPHA) + current_period * HOST_EWMA_ALPHA;
     GS_ASSERT(!isnan(s->host_secs_per_loop));
 
-    int vbls_to_execute = 0;
-    bool behind = false; // paced accumulator still owes frame-units after a capped burst
     s->previous_time = now;
-
-    switch (s->pacing.mode) {
-    case schedule_unthrottled:
-        // Execute as many VBLs as fit in TURBO_HOST_HEADROOM of the host loop
-        // period. host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint
-        // restore and mode switch); guard the first tick explicitly — a
-        // float→int conversion of NaN is undefined behaviour.
-        // With a turbo slice set (the run loop re-enters at once), fill the
-        // slice instead.
-        if (isnan(s->host_secs_per_vbl) || s->host_secs_per_vbl <= 0.0)
-            vbls_to_execute = 1;
-        else if (g_turbo_slice_secs > 0.0)
-            vbls_to_execute = (int)(g_turbo_slice_secs / s->host_secs_per_vbl);
-        else
-            vbls_to_execute = (int)(s->host_secs_per_loop * TURBO_HOST_HEADROOM / s->host_secs_per_vbl);
-        if (vbls_to_execute < 1)
-            vbls_to_execute = 1;
-        break;
-
-    case schedule_paced:
-    case schedule_accelerated:
-        // Wall-clock accumulator: run one frame-unit per accumulated VBL
-        // period. At a ~60 Hz host this is 1 per tick in steady state (one
-        // repeat/skip every ~7 s of oscillator drift); on 59.94/75/120/144 Hz
-        // and VRR displays the long-term rate converges to 60.147 Hz exactly.
-        // Accelerated shares this branch by design: it differs from paced
-        // only in the effective CPI *inside* each frame-unit, never in how
-        // many frame-units a host tick earns — that is what keeps its
-        // timebase (VBL/VIA/sound) locked to real time.
-        s->vbl_acc_error += current_period;
-        if (s->vbl_acc_error >= MAC_VBL_PERIOD) {
-            vbls_to_execute = (int)(s->vbl_acc_error / MAC_VBL_PERIOD);
-            if (vbls_to_execute > PACED_MAX_CATCHUP)
-                vbls_to_execute = PACED_MAX_CATCHUP;
-            s->vbl_acc_error -= vbls_to_execute * MAC_VBL_PERIOD;
-            // Behind real time: the capped burst left more than the saturated
-            // debt owed, i.e. this tick the host fell a further whole
-            // frame-unit behind.  The governor's cue -- under overload the
-            // host's tick comes late and the accumulator pins at the cap.
-            // (A steady owed remainder below that is a constant lag the host
-            // is holding, not a growing one: not a cue.)
-            behind = s->vbl_acc_error >= (PACED_MAX_CATCHUP + 1) * MAC_VBL_PERIOD;
-            // Saturate the debt a sustained-slow host can accumulate: the
-            // emulator lags real time by at most one capped burst instead of
-            // banking unbounded catch-up work (the death spiral).
-            if (s->vbl_acc_error > PACED_MAX_CATCHUP * MAC_VBL_PERIOD)
-                s->vbl_acc_error = PACED_MAX_CATCHUP * MAC_VBL_PERIOD;
-        }
-        break;
-
-    default:
-        GS_ASSERT(0);
-    }
-
+    tick_budget_t budget =
+        (s->pacing.mode == schedule_unthrottled) ? turbo_tick_budget(s) : paced_tick_budget(s, current_period);
     GS_ASSERT(!isnan(s->vbl_acc_error));
 
     now = host_time_ms() / 1000.0; // seconds
@@ -1695,7 +1708,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     // headless pump runs, so the guest execution sequence is identical across
     // targets; only how many units a single host tick batches differs.
     int executed_vbls = 0;
-    for (int i = 0; i < vbls_to_execute; i++) {
+    for (int i = 0; i < budget.vbls; i++) {
         scheduler_run_frame(s, config, pacing);
         executed_vbls++;
         if (!s->saved.running)
@@ -1721,6 +1734,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     // up, not load a slower guest CPU would relieve, and the cost is what
     // tells the two apart.
     if (governor_active(&s->pacing) && executed_vbls > 0 &&
-        governor_tick(&s->governor, &s->pacing, delta / denom, current_period, behind, platform_audio_ring_fill()))
+        governor_tick(&s->governor, &s->pacing, delta / denom, current_period, budget.behind,
+                      platform_audio_ring_fill()))
         scheduler_update_cpi_eff(s); // the rung stepped: new effective CPI, between sprints
 }
