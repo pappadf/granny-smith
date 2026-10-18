@@ -121,6 +121,10 @@ What you can do:
 - **Right-click** an item: **Rename**, **Save to computer…** (several
   selected: **Save files…**), **Export as raw image…**, **Unpack** (extract
   an archive into a folder next to it), **Delete**.
+- **Save to computer…** on a Mac file inside an image saves its data fork
+  only: a browser download has no place for the resource fork, and you are
+  told when one is left out. A 68K application keeps all its code there,
+  so it comes out empty.
 - Inside an image or archive, a disk image found there can be put straight
   into the machine: **Insert into floppy drive**, **Attach as hard disk**,
   **Insert into CD-ROM drive**.

@@ -682,7 +682,7 @@
       showNotification('Only files can be saved', 'warning');
       return;
     }
-    let result: BulkResult;
+    let result: Awaited<ReturnType<typeof downloadFiles>>;
     try {
       result = await downloadFiles(files, (name, i, total) =>
         startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Saving'),
@@ -697,6 +697,16 @@
       showNotification(`Saving '${files[0].split('/').pop()}'`, 'info');
     } else {
       showNotification(`Saving ${files.length} files`, 'info');
+    }
+    // A browser download holds one fork: an application inside an image
+    // came out as an empty file, with nothing said.
+    if (result.forkless.length) {
+      const names =
+        result.forkless.slice(0, 3).join("', '") + (result.forkless.length > 3 ? '…' : '');
+      showNotification(
+        `Saved the data fork only: '${names}' also has a resource fork, which a browser download cannot hold (a 68K application keeps all its code there).`,
+        'warning',
+      );
     }
   }
 </script>

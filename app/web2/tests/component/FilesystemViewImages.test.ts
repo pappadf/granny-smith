@@ -277,6 +277,31 @@ describe('FilesystemView — disk-image descent', () => {
     });
   });
 
+  // S1018-34: an application came out as a 0-byte file with nothing said.
+  // (The mock answers every in-image path_size, the resource fork's too.)
+  it('says when a download leaves out a resource fork, and removes its sidecar', async () => {
+    resetToasts();
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+    await fireEvent.contextMenu(rowFor(container, 'Read Me'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Save to computer…',
+    ) as HTMLElement;
+    await fireEvent.click(download);
+    await waitFor(() =>
+      expect(
+        toasts.active.some((t) => /data fork only: 'Read Me' also has a resource fork/.test(t.msg)),
+      ).toBe(true),
+    );
+    expect(backend.deleteCalls.some((p) => /\/\._[^/]*Read_Me$/.test(p))).toBe(true);
+  });
+
   it('downloads a plain OPFS file by reading it directly (no files.cp)', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
