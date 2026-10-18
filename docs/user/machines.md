@@ -9,8 +9,10 @@ terminal.
 
 A machine starts only with its original ROM. Load ROM files with
 **Load ROM...** on the Home screen, by dropping them on the window, or from
-a link. Each ROM is recognised by its checksum (the 8-digit number below,
-which is also how the Images panel lists it), never by its file name.
+a link. Each ROM is recognised by its checksum (the 8-digit number below),
+never by its file name. The Images panel lists a ROM by an id that starts
+with this checksum in lower case and continues with a second, longer one
+(`9feb69b3-dedc602cfc3b9221` for `9FEB69B3`).
 
 | ROM checksum | ROM | Boots |
 |---|---|---|
@@ -23,6 +25,7 @@ which is also how the Images panel lists it), never by its file name.
 | `3DC27823` | Quadra 950 | Quadra 950 |
 | `5BF10FD1` | Quadra 840AV / 660AV | Quadra 840AV, Centris/Quadra 660AV |
 | `9FEB69B3` | Power Macintosh 6100/7100/8100 v1.0 | Power Mac 6100, 7100, 8100 |
+| `9B7A3AAD` | Power Macintosh 7100 v1.1 | Power Mac 7100 |
 | `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7500, 8500, 9500 |
 | `9630C68B`, `962F6C13`, `49B2BE8F` | Apple Network Server (2.26B6, Win NT, 1.1.20.1, 1.1.22, 2.0 prototype) | Network Server 500, 700 |
 | `78F57389`, `79D68D63` | Power Macintosh G3 (Rev C, Rev A) | G3 Desktop, G3 Minitower |
