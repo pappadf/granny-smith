@@ -28,6 +28,7 @@ const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
 const boot = await import('@/bus/boot');
+const { machine } = await import('@/state/machine.svelte');
 
 // jsdom's Blob has no arrayBuffer(); the browser's does.
 if (!Blob.prototype.arrayBuffer) {
@@ -136,10 +137,27 @@ describe('a drop of several files', () => {
 
 describe('a single file', () => {
   it('keeps its own messages and auto-actions', async () => {
-    await acceptFiles([floppy('a.dsk')]);
+    machine.status = 'running';
+    try {
+      await acceptFiles([floppy('a.dsk')]);
+    } finally {
+      machine.status = 'no-machine';
+    }
     expect(toastText()).toContain('a.dsk added');
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
     expect(scratchLeft()).toEqual([]);
+  });
+
+  it('after Shut down a floppy is stored, not inserted into the stopped machine', async () => {
+    machine.status = 'stopped';
+    try {
+      await acceptFiles([floppy('a.dsk')]);
+    } finally {
+      machine.status = 'no-machine';
+    }
+    expect(toastText()).toContain('a.dsk added');
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText().some((m) => /Inserted/.test(m))).toBe(false);
   });
 
   it('says why it was not stored', async () => {

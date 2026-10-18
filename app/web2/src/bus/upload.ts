@@ -285,14 +285,17 @@ async function actOnStored(
   autoBootOnRom: boolean,
 ): Promise<void> {
   const roms = stored.filter((s) => s.category === 'rom');
-  if (autoBootOnRom && roms.length === 1) await maybeBootFromRom(roms[0].path);
+  // A machine this drop just booted takes its disks, though its run state
+  // may not have reached the page yet.
+  let booted = false;
+  if (autoBootOnRom && roms.length === 1) booted = await maybeBootFromRom(roms[0].path);
   else if (autoBootOnRom && roms.length > 1)
     showNotification(`Not booting: the drop holds ${roms.length} ROMs`, 'info');
   const mounted = new Set<MediaTypeId>();
   for (const s of stored) {
     if (s.category === 'rom' || mounted.has(s.category)) continue;
     mounted.add(s.category);
-    await autoMountIfEmpty(s.path, s.category);
+    await autoMountIfEmpty(s.path, s.category, booted);
   }
 }
 
@@ -428,17 +431,22 @@ async function importDiskFile(
 // ROM uses maybeBootFromRom instead (full cold boot); HD / VROM stay
 // on disk until explicitly mounted from the Images tab. Toast on the
 // outcome either way.
-async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
-  // With no machine running, a refusal is not news: the image is stored and
-  // that is all (it used to warn "this machine has no floppy drive").
-  const quietRefusal = machine.status !== 'running' && machine.status !== 'paused';
+async function autoMountIfEmpty(
+  persistedPath: string,
+  category: MediaTypeId,
+  justBooted = false,
+): Promise<void> {
+  // With no machine running, the image is stored and that is all: a machine
+  // that was shut down still holds its drives in the core, and the disk used
+  // to go into it ("Inserted into floppy drive 1" on the Home screen).
+  if (!justBooted && machine.status !== 'running' && machine.status !== 'paused') return;
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
     const r = await insertFloppy(persistedPath, true);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
-    } else if (!quietRefusal) {
+    } else {
       showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
     return;
@@ -450,7 +458,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
-    } else if (!quietRefusal) {
+    } else {
       showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
@@ -854,11 +862,11 @@ async function storeLisaChips(
 // If the user dropped a ROM and no machine is running yet, boot a default
 // configuration so they go straight to a usable Mac without going through
 // the Configuration slide. Picks the first compatible model from the ROM
-// info; the user can switch later.
-async function maybeBootFromRom(romPath: string): Promise<void> {
-  if (machine.status === 'running' || machine.status === 'paused') return;
+// info; the user can switch later.  True when it booted one.
+async function maybeBootFromRom(romPath: string): Promise<boolean> {
+  if (machine.status === 'running' || machine.status === 'paused') return false;
   const info = await identifyRom(gsEval, romPath);
-  if (!info || !info.compatible.length) return;
+  if (!info || !info.compatible.length) return false;
   const model = info.compatible[0];
   // One boot document — the core validates, installs the ROM itself and
   // boots the model's own default RAM.  A rejected document leaves the
@@ -867,13 +875,15 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   const booted = await gsEval('machine.boot', { model, rom: romPath });
   if (booted !== true) {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
-    return;
+    return false;
   }
   clearMounts();
   await reconcileUiWithMachine('boot');
   await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
-  showNotification(`Booted ${model} from the loaded ROM`, 'info');
+  // By the machine's name (reconciled above), not its model id ("iisi").
+  showNotification(`Booted ${machine.model ?? model} from the loaded ROM`, 'info');
+  return true;
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {
