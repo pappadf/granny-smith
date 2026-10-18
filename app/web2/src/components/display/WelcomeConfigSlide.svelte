@@ -197,6 +197,17 @@
     return hdNames.filter(fitsUnder(hdPaths, max));
   }
 
+  // The hard-disk images `key`'s menu offers: the bus's, less any another
+  // device has.  One image at two SCSI ids is two targets writing one file.
+  function diskChoicesFor(bus: StorageBus, key: string): string[] {
+    const taken = new Set(
+      Object.entries(mediaImages)
+        .filter(([k, v]) => k !== key && v)
+        .map(([, v]) => v),
+    );
+    return diskChoices(bus).filter((n) => !taken.has(n));
+  }
+
   async function refreshOpfs() {
     scanning = true;
     try {
@@ -796,7 +807,7 @@
                   onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
                 >
                   <option>{empty}</option>
-                  {#each d.type === 'cd' ? cdNames : diskChoices(bus) as n (n)}
+                  {#each d.type === 'cd' ? cdNames : diskChoicesFor(bus, key) as n (n)}
                     <option>{n}</option>
                   {/each}
                   <option>{UPLOAD_SENTINEL}</option>
