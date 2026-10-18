@@ -604,6 +604,19 @@ static void probe_report_partitions(image_t *img, uint64_t size) {
 }
 
 // `files.probe(path)` — identify the format of a disk image.
+// `files.image_error(path)` — why the file at `path` cannot be opened as a
+// disk image when it is a container image (UDIF, NDIF, QCOW2) the emulator
+// cannot read, else "".  The upload says it instead of "not a valid Hard
+// Disk image" (the reason was only in the terminal).
+static DEF_METHOD(files_method_image_error) {
+    image_t *img = image_open_readonly(argv[0].s);
+    if (img) {
+        image_close(img);
+        return val_str("");
+    }
+    return val_str(image_open_error());
+}
+
 static DEF_METHOD(files_method_probe) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
@@ -1026,7 +1039,11 @@ static source_t *open_decoded(const char *path, image_t **img, char *err, size_t
     source_release(data);
     *img = image_open_readonly(path);
     if (!*img) {
-        snprintf(err, cap, "cannot open '%s' as a disk image", path);
+        const char *why = image_open_error();
+        if (*why)
+            snprintf(err, cap, "'%s' is %s", path, why);
+        else
+            snprintf(err, cap, "cannot open '%s' as a disk image", path);
         return NULL;
     }
     return image_source(*img);
@@ -1697,6 +1714,11 @@ static const member_t files_members[] = {
      .examples = EXAMPLES("files.partmap \"/opfs/images/hd/system.img\""),
      .doc = "Print the Apple Partition Map of an image",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
+    {.kind = MK_METHOD,
+     .name = "image_error",
+     .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
+     .doc = "Why a container image (UDIF, NDIF, QCOW2) cannot be read, or \"\"",
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_STRING, .fn = files_method_image_error}},
     {.kind = MK_METHOD,
      .name = "probe",
      .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),

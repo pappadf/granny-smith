@@ -180,6 +180,15 @@ export async function identifyCardRom(
   };
 }
 
+// Why a disk image that did not validate cannot be read, when it is a UDIF,
+// NDIF or QCOW2 image the core cannot read ("is a QCOW2 image that cannot
+// be read in place (it uses ...)"), else undefined: the upload said only
+// "is not a valid Hard Disk image", the reason was in the terminal.
+async function containerRefusal(path: string, gsEval: GsEval): Promise<string | undefined> {
+  const why = await gsEval('files.image_error', [path]);
+  return typeof why === 'string' && why ? `is ${why}` : undefined;
+}
+
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
   rom: {
     id: 'rom',
@@ -322,7 +331,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       // is not floppy-sized) would otherwise take.
       const size = await gsEval('files.path_size', [path]);
       if (typeof size === 'number' && size < MIN_HD_BYTES) return { valid: false };
-      return { valid: (await gsEval('machine.scsi.identify_hd', [path])) === true };
+      if ((await gsEval('machine.scsi.identify_hd', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 
@@ -331,7 +341,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_cdrom', [path])) === true };
+      if ((await gsEval('machine.scsi.identify_cdrom', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 };

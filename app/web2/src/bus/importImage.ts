@@ -333,10 +333,14 @@ async function placeUdif(
   name: string,
   categories: DiskCategory[],
 ): Promise<{ path: string; category: DiskCategory } | null> {
+  let reject: string | undefined;
   for (const cat of categories) {
     const d = MEDIA_TYPES[cat];
     const v = await d.validate(part, gsEval);
-    if (!v.valid) continue;
+    if (!v.valid) {
+      reject ??= v.reject;
+      continue;
+    }
     await gsEval('files.mkdir', [d.persistDir]);
     const dest = await uniquePath(d.persistDir, storedDmgName(name));
     const moved = await gsEval('files.mv', [part, dest]);
@@ -350,7 +354,9 @@ async function placeUdif(
   }
   await rmQuiet(part);
   const what = categories.map((c) => MEDIA_TYPES[c].label).join(' or ');
-  showNotification(`'${name}' is not a valid ${what}`, 'error');
+  // The reason, when the core has one (a UDIF in a compression it cannot
+  // decode), in place of the bare verdict.
+  showNotification(`'${name}' ${reject ?? `is not a valid ${what}`}`, 'error');
   return null;
 }
 
@@ -508,8 +514,9 @@ async function importDecoded(
               `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
             ),
         );
+        // The reason names the staged copy; the user knows the file by its name.
         if (!r || typeof r !== 'object' || 'error' in (r as object))
-          throw new Error(gsErrorText(r));
+          throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
         await rmQuiet(staged);
       }

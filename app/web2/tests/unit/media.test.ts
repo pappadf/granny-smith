@@ -140,6 +140,20 @@ describe('hd media descriptor', () => {
     expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024))).valid).toBe(false);
     expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024))).valid).toBe(true);
   });
+
+  // S1018-43: a QCOW2 / UDIF the core cannot read said only "is not a valid
+  // Hard Disk image"; the reason was in the terminal.
+  it('refuses a container image the core cannot read, with its reason', async () => {
+    const why =
+      'a UDIF image that cannot be read in place (it uses a compression this emulator does not decode)';
+    const gsEval: GsEval = async (path: string) =>
+      path === 'files.path_size' ? 20 * 1024 * 1024 : path === 'files.image_error' ? why : false;
+    for (const cat of ['hd', 'cdrom'] as const) {
+      const r = await MEDIA_TYPES[cat].validate('/x.dmg', gsEval);
+      expect(r.valid).toBe(false);
+      expect(r.reject).toBe(`is ${why}`);
+    }
+  });
 });
 
 describe('fd media descriptor', () => {
