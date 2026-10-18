@@ -11,7 +11,7 @@ them, and how to manage the ones you have stored.
 | ROM | the ROM chip's contents, any name | Recognised by its checksum; see [Supported machines](machines.md) §1 |
 | Video ROM (VROM) | a NuBus display card's declaration ROM | Optional: cards work with a substitute without it |
 | PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card. A PCI ROM for a card Granny Smith does not emulate is refused with a message |
-| Floppy disk | 400K, 800K and 1.4 MB images: raw `.dsk`/`.img`/`.image`, Disk Copy 4.2 | Recognised by size |
+| Floppy disk | 400K, 800K, 720K (MFM, a SuperDrive reads it) and 1.4 MB images: raw `.dsk`/`.img`/`.image`, Disk Copy 4.2 | Recognised by size |
 | Hard disk | raw `.img`/`.hda`/`.dsk`, Disk Copy 6 (NDIF), `.dmg` (UDIF), QCOW2 (`.qcow2`) | Partitioned disks, and single-volume (HFS) images without a partition map, both boot. QCOW2 is converted when it loads (§2.1) |
 | CD-ROM | `.iso`, `.toast`, `.cdr`, `.dmg` | ISO 9660, HFS or partitioned |
 | Lisa ProFile | raw ProFile images; Disk Copy 4.2 ProFile images with tag bytes | For the Lisa and Macintosh XL hard disk |

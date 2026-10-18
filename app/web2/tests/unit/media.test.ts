@@ -116,9 +116,11 @@ describe('fd media descriptor', () => {
     for (const size of [
       409600,
       819200,
+      737280,
       1474560, // raw
       409684,
       819284,
+      737364,
       1474644, // Disk Copy 4.2, no tags
       419284,
       838484, // Disk Copy 4.2 with 12 tag bytes per sector (GCR disks)
