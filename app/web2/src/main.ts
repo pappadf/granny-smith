@@ -21,6 +21,7 @@ import {
   applySchedulerMode,
 } from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
+import { checkStoragePersistence } from '@/bus/storageHealth';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
@@ -180,6 +181,10 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     // the terminal (bus/testHook.ts).
     installEvalHookForAutomation();
     installUiHookForAutomation();
+
+    // Before anything else: if the worker had to put /opfs on memory, say
+    // so now and keep saying so (the banner), before the user adds anything.
+    await checkStoragePersistence();
 
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
