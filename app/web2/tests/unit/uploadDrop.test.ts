@@ -240,3 +240,29 @@ describe('a gzipped floppy', () => {
     expect(scratchLeft()).toEqual([]);
   });
 });
+
+// S1018-28: adding a file stored already copied it over itself, which failed
+// ("could not be stored") once a drive had held it.  It is left as it is; a
+// different file of that name is stored beside it.
+describe('adding a file of a name stored already', () => {
+  it('leaves the same file as it is, and stores a different one beside it', async () => {
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    bridge.calls.length = 0;
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    const writes = bridge.calls.filter(
+      (c) =>
+        (c.path === 'files.cp' || c.path === 'files.mv') &&
+        (c.args as string[])[1] === '/opfs/images/fd/sys.dsk',
+    );
+    expect(writes).toEqual([]);
+    expect(toastText().some((m) => /Failed|could not/.test(m))).toBe(false);
+    expect(scratchLeft()).toEqual([]);
+
+    const other = new File([new Uint8Array(819200).fill(0x5a)], 'sys.dsk');
+    await acceptFilesIntoCategory([other], 'fd');
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/sys 2.dsk',
+      '/opfs/images/fd/sys.dsk',
+    ]);
+  });
+});

@@ -595,17 +595,21 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
   return null;
 }
 
-// Where to store `name` in `dir`: its own name when nothing is there or the
-// file there is byte-identical to `source`, else the first "name N.ext"
-// free.
-async function freeStorePath(dir: string, name: string, source: string): Promise<string> {
+// Where to store `name` in `dir`: its own name when nothing is there, the
+// file there when it is byte-identical to `source` (`same`: it is stored
+// already), else the first "name N.ext" free.
+async function freeStorePath(
+  dir: string,
+  name: string,
+  source: string,
+): Promise<{ path: string; same: boolean }> {
   const dot = name.lastIndexOf('.');
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : '';
   for (let n = 1; ; n++) {
     const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
-    if ((await gsEval('files.path_exists', [path])) !== true) return path;
-    if ((await gsEval('files.path_compare', [source, path])) === -1) return path;
+    if ((await gsEval('files.path_exists', [path])) !== true) return { path, same: false };
+    if ((await gsEval('files.path_compare', [source, path])) === -1) return { path, same: true };
   }
 }
 
@@ -669,14 +673,17 @@ async function persist(
   // place and this one is stored beside it ("name 2.ext"), so two media of
   // one name -- two floppies of a URL, two uploads -- never overwrite each
   // other.
-  const finalPath = await freeStorePath(targetDir, finalName, sourcePath);
-  // Moved, not copied, so storing never holds the file twice.
-  const exists = (await gsEval('files.path_exists', [finalPath])) === true;
-  const verb = exists || inArchive ? 'files.cp' : 'files.mv';
-  const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;
-  if (!ok) {
-    if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
-    return null;
+  const { path: finalPath, same } = await freeStorePath(targetDir, finalName, sourcePath);
+  // The same file stored already is left as it is: copying over it failed
+  // ("could not be stored") when a drive had it open.  Anything else is
+  // moved, not copied, so storing never holds the file twice.
+  if (!same) {
+    const ok =
+      (await gsEval(inArchive ? 'files.cp' : 'files.mv', [sourcePath, finalPath])) === true;
+    if (!ok) {
+      if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
+      return null;
+    }
   }
   if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.
