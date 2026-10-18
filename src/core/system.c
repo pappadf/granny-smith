@@ -43,6 +43,7 @@
 #include "shell.h"
 #include "sound.h"
 #include "status.h"
+#include "storage_util.h"
 #include "via.h"
 #include "vrom.h"
 #include "event/event.h"
@@ -856,6 +857,28 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
+// Say that a quick checkpoint (an autosave) was not written: without it the
+// page never learns, and a reload resumes an older state.  `error` is the
+// reason in words.
+static void quick_checkpoint_failed_event(const char *error) {
+    char esc[256];
+    if (json_escape(error ? error : "", esc, sizeof esc) < 0)
+        snprintf(esc, sizeof esc, "the checkpoint could not be written");
+    event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_failed\",\"error\":\"%s\"}", esc);
+}
+
+// A quick checkpoint's failure in words.
+static const char *quick_checkpoint_status_text(status_t rc) {
+    switch (rc) {
+    case STATUS_E_NOMEM:
+        return "out of memory";
+    case STATUS_E_IO:
+        return "the file could not be written";
+    default:
+        return "the state could not be saved";
+    }
+}
+
 status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // No machine configured → nothing to save, like the idle and
     // no-directory cases below (a hidden tab before any boot lands here).
@@ -920,6 +943,9 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
         unlink(tmp_path);
         if (verbose)
             out_printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+        else
+            // An autosave (an explicit snapshot answers its caller instead).
+            quick_checkpoint_failed_event(quick_checkpoint_status_text(rc));
         return rc;
     }
     g_last_quick_checkpoint_ms = now;
@@ -933,6 +959,8 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
             out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
         out_printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
+        // The write runs after the caller had its answer: say it, always.
+        quick_checkpoint_failed_event(error ? error : "the file could not be written");
     }
 }
 

@@ -48,6 +48,7 @@ problem.
 | Symptom | Fix |
 |---|---|
 | A red bar at the top: **Browser storage could not be opened: nothing will be saved** | The page runs, but everything you add is kept in memory only and is gone when the page is closed or reloaded. Allow site data for the page, or leave private/incognito browsing, then reload. Your files from earlier visits are not deleted: they come back once the storage opens. |
+| **Automatic save failed** | The latest automatic save was not written, so a reload resumes an earlier state. It is said once while the failures go on, and again after ten minutes if they do not stop. Usually the browser's storage is full: free space as below, or use **Save State** to keep the machine. |
 | No **Continue from saved checkpoint?** after the emulator was updated | Checkpoints belong to the build that made them; after an update they cannot be resumed. Start the machine again from its disks ([Saving and resuming](saving-and-resuming.md) §6). |
 | "Not enough browser storage", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
 | My changes to a disk are not in the file I saved from the Images panel | Stored images are never changed; the Mac's changes live with the machine. Use the shared folder or **Save State** ([Disks and images](disks-and-images.md) §6). |

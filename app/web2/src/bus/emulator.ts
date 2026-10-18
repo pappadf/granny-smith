@@ -13,6 +13,7 @@ import {
   setSchedulerMode,
   setAcceleratedSpeed,
   setCheckpointSaved,
+  noteCheckpointFailed,
   setDriveActivity,
   setPerfStats,
   type MachineStatus,
@@ -814,6 +815,10 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'notify:checkpoint_saved':
       setCheckpointSaved(num(d.elapsed_ms));
+      break;
+    case 'notify:checkpoint_failed':
+      // An autosave that did not happen; once per run of failures.
+      noteCheckpointFailed(typeof d.error === 'string' ? d.error : '');
       break;
     case 'notify:printer_status':
       if (typeof d.status === 'string')
