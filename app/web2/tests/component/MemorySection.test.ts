@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import MemorySection from '@/components/panel-views/debug/MemorySection.svelte';
 import { debug } from '@/state/debug.svelte';
 import { machine } from '@/state/machine.svelte';
+import { toasts, _resetForTests } from '@/state/toasts.svelte';
 
 const peekCalls: Array<{ mode: 'logical' | 'physical'; addr: number; count: number }> = [];
 
@@ -28,6 +29,16 @@ beforeEach(() => {
 });
 
 describe('MemorySection', () => {
+  it('an address that does not parse says so (S1018-84)', async () => {
+    _resetForTests();
+    const { container } = render(MemorySection);
+    const input = container.querySelector('input[aria-label="Memory address"]') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'garbage!' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(toasts.active.map((t) => t.msg)).toEqual(['Invalid memory address']);
+    expect(debug.memoryAddress).toBe(0);
+  });
+
   it('renders 8 rows of bytes after the initial read', async () => {
     const { container } = render(MemorySection);
     await waitFor(() => {
