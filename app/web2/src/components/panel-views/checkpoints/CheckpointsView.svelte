@@ -19,6 +19,7 @@
     describeMachine,
     formatBytes,
     formatCheckpointLabel,
+    formatLocalStamp,
   } from '@/lib/checkpointMeta';
   import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
@@ -58,10 +59,17 @@
     };
   });
 
+  // Each background checkpoint the core reports (machine.checkpoint) can be
+  // a new autosave row, or a new size for one: re-scan, as Create
+  // Checkpoint does.  The list used to change only when the tab reopened.
+  $effect(() => {
+    if (machine.checkpoint) void refresh();
+  });
+
+  // Local time, like the names.
   function formatDate(created: string): string {
     const d = checkpointCreatedToDate(created);
-    if (!d) return created;
-    return d.toISOString().slice(0, 16).replace('T', ' ');
+    return d ? formatLocalStamp(d) : created;
   }
 
   const columns: TableColumn<CheckpointEntry>[] = [

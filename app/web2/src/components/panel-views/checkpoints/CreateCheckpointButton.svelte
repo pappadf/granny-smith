@@ -7,6 +7,7 @@
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { checkpointsView } from './checkpointsView.svelte';
+  import { formatLocalStamp } from '@/lib/checkpointMeta';
 
   // Save a checkpoint of the running machine (also the panel header's
   // overflow menu's "Create Checkpoint"): a self-contained copy of the whole
@@ -56,12 +57,9 @@
     }
   }
 
+  // To the second: checkpoints made within one minute used to share a name.
   function autoLabel(): string {
-    const d = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `Checkpoint ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-      d.getHours(),
-    )}:${pad(d.getMinutes())}`;
+    return `Checkpoint ${formatLocalStamp(new Date(), true)}`;
   }
 </script>
 

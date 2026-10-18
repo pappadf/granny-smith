@@ -193,10 +193,12 @@ export class BrowserOpfs implements OpfsBackend {
       );
       const m = manifestMachine(manifest?.machine);
       let sizeBytes = 0;
+      let hasState = false;
       try {
         const dirEntries = await this.list(e.path);
         for (const f of dirEntries) {
           if (f.kind !== 'file') continue;
+          if (f.name === 'state.checkpoint') hasState = true;
           const fileDir = await getDirAtPath(e.path);
           const fh = await fileDir.getFileHandle(f.name);
           const file = await fh.getFile();
@@ -205,6 +207,10 @@ export class BrowserOpfs implements OpfsBackend {
       } catch {
         // Best effort — keep sizeBytes = 0.
       }
+      // A machine's directory exists before its first checkpoint (and after
+      // Start fresh): with nothing to load it is no row ("Autosave … · 0 B"
+      // on a fresh profile).
+      if (!hasState) continue;
       out.push({
         path: e.path,
         dirName: e.name,
