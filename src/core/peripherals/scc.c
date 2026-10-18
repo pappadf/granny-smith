@@ -1056,10 +1056,14 @@ static void wr8(scc_channel_t *c, uint8_t value) {
     }
     // Tap the byte for the host-side capture before the SDLC framing buffer
     // sees it: in async mode nothing ever drains tx.buf, so the capture is the
-    // only place an emulated serial console's text survives.
-    if (ASYNC_MODE(c))
+    // only place an emulated serial console's text survives.  A byte sent in
+    // local loopback stays on the chip: the IIci ROM's start-up self-test
+    // sends 255 bytes that way, and a printer on the port printed them as two
+    // pages of garbage at every boot (S1018-11).
+    bool on_line = !(c->wr[14] & 0x10);
+    if (on_line && ASYNC_MODE(c))
         port_tx_byte(c->scc, c->index, value);
-    else
+    else if (on_line)
         sent_capture(c->scc, c->index, value);
 
     int prev_len = c->tx.len;
