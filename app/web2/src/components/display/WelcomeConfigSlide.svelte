@@ -176,9 +176,14 @@
     '400k': 84 + 409_600 + 9_600,
     '800k': 84 + 819_200 + 19_200,
   };
+  // A 720K disk is MFM, which those (GCR) drives do not read, though it is
+  // smaller than an 800K one.
+  const MFM_720K = new Set([737_280, 737_280 + 84]);
   function floppyChoices(type: string): string[] {
     const max = FLOPPY_MAX[type];
-    return max ? fdNames.filter(fitsUnder(fdPaths, max)) : fdNames;
+    if (!max) return fdNames;
+    const fits = fitsUnder(fdPaths, max);
+    return fdNames.filter((n) => fits(n) && !MFM_720K.has(mediaSizes[fdPaths[n]]));
   }
   // A bus whose blank disks are ProFile images (files.profile_create, the
   // argument a block count) takes ProFile-sized disks: its menu left out
@@ -401,6 +406,7 @@
   let createKind = $state<'hd' | 'fd'>('hd');
   let createDisks = $state<BlankDisk[]>([]);
   let createTarget = $state(''); // "fd0" or "scsi:0"
+  let createHighDensity = $state(true); // the floppy drive reads 1.4 MB disks
 
   // The new value of an image picker: the pick, or for "Upload image…" the
   // uploaded file -- or, when that was cancelled, the previous value (and
@@ -429,6 +435,9 @@
       select.value = floppyImages[id] ?? NO_DISK;
       createKind = 'fd';
       createTarget = id;
+      // The 400K / 800K drives (FLOPPY_MAX) read no high-density disk.
+      const pos = profile?.floppies.find((p) => p.id === id);
+      createHighDensity = !((doc?.floppies[id] ?? pos?.default ?? '') in FLOPPY_MAX);
       createOpen = true;
       return;
     }
@@ -865,6 +874,7 @@
   open={createOpen}
   kind={createKind}
   disks={createDisks}
+  highDensity={createHighDensity}
   onClose={() => (createOpen = false)}
   onCreated={onImageCreated}
 />
