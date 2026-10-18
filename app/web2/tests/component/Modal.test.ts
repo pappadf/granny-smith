@@ -14,6 +14,24 @@ describe('Modal', () => {
     expect(container.querySelector('.modal-title')?.textContent).toBe('Hi');
   });
 
+  it('opening releases a pointer lock the screen holds', () => {
+    const exit = vi.fn();
+    Object.defineProperty(document, 'pointerLockElement', {
+      configurable: true,
+      get: () => document.body,
+    });
+    document.exitPointerLock = exit;
+    try {
+      render(Modal, { open: true, title: 'Shut Down' });
+      expect(exit).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(document, 'pointerLockElement', {
+        configurable: true,
+        get: () => null,
+      });
+    }
+  });
+
   it('clicking the backdrop calls onClose when dismissible', async () => {
     const onClose = vi.fn();
     const { container } = render(Modal, { open: true, onClose });
