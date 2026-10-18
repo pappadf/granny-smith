@@ -148,6 +148,25 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
     await waitFor(() => expect($(c, '#cfg-fd1')).not.toBeNull());
   });
 
+  it('cancelling Create blank image puts the picker back, with the focus', async () => {
+    const c = await open('plus');
+    const fd0 = $(c, '#cfg-fd0')!;
+    choose(fd0, 'Disk_Tools.dsk');
+    await waitFor(() => expect(fd0.value).toBe('Disk_Tools.dsk'));
+    choose(fd0, 'Create blank image...');
+    const cancel = await waitFor(() => {
+      const b = Array.from(document.querySelectorAll('.modal-card button')).find(
+        (x) => x.textContent?.trim() === 'Cancel',
+      );
+      expect(b).toBeDefined();
+      return b as HTMLButtonElement;
+    });
+    await fireEvent.click(cancel);
+    await waitFor(() => expect(document.querySelector('.modal-card')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fd0));
+    expect(fd0.value).toBe('Disk_Tools.dsk');
+  });
+
   it('a model change and Reset to defaults reload the defaults', async () => {
     const c = await open('iix');
     const other = Array.from($(c, '#cfg-opt-memory')!.options).map((o) => o.value)[3];
