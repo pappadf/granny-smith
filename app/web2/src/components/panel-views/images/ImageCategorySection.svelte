@@ -5,7 +5,7 @@
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import ImageRow from './ImageRow.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
+  import { CATEGORY_LABELS, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
   import {
@@ -111,8 +111,10 @@
     ev.stopPropagation();
     // Category-strict picker: the user is in a specific category
     // section, so we won't auto-route to a different one if the file's
-    // size happens to match another type.
-    await pickAndUploadAs(mediaIdFor(cat), CATEGORY_ACCEPT[cat]);
+    // size happens to match another type.  No extension filter: the
+    // category's validator identifies the file by content, and media come
+    // with any name (.vrom, .dmg, .qcow2, no extension at all).
+    await pickAndUploadAs(mediaIdFor(cat));
     await refresh();
   }
 
