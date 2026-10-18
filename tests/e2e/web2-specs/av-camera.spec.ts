@@ -25,86 +25,24 @@
 // is where byte-exact goldens belong. This spec covers what only a real
 // browser can: getUserMedia, the heap transport, and the UI.
 
-import { test, expect, type Page } from '../helpers/test';
-import * as path from 'node:path';
-import { gsEvalInPage } from '../helpers/web2-eval';
+import { test, expect } from '../helpers/test';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import {
+  AV_ROM,
+  CAMERA_BUTTON,
+  FAKE_MEDIA_ARGS,
+  PLUS_ROM,
+  holdRealTime,
+  probe,
+  shutDown,
+  startMachine,
+} from '../helpers/av';
 
-const DATA = path.resolve(__dirname, '../../data');
-const AV_ROM = path.join(DATA, 'roms', 'q840av-q660av-5bf10fd1.rom');
-const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
-
-// Chromium's fake camera. Per-spec launchOptions REPLACE the config array,
-// so the swiftshader flags (web2 will not mount without WebGL2) are re-listed.
 test.use({
   // Real-time media feeds the guest: keep web2's default pacing.
   gsSpeed: null,
-  launchOptions: {
-    args: [
-      '--use-gl=angle',
-      '--use-angle=swiftshader-webgl',
-      '--ignore-gpu-blocklist',
-      '--disable-dev-shm-usage',
-      '--use-fake-device-for-media-stream',
-      '--use-fake-ui-for-media-stream',
-    ],
-  },
+  launchOptions: { args: FAKE_MEDIA_ARGS },
 });
-
-// Scan the console output for a probe key's answer.
-//
-// The answer is bracketed by the key on BOTH sides (`p1=none=p1`) and the
-// capture class excludes the `${}` characters, which makes the match immune
-// to the two ways the buffer lies: the command line is echoed as it is typed
-// (so a half-rendered `p1=$` must not match), and the completed echo still
-// carries the uninterpolated `p1=${...}=p1` (whose body contains `$` and `{`).
-// Only a fully rendered output line can satisfy both delimiters.
-async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator('.console-output').innerText();
-  const re = new RegExp(`${key}=([^=${'${}'}\\s]+)=${key}`);
-  for (const line of text.split('\n')) {
-    const m = line.trim().match(re);
-    if (m) return m[1];
-  }
-  return null;
-}
-
-// Read one object-model value back through the terminal. A fresh key per
-// probe keeps a stale echo from satisfying the match. The answer is polled
-// out of the buffer rather than read after a fixed delay: the round trip is
-// main thread → SAB bridge → emulator worker → console render, and a fixed
-// wait is exactly the kind of timing assumption that flakes under load.
-let probeSeq = 0;
-async function probe(page: Page, expr: string, timeoutMs = 10_000): Promise<string | null> {
-  const key = `p${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}=${key}"`);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await readKey(page, key);
-    if (v !== null) return v;
-    if (Date.now() > deadline) return null;
-    await page.waitForTimeout(250);
-  }
-}
-
-// Boot a machine through the Welcome dialog and open the Terminal panel.
-async function bootModel(page: Page, romFile: string, model: string): Promise<void> {
-  const [romChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Load ROM...' }).click(),
-  ]);
-  await romChooser.setFiles(romFile);
-
-  await page.getByRole('button', { name: 'New Machine...' }).click();
-  const sel = page.locator('#cfg-model');
-  await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, { timeout: 30_000 });
-  await sel.selectOption(model);
-  await page.getByRole('button', { name: 'Start', exact: true }).click();
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
-    timeout: 60_000,
-  });
-}
 
 test('AV camera control drives the video-in path with the fake camera', async ({ page }) => {
   test.setTimeout(180_000);
@@ -112,30 +50,16 @@ test('AV camera control drives the video-in path with the fake camera', async ({
   await stageOpfsFile(page, '/opfs/images/rom/q840av-q660av-5bf10fd1.rom', AV_ROM);
 
   // --- 1. Capability gating: a Plus has no digitizer, so no camera button.
-  await bootModel(page, PLUS_ROM, 'plus');
-  const camBtn = page.locator('.gs-toolbar button[aria-label*="amera"]');
+  await startMachine(page, PLUS_ROM, 'plus');
+  const camBtn = page.locator(CAMERA_BUTTON);
   await expect(camBtn).toHaveCount(0);
 
   // --- 2. The 840AV has one. Shut down and boot the AV machine.
-  await page.getByRole('button', { name: 'Shut down' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Shut Down' }).click();
-  await bootModel(page, AV_ROM, 'q840av');
+  await shutDown(page);
+  await startMachine(page, AV_ROM, 'q840av');
   await expect(camBtn).toHaveCount(1, { timeout: 30_000 });
   await expect(camBtn).toHaveAttribute('aria-pressed', 'false');
-
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
-  // Warm up the terminal: the first typed line can land before the pane has
-  // focus, so prove the round trip works before asserting on its answers.
-  await expect
-    .poll(async () => probe(page, 'machine.id'), { timeout: 30_000 })
-    .toBe('q840av');
-
-  // The guest runs in real time from here and the GUI drives below are paced
-  // in guest ticks, so it must run at 1x: floor the adaptive governor there
-  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
-  // and every wait comes up short.
-  await gsEvalInPage(page, 'scheduler.min_speed', [1]);
+  await holdRealTime(page);
 
   // Nothing plugged in yet: the guest sees no signal.
   expect(await probe(page, 'machine.videoin.source')).toBe('none');

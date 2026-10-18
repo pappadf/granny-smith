@@ -37,24 +37,27 @@
 // anything is asserted. A recognition failure with those numbers next to it
 // is a diagnosis; without them it is another round of guessing.
 
-import { test, expect, type Page } from "../helpers/test";
+import { test, expect } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { gsEvalInPage } from "../helpers/web2-eval";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { buildFakeCaptureWav } from "../helpers/fake-audio";
-import { terminalRun as typeLine } from "../helpers/terminal";
+import {
+  AV_HD,
+  DATA,
+  FAKE_MEDIA_ARGS,
+  MIC_BUTTON,
+  type MicStats,
+  bootAVToFinder,
+  click,
+  micStats,
+  moveTo,
+  openSelected,
+  probe,
+  probeNumber,
+  ticksMs,
+} from "../helpers/av";
 
-// A per-key delay: this machine keeps the main thread busy (a live
-// AudioWorklet), and a burst typed into it can lose characters.
-const terminalRun = (page: Page, line: string) =>
-  typeLine(page, line, { delay: 10 });
-
-const DATA = path.resolve(__dirname, "../../data");
-const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
-const AV_HD = path.join(DATA, "systems", "system_7_1_77mb_av.img");
-// A disk this large is stored compressed, as UDIF, under a .dmg name.
-const AV_HD_NAME = "system_7_1_77mb_av.dmg";
 const UTTERANCE = path.join(DATA, "speech", "sr-open-the-trash.wav");
 
 // Built at import time: --use-file-for-fake-audio-capture is a browser
@@ -78,12 +81,7 @@ test.use({
   gsSpeed: null,
   launchOptions: {
     args: [
-      "--use-gl=angle",
-      "--use-angle=swiftshader-webgl",
-      "--ignore-gpu-blocklist",
-      "--disable-dev-shm-usage",
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
+      ...FAKE_MEDIA_ARGS,
       // The fake capture device plays this file instead of its beep, and
       // loops it. The fixture pads the tail so the loop point leaves
       // EndPoint the >=400 ms of quiet it needs to close an utterance.
@@ -92,111 +90,11 @@ test.use({
   },
 });
 
-// --- terminal plumbing (identical to av-sound-record.spec.ts) ---------------
-
-async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".console-output").innerText();
-  const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
-  for (const line of text.split("\n")) {
-    const m = line.trim().match(re);
-    if (m) return m[1];
-  }
-  return null;
-}
-
-let probeSeq = 0;
-async function probe(page: Page, expr: string, timeoutMs = 10_000): Promise<string | null> {
-  const key = `s${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}=${key}"`);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await readKey(page, key);
-    if (v !== null) return v;
-    if (Date.now() > deadline) return null;
-    await page.waitForTimeout(250);
-  }
-}
-
-// suite-av counts settle time in Mac ticks; the browser runs on wall clock,
-// so the same counts convert at 60 Hz.
-function ticksMs(n: number): number {
-  return Math.max(120, Math.round((n / 60) * 1000));
-}
-
-async function moveTo(page: Page, x: number, y: number): Promise<void> {
-  await terminalRun(page, `machine.adb.mouse.move ${x} ${y} "global"`);
-}
-
-async function click(page: Page, x: number, y: number): Promise<void> {
-  await moveTo(page, x, y);
-  await page.waitForTimeout(ticksMs(20));
-  await terminalRun(page, "machine.adb.mouse.click true");
-  await page.waitForTimeout(ticksMs(4));
-  await terminalRun(page, "machine.adb.mouse.click false");
-  await page.waitForTimeout(ticksMs(6));
-}
-
-// Open the selected Finder item with Command-O, NOT a double-click.
-//
-// suite-av double-clicks, and in emulated time its run_ticks(4)/(6) really
-// are 4 and 6 ticks. Here every shell command is typed into the console one
-// keystroke at a time (typing a burst gets characters dropped — see
-// av-microphone.spec.ts), so a double-click spans ~900 ms of wall clock and
-// the Finder sees two separate selections. Widening DoubleTime does not
-// rescue it either; that was measured, not assumed. Command-O has no timing
-// constraint at all, which is the property that makes it right for a GUI
-// driven over a terminal.
-//
-// The letter has to go in as an ADB keycode: debug_mac_resolve_key_name
-// knows the modifiers and the named keys but not a-z, and `o` is $1F.
-async function openSelected(page: Page): Promise<void> {
-  await terminalRun(page, 'machine.adb.keyboard.down "command"');
-  await page.waitForTimeout(ticksMs(4));
-  await terminalRun(page, "machine.adb.keyboard.press 0x1F");
-  await page.waitForTimeout(ticksMs(4));
-  await terminalRun(page, 'machine.adb.keyboard.up "command"');
-}
-
-async function waitForStableScreen(page: Page, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let previous = "";
-  let stable = 0;
-  while (Date.now() < deadline) {
-    const now = await probe(page, "machine.screen.checksum()", 15_000);
-    stable = now !== null && now === previous ? stable + 1 : 0;
-    previous = now ?? "";
-    if (stable >= 3) return;
-    await page.waitForTimeout(2000);
-  }
-  throw new Error("the guest screen never settled — no Finder");
-}
-
-interface MicStats {
-  produced: number;
-  consumed: number;
-  overruns: number;
-  underruns: number;
-  rate: number;
-  // Session-cumulative frames, unaffected by graph rebuilds. `produced` is the
-  // ring's own `wr`, which resetRing() zeroes on every rebuild — so a small
-  // `produced` beside a large `captured` means the graph was torn down, and a
-  // small `captured` means the browser never delivered audio at all.
-  captured: number;
-}
-
-async function micStats(page: Page): Promise<MicStats> {
-  return JSON.parse(
-    (await page.evaluate(() =>
-      JSON.stringify((globalThis as unknown as { __micStats?: () => unknown }).__micStats?.() ?? "{}"),
-    )) as string,
-  ) as MicStats;
-}
-
 // The Trash window lands mid-screen (suite-av's goldens/av-sr-command.png).
 // This rectangle sits deep inside it and clear of the recognizer's windoid
 // in the bottom-left corner — which changes on ANY utterance, matched or
 // not ("Pardon me?"), so it cannot be the signal.
-const TRASH_RECT = "365, 260, 445, 550";
+const TRASH_RECT = [365, 260, 445, 550];
 
 // The codec's own dither is ±1 LSB, which the A/D gain lifts to a handful of
 // counts. Anything at or under this is silence however loud it sounds after
@@ -222,62 +120,8 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
 
   await gotoWeb2(page);
 
-  // --- 1. Start the 840AV with its System 7.1 disk. ------------------------
-  const [romChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Load ROM..." }).click(),
-  ]);
-  await romChooser.setFiles(AV_ROM);
-
-  await page.getByRole("button", { name: "New Machine..." }).click();
-  const model = page.locator("#cfg-model");
-  await expect(model.locator('option[value="q840av"]')).toHaveCount(1, { timeout: 30_000 });
-  await model.selectOption("q840av");
-
-  const hd = page.locator("#cfg-media-scsi-0");
-  const [hdChooser] = await Promise.all([page.waitForEvent("filechooser"), hd.selectOption("Load image...")]);
-  await hdChooser.setFiles(AV_HD);
-  await expect(hd.locator("option", { hasText: AV_HD_NAME })).toHaveCount(1, { timeout: 120_000 });
-  await hd.selectOption(AV_HD_NAME);
-
-  await page.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(page.locator(".toast .msg").filter({ hasText: "Machine started" })).toBeVisible({
-    timeout: 60_000,
-  });
-
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
-  await expect.poll(async () => probe(page, "machine.id"), { timeout: 30_000 }).toBe("q840av");
-
-  // The guest runs in real time from here and the GUI drives below are paced
-  // in guest ticks, so it must run at 1x: floor the adaptive governor there
-  // (the setting a budget-pinned run uses), or a loaded runner slows the CPU
-  // and every wait comes up short.
-  await gsEvalInPage(page, "scheduler.min_speed", [1]);
-
-  // Stay in real time until the 840AV's DSP kernel is up and idling (emr
-  // $8000): its bring-up, in the Enabler's RTM init a few guest seconds into
-  // boot, is a 68040<->DSP handshake that holds at 1x and is lost above it --
-  // at 2x the guest gives up on the DSP in about one boot in three, at a
-  // pinned 4x or 8x every time -- and a DSP held in reset means no sound
-  // input for the rest of the session (docs/internals/machines/av/dsp.md).
-  // Only then accelerate the rest of the boot.
-  await expect
-    .poll(
-      async () =>
-        `${await gsEvalInPage(page, "machine.dsp.state")}/${await gsEvalInPage(page, "machine.dsp.emr")}`,
-      { timeout: 120_000, intervals: [500] },
-    )
-    .toBe("running/0x8000");
-
-  // --- 2. Boot to the Finder, accelerated; then back to real time. ---------
-  // The microphone is a real-time stream: a guest running faster than wall
-  // clock drains the ring faster than the browser fills it, a guest running
-  // slower overruns it. Only paced mode is meaningful for what follows.
-  await page.getByRole("button", { name: "Faster", exact: true }).click();
-  await waitForStableScreen(page, 420_000);
-  await page.getByRole("button", { name: "Real", exact: true }).click();
-  await expect.poll(async () => probe(page, "scheduler.mode"), { timeout: 30_000 }).toBe("paced");
+  // --- 1. Boot the 840AV with its System 7.1 disk to the Finder. ----------
+  await bootAVToFinder(page);
 
   // 50% zoom so the WHOLE 640x480 guest screen fits above the panel. The
   // failure screenshot is the only view of a GUI drive that went wrong, and
@@ -323,7 +167,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // Only now: the track attaches while the guest is genuinely listening, and
   // connecting earlier would feed the looping utterance into the startup
   // blackout, where it would be heard but not yet matchable.
-  const micBtn = page.locator('.gs-toolbar button[aria-label*="icrophone"]');
+  const micBtn = page.locator(MIC_BUTTON);
   await expect(micBtn).toHaveCount(1);
   await micBtn.click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "true");
@@ -344,11 +188,11 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // cannot judge the product at all — that is a skip, not a failure. The
   // browser-mic transport itself is covered by av-microphone.spec.ts with
   // the default fake device, so nothing goes unwatched.
-  const rectBeforeAudio = await probe(page, `machine.screen.checksum(${TRASH_RECT})`);
+  const rectBeforeAudio = await probe(page, "machine.screen.checksum", TRASH_RECT);
   let peak = 0;
   const audioDeadline = Date.now() + 45_000;
   while (Date.now() < audioDeadline && peak <= AUDIO_FLOOR) {
-    const p = Number(await probe(page, "machine.audioin.peak"));
+    const p = await probeNumber(page, "machine.audioin.peak");
     if (Number.isFinite(p)) peak = Math.max(peak, p);
     await page.waitForTimeout(1000);
   }
@@ -360,7 +204,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
       "utterance to recognise",
   );
 
-  const baseline = await probe(page, `machine.screen.checksum(${TRASH_RECT})`);
+  const baseline = await probe(page, "machine.screen.checksum", TRASH_RECT);
   console.log(`  Trash-window rectangle: ${rectBeforeAudio} before audio, ${baseline} at baseline`);
   if (baseline !== rectBeforeAudio) {
     // Not fatal — recognition genuinely can fire during the audio wait, and
@@ -384,17 +228,30 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   let last: MicStats | null = null;
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline && !opened) {
-    const p = Number(await probe(page, "machine.audioin.peak"));
+    const p = await probeNumber(page, "machine.audioin.peak");
     if (Number.isFinite(p)) peak = Math.max(peak, p);
     last = await micStats(page);
-    const now = await probe(page, `machine.screen.checksum(${TRASH_RECT})`);
-    if (now !== null && now !== baseline) opened = true;
+    const now = await probe(page, "machine.screen.checksum", TRASH_RECT);
+    if (now !== baseline) opened = true;
     console.log(
       `  t+${Math.round((180_000 - (deadline - Date.now())) / 1000)}s  peak ${peak}  ` +
         `produced ${last.produced} consumed ${last.consumed} ` +
         `overruns ${last.overruns} underruns ${last.underruns}  rect ${now}`,
     );
     if (!opened) await page.waitForTimeout(2000);
+  }
+
+  // The transport gate below wants an utterance's worth of frames (~4.5 s)
+  // over the listening window, and the recognizer can act sooner than that:
+  // the warm-up take arrived during the audio wait, and the poll above
+  // stops the moment the window opens.  Let the counter run out the rest of
+  // that span before reading it, so a fast recognition is not misread as a
+  // capture-path failure.
+  const minFrames = Math.round((last?.rate || 44100) * 4);
+  const transportDeadline = Date.now() + 15_000;
+  while ((last?.captured ?? 0) < minFrames && Date.now() < transportDeadline) {
+    await page.waitForTimeout(500);
+    last = await micStats(page);
   }
 
   // --- 6. The diagnostics, printed before anything is asserted. ------------
@@ -417,7 +274,6 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // before anyone read the frame counter. One utterance is ~4.5 s; require at
   // least one utterance's worth over the whole listening window before the
   // recognition result is allowed to mean anything.
-  const minFrames = Math.round((last?.rate || 44100) * 4);
   expect(
     last?.captured ?? 0,
     `the browser never delivered audio: ${last?.captured ?? 0} frames captured in ${
