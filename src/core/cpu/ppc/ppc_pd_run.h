@@ -128,7 +128,8 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_LS_END()                                                                                                   \
     if (__builtin_expect(g_ppc_fetch.blk != blk || g_ppc_fetch.span != MEM_PAGE_SIZE, 0))                              \
         goto retire_relookup;                                                                                          \
-    PPD_ADVANCE();                                                                                                     \
+    cur++;                                                                                                             \
+    goto retire_access;                                                                                                \
     }
 #define PPD_LOAD(ID, SZ, BITS, EXT, UPD)                                                                               \
     PPD_LS_BEGIN(ID)                                                                                                   \
@@ -251,14 +252,22 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
 top:
     if (*instructions == 0)
         goto done;
-dispatch:
-    // Level-sensitive interrupt inputs re-checked at every boundary (as the
-    // switch loop does); taking one redirects the PC.
+irq_check:
+    // Level-sensitive interrupt inputs re-checked at the boundary (as the
+    // switch loop does at every one); taking one redirects the PC.  The
+    // condition is false at every boundary once checked (delivery clears
+    // MSR[EE]), and the inputs change only between sprints or through an
+    // instruction that writes the MSR or DEC or touches a device: a branch,
+    // a T1 leaf, the generic tier, or a load or store.  So the register-only
+    // T0 entries skip the test (retire_plain); every other entry gets it
+    // (retire_access, and the paths through top).  An interrupt is taken on
+    // exactly the boundary the switch loop takes it on.
     if (__builtin_expect((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE), 0)) {
         p->pc = page_lo + ((uint32_t)(cur - blk->e) << 2);
         ppc_poll_interrupt(p);
         goto relookup;
     }
+dispatch:
     ipc = (uint32_t)((uintptr_t)cur >> 1) + ipc_bias;
     {
         pd_entry_t e = *cur;
@@ -464,13 +473,27 @@ dispatch:
     goto retire_relookup;
 
 retire_plain:
-    // A non-branch entry: one read of the budget for the saturating
-    // decrement and the zero test, then straight past top's own test.
+    // A register-only entry: one read of the budget for the saturating
+    // decrement and the zero test, then straight past top's own tests (the
+    // interrupt test too: irq_check).
     {
         uint32_t n_ = *instructions;
         if (__builtin_expect(n_ > 1, 1)) {
             *instructions = n_ - 1;
             goto dispatch;
+        }
+        *instructions = 0;
+        goto done;
+    }
+
+retire_access:
+    // A load or store: as retire_plain, but a device access may have raised
+    // an interrupt input, so the boundary's interrupt test runs.
+    {
+        uint32_t n_ = *instructions;
+        if (__builtin_expect(n_ > 1, 1)) {
+            *instructions = n_ - 1;
+            goto irq_check;
         }
         *instructions = 0;
         goto done;
