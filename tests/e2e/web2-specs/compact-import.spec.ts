@@ -227,9 +227,9 @@ for (const variant of ["sized", "chunked", "zip"] as const) {
         : `${origin}/${variant}/Big%20Disk.img`;
     await page.goto(`/index.html?HD0=${encodeURIComponent(value)}`);
     await waitReady(page);
-    // A URL download is stored under its slot and the time it was fetched
-    // (hd0_2026-10-04_17-42-05.dmg), not a name from the URL.
-    const STORED = /^hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.dmg$/;
+    // A URL download is stored under the file's name from the URL
+    // ("Big Disk.img" -> Big_Disk.dmg, S1018-48).
+    const STORED = /^Big_Disk(?: \d+)?\.dmg$/;
     await expect
       .poll(
         async () => (await storedDisks(page)).some((d) => STORED.test(d.name)),

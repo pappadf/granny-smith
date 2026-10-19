@@ -64,8 +64,9 @@ export interface ImportOptions {
   // Progress (bytes of the source read; its length when known; bytes stored).
   onProgress?: (read: number, total: number | null, stored: number) => void;
   // The name to store the image under, and to report it as, instead of its
-  // own (URL media are named by slot and time: the source's own name then
-  // only hints at a streamed UDIF).
+  // own (URL media: the file's name from the URL, or, when it names none,
+  // the slot and the time; the source's own name then only hints at a
+  // streamed UDIF).
   storeAs?: string;
   // Where the image came from (the URL of URL media), recorded in a UDIF the
   // import writes as gs-origin and reported back by files.udif_info: what a

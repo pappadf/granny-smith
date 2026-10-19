@@ -89,8 +89,8 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
   await expect(view).toBeVisible({ timeout: 60_000 });
   await expect(view.locator('.title')).toHaveText('Granny Smith');
   await expect(view.locator('.headline')).toContainText('Downloading');
-  // Listed under its slot and the time, not a name from the URL.
-  await expect(view.locator('[data-slot="rom"]')).toContainText(/rom_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/);
+  // Listed under the file's name from the URL (S1018-48).
+  await expect(view.locator('[data-slot="rom"]')).toContainText('url-held-plus.rom');
   await expect(view.getByRole('progressbar')).toHaveCount(1);
   await expect(page.locator('.welcome-view')).toHaveCount(0);
   await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
@@ -106,8 +106,8 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
 });
 
 // URL media is kept the way an upload is: the fetched floppy is stored in
-// /opfs/images/fd/ under its slot and the time it was fetched
-// (fd0_2026-10-04_17-42-05) and inserted from there, not from
+// /opfs/images/fd/ under the file's name from the URL (url-system.dsk)
+// and inserted from there, not from
 // volatile /tmp.  It then survives a reload and shows in
 // the Images tab like any other floppy.
 test('?fd0= media is persisted to /opfs/images/fd and inserted from there', async ({ page }) => {
@@ -126,7 +126,7 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
-  const STORED = /\/opfs\/images\/fd\/fd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/;
+  const STORED = /\/opfs\/images\/fd\/url-system(?: \d+)?\.dsk$/;
   expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
   const stored = (await opfsFiles(page)).find((p) => STORED.test(p));
   expect(stored).toBeDefined();
@@ -150,7 +150,7 @@ test('?fd0= naming a floppy inside a Mac archive is stored and inserted', async 
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.toast .msg').filter({ hasText: /Failed to save|could not be stored/ })).toHaveCount(0);
-  const STORED = /\/opfs\/images\/fd\/fd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/;
+  const STORED = /\/opfs\/images\/fd\/MacTest Disk(?: \d+)?\.image$/;
   expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });
@@ -183,11 +183,11 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
 
   await page.goto('/index.html?rom=url-plus.rom&model=plus&hd0=url-floppy-as-hd.img');
   await expect(
-    page.locator('.toast .msg').filter({ hasText: /HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/ }),
+    page.locator('.toast .msg').filter({ hasText: /HD0: 'url-floppy-as-hd\.img' is not a valid Hard Disk image/ }),
   ).toBeVisible({ timeout: 60_000 });
   // The boot's own message names the disk it went without.
   await expect(
-    page.locator('.toast .msg').filter({ hasText: /Booted plus without Hard disk 1: 'hd0_[\d_-]+'/ }),
+    page.locator('.toast .msg').filter({ hasText: /Booted plus without Hard disk 1: 'url-floppy-as-hd\.img'/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
     timeout: 15_000,
