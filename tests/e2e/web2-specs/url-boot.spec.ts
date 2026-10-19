@@ -253,12 +253,12 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
 
   await page.goto('/index.html?rom=url-plus.rom&model=plus&vrom=url-not-a.vrom');
   await expect(
-    page.locator('.toast .msg').filter({ hasText: /VROM: 'vrom_[\d_-]+' is not a valid Video ROM image/ }),
+    page.locator('.toast .msg').filter({ hasText: /VROM: 'url-not-a\.vrom' is not a valid Video ROM image/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(
     page.locator('.toast .msg').filter({ hasText: "Booting plus without the URL's video ROM" }),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(page.locator('.toast .msg').filter({ hasText: /Booted plus without .*'vrom_[\d_-]+'/ }))
+  await expect(page.locator('.toast .msg').filter({ hasText: /Booted plus without .*'url-not-a\.vrom'/ }))
     .toBeVisible({ timeout: 60_000 });
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
 });
