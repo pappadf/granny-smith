@@ -26,6 +26,10 @@ From left to right:
 
 The speed and zoom controls are active only while a machine is running.
 
+When the toolbar is too narrow for all of them (a phone, or a display
+squeezed by the panel), the controls that do not fit move, from the right,
+into the **More** (**…**) menu at its end; Run and Shut down always stay.
+
 ## 2. Speed modes
 
 | Mode | Behaviour |

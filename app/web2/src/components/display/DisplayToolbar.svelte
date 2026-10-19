@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { machine, setZoom } from '@/state/machine.svelte';
   import {
     layout,
@@ -134,6 +135,26 @@
     void applySchedulerMode(mode);
   }
 
+  const schedulerOptions: Array<{ value: SchedulerMode; label: string; title: string }> = [
+    {
+      value: 'live',
+      label: 'Real',
+      title: "Real — runs at the original Mac's speed",
+    },
+    {
+      value: 'accel',
+      label: 'Faster',
+      title:
+        'Faster — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
+    },
+    {
+      value: 'turbo',
+      label: 'Max',
+      title:
+        'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
+    },
+  ];
+
   // Camera toggle — shown only on machines with the on-board video
   // digitizer (capabilities.video_in, the AV family). The click doubles as
   // the user gesture getUserMedia needs; the camera light itself follows
@@ -233,10 +254,153 @@
     // the displayed value on the next reactive tick without us touching it.
     else input.value = `${machine.zoom}%`;
   }
+
+  // A toolbar too narrow for its tools (a phone, a display squeezed by the
+  // panel) moves whole groups, right to left, into an overflow menu behind
+  // "More" instead of cutting them off at its edge (S1018-69).  Run and
+  // Shut down always stay.
+  const GROUPS = ['layout', 'actions', 'zoom', 'scheduler'] as const;
+  type Group = (typeof GROUPS)[number];
+  // How many of GROUPS, from the first, are in the menu.
+  let hidden = $state(0);
+  const off = (g: Group) => GROUPS.indexOf(g) < hidden;
+  let first: HTMLDivElement | undefined = $state(undefined);
+
+  // Does the bar's last group end past its content edge?
+  function overflows(bar: HTMLElement): boolean {
+    const last = bar.lastElementChild;
+    if (!last) return false;
+    const pad = parseFloat(getComputedStyle(bar).paddingRight) || 0;
+    return last.getBoundingClientRect().right > bar.getBoundingClientRect().right - pad + 0.5;
+  }
+
+  // Show every group, then move one at a time into the menu until the rest
+  // fit.  Each step is laid out before the next is measured, all before the
+  // frame is painted.
+  let fitting = 0;
+  async function fit(): Promise<void> {
+    const bar = first?.closest<HTMLElement>('.gs-toolbar');
+    if (!bar) return;
+    const run = ++fitting;
+    hidden = 0;
+    await tick();
+    while (run === fitting && hidden < GROUPS.length && overflows(bar)) {
+      hidden++;
+      await tick();
+    }
+  }
+
+  $effect(() => {
+    const bar = first?.closest<HTMLElement>('.gs-toolbar');
+    if (!bar || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => void fit());
+    ro.observe(bar);
+    return () => ro.disconnect();
+  });
+  // The groups' own widths change with the machine's inputs and the skin.
+  $effect(() => {
+    void [machine.videoIn, machine.audioIn, resolved.skin, first];
+    void fit();
+  });
+
+  // The hidden groups' controls, as menu entries in toolbar order.
+  function overflowItems(): ContextMenuItem[] {
+    const groups: ContextMenuItem[][] = [];
+    if (off('scheduler'))
+      groups.push(
+        schedulerOptions.map((o) => ({
+          label: o.label,
+          checked: machine.scheduler === o.value,
+          disabled: !isLive,
+          action: () => onSchedulerClick(o.value),
+        })),
+      );
+    if (off('zoom'))
+      groups.push([
+        {
+          label: 'Zoom Out',
+          icon: 'minus',
+          disabled: !isLive,
+          action: () => setZoom(machine.zoom - 10),
+        },
+        {
+          label: 'Zoom In',
+          icon: 'plus',
+          disabled: !isLive,
+          action: () => setZoom(machine.zoom + 10),
+        },
+      ]);
+    if (off('actions')) {
+      const g: ContextMenuItem[] = [
+        {
+          label: 'Save State',
+          icon: 'download',
+          disabled: !isLive || saving,
+          action: () => void onSave(),
+        },
+      ];
+      if (machine.videoIn)
+        g.push({
+          label: camera.enabled ? 'Disconnect Camera' : 'Connect Camera',
+          icon: cameraIcon,
+          disabled: !isLive,
+          action: onCameraClick,
+        });
+      if (machine.audioIn)
+        g.push({
+          label: microphone.enabled ? 'Disconnect Microphone' : 'Connect Microphone',
+          icon: micIcon,
+          disabled: !isLive,
+          action: () => void setMicrophoneEnabled(!microphone.enabled),
+        });
+      groups.push(g);
+    }
+    if (off('layout')) {
+      const current = screenMode();
+      groups.push(
+        skins.map((k) => ({
+          label: k.name,
+          checked: resolved.skin === k.id,
+          action: () => setSkin(k.id),
+        })),
+        (
+          [
+            ['normal', 'Normal'],
+            ['fullscreen', 'Full Screen'],
+            ['fullscreen-bare', 'Full Screen, Hide Toolbar and Status Bar'],
+          ] as Array<[ScreenMode, string]>
+        ).map(([mode, label]) => ({
+          label,
+          checked: current === mode,
+          action: () =>
+            setScreenMode(mode, () =>
+              showNotification('Full screen blocked by the browser', 'warning'),
+            ),
+        })),
+        (
+          [
+            ['left', 'Panel Left'],
+            ['bottom', 'Panel Bottom'],
+            ['right', 'Panel Right'],
+          ] as Array<[PanelPos, string]>
+        ).map(([pos, label]) => ({
+          label,
+          checked: layout.panelPos === pos && !layout.panelCollapsed,
+          action: () => onLayoutClick(pos),
+        })),
+      );
+    }
+    return groups.flatMap((g, i) => (i ? [{ sep: true } as const, ...g] : g));
+  }
+
+  function onOverflowMenu(ev: MouseEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(overflowItems(), r.left, r.bottom);
+  }
 </script>
 
 <Toolbar label="Display toolbar">
-  <div class="tg execution">
+  <div class="tg execution" bind:this={first}>
     <IconButton
       class="tbtn"
       icon={runIcon}
@@ -253,131 +417,130 @@
       disabled={!isLive}
       onclick={onShutdown}
     />
+    {#if !off('scheduler')}
+      <Separator class="sep" />
+      <SegmentedControl
+        class="scheduler"
+        optionClass="sch-btn"
+        label="Scheduler mode"
+        disabled={!isLive}
+        value={machine.scheduler}
+        onChange={onSchedulerClick}
+        options={schedulerOptions}
+      />
+    {/if}
+  </div>
+  {#if !off('zoom')}
     <Separator class="sep" />
-    <SegmentedControl
-      class="scheduler"
-      optionClass="sch-btn"
-      label="Scheduler mode"
-      disabled={!isLive}
-      value={machine.scheduler}
-      onChange={onSchedulerClick}
-      options={[
-        {
-          value: 'live',
-          label: 'Real',
-          title: "Real — runs at the original Mac's speed",
-        },
-        {
-          value: 'accel',
-          label: 'Faster',
-          title:
-            'Faster — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
-        },
-        {
-          value: 'turbo',
-          label: 'Max',
-          title:
-            'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
-        },
-      ]}
-    />
-  </div>
-  <Separator class="sep" />
-  <div class="tg view" data-caption="Zoom">
-    <IconButton
-      class="tbtn"
-      icon="minus"
-      label="Zoom out"
-      disabled={!isLive}
-      onclick={() => setZoom(machine.zoom - 10)}
-    />
-    <TextInput
-      class="zoom-input"
-      bare
-      style="width: 48px"
-      value={zoomInput}
-      disabled={!isLive}
-      aria-label="Zoom level"
-      onchange={onZoomInput}
-    />
-    <IconButton
-      class="tbtn"
-      icon="plus"
-      label="Zoom in"
-      disabled={!isLive}
-      onclick={() => setZoom(machine.zoom + 10)}
-    />
-  </div>
-  <Separator class="sep" />
-  <div class="tg actions">
-    <IconButton
-      class="tbtn"
-      icon="download"
-      label="Save State"
-      disabled={!isLive || saving}
-      onclick={onSave}
-    />
-    {#if machine.videoIn}
+    <div class="tg view" data-caption="Zoom">
       <IconButton
         class="tbtn"
-        live={camera.live}
-        icon={cameraIcon}
-        label={cameraTitle}
-        pressed={camera.enabled}
+        icon="minus"
+        label="Zoom out"
         disabled={!isLive}
-        onclick={onCameraClick}
+        onclick={() => setZoom(machine.zoom - 10)}
       />
-    {/if}
-    {#if machine.audioIn}
+      <TextInput
+        class="zoom-input"
+        bare
+        style="width: 48px"
+        value={zoomInput}
+        disabled={!isLive}
+        aria-label="Zoom level"
+        onchange={onZoomInput}
+      />
       <IconButton
         class="tbtn"
-        live={microphone.guestActive}
-        icon={micIcon}
-        label={micTitle}
-        pressed={microphone.enabled}
-        aria-haspopup="menu"
+        icon="plus"
+        label="Zoom in"
         disabled={!isLive}
-        onclick={onMicClick}
+        onclick={() => setZoom(machine.zoom + 10)}
       />
-    {/if}
-  </div>
+    </div>
+  {/if}
+  {#if !off('actions')}
+    <Separator class="sep" />
+    <div class="tg actions">
+      <IconButton
+        class="tbtn"
+        icon="download"
+        label="Save State"
+        disabled={!isLive || saving}
+        onclick={onSave}
+      />
+      {#if machine.videoIn}
+        <IconButton
+          class="tbtn"
+          live={camera.live}
+          icon={cameraIcon}
+          label={cameraTitle}
+          pressed={camera.enabled}
+          disabled={!isLive}
+          onclick={onCameraClick}
+        />
+      {/if}
+      {#if machine.audioIn}
+        <IconButton
+          class="tbtn"
+          live={microphone.guestActive}
+          icon={micIcon}
+          label={micTitle}
+          pressed={microphone.enabled}
+          aria-haspopup="menu"
+          disabled={!isLive}
+          onclick={onMicClick}
+        />
+      {/if}
+    </div>
+  {/if}
   <div class="layout-controls">
-    <IconButton
-      class="tbtn appearance-menu"
-      icon="brush"
-      label="Appearance"
-      aria-haspopup="menu"
-      onclick={onAppearanceMenu}
-    />
-    <IconButton
-      class="tbtn fullscreen-menu"
-      icon={fullscreenIcon}
-      label="Screen Mode"
-      aria-haspopup="menu"
-      onclick={onFullscreenMenu}
-    />
-    <Separator class="sep" />
-    <IconButton
-      class="tbtn layout-btn"
-      icon={layoutIcon('left')}
-      label="Panel Left"
-      pressed={layout.panelPos === 'left' && !layout.panelCollapsed}
-      onclick={() => onLayoutClick('left')}
-    />
-    <IconButton
-      class="tbtn layout-btn"
-      icon={layoutIcon('bottom')}
-      label="Panel Bottom"
-      pressed={layout.panelPos === 'bottom' && !layout.panelCollapsed}
-      onclick={() => onLayoutClick('bottom')}
-    />
-    <IconButton
-      class="tbtn layout-btn"
-      icon={layoutIcon('right')}
-      label="Panel Right"
-      pressed={layout.panelPos === 'right' && !layout.panelCollapsed}
-      onclick={() => onLayoutClick('right')}
-    />
+    {#if !off('layout')}
+      <IconButton
+        class="tbtn appearance-menu"
+        icon="brush"
+        label="Appearance"
+        aria-haspopup="menu"
+        onclick={onAppearanceMenu}
+      />
+      <IconButton
+        class="tbtn fullscreen-menu"
+        icon={fullscreenIcon}
+        label="Screen Mode"
+        aria-haspopup="menu"
+        onclick={onFullscreenMenu}
+      />
+      <Separator class="sep" />
+      <IconButton
+        class="tbtn layout-btn"
+        icon={layoutIcon('left')}
+        label="Panel Left"
+        pressed={layout.panelPos === 'left' && !layout.panelCollapsed}
+        onclick={() => onLayoutClick('left')}
+      />
+      <IconButton
+        class="tbtn layout-btn"
+        icon={layoutIcon('bottom')}
+        label="Panel Bottom"
+        pressed={layout.panelPos === 'bottom' && !layout.panelCollapsed}
+        onclick={() => onLayoutClick('bottom')}
+      />
+      <IconButton
+        class="tbtn layout-btn"
+        icon={layoutIcon('right')}
+        label="Panel Right"
+        pressed={layout.panelPos === 'right' && !layout.panelCollapsed}
+        onclick={() => onLayoutClick('right')}
+      />
+    {/if}
+    {#if hidden > 0}
+      <IconButton
+        class="tbtn overflow-menu"
+        icon="ellipsis"
+        label="More"
+        aria-haspopup="menu"
+        onclick={onOverflowMenu}
+      />
+    {/if}
   </div>
 </Toolbar>
 
