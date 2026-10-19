@@ -66,6 +66,15 @@
     if (machine.checkpoint) void refresh();
   });
 
+  // A machine that goes away (Shut down deletes its autosave) changes the
+  // list too.
+  let wasLive = false;
+  $effect(() => {
+    const live = machine.status === 'running' || machine.status === 'paused';
+    if (wasLive && !live) void refresh();
+    wasLive = live;
+  });
+
   // Local time, like the names.
   function formatDate(created: string): string {
     const d = checkpointCreatedToDate(created);

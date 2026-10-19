@@ -37,10 +37,13 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
   it('pause/resume/shutdown each resolve to undefined (no Module)', async () => {
     await expect(pauseEmulator()).resolves.toBeUndefined();
     await expect(resumeEmulator()).resolves.toBeUndefined();
-    // Without a Module the stop fails ({error}); shutdownEmulator must say so
-    // rather than show a machine that is still running as stopped.
+    // Without a Module the shut down fails ({error}); shutdownEmulator must
+    // say so rather than show a machine that is still there as gone.
+    machine.status = 'running';
     await shutdownEmulator();
-    expect(machine.status).toBe('no-machine');
-    expect(toasts.active.some((t) => /Stop failed: emulator not ready/.test(t.msg))).toBe(true);
+    expect(machine.status).toBe('running');
+    expect(toasts.active.some((t) => /Shut down failed: emulator not ready/.test(t.msg))).toBe(
+      true,
+    );
   });
 });

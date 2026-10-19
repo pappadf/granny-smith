@@ -55,6 +55,34 @@ describe('CheckpointsView', () => {
     }
   });
 
+  it('a shut down (its autosave deleted) re-scans the list', async () => {
+    const autosave: CheckpointEntry = {
+      path: '/opfs/checkpoints/aaaa-20260101T000000Z',
+      dirName: 'aaaa-20260101T000000Z',
+      id: 'aaaa000000000000',
+      created: '20260101T000000Z',
+      label: 'Autosave',
+      model: 'plus',
+      ramBytes: 4194304,
+      sizeBytes: 1024,
+      saved: false,
+    };
+    const stub = new CheckpointStubOpfs();
+    stub.fixtures = [autosave];
+    setOpfsBackend(stub);
+    const { machine } = await import('@/state/machine.svelte');
+    machine.status = 'running';
+    try {
+      const { container } = render(CheckpointsView);
+      await waitFor(() => expect(container.querySelectorAll('.tr').length).toBe(1));
+      stub.fixtures = [];
+      machine.status = 'no-machine';
+      await waitFor(() => expect(container.querySelector('.empty')).not.toBeNull());
+    } finally {
+      machine.status = 'no-machine';
+    }
+  });
+
   it('renders one row per checkpoint with name/machine/date/size cells', async () => {
     const stub = new CheckpointStubOpfs();
     stub.fixtures = [

@@ -6,16 +6,8 @@
 //
 // This file owns the gsEval dispatch.
 
-import {
-  gsEval,
-  gsOk,
-  isGsError,
-  shutdownEmulator,
-  pauseEmulator,
-  resumeEmulator,
-  isModuleReady,
-} from './emulator';
-import { restartEmulator } from './boot';
+import { gsEval, gsOk, isGsError, pauseEmulator, resumeEmulator, isModuleReady } from './emulator';
+import { restartEmulator, shutdownEmulator } from './boot';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
 import { isTaggedEnum } from '@/lib/taggedValue';
 

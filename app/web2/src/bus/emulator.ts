@@ -16,7 +16,6 @@ import {
   noteCheckpointFailed,
   setDriveActivity,
   setPerfStats,
-  type MachineStatus,
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
@@ -971,16 +970,6 @@ export async function setCpuEngine(choice: CpuEngineChoice): Promise<void> {
   machine.engine = choice === 'jit-kernel' ? 'jit' : choice;
   machine.jitSupervisor = choice === 'jit-kernel';
   if (choice !== 'jit' && choice !== 'jit-kernel') machine.jitPct = 0;
-}
-
-export async function shutdownEmulator(): Promise<void> {
-  const res = await gsEval('scheduler.stop');
-  if (!gsOk(res)) {
-    showNotification(`Stop failed: ${gsErrorText(res)}`, 'error');
-    return;
-  }
-  machine.status = 'stopped' as MachineStatus;
-  showNotification('Machine stopped', 'info');
 }
 
 export async function pauseEmulator(): Promise<void> {

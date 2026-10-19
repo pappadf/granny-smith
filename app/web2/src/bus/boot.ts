@@ -226,6 +226,53 @@ export async function prepareFreshMachine(): Promise<void> {
   if (!gsOk(run)) showNotification(`Could not run the machine: ${gsErrorText(run)}`, 'error');
 }
 
+// Shut the machine down.  machine.shutdown tears it down in the core, so no
+// machine is left -- nothing a later Load ROM or Add can be inserted into --
+// and its background checkpoint is discarded, so a reload offers no Resume:
+// the Shut down dialog says anything not saved in the guest is lost.  The
+// page then shows no machine, as at its first load.
+export async function shutdownEmulator(): Promise<void> {
+  const res = await gsEval('machine.shutdown');
+  if (res !== true) {
+    showNotification(`Shut down failed: ${gsErrorText(res)}`, 'error');
+    return;
+  }
+  // The autosave goes before the page forgets the machine, so a view that
+  // re-reads the checkpoints on that (the Checkpoints tab) finds it gone.
+  const cleared = await gsEval('checkpoint.clear');
+  await forgetMachine();
+  if (cleared === true) showNotification('Machine shut down', 'info');
+  else
+    showNotification(
+      `Machine shut down, but its saved state could not be discarded: ${gsErrorText(cleared)}`,
+      'warning',
+    );
+}
+
+// The page's copy of a machine that is gone: what reconcileUiWithMachine set,
+// back to the no-machine state of a first load.  Pacing and the Caps Lock
+// latch are the host's and stay.
+export async function forgetMachine(): Promise<void> {
+  setRunStateMirror(false);
+  machine.status = 'no-machine';
+  machine.model = null;
+  machine.ram = null;
+  machine.mmuKind = 'none';
+  machine.mmuEnabled = false;
+  machine.fpu = false;
+  machine.videoIn = false;
+  machine.audioIn = false;
+  machine.auxCpus = [];
+  machine.drives = { hd: false, fd: false, cd: false };
+  resetDriveActivity();
+  clearMounts();
+  images.fdDriveCount = -1;
+  // No digitizer and no audio input any more: the host camera and
+  // microphone streams stop.
+  await reapplyCameraSource();
+  await reapplyMicrophoneSource();
+}
+
 // Power-cycle the running machine.  machine.restart tears nothing down: the
 // core resets the same machine with its RAM cold, so the PRAM/NVRAM (the
 // startup disk with it), the mounted media, the Caps Lock latch, the camera
