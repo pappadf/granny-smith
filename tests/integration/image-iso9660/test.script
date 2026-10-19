@@ -2,6 +2,7 @@
 # bare volume: one synthetic partition holding the disc's files.
 let iso = "${$WORK_DIR}/disc.iso"
 assert files.probe($iso) "the disc is recognised as a disk"
+assert machine.scsi.identify_iso($iso) "an upload of the disc is filed as a CD-ROM"
 let names = ""
 for e in files.list("${$iso}/partition1") {
     $names = "${$names}|${$e.name}"
@@ -31,6 +32,7 @@ assert files.path_compare("${$hy}/partition2/Hello.txt", "config.mk") == -1 "the
 assert files.path_compare("${$hy}/ISO9660/Read Me.txt", "config.mk") == -1 "the ISO side reads (name matched without case)"
 assert !files.path_exists("${$iso}/iso9660") "a disc that is only ISO has no iso9660 entry"
 assert !files.path_exists("${$hy}/partition3") "the ISO side is not a partitionN"
+assert machine.scsi.identify_iso($hy) "an upload of the hybrid is filed as a CD-ROM"
 
 # Apple's "AA" entry is the file's Finder info, and a copy out keeps it.
 assert files.path_compare("${$hy}/iso9660/Read Me.txt/finf", "${$WORK_DIR}/readme.finf") == -1 "Finder info from AA"
