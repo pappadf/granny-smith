@@ -5,9 +5,10 @@
 // Parameter names are case-insensitive (`ROM=`, `HD0=`); `hd` / `fd` mean the
 // first bay / drive.  A value is fetched as given; it may continue through a
 // container (`…/roms.zip/Mac%20IIci.ROM`) — see lib/mediaUrl.ts for the
-// addressing rules.  What a file is stored and shown as comes from its slot
-// and the time it was fetched (state/urlBoot urlMediaName), never from the
-// URL; a ROM is stored under its own content id.
+// addressing rules.  What a file is stored and shown as is the file's name
+// from the URL, or, when the URL names none, its slot and the time it was
+// fetched (lib/mediaUrl urlMediaFileName); a ROM is stored under its own
+// content id.
 //
 // Each parameter value is fetched, one at a time (relative paths resolve
 // against the page origin), streamed to a scratch file of its own
@@ -111,7 +112,7 @@ import {
   insertFloppy,
   type MediaResult,
 } from './media';
-import { importImage, type DiskCategory, type ImportSource } from './importImage';
+import { importImage, storedDmgName, type DiskCategory, type ImportSource } from './importImage';
 import { decompressor } from '@/lib/zipStream';
 
 export interface UrlMediaParams {
@@ -224,13 +225,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // in parallel, every large image was in flight at once.
   const paths = new Map<string, string | undefined>();
   if (params.rom) {
-    queueUrlFile('rom');
-    if (params.romPair) queueUrlFile('rom2');
+    queueUrlFile('rom', params.rom);
+    if (params.romPair) queueUrlFile('rom2', params.romPair);
   }
-  if (params.vrom) queueUrlFile('vrom');
-  for (const fd of params.floppies) queueUrlFile(fd.slot);
-  for (const hd of params.hardDisks) queueUrlFile(hd.slot);
-  if (params.cd) queueUrlFile('cd');
+  if (params.vrom) queueUrlFile('vrom', params.vrom);
+  for (const fd of params.floppies) queueUrlFile(fd.slot, fd.url);
+  for (const hd of params.hardDisks) queueUrlFile(hd.slot, hd.url);
+  if (params.cd) queueUrlFile('cd', params.cd);
   // A blank disk is listed under the name it will have (its extension is
   // the bus's, known once the model is).
   const hash = blankUrlHash(urlMediaEntries(params));
@@ -589,10 +590,12 @@ async function storedFromUrl(
   for (const e of entries as { name?: unknown; kind?: unknown }[]) {
     if (typeof e?.name !== 'string' || e.kind === 'directory' || !/\.dmg$/i.test(e.name)) continue;
     const path = `${dir}/${e.name}`;
-    const info = (await gsEval('files.udif_info', [path])) as { origin?: unknown } | null;
+    const info = (await gsEval('files.udif_info', [path])) as {
+      origin?: unknown;
+      bytes?: unknown;
+    } | null;
     if (!info || typeof info !== 'object' || info.origin !== origin) continue;
-    const size = await gsEval('files.path_size', [path]);
-    const bytes = typeof size === 'number' ? size : 0;
+    const bytes = typeof info.bytes === 'number' ? info.bytes : 0;
     updateUrlFile(slot, {
       name: e.name,
       status: 'done',
@@ -681,7 +684,7 @@ async function storeCompact(
       if (before) updateUrlFile(slot, { status: before });
       return false;
     }
-    const name = `${staged.name}.dmg`;
+    const name = storedDmgName(staged.name);
     const stored = await persistAs(part, name, category);
     if (stored.ok) {
       updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name, status: 'done' });
@@ -726,7 +729,7 @@ async function fetchAndImport(
     updateUrlFile(slot, { status: 'failed', error: msg });
     return undefined;
   }
-  const storeAs = urlMediaNameFor(slot);
+  const storeAs = urlMediaNameFor(slot, url);
   updateUrlFile(slot, { name: storeAs, status: 'downloading' });
   let res: Response;
   try {
@@ -793,8 +796,20 @@ async function fetchAndImport(
       `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
       'info',
     );
-  updateUrlFile(slot, { name, status: 'done' });
+  // The row's size is the disk's: what was received is the compressed
+  // download, and only as of the last progress report (S1018-48).
+  const disk = await diskBytes(out.path);
+  updateUrlFile(slot, { name, status: 'done', ...(disk ? { received: disk, total: disk } : {}) });
   return out.path;
+}
+
+// The size of the disk a stored image holds: a UDIF's disk, not its
+// compressed file; null when unknown.
+async function diskBytes(path: string): Promise<number | null> {
+  const info = (await gsEval('files.udif_info', [path])) as { bytes?: unknown } | null;
+  if (info && typeof info === 'object' && typeof info.bytes === 'number') return info.bytes;
+  const size = await gsEval('files.path_size', [path]);
+  return typeof size === 'number' ? size : null;
 }
 
 // Fetch the two chips of a ROM dumped as byte-wide halves, and store them
@@ -863,7 +878,7 @@ async function fetchAndStage(
     if (downloaded) await discardStaging(downloaded);
     return null;
   }
-  const storeAs = urlMediaNameFor(slot);
+  const storeAs = urlMediaNameFor(slot, url);
   updateUrlFile(slot, { name: storeAs, status: downloaded ? 'unpacking' : 'downloading' });
   const staged = downloaded ?? scratchPath(`url_${slot}`);
   let handedOver = false;

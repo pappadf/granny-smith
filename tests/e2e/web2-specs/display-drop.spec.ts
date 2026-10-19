@@ -134,6 +134,10 @@ test('drop an archive: the floppy inside is stored and inserted, nothing unpacke
   expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
     419284,
   );
+  // Without the AppleDouble sidecar the copy out of the archive writes (S1018-51).
+  expect(await gsEvalInPage(page, 'files.path_exists', ['/opfs/images/fd/._MacTest Disk.image'])).toBe(
+    false,
+  );
   expect(await scratchFiles(page)).toEqual([]);
 });
 

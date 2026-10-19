@@ -294,3 +294,71 @@ describe('adding a file of a name stored already', () => {
     ]);
   });
 });
+
+// S1018-06: a dropped HFS or partitioned hard disk was filed as a CD-ROM, as
+// the CD probe took any HFS/APM signature.  A drop files an image as a CD only
+// when it holds ISO 9660; the CD-ROM section's own Add still takes the disk.
+describe('a dropped disk image', () => {
+  // A 2 MB image the fake core finds a disk (HFS: 'H', ISO 9660: 'I').
+  const disk = (name: string, kind: 'H' | 'I') =>
+    new File([new Uint8Array(2 * 1024 * 1024).fill(kind.charCodeAt(0))], name);
+  const kindOf = (args: unknown) => files.get((args as [string])[0])?.[0];
+  beforeEach(() => {
+    bridge.reply('machine.scsi.identify_hd', (a: unknown) => kindOf(a) !== undefined);
+    bridge.reply('machine.scsi.identify_cdrom', (a: unknown) => kindOf(a) !== undefined);
+    bridge.reply('machine.scsi.identify_iso', (a: unknown) => kindOf(a) === 0x49);
+  });
+  const stored = () => [...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort();
+
+  it('is a hard disk when it holds no ISO 9660', async () => {
+    await acceptFiles([disk('hfs.img', 'H')]);
+    expect(stored()).toEqual(['/opfs/images/hd/hfs.img']);
+  });
+
+  it('is a CD-ROM when it holds ISO 9660', async () => {
+    await acceptFiles([disk('disc.iso', 'I')]);
+    expect(stored()).toEqual(['/opfs/images/cd/disc.iso']);
+  });
+
+  it('is still a disc when added to the CD-ROM section', async () => {
+    await acceptFilesIntoCategory([disk('hfs.img', 'H')], 'cdrom');
+    expect(stored()).toEqual(['/opfs/images/cd/hfs.img']);
+  });
+});
+
+// S1018-51: a floppy taken out of a dropped Mac archive was stored with the
+// AppleDouble "._" sidecar files.cp writes for its Finder info.
+describe('a floppy in a dropped Mac archive', () => {
+  it('is stored without its AppleDouble sidecar', async () => {
+    const archive = new File(
+      [new TextEncoder().encode('(This file must be converted')],
+      'm.sit.hqx',
+    );
+    const isArchive = (p: string) => /m\.sit\.hqx$/.test(p);
+    bridge.reply('files.archive.identify', (a: unknown) =>
+      isArchive((a as [string])[0]) ? 'hqx' : '',
+    );
+    bridge.reply('files.list', (a: unknown) => {
+      const dir = (a as [string])[0];
+      if (!isArchive(dir)) return [];
+      files.set(`${dir}/MacTest Disk.image`, new Uint8Array(819200).fill(0xa5));
+      return [{ name: 'MacTest Disk.image', kind: 'file' }];
+    });
+    // As the core's cp does for a file with Finder info.
+    bridge.reply('files.cp', (a: unknown) => {
+      const [from, to] = a as [string, string];
+      const f = files.get(from);
+      if (!f) return false;
+      files.set(to, f.slice());
+      files.set(
+        to.replace(/[^/]+$/, (n) => `._${n}`),
+        new Uint8Array(82),
+      );
+      return true;
+    });
+    await acceptFiles([archive]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/MacTest Disk.image',
+    ]);
+  });
+});

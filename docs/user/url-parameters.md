@@ -157,9 +157,12 @@ size (a 2 GB disk is several minutes on a fast connection).
 
 ### 5.3 What is stored, and what happens on reload
 
-- Each file is stored in the browser, named after its slot and the time it
-  was fetched (`hd0_2026-10-04_17-42-05`); a ROM is stored under its
-  checksum. You will find them in the Images panel.
+- Each file is stored in the browser under its own name from the URL
+  (`System 7.5.3.img`; the member's name for a file inside an archive). A
+  URL that names no file (one ending in `/`, or a server script such as
+  `…/download.php?id=…`) is named after its slot and the time it was fetched
+  (`hd0_2026-10-04_17-42-05`). A ROM is stored under its checksum. You will
+  find them in the Images panel.
 - Hard disks and CDs are stored compressed (`.dmg`) and remember the URL
   they came from. Opening a link again with the same `hd0=`/`cd=` value
   reuses the stored copy ("Already stored") instead of downloading it

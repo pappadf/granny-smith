@@ -25,6 +25,7 @@
   import { storedDmgName } from '@/bus/importImage';
   import { gsEval, gsErrorText, gsEvalWithProgress } from '@/bus/emulator';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
+  import { machine } from '@/state/machine.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
@@ -230,6 +231,20 @@
   }
 
   async function unmount(entry: OpfsEntry) {
+    if (!images.mounted[entry.path]) return;
+    // A floppy in a running (or paused) machine is one the Mac has mounted:
+    // pulling it out here loses what the Mac has not yet written to it, and
+    // the Mac goes on showing it (S1018-03).  Asked first.
+    if (cat === 'fd' && (machine.status === 'running' || machine.status === 'paused')) {
+      const ok = await askConfirm({
+        title: 'Eject',
+        message: `The Mac may be using '${entry.name}'. Ejecting it here pulls it out of the drive: anything the Mac has not yet written to it is lost, and the Mac may go on showing the disk. To eject it safely, eject it in the Mac (drag it to the Trash or press ⌘E).`,
+        confirmText: 'Eject',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    // Where it is now: the Mac may have ejected it while the question was up.
     const where = images.mounted[entry.path];
     if (!where) return;
     const r = await ejectMedia(where);

@@ -36,7 +36,7 @@ import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { scratchPath } from '@/lib/opfsPaths';
-import { MEDIA_TYPES, LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
 import { findMember } from '@/lib/mediaUrl';
 import { zipEntries, sniffContainer, decompressor, ZipStreamError } from '@/lib/zipStream';
 
@@ -49,6 +49,9 @@ export type ImportSource =
 export interface ImportOptions {
   // What the image may be stored as, in the order tried.
   categories: DiskCategory[];
+  // The upload did not say what the image is (a drop): it is a CD-ROM only
+  // when it holds ISO 9660 (lib/media.ts validateUnstated).
+  unstated?: boolean;
   // A zip member to take (forward-only, by name); null/absent: the first
   // member that is a medium.
   member?: string | null;
@@ -61,8 +64,9 @@ export interface ImportOptions {
   // Progress (bytes of the source read; its length when known; bytes stored).
   onProgress?: (read: number, total: number | null, stored: number) => void;
   // The name to store the image under, and to report it as, instead of its
-  // own (URL media are named by slot and time: the source's own name then
-  // only hints at a streamed UDIF).
+  // own (URL media: the file's name from the URL, or, when it names none,
+  // the slot and the time; the source's own name then only hints at a
+  // streamed UDIF).
   storeAs?: string;
   // Where the image came from (the URL of URL media), recorded in a UDIF the
   // import writes as gs-origin and reported back by files.udif_info: what a
@@ -326,17 +330,19 @@ async function rmQuiet(path: string): Promise<void> {
   }
 }
 
-// Validate the UDIF at `part` as the first of `categories` it is, and move it
-// into that category's directory.  Removes `part` either way.
+// Validate the UDIF at `part` as the first of `categories` it is (`unstated`:
+// see ImportOptions), and move it into that category's directory.  Removes
+// `part` either way.
 async function placeUdif(
   part: string,
   name: string,
   categories: DiskCategory[],
+  unstated = false,
 ): Promise<{ path: string; category: DiskCategory } | null> {
   let reject: string | undefined;
   for (const cat of categories) {
     const d = MEDIA_TYPES[cat];
-    const v = await d.validate(part, gsEval);
+    const v = unstated ? await validateUnstated(cat, part, gsEval) : await d.validate(part, gsEval);
     if (!v.valid) {
       reject ??= v.reject;
       continue;
@@ -520,7 +526,7 @@ async function importDecoded(
       } finally {
         await rmQuiet(staged);
       }
-      const placed = await placeUdif(part, shown, opts.categories);
+      const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
@@ -543,18 +549,18 @@ async function importDecoded(
         await rmQuiet(part);
         if (!r || typeof r !== 'object' || 'error' in (r as object))
           throw new Error(gsErrorText(r));
-        const placed = await placeUdif(dmg, shown, opts.categories);
+        const placed = await placeUdif(dmg, shown, opts.categories, opts.unstated);
         if (placed) showNotification(`${shown} stored`, 'info');
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
       }
       const settled = await settleUdif(part, name, opts.origin);
-      const placed = await placeUdif(settled, shown, opts.categories);
+      const placed = await placeUdif(settled, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
 
     const st = await writeUdif(part, name, pump, opts, cancelled);
-    const placed = await placeUdif(part, shown, opts.categories);
+    const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
     if (placed)
       showNotification(
         `${shown}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
@@ -610,8 +616,11 @@ async function importMacArchive(
     if (!r || typeof r !== 'object' || typeof r.member !== 'string') return leave();
     const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {
-      if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
-        const placed = await placeUdif(part, shown, [cat]);
+      const v = opts.unstated
+        ? await validateUnstated(cat, part, gsEval)
+        : await MEDIA_TYPES[cat].validate(part, gsEval);
+      if (v.valid) {
+        const placed = await placeUdif(part, shown, [cat], opts.unstated);
         if (placed && r.bytes_in && r.stored_bytes)
           showNotification(
             `${shown}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,

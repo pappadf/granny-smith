@@ -374,8 +374,9 @@
   let addingCard = $state(false);
   let addCardId = $state('');
   let addSlot = $state('');
-  // Every card of the tree, the ones that cannot be added now disabled with
-  // the reason (an unavailable ROM, no free slot it fits).
+  // Every card of the tree, each that cannot be added now with the reason
+  // (an unavailable ROM, no free slot it fits).  One without its ROM stays
+  // choosable, so the form can say what it needs and offer to load it.
   let cardChoices = $derived(
     profile && doc
       ? profile.cards.map((c) => {
@@ -390,9 +391,13 @@
         })
       : [],
   );
-  let addSlotChoices = $derived(cardChoices.find((c) => c.card.id === addCardId)?.slots ?? []);
+  let addChoice = $derived(cardChoices.find((c) => c.card.id === addCardId));
+  let addSlotChoices = $derived(addChoice?.slots ?? []);
+  // A card the form can show: one that can be added, or one that only needs
+  // its ROM loaded.
+  const offered = (c: (typeof cardChoices)[number]) => !c.reason || c.card.status === 'unavailable';
   function openAddCard(): void {
-    const first = cardChoices.find((c) => !c.reason);
+    const first = cardChoices.find((c) => !c.reason) ?? cardChoices.find(offered);
     addCardId = first?.card.id ?? '';
     addSlot = first?.slots[0]?.id ?? '';
     addingCard = true;
@@ -402,7 +407,7 @@
       addSlot = addSlotChoices[0]?.id ?? '';
   });
   function confirmAddCard(): void {
-    if (!addCardId || !addSlot) return;
+    if (!addCardId || !addSlot || addChoice?.reason) return;
     const [id, slot] = [addCardId, addSlot];
     edit((p, d) => mc.addCard(p, d, id, slot));
     addingCard = false;
@@ -680,7 +685,7 @@
         {#if profile.slots.length > 0}
           <div class="section-head">
             <SectionHeading class="config-section" rule>Expansion cards</SectionHeading>
-            {#if !addingCard && cardChoices.some((c) => !c.reason)}
+            {#if !addingCard && cardChoices.some(offered)}
               <Button size="sm" icon="plus" onclick={openAddCard} data-testid="cfg-add-card"
                 >Add card</Button
               >
@@ -724,9 +729,23 @@
           {#if addingCard}
             <div class="add-form">
               <Select id="cfg-add-card" bind:value={addCardId} aria-label="Card">
+                <!-- A card on the emulator's substitute ROM, or without the
+                     ROM it needs, is marked in the list (S1018-51). -->
                 {#each cardChoices as ch (ch.card.id)}
-                  <option value={ch.card.id} disabled={!!ch.reason}
-                    >{ch.card.label}{ch.reason ? ` — ${ch.reason}` : ''}</option
+                  {@const badge =
+                    ch.card.status === 'unavailable'
+                      ? 'ROM needed'
+                      : ch.card.status === 'substitute'
+                        ? 'Substitute ROM'
+                        : undefined}
+                  <option
+                    value={ch.card.id}
+                    disabled={!offered(ch)}
+                    data-badge={badge}
+                    data-badge-intent={ch.card.status === 'unavailable' ? 'warning' : 'info'}
+                    >{ch.card.label}{ch.reason && ch.card.status !== 'unavailable'
+                      ? ` — ${ch.reason}`
+                      : ''}</option
                   >
                 {/each}
               </Select>
@@ -735,21 +754,25 @@
                   <option value={s.id}>{s.label}</option>
                 {/each}
               </Select>
-              <Button size="sm" variant="primary" onclick={confirmAddCard} disabled={!addSlot}
-                >Add</Button
+              <Button
+                size="sm"
+                variant="primary"
+                onclick={confirmAddCard}
+                disabled={!addSlot || !!addChoice?.reason}>Add</Button
               >
               <Button size="sm" variant="ghost" onclick={() => (addingCard = false)}>Cancel</Button>
             </div>
+            {#if addChoice?.card.status === 'unavailable'}
+              {@const needs = addChoice.card}
+              <p class="item-note" data-testid="cfg-add-card-needs">
+                {addChoice.reason}.
+                <Link
+                  href="#upload"
+                  onclick={(e: Event) => (e.preventDefault(), uploadCardRom(needs))}>Load ROM…</Link
+                >
+              </p>
+            {/if}
           {/if}
-          {#each cardChoices.filter((ch) => ch.card.status === 'unavailable') as ch (ch.card.id)}
-            <p class="item-note">
-              {ch.card.label}: {ch.reason}.
-              <Link
-                href="#upload"
-                onclick={(e: Event) => (e.preventDefault(), uploadCardRom(ch.card))}>Load ROM…</Link
-              >
-            </p>
-          {/each}
         {/if}
 
         {#each warnings as w (w)}

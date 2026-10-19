@@ -2195,6 +2195,28 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     return val_bool(true);
 }
 
+// `scsi.identify_iso(path)` — true if the image holds an ISO 9660 volume
+// (alone or as a hybrid's other side).  An upload of no stated kind (a drop,
+// Home's Load ROM) is filed as a CD-ROM only then: a bare HFS or partitioned
+// image is a hard disk (S1018-06), though identify_cdrom accepts it as a disc.
+static DEF_METHOD(scsi_method_identify_iso) {
+    const char *path = argv[0].s;
+    image_t *img = image_open_readonly(path);
+    if (!img) {
+        LOG(2, "identify_iso: cannot open %s", path);
+        return val_bool(false);
+    }
+    bool is_iso = false;
+    if (!image_is_floppy(image_get_type(img))) {
+        source_t *src = image_source(img);
+        is_iso = iso_probe_source(src, 0, disk_size(img));
+        source_release(src);
+    }
+    LOG(2, "identify_iso: %s %s", path, is_iso ? "holds ISO 9660" : "has no ISO 9660 volume");
+    image_close(img);
+    return val_bool(is_iso);
+}
+
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
 // Calls system_hd_attach directly.
 static DEF_METHOD(scsi_method_attach_hd) {
@@ -2271,6 +2293,11 @@ static const member_t scsi_static_members[] = {
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},
+    {.kind = MK_METHOD,
+     .name = "identify_iso",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True if the image holds an ISO 9660 volume",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}  },
 };
 
 static const class_desc_t scsi_static_class = {
@@ -2324,6 +2351,11 @@ static const member_t scsi_members[] = {
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom} },
+    {.kind = MK_METHOD,
+     .name = "identify_iso",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True if the image holds an ISO 9660 volume",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}   },
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),

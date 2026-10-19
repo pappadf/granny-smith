@@ -50,11 +50,12 @@ import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
   identifyRom,
+  validateUnstated,
   type MediaTypeId,
   type MediaTypeDescriptor,
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
-import { opfsSafeName } from './fsOps';
+import { opfsSafeName, adSidecarPath } from './fsOps';
 import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
@@ -262,6 +263,7 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],
+      unstated: true,
       onSmall: async (path, name) => {
         small = await probeStaged(path, name, quiet);
         return small.stored ? small.path : null;
@@ -519,7 +521,9 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
 //   vrom   — catalog.vroms.identify: Format-Block CRC against the catalog
 //   prom   — $55AA + a reachable PCIR + Open Firmware code type
 //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
-//   cdrom  — ISO 9660 / HFS / APM signature inside the file
+//   cdrom  — ISO 9660 inside the file (validateUnstated: a bare HFS or
+//            partitioned image is a hard disk; only the CD-ROM section's own
+//            Add takes one as a disc)
 //   hd     — permissive fallback
 //
 // vrom and prom cannot claim each other's files even though both are
@@ -546,7 +550,7 @@ async function probeAs(
       if (chip) return { stored: false, reason: loneChipReason(chip), severity: 'error' };
     }
     const descriptor = MEDIA_TYPES[id];
-    const result = await descriptor.validate(path, gsEval);
+    const result = await validateUnstated(id, path, gsEval);
     // This IS that kind of file, refused: say why and stop, rather than
     // letting the permissive hd probe store it as a disk image.
     if (result.reject) return { stored: false, reason: result.reject, severity: 'error' };
@@ -698,6 +702,18 @@ async function persist(
       if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
       return null;
     }
+    // A member copied out of a Mac archive brings its resource fork and
+    // Finder info along as an AppleDouble "._" sidecar (files.cp).  Only a
+    // disk image can need one (an NDIF's block map is in its resource fork);
+    // beside a ROM or a floppy it is no medium, and is not kept (S1018-51).
+    const sidecar = adSidecarPath(finalPath);
+    if (
+      inArchive &&
+      descriptor.id !== 'hd' &&
+      descriptor.id !== 'cdrom' &&
+      (await gsEval('files.path_exists', [sidecar])) === true
+    )
+      await gsEval('files.rm', [sidecar]);
   }
   if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.

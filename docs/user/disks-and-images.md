@@ -13,7 +13,7 @@ them, and how to manage the ones you have stored.
 | PCI ROM | a PCI card's option ROM | Needed by the Apple Accelerated PCI Graphics Card. A PCI ROM for a card Granny Smith does not emulate is refused with a message |
 | Floppy disk | 400K, 800K, 720K (MFM, a SuperDrive reads it) and 1.4 MB images: raw `.dsk`/`.img`/`.image`, Disk Copy 4.2 | Recognised by size |
 | Hard disk | raw `.img`/`.hda`/`.dsk`, Disk Copy 6 (NDIF), `.dmg` (UDIF), QCOW2 (`.qcow2`) | Partitioned disks, and single-volume (HFS) images without a partition map, both boot. QCOW2 is converted when it loads (§2.1) |
-| CD-ROM | `.iso`, `.toast`, `.cdr`, `.dmg` | ISO 9660, HFS or partitioned |
+| CD-ROM | `.iso`, `.toast`, `.cdr`, `.dmg` | ISO 9660, HFS or partitioned. A dropped image is a CD only when it holds ISO 9660 (§1.1); add an HFS or partitioned disc through the Images panel's CD-ROM section |
 | Lisa ProFile | raw ProFile images; Disk Copy 4.2 ProFile images with tag bytes | For the Lisa and Macintosh XL hard disk |
 
 Wrappers and archives are opened for you: **zip**, **gzip** (`.gz`),
@@ -26,9 +26,11 @@ extract them on your computer first.)
 
 The file name does not matter; the contents do. When you drop or load a
 file without saying what it is, Granny Smith tries in turn: ROM, video
-ROM, PCI ROM, floppy (exact floppy sizes only), CD-ROM (a CD file system or
-partition map), an archive (looks inside), and finally hard disk — any
-other non-empty image.
+ROM, PCI ROM, floppy (exact floppy sizes only), CD-ROM (an ISO 9660 file system), an
+archive (looks inside), and finally hard disk — any other non-empty image.
+So an HFS or partitioned image is filed as a hard disk, even a CD's; to use
+one as a CD, add it in the Images panel's CD-ROM section, which takes ISO
+9660, HFS and partitioned discs.
 
 ## 2. Loading images
 
@@ -92,7 +94,7 @@ Right-click an image:
 
 | Action | What it does |
 |---|---|
-| **Insert** / **Eject** | Put a floppy or CD into the running machine's drive, or take it out. With several drives, choose which ("Insert into …"). |
+| **Insert** / **Eject** | Put a floppy or CD into the running machine's drive, or take it out. With several drives, choose which ("Insert into …"). Ejecting a floppy here asks first: it pulls the disk out without the Mac's knowledge, so anything the Mac has not yet written to it is lost. To eject a floppy safely, eject it in the Mac (drag it to the Trash or press ⌘E). |
 | **Mount** / **Unmount** | Attach a hard-disk image to the running machine, or detach it. |
 | **Save to computer…** | Download the stored file. |
 | **Export as raw image…** | Download a `.dmg` as a plain, uncompressed image. |

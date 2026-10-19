@@ -326,6 +326,12 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
   });
 
   it('a PCI card’s options are rendered from the tree, with the monitor’s device', async () => {
+    // Its expansion ROM is loaded.
+    fake.patch = (id, t) => {
+      if (id !== 'pm7500') return;
+      for (const card of t.cards as Array<Record<string, unknown>>)
+        if (card.id === 'mach64_gx') card.status = 'ok';
+    };
     const c = await open('pm7500');
     await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
     choose($(c, '#cfg-add-card')!, 'mach64_gx');
@@ -354,7 +360,8 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
     expect($(c, '#cfg-card-opt-pci_1-raster')).toBeNull();
   });
 
-  it('a card whose ROM is missing is offered disabled, with the reason', async () => {
+  // S1018-51: the list marks each such card, instead of a note under it.
+  it('a card whose ROM is missing is marked in the list; chosen, it says why and cannot be added', async () => {
     fake.patch = (id, t) => {
       if (id !== 'pm9500') return;
       const cards = t.cards as Array<Record<string, unknown>>;
@@ -362,10 +369,31 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
     };
     const c = await open('pm9500');
     expect(c.textContent).toContain('It will start with no screen');
+    // No note under the section names the card before the list is opened.
+    expect(c.textContent).not.toContain('expansion ROM (.prom)');
     await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
     const opt = Array.from($(c, '#cfg-add-card')!.options).find((o) => o.value === 'mach64_gx')!;
-    expect(opt.disabled).toBe(true);
-    expect(opt.textContent).toContain('expansion ROM (.prom)');
+    expect(opt.dataset.badge).toBe('ROM needed');
+    expect(opt.dataset.badgeIntent).toBe('warning');
+    choose($(c, '#cfg-add-card')!, 'mach64_gx');
+    await waitFor(() =>
+      expect(c.querySelector('[data-testid="cfg-add-card-needs"]')?.textContent).toContain(
+        'expansion ROM (.prom)',
+      ),
+    );
+    expect(c.querySelector('[data-testid="cfg-add-card-needs"]')?.textContent).toContain(
+      'Load ROM…',
+    );
+    expect((button(c, 'Add') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a card on the substitute ROM is marked in the list', async () => {
+    const c = await open('iici');
+    await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
+    const opt = Array.from($(c, '#cfg-add-card')!.options).find((o) => o.value === 'mdc_8_24')!;
+    expect(opt.dataset.badge).toBe('Substitute ROM');
+    expect(opt.disabled).toBe(false);
+    expect(c.querySelector('[data-testid="cfg-add-card-needs"]')).toBeNull();
   });
 });
 

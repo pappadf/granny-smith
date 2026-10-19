@@ -784,7 +784,8 @@ typed-dispatch and introspection surface.
 - **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
-  → bool.
+  → bool.  **`machine.scsi.identify_iso(path)`** → bool: the image holds ISO
+  9660, what a drop files a CD-ROM by (`validateUnstated` in lib/media.ts).
 - **`files.archive.identify(path)`** → the archive format (`sit`, `cpt`,
   `zip`, `hqx`, `bin`, `gz`) or an empty string.
   **`files.archive.extract(path, out_dir)`** → bool; powers the

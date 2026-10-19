@@ -343,3 +343,19 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     },
   },
 };
+
+// Validate the file at `path` as `id` for an upload of no stated kind (a
+// drop, Home's Load ROM): as MEDIA_TYPES[id] does, except that a CD-ROM is
+// only an image holding ISO 9660.  A bare HFS or partitioned image is a hard
+// disk then (S1018-06): the CD-ROM section's own Add, which validates with
+// MEDIA_TYPES.cdrom, still takes one as a disc.
+export async function validateUnstated(
+  id: MediaTypeId,
+  path: string,
+  gsEval: GsEval,
+): Promise<ValidateResult> {
+  const result = await MEDIA_TYPES[id].validate(path, gsEval);
+  if (id !== 'cdrom' || !result.valid) return result;
+  if ((await gsEval('machine.scsi.identify_iso', [path])) === true) return result;
+  return { valid: false };
+}

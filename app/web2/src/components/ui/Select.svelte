@@ -4,13 +4,14 @@
   // click, Enter, Space or an arrow key opens a menu of the options, and
   // choosing one sets the select's value and fires its input and change
   // events.  On touch the platform's picker stays.  Children are the
-  // <option>s.
+  // <option>s; one's `data-badge` (tinted by `data-badge-intent`) is drawn
+  // as a pill beside it in the menu.
   // `class` and `style` (layout only) land on the wrapper; every other
   // attribute (id, onchange, aria-label…) reaches the <select>.
   import type { Snippet } from 'svelte';
   import type { HTMLSelectAttributes } from 'svelte/elements';
   import Icon from '@/components/common/Icon.svelte';
-  import { openContextMenu } from '@/components/common/ContextMenu.svelte';
+  import { openContextMenu, type BadgeIntent } from '@/components/common/ContextMenu.svelte';
 
   interface Props extends Omit<HTMLSelectAttributes, 'size' | 'value' | 'children'> {
     value?: unknown;
@@ -52,6 +53,8 @@
         label: o.text,
         checked: i === el.selectedIndex,
         disabled: o.disabled,
+        badge: o.dataset.badge,
+        badgeIntent: o.dataset.badgeIntent as BadgeIntent | undefined,
         action: () => choose(el, i),
       })),
       r.left,

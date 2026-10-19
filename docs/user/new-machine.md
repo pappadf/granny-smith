@@ -54,11 +54,12 @@ whether the monitor is plugged into it (**connected** / **no monitor**).
 2. Remove a card with its **×**.
 
 NuBus cards: Macintosh Display Card 8•24, 24AC and 8•24 GC. PCI cards:
-the Apple Accelerated PCI Graphics Card and the 3dfx Voodoo2. A card
-marked *substitute* runs on Granny Smith's own declaration ROM because you
-have not loaded Apple's; load the card's ROM with **Load ROM...** to use
-the original. A card marked *unavailable* needs a ROM that has not been
-loaded.
+the Apple Accelerated PCI Graphics Card and the 3dfx Voodoo2. In the card
+list, a card marked **Substitute ROM** runs on Granny Smith's own
+declaration ROM because you have not loaded Apple's; once added, load the
+card's ROM with **Load ROM...** to use the original. A card marked **ROM
+needed** cannot be added until its ROM is loaded: choose it, and the form
+says which ROM it needs and offers **Load ROM...**.
 
 ## 4. Floppy drives
 
