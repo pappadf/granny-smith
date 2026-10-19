@@ -56,11 +56,7 @@ void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
     uint32_t start_page = ov->rom_base >> MEM_PAGE_SHIFT;
     uint32_t end_page = ov->rom_end >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
-        g_page_table[p].host_base = NULL;
-        g_page_table[p].dev = &ov->iface;
-        g_page_table[p].dev_context = ov;
-        g_page_table[p].base_addr = ov->rom_base;
-        g_page_table[p].writable = false;
+        memory_page_set_device(p, &ov->iface, ov, ov->rom_base);
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
         if (g_supervisor_write)

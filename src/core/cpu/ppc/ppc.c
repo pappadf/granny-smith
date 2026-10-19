@@ -124,11 +124,41 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
 
 // Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
 // both 32-bit after reduction) and is exact over any interval.
+//
+// The guest polls the timebase in tight loops (mftb), so consecutive reads
+// are usually less than tick_div cycles apart: the quotient and remainder of
+// the last read carry forward without a 64-bit division.  The cache is pure
+// arithmetic on (cycles, tick_div), so any CPU, a restore or a reset may use
+// it; anything else recomputes.
+static struct {
+    uint64_t cycles, q;
+    uint32_t r, div;
+} g_tick_cache;
+
 uint64_t ppc_ticks_now(ppc_t *p) {
     if (!p->tick_mul || !p->scheduler)
         return 0;
     uint64_t cycles = scheduler_cpu_cycles(p->scheduler);
-    return (cycles / p->tick_div) * p->tick_mul + (cycles % p->tick_div) * p->tick_mul / p->tick_div;
+    uint32_t div = p->tick_div;
+    uint64_t q, d = cycles - g_tick_cache.cycles;
+    uint32_t r;
+    if (g_tick_cache.div == div && cycles >= g_tick_cache.cycles && d < div && div <= 0x80000000u) {
+        q = g_tick_cache.q; // the last read's division, advanced by under one divisor
+        r = g_tick_cache.r + (uint32_t)d;
+        if (r >= div) {
+            r -= div;
+            q++;
+        }
+    } else {
+        q = cycles / div;
+        r = (uint32_t)(cycles % div);
+    }
+    g_tick_cache.cycles = cycles;
+    g_tick_cache.q = q;
+    g_tick_cache.r = r;
+    g_tick_cache.div = div;
+    // q*mul + r*mul/div: the remainder's share is zero when mul is 1 (r < div)
+    return q * p->tick_mul + (p->tick_mul == 1 ? 0 : (uint64_t)r * p->tick_mul / div);
 }
 
 // RTCL advances 128 units per 7.8336 MHz tick and rolls into RTCU at 10^9
@@ -953,12 +983,14 @@ memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
     // them with the blocks when the pool is freed.
     g_pd_pool_freed_hook = ppc_mmu_flush_fetch;
     // The user SoA arrays carry this MMU's logical fills — the generic
-    // identity-restore paths must leave them alone (memory.h).
+    // identity-restore paths must leave them alone (memory.h).  Real-mode
+    // device pages go in the physical view's tables too.
     return (memory_cpu_hooks_t){.user_soa_reserved = true,
                                 .map_changed = ppc_fastpath_changed,
                                 .logical_xlate = ppc_hook_logical_xlate,
                                 .selected = ppc_hook_selected,
-                                .ctx = p};
+                                .ctx = p,
+                                .dev_entries_phys = true};
 }
 
 #include "ppc_pd_ids.h"

@@ -28,6 +28,11 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
     predecode_count_decode(PD_ARCH_PPC, e.id);
 }
 
+// The dispatched entry's guest address, set by every entry that reads it or
+// may end the sprint on it; the register-only T0 entries never read it, so
+// they skip it (retire_plain sets it when the sprint ends on one).
+#define PPD_SET_IPC() (ipc = (uint32_t)((uintptr_t)cur >> 1) + ipc_bias)
+
 // Register access by byte offset.
 #define PPD_R(off) (*(uint32_t *)((uint8_t *)p + (off)))
 
@@ -120,6 +125,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_LS_BEGIN(ID)                                                                                               \
     case ID: {                                                                                                         \
         PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));                                                                   \
+        PPD_SET_IPC();                                                                                                 \
         uint32_t ea = PPD_R(e.b) + e.c;                                                                                \
         uint32_t xa = ea;                                                                                              \
         uint32_t iw = blk->raw32[cur - blk->e];                                                                        \
@@ -128,12 +134,13 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_LS_END()                                                                                                   \
     if (__builtin_expect(g_ppc_fetch.blk != blk || g_ppc_fetch.span != MEM_PAGE_SIZE, 0))                              \
         goto retire_relookup;                                                                                          \
-    PPD_ADVANCE();                                                                                                     \
+    cur++;                                                                                                             \
+    goto retire_access;                                                                                                \
     }
 #define PPD_LOAD(ID, SZ, BITS, EXT, UPD)                                                                               \
     PPD_LS_BEGIN(ID)                                                                                                   \
     uint64_t lv_ = 0;                                                                                                  \
-    int lg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, false, &lv_);                                                        \
+    int lg_ = ppc_scalar_gate_int_inl(p, iw, &xa, SZ, false, &lv_);                                                    \
     if (lg_ < 0)                                                                                                       \
         goto retire_relookup;                                                                                          \
     uint32_t v_ = EXT(lg_ ? (uint##BITS##_t)lv_ : memory_read_uint##BITS(xa));                                         \
@@ -154,7 +161,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_STORE(ID, SZ, BITS, UPD)                                                                                   \
     PPD_LS_BEGIN(ID)                                                                                                   \
     uint64_t sv_ = PPD_R(e.a);                                                                                         \
-    int sg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, true, &sv_);                                                         \
+    int sg_ = ppc_scalar_gate_int_inl(p, iw, &xa, SZ, true, &sv_);                                                     \
     if (sg_ < 0)                                                                                                       \
         goto retire_relookup;                                                                                          \
     if (!sg_)                                                                                                          \
@@ -213,6 +220,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
         uint32_t iw = e.c;                                                                                             \
         (void)iw;                                                                                                      \
         PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));                                                                   \
+        PPD_SET_IPC();                                                                                                 \
         p->instruction_pc = ipc;                                                                                       \
         p->pc = ipc + 4;                                                                                               \
         OPX;                                                                                                           \
@@ -251,226 +259,266 @@ static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
 top:
     if (*instructions == 0)
         goto done;
-dispatch:
-    // Level-sensitive interrupt inputs re-checked at every boundary (as the
-    // switch loop does); taking one redirects the PC.
+irq_check:
+    // Level-sensitive interrupt inputs re-checked at the boundary (as the
+    // switch loop does at every one); taking one redirects the PC.  The
+    // condition is false at every boundary once checked (delivery clears
+    // MSR[EE]), and the inputs change only between sprints or through an
+    // instruction that writes the MSR or DEC or touches a device: a branch,
+    // a T1 leaf, the generic tier, or a load or store.  So the register-only
+    // T0 entries skip the test (retire_plain); every other entry gets it
+    // (retire_access, and the paths through top).  An interrupt is taken on
+    // exactly the boundary the switch loop takes it on.
     if (__builtin_expect((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE), 0)) {
         p->pc = page_lo + ((uint32_t)(cur - blk->e) << 2);
         ppc_poll_interrupt(p);
         goto relookup;
     }
-    ipc = (uint32_t)((uintptr_t)cur >> 1) + ipc_bias;
-    {
-        pd_entry_t e = *cur;
-        uint16_t id = e.id;
-    redispatch:
+dispatch: {
+    pd_entry_t e = *cur;
+    uint16_t id = e.id;
+redispatch:
 #ifdef PD_PROFILE
-        if (g_pd_prof_exec && id != PD_UNDECODED)
-            g_pd_prof_exec[id]++;
+    if (g_pd_prof_exec && id != PD_UNDECODED)
+        g_pd_prof_exec[id]++;
 #endif
-        switch (id) {
-        case PD_UNDECODED:
-            ppc_pd_decode(blk, (uint32_t)(cur - blk->e), page_lo);
-            e = *cur;
-            id = e.id;
-            goto redispatch;
+    switch (id) {
+    case PD_UNDECODED:
+        ppc_pd_decode(blk, (uint32_t)(cur - blk->e), page_lo);
+        e = *cur;
+        id = e.id;
+        goto redispatch;
 
-        case PD_CROSS:
-            g_pd_stats.generic_cross++;
-            p->pc = ipc;
-            goto t2_step;
-        case PD_GENERIC:
-            g_pd_stats.generic_declined++;
-            p->pc = ipc;
-            goto t2_step;
+    case PD_CROSS:
+        PPD_SET_IPC();
+        g_pd_stats.generic_cross++;
+        p->pc = ipc;
+        goto t2_step;
+    case PD_GENERIC:
+        PPD_SET_IPC();
+        g_pd_stats.generic_declined++;
+        p->pc = ipc;
+        goto t2_step;
 
-        case PD_PAGE_END:
-            // Fell off the page: no instruction ran; continue on the next page.
-            p->pc = ipc;
-            goto relookup;
+    case PD_PAGE_END:
+        PPD_SET_IPC();
+        // Fell off the page: no instruction ran; continue on the next page.
+        p->pc = ipc;
+        goto relookup;
 
-            // ---- T0: register arithmetic and logic ----
-            PPD_PAIR(PPD_ADD, PPD_B_ADD)
-            PPD_PAIR(PPD_SUBF, PPD_B_SUBF)
-            PPD_PAIR(PPD_MULLW, PPD_B_MULLW)
-            PPD_PAIR(PPD_NEG, PPD_B_NEG)
-            PPD_PAIR(PPD_AND, PPD_B_AND)
-            PPD_PAIR(PPD_ANDC, PPD_B_ANDC)
-            PPD_PAIR(PPD_OR, PPD_B_OR)
-            PPD_PAIR(PPD_NOR, PPD_B_NOR)
-            PPD_PAIR(PPD_XOR, PPD_B_XOR)
-            PPD_PAIR(PPD_SLW, PPD_B_SLW)
-            PPD_PAIR(PPD_SRW, PPD_B_SRW)
-            PPD_PAIR(PPD_EXTSB, PPD_B_EXTSB)
-            PPD_PAIR(PPD_EXTSH, PPD_B_EXTSH)
-            PPD_PAIR(PPD_CNTLZW, PPD_B_CNTLZW)
-            PPD_PAIR(PPD_SRAWI, PPD_B_SRAWI)
-            PPD_PAIR(PPD_RLWINM, PPD_B_RLWINM)
-            PPD_PAIR(PPD_RLWIMI, PPD_B_RLWIMI)
-            PPD_PAIR(PPD_RLWNM, PPD_B_RLWNM)
+        // ---- T0: register arithmetic and logic ----
+        PPD_PAIR(PPD_ADD, PPD_B_ADD)
+        PPD_PAIR(PPD_SUBF, PPD_B_SUBF)
+        PPD_PAIR(PPD_MULLW, PPD_B_MULLW)
+        PPD_PAIR(PPD_NEG, PPD_B_NEG)
+        PPD_PAIR(PPD_AND, PPD_B_AND)
+        PPD_PAIR(PPD_ANDC, PPD_B_ANDC)
+        PPD_PAIR(PPD_OR, PPD_B_OR)
+        PPD_PAIR(PPD_NOR, PPD_B_NOR)
+        PPD_PAIR(PPD_XOR, PPD_B_XOR)
+        PPD_PAIR(PPD_SLW, PPD_B_SLW)
+        PPD_PAIR(PPD_SRW, PPD_B_SRW)
+        PPD_PAIR(PPD_EXTSB, PPD_B_EXTSB)
+        PPD_PAIR(PPD_EXTSH, PPD_B_EXTSH)
+        PPD_PAIR(PPD_CNTLZW, PPD_B_CNTLZW)
+        PPD_PAIR(PPD_SRAWI, PPD_B_SRAWI)
+        PPD_PAIR(PPD_RLWINM, PPD_B_RLWINM)
+        PPD_PAIR(PPD_RLWIMI, PPD_B_RLWIMI)
+        PPD_PAIR(PPD_RLWNM, PPD_B_RLWNM)
 
-            // ---- T0: immediates ----
-            PPD_CASE(PPD_ADDI, PPD_R(e.a) = PPD_R(e.b) + e.c)
-            PPD_CASE(PPD_LI, PPD_R(e.a) = e.c)
-            PPD_CASE(PPD_MULLI, PPD_R(e.a) = (uint32_t)((int64_t)(int32_t)PPD_R(e.b) * (int32_t)e.c))
-            PPD_CASE(PPD_ORI, PPD_R(e.a) = PPD_R(e.b) | e.c)
-            PPD_CASE(PPD_XORI, PPD_R(e.a) = PPD_R(e.b) ^ e.c)
-            PPD_CASE(PPD_ANDI_RC, PPD_REC(e.a, PPD_R(e.b) & e.c, 1))
-            PPD_CASE(PPD_ADDIC, PPD_R(e.a) = ppc_add_body(p, PPD_R(e.b), e.c, 0, true, false))
-            PPD_CASE(PPD_ADDIC_RC, PPD_REC(e.a, ppc_add_body(p, PPD_R(e.b), e.c, 0, true, false), 1))
-            PPD_CASE(PPD_SUBFIC, PPD_R(e.a) = ppc_subf_body(p, PPD_R(e.b), e.c, 1, true, false))
+        // ---- T0: immediates ----
+        PPD_CASE(PPD_ADDI, PPD_R(e.a) = PPD_R(e.b) + e.c)
+        PPD_CASE(PPD_LI, PPD_R(e.a) = e.c)
+        PPD_CASE(PPD_MULLI, PPD_R(e.a) = (uint32_t)((int64_t)(int32_t)PPD_R(e.b) * (int32_t)e.c))
+        PPD_CASE(PPD_ORI, PPD_R(e.a) = PPD_R(e.b) | e.c)
+        PPD_CASE(PPD_XORI, PPD_R(e.a) = PPD_R(e.b) ^ e.c)
+        PPD_CASE(PPD_ANDI_RC, PPD_REC(e.a, PPD_R(e.b) & e.c, 1))
+        PPD_CASE(PPD_ADDIC, PPD_R(e.a) = ppc_add_body(p, PPD_R(e.b), e.c, 0, true, false))
+        PPD_CASE(PPD_ADDIC_RC, PPD_REC(e.a, ppc_add_body(p, PPD_R(e.b), e.c, 0, true, false), 1))
+        PPD_CASE(PPD_SUBFIC, PPD_R(e.a) = ppc_subf_body(p, PPD_R(e.b), e.c, 1, true, false))
 
-            // ---- T0: compares ----
-            PPD_CASE(PPD_CMPWI, ppc_cmp_signed(p, e.a, (int32_t)PPD_R(e.b), (int32_t)e.c))
-            PPD_CASE(PPD_CMPLWI, ppc_cmp_unsigned(p, e.a, PPD_R(e.b), e.c))
-            PPD_CASE(PPD_CMPW, ppc_cmp_signed(p, e.a, (int32_t)PPD_R(e.b), (int32_t)PPD_R(e.c)))
-            PPD_CASE(PPD_CMPLW, ppc_cmp_unsigned(p, e.a, PPD_R(e.b), PPD_R(e.c)))
+        // ---- T0: compares ----
+        PPD_CASE(PPD_CMPWI, ppc_cmp_signed(p, e.a, (int32_t)PPD_R(e.b), (int32_t)e.c))
+        PPD_CASE(PPD_CMPLWI, ppc_cmp_unsigned(p, e.a, PPD_R(e.b), e.c))
+        PPD_CASE(PPD_CMPW, ppc_cmp_signed(p, e.a, (int32_t)PPD_R(e.b), (int32_t)PPD_R(e.c)))
+        PPD_CASE(PPD_CMPLW, ppc_cmp_unsigned(p, e.a, PPD_R(e.b), PPD_R(e.c)))
 
-            // ---- T0: SPR / CR moves ----
-            PPD_CASE(PPD_MFLR, PPD_R(e.a) = p->lr)
-            PPD_CASE(PPD_MTLR, p->lr = PPD_R(e.a))
-            PPD_CASE(PPD_MFCTR, PPD_R(e.a) = p->ctr)
-            PPD_CASE(PPD_MTCTR, p->ctr = PPD_R(e.a))
-            PPD_CASE(PPD_MFXER, PPD_R(e.a) = p->xer)
-            // The 601's XER reserved bits (3-15, 24) read as zero (MPC601UM
-            // 2.2.5.2); the 604 keeps what was written -- as ppc_mtspr.
-            PPD_CASE(PPD_MTXER, p->xer = ppc_is_604(p) ? PPD_R(e.a)
-                                                       : (PPD_R(e.a) & (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA |
-                                                                        PPC_XER_CMPBYTE | PPC_XER_BYTES)))
-            PPD_CASE(PPD_MFCR, PPD_R(e.a) = p->cr)
-            PPD_CASE(PPD_MTCRF, p->cr = (PPD_R(e.a) & e.c) | (p->cr & ~e.c))
-            PPD_CROP(PPD_CRAND, a & b)
-            PPD_CROP(PPD_CRANDC, a & ~b)
-            PPD_CROP(PPD_CROR, a | b)
-            PPD_CROP(PPD_CRORC, a | ~b)
-            PPD_CROP(PPD_CRXOR, a ^ b)
-            PPD_CROP(PPD_CREQV, ~(a ^ b))
-            PPD_CROP(PPD_CRNAND, ~(a & b))
-            PPD_CROP(PPD_CRNOR, ~(a | b))
-            PPD_CASE(PPD_MCRF, ppc_set_cr_field(p, e.a, ppc_get_cr_field(p, e.b)))
-            PPD_CASE(PPD_NOP, (void)0)
-            PPD_CASE(PPD_ISYNC, ppc_context_sync(p))
+        // ---- T0: SPR / CR moves ----
+        PPD_CASE(PPD_MFLR, PPD_R(e.a) = p->lr)
+        PPD_CASE(PPD_MTLR, p->lr = PPD_R(e.a))
+        PPD_CASE(PPD_MFCTR, PPD_R(e.a) = p->ctr)
+        PPD_CASE(PPD_MTCTR, p->ctr = PPD_R(e.a))
+        PPD_CASE(PPD_MFXER, PPD_R(e.a) = p->xer)
+        // The 601's XER reserved bits (3-15, 24) read as zero (MPC601UM
+        // 2.2.5.2); the 604 keeps what was written -- as ppc_mtspr.
+        PPD_CASE(PPD_MTXER,
+                 p->xer = ppc_is_604(p)
+                              ? PPD_R(e.a)
+                              : (PPD_R(e.a) & (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA | PPC_XER_CMPBYTE | PPC_XER_BYTES)))
+        PPD_CASE(PPD_MFCR, PPD_R(e.a) = p->cr)
+        PPD_CASE(PPD_MTCRF, p->cr = (PPD_R(e.a) & e.c) | (p->cr & ~e.c))
+        PPD_CROP(PPD_CRAND, a & b)
+        PPD_CROP(PPD_CRANDC, a & ~b)
+        PPD_CROP(PPD_CROR, a | b)
+        PPD_CROP(PPD_CRORC, a | ~b)
+        PPD_CROP(PPD_CRXOR, a ^ b)
+        PPD_CROP(PPD_CREQV, ~(a ^ b))
+        PPD_CROP(PPD_CRNAND, ~(a & b))
+        PPD_CROP(PPD_CRNOR, ~(a | b))
+        PPD_CASE(PPD_MCRF, ppc_set_cr_field(p, e.a, ppc_get_cr_field(p, e.b)))
+        PPD_CASE(PPD_NOP, (void)0)
+        PPD_CASE(PPD_ISYNC, ppc_context_sync(p))
 
-            // ---- T0: D-form loads and stores (rA != 0) ----
-            // The T1 bodies (CHKA gate, XLT for bytes, update order) with the
-            // fields pre-extracted.  instruction_pc and pc are set as T1 does,
-            // for the exceptions and slow paths the access may take; the raw
-            // word (the DSISR and alignment images need it) comes from the
-            // shadow.  A raised exception moved the PC: retire_relookup, as
-            // T1.  An access with side effects (a device store remapping
-            // memory) may have flushed the fetch window: then relookup too.
-            PPD_LOAD(PPD_LWZ, 4, 32, (uint32_t), 0)
-            PPD_LOAD(PPD_LWZU, 4, 32, (uint32_t), 1)
-            PPD_LOAD(PPD_LHZ, 2, 16, (uint32_t), 0)
-            PPD_LOAD(PPD_LHZU, 2, 16, (uint32_t), 1)
-            PPD_LOAD(PPD_LHA, 2, 16, (uint32_t)(int32_t)(int16_t), 0)
-            PPD_LOAD(PPD_LHAU, 2, 16, (uint32_t)(int32_t)(int16_t), 1)
-            PPD_LOAD_BYTE(PPD_LBZ, 0)
-            PPD_LOAD_BYTE(PPD_LBZU, 1)
-            PPD_STORE(PPD_STW, 4, 32, 0)
-            PPD_STORE(PPD_STWU, 4, 32, 1)
-            PPD_STORE(PPD_STH, 2, 16, 0)
-            PPD_STORE(PPD_STHU, 2, 16, 1)
-            PPD_STORE_BYTE(PPD_STB, 0)
-            PPD_STORE_BYTE(PPD_STBU, 1)
+        // ---- T0: D-form loads and stores (rA != 0) ----
+        // The T1 bodies (CHKA gate, XLT for bytes, update order) with the
+        // fields pre-extracted.  instruction_pc and pc are set as T1 does,
+        // for the exceptions and slow paths the access may take; the raw
+        // word (the DSISR and alignment images need it) comes from the
+        // shadow.  A raised exception moved the PC: retire_relookup, as
+        // T1.  An access with side effects (a device store remapping
+        // memory) may have flushed the fetch window: then relookup too.
+        PPD_LOAD(PPD_LWZ, 4, 32, (uint32_t), 0)
+        PPD_LOAD(PPD_LWZU, 4, 32, (uint32_t), 1)
+        PPD_LOAD(PPD_LHZ, 2, 16, (uint32_t), 0)
+        PPD_LOAD(PPD_LHZU, 2, 16, (uint32_t), 1)
+        PPD_LOAD(PPD_LHA, 2, 16, (uint32_t)(int32_t)(int16_t), 0)
+        PPD_LOAD(PPD_LHAU, 2, 16, (uint32_t)(int32_t)(int16_t), 1)
+        PPD_LOAD_BYTE(PPD_LBZ, 0)
+        PPD_LOAD_BYTE(PPD_LBZU, 1)
+        PPD_STORE(PPD_STW, 4, 32, 0)
+        PPD_STORE(PPD_STWU, 4, 32, 1)
+        PPD_STORE(PPD_STH, 2, 16, 0)
+        PPD_STORE(PPD_STHU, 2, 16, 1)
+        PPD_STORE_BYTE(PPD_STB, 0)
+        PPD_STORE_BYTE(PPD_STBU, 1)
 
-            // ---- T0: branches (the 601 fold rule: a taken branch to itself burns a slot) ----
-        case PPD_B_IN: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        // ---- T0: branches (the 601 fold rule: a taken branch to itself burns a slot) ----
+    case PPD_B_IN: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
+    }
+    case PPD_B_OUT: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        PPD_JUMP_PC(e.c);
+    }
+    case PPD_BL_IN: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        p->lr = ipc + 4;
+        PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
+    }
+    case PPD_BL_OUT: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        p->lr = ipc + 4;
+        PPD_JUMP_PC(e.c);
+    }
+    case PPD_BDNZ_IN: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        p->ctr -= 1;
+        if (p->ctr != 0)
             PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-        }
-        case PPD_B_OUT: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        p->fold = 1; // not taken: falls through, still folds
+        PPD_NEXT();
+    }
+    case PPD_BDNZ_OUT: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        p->ctr -= 1;
+        if (p->ctr != 0)
             PPD_JUMP_PC(e.c);
-        }
-        case PPD_BL_IN: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            p->lr = ipc + 4;
+        p->fold = 1;
+        PPD_NEXT();
+    }
+    case PPD_BC_T_IN: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        if ((p->cr >> e.a) & 1u)
             PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-        }
-        case PPD_BL_OUT: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            p->lr = ipc + 4;
+        p->fold = 1;
+        PPD_NEXT();
+    }
+    case PPD_BC_T_OUT: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        if ((p->cr >> e.a) & 1u)
             PPD_JUMP_PC(e.c);
-        }
-        case PPD_BDNZ_IN: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            p->ctr -= 1;
-            if (p->ctr != 0)
-                PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            p->fold = 1; // not taken: falls through, still folds
-            PPD_NEXT();
-        }
-        case PPD_BDNZ_OUT: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            p->ctr -= 1;
-            if (p->ctr != 0)
-                PPD_JUMP_PC(e.c);
-            p->fold = 1;
-            PPD_NEXT();
-        }
-        case PPD_BC_T_IN: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            if ((p->cr >> e.a) & 1u)
-                PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            p->fold = 1;
-            PPD_NEXT();
-        }
-        case PPD_BC_T_OUT: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            if ((p->cr >> e.a) & 1u)
-                PPD_JUMP_PC(e.c);
-            p->fold = 1;
-            PPD_NEXT();
-        }
-        case PPD_BC_F_IN: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            if (!((p->cr >> e.a) & 1u))
-                PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            p->fold = 1;
-            PPD_NEXT();
-        }
-        case PPD_BC_F_OUT: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            if (!((p->cr >> e.a) & 1u))
-                PPD_JUMP_PC(e.c);
-            p->fold = 1;
-            PPD_NEXT();
-        }
-        case PPD_BLR: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            uint32_t target = p->lr & ~3u;
-            p->fold = (target != ipc);
-            p->pc = target;
-            goto retire_relookup;
-        }
-        case PPD_BCTR: {
-            PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
-            uint32_t target = p->ctr & ~3u;
-            p->fold = (target != ipc);
-            p->pc = target;
-            goto retire_relookup;
-        }
+        p->fold = 1;
+        PPD_NEXT();
+    }
+    case PPD_BC_F_IN: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        if (!((p->cr >> e.a) & 1u))
+            PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
+        p->fold = 1;
+        PPD_NEXT();
+    }
+    case PPD_BC_F_OUT: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        if (!((p->cr >> e.a) & 1u))
+            PPD_JUMP_PC(e.c);
+        p->fold = 1;
+        PPD_NEXT();
+    }
+    case PPD_BLR: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        uint32_t target = p->lr & ~3u;
+        p->fold = (target != ipc);
+        p->pc = target;
+        goto retire_relookup;
+    }
+    case PPD_BCTR: {
+        PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
+        PPD_SET_IPC();
+        uint32_t target = p->ctr & ~3u;
+        p->fold = (target != ipc);
+        p->pc = target;
+        goto retire_relookup;
+    }
 
-        // ---- T1: every leaf of the decode tree, flattened ----
+    // ---- T1: every leaf of the decode tree, flattened ----
 #include "ppc_pd_t1_cases.h"
 
-        default:
-            p->pc = ipc;
-            goto t2_step;
-        }
+    default:
+        PPD_SET_IPC();
+        p->pc = ipc;
+        goto t2_step;
     }
+}
     // T1 leaves: the body set p->pc (sequentially or by branching).
     goto retire_relookup;
 
 retire_plain:
-    // A non-branch entry: one read of the budget for the saturating
-    // decrement and the zero test, then straight past top's own test.
+    // A register-only entry: one read of the budget for the saturating
+    // decrement and the zero test, then straight past top's own tests (the
+    // interrupt test too: irq_check).
     {
         uint32_t n_ = *instructions;
         if (__builtin_expect(n_ > 1, 1)) {
             *instructions = n_ - 1;
             goto dispatch;
+        }
+        *instructions = 0;
+        cur--; // the sprint ends on this entry: done reports it
+        PPD_SET_IPC();
+        cur++;
+        goto done;
+    }
+
+retire_access:
+    // A load or store: as retire_plain, but a device access may have raised
+    // an interrupt input, so the boundary's interrupt test runs.
+    {
+        uint32_t n_ = *instructions;
+        if (__builtin_expect(n_ > 1, 1)) {
+            *instructions = n_ - 1;
+            goto irq_check;
         }
         *instructions = 0;
         goto done;

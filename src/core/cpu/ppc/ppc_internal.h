@@ -584,6 +584,23 @@ static inline int ppc_scalar_gate_inl(ppc_t *p, uint32_t iw, uint32_t *addr, uin
     return ppc_scalar_gate(p, iw, addr, size, store, val);
 }
 
+// The same for the integer D-form loads and stores of the predecoded loop
+// (lwz/lhz/lha/stw/sth and their update forms), which no model requires to
+// be word-aligned.  On the 604 and 750 with MSR[LE] clear, a misaligned
+// access that stays inside its page is an ordinary access (ppc_scalar_gate:
+// the hardware split is for page crossings only), so it is translated here
+// too.  The ROM's 68K emulator makes many such accesses (68K word
+// alignment).  Page crossings, LE mode and the 601's boundary rule still
+// take the full gate.
+static inline int ppc_scalar_gate_int_inl(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store,
+                                          uint64_t *val) {
+    uint32_t ea = *addr;
+    if (__builtin_expect(!(p->msr & PPC_MSR_LE), 1) &&
+        __builtin_expect(!(ea & (size - 1u)) || (ppc_is_604(p) && (ea & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size), 1))
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    return ppc_scalar_gate(p, iw, addr, size, store, val);
+}
+
 // Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
 // one-liner table: branches, divides with their deterministic-undefined
 // results, string transfers, and the store-conditional.

@@ -65,12 +65,9 @@ LOG_USE_CATEGORY_NAME("board");
 void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (page_index >= (uint32_t)g_page_count)
         return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
+    memory_page_set_host(page_index, host_ptr, writable);
     uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
     // Supervisor arrays hold the eager physical identity view; the user
     // arrays belong to the PPC MMU front end and are only cleared here.
     if (g_supervisor_read)
@@ -87,10 +84,7 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
 void gos_clear_page(uint32_t page_index) {
     if (page_index >= (uint32_t)g_page_count)
         return;
-    g_page_table[page_index].host_base = NULL;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = false;
+    memory_page_clear(page_index);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = 0;
     if (g_supervisor_write)

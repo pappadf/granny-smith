@@ -148,8 +148,8 @@ static display_t *plus_display(config_t *cfg) {
 static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
     if (p >= g_page_count)
         return;
-    uintptr_t adjusted = (uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT);
-    g_page_table[p].host_base = host_ptr;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT));
+    memory_page_set_host(p, host_ptr, g_page_table[p].writable);
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
