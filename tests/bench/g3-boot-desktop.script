@@ -1,0 +1,44 @@
+# g3-boot-desktop — a whole Mac OS 9.2.1 boot on the beige G3 (256 MB), from
+# power-on to the desktop: the ROM's start-up, the extension loading and the
+# desktop coming up, with the device polling, code loading and 68K emulator
+# work that the CPU-bound rows' windows leave out.  Run by
+# scripts/bench/scenario.py (docs/guide/BENCHMARKS.md, "Interactive
+# scenarios"); not a metric-A/B row.
+#
+# The disk is gs-test-data `systems/mac_os_9_2_1_516mb_g3.img`.
+#
+#   MODE=boot  attach the disk and save CKPT at power-on
+#   MODE=run   load CKPT and run the boot in three fixed stretches of
+#              scheduler slots (start-up, extensions, desktop), each printing
+#              one @@SCEN line with its host wall time and the guest
+#              instructions it retired
+#
+# Guard: the desktop is drawn (the whole screen's checksum) at the end, so a
+# boot that stopped short fails the run rather than timing something else.
+
+# Run `slots` scheduler slots and report the host time and the guest
+# instructions they took
+def scen_phase(name, slots) {
+    let w0 = scheduler.host_wall_ns
+    let i0 = machine.cpu.instr_count
+    scheduler.run $slots
+    let di = machine.cpu.instr_count - $i0
+    let ns = scheduler.host_wall_ns - $w0
+    echo "@@SCEN {\"phase\":\"${$name}\",\"ns\":${$ns},\"instr\":${$di}}"
+}
+
+if $MODE == "boot" {
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
+    checkpoint.save "${$CKPT}"
+    echo "@@SCEN {\"phase\":\"boot\",\"instr\":${machine.cpu.instr_count}}"
+} else {
+    checkpoint.load "${$CKPT}"
+    # The configuration under test (scenario.py's driver defines it)
+    try(scen_setup(), none)
+    scen_phase("startup", 2000000000)
+    scen_phase("extensions", 3000000000)
+    scen_phase("desktop", 3200000000)
+    assert machine.screen.checksum(0, 0, 480, 640) == 2648497283 "g3-boot-desktop: the desktop is not drawn (${machine.screen.checksum(0, 0, 480, 640)})"
+}
+quit
