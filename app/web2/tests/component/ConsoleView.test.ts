@@ -154,6 +154,29 @@ describe('ConsoleView', () => {
     expect(keys).toEqual(['a', 'b']);
   });
 
+  it('a map printed on several lines shows its first line and size, and only the size open', async () => {
+    const { container } = view();
+    job(6, [
+      { kind: 'value_begin', job: 6 },
+      { kind: 'output', job: 6, text: 'adb : 0\nfloppy : 15\nscsi : 2\n' },
+      { kind: 'value', job: 6, json: { adb: 0, floppy: 15, scsi: 2 } },
+    ]);
+    const tree = await waitFor(() => {
+      const d = container.querySelector('.entry.value details.value-tree');
+      expect(d).not.toBeNull();
+      return d as HTMLDetailsElement;
+    });
+    const summary = tree.querySelector('summary') as HTMLElement;
+    expect(summary.textContent).toBe('adb : 0 … 3 items');
+    tree.open = true;
+    tree.dispatchEvent(new Event('toggle'));
+    await waitFor(() => expect(summary.textContent).toBe('3 items'));
+    const keys = Array.from(tree.querySelectorAll(':scope > .kv > .kv-row > .kv-key')).map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(['adb', 'floppy', 'scsi']);
+  });
+
   it('Copy as commands copies the clicked command; Copy output its job', async () => {
     const { container } = view();
     const m = con.model;

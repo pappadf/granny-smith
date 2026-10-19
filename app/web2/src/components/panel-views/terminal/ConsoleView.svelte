@@ -309,8 +309,8 @@
         data-id={e.id}
       >
         {#if e.kind === 'value' && e.json !== undefined}
-          <ValueTree value={e.json} onlink={onObjectLink}>
-            {#snippet label()}{@render marked(e.text)}{/snippet}
+          <ValueTree value={e.json} text={e.text} onlink={onObjectLink}>
+            {#snippet label(t)}{@render marked(t)}{/snippet}
           </ValueTree>
         {:else if e.kind === 'command' && e.spans && !find.active}
           {#each highlightParts(e.text, e.spans) as p, i (i)}{#if p.cls}<span class="hl-{p.cls}"
