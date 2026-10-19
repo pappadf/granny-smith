@@ -121,7 +121,7 @@ describe('bus/debug against the real object-model paths', () => {
   });
 
   it('steps, and makes the panes re-fetch', async () => {
-    bridge.reply('debug.step', true);
+    bridge.reply('debug.step', null);
     const gen = debug.refreshGen;
     await stepInto(1);
     expect(bridge.calls).toEqual([{ path: 'debug.step', args: [1] }]);

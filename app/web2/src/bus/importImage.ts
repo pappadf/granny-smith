@@ -28,7 +28,7 @@
 // disk in memory, and the QCOW2 removed once the UDIF is stored.  Nothing
 // else keeps a QCOW2 -- the stored image is the UDIF.
 
-import { gsEval, gsEvalWithProgress, gsErrorText } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, gsOk } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
@@ -350,7 +350,7 @@ async function placeUdif(
     await gsEval('files.mkdir', [d.persistDir]);
     const dest = await uniquePath(d.persistDir, storedDmgName(name));
     const moved = await gsEval('files.mv', [part, dest]);
-    if (moved !== true) {
+    if (!gsOk(moved)) {
       showNotification(`Could not store ${name}: ${gsErrorText(moved)}`, 'error');
       await rmQuiet(part);
       return null;

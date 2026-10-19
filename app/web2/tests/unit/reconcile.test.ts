@@ -21,7 +21,7 @@ const RECONCILE_MARK = 'machine.id';
 // A running SE/30, as the core would answer after a boot or a restore.
 function se30(mode = 'paced'): void {
   bridge.reply('machine.boot', true);
-  bridge.reply('machine.restart', true);
+  bridge.reply('machine.restart', null);
   bridge.reply('machine.id', 'se30');
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);

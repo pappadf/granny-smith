@@ -938,7 +938,7 @@ export async function setCapsLock(on: boolean): Promise<void> {
   const r = await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', [
     'capslock',
   ]);
-  if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
+  if (!gsOk(r)) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
 // The status bar's engine menu: the CPU engine the next instructions run on.

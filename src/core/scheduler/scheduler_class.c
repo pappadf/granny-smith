@@ -178,7 +178,7 @@ static DEF_METHOD(sched_method_run) {
     uint64_t instructions = (argc >= 1) ? argv[0].u : 0; // 0 = run-until-stopped
     if (!scheduler_run_with_budget(s, instructions))
         return val_err("scheduler.run: instruction count too large");
-    return val_bool(true);
+    return val_none();
 }
 
 static DEF_METHOD(sched_method_stop) {
@@ -274,7 +274,7 @@ static const member_t scheduler_members[] = {
      .name = "run",
      .examples = EXAMPLES("scheduler.run", "scheduler.run 20000000"),
      .doc = "Start execution; with an instruction budget, stop after that many",
-     .method = {.args = sched_run_args, .nargs = 1, .result = VK_BOOL, .fn = sched_method_run}},
+     .method = {.args = sched_run_args, .nargs = 1, .result = VK_NONE, .fn = sched_method_run}},
     {.kind = MK_METHOD,
      .name = "stop",
      .examples = EXAMPLES("scheduler.stop"),

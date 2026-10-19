@@ -217,7 +217,7 @@ static void on_complete(atp_request_handle_t *h, atp_request_result_t result, vo
     if (g_s.eof) {
         g_s.eof = false;
         LOG(2, "imagewriter pap: EOF, job complete");
-        iw_printer_end_job(iw_printer_localtalk());
+        iw_printer_end_network_job(iw_printer_localtalk(), false);
         release_credits();
         // The workstation closes the connection, or sends the next job
     }
@@ -225,7 +225,7 @@ static void on_complete(atp_request_handle_t *h, atp_request_result_t result, vo
 }
 
 // End the connection (optionally telling the workstation); a job cut off
-// ends with what arrived.
+// ends with what arrived, and the next job starts on a new page.
 static void iw_pap_close(bool notify) {
     if (!g_s.active) {
         session_reset();
@@ -244,9 +244,7 @@ static void iw_pap_close(bool notify) {
         atp_request_submit(&params, &cb, NULL);
     }
     release_credits();
-    iw_printer_t *p = iw_printer_localtalk();
-    if (p && iw_printer_busy(p))
-        iw_printer_end_job(p);
+    iw_printer_end_network_job(iw_printer_localtalk(), true);
     session_reset();
 }
 

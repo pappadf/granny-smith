@@ -10,7 +10,7 @@ describe('Save State', () => {
   beforeEach(() => bridge.reset());
 
   it('reports success only when both the save and the download worked', async () => {
-    bridge.reply('checkpoint.save', true).reply('files.download', true).reply('files.rm', true);
+    bridge.reply('checkpoint.save', true).reply('files.download', true).reply('files.rm', null);
     const res = await saveCheckpoint();
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.name).toMatch(/^saved-state-\d{8}-\d{6}\.bin$/);
@@ -24,12 +24,12 @@ describe('Save State', () => {
   });
 
   it('reports a failed download', async () => {
-    bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', true);
+    bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', null);
     expect(await saveCheckpoint()).toMatchObject({ ok: false, step: 'save to computer' });
   });
 
   it('saves in a scratch directory of its own, under the name it downloads as', async () => {
-    bridge.reply('checkpoint.save', true).reply('files.download', true).reply('files.rm', true);
+    bridge.reply('checkpoint.save', true).reply('files.download', true).reply('files.rm', null);
     const res = await saveCheckpoint();
     const saved = bridge.calls.find((c) => c.path === 'checkpoint.save')!.args![0] as string;
     const dir = saved.slice(0, saved.lastIndexOf('/'));
@@ -40,11 +40,11 @@ describe('Save State', () => {
   });
 
   it('removes the scratch copy on every exit, a failed save included', async () => {
-    bridge.reply('checkpoint.save', false).reply('files.rm', true);
+    bridge.reply('checkpoint.save', false).reply('files.rm', null);
     await saveCheckpoint();
     expect(bridge.calls.at(-1)?.path).toBe('files.rm');
     bridge.reset();
-    bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', true);
+    bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', null);
     await saveCheckpoint();
     expect(bridge.calls.at(-1)?.path).toBe('files.rm');
   });

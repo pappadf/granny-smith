@@ -35,7 +35,7 @@
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
 // through the worker (files.mv/files.rm).
 
-import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
+import { gsEval, gsErrorText, gsOk, isModuleReady, whenModuleReady } from './emulator';
 import { routePrintLine } from './logSink';
 import { xferChunkBytes, xferReadAll, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
@@ -695,8 +695,8 @@ async function persist(
   // ("could not be stored") when a drive had it open.  Anything else is
   // moved, not copied, so storing never holds the file twice.
   if (!same) {
-    const ok =
-      (await gsEval(inArchive ? 'files.cp' : 'files.mv', [sourcePath, finalPath])) === true;
+    // files.mv answers nothing on success, files.cp true: gsOk covers both
+    const ok = gsOk(await gsEval(inArchive ? 'files.cp' : 'files.mv', [sourcePath, finalPath]));
     if (!ok) {
       if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
       return null;

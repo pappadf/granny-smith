@@ -280,7 +280,7 @@ export async function forgetMachine(): Promise<void> {
 // destroyed them.  There is nothing to re-assert; only run it.
 export async function restartEmulator(): Promise<void> {
   const ok = await gsEval('machine.restart');
-  if (ok !== true) {
+  if (!gsOk(ok)) {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }

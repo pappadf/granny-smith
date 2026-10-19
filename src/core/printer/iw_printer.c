@@ -405,6 +405,15 @@ void iw_printer_end_job(iw_printer_t *p) {
     job_end(p);
 }
 
+void iw_printer_end_network_job(iw_printer_t *p, bool abandoned) {
+    if (!p || !p->job.job_active)
+        return;
+    uint32_t jobs = p->job.jobs; // a document delivered counts a job
+    iw_printer_end_job(p);
+    if (abandoned || p->job.jobs == jobs)
+        iw_interp_top_of_form(&p->interp);
+}
+
 // Interpret `len` bytes, starting a job on the first and splitting jobs at a
 // long CAN run.
 static void interpret(iw_printer_t *p, const uint8_t *data, size_t len) {

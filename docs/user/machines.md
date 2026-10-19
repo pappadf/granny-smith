@@ -102,14 +102,15 @@ you can connect to your camera and microphone — see
 | Power Mac 6100 | `pm6100` | 16 MB; 8–72 MB | built-in (13″, 15″ Portrait, 12″) | SCSI hard disk, CD-ROM | — |
 | Power Mac 7100 | `pm7100` | 24 MB; 8–136 MB | built-in | SCSI: two hard disks, CD-ROM | NuBus B–D |
 | Power Mac 8100 | `pm8100` | 32 MB; 8–264 MB | built-in | SCSI, CD-ROM | NuBus B–D |
-| Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays | PCI A1–C1 |
-| Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays | PCI A1–C1 |
-| Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays | PCI A1–F2 |
+| Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays; CD-ROM | PCI A1–F2 |
 | Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM; two ATA buses (hard disks, ATAPI CD-ROM) | PCI A1–C1 |
 | Power Mac G3 Minitower | `pmg3mt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | as the Desktop | PCI A1–C1 |
 
-Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have no CD-ROM
-drive in their default configuration. PCI cards you can add: the **Apple
+Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have their
+CD-ROM drive at ID 3 on a second SCSI bus, the one that also goes to the
+external connector; the hard disk bays are on the fast internal bus. PCI cards you can add: the **Apple
 Accelerated PCI Graphics Card** (ATI Mach64 GX) and the **3dfx Voodoo2** 3D
 card.
 
