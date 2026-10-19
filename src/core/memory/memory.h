@@ -10,6 +10,7 @@
 // === Includes ===
 #include "checkpoint.h"
 #include "common.h"
+#include "gs_assert.h"
 #include "machine_build_opts.h" // rom_image_t
 
 #include <stdbool.h>
@@ -137,6 +138,9 @@ typedef struct memory_cpu_hooks {
     // whichever map was selected before, so they start over.
     void (*selected)(void *ctx);
     void *ctx; // passed to logical_xlate and selected
+    // Plant device entries in the physical (real-mode) view as well as in the
+    // CPU's logical fills (g_mem_dev_entries_phys).
+    bool dev_entries_phys;
 } memory_cpu_hooks_t;
 void memory_map_set_cpu_hooks(memory_map_t *mem, const memory_cpu_hooks_t *hooks);
 
@@ -699,17 +703,84 @@ static inline void memory_code_page_unmark(const uint8_t *host_page) {
 // Cheap when no page in the range is marked.
 void memory_host_written(const uint8_t *host, uint32_t len);
 
+// === Fast-table entry encoding ===
+// Odd entry  = RAM/ROM: the adjusted host address (host - guest page) | 1.
+// Even entry, non-zero = a device page: pointer to its mem_dev_desc_t, so the
+//   slow path dispatches straight to the handler that decodes the page.
+// Zero entry = slow path (unmapped, protected, logpointed, MMU TLB miss).
+// The RAM test is one bit test, as the zero test was; the -1 folds into the
+// load's address arithmetic.  Zero keeps meaning "slow path", so every writer
+// that zeroes an entry to force the slow path works unchanged.
+#define MEM_RAM_ENTRY(adjusted) memory_ram_entry((uintptr_t)(adjusted))
+#define MEM_ENTRY_IS_RAM(e)     (((e) & (uintptr_t)1u) != 0)
+#define MEM_ENTRY_IS_DEV(e)     ((e) != 0 && !MEM_ENTRY_IS_RAM(e))
+#define MEM_ENTRY_HOST(e, addr) ((uint8_t *)((e) - (uintptr_t)1u + (uintptr_t)(addr)))
+
+// Tag an adjusted host address as a RAM entry.  Host page buffers are page
+// aligned, so the adjusted address is even; an odd one would read back as a
+// device pointer once tagged.
+static inline uintptr_t memory_ram_entry(uintptr_t adjusted) {
+    GS_ASSERTF((adjusted & 1u) == 0, "RAM entry at an odd adjusted address %p", (void *)adjusted);
+    return adjusted | (uintptr_t)1u;
+}
+
+// A device page resolved once (at fill time) to the handler that decodes it:
+// device offset = sub_base + page offset (lane-reversed for a PCI window).
+// Owned by the memory map (one per physical page, reused across flushes);
+// 16-byte aligned so its address is even.
+typedef struct mem_dev_desc {
+    const memory_interface_t *iface;
+    void *ctx;
+    uint32_t sub_base;
+    uint32_t ppage; // the physical page this descriptor resolves
+    uint32_t gen; // the map's device generation it was resolved in
+    uint8_t lane_reverse; // PCI window with byte-lane reversal (pci.h)
+    uint8_t valid; // resolved to a handler (0: stays on the slow path)
+} mem_dev_desc_t;
+
+// Resolve physical page `ppage` to a descriptor, or NULL when the page cannot
+// be dispatched directly (no device, partially claimed PCI page, ...).
+const mem_dev_desc_t *memory_dev_desc_for_page(uint32_t ppage);
+// Install a device entry for `page` in `table` (recorded for the flush).
+void memory_dev_entry_install(uintptr_t *table, uint32_t page, const mem_dev_desc_t *d);
+// Zero every installed device entry and re-resolve descriptors on next use
+// (the PCI decode changed).
+void memory_dev_entries_flush(void);
+// Physical page `ppage` changed what backs it: drop entries resolved from it.
+// Every writer of a physical page entry must call this (the memory_page_set_*
+// helpers below do).
+void memory_dev_page_changed(uint32_t ppage);
+// Drop the install records for `table` without writing to it (the table is
+// about to be freed).
+void memory_dev_entries_forget(const uintptr_t *table);
+// The bus layer's page resolver (pci.c): fills `out` when one handler decodes
+// the whole page at device offset `off` of `iface`.  With `out` NULL it only
+// answers whether `iface` is one it resolves (true: never dispatch `iface`
+// itself from the table).
+typedef bool (*memory_dev_resolver_t)(const memory_interface_t *iface, void *ctx, uint32_t off, mem_dev_desc_t *out);
+void memory_map_set_dev_resolver(memory_map_t *mem, memory_dev_resolver_t fn);
+// True while the selected map plants device entries in its physical
+// (real-mode) view too (the PowerPC front end: memory_cpu_hooks_t).
+extern bool g_mem_dev_entries_phys;
+
+// Rewrite physical page `p`'s entry: host memory, a device, or nothing.
+// Each drops the device entries resolved from the page; the caller keeps
+// the fast tables of its view in step as before.
+void memory_page_set_host(uint32_t p, uint8_t *host, bool writable);
+void memory_page_set_device(uint32_t p, const memory_interface_t *iface, void *ctx, uint32_t base_addr);
+void memory_page_clear(uint32_t p);
+
 // === Inline Accessors (SoA fast-path with adjusted-base trick) ===
-// Non-zero entry in g_active_read/write = adjusted host address.
-// Zero entry = slow path (device I/O, unmapped, or MMU TLB miss).
+// Odd entry in g_active_read/write = adjusted host address | 1.
+// Anything else = slow path (device page descriptor, unmapped, or TLB miss).
 // Always inlined: the interpreter loops are large enough that the compiler
 // otherwise outlines these, turning every guest load and store into a call.
 
 static inline __attribute__((always_inline)) uint8_t memory_read_uint8(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
-    if (__builtin_expect(base != 0, 1))
-        return LOAD_BE8((uint8_t *)(base + masked));
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base), 1))
+        return LOAD_BE8(MEM_ENTRY_HOST(base, masked));
     return memory_read_uint8_slow(masked);
 }
 
@@ -717,8 +788,8 @@ static inline __attribute__((always_inline)) uint16_t memory_read_uint16(uint32_
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
-        return LOAD_BE16((uint8_t *)(base + masked));
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base) && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
+        return LOAD_BE16(MEM_ENTRY_HOST(base, masked));
     return memory_read_uint16_slow(masked);
 }
 
@@ -726,8 +797,8 @@ static inline __attribute__((always_inline)) uint32_t memory_read_uint32(uint32_
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
-        return LOAD_BE32((uint8_t *)(base + masked));
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base) && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        return LOAD_BE32(MEM_ENTRY_HOST(base, masked));
     }
     return memory_read_uint32_slow(masked);
 }
@@ -758,8 +829,8 @@ static inline __attribute__((always_inline)) uint32_t memory_read_uint32(uint32_
 static inline uint32_t memory_read_prefetch32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> MEM_PAGE_SHIFT];
-    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
-        return LOAD_BE32((uint8_t *)(base + masked));
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base) && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        return LOAD_BE32(MEM_ENTRY_HOST(base, masked));
     }
     // Out of page (or no SoA entry): take the opcode word only.
     return (uint32_t)memory_read_uint16_slow(masked) << 16;
@@ -768,8 +839,8 @@ static inline uint32_t memory_read_prefetch32(uint32_t addr) {
 static inline __attribute__((always_inline)) void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
-    if (__builtin_expect(base != 0, 1)) {
-        STORE_BE8((uint8_t *)(base + masked), value);
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base), 1)) {
+        STORE_BE8(MEM_ENTRY_HOST(base, masked), value);
         return;
     }
     memory_write_uint8_slow(masked, value);
@@ -779,8 +850,8 @@ static inline __attribute__((always_inline)) void memory_write_uint16(uint32_t a
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
-        STORE_BE16((uint8_t *)(base + masked), value);
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base) && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
+        STORE_BE16(MEM_ENTRY_HOST(base, masked), value);
         return;
     }
     memory_write_uint16_slow(masked, value);
@@ -790,8 +861,8 @@ static inline __attribute__((always_inline)) void memory_write_uint32(uint32_t a
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
-        STORE_BE32((uint8_t *)(base + masked), value);
+    if (__builtin_expect(MEM_ENTRY_IS_RAM(base) && (masked & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        STORE_BE32(MEM_ENTRY_HOST(base, masked), value);
         return;
     }
     memory_write_uint32_slow(masked, value);

@@ -953,12 +953,14 @@ memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
     // them with the blocks when the pool is freed.
     g_pd_pool_freed_hook = ppc_mmu_flush_fetch;
     // The user SoA arrays carry this MMU's logical fills — the generic
-    // identity-restore paths must leave them alone (memory.h).
+    // identity-restore paths must leave them alone (memory.h).  Real-mode
+    // device pages go in the physical view's tables too.
     return (memory_cpu_hooks_t){.user_soa_reserved = true,
                                 .map_changed = ppc_fastpath_changed,
                                 .logical_xlate = ppc_hook_logical_xlate,
                                 .selected = ppc_hook_selected,
-                                .ctx = p};
+                                .ctx = p,
+                                .dev_entries_phys = true};
 }
 
 #include "ppc_pd_ids.h"

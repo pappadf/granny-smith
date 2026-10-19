@@ -71,7 +71,7 @@ page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0; // set by memory_map_init; 0 here means "pre-init, do not use"
 uint32_t g_page_count = 0; // number of pages in current page table
 
-// SoA fast-path arrays (adjusted-base entries; zero = slow path)
+// SoA fast-path arrays (RAM: adjusted base | 1; device page: its descriptor; zero = slow path)
 uintptr_t *g_supervisor_read = NULL;
 uintptr_t *g_supervisor_write = NULL;
 uintptr_t *g_user_read = NULL;
@@ -201,6 +201,12 @@ typedef struct mem_host_fill_region {
     bool writable;
 } mem_host_fill_region_t;
 
+// One installed device entry (memory.h, mem_dev_desc_t): the table and slot.
+typedef struct mem_dev_install {
+    uintptr_t *table;
+    uint32_t page;
+} mem_dev_install_t;
+
 typedef struct memory {
 
     mapping_t *map;
@@ -255,6 +261,15 @@ typedef struct memory {
     // when the ROM came from bytes with no file behind them.  The ROM's
     // identity is computed from the bytes on demand (rom.c), not stored.
     char *rom_filename;
+
+    // Device pages in the fast tables: the resolver of the bus windows on the
+    // map (pci.c), one descriptor per physical page (allocated on first
+    // resolve), the generation a flush bumps, and every installed entry.
+    memory_dev_resolver_t dev_resolve;
+    mem_dev_desc_t **dev_desc;
+    uint32_t dev_gen;
+    mem_dev_install_t *dev_inst;
+    uint32_t dev_inst_n, dev_inst_cap;
 
     // Object-tree binding — lifetime tied to memory_map_init / delete.
     struct object *memory_object;
@@ -542,12 +557,279 @@ extern struct pd_block *g_pd_current;
 #define PD_PROF_SLOW() ((void)0)
 #endif
 
+// ---- Device pages in the fast tables (memory.h, mem_dev_desc_t) -----------
+// A device page's fast-table entry points at a descriptor naming the handler
+// that decodes it, resolved once here instead of per access (for a PCI
+// window, through the bus's decode).  Installed by the PowerPC MMU fills
+// (logical tables) and, on PowerPC machines, by the slow path for the
+// real-mode view.  The selected map owns the descriptors and the record of
+// every installed entry, so a flush is O(installed entries).
+
+bool g_mem_dev_entries_phys;
+
+// Descriptor allocation: 16-byte aligned so the pointer is even.
+#define DEV_DESC_ALLOC (((sizeof(mem_dev_desc_t)) + 15u) & ~(size_t)15u)
+
+// The descriptor for `ppage` resolved afresh into `d`; false when the page
+// stays on the per-access path.
+static bool dev_desc_resolve(memory_map_t *m, uint32_t ppage, mem_dev_desc_t *d) {
+    const page_entry_t *pe = &g_page_table[ppage];
+    if (!pe->dev)
+        return false;
+    uint32_t off = (ppage << MEM_PAGE_SHIFT) - pe->base_addr;
+    if (m->dev_resolve && m->dev_resolve(pe->dev, pe->dev_context, ~0u, NULL)) {
+        // A bus window: resolved only when one handler decodes the whole page.
+        if (!m->dev_resolve(pe->dev, pe->dev_context, off, d))
+            return false;
+    } else {
+        d->iface = pe->dev;
+        d->ctx = pe->dev_context;
+        d->sub_base = off;
+        d->lane_reverse = 0;
+    }
+    return true;
+}
+
+const mem_dev_desc_t *memory_dev_desc_for_page(uint32_t ppage) {
+    memory_map_t *m = g_installed_map;
+    if (!m || ppage >= g_page_count || !g_page_table || !g_page_table[ppage].dev)
+        return NULL;
+    if (!m->dev_desc) {
+        m->dev_desc = calloc(m->page_count, sizeof *m->dev_desc);
+        if (!m->dev_desc)
+            return NULL;
+    }
+    mem_dev_desc_t *d = m->dev_desc[ppage];
+    if (d && d->gen == m->dev_gen)
+        return d->valid ? d : NULL; // resolved in this generation (either way)
+    if (!d) {
+        d = aligned_alloc(16, DEV_DESC_ALLOC);
+        if (!d)
+            return NULL;
+        m->dev_desc[ppage] = d;
+    }
+    // No table holds `d` now: a stale generation's entries were zeroed by the
+    // flush or memory_dev_page_changed, so it can be rewritten in place.
+    mem_dev_desc_t fresh = {0};
+    fresh.valid = dev_desc_resolve(m, ppage, &fresh) ? 1 : 0;
+    fresh.ppage = ppage;
+    fresh.gen = m->dev_gen;
+    *d = fresh;
+    return d->valid ? d : NULL;
+}
+
+// Drop install records whose slot no longer holds a device entry, and
+// duplicates (a slot zeroed and refilled is recorded twice).
+static int dev_inst_cmp(const void *a, const void *b) {
+    const mem_dev_install_t *x = a, *y = b;
+    if (x->table != y->table)
+        return (uintptr_t)x->table < (uintptr_t)y->table ? -1 : 1;
+    return x->page < y->page ? -1 : x->page > y->page;
+}
+static void dev_inst_compact(memory_map_t *m) {
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < m->dev_inst_n; i++)
+        if (MEM_ENTRY_IS_DEV(m->dev_inst[i].table[m->dev_inst[i].page]))
+            m->dev_inst[k++] = m->dev_inst[i];
+    qsort(m->dev_inst, k, sizeof *m->dev_inst, dev_inst_cmp);
+    uint32_t u = 0;
+    for (uint32_t i = 0; i < k; i++)
+        if (u == 0 || dev_inst_cmp(&m->dev_inst[u - 1], &m->dev_inst[i]) != 0)
+            m->dev_inst[u++] = m->dev_inst[i];
+    m->dev_inst_n = u;
+}
+
+void memory_dev_entry_install(uintptr_t *table, uint32_t page, const mem_dev_desc_t *d) {
+    memory_map_t *m = g_installed_map;
+    if (!m || !table || !d || page >= g_page_count)
+        return;
+    GS_ASSERTF(m->dev_desc && d->ppage < (uint32_t)m->page_count && m->dev_desc[d->ppage] == d && d->valid,
+               "device entry for page %u is not a live descriptor of the selected map", page);
+    if (m->dev_inst_n == m->dev_inst_cap) {
+        dev_inst_compact(m); // refills after TLB invalidations leave dead records
+        if (m->dev_inst_n > m->dev_inst_cap / 2 || m->dev_inst_cap == 0) {
+            uint32_t cap = m->dev_inst_cap ? m->dev_inst_cap * 2 : 1024;
+            mem_dev_install_t *n = realloc(m->dev_inst, cap * sizeof *n);
+            if (!n)
+                return; // not recorded: not installed either
+            m->dev_inst = n;
+            m->dev_inst_cap = cap;
+        }
+    }
+    m->dev_inst[m->dev_inst_n++] = (mem_dev_install_t){table, page};
+    table[page] = (uintptr_t)d;
+}
+
+void memory_dev_entries_forget(const uintptr_t *table) {
+    memory_map_t *m = g_installed_map;
+    if (!m)
+        return;
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < m->dev_inst_n; i++)
+        if (m->dev_inst[i].table != table)
+            m->dev_inst[k++] = m->dev_inst[i];
+    m->dev_inst_n = k;
+}
+
+void memory_dev_page_changed(uint32_t ppage) {
+    memory_map_t *m = g_installed_map;
+    if (!m || !m->dev_desc || ppage >= (uint32_t)m->page_count || !m->dev_desc[ppage])
+        return; // never resolved: no entry can point at it
+    mem_dev_desc_t *d = m->dev_desc[ppage];
+    d->gen = m->dev_gen - 1; // stale: the next fill resolves afresh
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < m->dev_inst_n; i++) {
+        uintptr_t *t = m->dev_inst[i].table;
+        uintptr_t e = t[m->dev_inst[i].page];
+        if (!MEM_ENTRY_IS_DEV(e))
+            continue; // the slot moved on: drop the record
+        if (e == (uintptr_t)d) {
+            t[m->dev_inst[i].page] = 0;
+            continue;
+        }
+        m->dev_inst[k++] = m->dev_inst[i];
+    }
+    m->dev_inst_n = k;
+}
+
+void memory_dev_entries_flush(void) {
+    memory_map_t *m = g_installed_map;
+    if (!m)
+        return;
+    for (uint32_t i = 0; i < m->dev_inst_n; i++) {
+        uintptr_t *slot = &m->dev_inst[i].table[m->dev_inst[i].page];
+        if (MEM_ENTRY_IS_DEV(*slot))
+            *slot = 0;
+    }
+    m->dev_inst_n = 0;
+    m->dev_gen++; // every descriptor resolves afresh on its next fill
+}
+
+void memory_map_set_dev_resolver(memory_map_t *mem, memory_dev_resolver_t fn) {
+    if (!mem)
+        return;
+    mem->dev_resolve = fn;
+    if (g_installed_map == mem)
+        memory_dev_entries_flush();
+}
+
+// Free the map's descriptors and install records (memory_map_delete).
+static void dev_entries_free(memory_map_t *m) {
+    if (m->dev_desc) {
+        for (uint32_t p = 0; p < (uint32_t)m->page_count; p++)
+            free(m->dev_desc[p]);
+        free(m->dev_desc);
+        m->dev_desc = NULL;
+    }
+    free(m->dev_inst);
+    m->dev_inst = NULL;
+    m->dev_inst_n = m->dev_inst_cap = 0;
+}
+
+void memory_page_set_host(uint32_t p, uint8_t *host, bool writable) {
+    if (p >= g_page_count)
+        return;
+    memory_dev_page_changed(p);
+    g_page_table[p].host_base = host;
+    g_page_table[p].dev = NULL;
+    g_page_table[p].dev_context = NULL;
+    g_page_table[p].writable = writable;
+}
+
+void memory_page_set_device(uint32_t p, const memory_interface_t *iface, void *ctx, uint32_t base_addr) {
+    if (p >= g_page_count)
+        return;
+    memory_dev_page_changed(p);
+    g_page_table[p].host_base = NULL;
+    g_page_table[p].dev = iface;
+    g_page_table[p].dev_context = ctx;
+    g_page_table[p].base_addr = base_addr;
+    g_page_table[p].writable = false;
+}
+
+void memory_page_clear(uint32_t p) {
+    if (p >= g_page_count)
+        return;
+    memory_dev_page_changed(p);
+    g_page_table[p].host_base = NULL;
+    g_page_table[p].dev = NULL;
+    g_page_table[p].dev_context = NULL;
+    g_page_table[p].writable = false;
+}
+
+// The direct dispatch: device offset from the descriptor, lane reversal as
+// the PCI window applies it, the same width composition and logpoint notify
+// as dev_read_n / dev_write_n.
+static inline uint32_t dev_desc_read(const mem_dev_desc_t *d, uint32_t addr, unsigned size) {
+    GS_ASSERTF(g_installed_map && g_installed_map->dev_desc && d->ppage < g_page_count &&
+                   g_installed_map->dev_desc[d->ppage] == d && d->valid && d->gen == g_installed_map->dev_gen,
+               "stale device entry at $%08X", addr);
+    uint32_t off = addr & MEM_PAGE_MASK;
+    if (d->lane_reverse)
+        off ^= 8u - size;
+    page_entry_t pe = {.dev = d->iface, .dev_context = d->ctx};
+    uint32_t sub = d->sub_base + off, v;
+    if (size == 1)
+        v = dev_raw8(&pe, sub);
+    else if (size == 2) {
+        v = dev_read16_raw(&pe, sub);
+        if (d->lane_reverse)
+            v = __builtin_bswap16((uint16_t)v);
+    } else {
+        v = dev_read32_raw(&pe, sub);
+        if (d->lane_reverse)
+            v = __builtin_bswap32(v);
+    }
+    logpoint_notify_device(addr, size, v, false);
+    return v;
+}
+
+static inline void dev_desc_write(const mem_dev_desc_t *d, uint32_t addr, uint32_t value, unsigned size) {
+    GS_ASSERTF(g_installed_map && g_installed_map->dev_desc && d->ppage < g_page_count &&
+                   g_installed_map->dev_desc[d->ppage] == d && d->valid && d->gen == g_installed_map->dev_gen,
+               "stale device entry at $%08X", addr);
+    uint32_t off = addr & MEM_PAGE_MASK;
+    if (d->lane_reverse)
+        off ^= 8u - size;
+    page_entry_t pe = {.dev = d->iface, .dev_context = d->ctx};
+    uint32_t sub = d->sub_base + off;
+    if (size == 1)
+        dev_raw_w8(&pe, sub, (uint8_t)value);
+    else if (size == 2)
+        dev_write16_raw(&pe, sub, d->lane_reverse ? __builtin_bswap16((uint16_t)value) : (uint16_t)value);
+    else
+        dev_write32_raw(&pe, sub, d->lane_reverse ? __builtin_bswap32(value) : value);
+    logpoint_notify_device(addr, size, value, true);
+}
+
+// Real-mode view on PowerPC machines: the supervisor tables are the physical
+// identity view there, so a resolved device page can be planted at its own
+// index (both directions: device pages carry no write protection).
+static inline void dev_phys_install(uint32_t page) {
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page])
+        return;
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[page])
+        return;
+    const mem_dev_desc_t *d = memory_dev_desc_for_page(page);
+    if (!d)
+        return;
+    memory_dev_entry_install(g_supervisor_read, page, d);
+    memory_dev_entry_install(g_supervisor_write, page, d);
+}
+
 static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr, unsigned size) {
     g_mem_slowpath_count++;
     PD_PROF_SLOW();
     g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
 
     const bool supervisor = g_active_read == g_supervisor_read;
+
+    // A device page planted in the table: dispatch straight to its handler.
+    if (g_active_read && (addr >> MEM_PAGE_SHIFT) < g_page_count) {
+        uintptr_t e = g_active_read[addr >> MEM_PAGE_SHIFT];
+        if (e && !MEM_ENTRY_IS_RAM(e) && ((size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size)))
+            return dev_desc_read((const mem_dev_desc_t *)e, addr, size);
+    }
 
     // Lisa segment MMU owns translation, routing, and bus errors for Lisa/XL
     // machines (its SoA stays empty so every access reaches here).
@@ -585,8 +867,11 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
     // to-RAM (e.g. 24-bit Memory Manager flag-tagged master pointers $40xxxxxx
     // -> $00xxxxxx) falls through to the MMU walk below so the translated RAM
     // is read instead of returning ROM bytes from the $40000000 device window.
-    if (pe->dev && in_page && dispatch_device_at_logical(addr, supervisor))
+    if (pe->dev && in_page && dispatch_device_at_logical(addr, supervisor)) {
+        if (g_mem_dev_entries_phys && supervisor && !g_mmu)
+            dev_phys_install(page); // the next access dispatches from the table
         return dev_read_n(pe, addr, addr - pe->base_addr, size);
+    }
 
     // With the MMU enabled, dispatch via the PHYSICAL address (after the table
     // walk) rather than the logical page-table entry -- otherwise a user-virtual
@@ -602,8 +887,8 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
             return dev_read_n(pe, addr, addr - pe->base_addr, size);
         if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
             uintptr_t base = g_active_read[addr >> MEM_PAGE_SHIFT];
-            if (base != 0)
-                return load_be_n((uint8_t *)(base + addr), size);
+            if (MEM_ENTRY_IS_RAM(base))
+                return load_be_n(MEM_ENTRY_HOST(base, addr), size);
             // SoA still 0: the physical page is a device, unmapped, or
             // logpointed.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
@@ -992,6 +1277,15 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
 
     const bool supervisor = g_active_write == g_supervisor_write;
 
+    // A device page planted in the table: dispatch straight to its handler.
+    if (g_active_write && (addr >> MEM_PAGE_SHIFT) < g_page_count) {
+        uintptr_t e = g_active_write[addr >> MEM_PAGE_SHIFT];
+        if (e && !MEM_ENTRY_IS_RAM(e) && ((size == 1) || ((addr & MEM_PAGE_MASK) <= MEM_PAGE_SIZE - size))) {
+            dev_desc_write((const mem_dev_desc_t *)e, addr, value, size);
+            return;
+        }
+    }
+
     // Lisa segment MMU owns translation, routing and bus errors for Lisa/XL.
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         if (size == 1)
@@ -1034,6 +1328,8 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     // Gate logical-device dispatch (24-bit Mac OS master-pointer fix -- see
     // dispatch_device_at_logical above).
     if (pe->dev && in_page && dispatch_device_at_logical(addr, supervisor)) {
+        if (g_mem_dev_entries_phys && supervisor && !g_mmu)
+            dev_phys_install(page); // the next access dispatches from the table
         dev_write_n(pe, addr, addr - pe->base_addr, value, size);
         return;
     }
@@ -1059,8 +1355,8 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
         // pages by U).  The page's read entry maps the same host bytes.
         if (memory_write_refused(page, supervisor)) {
             uintptr_t rbase = (supervisor ? g_supervisor_read : g_user_read)[page];
-            if (rbase != 0) {
-                uint8_t *host = (uint8_t *)(rbase + addr);
+            if (MEM_ENTRY_IS_RAM(rbase)) {
+                uint8_t *host = MEM_ENTRY_HOST(rbase, addr);
                 // The page left the code set since (its block was evicted or
                 // demoted): the entry the switch core holds comes back.
                 if (!memory_host_is_code(host)) {
@@ -1074,8 +1370,8 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
         }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
             uintptr_t base = g_active_write[addr >> MEM_PAGE_SHIFT];
-            if (base != 0) {
-                store_be_n((uint8_t *)(base + addr), value, size);
+            if (MEM_ENTRY_IS_RAM(base)) {
+                store_be_n(MEM_ENTRY_HOST(base, addr), value, size);
                 return;
             }
             // SoA still 0: the physical page is a device, unmapped, or covered
@@ -1214,7 +1510,7 @@ static void rebuild_soa_page(uint32_t p) {
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[p])
         return;
     uint32_t guest_base = p << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)pe->host_base - guest_base);
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
     if (g_user_read && !g_user_soa_reserved)
@@ -1483,7 +1779,7 @@ static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *ho
             p1 = g_page_count;
         for (uint32_t p = p0; p < p1; p++) {
             uintptr_t e = arr[p];
-            if (e != 0 && e + ((uintptr_t)p << MEM_PAGE_SHIFT) == (uintptr_t)host_page) {
+            if (MEM_ENTRY_IS_RAM(e) && MEM_ENTRY_HOST(e, (uintptr_t)p << MEM_PAGE_SHIFT) == host_page) {
                 arr[p] = 0; // stores must take the slow path from now on
                 memory_write_refused_set(p, table);
             }
@@ -1611,11 +1907,7 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                 LOG(2, "memory_map_add('%s'): page $%X was already claimed by a device at $%08X; replacing it",
                     name ? name : "?", p, g_page_table[p].base_addr);
             // AoS cold-path: register device handler
-            g_page_table[p].host_base = NULL;
-            g_page_table[p].dev = &map->memory_interface;
-            g_page_table[p].dev_context = device;
-            g_page_table[p].base_addr = addr;
-            g_page_table[p].writable = false;
+            memory_page_set_device(p, &map->memory_interface, device, addr);
 
             // SoA fast-path: zero entries force slow path for device I/O
             if (g_supervisor_read)
@@ -1642,11 +1934,8 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
     uint32_t end_page = ((addr + size - 1) & g_address_mask) >> MEM_PAGE_SHIFT;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_page_table[p].dev == iface_ptr) {
-            g_page_table[p].host_base = NULL;
-            g_page_table[p].dev = NULL;
-            g_page_table[p].dev_context = NULL;
+            memory_page_clear(p);
             g_page_table[p].base_addr = 0;
-            g_page_table[p].writable = false;
         }
     }
     if (g_mem_map_changed)
@@ -1722,13 +2011,10 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         assert((p << MEM_PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
         uint8_t *host_ptr = mem->image + (p << MEM_PAGE_SHIFT);
         uint32_t guest_base = p << MEM_PAGE_SHIFT;
-        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+        uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
 
         // AoS cold-path entry (device dispatch)
-        g_page_table[p].host_base = host_ptr;
-        g_page_table[p].dev = NULL;
-        g_page_table[p].dev_context = NULL;
-        g_page_table[p].writable = true;
+        memory_page_set_host(p, host_ptr, true);
 
         // SoA fast-path entries: RAM is readable and writable by all
         // (write entries refused on a code page — memory_write_fill)
@@ -1765,13 +2051,10 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
         uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << MEM_PAGE_SHIFT);
         uint32_t guest_base = p << MEM_PAGE_SHIFT;
-        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+        uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
 
         // AoS cold-path entry
-        g_page_table[p].host_base = host_ptr;
-        g_page_table[p].dev = NULL;
-        g_page_table[p].dev_context = NULL;
-        g_page_table[p].writable = false;
+        memory_page_set_host(p, host_ptr, false);
 
         // SoA fast-path entries: ROM is read-only (write entries stay 0 → slow path)
         if (g_supervisor_read)
@@ -1804,14 +2087,11 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
         uint32_t guest_base = p << MEM_PAGE_SHIFT;
         uint32_t ram_off = guest_base % ram_size;
         uint8_t *host_ptr = mem->image + ram_off;
-        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+        uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
 
         // AoS cold-path entry: same RAM image, just aliased at a different
         // guest base.  Marked writable so the slow path treats it like RAM.
-        g_page_table[p].host_base = host_ptr;
-        g_page_table[p].dev = NULL;
-        g_page_table[p].dev_context = NULL;
-        g_page_table[p].writable = true;
+        memory_page_set_host(p, host_ptr, true);
 
         // SoA fast-path: full read+write on both supervisor and user sides
         // (write entries refused on a code page — memory_write_fill).
@@ -1865,6 +2145,7 @@ void memory_map_select(memory_map_t *mem) {
     g_bus_err_lo = mem ? mem->bus_err.lo : MEMORY_BUS_ERR_NONE.lo;
     g_bus_err_hi = mem ? mem->bus_err.hi : MEMORY_BUS_ERR_NONE.hi;
     g_user_soa_reserved = mem ? mem->cpu_hooks.user_soa_reserved : false;
+    g_mem_dev_entries_phys = mem ? mem->cpu_hooks.dev_entries_phys : false;
     g_mem_map_changed = mem ? mem->cpu_hooks.map_changed : NULL;
     g_mem_logical_xlate = mem ? mem->cpu_hooks.logical_xlate : NULL;
     g_mem_logical_xlate_ctx = mem ? mem->cpu_hooks.ctx : NULL;
@@ -2000,6 +2281,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // on.  On a machine whose MMU never invalidates (no PMMU) it simply
     // stays that way, unused.
     mem->track_overflow = true;
+    mem->dev_gen = 1; // a descriptor's gen 0 is never current
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
@@ -2104,6 +2386,7 @@ void memory_map_delete(memory_map_t *mem) {
     free(mem->soa_chunk);
     free(mem->write_refused);
     free(mem->refused_pages);
+    dev_entries_free(mem);
     // Free RAM/ROM image buffer
     if (mem->image) {
         free(mem->image);

@@ -178,6 +178,7 @@ typedef struct pci_decode {
     const memory_interface_t *iface;
     void *ctx;
     uint32_t sub;
+    bool bar; // decoded by a BAR (linear), not a fixed region
 } pci_decode_t;
 
 // Locate whatever decodes `pci_addr` in `w`'s space.  False when nothing
@@ -202,6 +203,7 @@ static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t
                 out->iface = bk->iface;
                 out->ctx = bk->ctx;
                 out->sub = pci_addr - bk->base;
+                out->bar = true;
                 return true;
             }
         }
@@ -219,6 +221,7 @@ static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t
             out->iface = fr->iface;
             out->ctx = fr->ctx;
             out->sub = pci_addr - fr->base;
+            out->bar = false;
             return true;
         }
     }
@@ -346,6 +349,32 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     d.iface->write_uint32(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap32(value) : value);
 }
 
+// Resolve one window page for the fast tables (memory.h,
+// mem_dev_desc_t).  `out` NULL asks only whether `iface` is a PCI window.
+// A page resolves when a single BAR decodes all of it linearly; anything
+// else (a fixed or sparse region, a partial claim, nothing) stays on the
+// window's per-access path.
+static bool window_resolve_page(const memory_interface_t *iface, void *ctx, uint32_t offset, mem_dev_desc_t *out) {
+    if (iface->read_uint8 != window_read8)
+        return false;
+    if (!out)
+        return true;
+    const pci_window_t *w = (const pci_window_t *)ctx;
+    uint32_t a0 = window_pci_addr(w, offset), a1 = window_pci_addr(w, offset + MEM_PAGE_SIZE - 1);
+    if (a1 - a0 != MEM_PAGE_SIZE - 1)
+        return false;
+    pci_decode_t d0, d1;
+    if (!window_locate(w, a0, &d0) || !window_locate(w, a1, &d1))
+        return false;
+    if (!d0.bar || !d1.bar || d0.iface != d1.iface || d0.ctx != d1.ctx || d1.sub - d0.sub != MEM_PAGE_SIZE - 1)
+        return false;
+    out->iface = d0.iface;
+    out->ctx = d0.ctx;
+    out->sub_base = d0.sub;
+    out->lane_reverse = w->bus->lane_reverse ? 1 : 0;
+    return true;
+}
+
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
                         uint32_t pci_mask, const char *what) {
     if (!bus)
@@ -374,6 +403,7 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.peek_uint16 = window_peek16;
     w->iface.peek_uint32 = window_peek32;
     memory_map_add(bus->cfg->memory_map, map_base, size, w->what, &w->iface, w);
+    memory_map_set_dev_resolver(bus->cfg->memory_map, window_resolve_page); // flushes resolved pages
 }
 
 const memory_interface_t *pci_bus_window_iface(pci_bus_t *bus, int window) {
@@ -389,6 +419,7 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window) {
 }
 
 void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
+    memory_dev_entries_flush(); // resolved window pages carry the lane mode
     if (!bus || bus->lane_reverse == on)
         return;
     bus->lane_reverse = on;
@@ -446,6 +477,7 @@ void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t 
 // the ONE place a BAR transition happens, so a device driver never has to
 // track where it currently answers.
 void pci_device_regions_changed(pci_device_t *dev) {
+    memory_dev_entries_flush(); // resolved window pages may have moved
     if (!dev)
         return;
     // Non-BAR regions have no latch to move: their address is strapped, so

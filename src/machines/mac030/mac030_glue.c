@@ -291,10 +291,7 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
 void mac030_clear_page(uint32_t page_index) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = NULL;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = false;
+    memory_page_clear(page_index);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = 0;
     if (g_user_read)
@@ -310,12 +307,9 @@ void mac030_clear_page(uint32_t page_index) {
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
+    memory_page_set_host(page_index, host_ptr, writable);
     uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
     if (g_user_read)

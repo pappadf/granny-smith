@@ -935,8 +935,15 @@ static void emit_bswap16(void) { // low 16 bits, upper zero
 }
 
 // The fast-path test of the access at L_EA: on the stack, nonzero when it
-// must leave (crossing a page, a 601 T=1 segment, or no SoA entry); leaves the
-// masked address in L_T0 and the entry in L_T1.
+// must leave (crossing a page, a 601 T=1 segment, or no RAM entry); leaves the
+// masked address in L_T0 and the entry minus its RAM tag in L_T1, so
+// L_T1 + L_T0 is the host address (memory.h, MEM_ENTRY_HOST).  A RAM entry
+// is odd; less one it is even, and anything else (zero, a device
+// descriptor) is odd less one -- one bit test, as the zero test was.
+static void emit_entry_test(void) {
+    iconst(-1);
+    op(W_ADD);
+}
 static void emit_access_test(uint32_t size, bool store) {
     lget(L_EA);
     lget(L_AMASK);
@@ -950,8 +957,10 @@ static void emit_access_test(uint32_t size, bool store) {
     op(W_SHL);
     op(W_ADD);
     mem(W_LOAD, 2, 0);
+    emit_entry_test();
     ltee(L_T1);
-    op(W_EQZ);
+    iconst(1);
+    op(W_AND);
     if (U.is601) { // T=1 segments (601, MSR[DT] clear; the 604's mask is always 0)
         lget(L_TMASK);
         lget(L_EA);
@@ -1014,8 +1023,10 @@ static void emit_helper(uint32_t h) {
     op(W_SHL);
     op(W_ADD);
     mem(W_LOAD, 2, 0);
+    emit_entry_test(); // t1: the host address less the guest address
     ltee(t1);
-    op(W_EQZ);
+    iconst(1);
+    op(W_AND);
     if (size > 1) { // misaligned is an ordinary access unless it crosses a page
         lget(ea);
         iconst(MEM_PAGE_MASK);
@@ -3979,7 +3990,7 @@ int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     } else if (g_ppc_user_wok[page] != rd)
         return why[2]++, 1;
     else
-        host = (uint8_t *)(rd + ea);
+        host = MEM_ENTRY_HOST(rd, ea);
     if (!memory_host_is_code(host))
         return why[4]++, 1; // unmarked since: the slow path brings the write entry back
     g_jit_wrote = false;
