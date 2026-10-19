@@ -133,7 +133,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_LOAD(ID, SZ, BITS, EXT, UPD)                                                                               \
     PPD_LS_BEGIN(ID)                                                                                                   \
     uint64_t lv_ = 0;                                                                                                  \
-    int lg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, false, &lv_);                                                        \
+    int lg_ = ppc_scalar_gate_int_inl(p, iw, &xa, SZ, false, &lv_);                                                    \
     if (lg_ < 0)                                                                                                       \
         goto retire_relookup;                                                                                          \
     uint32_t v_ = EXT(lg_ ? (uint##BITS##_t)lv_ : memory_read_uint##BITS(xa));                                         \
@@ -154,7 +154,7 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 #define PPD_STORE(ID, SZ, BITS, UPD)                                                                                   \
     PPD_LS_BEGIN(ID)                                                                                                   \
     uint64_t sv_ = PPD_R(e.a);                                                                                         \
-    int sg_ = ppc_scalar_gate_inl(p, iw, &xa, SZ, true, &sv_);                                                         \
+    int sg_ = ppc_scalar_gate_int_inl(p, iw, &xa, SZ, true, &sv_);                                                     \
     if (sg_ < 0)                                                                                                       \
         goto retire_relookup;                                                                                          \
     if (!sg_)                                                                                                          \
