@@ -144,7 +144,7 @@ export const machine: MachineState = $state({
   zoom: 200,
 });
 
-const ZOOM_MIN = 100;
+const ZOOM_MIN = 50;
 const ZOOM_MAX = 300;
 
 // Whether the user has chosen a zoom.  Until they do, the display fits the
@@ -157,10 +157,10 @@ export function setZoom(value: number): void {
   machine.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(value)));
 }
 
-// The largest zoom, in 10 % steps from 100 % up to the 200 % default, at
+// The largest zoom, in 10 % steps from 50 % up to the 200 % default, at
 // which a `width` × `height` screen (pixel aspect parH/parW) fits a
 // `boxW` × `boxH` display area.  Applied only while the user has not set a
-// zoom; at 100 % a screen still too big for the area scrolls.
+// zoom; at 50 % a screen still too big for the area scrolls.
 export function fitZoom(
   width: number,
   height: number,
