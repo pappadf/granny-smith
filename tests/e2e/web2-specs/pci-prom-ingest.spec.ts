@@ -83,7 +83,11 @@ test('a 9500 boots its factory PCI display card once its ROM is uploaded', async
   await expect(page.locator('.config-form')).toContainText('It will start with no screen', {
     timeout: 30_000,
   });
-  await expect(page.locator('.config-form')).toContainText('expansion ROM (.prom)');
+  // The card is marked "ROM needed" in the Add-card list (S1018-51); chosen,
+  // the form names the ROM it needs.
+  await page.getByTestId('cfg-add-card').click({ timeout: 30_000 });
+  await page.locator('#cfg-add-card').selectOption('mach64_gx');
+  await expect(page.getByTestId('cfg-add-card-needs')).toContainText('expansion ROM (.prom)');
   await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Upload the card's expansion ROM. ------------------------------------
