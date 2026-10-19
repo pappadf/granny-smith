@@ -6,7 +6,8 @@
 
   // A menu entry.  `checked` (true or false) makes it a checkable item with
   // a check mark column; `disabled` greys it out and skips it; `icon` and
-  // `shortcut` sit before and after the label.
+  // `shortcut` sit before and after the label, and `badge` (a pill, tinted
+  // by `badgeIntent`) after it.
   export type ContextMenuItem =
     | {
         label: string;
@@ -16,8 +17,12 @@
         disabled?: boolean;
         icon?: IconName;
         shortcut?: string;
+        badge?: string;
+        badgeIntent?: BadgeIntent;
       }
     | { sep: true };
+
+  export type BadgeIntent = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
   // One menu at a time. Subsequent openContextMenu calls dismiss the previous.
   let current: { instance: ReturnType<typeof mount>; target: HTMLElement } | null = null;
@@ -77,6 +82,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import Badge from '@/components/ui/Badge.svelte';
 
   interface Props {
     items: ContextMenuItem[];
@@ -219,6 +225,7 @@
           >
         {/if}
         <span class="gs-menu__label">{item.label}</span>
+        {#if item.badge}<Badge intent={item.badgeIntent}>{item.badge}</Badge>{/if}
         {#if item.shortcut}<span class="gs-menu__shortcut">{item.shortcut}</span>{/if}
       </div>
     {/if}

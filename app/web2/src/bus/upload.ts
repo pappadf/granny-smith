@@ -55,7 +55,7 @@ import {
   type MediaTypeDescriptor,
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
-import { opfsSafeName } from './fsOps';
+import { opfsSafeName, adSidecarPath } from './fsOps';
 import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
@@ -702,6 +702,18 @@ async function persist(
       if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
       return null;
     }
+    // A member copied out of a Mac archive brings its resource fork and
+    // Finder info along as an AppleDouble "._" sidecar (files.cp).  Only a
+    // disk image can need one (an NDIF's block map is in its resource fork);
+    // beside a ROM or a floppy it is no medium, and is not kept (S1018-51).
+    const sidecar = adSidecarPath(finalPath);
+    if (
+      inArchive &&
+      descriptor.id !== 'hd' &&
+      descriptor.id !== 'cdrom' &&
+      (await gsEval('files.path_exists', [sidecar])) === true
+    )
+      await gsEval('files.rm', [sidecar]);
   }
   if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.

@@ -325,3 +325,40 @@ describe('a dropped disk image', () => {
     expect(stored()).toEqual(['/opfs/images/cd/hfs.img']);
   });
 });
+
+// S1018-51: a floppy taken out of a dropped Mac archive was stored with the
+// AppleDouble "._" sidecar files.cp writes for its Finder info.
+describe('a floppy in a dropped Mac archive', () => {
+  it('is stored without its AppleDouble sidecar', async () => {
+    const archive = new File(
+      [new TextEncoder().encode('(This file must be converted')],
+      'm.sit.hqx',
+    );
+    const isArchive = (p: string) => /m\.sit\.hqx$/.test(p);
+    bridge.reply('files.archive.identify', (a: unknown) =>
+      isArchive((a as [string])[0]) ? 'hqx' : '',
+    );
+    bridge.reply('files.list', (a: unknown) => {
+      const dir = (a as [string])[0];
+      if (!isArchive(dir)) return [];
+      files.set(`${dir}/MacTest Disk.image`, new Uint8Array(819200).fill(0xa5));
+      return [{ name: 'MacTest Disk.image', kind: 'file' }];
+    });
+    // As the core's cp does for a file with Finder info.
+    bridge.reply('files.cp', (a: unknown) => {
+      const [from, to] = a as [string, string];
+      const f = files.get(from);
+      if (!f) return false;
+      files.set(to, f.slice());
+      files.set(
+        to.replace(/[^/]+$/, (n) => `._${n}`),
+        new Uint8Array(82),
+      );
+      return true;
+    });
+    await acceptFiles([archive]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/MacTest Disk.image',
+    ]);
+  });
+});
