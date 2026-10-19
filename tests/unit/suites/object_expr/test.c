@@ -764,6 +764,74 @@ TEST(test_range_step_zero_is_refused) {
     value_free(&v);
 }
 
+// === expr_check: syntax only =================================================
+
+// Counts every binding read and user-function call, which a check must not
+// make.
+static int g_check_reads;
+static value_t counting_binding(void *ud, const char *name) {
+    (void)ud;
+    (void)name;
+    g_check_reads++;
+    return val_int(1);
+}
+static value_t counting_func(void *ud, const char *name, int argc, const value_t *argv, int named_n,
+                             const named_arg_t *named) {
+    (void)ud, (void)name, (void)argc, (void)argv, (void)named_n, (void)named;
+    g_check_reads++;
+    return val_int(1);
+}
+
+// True when expr_check accepts `src` (with the counting binding wired in).
+static bool check_ok(const char *src) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = counting_binding;
+    value_t v = expr_check(src, &ctx);
+    bool ok = !val_is_error(&v);
+    value_free(&v);
+    return ok;
+}
+
+TEST(test_check_accepts_well_formed_conditions) {
+    // No root: a check resolves nothing, so paths need not exist.
+    ASSERT_TRUE(check_ok("cpu.pc == 0x40802A14"));
+    ASSERT_TRUE(check_ok("memory.peek.l(0x1201D420) == 0xE000"));
+    ASSERT_TRUE(check_ok("cpu.supervisor && cpu.pc >= 0x10000000"));
+    ASSERT_TRUE(check_ok("!machine.cpu.broken || ~$d0 & 0xFF"));
+    ASSERT_TRUE(check_ok("$m.mmu[0].kind == \"x\" ? 1 / $n : -1"));
+    ASSERT_TRUE(check_ok("try(a.b(1, x=2), 0) .. 4"));
+    ASSERT_TRUE(check_ok("catalog.profile(\"se30\").capabilities.mmu.kind == \"68030_pmmu\""));
+    // Types are evaluation's business: a string plus a path is not refused.
+    ASSERT_TRUE(check_ok("machine.name + \"x\" == \"${cpu.pc:08x}$n\""));
+}
+
+TEST(test_check_refuses_malformed_conditions) {
+    ASSERT_TRUE(!check_ok("((( nonsense"));
+    ASSERT_TRUE(!check_ok("cpu.pc =="));
+    ASSERT_TRUE(!check_ok("cpu.pc == 1 junk"));
+    ASSERT_TRUE(!check_ok("a ? b"));
+    ASSERT_TRUE(!check_ok("foo(1,"));
+    ASSERT_TRUE(!check_ok("\"unterminated"));
+    // The side a short circuit would skip is checked too.
+    ASSERT_TRUE(!check_ok("false && ((("));
+    ASSERT_TRUE(!check_ok("true || cpu.pc =="));
+    ASSERT_TRUE(!check_ok("1 ? 2 : (3"));
+    // The message is the parser's own.
+    expr_ctx_t ctx = {0};
+    value_t v = expr_check("((( nonsense", &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(v.err && strstr(v.err, "expected ')'") != NULL);
+    value_free(&v);
+}
+
+TEST(test_check_reads_and_calls_nothing) {
+    g_check_reads = 0;
+    expr_set_func_hook(counting_func, NULL);
+    ASSERT_TRUE(check_ok("$a + $b.c == step_to(0x400128) && \"$d ${$e}\" != \"\" ? $f : g(1)"));
+    expr_set_func_hook(NULL, NULL);
+    ASSERT_EQ_INT(0, g_check_reads);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -823,5 +891,8 @@ int main(void) {
     RUN(test_interpolate_long_splice_name_errors);
     RUN(test_deep_nesting_is_an_error);
     RUN(test_nonfinite_float_json_is_null);
+    RUN(test_check_accepts_well_formed_conditions);
+    RUN(test_check_refuses_malformed_conditions);
+    RUN(test_check_reads_and_calls_nothing);
     return 0;
 }

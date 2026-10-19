@@ -89,8 +89,13 @@ describe('bus/debug against the real object-model paths', () => {
     expect(await removeBreakpointAt(0x999999)).toBe(false);
   });
 
-  it('reports a failed add', async () => {
-    expect(await addBreakpoint(0x400100)).toBe(false);
+  it('reports a failed add, with the reason', async () => {
+    bridge.reply('debug.breakpoints.add', {
+      error: "invalid breakpoint condition '((( x': expected ')'",
+    });
+    expect(await addBreakpoint(0x400100, '((( x')).toBe(
+      "invalid breakpoint condition '((( x': expected ')'",
+    );
     bridge.reply('debug.breakpoints.add', { kind: 'object' });
     expect(await addBreakpoint(0x400100, ' d0 == 1 ')).toBe(true);
     expect(bridge.calls.at(-1)).toEqual({

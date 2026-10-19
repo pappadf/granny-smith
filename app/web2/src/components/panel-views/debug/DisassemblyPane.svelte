@@ -111,9 +111,9 @@
         : {
             label: `Add breakpoint at $${fmtHex32(row.addr)}`,
             action: async () => {
-              const ok = await addBreakpoint(row.addr);
-              if (!ok) {
-                showNotification('Failed to add breakpoint', 'error');
+              const added = await addBreakpoint(row.addr);
+              if (added !== true) {
+                showNotification(`Failed to add breakpoint: ${added}`, 'error');
                 return;
               }
               showNotification(`Breakpoint set at $${fmtHex32(row.addr)}`, 'info');
