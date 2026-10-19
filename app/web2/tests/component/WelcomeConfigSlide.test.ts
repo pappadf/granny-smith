@@ -138,7 +138,8 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
     );
     expect(rows).toEqual(['scsi:0', 'scsi:3']);
     expect(labels($(c, '#cfg-startup'))).toContain('No default (search all drives)');
-    expect($(c, '#cfg-startup')!.value).toBe('scsi:0');
+    // No image yet: Start would drop the disk, so no default.
+    expect($(c, '#cfg-startup')!.value).toBe('');
   });
 
   it('an empty floppy position has no disk picker until a drive is put there', async () => {
@@ -237,13 +238,24 @@ describe('WelcomeConfigSlide: storage', () => {
     expect(labels($(c, '#cfg-opt-keyswitch'))).toEqual(['Unlocked', 'Service', 'Locked']);
     expect(c.textContent).toContain('Internal SCSI bus 0');
     expect(c.textContent).toContain('Internal SCSI bus 1');
-    expect($(c, '#cfg-startup')!.value).toBe('scsi:2');
+    choose($(c, '#cfg-media-scsi-2')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('scsi:2'));
   });
 
   it('the Lisa: one ProFile, no SCSI', async () => {
     const c = await open('lisa');
     expect(c.textContent).toContain('ProFile port');
     expect(c.querySelector('[data-bus="scsi"]')).toBeNull();
+  });
+
+  // S1018-55: with the ProFile empty the boot ROM would stop at error 42
+  // looking for it; the disk is the default again once it has an image.
+  it('the Lisa starts up from no default until the ProFile has an image', async () => {
+    const c = await open('lisa');
+    expect($(c, '#cfg-startup')!.value).toBe('');
+    expect(Array.from($(c, '#cfg-startup')!.options).map((o) => o.value)).toEqual(['']);
+    choose($(c, '#cfg-media-profile-0')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('profile:0'));
   });
 
   it('a hard disk with no image is dropped at Start, with a notice; images go to their device', async () => {

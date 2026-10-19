@@ -295,7 +295,14 @@
   );
   let modeChoices = $derived(connected ? (connected.modes[monitorId] ?? []) : []);
   let modeValue = $derived(connected && doc ? (doc.displays[connected.id]?.mode ?? '') : '');
-  let startups = $derived(profile && doc ? mc.startupChoices(profile, doc) : []);
+  // What Start will boot: a hard disk with no image is dropped and the
+  // startup device moves off it, so "Start up from" offers and shows that
+  // document's -- "No default" while the only hard disk (a Lisa's ProFile)
+  // has no image, the disk again once it has one (S1018-55).
+  let booting = $derived(
+    profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
+  );
+  let startups = $derived(profile && booting ? mc.startupChoices(profile, booting) : []);
   let warnings = $derived(profile && doc ? mc.configWarnings(profile, doc) : []);
   // A card entry's display status, for its row.
   function cardStatus(slot: string): string {
@@ -356,7 +363,7 @@
     mediaImages = image ? { ...rest, [mc.positionKey({ bus: d.bus, unit })]: image } : rest;
   }
   function startupValue(): string {
-    return doc?.startup ? mc.positionKey(doc.startup) : '';
+    return booting?.startup ? mc.positionKey(booting.startup) : '';
   }
   function setStartupFrom(value: string): void {
     const [bus, unit] = value.split(':');

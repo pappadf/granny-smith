@@ -93,6 +93,10 @@ on the Plus).
 4. **Start up from** — the disk the Mac starts from (it sets the Startup
    Disk control panel), or **No default (search all drives)**. A startup
    floppy in the internal drive is always tried first, as on a real Mac.
+   A hard disk with no image is not attached, so it cannot be the startup
+   disk: until you choose its image this shows **No default** (on a Lisa
+   or Macintosh XL with an empty ProFile, that lets a startup floppy such
+   as MacWorks boot).
 
 ## 6. Start
 
