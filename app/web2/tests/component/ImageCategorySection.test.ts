@@ -36,6 +36,8 @@ import { MockOpfs } from '../helpers/mockOpfs';
 import { images } from '@/state/images.svelte';
 import { dialogs } from '@/state/dialogs.svelte';
 import { toasts, _resetForTests as resetToasts } from '@/state/toasts.svelte';
+import { machine } from '@/state/machine.svelte';
+import { ejectMedia } from '@/bus/media';
 
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
@@ -127,5 +129,49 @@ describe('ImageCategorySection — rename and delete', () => {
     expect(q.validate('System_7.0_Install.dsk')).toMatch(/already exists/);
     expect(q.validate('Disk_Tools.dsk')).toBe('');
     expect(q.validate('fresh.dsk')).toBe('');
+  });
+});
+
+// S1018-03: Eject of a floppy the Mac is using lost its unsaved writes
+// without a word.  It asks first, and ejects only when confirmed.
+describe('ImageCategorySection — eject of a floppy in use', () => {
+  const where = { kind: 'fd', bus: 'floppy', drive: 0 } as const;
+  beforeEach(() => {
+    images.mounted['/opfs/images/fd/Disk_Tools.dsk'] = where;
+    vi.mocked(ejectMedia).mockReset();
+    vi.mocked(ejectMedia).mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof ejectMedia>>);
+  });
+  const eject = async () =>
+    fireEvent.click(
+      (await menuFor('Disk_Tools.dsk')).find((e) => e.textContent?.trim() === 'Eject')!,
+    );
+
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])('asks first, warning of lost writes (confirmed: %s)', async (answer, ejects) => {
+    machine.status = 'running';
+    try {
+      await eject();
+      await waitFor(() => expect(dialogs.current?.kind).toBe('confirm'));
+      const q = dialogs.current as { message: string; resolve: (ok: boolean) => void };
+      expect(q.message).toMatch(/not yet written to it is lost/);
+      expect(ejectMedia).not.toHaveBeenCalled();
+      dialogs.current = null;
+      q.resolve(answer);
+      await waitFor(() => expect(ejectMedia).toHaveBeenCalledTimes(ejects));
+      if (!answer) await new Promise((r) => setTimeout(r, 0));
+      expect(ejectMedia).toHaveBeenCalledTimes(ejects);
+      expect(images.mounted['/opfs/images/fd/Disk_Tools.dsk'] ? 0 : 1).toBe(ejects);
+    } finally {
+      machine.status = 'no-machine';
+    }
+  });
+
+  it('ejects without asking when no machine is running', async () => {
+    machine.status = 'no-machine';
+    await eject();
+    await waitFor(() => expect(ejectMedia).toHaveBeenCalledWith(where));
+    expect(dialogs.current).toBeNull();
   });
 });
