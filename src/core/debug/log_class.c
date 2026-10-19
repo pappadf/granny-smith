@@ -91,7 +91,7 @@ static DEF_METHOD(log_method_set) {
 
     print_category(category);
     (void)touched;
-    return val_bool(true);
+    return val_none();
 }
 
 // log_foreach_category callback: put "<category>" → <level> into the map.
@@ -293,7 +293,7 @@ static const member_t log_members[] = {
     {.kind = MK_METHOD,
      .name = "set",
      .doc = "Configure a log category: log.set(cat, level=, stdout=, file=, ts=, pc=)",
-     .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = VK_BOOL, .fn = log_method_set}},
+     .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = VK_NONE, .fn = log_method_set}},
 };
 
 static const class_desc_t log_class = {

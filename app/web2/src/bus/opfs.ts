@@ -9,7 +9,7 @@ import {
   formatCheckpointLabel,
   manifestMachine,
 } from '@/lib/checkpointMeta';
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -247,7 +247,7 @@ export class BrowserOpfs implements OpfsBackend {
     // stale-inode bug this routing exists to prevent — propagate it instead.
     if (isModuleReady()) {
       const res = await gsEval('files.mv', [src, dst]);
-      if (res !== true) throw new Error(gsErrorText(res));
+      if (!gsOk(res)) throw new Error(gsErrorText(res));
       return;
     }
     // Module not up yet (no worker cache to desync) — direct OPFS fallback.
@@ -311,7 +311,7 @@ export class BrowserOpfs implements OpfsBackend {
     // makes the UI's per-item failure accounting real instead of dead code.
     if (isModuleReady()) {
       const res = await gsEval('files.rm', [path]);
-      if (res !== true) throw new Error(gsErrorText(res));
+      if (!gsOk(res)) throw new Error(gsErrorText(res));
       return;
     }
     // Module not up yet (no worker cache to desync) — direct OPFS fallback.

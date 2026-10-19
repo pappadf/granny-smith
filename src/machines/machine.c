@@ -704,7 +704,7 @@ static DEF_METHOD(machine_method_reset) {
     if (!system_config())
         return val_err("machine.reset: no machine is running; boot one first");
     system_machine_reset();
-    return val_bool(true);
+    return val_none();
 }
 
 // machine.restart — level 3, a power cycle: the same complete reset as
@@ -716,7 +716,7 @@ static DEF_METHOD(machine_method_restart) {
     if (!system_config())
         return val_err("machine.restart: no machine is running; boot one first");
     system_machine_power_cycle();
-    return val_bool(true);
+    return val_none();
 }
 
 // machine.register(id, created) — record the active machine identity for
@@ -995,12 +995,12 @@ static const member_t machine_members[] = {
      .name = "reset",
      .examples = EXAMPLES("machine.reset"),
      .doc = "Warm-reset the running machine: the /RESET net plus the CPU, keeping RAM, PRAM and media",
-     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = machine_method_reset}},
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = machine_method_reset}},
     {.kind = MK_METHOD,
      .name = "restart",
      .examples = EXAMPLES("machine.restart"),
      .doc = "Power-cycle the running machine: a reset with the RAM cold; nothing is rebuilt, so PRAM/NVRAM, "
-            "the clock and media survive", .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = machine_method_restart}},
+            "the clock and media survive", .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = machine_method_restart}},
     {.kind = MK_METHOD,
      .name = "register",
      .flags = M_CAT_ADVANCED,
