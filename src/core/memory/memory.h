@@ -593,6 +593,12 @@ typedef struct mem_code_region {
     uint8_t *base; // host base of the region
     uintptr_t size; // bytes
     uint8_t *marks; // per page: nonzero = code page (write entries suppressed); one bit per owner (MEM_CODE_*)
+    // Per page, the logical write slots that may map it (memory_write_alias_note):
+    // MEM_ALIAS_SLOTS records of (MEM_WT_* tables << 20 | logical page), 0 =
+    // empty; `alias_over` set when a page outgrew its slots (its mark scans
+    // the tables instead).  Allocated on the first note.
+    uint32_t *alias;
+    uint8_t *alias_over;
 } mem_code_region_t;
 extern mem_code_region_t g_mem_code_regions[MEM_CODE_REGIONS_MAX];
 extern int g_mem_code_region_count;
@@ -643,6 +649,12 @@ static inline bool memory_host_is_code(const uint8_t *host) {
 // Which write table(s) a fill or a refusal concerns (memory_write_fill).
 #define MEM_WT_SUPER 1u // g_supervisor_write
 #define MEM_WT_USER  2u // g_user_write
+#define MEM_WT_EXTRA 4u // g_mem_extra_write (a fill with no MEM_WT_* table)
+
+// Record that write table(s) `tables` (MEM_WT_*; 0 = the extra table) may
+// map logical page `page_index` onto the host page holding `host`, so the
+// page's code mark finds the alias without scanning the tables.
+void memory_write_alias_note(uint32_t page_index, const uint8_t *host, unsigned tables);
 
 // The refused-write record: one bit per page and write table, set exactly
 // where the switch core would hold a live write entry that the code-page
@@ -666,6 +678,7 @@ static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *ho
                                           unsigned tables) {
     if (g_mem_soa_chunk)
         g_mem_soa_chunk[page_index >> 8] = 1;
+    memory_write_alias_note(page_index, host, tables);
     if (__builtin_expect(memory_host_is_code(host), 0)) {
         memory_write_refused_set(page_index, tables);
         return 0;

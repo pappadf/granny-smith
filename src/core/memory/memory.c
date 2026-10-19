@@ -1360,6 +1360,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
                 // The page left the code set since (its block was evicted or
                 // demoted): the entry the switch core holds comes back.
                 if (!memory_host_is_code(host)) {
+                    memory_write_alias_note(page, host, supervisor ? MEM_WT_SUPER : MEM_WT_USER);
                     (supervisor ? g_supervisor_write : g_user_write)[page] = rbase;
                     memory_write_refused_clear(page, supervisor ? MEM_WT_SUPER : MEM_WT_USER);
                 }
@@ -1692,6 +1693,10 @@ static void code_regions_reset(void) {
     for (int i = 0; i < g_mem_code_region_count; i++) {
         free(g_mem_code_regions[i].marks);
         g_mem_code_regions[i].marks = NULL;
+        free(g_mem_code_regions[i].alias);
+        free(g_mem_code_regions[i].alias_over);
+        g_mem_code_regions[i].alias = NULL;
+        g_mem_code_regions[i].alias_over = NULL;
         g_mem_code_regions[i].base = NULL;
         g_mem_code_regions[i].size = 0;
     }
@@ -1764,6 +1769,115 @@ bool memory_write_refused(uint32_t page_index, bool supervisor) {
            (m->write_refused[page_index] & (supervisor ? MEM_WT_SUPER : MEM_WT_USER));
 }
 
+// The write table a MEM_WT_* bit names, and the refused-write record's
+// bits for it (the extra table has none).
+static uintptr_t *alias_table(unsigned bit) {
+    return bit == MEM_WT_SUPER ? g_supervisor_write : bit == MEM_WT_USER ? g_user_write : g_mem_extra_write;
+}
+
+// True when one of record `rec`'s tables still maps its logical page onto
+// `host_page`.
+static bool alias_live(uint32_t rec, const uint8_t *host_page) {
+    uint32_t lpage = rec & 0xFFFFFu;
+    if (lpage >= g_page_count)
+        return false;
+    for (unsigned bit = MEM_WT_SUPER; bit <= MEM_WT_EXTRA; bit <<= 1) {
+        uintptr_t *arr = (rec >> 20) & bit ? alias_table(bit) : NULL;
+        if (arr && MEM_ENTRY_IS_RAM(arr[lpage]) &&
+            MEM_ENTRY_HOST(arr[lpage], (uintptr_t)lpage << MEM_PAGE_SHIFT) == host_page)
+            return true;
+    }
+    return false;
+}
+
+#define MEM_ALIAS_SLOTS 4
+
+// Add a record for logical page `page_index` and tables `mask` to region
+// page `page` of region `g` (its slots allocated).
+static void alias_add(mem_code_region_t *g, uint32_t page, uint32_t page_index, uint32_t mask) {
+    if (g->alias_over[page])
+        return;
+    if (page_index > 0xFFFFFu) {
+        g->alias_over[page] = 1; // no room in a record: marks scan for this page
+        return;
+    }
+    uint32_t rec = (mask << 20) | page_index;
+    uint32_t *slot = &g->alias[(size_t)page * MEM_ALIAS_SLOTS];
+    int empty = -1;
+    for (int i = 0; i < MEM_ALIAS_SLOTS; i++) {
+        if (!slot[i]) {
+            if (empty < 0)
+                empty = i;
+        } else if ((slot[i] & 0xFFFFFu) == page_index) {
+            slot[i] |= rec; // the same logical page: one record, its tables merged
+            return;
+        }
+    }
+    if (empty >= 0) {
+        slot[empty] = rec;
+        return;
+    }
+    // Full: reuse a record whose tables no longer map the page.
+    const uint8_t *host_page = g->base + ((uintptr_t)page << MEM_PAGE_SHIFT);
+    for (int i = 0; i < MEM_ALIAS_SLOTS; i++)
+        if (!alias_live(slot[i], host_page)) {
+            slot[i] = rec;
+            return;
+        }
+    g->alias_over[page] = 1; // more live aliases than slots: marks scan for this page
+}
+
+// Record every write entry the selected tables already hold into region
+// `g` (entries planted before its slots existed, e.g. before the region was
+// registered), scanning only the chunks that ever held a write entry.
+static void alias_populate(mem_code_region_t *g) {
+    if (!g_mem_soa_chunk)
+        return;
+    uint32_t chunks = (g_page_count + 255) / 256;
+    for (unsigned bit = MEM_WT_SUPER; bit <= MEM_WT_EXTRA; bit <<= 1) {
+        uintptr_t *arr = alias_table(bit);
+        if (!arr)
+            continue;
+        for (uint32_t c = 0; c < chunks; c++) {
+            if (!g_mem_soa_chunk[c])
+                continue;
+            uint32_t p0 = c << 8, p1 = p0 + 256;
+            if (p1 > g_page_count)
+                p1 = g_page_count;
+            for (uint32_t p = p0; p < p1; p++) {
+                uintptr_t e = arr[p];
+                if (!MEM_ENTRY_IS_RAM(e))
+                    continue;
+                const uint8_t *h = MEM_ENTRY_HOST(e, (uintptr_t)p << MEM_PAGE_SHIFT);
+                if (h >= g->base && (uintptr_t)(h - g->base) < g->size)
+                    alias_add(g, (uint32_t)((uintptr_t)(h - g->base) >> MEM_PAGE_SHIFT), p, bit);
+            }
+        }
+    }
+}
+
+void memory_write_alias_note(uint32_t page_index, const uint8_t *host, unsigned tables) {
+    uint32_t page;
+    int r = memory_code_region_of(host, &page);
+    if (r < 0)
+        return; // never a code page
+    mem_code_region_t *g = &g_mem_code_regions[r];
+    if (!g->alias) {
+        uint32_t pages = (uint32_t)((g->size + MEM_PAGE_SIZE - 1) >> MEM_PAGE_SHIFT);
+        g->alias = calloc((size_t)pages * MEM_ALIAS_SLOTS, sizeof *g->alias);
+        g->alias_over = calloc(pages, 1);
+        if (!g->alias || !g->alias_over) {
+            free(g->alias);
+            free(g->alias_over);
+            g->alias = NULL; // every mark in this region scans
+            g->alias_over = NULL;
+            return;
+        }
+        alias_populate(g);
+    }
+    alias_add(g, page, page_index, tables ? (tables & (MEM_WT_SUPER | MEM_WT_USER)) : MEM_WT_EXTRA);
+}
+
 // Zero every write entry of `arr` that maps its logical page onto host_page,
 // scanning only the chunks that ever held a write entry; each zeroed entry is
 // noted for `table` in the refused-write record.
@@ -1797,10 +1911,30 @@ void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     if (was)
         return; // already a code page: its write entries are gone
     // Every logical alias currently holding a write entry for these bytes
-    // loses it; refills consult the mark (memory_write_fill).
-    zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
-    zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
-    zero_write_aliases(g_mem_extra_write, 0, host_page);
+    // loses it; refills consult the mark (memory_write_fill).  Every write
+    // entry was planted through memory_write_fill, which noted its slot: the
+    // page's records name them, unless the page outgrew its slots.
+    mem_code_region_t *g = &g_mem_code_regions[r];
+    if (!g->alias || g->alias_over[page]) {
+        zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
+        zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
+        zero_write_aliases(g_mem_extra_write, 0, host_page);
+        return;
+    }
+    const uint32_t *slot = &g->alias[(size_t)page * MEM_ALIAS_SLOTS];
+    for (int i = 0; i < MEM_ALIAS_SLOTS; i++) {
+        uint32_t lpage = slot[i] & 0xFFFFFu;
+        if (!slot[i] || lpage >= g_page_count)
+            continue;
+        for (unsigned bit = MEM_WT_SUPER; bit <= MEM_WT_EXTRA; bit <<= 1) {
+            uintptr_t *arr = (slot[i] >> 20) & bit ? alias_table(bit) : NULL;
+            uintptr_t e = arr ? arr[lpage] : 0;
+            if (MEM_ENTRY_IS_RAM(e) && MEM_ENTRY_HOST(e, (uintptr_t)lpage << MEM_PAGE_SHIFT) == host_page) {
+                arr[lpage] = 0; // stores must take the slow path from now on
+                memory_write_refused_set(lpage, bit == MEM_WT_EXTRA ? 0 : bit);
+            }
+        }
+    }
 }
 
 void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {
