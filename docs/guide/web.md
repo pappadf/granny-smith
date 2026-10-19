@@ -320,6 +320,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:renderer` | the core thread's display update, once, after the render thread gave up: no WebGL 2 context, one lost while it came up, one lost later (checked every animation frame, before any GL call), or display shaders the driver would not build; the page replaces the UI with the graphics error page | `{status, detail}`, `status` one of `no_context`, `context_dead`, `context_lost`, `shader_failed` |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
+| `state:machine_shut_down` | `system_shut_down` (`machine.shutdown`): the machine is gone and none replaces it | `{}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
@@ -643,7 +644,7 @@ Enter commits and Esc cancels. A commit takes one of two paths:
 - after every console job and SYSTEM action;
 - every 2 s while the machine runs and the page is in the foreground.
 
-On `state:machine_booted` the whole tree reloads, keeping the open levels
+On `state:machine_booted` and `state:machine_shut_down` the whole tree reloads, keeping the open levels
 by path.
 
 **Revealing a node.** Ctrl/Cmd-click on a console object link opens SYSTEM
@@ -823,6 +824,10 @@ typed-dispatch and introspection surface.
   machine and creates a fresh one from a complete configuration document
   (model and rom required; nothing is inherited from the previous
   machine).
+- **`machine.shutdown`** — the toolbar's Shut down: stops the machine and
+  destroys it with nothing in its place, so the core is as before the first
+  boot (`machine.created` false). The page then discards the machine's
+  background checkpoint (`checkpoint.clear`), so a reload offers no Resume.
 - **`machine.restart`** — power-cycles the running machine: a reset with
   the RAM cold. Nothing is torn down, so PRAM/NVRAM, the clock, the
   mounted media, the Caps Lock latch and the LaserWriter survive; the

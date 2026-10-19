@@ -719,6 +719,17 @@ static DEF_METHOD(machine_method_restart) {
     return val_bool(true);
 }
 
+// machine.shutdown — switch the machine off for good: it is stopped and torn
+// down, and no machine is left (machine.created is false) until the next
+// machine.boot or checkpoint.load.  Unlike machine.restart, nothing survives:
+// the media come out of their drives and anything the guest did not save is
+// gone.  Its background checkpoint is a separate store (checkpoint.clear).
+static DEF_METHOD(machine_method_shutdown) {
+    if (!system_shut_down())
+        return val_err("machine.shutdown: no machine is running");
+    return val_bool(true);
+}
+
 // machine.register(id, created) — record the active machine identity for
 // checkpointing. Routes to the platform's system_register_machine.
 static DEF_METHOD(machine_method_register) {
@@ -1001,6 +1012,11 @@ static const member_t machine_members[] = {
      .examples = EXAMPLES("machine.restart"),
      .doc = "Power-cycle the running machine: a reset with the RAM cold; nothing is rebuilt, so PRAM/NVRAM, "
             "the clock and media survive", .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = machine_method_restart}},
+    {.kind = MK_METHOD,
+     .name = "shutdown",
+     .examples = EXAMPLES("machine.shutdown"),
+     .doc = "Shut the machine down: stop it and tear it down, leaving no machine until the next boot",
+     .method = {.args = NULL, .nargs = 0, .result = VK_BOOL, .fn = machine_method_shutdown}},
     {.kind = MK_METHOD,
      .name = "register",
      .flags = M_CAT_ADVANCED,

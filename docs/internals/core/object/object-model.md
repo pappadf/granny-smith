@@ -653,7 +653,9 @@ one thing: whether the machine is torn down. Only building a new machine
 tears down; a reset or a power cycle keeps every device, so the
 non-volatile stores, the mounted media, the Caps Lock latch and the
 LaserWriter survive for the hardware's own reason -- nothing destroyed
-them. A new machine inherits nothing from the old one.
+them. A new machine inherits nothing from the old one. A fifth,
+`machine.shutdown`, only tears down: the machine is destroyed and nothing
+takes its place, so the core is as it was before the first boot.
 
 | Level | Operation | What it does | Entry point |
 |---|---|---|---|
@@ -661,6 +663,7 @@ them. A new machine inherits nothing from the old one.
 | 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`, and each NuBus card's `power_on`) back to its constructed values -- video VRAM included, so the old picture does not outlive the power. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
 | -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, builds the new machine with its ROM, swaps it in and destroys the old one. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
 | -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
+| -- | `machine.shutdown` | **Shut down**: stops the machine and destroys it with nothing swapped in; no machine is left (`machine.created` false) until the next boot or load. Emits `machine_shut_down`. | `machine_method_shutdown` → `system_shut_down` (`src/core/system.c`; `tests/integration/machine-shutdown`) |
 
 Level 1 is the 68k `RESET` instruction: the /RESET net alone, with the CPU
 untouched (`system_reset_devices`). It has no verb -- it is an instruction

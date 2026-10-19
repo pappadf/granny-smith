@@ -98,6 +98,7 @@ The browser storage is `/opfs`; your images are in `/opfs/images/<kind>/`.
 | Command | Does |
 |---|---|
 | `run`, `stop` | Run and stop the machine (as the toolbar's run/pause) |
+| `machine.shutdown` | Shut the machine down, as the toolbar's **Shut down**: nothing of it is left |
 | `machine.restart` | Power-cycle the machine: memory is cleared; PRAM, the clock and disks stay |
 | `reset` (`machine.reset`) | Press the reset switch: keeps memory, PRAM and disks |
 | `machine.screen.save("<file>.png")` | Save a screenshot of the Mac's screen |
