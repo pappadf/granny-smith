@@ -13,7 +13,7 @@ From left to right:
 | Control | What it does |
 |---|---|
 | **Run** / **Pause** | Pause the machine, or let it run again. A paused machine keeps its state; the Debug panel can inspect it. |
-| **Shut down** | Turn the machine off and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. |
+| **Shut down** | Turn the machine off for good and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. The machine and its automatic checkpoint are gone, so a reload offers no **Resume**; to keep it, use **Save State** or **Create Checkpoint** first. |
 | **Real · Faster · Max** | The speed mode — see §2. |
 | **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 50 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
 | **Save State** | Download the whole machine — memory, devices and disks — as one file you can open again later. See [Saving and resuming](saving-and-resuming.md). |

@@ -54,6 +54,22 @@ void expr_set_func_hook(expr_func_hook_fn fn, void *ud) {
     g_func_hook_ud = ud;
 }
 
+// === Parse-only checks ======================================================
+
+// True when the evaluation is a syntax check (expr_check): nothing is
+// resolved, read or called, and every value the parser would compute is
+// the stand-in below.
+static bool parse_only(const expr_ctx_t *ctx) {
+    return ctx && ctx->parse_only;
+}
+
+// What a parse-only check gives every path, binding, call and operator
+// result: a plain integer, which every place in the grammar accepts (an
+// operand, an index, a splice).
+static value_t parse_only_value(void) {
+    return val_int(0);
+}
+
 // === Lexer state ============================================================
 
 typedef struct lex {
@@ -641,6 +657,28 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
     return false;
 }
 
+// The rest of a path or binding primary in a parse-only check: the call's
+// argument list if `call_open` (the '(' already consumed), then any `.key` /
+// `[...]` segments and call that may follow, each parsed for its errors and
+// none evaluated.
+static value_t parse_only_tail(lex_t *L, const expr_ctx_t *ctx, bool call_open) {
+    char sub[256];
+    if (!call_open && !read_sub_segments(L, ctx, sub, sizeof(sub), &call_open))
+        return val_err("bad path");
+    while (call_open) {
+        value_t *argv = NULL;
+        call_named_t *named = NULL;
+        int argc = 0, named_n = 0;
+        if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+            return val_err("bad call");
+        free_call_args(argv, argc, named, named_n);
+        // Segments on a call result (catalog.profile("se30").capabilities).
+        if (!read_sub_segments(L, ctx, sub, sizeof(sub), &call_open))
+            return val_err("bad path");
+    }
+    return parse_only_value();
+}
+
 // === Structured-value path access (VK_MAP / VK_LIST, shell v2) ================
 
 // Walk continuation-segment text (`.key`, `[N]`, `["key"]` — the textual
@@ -797,6 +835,8 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
         lex_error(L, "expected binding name after '$'");
         return val_err("bad binding");
     }
+    if (parse_only(ctx))
+        return parse_only_tail(L, ctx, false);
     if (!ctx || !ctx->binding)
         return val_err("no bindings in this context ('$%s')", ident);
     value_t base = ctx->binding(ctx->binding_ud, ident);
@@ -1136,6 +1176,10 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         bool call_open = false;
         if (!parse_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
+        // A check resolves nothing: not the tree, not a builtin, not a
+        // user function.
+        if (parse_only(ctx))
+            return parse_only_tail(L, ctx, call_open);
         // Builtins: recognised by name in call form, before
         // object-tree lookup. `try` is a special form (lazy w.r.t.
         // errors); the rest evaluate their args normally.
@@ -1319,6 +1363,10 @@ static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set || val_is_error(&v))
             return v;
+        if (parse_only(ctx)) {
+            value_free(&v);
+            return parse_only_value();
+        }
         bool ok = false;
         uint64_t u = val_as_u64(&v, &ok);
         uint8_t w = v.width;
@@ -1332,6 +1380,10 @@ static value_t parse_unary_inner(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set || val_is_error(&v))
             return v;
+        if (parse_only(ctx)) {
+            value_free(&v);
+            return parse_only_value();
+        }
         if (v.kind == VK_FLOAT) {
             double d = -v.f;
             value_free(&v);
@@ -1608,6 +1660,13 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
+        }
         char err[64] = "";
         value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
@@ -1669,6 +1728,13 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
+        }
         // String/bytes concat with '+'.
         if (op == '+' && (a.kind == VK_STRING || a.kind == VK_BYTES)) {
             value_t r = plus_concat(&a, &b);
@@ -1712,6 +1778,13 @@ static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
+        }
         char err[64] = "";
         value_t r = numeric_op(&a, &b, op, err, sizeof(err));
         value_free(&a);
@@ -1740,6 +1813,13 @@ static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
+        }
         char err[64] = "";
         value_t r = numeric_op(&a, &b, '&', err, sizeof(err));
         value_free(&a);
@@ -1766,6 +1846,13 @@ static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
         if (L->err_set || val_is_error(&b)) {
             value_free(&a);
             return b;
+        }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
         }
         char err[64] = "";
         value_t r = numeric_op(&a, &b, '^', err, sizeof(err));
@@ -1794,6 +1881,13 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
         if (L->err_set || val_is_error(&b)) {
             value_free(&a);
             return b;
+        }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
         }
         char err[64] = "";
         value_t r = numeric_op(&a, &b, '|', err, sizeof(err));
@@ -1826,6 +1920,11 @@ static value_t parse_range_level(lex_t *L, const expr_ctx_t *ctx) {
     if (L->err_set || val_is_error(&b)) {
         value_free(&a);
         return b;
+    }
+    if (parse_only(ctx)) {
+        value_free(&a);
+        value_free(&b);
+        return parse_only_value();
     }
     if ((a.kind != VK_INT && a.kind != VK_UINT) || (b.kind != VK_INT && b.kind != VK_UINT)) {
         value_free(&a);
@@ -1890,6 +1989,13 @@ static value_t parse_relational(lex_t *L, const expr_ctx_t *ctx) {
         if (L->err_set || val_is_error(&b)) {
             value_free(&a);
             return b;
+        }
+        if (parse_only(ctx)) {
+            // A syntax check computes nothing: no type can be wrong.
+            value_free(&a);
+            value_free(&b);
+            a = parse_only_value();
+            continue;
         }
         bool ok = false;
         int c = compare_numeric(&a, &b, &ok);
@@ -1995,6 +2101,14 @@ static value_t parse_logand(lex_t *L, const expr_ctx_t *ctx) {
         lex_skip_ws(L);
         if (!lex_eat2(L, '&', '&'))
             break;
+        if (parse_only(ctx)) {
+            // A check parses every side for its errors; none is skipped.
+            value_free(&a);
+            a = parse_equality(L, ctx);
+            if (L->err_set || val_is_error(&a))
+                return a;
+            continue;
+        }
         if (val_is_error(&a)) {
             skip_equality(L, ctx);
             continue;
@@ -2023,6 +2137,13 @@ static value_t parse_logor(lex_t *L, const expr_ctx_t *ctx) {
         lex_skip_ws(L);
         if (!lex_eat2(L, '|', '|'))
             break;
+        if (parse_only(ctx)) {
+            value_free(&a);
+            a = parse_logand(L, ctx);
+            if (L->err_set || val_is_error(&a))
+                return a;
+            continue;
+        }
         if (val_is_error(&a)) {
             skip_logand(L, ctx);
             continue;
@@ -2064,6 +2185,22 @@ static value_t parse_ternary_inner(lex_t *L, const expr_ctx_t *ctx) {
     if (*L->p != '?')
         return c;
     L->p++;
+
+    if (parse_only(ctx)) {
+        // A check parses both branches for their errors.
+        value_free(&c);
+        value_t t = parse_expr(L, ctx);
+        if (L->err_set || val_is_error(&t))
+            return t;
+        value_free(&t);
+        lex_skip_ws(L);
+        if (*L->p != ':') {
+            lex_error(L, "expected ':' in ternary");
+            return val_err("ternary");
+        }
+        L->p++;
+        return parse_ternary(L, ctx);
+    }
 
     bool err = val_is_error(&c);
     bool truthy = !err && val_as_bool(&c);
@@ -2143,6 +2280,16 @@ value_t expr_eval(const char *src, const expr_ctx_t *ctx) {
         return val_err("trailing garbage in expression: '%s'", p);
     }
     return v;
+}
+
+value_t expr_check(const char *src, const expr_ctx_t *ctx) {
+    expr_ctx_t check = ctx ? *ctx : (expr_ctx_t){0};
+    check.parse_only = true;
+    value_t v = expr_eval(src, &check);
+    if (val_is_error(&v))
+        return v;
+    value_free(&v);
+    return val_none();
 }
 
 // === String interpolation ===================================================
@@ -2538,6 +2685,10 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
                 q++;
             }
             ident[i] = '\0';
+            if (parse_only(ctx)) {
+                p = q; // a check reads no binding
+                continue;
+            }
             if (!ctx || !ctx->binding) {
                 free(out);
                 return val_err("no bindings in this context ('$%s')", ident);

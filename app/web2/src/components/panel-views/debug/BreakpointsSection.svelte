@@ -57,9 +57,11 @@
       showNotification('Invalid breakpoint address', 'error');
       return;
     }
-    const ok = await addBreakpoint(v, addCond.trim() || undefined);
-    if (!ok) {
-      showNotification('Failed to add breakpoint', 'error');
+    // A condition that does not parse is refused by the core, with its
+    // reason; the form stays open to correct it.
+    const added = await addBreakpoint(v, addCond.trim() || undefined);
+    if (added !== true) {
+      showNotification(`Failed to add breakpoint: ${added}`, 'error');
       return;
     }
     showNotification(`Breakpoint set at $${fmtHex32(v)}`, 'info');

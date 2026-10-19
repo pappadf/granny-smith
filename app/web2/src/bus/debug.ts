@@ -9,13 +9,13 @@
 import {
   gsEval,
   gsOk,
+  gsErrorText,
   isGsError,
-  shutdownEmulator,
   pauseEmulator,
   resumeEmulator,
   isModuleReady,
 } from './emulator';
-import { restartEmulator } from './boot';
+import { restartEmulator, shutdownEmulator } from './boot';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
 import { isTaggedEnum } from '@/lib/taggedValue';
 
@@ -277,13 +277,16 @@ export async function listBreakpoints(): Promise<Breakpoint[]> {
 }
 
 // Add a breakpoint.  The core returns the existing entry for an address that
-// already has one, so a repeated add never stacks a duplicate.
-export async function addBreakpoint(addr: number, condition?: string): Promise<boolean> {
-  if (!isModuleReady()) return false;
+// already has one, so a repeated add never stacks a duplicate (a condition
+// given replaces the old one).  True, or why it was not added: the core
+// refuses a condition that does not parse ("invalid breakpoint condition
+// '((( x': expected ')'").
+export async function addBreakpoint(addr: number, condition?: string): Promise<true | string> {
+  if (!isModuleReady()) return 'the emulator is not ready';
   const args: unknown[] = [addr >>> 0];
   if (condition && condition.trim().length) args.push(condition.trim());
   const r = await gsEval('debug.breakpoints.add', args);
-  return gsOk(r);
+  return gsOk(r) ? true : gsErrorText(r);
 }
 
 // Remove the breakpoint with stable id `id`.

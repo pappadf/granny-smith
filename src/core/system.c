@@ -1364,6 +1364,36 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
     platform_machine_attached();
 }
 
+// Shut the active machine down (system.h): the destroy step of build, swap,
+// destroy with nothing swapped in.  Everything system_swap_in pointed at the
+// machine is pointed at nothing, so the core is as it was before the first
+// boot.
+bool system_shut_down(void) {
+    config_t *old = global_emulator;
+    if (!old)
+        return false;
+    // A run in progress ends first, so its mode_ended event goes out while
+    // the machine still exists (a stop between frames reports at once).
+    if (old->scheduler)
+        scheduler_stop(old->scheduler);
+    // A background checkpoint's write in flight lands before the machine goes.
+    checkpoint_quick_wait();
+
+    // Destroyed while still the active machine, as a headless quit does;
+    // system_destroy clears the active-machine pointer.  Teardown unplugs it
+    // from the AppleTalk cable and drops its object tree (root_uninstall_if,
+    // debug_cleanup, the expansion buses' slot trees).
+    system_destroy(old);
+    GS_ASSERT(global_emulator == NULL);
+    memory_map_select(NULL);
+    // The machine container shows the bare "machine" segment again.
+    machine_set_active_label(NULL);
+
+    LOG(1, "Machine shut down");
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_shut_down\"}");
+    return true;
+}
+
 // Destroy an emulator instance: call machine teardown and free all resources.
 void system_destroy(config_t *config) {
     if (!config)

@@ -97,7 +97,8 @@ Machine dialog can be given this way — see [URL parameters](url-parameters.md)
 Granny Smith saves the running machine in the background every few
 seconds. When you reload the page or come back later, it asks **Continue
 from saved checkpoint?** — choose **Resume** to carry on exactly where you
-left off. Machines you started recently are also listed under **RECENT** on
+left off. A machine you shut down is not kept: **Shut down** turns it off
+for good. Machines you started recently are also listed under **RECENT** on
 the Home screen. See [Saving and resuming](saving-and-resuming.md).
 
 ## 6. Where next

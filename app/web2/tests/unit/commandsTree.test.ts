@@ -248,6 +248,7 @@ describe('command browser rows (model projection)', () => {
 
   it('events map to the levels they change', () => {
     expect(changeFor('state:machine_booted')).toEqual({ reload: true, dropped: [] });
+    expect(changeFor('state:machine_shut_down')).toEqual({ reload: true, dropped: [] });
     expect(changeFor('notify:media')).toEqual({ reload: false, dropped: ['machine.scsi'] });
     expect(changeFor('notify:floppy')).toEqual({ reload: false, dropped: ['machine.floppy'] });
     expect(changeFor('state:speed')).toEqual({ reload: false, dropped: [] });

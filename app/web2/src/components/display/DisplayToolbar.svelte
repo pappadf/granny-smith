@@ -40,8 +40,8 @@
 
   // Enable predicates. `isLive` covers running + paused — the
   // states where machine-dependent toolbar buttons are interactive. After a
-  // Shut Down the status is 'stopped'; Welcome view is shown again so the user
-  // can pick a new config, but the Run/Save/Shut down buttons stay disabled
+  // Shut Down there is no machine; Welcome view is shown again so the user
+  // can pick a new config, and the Run/Save/Shut down buttons stay disabled
   // until they do.
   const isLive = $derived(machine.status === 'running' || machine.status === 'paused');
 

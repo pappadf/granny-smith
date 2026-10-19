@@ -469,9 +469,8 @@ async function autoMountIfEmpty(
   category: MediaTypeId,
   justBooted = false,
 ): Promise<void> {
-  // With no machine running, the image is stored and that is all: a machine
-  // that was shut down still holds its drives in the core, and the disk used
-  // to go into it ("Inserted into floppy drive 1" on the Home screen).
+  // With no machine running, the image is stored and that is all (after a
+  // Shut down the core has no machine, and no drive to insert it into).
   if (!justBooted && machine.status !== 'running' && machine.status !== 'paused') return;
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
