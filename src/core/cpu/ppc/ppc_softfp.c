@@ -524,7 +524,204 @@ static inline uint64_t sf_nan_single(uint64_t nan) {
     return r;
 }
 
+// ============================================================================
+// Host fast path
+// ============================================================================
+// The common case -- round to nearest, normal operands, a normal result far
+// from both ends of the exponent range -- computed with one host double
+// operation plus an error-free transformation that recovers the exact
+// rounding error.  The error's sign and whether it is zero are exactly the
+// facts round_pack derives (FI = inexact, FR = the magnitude was rounded
+// up), so the result and the FPSCR image are the soft path's, bit for bit;
+// anything outside that envelope declines to the soft path.  Requires IEEE
+// binary64 evaluation in round-to-nearest (SSE2, AArch64, wasm; never x87),
+// no host rounding-mode changes, and no contraction of the products and
+// sums below into fused operations (the pragmas).
+
+#if defined(__FLT_EVAL_METHOD__) && __FLT_EVAL_METHOD__ == 0
+#define SF_HOST_FAST 1
+#else
+#define SF_HOST_FAST 0
+#endif
+
+#if SF_HOST_FAST
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
+
+// The envelope: biased exponents in [SF_FAST_ELO, SF_FAST_EHI] keep every
+// operand, product, error term and result clear of overflow and of the
+// subnormal range (the error terms of a product or quotient sit up to
+// 2^-106 below it), so each transformation below is exact.
+#define SF_FAST_ELO 123u // 2^-900
+#define SF_FAST_EHI 2023u // 2^1000
+
+static inline double sf_f64(uint64_t x) {
+    union {
+        uint64_t u;
+        double d;
+    } v = {.u = x};
+    return v.d;
+}
+
+static inline uint64_t sf_u64(double d) {
+    union {
+        double d;
+        uint64_t u;
+    } v = {.d = d};
+    return v.u;
+}
+
+// Inside the envelope (also rejects zero, denormal, inf, NaN).
+static inline int sf_fast_ok(uint64_t x) {
+    return ((uint32_t)(x >> 52) & 0x7FFu) - SF_FAST_ELO <= SF_FAST_EHI - SF_FAST_ELO;
+}
+
+// Sign of an exact error term: -1, 0, +1.
+static inline int sf_sign_of(double e) {
+    return (e > 0) - (e < 0);
+}
+
+// Exact sum: s + t == a + b (Knuth's TwoSum; round-to-nearest, no overflow).
+static inline double sf_two_sum(double a, double b, double *t) {
+    double s = a + b;
+    double bb = s - a;
+    *t = (a - (s - bb)) + (b - bb);
+    return s;
+}
+
+// Sign of (a*x + y) - r where r = RN(a*x + y): the ErrFma algorithm
+// (Boldo and Muller, "Exact and Approximated Error of the FMA", 2011),
+// which returns r2 + r3 equal to that error exactly with |r3| <= ulp(r2)/2,
+// so the sign is r2's unless r2 is zero.
+static inline int sf_fma_err_sign(double a, double x, double y, double r) {
+    double u1 = a * x;
+    double u2 = __builtin_fma(a, x, -u1);
+    double a2, b2;
+    double a1 = sf_two_sum(y, u2, &a2);
+    double b1 = sf_two_sum(u1, a1, &b2);
+    double g = (b1 - r) + b2;
+    double r2 = g + a2; // Fast2Sum(g, a2)
+    double r3 = a2 - (r2 - g);
+    int s = sf_sign_of(r2);
+    return s ? s : sf_sign_of(r3);
+}
+
+// Returns 1 with *frt / *fpscr set as the soft path would set them, or 0
+// to decline.
+static inline __attribute__((always_inline)) int sf_fast_arith(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c,
+                                                               int single, uint32_t *fpscr, uint64_t *frt) {
+    uint32_t f = *fpscr;
+    if ((f & PPC_FPSCR_RN) != PPC_RN_NEAREST || !sf_fast_ok(a))
+        return 0;
+    double da = sf_f64(a), r;
+    int es; // sign of (exact - r)
+    switch (op) {
+    case PPC_SF_ADD:
+    case PPC_SF_SUB: {
+        if (!sf_fast_ok(b))
+            return 0;
+        double db = sf_f64(op == PPC_SF_SUB ? b ^ 0x8000000000000000ull : b), t;
+        r = sf_two_sum(da, db, &t);
+        es = sf_sign_of(t);
+        break;
+    }
+    case PPC_SF_MUL: {
+        if (!sf_fast_ok(c))
+            return 0;
+        double dc = sf_f64(c);
+        r = da * dc;
+        es = sf_sign_of(__builtin_fma(da, dc, -r));
+        break;
+    }
+    case PPC_SF_DIV: {
+        if (!sf_fast_ok(b))
+            return 0;
+        double db = sf_f64(b);
+        r = da / db;
+        // a - r*b is exact; exact - r = (a - r*b) / b.
+        es = sf_sign_of(__builtin_fma(-r, db, da)) * (db < 0 ? -1 : 1);
+        break;
+    }
+    default: { // the madd family: one rounding of a*c +/- b, negated after
+        if (!sf_fast_ok(b) || !sf_fast_ok(c))
+            return 0;
+        double dc = sf_f64(c);
+        double db = sf_f64((op == PPC_SF_MSUB || op == PPC_SF_NMSUB) ? b ^ 0x8000000000000000ull : b);
+        if (!sf_fast_ok(sf_u64(da * dc)))
+            return 0;
+        r = __builtin_fma(da, dc, db);
+        if (!sf_fast_ok(sf_u64(r)))
+            return 0;
+        es = sf_fma_err_sign(da, dc, db, r);
+        break;
+    }
+    }
+    uint64_t result = sf_u64(r);
+    if (!sf_fast_ok(result))
+        return 0;
+    int inexact, up; // FI, FR
+    if (single) {
+        // r is RN(exact); RN_single(r) == RN_single(exact) unless r sits on
+        // a single-precision tie with exact off it (double rounding).
+        if (es != 0 && (result & 0x1FFFFFFFull) == 0x10000000ull)
+            return 0;
+        float s = (float)r;
+        uint32_t se = (sf_u64((double)s) >> 52) & 0x7FFu;
+        if (se < 1023u - 125u || se > 1023u + 127u) // tiny (or near it), or overflowed
+            return 0;
+        double ds = (double)s;
+        if (ds != r) {
+            inexact = 1;
+            up = (ds < 0 ? -ds : ds) > (r < 0 ? -r : r);
+        } else {
+            inexact = es != 0;
+            up = es != 0 && (es < 0) != (r < 0);
+        }
+        result = sf_u64(ds);
+    } else {
+        inexact = es != 0;
+        up = inexact && (es < 0) != (r < 0); // |r| > |exact|
+    }
+    f &= ~(PPC_FPSCR_FR | PPC_FPSCR_FI);
+    if (inexact) {
+        f |= PPC_FPSCR_FI;
+        if (up)
+            f |= PPC_FPSCR_FR;
+        f = ppc_fpscr_raise(f, PPC_FPSCR_XX);
+    }
+    if (op == PPC_SF_NMADD || op == PPC_SF_NMSUB)
+        result ^= 0x8000000000000000ull;
+    // FPRF: the result is a normal number (601UM Table 2-2: +normal 0x04,
+    // -normal 0x08).
+    f = (f & ~PPC_FPSCR_FPRF) | ((result >> 63) ? 0x08000u : 0x04000u);
+    *fpscr = ppc_fpscr_derive(f);
+    *frt = result;
+    return 1;
+}
+
+// The instruction surface: the fast path, else the integer path (defined
+// inside the fast path's option region so its helpers inline).
 int ppc_sf_arith(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c, int single, uint32_t *fpscr, uint64_t *frt) {
+    if (sf_fast_arith(op, a, b, c, single, fpscr, frt))
+        return 1;
+    return ppc_sf_arith_soft(op, a, b, c, single, fpscr, frt);
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+#else
+int ppc_sf_arith(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c, int single, uint32_t *fpscr, uint64_t *frt) {
+    return ppc_sf_arith_soft(op, a, b, c, single, fpscr, frt);
+}
+#endif // SF_HOST_FAST
+
+__attribute__((noinline)) int ppc_sf_arith_soft(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c, int single,
+                                                uint32_t *fpscr, uint64_t *frt) {
     sf_val_t va = sf_unpack(a);
     sf_val_t vb = sf_unpack(b);
     sf_val_t vc = sf_unpack(c);
