@@ -26,7 +26,8 @@
 // - storage=<bus>:<unit>:<type>[,…]: the whole storage list, as the
 //   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`).
 // - startup=<bus>:<unit> (or `none`): the startup device.  Without it, a
-//   storage= boots from its first hard disk, as the core picks.
+//   storage= boots from its first hard disk, as the core picks.  A model
+//   with no startup-device setting (the Plus) leaves it out.
 // - nvram.<variable>=<value>: an Open Firmware variable, as setenv sets it
 //   (`nvram.boot-command=0 bootr`, `nvram.use-nvramrc?=true`).
 //
@@ -263,7 +264,12 @@ export function applyUrlConfig(
     const parsed = parseStartup(params.startup);
     if (parsed === undefined)
       warnings.push(`startup=${params.startup}: a startup device is <bus>:<unit>, or none`);
-    else {
+    else if (!profile.storage.some((b) => b.startup)) {
+      // No startup-device setting (the Plus's ROM boots the highest SCSI
+      // ID): nothing to set, and the core would ignore it.
+      if (parsed !== null)
+        warnings.push(`startup=${params.startup}: ${profile.name} has no startup device setting`);
+    } else {
       doc.startup = parsed;
       changed = true;
     }

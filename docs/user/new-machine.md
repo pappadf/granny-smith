@@ -97,6 +97,8 @@ on the Plus).
    disk: until you choose its image this shows **No default** (on a Lisa
    or Macintosh XL with an empty ProFile, that lets a startup floppy such
    as MacWorks boot).
+   The Plus has no **Start up from**: its ROM always starts from the disk
+   with the highest SCSI ID.
 
 ## 6. Start
 

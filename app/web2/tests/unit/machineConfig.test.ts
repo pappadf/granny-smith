@@ -35,7 +35,7 @@ describe('storage', () => {
   });
 
   it('removing or moving the startup device carries the startup choice', () => {
-    const p = profile('plus');
+    const p = profile('iix');
     let doc = mc.addDevice(p, mc.defaultDocument(p), 'scsi', 'hd', 4);
     doc = mc.setDeviceUnit(doc, 0, 2);
     expect(doc.startup).toEqual({ bus: 'scsi', unit: 2 });
@@ -47,6 +47,14 @@ describe('storage', () => {
       doc.storage.findIndex((d) => d.unit === 4),
     );
     expect(doc.startup).toBeNull();
+  });
+
+  // S1018-56: the Plus's ROM boots the highest SCSI ID.
+  it('a model with no startup record has no startup device or choices', () => {
+    const p = profile('plus');
+    const doc = mc.addDevice(p, mc.defaultDocument(p), 'scsi', 'hd', 4);
+    expect(doc.startup).toBeNull();
+    expect(mc.startupChoices(p, doc)).toEqual([]);
   });
 
   it('the startup list holds only devices on a bus whose record can name them', () => {

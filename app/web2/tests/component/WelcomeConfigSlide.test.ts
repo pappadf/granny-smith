@@ -137,9 +137,8 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
       r.getAttribute('data-position'),
     );
     expect(rows).toEqual(['scsi:0', 'scsi:3']);
-    expect(labels($(c, '#cfg-startup'))).toContain('No default (search all drives)');
-    // No image yet: Start would drop the disk, so no default.
-    expect($(c, '#cfg-startup')!.value).toBe('');
+    // Its ROM boots the highest SCSI ID: no startup device to choose.
+    expect($(c, '#cfg-startup')).toBeNull();
   });
 
   it('an empty floppy position has no disk picker until a drive is put there', async () => {
@@ -211,7 +210,9 @@ describe('WelcomeConfigSlide: storage', () => {
   });
 
   it('removing the startup disk moves the startup choice', async () => {
-    const c = await open('plus');
+    const c = await open('iix');
+    choose($(c, '#cfg-media-scsi-0')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('scsi:0'));
     const remove = c.querySelector('[data-position="scsi:0"] button') as HTMLButtonElement;
     await fireEvent.click(remove);
     await waitFor(() => expect(c.querySelector('[data-position="scsi:0"]')).toBeNull());

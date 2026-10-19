@@ -862,7 +862,8 @@ this configuration, a monitor the device does not take, a mode the
 monitor does not have, more than one connected monitor (V7); the legacy
 card or display arguments beside the document's `cards` / `displays`
 (V8); a startup device not in `storage`, or on a bus the machine's startup
-record cannot name (V9); an `nvram` on a model without Open Firmware NVRAM,
+record cannot name (V9; a model with no such record at all, the Plus,
+ignores `startup`); an `nvram` on a model without Open Firmware NVRAM,
 a variable the firmware does not have, a value it cannot take, or more
 than its 2 KB partition holds -- each set on a factory store to find out
 (V10).  `tests/integration/machine-config-validation` pins one case per
