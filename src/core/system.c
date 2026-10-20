@@ -88,8 +88,10 @@ static const char *pick_delta_dir(const char *path) {
 #define MAX_IMAGES 10
 
 // A machine's tracked disk images (config_t.image_table): system.c owns them
-// and closes them at teardown; everyone else goes through the accessors.
-// Slots are dense from 0 to view.n - 1, a slot NULL only if cleared.
+// and closes them at teardown, or when a drive gives one up (an ejected
+// floppy, config_release_image); everyone else goes through the accessors.
+// Slots run from 0 to view.n - 1; a released slot is NULL until an addition
+// reuses it.
 struct image_table {
     image_t *items[MAX_IMAGES];
     image_list_t view; // {items, n}: the list config_images hands out
@@ -138,11 +140,36 @@ void config_add_image(config_t *cfg, image_t *image) {
     if (!cfg || !cfg->image_table || !image)
         return;
     struct image_table *t = cfg->image_table;
+    // A slot an eject released first: a floppy swapped in and out of an
+    // install would otherwise use up the table.
+    for (int i = 0; i < t->view.n; ++i) {
+        if (!t->items[i]) {
+            t->items[i] = image;
+            return;
+        }
+    }
     if (t->view.n >= MAX_IMAGES) {
         LOG(1, "config_add_image: image table full (max %d), dropping image", MAX_IMAGES);
         return;
     }
     t->items[t->view.n++] = image;
+}
+
+// Close a tracked image its drive gave up (an ejected floppy) and free its
+// slot, so the file is released at once: it can then be copied, renamed,
+// deleted or replaced, and inserting it again opens it afresh.  An image the
+// table does not hold is left to whoever owns it.
+void config_release_image(config_t *cfg, image_t *image) {
+    struct image_table *t = (cfg && image) ? cfg->image_table : NULL;
+    if (!t)
+        return;
+    for (int i = 0; i < t->view.n; ++i) {
+        if (t->items[i] == image) {
+            t->items[i] = NULL;
+            image_close(image);
+            return;
+        }
+    }
 }
 
 // Set while system_create builds a machine.  The machine under construction

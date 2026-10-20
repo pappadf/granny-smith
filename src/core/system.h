@@ -79,6 +79,9 @@ int config_max_images(void);
 // NULL for a NULL cfg.
 const image_list_t *config_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
+// Close a tracked image a drive no longer holds (an ejected floppy) and free
+// its slot; an image the table does not hold is left alone.
+void config_release_image(config_t *cfg, image_t *image);
 // Standard substrate implementation of media attach (cfg->floppy +
 // cfg->scsi); Mac substrates bind it into their vtables, the Lisa provides
 // its own.  See machine_profile.h media_slot_t.
