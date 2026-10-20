@@ -21,10 +21,13 @@
 #   make test-suite-iici TEST_VARS="REGEN=1"          recapture goldens
 
 TEST_NAME := IIci suite
-TEST_DESC := Chime WAV, RBV 7.0.1 boot + About, 7.5 HD, 7.6 HD (32-bit, System-selected and seeded), MDU checkpoint round-trip
+TEST_DESC := Chime WAV, RBV 7.0.1 boot + About, 7.5 HD, 7.6 HD (32-bit, System-selected and seeded), MDU checkpoint round-trip, CD inserted into an empty drive
 
 TEST_ROM := roms/iici-368cadfe.rom
 TEST_ARGS := model=iici ram=8192
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+# The iici-71-cd-insert row's disc: a plain ISO 9660 volume.
+TEST_SETUP := mkdir -p "$(WORK_DIR)" && python3 image-iso9660/make-fixture.py "$(WORK_DIR)/plain.iso" "Read Me.txt=image-iso9660/config.mk"
+
 TEST_TIER := matrix

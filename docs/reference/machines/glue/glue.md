@@ -501,9 +501,9 @@ the PALs implement the frame buffer controller and declaration-ROM functions of 
 a color lookup table [1] p. 114. The frame buffer is 64 KB of dedicated VRAM (two 256-Kbit ICs [1] p. 23)
 in "Video RAM space $FE00 0000–$FE00 FFFF" [2] Table 15-9 p. 342, and the 8 KB video declaration ROM
 occupies $FEFF 0000–$FEFF FFFF [2] Table 15-9 p. 342 — the upper limit of slot $E's standard space, where
-a declaration ROM must sit to be found (§3.5). (A differing VRAM base is in circulation in this tree's SE/30
-page; see §7.4.) The video interrupt rides the slot-$E line, and VIA1 port B bit 6 (vSyncEnA) enables it
-(§6.3).
+a declaration ROM must sit to be found (§3.5). (The same 64 KB also answers at $FEE00000, the base the
+Slot Manager uses in 24-bit mode; see §7.4.) The video interrupt rides the slot-$E line, and VIA1 port B
+bit 6 (vSyncEnA) enables it (§6.3).
 
 ### 3.7 Error paths
 
@@ -861,10 +861,11 @@ outside this family.
    same ROM boots. Which machine each candidate serves, and why the floppy probe's annotations name
    $50F14000 both "SWIM base" and (in the diagnostics) "ASC base", is unresolved in the annotations; the
    printed $0178-generation map (§3.3) is authoritative for these three boards.
-4. **The SE/30's VRAM base.** [2] Table 15-9 p. 342 prints "Video RAM space $FE00 0000–$FE00 FFFF";
-   [se30.md](se30.md) §"Physical Memory Map" records $FEE00000–$FEE0FFFF for the same 64 KB. One of the two
-   is wrong (or the space is wider than 64 KB and both windows decode). A dump of the SE/30 video driver's
-   frame-buffer address from the running system would settle it.
+4. **The SE/30's VRAM base** (resolved). [2] Table 15-9 p. 342 prints "Video RAM space $FE00 0000–$FE00 FFFF".
+   [se30.md](se30.md) §"Physical Memory Map" records $FEE00000–$FEE0FFFF for the same 64 KB. Both windows
+   decode. The frame-buffer address the system computes settles it: under the $0178 ROM the Slot Manager gives the video
+   sResource (`MinorBaseOS` 0) the base $FEE00000 in 24-bit mode and $FE000000 in 32-bit mode, and `ScrnBase`
+   follows (*observed* [4]).
 5. **The 60.15 Hz arithmetic.** The observed T1 latch $196E (6510) against the documented 16.63 ms period
    implies the VIA counts at about 391.68 kHz — E/2 — which no document states. The VIA's Φ2 frequency on
    these boards needs a datasheet-plus-schematic confirmation.

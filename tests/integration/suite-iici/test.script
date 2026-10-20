@@ -19,6 +19,9 @@
 #                   sizes correctly (was a known defect; fixed and enforced)
 #   iici-71-hd      **IIci x 7.1** on the built-in RBV — a cell once wrongly
 #                   believed unreachable (8 MB)
+#   iici-71-cd-insert 7.1 with the Apple CD-ROM driver and the CD-ROM drive
+#                   empty at start-up; a data disc inserted at the desktop
+#                   mounts under its own volume name
 #   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C beside
 #                   the live built-in RBV, booting 7.1 to the Finder, with the
 #                   24AC engine counters asserted. Was a known defect
@@ -46,6 +49,8 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
 let hd_71_gc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
 let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
+# A plain ISO 9660 data disc (volume GS_TEST_DISC), built by config.mk's TEST_SETUP
+let iso_plain = "${$WORK_DIR}/plain.iso"
 let mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 
 # ---- iici-chime -------------------------------------------------------------
@@ -211,6 +216,32 @@ def row_iici_76_hd_addr32() {
     check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
     report_row("7.6", "rbv", "hd-boot 5380 addr32 seeded")
     report_perf("suite-iici/iici-76-hd-addr32", scheduler.instr_count)
+}
+
+# ---- iici-71-cd-insert ------------------------------------------------------
+# The default CD-ROM drive (ID 3) is empty at start-up; System 7.1's Apple
+# CD-ROM driver must still find it, so a data disc inserted at the desktop
+# mounts.  Two faults hid it.  The NCR 5380 front-end answered a selection only
+# for an ID holding a medium, so an empty drive was absent from the bus, the
+# driver never installed, and an inserted disc never appeared (the 53C96 and
+# MESH front-ends already answered).  And the drive's vendor READ TOC (C1h)
+# ignored the control byte's request type, so the driver read the data track
+# as audio and mounted a plain ISO 9660 disc as "Audio CD 1"; the golden
+# shows it under its own volume name, GS_TEST_DISC.
+def row_iici_71_cd_insert() {
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd "${$hd_71}" 0
+    assert machine.scsi.device[3].type == "cdrom" "iici-71-cd-insert: no CD-ROM drive at ID 3"
+    assert !machine.scsi.device[3].medium_present "iici-71-cd-insert: the drive is not empty"
+    scheduler.run 300000000
+    wait_stable(1200000000)
+    machine.scsi.device[3].insert "${$iso_plain}"
+    scheduler.run 200000000
+    wait_stable(1200000000)
+    check("goldens/iici-7.1-640x480x1-cd-inserted.png")
+    report_row("7.1", "rbv", "cd-insert 5380 apple-cd-driver")
+    report_perf("suite-iici/iici-71-cd-insert", scheduler.instr_count)
 }
 
 # ---- iici-71-hd -------------------------------------------------------------
@@ -521,6 +552,13 @@ if row_on("iici-71-hd") {
         row_end("iici-71-hd", try(row_iici_71_hd(), "FAILED"))
     } else {
         echo "skip: iici-71-hd (7.1 prepared image not fetched)"
+    }
+}
+if row_on("iici-71-cd-insert") {
+    if have_media($hd_71) && have_media($iso_plain) {
+        row_end("iici-71-cd-insert", try(row_iici_71_cd_insert(), "FAILED"))
+    } else {
+        echo "skip: iici-71-cd-insert (7.1 CD image or the ISO fixture missing)"
     }
 }
 if row_on("iici-lowram") { row_end("iici-lowram", try(row_iici_lowram(), "FAILED")) }

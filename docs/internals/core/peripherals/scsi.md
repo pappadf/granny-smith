@@ -788,6 +788,14 @@ device walked past it: a hard disk emptied through
 READ CAPACITY with `0xFFFFFFFF` — four billion blocks — also with
 GOOD.
 
+A device with no medium still answers selection, on every front-end.
+The NCR 5380 path used to answer only for an ID holding an image. An empty
+CD-ROM drive was then absent from the bus: the ROM scan and System 7's
+Apple CD-ROM driver never saw it, and a disc inserted later never mounted.
+The 53C96 and MESH front-ends, which select through
+`scsi_external_select`, already answered. Both now ask
+`scsi_device_present`.
+
 #### START STOP UNIT — `0x1B`
 
 * CDB: `1B | immed | 00 | 00 | LoEj|Start | control`

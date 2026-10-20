@@ -57,6 +57,13 @@
 #define SE30_VRAM_BASE 0xFEE00000UL
 #define SE30_VRAM_SIZE 0x00010000UL // 64 KB
 
+// The same 64 KB also decodes at the base of slot E's standard space, the
+// "Video RAM space $FE00 0000-$FE00 FFFF" of Apple's SE/30 memory map.  The
+// video sResource's MinorBaseOS is 0, so in 32-bit mode the Slot Manager puts
+// the frame buffer (and ScrnBase) at $FE000000 + $8040; in 24-bit mode it
+// forms $FEE08040 from the 24-bit slot address $E08040 instead.
+#define SE30_VRAM_BASE_SLOT 0xFE000000UL
+
 // SE/30 Video ROM: 32 KB, mapped at logical $FEFF8000 (top of slot E)
 // Byte lanes = $0F (all lanes), so data is contiguous in the top 32 KB
 #define SE30_VROM_BASE 0xFEFF8000UL
@@ -154,6 +161,10 @@ static void se30_memory_layout_tail(config_t *cfg) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << MEM_PAGE_SHIFT;
             mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
+        // The 32-bit-mode window at the base of slot E: $FE000000-$FE00FFFF
+        uint32_t slot_start_page = SE30_VRAM_BASE_SLOT >> MEM_PAGE_SHIFT;
+        for (uint32_t p = 0; p < vram_pages && slot_start_page + p < g_page_count; p++)
+            mac030_fill_page(slot_start_page + p, se30->vram + (p << MEM_PAGE_SHIFT), true);
     }
 
     // --- VROM: $FEFF8000 - $FEFFFFFF (32 KB read-only) ---
@@ -206,7 +217,18 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // Bit 3: vADBInt (input — read-only, driven by ADB module)
         // Bits 0-2: RTC chip select/clock/data
         rtc_via1_pb_output(cfg->rtc, output);
+        // Bit 6: vSyncEnA (active low).  Raising it withdraws the slot-$E
+        // vSync request: the video driver's interrupt handler acks each
+        // VBL by pulsing it high, and a driver that closes leaves it high.
+        if (output & 0x40)
+            mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, false);
     }
+}
+
+// True when VIA1 PB6 (vSyncEnA) drives low: the slot-$E vSync request is
+// enabled.  An undriven pin (DDR bit clear) counts as disabled.
+static bool se30_vsync_irq_enabled(config_t *cfg) {
+    return (via_port_direction(cfg->via1, 1) & 0x40) && !(via_port_output(cfg->via1, 1) & 0x40);
 }
 
 // VIA1 IRQ callback: VIA1 drives IPL level 1
@@ -250,7 +272,14 @@ static void se30_trigger_vbl(config_t *cfg) {
     // slot interrupt every frame and fought the umbrella level a real card
     // may be holding, and drove slot $E by poking VIA2 port A directly, so
     // the bus never saw it.
-    mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
+    //
+    // vSyncEnA (VIA1 PB6) gates the request: with it high no slot-$E
+    // interrupt is raised.  The ROM holds it high until the video driver is
+    // open, and a driver closed for a restart (the 32-bit enabler's switch)
+    // leaves it high; raising the request anyway reached the ROM's slot
+    // dispatcher with no handler in SlotQDT -- SysError 51, a Sad Mac.
+    if (se30_vsync_irq_enabled(cfg))
+        mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
     mac_vbl_pulse(cfg->via1);
 
     // Deassert slot $E after the vertical blanking interval ends.
@@ -344,6 +373,8 @@ static void se30_post_nubus(config_t *cfg) {
     memory_map_host_region(cfg->memory_map, "se30_vrom", se30->vrom, SE30_VROM_BASE, SE30_VROM_SIZE,
                            /*writable*/ false);
     memory_map_host_region_alias(cfg->memory_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
+    // The 32-bit-mode frame-buffer window, reached through TT1 (ScrnBase $FE008040)
+    memory_map_host_region_alias(cfg->memory_map, SE30_VRAM_BASE_SLOT, SE30_VRAM_BASE);
     memory_map_host_region_alias(cfg->memory_map, SE30_VROM_PHYS_ALT, SE30_VROM_BASE);
 }
 
