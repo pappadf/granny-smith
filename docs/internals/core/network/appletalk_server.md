@@ -860,6 +860,14 @@ Bit 0 is the least-significant bit.
 |    7 | Bytes Total       | long | Unsigned.                                             |
 |    8 | Volume Name       | int  | Offset to Pascal string within parameter block.       |
 
+Bytes Free and Bytes Total come from the host filesystem (`statvfs`), clamped
+to 2 GB − 1 KB. An AFP 2.0 session (System 6) is clamped further, to 65535 ×
+16 KB (just under 1 GB): its client builds an HFS volume record of at most
+65535 allocation blocks, so a larger volume gets 32 KB blocks, and System 6's
+Finder then reports every file as about 2 GB on disk ("16 bytes used,
+2,097,600K on disk"). At 16 KB blocks it reports "16K on disk". System 7.5
+(AFP 2.1) handles 32 KB blocks and keeps the 2 GB figure.
+
 **Volume Attributes bits (bit 0 of bitmap selects this 16-bit field)**
 
 |  Bit | Name                        | Meaning                                        |
