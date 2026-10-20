@@ -32,17 +32,31 @@ LOG_USE_CATEGORY_NAME("pap");
 #define IW_PAP_TYPE           "ImageWriter"
 // Guest time between a transaction's end and the next SendData (as the
 // LaserWriter's server spaces its reads, appletalk_printer.c)
-#define IW_PAP_GAP_NS      10000000ull
-#define IW_PAP_RETRY_MS    8000u
-#define IW_PAP_RETRY_LIMIT 12
+#define IW_PAP_GAP_NS   10000000ull
+#define IW_PAP_RETRY_MS 8000u
+// SendData is retried without end (Inside AppleTalk ch. 10): the workstation
+// holds it while its driver waits on an alert (the "select" light is off,
+// out of paper) for as long as the user takes, and the connection timer, not
+// the retry count, says when the workstation is gone.
+#define IW_PAP_RETRY_LIMIT -1
 #define IW_PAP_TIMEOUT_NS  (120ull * 1000000000ull)
+// Our own Tickle: half the connection timeout, retried without end, ALO so
+// every retry reaches the workstation as a sign of life (Inside AppleTalk
+// ch. 10).  The retries of a SendData it holds do not keep it alive
+// (measured: System 6.0.8 drops the connection two minutes after our last
+// new packet).
+#define IW_PAP_TICKLE_MS 60000u
 // The workstation's read credits held until the job ends
 #define IW_PAP_MAX_CREDITS 8
 
-// statusBits (NW20): sheet feeder installed, paper out, paper jam (what a
-// printer with a sheet feeder reports for running out of paper)
+// statusBits (NW20): sheet feeder installed, paper out, deselected, paper
+// jam (what a printer with a sheet feeder reports for running out of paper).
+// Bit 11 is what AppleTalk ImageWriter 2.7 reads as "The 'select' light is
+// off" (its CHECKSTATUS maps bit 13 to ALRT -8178, 12 to -8177, 11 to -8175
+// and 10 to -8176).
 #define IW_STATUS_SHEET_FEEDER (1u << 14)
 #define IW_STATUS_PAPER_OUT    (1u << 13)
+#define IW_STATUS_DESELECTED   (1u << 11)
 #define IW_STATUS_PAPER_JAM    (1u << 10)
 
 // A held SendData from the workstation (its read of our output)
@@ -61,6 +75,7 @@ typedef struct {
     bool awaiting; // a SendData is outstanding
     bool eof; // the transaction in flight carried the EOF
     atp_request_handle_t *send;
+    atp_request_handle_t *tickle; // our Tickle to the workstation
     uint64_t last_activity_ns;
     iw_credit_t credits[IW_PAP_MAX_CREDITS];
     uint8_t n_credits;
@@ -89,6 +104,8 @@ static uint16_t status_bits(const iw_printer_t *p) {
         bits |= IW_STATUS_SHEET_FEEDER;
     if (iw_printer_paper_out(p))
         bits |= feeder ? IW_STATUS_PAPER_JAM : IW_STATUS_PAPER_OUT;
+    else if (!iw_printer_selected(p))
+        bits |= IW_STATUS_DESELECTED; // the front-panel Select switch is off
     return bits;
 }
 
@@ -123,6 +140,8 @@ static void session_reset(void) {
     atalk_timer_cancel_all(&g_idle_timer);
     if (g_s.send)
         atp_request_cancel(g_s.send);
+    if (g_s.tickle)
+        atp_request_cancel(g_s.tickle);
     memset(&g_s, 0, sizeof(g_s));
 }
 
@@ -248,6 +267,23 @@ static void iw_pap_close(bool notify) {
     session_reset();
 }
 
+// Tickle the workstation every IW_PAP_TICKLE_MS while connected: without it
+// the workstation's connection timer runs out while its driver waits on an
+// alert (the select light, paper), and its next write fails with "The
+// AppleTalk network is not responding".
+static void tickle_start(void) {
+    atp_request_params_t params = {.dest = g_s.client,
+                                   .src_socket = ATALK_HOST_IW_PAP_SOCKET,
+                                   .bitmap = 1,
+                                   .mode = ATP_TRANSACTION_ALO,
+                                   .retry_timeout_ms = IW_PAP_TICKLE_MS,
+                                   .retry_limit = -1};
+    params.user[0] = g_s.conn_id;
+    params.user[1] = PAP_FUNC_TICKLE;
+    atp_request_callbacks_t cb = {0};
+    g_s.tickle = atp_request_submit(&params, &cb, NULL);
+}
+
 static void handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t conn_id = atp->user[0];
     uint16_t result = PAP_RESULT_OK;
@@ -265,6 +301,7 @@ static void handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_s.next_seq = 1;
         g_s.last_activity_ns = atalk_now_ns();
         atalk_timer_arm(&g_idle_timer, 0, IW_PAP_TIMEOUT_NS);
+        tickle_start();
     }
     uint8_t payload[7];
     int len = status_payload(result, payload);
