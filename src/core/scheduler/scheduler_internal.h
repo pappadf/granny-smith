@@ -158,11 +158,6 @@ struct scheduler {
     bool mode_open;
     bool mode_bounded; // the mode has an instruction budget
     uint32_t speed_reported_x256; // the last effective speed announced (speed event)
-    // The machine holds the CPU at its original speed: accelerated mode may
-    // not lower the effective CPI below the authentic one while this is set
-    // (scheduler_hold_authentic_speed).  Re-derived by the machine at each
-    // frame start, so never checkpointed.
-    bool hold_authentic;
     bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
 
     // Pointers last

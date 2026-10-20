@@ -61,10 +61,10 @@ and in paced and accelerated alike the governor *raises* it (down to
 frame-unit per VBL period, so the budget converts to fewer instructions and the
 frame-units stay on real time — see docs/internals/core/scheduler/scheduler.md
 §2.3. Either way the cycle timebase (and thus every cycle-derived peripheral
-clock) stays real-time. A machine can hold the speed at 1x for a while
-(`scheduler_hold_authentic_speed`): the Lisa does whenever a frame starts
-with the CPU in its boot ROM, whose video self-test times the retrace with
-an instruction loop that an accelerated CPU finishes too soon. The sub-cycle remainder of each sprint
+clock) stays real-time. Guest code that times a hardware signal with an
+instruction loop sees the loop shortened too: the Lisa boot ROM's video
+self-test (CPU error 42) passes only at 1x, so a Lisa is started in Real
+mode and accelerated once the boot ROM has handed over. The sub-cycle remainder of each sprint
 (`cycle_frac_x256`) carries in scheduler state, so `cpu_cycles` advances by
 exact integers and no fraction is ever dropped. Formulas below are written with
 plain `CPI`; read `cpi_eff_x256 / 256` for the general case.

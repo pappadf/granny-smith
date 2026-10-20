@@ -1283,15 +1283,6 @@ static void lisa_vbl_ack(void *source) {
 
 static void lisa_trigger_vbl(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    // While the boot ROM runs, hold the CPU at its original speed: its
-    // self-test times the vertical retrace with an instruction loop (VIDCHK,
-    // docs/reference/machines/lisa/video.md §4.3) sized for a 5 MHz 68000,
-    // which an accelerated CPU finishes before the retrace comes -- CPU error
-    // 42.  Sampled at each frame start (between sprints), so the hold covers
-    // every pass through the ROM's diagnostics, its RESTART included, and
-    // lifts once the loaded system runs from RAM.
-    uint32_t pc = cpu_get_pc(cfg->cpu) & 0x00FFFFFFu;
-    scheduler_hold_authentic_speed(cfg->scheduler, pc >= LISA_ROM_BASE && pc < LISA_ROM_BASE + cfg->machine->rom_size);
     if (ls && ls->mmu) {
         // VBL is an IPL-1 interrupt source (docs/reference/machines/lisa/lisa.md §8) gated by the VTMSK
         // latch ($E01A on / $E018 off).  Real hardware FIREs the video

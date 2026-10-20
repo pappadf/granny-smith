@@ -1,6 +1,5 @@
 # The boot ROM's video self-test (VIDCHK, docs/reference/machines/lisa/
-# video.md §4.3) on both Lisa ROMs, at three memory sizes, at 1x and with
-# the CPU accelerated to 8x.
+# video.md §4.3) on both Lisa ROMs, at three memory sizes, at 1x.
 #
 # VIDCHK polls the Status Register's retrace bit with a $0DF4-pass
 # BTST/BEQ/DBF loop, "about 20 ms" on the real machine, and sets the CPU
@@ -9,14 +8,14 @@
 # number read that follows).  The memory test before it runs longer with
 # more RAM, so the three sizes start VIDCHK at three different points in
 # the frame.  Turbo runs the CPU at its authentic cycles per instruction
-# (1x); accelerated, the machine holds the CPU at 1x while it runs the boot
-# ROM, so the 8x setting must not shorten the loop.
+# (1x).  Accelerated, the loop is shortened by the speed setting and the
+# test can time out, as on a real Lisa run faster; the emulator does not
+# second-guess it, so a Lisa is accelerated only once the boot ROM is done.
 
 # The ROM, the address of VIDCHK's error exit and of its pass exit.
 def vidchk(model, rom, ram, mode, fail_pc, pass_pc) {
     machine.boot model="${$model}" ram=$ram rom="${$rom}"
     scheduler.mode = $mode
-    if $mode == "accelerated" { scheduler.speed = 8.0 }
     debug.breakpoints.add $fail_pc
     debug.breakpoints.add $pass_pc
     scheduler.run 20000000
@@ -28,27 +27,9 @@ def vidchk(model, rom, ram, mode, fail_pc, pass_pc) {
 }
 
 for ram in [512, 1024, 2048] {
-    for mode in ["turbo", "accelerated"] {
-        vidchk("lisa", "../../data/roms/lisa2-revh-098917b2.rom", $ram, $mode, 0xFE0BD4, 0xFE0BE0)
-        vidchk("macxl", "../../data/roms/macxl-3a-094c82f0.rom", $ram, $mode, 0xFE0BE8, 0xFE0BF4)
-    }
+    vidchk("lisa", "../../data/roms/lisa2-revh-098917b2.rom", $ram, "turbo", 0xFE0BD4, 0xFE0BE0)
+    vidchk("macxl", "../../data/roms/macxl-3a-094c82f0.rom", $ram, "turbo", 0xFE0BE8, 0xFE0BF4)
 }
 
-# The hold is the boot ROM's only: once MacWorks XL runs from RAM, the CPU
-# is back at the accelerated setting.
-machine.boot model="macxl" ram=1024 rom="../../data/roms/macxl-3a-094c82f0.rom" config="{\"startup\":null}"
-scheduler.mode = "accelerated"
-scheduler.speed = 8.0
-machine.floppy.drive[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42"
-let spent = 0
-while machine.cpu.pc >= 0xFE0000 && $spent < 100000000 {
-    scheduler.run 5000000
-    $spent = $spent + 5000000
-}
-scheduler.run 5000000
-echo "macxl MacWorks: pc ${machine.cpu.pc:08x} speed ${scheduler.speed}"
-assert machine.cpu.pc < 0xFE0000 "MacWorks XL is not running from RAM (pc ${machine.cpu.pc:08x})"
-assert scheduler.speed == 8.0 "the CPU stayed held at ${scheduler.speed}x after the boot ROM"
-
-echo "lisa-vidchk: VIDCHK passes on both ROMs at every size and speed"
+echo "lisa-vidchk: VIDCHK passes on both ROMs at every size"
 quit

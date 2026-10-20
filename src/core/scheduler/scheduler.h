@@ -348,12 +348,6 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
 // in every pacing mode — one guest timeline.
 void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi);
 
-// Hold the CPU at no more than its original (1x) speed while `hold` is set,
-// whatever the accelerated setting: for guest code that times a hardware
-// signal with an instruction loop (the Lisa boot ROM's video self-test).
-// Call between sprints only -- a machine's trigger_vbl hook is such a place.
-void scheduler_hold_authentic_speed(struct scheduler *restrict s, bool hold);
-
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);
 // The same count for one scheduler (0 for NULL).
