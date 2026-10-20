@@ -106,6 +106,26 @@ The CDU-8002 implements Sony proprietary audio commands alongside their SCSI-2 e
 
 For data-only disc emulation (no audio CD playback), these commands should return CHECK CONDITION with ILLEGAL REQUEST sense key and ASC `0x64` "ILLEGAL MODE FOR THIS TRACK" or `0x30` "INCOMPATIBLE MEDIUM INSTALLED".
 
+**`0xC1` READ TOC is answered** (`scsi_cdrom_read_toc_sony`). It is the
+command System 7's Apple CD-ROM driver reads the disc's TOC with, and it is
+not laid out like `0x43`. Bits 7-6 of CDB byte 9 (the control byte) select
+the request, bytes 7-8 hold the allocation length, and every field is a
+4-byte BCD record:
+
+| Byte 9 bits 7-6 | Answer |
+|---|---|
+| `00` | first and last track number: `01 01 00 00` |
+| `01` | the lead-out's start: `M S F 00` (absolute time, +150 frames) |
+| `10` | from the track in byte 5, one `ADR/control M S F` entry per 4 bytes requested (`14 00 02 00` for track 1); entries past the last track repeat it |
+| `11` | reserved: CHECK CONDITION / ILLEGAL REQUEST / INVALID FIELD IN CDB |
+
+The driver asks `00`, `01`, and then `10` with an allocation of `0x3C`, as
+the traces show.
+Until 2026-10-20 every request got a header followed by 6-byte descriptors,
+the CDU-541's layout. The driver read the header as the track range and a
+zero as track 1's control nibble, which marks an audio track, so a plain ISO
+9660 disc mounted as "Audio CD 1".
+
 ---
 
 ## 3. Command Specifications
@@ -406,9 +426,8 @@ single-session data disc; anything else is refused with CHECK CONDITION /
 ILLEGAL REQUEST / INVALID FIELD IN CDB, which both authorities require. They
 differ on **zero**: the CDU-541 manual lists it as invalid, X3.131-1994
 §14.2.11 says "if this value is zero, the table of contents data shall begin
-with the first track on the medium". We take the lenient reading, so that `0x43`
-and the Sony `0xC1` handler — which already did — answer the same question the
-same way.
+with the first track on the medium". We take the lenient reading: a starting track of zero means the first track,
+as it does in an Apple `0xC1` request.
 
 **TOC data length** is the length *available*, not the length transferred
 (X3.131-1994 Table 261; CDU-541 §5.2.24). It does not shrink when the allocation

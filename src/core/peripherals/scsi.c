@@ -514,8 +514,13 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             uint32_t target_bits = scsi->chip5380->reg.odr & ~(1u << scsi->bus.initiator) & 0xFFu;
             scsi->bus.target = target_bits ? platform_ntz32(target_bits) : 7;
 
-            // [6]: target will assert BSY - if no target, the bus will be free again
-            if (!target_bits || !scsi->device_images[scsi->bus.target])
+            // [6]: target will assert BSY - if no target, the bus will be free again.
+            // A drive answers whether or not it holds a medium: an empty CD-ROM
+            // drive is on the bus (as on the 53C96 and MESH front-ends), and the
+            // command layer answers NOT READY for what needs a disc.  Testing for
+            // an image here hid an empty drive from the ROM scan and from System
+            // 7's CD driver, which then never saw a disc inserted later.
+            if (!target_bits || !scsi_device_present(scsi, scsi->bus.target))
                 phase_free(scsi);
             else
                 phase_command(scsi);
