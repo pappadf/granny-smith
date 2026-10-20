@@ -182,6 +182,16 @@
       "suite": "iici-aux3-8bpp"
     },
     {
+      "machine": "iici",
+      "system": "7.1",
+      "card": "mdc_8_24 substitute",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iici"
+    },
+    {
       "machine": "iicx",
       "system": "6.0.8",
       "card": "824gc",
@@ -1120,6 +1130,16 @@
       "width": 640,
       "height": 480,
       "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm9500",
+      "system": "7.6",
+      "card": "mach64_gx",
+      "width": 1024,
+      "height": 768,
+      "depth": 32,
       "addr32": true,
       "suite": "suite-tnt"
     },
