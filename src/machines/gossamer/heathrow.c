@@ -349,6 +349,16 @@ static uint32_t escc_pins(uint32_t off) {
     return (ab << 1) | (dc << 2);
 }
 
+// Only those four registers (+$00..+$3F) reach the cell; the aperture has
+// others past them.  The Open Transport LocalTalk driver writes $00 then
+// $01 to +$A0 before the frames it sends, and decoding that as A control
+// (bits 5:4 = 2) left channel A's register pointer at 1: the driver's next
+// "select RR3" write on channel A then landed in WR1 as $03, turning on
+// channel A's Tx and External/Status interrupts behind its back.
+static bool escc_is_channel_reg(uint32_t off) {
+    return off < 0x40u;
+}
+
 #define SCC_DMA_TX(ch) (GOS_DMA_SCCA_TX + 2u * (ch))
 #define SCC_DMA_RX(ch) (GOS_DMA_SCCA_RX + 2u * (ch))
 
@@ -425,6 +435,8 @@ static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
     case HR_SCCLEG:
         return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, off - HR_SCCLEG, peek);
     case HR_ESCC:
+        if (!escc_is_channel_reg(off - HR_ESCC))
+            return 0;
         return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(off - HR_ESCC), peek);
     case HR_MESH:
         return peek ? mesh_peek(st->mesh, off - HR_MESH) : mesh_read(st->mesh, off - HR_MESH);
@@ -493,6 +505,10 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, off - HR_SCCLEG, value);
         return;
     case HR_ESCC:
+        if (!escc_is_channel_reg(off - HR_ESCC)) {
+            LOG(3, "ESCC +$%03X = $%02X (not a channel register; ignored)", off - HR_ESCC, value);
+            return;
+        }
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(off - HR_ESCC), value);
         scc_dma_kick_rx(cfg);
         return;

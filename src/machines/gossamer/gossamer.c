@@ -177,14 +177,18 @@ static void gos_via1_irq(void *context, bool active) {
         gos_set_source(cfg, GOS_INT_VIA, active);
 }
 
-// The SCC's one INT line -> both channel sources ($0F/$10); the guest
-// discriminates via RR3 (the TNT wiring).
+// Each ESCC channel interrupts on its own Heathrow source: ch-a $0F, ch-b
+// $10.  Mac OS 9 binds the native Open Transport LocalTalk driver's
+// handler to ch-b alone; with a channel B event raised on both sources,
+// the 68k SCC dispatcher took it first and reset the External/Status
+// latch, and the LocalTalk driver's handler never ran.
 static void gos_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     if (!gos_st(cfg))
         return;
-    gos_set_source(cfg, GOS_INT_SCCA, active);
-    gos_set_source(cfg, GOS_INT_SCCB, active);
+    unsigned chans = active ? scc_irq_channels(cfg->scc) : 0;
+    gos_set_source(cfg, GOS_INT_SCCA, (chans & 1) != 0);
+    gos_set_source(cfg, GOS_INT_SCCB, (chans & 2) != 0);
 }
 
 static void gos_mesh_irq(void *ctx, bool level) {

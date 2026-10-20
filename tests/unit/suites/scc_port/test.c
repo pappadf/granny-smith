@@ -15,7 +15,11 @@
 //   enable is off stays in RR3 but requests nothing;
 // - Reset Tx Int Pending holds the Tx interrupt off until another character
 //   leaves the buffer, while a freshly reset channel still interrupts once
-//   when Tx interrupts are enabled (how the Mac drivers prime output).
+//   when Tx interrupts are enabled (how the Mac drivers prime output);
+// - on the LocalTalk channel, the Tx Underrun/EOM interrupt comes when the
+//   frame has drained, and a Special Receive Condition (end of frame)
+//   survives a DMA engine reading the CRC bytes, as the Open Transport
+//   LocalTalk driver on the Heathrow Macs needs.
 //
 // Driven through the memory interface, as the machine glue does.
 
@@ -400,6 +404,110 @@ TEST(test_line_send_is_paced) {
     scc_delete(scc);
 }
 
+// ============================================================
+// LocalTalk on channel B: the interrupts a DMA-driven driver waits on
+// ============================================================
+
+#define CH_B_DATA  4
+#define RR0_TX_EOM 0x40
+#define RR1_EOF    0x80
+#define RR3_B_EXT  0x01
+#define RR3_B_RX   0x04
+
+// Channel B in SDLC with interrupts on (WR9 MIE, no vector), as the Open
+// Transport LocalTalk driver on the Heathrow Macs programs it.
+static scc_t *make_sdlc(struct scheduler *s) {
+    g_irq = false;
+    memset(&g_ev, 0, sizeof g_ev);
+    scc_t *scc = scc_init(NULL, s, irq_sink, NULL, NULL);
+    ASSERT_TRUE(scc != NULL);
+    wr(scc, CH_B_CTL, 4, 0x20); // SDLC
+    wr(scc, CH_B_CTL, 9, 0x0A);
+    return scc;
+}
+
+// Puts a 3-byte lapRTS in channel B's transmitter and ends it with WR0
+// "reset Tx underrun/EOM latch", as the driver does after its DMA stops.
+static void send_rts_b(scc_t *scc) {
+    const memory_interface_t *mi = scc_get_memory_interface(scc);
+    wr(scc, CH_B_CTL, 5, 0x6B); // Tx enable, RTS, CRC
+    mi->write_uint8(scc, CH_B_DATA, 0xFF);
+    mi->write_uint8(scc, CH_B_DATA, 0x01);
+    mi->write_uint8(scc, CH_B_DATA, 0x84);
+    mi->write_uint8(scc, CH_B_CTL, 0xC0);
+}
+
+// With WR15 bit 6 set, the Tx Underrun/EOM latch rises -- and raises an
+// External/Status interrupt -- once the frame has drained from the Tx FIFO,
+// not inside the WR0 write that ends it: the driver arms the flag its
+// handler checks only after that write, and ignored an interrupt taken in
+// it, so it never sent the data frame after a lapRTS.
+TEST(test_tx_eom_interrupt_waits_for_the_frame) {
+    static int fake_scheduler;
+    scc_t *scc = make_sdlc((struct scheduler *)&fake_scheduler);
+    wr(scc, CH_B_CTL, 15, 0x40); // Tx Underrun/EOM IE
+    wr(scc, CH_B_CTL, 1, 0x01); // External/Status interrupts
+    int before = g_ev.count;
+
+    send_rts_b(scc);
+    ASSERT_TRUE(!g_irq);
+    ASSERT_TRUE(!(rd(scc, CH_B_CTL, 0) & RR0_TX_EOM));
+    ASSERT_EQ_INT(g_ev.count, before + 1);
+    ASSERT_TRUE(g_ev.ns == 3 * 34722); // three bytes at 230.4 kbit/s
+
+    g_ev.cb(g_ev.src, g_ev.data); // the FIFO has drained
+    ASSERT_TRUE(g_irq);
+    ASSERT_TRUE(rd(scc, CH_B_CTL, 0) & RR0_TX_EOM);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 3) & RR3_B_EXT);
+    ASSERT_EQ_INT((int)scc_irq_channels(scc), 2); // channel B's source only
+
+    scc_get_memory_interface(scc)->write_uint8(scc, CH_B_CTL, 0x10); // Reset Ext/Status Interrupts
+    ASSERT_TRUE(!g_irq);
+    ASSERT_EQ_INT((int)scc_irq_channels(scc), 0);
+    scc_delete(scc);
+}
+
+// Without the enable the latch reads 1 as soon as the frame is ended, which
+// the classic .MPP polls for, and nothing interrupts.
+TEST(test_tx_eom_latch_without_interrupt) {
+    static int fake_scheduler;
+    scc_t *scc = make_sdlc((struct scheduler *)&fake_scheduler);
+    wr(scc, CH_B_CTL, 1, 0x01);
+    int before = g_ev.count;
+
+    send_rts_b(scc);
+    ASSERT_TRUE(rd(scc, CH_B_CTL, 0) & RR0_TX_EOM);
+    ASSERT_TRUE(!g_irq);
+    ASSERT_EQ_INT(g_ev.count, before);
+    scc_delete(scc);
+}
+
+// A DMA engine that drains a received frame's CRC bytes after its last data
+// byte leaves the end-of-frame Special Receive Condition standing until
+// Error Reset: reading a character clears only Rx Character Available.
+// Heathrow's DBDMA does exactly that, and the Open Transport LocalTalk
+// driver found nothing in RR3 when it came to take the frame.
+TEST(test_end_of_frame_survives_the_crc_reads) {
+    scc_t *scc = make_sdlc(NULL);
+    wr(scc, CH_B_CTL, 6, 0x01); // node 1
+    wr(scc, CH_B_CTL, 1, 0x08); // Rx interrupt on first character or special condition
+    wr(scc, CH_B_CTL, 3, 0xDD); // 8 bits, hunt, Rx CRC, address search, Rx enable
+    uint8_t cts[] = {0x01, 0x02, 0x85};
+    ASSERT_EQ_INT(scc_sdlc_send(scc, cts, sizeof cts), 0);
+    ASSERT_TRUE(g_irq);
+
+    uint8_t buf[8];
+    ASSERT_EQ_INT((int)scc_dma_rx(scc, 1, buf, sizeof buf), 5); // the frame and its CRC
+    ASSERT_TRUE(g_irq);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 3) & RR3_B_RX);
+    ASSERT_TRUE(rd(scc, CH_B_CTL, 1) & RR1_EOF);
+
+    scc_get_memory_interface(scc)->write_uint8(scc, CH_B_CTL, 0x30); // Error Reset
+    ASSERT_TRUE(!g_irq);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 3) & RR3_B_RX));
+    scc_delete(scc);
+}
+
 // A device's reply arrives in the receive FIFO with Rx Character Available.
 TEST(test_device_rx_byte) {
     scc_t *scc = make_async();
@@ -425,6 +533,9 @@ int main(void) {
     RUN(test_ready_line_follows_device);
     RUN(test_device_rx_byte);
     RUN(test_line_send_is_paced);
+    RUN(test_tx_eom_interrupt_waits_for_the_frame);
+    RUN(test_tx_eom_latch_without_interrupt);
+    RUN(test_end_of_frame_survives_the_crc_reads);
     printf("[PASS] All scc_port tests passed\n");
     return 0;
 }
