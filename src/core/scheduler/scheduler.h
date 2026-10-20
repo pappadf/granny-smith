@@ -240,6 +240,10 @@ void scheduler_new_event_type(struct scheduler *s, const char *source_name, void
 // real function, not a header inline: struct scheduler is opaque outside the
 // scheduler, and unit suites substitute their own definition.
 uint64_t scheduler_cpu_cycles(struct scheduler *restrict s);
+// Cycles the CPU has slept stopped (STOP, PowerPC doze/nap) since this
+// scheduler was built or restored: a part of scheduler_cpu_cycles that
+// retired no instructions.  0 for NULL.
+uint64_t scheduler_sleep_cycles(struct scheduler *s);
 
 // Get current emulated time in nanoseconds
 double scheduler_time_ns(struct scheduler *restrict s);

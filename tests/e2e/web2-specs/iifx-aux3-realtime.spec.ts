@@ -11,8 +11,8 @@
 //
 // This spec is the load-bearing guard against host-pacing-only regressions:
 // the machine free-runs under the real RAF loop (scheduler_main_loop) in the
-// default `live` mode — host-paced VBLs, one frame-unit per vsync. NO
-// scheduler stop, NO fixed budget, NO rtc pin, NO speed override. Nothing
+// `live` (Real) mode — host-paced VBLs, one frame-unit per vsync. NO
+// scheduler stop, NO fixed budget, NO rtc pin, NO faster speed. Nothing
 // that could paper over a real-time-only failure. 8bpp DID hang here
 // historically while 1bpp didn't (the f_trap demand-page retry mis-detected
 // as a double bus fault under RAF cadence — memory
@@ -34,8 +34,8 @@ import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
 
-// Keep web2's default pacing: its point is a boot with no speed override.
-test.use({ gsSpeed: null });
+// Real pacing, not web2's default Faster: its point is a real-time boot.
+test.use({ gsSpeed: 'paced' });
 
 const DATA = path.resolve(__dirname, '../../data');
 const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');

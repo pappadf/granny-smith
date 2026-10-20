@@ -11,7 +11,7 @@ if have_media($hd) {
     machine.scsi.attach_hd "${$hd}" 0
     assert appletalk.afp.volumes.add("Shared", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
     # The desktop with the Setup Assistant open (suite-gossamer's g3dt-hd).
-    scheduler.run 12000000000
+    scheduler.run 24000000000
 
     # Apple menu -> Chooser
     machine.adb.mouse.move 300 300 "global"
@@ -19,18 +19,18 @@ if have_media($hd) {
     machine.adb.mouse.move 20 8 "global"
     wait_cursor(20)
     machine.adb.mouse.click true
-    scheduler.run 30000000
+    scheduler.run 60000000
     machine.adb.mouse.move 75 86 "global"
-    scheduler.run 10000000
+    scheduler.run 20000000
     machine.adb.mouse.click false
-    scheduler.run 600000000
+    scheduler.run 1200000000
 
     # AppleShare: the NBP lookup goes out by DBDMA, the reply comes back in
     machine.adb.mouse.move 148 110 "global"
     wait_cursor(20)
     machine.adb.mouse.click true
     machine.adb.mouse.click false
-    run_until_match("server-listed.png", 3000000000, 100000000)
+    run_until_match("server-listed.png", 6000000000, 100000000)
     try(machine.screen.save("${$RESULTS_DIR}/server-listed.png"), none)
     check("server-listed.png")
     assert appletalk.stats.ddp_in > 0 "no DDP frame came from the guest"
@@ -42,17 +42,17 @@ if have_media($hd) {
     wait_cursor(20)
     machine.adb.mouse.click true
     machine.adb.mouse.click false
-    scheduler.run 20000000
+    scheduler.run 40000000
     machine.adb.mouse.move 510 301 "global"
     wait_cursor(20)
     machine.adb.mouse.click true
     machine.adb.mouse.click false
-    scheduler.run 1500000000
+    scheduler.run 3000000000
     machine.adb.mouse.move 461 310 "global"
     wait_cursor(20)
     machine.adb.mouse.click true
     machine.adb.mouse.click false
-    run_until_match("volume-list.png", 3000000000, 100000000)
+    run_until_match("volume-list.png", 6000000000, 100000000)
     try(machine.screen.save("${$RESULTS_DIR}/volume-list.png"), none)
     check("volume-list.png")
     assert appletalk.afp.sessions.count == 1 "the G3 opened no ASP session"

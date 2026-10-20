@@ -10,7 +10,8 @@ const { initEmulator, restartEmulator, shutdownEmulator, reconcileUiWithMachine 
 const { toasts, _resetForTests: resetToasts } = await import('@/state/toasts.svelte');
 const { maybeOfferBackgroundCheckpoint, resolveResume } = await import('@/bus/checkpoint');
 const { clearProfileCache } = await import('@/bus/profile');
-const { machine } = await import('@/state/machine.svelte');
+const { machine, markSchedulerChosen, _resetSchedulerChoiceForTests } =
+  await import('@/state/machine.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { images } = await import('@/state/images.svelte');
 
@@ -19,13 +20,18 @@ const { images } = await import('@/state/images.svelte');
 const RECONCILE_MARK = 'machine.id';
 
 // A running SE/30, as the core would answer after a boot or a restore.
-function se30(mode = 'paced'): void {
+// `realtime` is its profile's realtime_default (the Lisa family's).
+function se30(mode = 'paced', realtime = false): void {
   bridge.reply('machine.boot', true);
   bridge.reply('machine.restart', null);
   bridge.reply('machine.id', 'se30');
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
-  bridge.reply('catalog.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
+  bridge.reply('catalog.profile', {
+    id: 'se30',
+    capabilities: { mmu: { kind: '68030_pmmu' }, realtime_default: realtime },
+  });
+  bridge.reply('pacing.mode', null);
   // An enum reads as {enum, index} over the bridge.
   const index = ['paced', 'accelerated', 'turbo'].indexOf(mode);
   bridge.reply('scheduler.mode', (args: unknown) => (args ? null : { enum: mode, index }));
@@ -45,6 +51,8 @@ describe('one post-boot reconciliation, every path', () => {
     machine.ram = null;
     machine.scheduler = 'live';
     machine.mmuKind = 'none';
+    // The tests below choose a pacing; the rest run as the user who has not.
+    markSchedulerChosen();
   });
 
   it('a dialog boot reconciles, then runs', async () => {
@@ -193,13 +201,32 @@ describe('one post-boot reconciliation, every path', () => {
     expect(images.mounted).toEqual({});
   });
 
-  it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
+  it("a chosen pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');
     await reconcileUiWithMachine('boot');
     expect(machine.scheduler).toBe('live');
     expect(bridge.paths()).not.toContain('scheduler.mode');
+    expect(bridge.paths()).not.toContain('pacing.mode');
     expect(images.fdDriveCount).toBe(-1);
+  });
+
+  // Until the user picks a pacing (the toolbar, ?speed=), each machine that
+  // appears gets its model's default: Faster, or Real where the profile asks
+  // for it (the Lisa family).
+  it("with no pacing chosen, a machine starts at its model's default", async () => {
+    _resetSchedulerChoiceForTests();
+    se30();
+    await reconcileUiWithMachine('boot');
+    expect(machine.scheduler).toBe('accel');
+    expect(bridge.calls.find((c) => c.path === 'pacing.mode')?.args).toEqual(['accelerated']);
+
+    bridge.reset();
+    clearProfileCache();
+    se30('paced', true);
+    await reconcileUiWithMachine('restore');
+    expect(machine.scheduler).toBe('live');
+    expect(bridge.calls.find((c) => c.path === 'pacing.mode')?.args).toEqual(['paced']);
   });
 
   it('a restore of the same model keeps the Debug layout; another model resets it', async () => {

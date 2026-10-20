@@ -36,7 +36,7 @@
   import Toolbar from '../ui/Toolbar.svelte';
   import TextInput from '../ui/TextInput.svelte';
   import type { IconName } from '@/lib/icons';
-  import type { SchedulerMode } from '@/state/machine.svelte';
+  import { markSchedulerChosen, type SchedulerMode } from '@/state/machine.svelte';
 
   // Enable predicates. `isLive` covers running + paused — the
   // states where machine-dependent toolbar buttons are interactive. After a
@@ -132,6 +132,7 @@
   }
 
   function onSchedulerClick(mode: SchedulerMode) {
+    markSchedulerChosen();
     void applySchedulerMode(mode);
   }
 

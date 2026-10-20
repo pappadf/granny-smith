@@ -2,17 +2,17 @@
 // Copyright (c) pappadf
 
 // The web2 specs' `test`: Playwright's, with every page.goto() made at max
-// speed.  web2 paces machines in real time unless the URL says otherwise,
-// and a spec that waits for a guest to boot or redraw only needs the guest
+// speed.  web2 runs machines in Faster (the Lisa family in Real) unless the
+// URL says otherwise, and a spec that waits for a guest to boot or redraw only needs the guest
 // to get there, not to take as long as a real Mac would.  So the `page`
 // fixture appends `speed=turbo` to each URL it loads (the same ?speed= the
 // toolbar's pacing preference reads at start-up) unless the URL already
 // names a speed.
 //
 // A spec whose point is the pacing itself, or that feeds real-time media
-// into the guest, opts out at file level:
+// into the guest, asks for Real at file level:
 //
-//   test.use({ gsSpeed: null });
+//   test.use({ gsSpeed: 'paced' });
 
 import { test as base, expect } from '@playwright/test';
 

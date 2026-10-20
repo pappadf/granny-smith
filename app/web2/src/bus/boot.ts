@@ -3,11 +3,19 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, gsOk, setRunStateMirror } from './emulator';
+import { CORE_MODE, gsEval, gsErrorText, gsOk, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
 import { attachMedia, insertFloppy, readMounts, type MediaResult } from './media';
 import type { MachineConfig } from './types';
-import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
+import {
+  machine,
+  resetDriveActivity,
+  defaultSchedulerMode,
+  isSchedulerChosen,
+  setSchedulerMode,
+  type MmuKind,
+  type AuxCpu,
+} from '@/state/machine.svelte';
 import { images, setMounted, clearMounts } from '@/state/images.svelte';
 import { reapplyCameraSource } from '@/state/camera.svelte';
 import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
@@ -170,7 +178,8 @@ export async function recordRecentBoot(config: MachineConfig): Promise<void> {
 // power-cycles the SAME machine, so there is nothing new to reconcile with.
 
 // How the machine came to be running.  Pacing is the page's, not the
-// machine's: neither origin touches it.
+// machine's: once the user has chosen one (the toolbar, ?speed=) neither
+// origin touches it; until then each machine gets its model's default.
 export type MachineOrigin = 'boot' | 'restore';
 
 export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<void> {
@@ -178,6 +187,12 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   const model = typeof id === 'string' && id ? id : null;
   await syncMachineIdentity();
   if (model) await applyCapabilities(model);
+  if (model && !isSchedulerChosen()) {
+    const profile = await getProfile(model).catch(() => null);
+    const mode = defaultSchedulerMode(profile?.capabilities.realtime_default === true);
+    if (mode !== machine.scheduler && gsOk(await gsEval('pacing.mode', [CORE_MODE[mode]])))
+      setSchedulerMode(mode);
+  }
   // Per-machine caches go with the machine.  A boot cleared the mounts
   // before attaching its own media; a restore brings the checkpoint's media,
   // which the page did not attach, so its mounts are read back from the

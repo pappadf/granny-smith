@@ -424,6 +424,8 @@ static value_t build_capabilities(const hw_profile_t *p) {
         }
     }
     val_map_put(b, "aux_cpus", val_list(aux, n_aux));
+    // The front end's default pacing for the model: Real when set, else Faster.
+    val_map_put(b, "realtime_default", val_bool(p->realtime_default));
     return val_map_finish(b);
 }
 

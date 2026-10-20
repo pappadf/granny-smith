@@ -323,8 +323,8 @@ python3 scripts/bench/scenario.py --bin native=build/headless-fast/gs-headless \
     --bin node=build/headless-fast-node/gs-headless --runs 3
 ```
 
-The scale: the G3 runs at 267 MHz with a CPI of 2, so a fully busy guest
-retires 134 M instructions a second, and the genie's minimize and restore
+The scale: the G3 runs at 267 MHz with a CPI of 1, so a fully busy guest
+retires 267 M instructions a second, and the genie's minimize and restore
 each carry 120–160 M instructions of work.  Node's compiles are
 synchronous, so the cold round charges the translation tier for compiling
 in a way the browser, which compiles on other threads, does not.

@@ -340,11 +340,11 @@ precedent).  The deltas, each keyed on `cpu_model`:
   remains illegal: the 604 does not implement it.
 - **Superscalar timing is not modeled**: the 604 keeps the sprint model
   and 601-style branch folding, for the same determinism-and-measurement
-  reasons as the 601.  The TNT and Gossamer schedulers count two cycles
-  per instruction (`tnt.c`, `gossamer.c`); for the 267 MHz G3 that sets a
-  real-time pace of about 134 M instructions a second.  CPI 2 is a
-  modelling choice inherited from TNT, not a measurement, so "times a real
-  G3" comparisons are relative to this model.
+  reasons as the 601.  The TNT scheduler counts two cycles per
+  instruction (`tnt.c`) and the Gossamer one counts one (`gossamer.c`);
+  for the 267 MHz G3 that sets a real-time pace of about 267 M
+  instructions a second.  Both are modelling choices, not measurements,
+  so "times a real G3" comparisons are relative to this model.
 - **Object model**: `machine.cpu` adds `dbat0u..dbat3l` and `tbu`/`tbl`
   (aliases of the rtcu/rtcl storage); the members are static per class,
   so they exist — inert — on the 601 too.

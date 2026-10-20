@@ -1183,6 +1183,10 @@ uint64_t scheduler_cpu_cycles(struct scheduler *restrict s) {
     return current_cpu_cycles(s);
 }
 
+uint64_t scheduler_sleep_cycles(struct scheduler *s) {
+    return s ? s->sleep_cycles : 0;
+}
+
 // Get current emulated time in nanoseconds
 double scheduler_time_ns(struct scheduler *restrict s) {
     uint64_t cycles = scheduler_cpu_cycles(s);
@@ -1388,6 +1392,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
                 uint64_t advance = min_u64(cte, remaining_cycles);
                 remaining_cycles -= advance;
                 s->saved.cpu_cycles += advance;
+                s->sleep_cycles += advance;
                 process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
                 cpu->poll_interrupt(cpu->ctx); // event may have raised the IPL → take it (clears stopped)
             }

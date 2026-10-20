@@ -11,7 +11,7 @@ TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
 
 TEST_ARGS := model=pmg3dt ram=65536
 
-# ~70 G instructions: CD boot, Drive Setup, the install.
+# ~140 G instructions: CD boot, Drive Setup, the install.
 TEST_TIMEOUT := 7200
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
