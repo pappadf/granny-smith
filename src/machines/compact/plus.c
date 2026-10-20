@@ -600,9 +600,19 @@ static const floppy_slot_t plus_floppy_slots[] = {
 };
 
 // The Plus has no internal bay: its one SCSI bus is the DB-25 on the back, so
-// every device is "External".
+// every device is "External".  Nor has it a startup-device record: its ROM
+// has no Start Manager table in parameter memory and boots the highest SCSI
+// ID, so the bus cannot hold the startup device (no "Start up from").
 static const storage_bus_decl_t plus_storage[] = {
-    MAC_SCSI_BUS("scsi", "SCSI", MEDIA_BUS_SCSI, NULL, true),
+    {.id = "scsi",
+     .label = "SCSI",
+     .kind = STORAGE_KIND_SCSI,
+     .media_bus = MEDIA_BUS_SCSI,
+     .units = MAC_SCSI_UNITS,
+     .reserved = MAC_SCSI_RESERVED,
+     .external_connector = true,
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = false},
     {0},
 };
 

@@ -625,6 +625,62 @@ TEST(cnid_survives_rename_move_and_is_never_reused) {
     fixture_down();
 }
 
+// A folder renames, and moves, where the filesystem renames files only:
+// WasmFS's OPFS backend refuses a directory, and every folder rename on the
+// Shared volume failed with "could not be renamed" (S1018-23).  The folder is
+// rebuilt entry by entry -- a nested folder, files and their sidecars --
+// under its new name, keeping its CNID.
+extern int stub_refuse_dir_rename;
+static bool host_exists(const char *path);
+TEST(folder_renames_where_directories_cannot_be_renamed) {
+    fixture_up("dirmv");
+    uint32_t dir_id = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Empty Folder", &dir_id));
+    write_file("Empty Folder/a.txt", "A");
+    write_file("Empty Folder/._a.txt", "sidecar");
+    char p[512];
+    host_path("Empty Folder/Inner", p, sizeof p);
+    ASSERT_EQ_INT(0, mkdir(p, 0755));
+    write_file("Empty Folder/Inner/b.txt", "B");
+
+    stub_refuse_dir_rename = 1;
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("Empty Folder");
+    put_path("F");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_RENAME));
+    host_path("Empty Folder", p, sizeof p);
+    ASSERT_TRUE(!host_exists(p));
+    host_path("F/a.txt", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    host_path("F/._a.txt", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    host_path("F/Inner/b.txt", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("F", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)dir_id, (int)rd32(g_reply + 6));
+
+    // And a move into another folder
+    uint32_t dest = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Dest", &dest));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put32(dest);
+    put_path("F");
+    put_path("");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_MOVE_AND_RENAME));
+    host_path("Dest/F/Inner/b.txt", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    host_path("F", p, sizeof p);
+    ASSERT_TRUE(!host_exists(p));
+    stub_refuse_dir_rename = 0;
+    fixture_down();
+}
+
 TEST(cnids_persist_across_a_share_remove_and_readd) {
     fixture_up("cnidpersist");
     ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Alpha"));
@@ -4034,6 +4090,7 @@ int main(void) {
     RUN(set_parms_rejects_read_only_bits);
 
     RUN(cnid_survives_rename_move_and_is_never_reused);
+    RUN(folder_renames_where_directories_cannot_be_renamed);
     RUN(cnids_persist_across_a_share_remove_and_readd);
     RUN(catalog_survives_a_torn_tail_record);
     RUN(out_of_band_files_are_adopted_on_first_touch);

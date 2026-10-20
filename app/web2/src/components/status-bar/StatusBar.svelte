@@ -38,7 +38,11 @@
   // governor's ladder gives eighths below 1x (0.25 … 0.875) and 1.5/2/3/4/6/8x
   // above — one decimal above 1x, two below (0.38x, not 0.4x), dropping
   // trailing zeros.
-  const showSpeed = $derived(machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1);
+  // Only for a machine that can run: a stopped one has no speed.
+  const showSpeed = $derived(
+    (machine.status === 'running' || machine.status === 'paused') &&
+      (machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1),
+  );
   const speedLabel = $derived(
     Number.isInteger(machine.acceleratedSpeed)
       ? `${machine.acceleratedSpeed}×`

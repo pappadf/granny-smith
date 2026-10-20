@@ -4,7 +4,7 @@
 // "resume the saved machine?" prompt.  The orchestration lives in
 // bus/urlMedia.ts; this module owns the state the view renders.
 
-import { urlMediaName } from '@/lib/mediaUrl';
+import { urlMediaFileName } from '@/lib/mediaUrl';
 
 // One file being fetched.  `total` is null when the server sends no length
 // (a streamed zip member, a compressed response): the bar is then
@@ -17,7 +17,7 @@ export type UrlFileStatus =
 export interface UrlFile {
   slot: string; // rom, rom2, vrom, fd0, hd0, cd …
   label: string; // "ROM", "Hard disk 1" …
-  name: string; // what it is stored and shown as (urlMediaName)
+  name: string; // what it is stored and shown as (urlMediaFileName)
   received: number;
   total: number | null;
   status: UrlFileStatus;
@@ -82,18 +82,23 @@ export function slotLabel(slot: string): string {
   return slot.toUpperCase();
 }
 
-// The name for `slot`'s file: the one it was listed under, or a new one.
-export function urlMediaNameFor(slot: string): string {
-  return urlBoot.files.find((x) => x.slot === slot)?.name ?? urlMediaName(slot);
+// The name for `slot`'s file, fetched from `url`: the one it was listed
+// under, or a new one.
+export function urlMediaNameFor(slot: string, url: string): string {
+  return (
+    urlBoot.files.find((x) => x.slot === slot)?.name ??
+    urlMediaFileName(slot, url, window.location.href)
+  );
 }
 
-// List a file the boot will fetch (in the order the view shows them).
-export function queueUrlFile(slot: string): void {
+// List a file the boot will fetch from `url` (in the order the view shows
+// them).
+export function queueUrlFile(slot: string, url: string): void {
   if (!urlBoot.requested) return;
   urlBoot.files.push({
     slot,
     label: slotLabel(slot),
-    name: urlMediaName(slot),
+    name: urlMediaFileName(slot, url, window.location.href),
     received: 0,
     total: null,
     status: 'queued',

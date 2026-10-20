@@ -99,6 +99,12 @@ void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t 
 // engine reads the innermost source directly: nothing is decoded to a file.
 image_t *image_open_readonly(const char *base_path);
 
+// Why this thread's last image open failed when the file is a container
+// image (UDIF, NDIF, QCOW2) that cannot be read -- "a QCOW2 image that
+// cannot be read in place (it uses ...)" -- or "" (it opened, or was no
+// such container).  Valid until the thread's next open.
+const char *image_open_error(void);
+
 // The same over forks already open (the VFS mounting a file it holds).
 // `name` is what image_get_filename reports.
 struct peel_source;

@@ -7,11 +7,12 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
-  import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
+  import { pickAndUploadAs, acceptFilesIntoCategory } from '@/bus/upload';
   import {
     insertFloppy,
     detectFdDriveCount,
     ejectMedia,
+    imageInUseUnder,
     mountImage,
     machineDevices,
     deviceLabel,
@@ -24,6 +25,7 @@
   import { storedDmgName } from '@/bus/importImage';
   import { gsEval, gsErrorText, gsEvalWithProgress } from '@/bus/emulator';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
+  import { machine } from '@/state/machine.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
@@ -154,7 +156,7 @@
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
-    if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
+    if (await acceptFilesIntoCategory(files, mediaIdFor(cat))) await refresh();
   }
 
   async function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
@@ -229,6 +231,20 @@
   }
 
   async function unmount(entry: OpfsEntry) {
+    if (!images.mounted[entry.path]) return;
+    // A floppy in a running (or paused) machine is one the Mac has mounted:
+    // pulling it out here loses what the Mac has not yet written to it, and
+    // the Mac goes on showing it (S1018-03).  Asked first.
+    if (cat === 'fd' && (machine.status === 'running' || machine.status === 'paused')) {
+      const ok = await askConfirm({
+        title: 'Eject',
+        message: `The Mac may be using '${entry.name}'. Ejecting it here pulls it out of the drive: anything the Mac has not yet written to it is lost, and the Mac may go on showing the disk. To eject it safely, eject it in the Mac (drag it to the Trash or press ⌘E).`,
+        confirmText: 'Eject',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    // Where it is now: the Mac may have ejected it while the question was up.
     const where = images.mounted[entry.path];
     if (!where) return;
     const r = await ejectMedia(where);
@@ -314,33 +330,51 @@
     }
   }
 
+  // A mounted image keeps its name and its file: the machine reads and writes
+  // it by path, and its checkpoints name it, so a rename or delete under it
+  // made every later checkpoint, Save State and Resume fail.
+  async function refuseInUse(entry: OpfsEntry, what: string): Promise<boolean> {
+    if (!(await imageInUseUnder([entry.path]))) return false;
+    showNotification(
+      `Can't ${what} '${entry.name}' while the machine is using it. ${isRemovable ? 'Eject' : 'Unmount'} it first.`,
+      'warning',
+    );
+    return true;
+  }
+
   async function doRename(entry: OpfsEntry) {
+    if (await refuseInUse(entry, 'rename')) return;
     const next = await askText({
       title: 'Rename',
       label: 'New name',
       initial: entry.name,
       submitText: 'Rename',
-      validate: validateName,
+      validate: (v) =>
+        validateName(v) ||
+        (v !== entry.name && entries.some((e) => e.name === v) ? `'${v}' already exists` : ''),
     });
     if (!next || next === entry.name) return;
+    // Asked again: the machine may have taken the image while the dialog was open.
+    if (await refuseInUse(entry, 'rename')) return;
     try {
       await opfs.rename(entry.path, next);
       await refresh();
       bumpImagesRevision();
       showNotification(`Renamed to '${next}'`, 'info');
-    } catch {
-      showNotification('Rename failed', 'error');
+    } catch (err) {
+      showNotification(`Rename failed: ${err instanceof Error ? err.message : err}`, 'error');
     }
   }
 
   async function doDelete(entry: OpfsEntry) {
+    if (await refuseInUse(entry, 'delete')) return;
     const ok = await askConfirm({
       title: 'Delete',
       message: `Delete '${entry.name}'?`,
       confirmText: 'Delete',
       danger: true,
     });
-    if (!ok) return;
+    if (!ok || (await refuseInUse(entry, 'delete'))) return;
     try {
       await opfs.delete(entry.path);
       await refresh();

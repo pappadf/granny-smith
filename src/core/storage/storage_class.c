@@ -437,7 +437,7 @@ static DEF_METHOD(files_method_rm) {
     int rc = rm_tree(path);
     if (rc < 0)
         return val_err("files.rm: cannot remove '%s': %s", path, strerror(-rc));
-    return val_bool(true);
+    return val_none();
 }
 
 // `files.mv(src, dst)` — move/rename within the host filesystem. Like
@@ -469,7 +469,7 @@ static DEF_METHOD(files_method_mv) {
         return val_err("files.mv: destination '%s' already exists", dst);
     release_cached_mounts(src);
     if (rename(src, dst) == 0)
-        return val_bool(true);
+        return val_none();
     char err[256] = {0};
     if (shell_cp_to_host(src, dst, true, err, sizeof(err)) < 0)
         return val_err("files.mv: %s", err[0] ? err : "move failed");
@@ -478,7 +478,7 @@ static DEF_METHOD(files_method_mv) {
     int rc = rm_tree(src);
     if (rc < 0)
         return val_err("files.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
-    return val_bool(true);
+    return val_none();
 }
 
 // `files.fd_create(path, [high_density])` — create a blank (unformatted)
@@ -604,6 +604,19 @@ static void probe_report_partitions(image_t *img, uint64_t size) {
 }
 
 // `files.probe(path)` — identify the format of a disk image.
+// `files.image_error(path)` — why the file at `path` cannot be opened as a
+// disk image when it is a container image (UDIF, NDIF, QCOW2) the emulator
+// cannot read, else "".  The upload says it instead of "not a valid Hard
+// Disk image" (the reason was only in the terminal).
+static DEF_METHOD(files_method_image_error) {
+    image_t *img = image_open_readonly(argv[0].s);
+    if (img) {
+        image_close(img);
+        return val_str("");
+    }
+    return val_str(image_open_error());
+}
+
 static DEF_METHOD(files_method_probe) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
@@ -758,6 +771,12 @@ static const arg_decl_t files_cp_args[] = {
 // all others do.  One chunk in flight at a time; the page serialises them.
 #define STORAGE_XFER_BYTES (2u << 20)
 static uint8_t g_xfer[STORAGE_XFER_BYTES];
+
+// `files.persistent` — whether what is written under /opfs outlives the page
+// (false when the browser's storage could not be opened).
+static DEF_GETTER(files_attr_persistent) {
+    return val_bool(platform_storage_persistent());
+}
 
 static DEF_GETTER(files_attr_xfer_buffer) {
     return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
@@ -1026,7 +1045,11 @@ static source_t *open_decoded(const char *path, image_t **img, char *err, size_t
     source_release(data);
     *img = image_open_readonly(path);
     if (!*img) {
-        snprintf(err, cap, "cannot open '%s' as a disk image", path);
+        const char *why = image_open_error();
+        if (*why)
+            snprintf(err, cap, "'%s' is %s", path, why);
+        else
+            snprintf(err, cap, "cannot open '%s' as a disk image", path);
         return NULL;
     }
     return image_source(*img);
@@ -1516,6 +1539,10 @@ static DEF_METHOD(files_method_download) {
 
 static const member_t files_members[] = {
     {.kind = MK_ATTR,
+     .name = "persistent",
+     .doc = "True when files under /opfs outlive the page; false when the browser's storage could not be opened",
+     .attr = {.type = VK_BOOL, .get = files_attr_persistent, .set = NULL}},
+    {.kind = MK_ATTR,
      .name = "xfer_buffer",
      .flags = M_CAT_INTERNAL,
      .doc = "Address of the file-transfer window in wasm memory (the web page's upload path)",
@@ -1686,17 +1713,22 @@ static const member_t files_members[] = {
      .name = "rm",
      .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
-     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = VK_BOOL, .fn = files_method_rm}},
+     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = VK_NONE, .fn = files_method_rm}},
     {.kind = MK_METHOD,
      .name = "mv",
      .examples = EXAMPLES("files.mv \"/opfs/images/hd/new.img\" \"/opfs/images/hd/work.img\""),
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
-     .method = {.args = files_mv_args, .nargs = 2, .result = VK_BOOL, .fn = files_method_mv}},
+     .method = {.args = files_mv_args, .nargs = 2, .result = VK_NONE, .fn = files_method_mv}},
     {.kind = MK_METHOD,
      .name = "partmap",
      .examples = EXAMPLES("files.partmap \"/opfs/images/hd/system.img\""),
      .doc = "Print the Apple Partition Map of an image",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
+    {.kind = MK_METHOD,
+     .name = "image_error",
+     .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
+     .doc = "Why a container image (UDIF, NDIF, QCOW2) cannot be read, or \"\"",
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_STRING, .fn = files_method_image_error}},
     {.kind = MK_METHOD,
      .name = "probe",
      .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
@@ -1721,7 +1753,7 @@ static const member_t files_members[] = {
      .name = "ls",
      .examples = EXAMPLES("files.ls", "files.ls \"/opfs/images\""),
      .doc = "Print a directory listing",
-     .method = {.args = files_path_arg_optional, .nargs = 1, .result = VK_BOOL, .fn = files_method_ls}},
+     .method = {.args = files_path_arg_optional, .nargs = 1, .result = VK_NONE, .fn = files_method_ls}},
     {.kind = MK_METHOD,
      .name = "list",
      .examples = EXAMPLES("files.list", "files.list \"/opfs/images/hd/system.img/System Folder\""),
@@ -1735,7 +1767,7 @@ static const member_t files_members[] = {
      .name = "mkdir",
      .examples = EXAMPLES("files.mkdir \"/opfs/images/cd\""),
      .doc = "Create a directory (one already there is success)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_mkdir}},
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_NONE, .fn = files_method_mkdir}},
     {.kind = MK_METHOD,
      .name = "cd",
      .examples = EXAMPLES("files.cd \"/opfs/images\"", "files.cd .."),
@@ -1750,7 +1782,7 @@ static const member_t files_members[] = {
      .name = "cat",
      .examples = EXAMPLES("files.cat \"/opfs/notes.txt\""),
      .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_cat}},
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = VK_NONE, .fn = files_method_cat}},
     {.kind = MK_METHOD,
      .name = "download",
      .examples = EXAMPLES("files.download \"/opfs/images/hd/system.img\""),

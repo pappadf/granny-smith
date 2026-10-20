@@ -28,7 +28,7 @@
 // disk in memory, and the QCOW2 removed once the UDIF is stored.  Nothing
 // else keeps a QCOW2 -- the stored image is the UDIF.
 
-import { gsEval, gsEvalWithProgress, gsErrorText } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, gsOk } from './emulator';
 import { streamToOpfs } from './upload';
 import { xferChunkBytes, xferUdifAppend, xferRead } from './xfer';
 import { showNotification } from '@/state/toasts.svelte';
@@ -36,7 +36,7 @@ import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { scratchPath } from '@/lib/opfsPaths';
-import { MEDIA_TYPES, LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+import { MEDIA_TYPES, LARGE_IMPORT_BYTES, validateUnstated, type MediaTypeId } from '@/lib/media';
 import { findMember } from '@/lib/mediaUrl';
 import { zipEntries, sniffContainer, decompressor, ZipStreamError } from '@/lib/zipStream';
 
@@ -49,6 +49,9 @@ export type ImportSource =
 export interface ImportOptions {
   // What the image may be stored as, in the order tried.
   categories: DiskCategory[];
+  // The upload did not say what the image is (a drop): it is a CD-ROM only
+  // when it holds ISO 9660 (lib/media.ts validateUnstated).
+  unstated?: boolean;
   // A zip member to take (forward-only, by name); null/absent: the first
   // member that is a medium.
   member?: string | null;
@@ -61,8 +64,9 @@ export interface ImportOptions {
   // Progress (bytes of the source read; its length when known; bytes stored).
   onProgress?: (read: number, total: number | null, stored: number) => void;
   // The name to store the image under, and to report it as, instead of its
-  // own (URL media are named by slot and time: the source's own name then
-  // only hints at a streamed UDIF).
+  // own (URL media: the file's name from the URL, or, when it names none,
+  // the slot and the time; the source's own name then only hints at a
+  // streamed UDIF).
   storeAs?: string;
   // Where the image came from (the URL of URL media), recorded in a UDIF the
   // import writes as gs-origin and reported back by files.udif_info: what a
@@ -125,6 +129,15 @@ export function isQcow2Head(head: Uint8Array): boolean {
 export async function isQcow2File(blob: Blob): Promise<boolean> {
   if (blob.size < 8) return false;
   return isQcow2Head(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
+}
+
+// True when `blob` is gzip-compressed: a small one goes to importImage too,
+// which unpacks it and hands what it holds (a floppy, a ROM) to the staged
+// flow.  Staged as it is, it reached the core's archive probe, which sees
+// through the gzip into the disk's volume and found "no mountable media".
+export async function isGzipFile(blob: Blob): Promise<boolean> {
+  if (blob.size < 2) return false;
+  return sniffContainer(new Uint8Array(await blob.slice(0, 2).arrayBuffer())) === 'gzip';
 }
 
 function sizeText(bytes: number): string {
@@ -255,30 +268,45 @@ let persistAsked = false;
 // Refuse up front when even the compressed source will not fit, and ask once
 // that the origin's storage not be evicted under pressure (nothing else in
 // the app asks, and an evicted origin loses every image and checkpoint).
-async function preflight(name: string, sourceBytes: number | null): Promise<boolean> {
+// `free`: the storage free when it started (null when unknown), which a
+// failed write is measured against.
+async function preflight(
+  name: string,
+  sourceBytes: number | null,
+): Promise<{ ok: boolean; free: number | null }> {
   const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
-  if (!storage) return true;
+  if (!storage) return { ok: true, free: null };
   if (!persistAsked && storage.persist) {
     persistAsked = true;
     storage.persist().catch(() => undefined);
   }
-  if (sourceBytes === null || !storage.estimate) return true;
+  if (!storage.estimate) return { ok: true, free: null };
   try {
     const est = await storage.estimate();
-    const free = (est.quota ?? Infinity) - (est.usage ?? 0);
+    const free = est.quota !== undefined ? est.quota - (est.usage ?? 0) : null;
     // The stored image is at most about the decoded size, at least what the
     // source compresses to; the source's own size is the cheap bound.
-    if (free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
+    if (free !== null && sourceBytes !== null && free < Math.min(sourceBytes, 64 * 1024 * 1024)) {
       showNotification(
         `Not enough browser storage for ${name}: ${sizeText(Math.max(0, free))} free`,
         'error',
       );
-      return false;
+      return { ok: false, free };
     }
+    return { ok: true, free };
   } catch {
     /* no estimate: try anyway */
+    return { ok: true, free: null };
   }
-  return true;
+}
+
+// Why a failed import failed, when it is the storage: it had written about
+// all that was free when it started.  The write itself fails with a bare
+// error, and its partial file is gone by the time the failure is reported,
+// so an estimate then shows space again.
+export function storageFullHint(free: number | null, stored: number): string {
+  if (free === null || stored < 0.9 * free) return '';
+  return ` (the browser's storage is full: it had ${sizeText(Math.max(0, free))} free)`;
 }
 
 // --- The pipeline ----------------------------------------------------------------
@@ -302,21 +330,27 @@ async function rmQuiet(path: string): Promise<void> {
   }
 }
 
-// Validate the UDIF at `part` as the first of `categories` it is, and move it
-// into that category's directory.  Removes `part` either way.
+// Validate the UDIF at `part` as the first of `categories` it is (`unstated`:
+// see ImportOptions), and move it into that category's directory.  Removes
+// `part` either way.
 async function placeUdif(
   part: string,
   name: string,
   categories: DiskCategory[],
+  unstated = false,
 ): Promise<{ path: string; category: DiskCategory } | null> {
+  let reject: string | undefined;
   for (const cat of categories) {
     const d = MEDIA_TYPES[cat];
-    const v = await d.validate(part, gsEval);
-    if (!v.valid) continue;
+    const v = unstated ? await validateUnstated(cat, part, gsEval) : await d.validate(part, gsEval);
+    if (!v.valid) {
+      reject ??= v.reject;
+      continue;
+    }
     await gsEval('files.mkdir', [d.persistDir]);
     const dest = await uniquePath(d.persistDir, storedDmgName(name));
     const moved = await gsEval('files.mv', [part, dest]);
-    if (moved !== true) {
+    if (!gsOk(moved)) {
       showNotification(`Could not store ${name}: ${gsErrorText(moved)}`, 'error');
       await rmQuiet(part);
       return null;
@@ -326,7 +360,9 @@ async function placeUdif(
   }
   await rmQuiet(part);
   const what = categories.map((c) => MEDIA_TYPES[c].label).join(' or ');
-  showNotification(`'${name}' is not a valid ${what}`, 'error');
+  // The reason, when the core has one (a UDIF in a compression it cannot
+  // decode), in place of the bare verdict.
+  showNotification(`'${name}' ${reject ?? `is not a valid ${what}`}`, 'error');
   return null;
 }
 
@@ -484,12 +520,13 @@ async function importDecoded(
               `converting the QCOW2 image: ${sizeText(done)}${total ? ` of ${sizeText(total)}` : ''}`,
             ),
         );
+        // The reason names the staged copy; the user knows the file by its name.
         if (!r || typeof r !== 'object' || 'error' in (r as object))
-          throw new Error(gsErrorText(r));
+          throw new Error(gsErrorText(r).split(staged).join(name));
       } finally {
         await rmQuiet(staged);
       }
-      const placed = await placeUdif(part, shown, opts.categories);
+      const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
@@ -512,18 +549,18 @@ async function importDecoded(
         await rmQuiet(part);
         if (!r || typeof r !== 'object' || 'error' in (r as object))
           throw new Error(gsErrorText(r));
-        const placed = await placeUdif(dmg, shown, opts.categories);
+        const placed = await placeUdif(dmg, shown, opts.categories, opts.unstated);
         if (placed) showNotification(`${shown} stored`, 'info');
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
       }
       const settled = await settleUdif(part, name, opts.origin);
-      const placed = await placeUdif(settled, shown, opts.categories);
+      const placed = await placeUdif(settled, shown, opts.categories, opts.unstated);
       if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
 
     const st = await writeUdif(part, name, pump, opts, cancelled);
-    const placed = await placeUdif(part, shown, opts.categories);
+    const placed = await placeUdif(part, shown, opts.categories, opts.unstated);
     if (placed)
       showNotification(
         `${shown}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
@@ -579,8 +616,11 @@ async function importMacArchive(
     if (!r || typeof r !== 'object' || typeof r.member !== 'string') return leave();
     const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {
-      if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
-        const placed = await placeUdif(part, shown, [cat]);
+      const v = opts.unstated
+        ? await validateUnstated(cat, part, gsEval)
+        : await MEDIA_TYPES[cat].validate(part, gsEval);
+      if (v.valid) {
+        const placed = await placeUdif(part, shown, [cat], opts.unstated);
         if (placed && r.bytes_in && r.stored_bytes)
           showNotification(
             `${shown}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,
@@ -616,9 +656,12 @@ export async function importImage(
   });
   const total = src.kind === 'blob' ? src.blob.size : src.total;
   const report = opts.onProgress;
+  let storedSoFar = 0;
+  let free: number | null = null;
   opts = {
     ...opts,
     onProgress(read, t, stored) {
+      storedSoFar = Math.max(storedSoFar, stored);
       setActivityDetail(
         `${sizeText(read)}${t ? ` of ${sizeText(t)}` : ''} read, ${sizeText(stored)} stored`,
       );
@@ -626,7 +669,9 @@ export async function importImage(
     },
   };
   try {
-    if (!(await preflight(name, total))) return { handled: true, path: null };
+    const pre = await preflight(name, total);
+    free = pre.free;
+    if (!pre.ok) return { handled: true, path: null };
     const peeked = await headOf(src, 512);
     src = peeked.src;
     const kind = sniffContainer(peeked.head);
@@ -696,7 +741,10 @@ export async function importImage(
       showNotification(`Import of ${name} cancelled`, 'info');
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      showNotification(`Could not import ${name}: ${msg}`, 'error');
+      showNotification(
+        `Could not import ${name}: ${msg}${storageFullHint(free, storedSoFar)}`,
+        'error',
+      );
       console.error('[importImage]', e);
     }
     return { handled: true, path: null };

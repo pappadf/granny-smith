@@ -632,6 +632,19 @@ static void js_log_sink(const char *line, void *user) {
     event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
+// The stdout copy of a log line (its category has stdout on), for the
+// Terminal console.  On stdout each line would be one postMessage from this
+// pthread to the page, unbounded: a verbose category at Max speed queued
+// them faster than the page could take them and hung it for good
+// (S1018-04).  The event ring is bounded and drops what the page cannot
+// keep up with.
+static void js_log_stdout_sink(const char *line, void *user) {
+    (void)user;
+    if (!line)
+        return;
+    event_emit_text(GS_EVENT_LOG, "print", "line", line);
+}
+
 // ============================================================================
 // Filesystem Commands
 // ============================================================================
@@ -1014,6 +1027,10 @@ static void install_background_checkpoint_handlers(void) {
 // /opfs/upload is the user's, and is not touched.
 #define SCRATCH_DIR "/opfs/upload/.scratch"
 
+// Whether /opfs is the browser's storage (main() sets it false when it had
+// to fall back to memory).
+static bool g_storage_persistent = true;
+
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
 // ============================================================================
@@ -1032,10 +1049,20 @@ int main(void) {
     // during global constructors on the main thread).
     // The web app creates its directory structure under /opfs; users can also
     // create arbitrary paths under /opfs for their own persistent storage.
+    // Tried twice: a transient refusal (suspected after a reload while the
+    // origin's previous page still hung) should not cost the session its
+    // storage.
     backend_t opfs = wasmfs_create_opfs_backend();
     if (!opfs || wasmfs_create_directory("/opfs", 0777, opfs) != 0) {
+        fprintf(stderr, "OPFS backend not available, trying once more\n");
+        opfs = wasmfs_create_opfs_backend();
+        g_storage_persistent = opfs && wasmfs_create_directory("/opfs", 0777, opfs) == 0;
+    }
+    if (!g_storage_persistent) {
         // No OPFS (a private window, storage blocked): /opfs on memory, so
-        // the page still works, but nothing it writes survives a reload.
+        // the page still works, but nothing it writes survives a reload.  The
+        // page reads files.persistent and says so for as long as it is open:
+        // empty folders here used to look like every stored file was lost.
         fprintf(stderr, "OPFS unavailable: /opfs is memory-backed, nothing will persist\n");
         backend_t fallback = wasmfs_create_memory_backend();
         if (!fallback || wasmfs_create_directory("/opfs", 0777, fallback) != 0)
@@ -1096,6 +1123,8 @@ int main(void) {
     // process-wide, so it also forwards any categories registered later
     // (system_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
+    // ... and the console's copy (stdout=on) the same road, not stdout.
+    log_set_stdout_sink(js_log_stdout_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on
     // READY so requests issued during the boot window don't dispatch
@@ -1144,6 +1173,11 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
     snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
     event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
     event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
+}
+
+// files.persistent: false once main() fell back to a memory-backed /opfs.
+bool platform_storage_persistent(void) {
+    return g_storage_persistent;
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in

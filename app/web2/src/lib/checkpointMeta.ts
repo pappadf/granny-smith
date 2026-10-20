@@ -19,12 +19,23 @@ export function parseCheckpointDirName(name: string): ParsedCheckpointDir | null
   return { id: m[1], created: m[2] };
 }
 
+// "YYYY-MM-DD HH:MM" in local time (with `seconds`, ":SS" too): the one
+// clock the Checkpoints panel shows, in its names and its Date column alike
+// (the stamps are UTC; the names a user creates were local).
+export function formatLocalStamp(d: Date, seconds = false): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}` +
+    (seconds ? `:${pad(d.getSeconds())}` : '')
+  );
+}
+
 // Format a compact ISO 8601 timestamp (YYYYMMDDTHHMMSSZ) into a human label
 // suitable for the Checkpoints table when no manifest is present.
 export function formatCheckpointLabel(created: string): string {
-  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(created);
-  if (!m) return `Checkpoint ${created}`;
-  return `Checkpoint ${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+  const d = checkpointCreatedToDate(created);
+  return d ? `Checkpoint ${formatLocalStamp(d)}` : `Checkpoint ${created}`;
 }
 
 // Convert compact ISO 8601 back to a sortable Date.

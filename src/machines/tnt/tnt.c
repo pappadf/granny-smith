@@ -444,10 +444,9 @@ static void tnt_scsi96_irq(void *context, bool active) {
 }
 
 // DBDMA channel-0 device port for the 53C94: the classic DREQ-gated
-// pseudo-DMA byte stream.  With no bus attached the chip never raises
-// DREQ, so the port is exercised only when the external chain gains
-// devices (CD-ROM phase) — at which point a DREQ-edge kick will be
-// wired alongside.
+// pseudo-DMA byte stream.  A channel that ran before the chip raised DREQ
+// stalls; the 53C94's register write that raises it kicks the channel
+// again (grand_central.c).
 static int tnt_scsi0_port_in(void *ctx, uint8_t *buf, int len) {
     tnt_state_t *st = tnt_st((config_t *)ctx);
     int n = 0;
@@ -464,11 +463,21 @@ static int tnt_scsi0_port_out(void *ctx, const uint8_t *buf, int len) {
     return n;
 }
 
+// The 53C94's DREQ, wired to channel 0's device status bit s5: the SCSI
+// Manager's HAL polls it (a byte read of channelStatus) to learn that a DMA
+// select has reached the command phase and wants the CDB.
+#define TNT_SCSI0_SBIT_DREQ 0x20u
+
+static uint8_t tnt_scsi0_port_s_bits(void *ctx) {
+    tnt_state_t *st = tnt_st((config_t *)ctx);
+    return scsi_53c96_dreq(st->scsi96) ? TNT_SCSI0_SBIT_DREQ : 0;
+}
+
 static void tnt_scsi0_port_init(config_t *cfg) {
     dbdma_port_t port = {
         .out = tnt_scsi0_port_out,
         .in = tnt_scsi0_port_in,
-        .s_bits = NULL,
+        .s_bits = tnt_scsi0_port_s_bits,
         .ctx = cfg,
     };
     dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
@@ -811,10 +820,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI.  The image list restores before the devices that resolve media
     // out of it, then the shared bus, then the chips.  hd= media land on
     // cfg->scsi = the MESH internal bus (boot disks are internal on the
-    // real machines); the external 53C94 is instantiated with NO bus
-    // attached — every select times out, the empty-chain presentation
-    // (the PDM 8100 fast-chip precedent).  No CD-ROM sits on the 53C94
-    // chain yet (see pm7500.c's has_cdrom).
+    // real machines).  On the Macintosh boards the 53C94 drives the second
+    // bus, `machine.scsi2`: the internal CD-ROM drive and the external
+    // DB-25 chain.  On the Network Servers it has no bus attached -- every
+    // select times out, the empty-chain presentation.
     machine_part_images(cfg, cp);
     machine_part_begin(cfg, cp, "scsi");
     cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
@@ -824,16 +833,20 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // aliases), so `hd=` / `cd=` and every existing consumer of
     // `machine.scsi` keep landing where the boot disk goes.  Channel 1
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
-    // it as `machine.scsi2`.
-    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER) {
-        machine_part_begin(cfg, cp, "scsi2");
-        st->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
-        machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
-    }
+    // it as `machine.scsi2`.  On the Macintosh boards `machine.scsi2` is
+    // the 53C94's bus instead (below), so every board has one.
+    machine_part_begin(cfg, cp, "scsi2");
+    st->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
+    // The Macintosh boards' slow bus: the CD-ROM bay and the external
+    // connector ("a SCSI bus for external SCSI devices and for the internal
+    // CD-ROM drive", Power Macintosh 7500/8500 Developer Note, S3)
+    if (tnt_board(cfg)->kind == TNT_BOARD_MAC)
+        scsi_53c96_attach_bus(st->scsi96, st->scsi2);
     if (tnt_board(cfg)->has_mesh) {
         // MESH is a controller like any other: the machine builds it, tells it
         // where its interrupt goes and which bus it drives, and registers its
@@ -1075,8 +1088,7 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
 // The Power Macintosh boards' internal bus, MESH: the hard disk bay at ID 0
 // and the 3.5" bay at ID 1 (the 8500 and 9500 add a second 3.5" bay at ID 2).
 // The external connector and the CD-ROM bay are on the board's other bus, the
-// 53C94 in Curio, which has no bus attached yet -- so these machines have no
-// CD-ROM drive until it has.
+// 53C94 in Curio (`machine.scsi2`): the factory CD-ROM drive is at ID 3.
 static const storage_bay_decl_t tnt_bays_7500[] = {
     {.unit = 0, .label = "Internal hard disk bay"},
     {.unit = 1, .label = "3.5\xe2\x80\xb3 bay"},
@@ -1090,19 +1102,42 @@ static const storage_bay_decl_t tnt_bays_8500[] = {
     {0},
 };
 
+static const storage_bay_decl_t tnt_bays_53c94[] = {
+    {.unit = 3, .label = "CD-ROM bay"},
+    {0},
+};
+
+// The 53C94's bus: its own SCSI ID space, separate from MESH's.  The startup
+// device is a MESH disk; holding C to start up from the CD is the guest's
+// business, not a configuration's.
+#define TNT_SCSI_53C94_BUS                                                                                             \
+    {.id = "scsi2",                                                                                                    \
+     .label = "SCSI",                                                                                                  \
+     .kind = STORAGE_KIND_SCSI,                                                                                        \
+     .media_bus = MEDIA_BUS_SCSI2,                                                                                     \
+     .units = MAC_SCSI_UNITS,                                                                                          \
+     .reserved = MAC_SCSI_RESERVED,                                                                                    \
+     .external_connector = true,                                                                                       \
+     .bays = tnt_bays_53c94,                                                                                           \
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD}
+
 const storage_bus_decl_t tnt_storage_7500[] = {
     MAC_SCSI_BUS("scsi", "Internal fast SCSI", MEDIA_BUS_SCSI, tnt_bays_7500, false),
+    TNT_SCSI_53C94_BUS,
     {0},
 };
 
 const storage_bus_decl_t tnt_storage_8500[] = {
     MAC_SCSI_BUS("scsi", "Internal fast SCSI", MEDIA_BUS_SCSI, tnt_bays_8500, false),
+    TNT_SCSI_53C94_BUS,
     {0},
 };
 
-// A hard disk in the internal bay; no CD-ROM drive (see above).
+// A hard disk in the internal bay, and the factory CD-ROM drive at ID 3 on
+// the 53C94's bus.
 const storage_device_decl_t tnt_default_storage[] = {
     {.bus = "scsi", .unit = 0, .type = STORAGE_DEV_HD},
+    {.bus = "scsi2", .unit = 3, .type = STORAGE_DEV_CD},
     {0},
 };
 

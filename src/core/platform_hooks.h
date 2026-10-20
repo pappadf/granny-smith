@@ -31,6 +31,12 @@ void platform_machine_attached(void);
 // keeps its delta in the image scratch root, not in the machine directory.
 bool platform_path_is_volatile(const char *path);
 
+// True when the platform's persistent store is what it claims to be: false
+// in a browser whose OPFS could not be opened, where /opfs fell back to
+// memory and nothing written survives the page (files.persistent).  The weak
+// default (headless: the host's own filesystem) answers true.
+bool platform_storage_persistent(void);
+
 // Background auto-checkpoint state.  The wasm platform overrides the weak
 // defaults to read/write its live flag; a platform with no auto-checkpoint
 // loop (headless) reads false and refuses the set (-2, "not supported").

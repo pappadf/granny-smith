@@ -8,7 +8,8 @@ dialogs, the debugger — the rest of the time.
 
 1. **Click the Mac's screen** while the machine is running. The browser
    hides your pointer and the Mac's pointer follows your mouse. The click
-   that captures is not passed on to the Mac.
+   that captures is not passed on to the Mac. Only the main (left) button
+   captures; a right-click opens the browser's menu as elsewhere on the page.
 2. Use the mouse and keyboard as on a real Mac.
 3. **Press Esc** to release them. The browser uses Esc for this, so to
    send Esc to the Mac use the terminal (§4).
@@ -59,8 +60,9 @@ The Lisa keyboard has no Control key. Ctrl is sent as the Apple
 (Command) key instead, so Ctrl-D works as Apple-D — for example to end
 input in Xenix.
 
-The Lisa also has no function keys, backquote (`` ` ``), backslash (`\`),
-or keypad `*`, `+`, `/` and `=`. These keys are left to the browser, so
+Alt is the Lisa's Option key, and backquote (`` ` ``) its `` ` ``/`~` key.
+The Lisa has no function keys, backslash (`\`), or keypad `*`, `+`, `/`
+and `=`. These keys are left to the browser, so
 browser shortcuts on them still work: **F5 reloads the page** and ends the
 session. Save State first if you might press it.
 

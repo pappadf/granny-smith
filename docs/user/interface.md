@@ -13,9 +13,9 @@ From left to right:
 | Control | What it does |
 |---|---|
 | **Run** / **Pause** | Pause the machine, or let it run again. A paused machine keeps its state; the Debug panel can inspect it. |
-| **Shut down** | Turn the machine off and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. |
+| **Shut down** | Turn the machine off for good and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. The machine and its automatic checkpoint are gone, so a reload offers no **Resume**; to keep it, use **Save State** or **Create Checkpoint** first. |
 | **Real · Faster · Max** | The speed mode — see §2. |
-| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 100 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
+| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 50 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
 | **Save State** | Download the whole machine — memory, devices and disks — as one file you can open again later. See [Saving and resuming](saving-and-resuming.md). |
 | Camera, microphone | Shown only on machines with video and sound inputs (the AV Quadras). See [Sound, camera and 3D](sound-and-video.md). |
 | **Appearance** | Choose the look of the emulator (§5). |
@@ -25,6 +25,10 @@ From left to right:
 ![Shut down asks first](images/shutdown-dialog.png)
 
 The speed and zoom controls are active only while a machine is running.
+
+When the toolbar is too narrow for all of them (a phone, or a display
+squeezed by the panel), the controls that do not fit move, from the right,
+into the **More** (**…**) menu at its end; Run and Shut down always stay.
 
 ## 2. Speed modes
 
@@ -40,8 +44,9 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 ## 3. Display
 
 - The Mac's screen is fitted to the display area — as large as fits, up to
-  200 % — until you choose a zoom yourself. A screen larger than the area
-  even at 100 % scrolls; or use full screen.
+  200 %, and below 100 % (down to 50 %) for a screen bigger than the area —
+  until you choose a zoom yourself. A screen larger than the area even at
+  50 % scrolls; or use full screen.
 - **Click the screen** to give the Mac the mouse and keyboard; press
   **Esc** to get them back. See [Mouse and keyboard](mouse-and-keyboard.md).
 - **Drop files** onto the display: a ROM boots a machine (when none is

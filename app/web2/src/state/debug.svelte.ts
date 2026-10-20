@@ -32,6 +32,14 @@ interface DebugState {
    *  (paused → paused, no mode event), so we need a
    *  reactive signal of "PC moved, re-fetch" to trigger refreshes. */
   refreshGen: number;
+  /** Bumped after every breakpoint add or remove, so each surface that
+   *  shows them (the Breakpoints section, the Disassembly markers) lists
+   *  them again. */
+  breakpointsGen: number;
+  /** The model the section layout was last set up for (persisted with it):
+   *  a restore of another model resets the layout, of the same one keeps
+   *  it -- also across a reload (S1018-83). */
+  sectionsModel: string | null;
 }
 
 export const debug: DebugState = $state({
@@ -57,10 +65,16 @@ export const debug: DebugState = $state({
   auxOpen: {},
   registersPrev: {},
   refreshGen: 0,
+  breakpointsGen: 0,
+  sectionsModel: null,
 });
 
 export function bumpDebugRefresh(): void {
   debug.refreshGen++;
+}
+
+export function bumpBreakpoints(): void {
+  debug.breakpointsGen++;
 }
 
 export function toggleSection(name: keyof DebugState['sections']): void {

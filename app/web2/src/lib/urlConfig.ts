@@ -26,7 +26,8 @@
 // - storage=<bus>:<unit>:<type>[,…]: the whole storage list, as the
 //   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`).
 // - startup=<bus>:<unit> (or `none`): the startup device.  Without it, a
-//   storage= boots from its first hard disk, as the core picks.
+//   storage= boots from its first hard disk, as the core picks.  A model
+//   with no startup-device setting (the Plus) leaves it out.
 // - nvram.<variable>=<value>: an Open Firmware variable, as setenv sets it
 //   (`nvram.boot-command=0 bootr`, `nvram.use-nvramrc?=true`).
 //
@@ -40,11 +41,12 @@ import type { ConfigDocument, ConfigOption, MachineProfile, StorageDevice } from
 import * as mc from './machineConfig';
 
 // Names the page reads for something else: the media and boot parameters
-// (bus/urlMedia.ts), the skin, and the component gallery's.  They are never
-// option names; a core option id that collided with one could not be set
-// from a URL (tests/unit/urlConfig.test.ts keeps the trees clear of them).
+// (bus/urlMedia.ts), the audio latency (audio/latency.ts), the skin, and the
+// component gallery's.  They are never option names; a core option id that
+// collided with one could not be set from a URL (tests/unit/urlConfig.test.ts
+// keeps the trees clear of them).
 const PAGE_PARAM =
-  /^(rom|vrom|model|speed|cd|config|skin|gallery|story|variant|motion|view|(fd|hd)\d*)$/;
+  /^(rom|vrom|model|speed|audio_latency|cd|config|skin|gallery|story|variant|motion|view|(fd|hd)\d*)$/;
 
 // The display edits' names.
 const DISPLAY_PARAMS = ['display', 'monitor', 'mode'] as const;
@@ -262,7 +264,12 @@ export function applyUrlConfig(
     const parsed = parseStartup(params.startup);
     if (parsed === undefined)
       warnings.push(`startup=${params.startup}: a startup device is <bus>:<unit>, or none`);
-    else {
+    else if (!profile.storage.some((b) => b.startup)) {
+      // No startup-device setting (the Plus's ROM boots the highest SCSI
+      // ID): nothing to set, and the core would ignore it.
+      if (parsed !== null)
+        warnings.push(`startup=${params.startup}: ${profile.name} has no startup device setting`);
+    } else {
       doc.startup = parsed;
       changed = true;
     }

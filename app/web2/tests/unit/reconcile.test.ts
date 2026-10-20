@@ -5,7 +5,9 @@ import { bridge } from '../helpers/bridgeMock';
 
 vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).emulatorModule());
 
-const { initEmulator, restartEmulator, reconcileUiWithMachine } = await import('@/bus/boot');
+const { initEmulator, restartEmulator, shutdownEmulator, reconcileUiWithMachine } =
+  await import('@/bus/boot');
+const { toasts, _resetForTests: resetToasts } = await import('@/state/toasts.svelte');
 const { maybeOfferBackgroundCheckpoint, resolveResume } = await import('@/bus/checkpoint');
 const { clearProfileCache } = await import('@/bus/profile');
 const { machine } = await import('@/state/machine.svelte');
@@ -19,7 +21,7 @@ const RECONCILE_MARK = 'machine.id';
 // A running SE/30, as the core would answer after a boot or a restore.
 function se30(mode = 'paced'): void {
   bridge.reply('machine.boot', true);
-  bridge.reply('machine.restart', true);
+  bridge.reply('machine.restart', null);
   bridge.reply('machine.id', 'se30');
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
@@ -211,6 +213,15 @@ describe('one post-boot reconciliation, every path', () => {
     expect(debug.sections.registers).toBe(false);
   });
 
+  it('a Resume after a reload keeps the layout saved with its model (S1018-83)', async () => {
+    se30();
+    // As loaded from localStorage on a fresh page: the layout and its model.
+    debug.sections.registers = true;
+    debug.sectionsModel = 'se30';
+    await reconcileUiWithMachine('restore');
+    expect(debug.sections.registers).toBe(true);
+  });
+
   it('a restore sets the run state from the core, from Welcome too (#239)', async () => {
     se30();
     machine.status = 'no-machine';
@@ -234,6 +245,44 @@ describe('one post-boot reconciliation, every path', () => {
     expect(machine.status).toBe('running');
     dispatchCoreEvent(EVT_STATE, '{"event":"mode_ended","mode":1}');
     expect(machine.status).toBe('paused');
+  });
+
+  // Shut down tears the machine down in the core and discards its autosave
+  // (S1018-39, S1018-40): the page then shows no machine, as at a first load.
+  it('a shut down leaves no machine and discards its checkpoint', async () => {
+    se30();
+    await initEmulator(BOOT);
+    machine.status = 'running';
+    images.mounted['/opfs/images/fd/a.img'] = { kind: 'fd', drive: 0 };
+    bridge.reset();
+    bridge.reply('machine.shutdown', true);
+    bridge.reply('checkpoint.clear', true);
+    resetToasts();
+    await shutdownEmulator();
+    expect(bridge.paths()).toEqual(['machine.shutdown', 'checkpoint.clear']);
+    expect(machine.status).toBe('no-machine');
+    expect(machine.model).toBeNull();
+    expect(machine.ram).toBeNull();
+    expect(machine.mmuKind).toBe('none');
+    expect(machine.drives).toEqual({ hd: false, fd: false, cd: false });
+    expect(images.mounted).toEqual({});
+    expect(toasts.active.map((t) => t.msg)).toContain('Machine shut down');
+  });
+
+  it('a refused shut down changes nothing and says why', async () => {
+    se30();
+    await initEmulator(BOOT);
+    machine.status = 'running';
+    bridge.reset();
+    bridge.reply('machine.shutdown', { error: 'machine.shutdown: no machine is running' });
+    resetToasts();
+    await shutdownEmulator();
+    expect(bridge.paths()).toEqual(['machine.shutdown']);
+    expect(machine.status).toBe('running');
+    expect(machine.model).toBe('Macintosh SE/30');
+    expect(toasts.active.map((t) => t.msg)).toContain(
+      'Shut down failed: machine.shutdown: no machine is running',
+    );
   });
 
   it('the resume prompt reconciles after checkpoint.load', async () => {

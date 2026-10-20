@@ -75,9 +75,9 @@ TEST(the_extended_keyboard_block_is_mapped) {
 
 // Every key the old DOM -> COPS table sent a Lisa reaches the same COPS key
 // through DOM -> ADB -> lisa_keycode_for_adb (Control through the retry).
-// Two of its entries were not Lisa keys and are pinned separately below:
-// Backquote sent $68, which is Option (the table had no Alt), and Backslash
-// sent $42, a code the boot ROM's key table does not name.
+// Two of its entries are pinned separately below: Backquote sent $68, the
+// Final US `~ key, as it does again; and Backslash sent $42, a code the boot
+// ROM's key table does not name.
 TEST(every_key_a_lisa_has_survives) {
     static const struct {
         const char *dom;
@@ -162,12 +162,16 @@ TEST(every_key_a_lisa_has_survives) {
     }
 }
 
-TEST(option_comes_from_alt_and_the_lisa_has_no_backquote_or_backslash) {
+// Option is the Final US keyboard's $7C and Backquote its `~ key, $68 -- what
+// MacWorks XL reads them as (lisa_keymap.c, S1018-60).
+TEST(option_comes_from_alt_and_the_lisa_has_no_backslash) {
     host_keys_t keys = {0};
     reset(true);
     ASSERT_TRUE(host_keys_down(&keys, host_keymap_dom_to_adb("AltLeft"), sink));
-    ASSERT_EQ_INT(lisa_keycode_for_adb(delivered[0].adb), 0x68); // Option
-    ASSERT_TRUE(!host_keys_down(&keys, host_keymap_dom_to_adb("Backquote"), sink));
+    ASSERT_EQ_INT(lisa_keycode_for_adb(delivered[0].adb), 0x7C); // Option
+    reset(true);
+    ASSERT_TRUE(host_keys_down(&keys, host_keymap_dom_to_adb("Backquote"), sink));
+    ASSERT_EQ_INT(lisa_keycode_for_adb(delivered[0].adb), 0x68); // `~
     ASSERT_TRUE(!host_keys_down(&keys, host_keymap_dom_to_adb("Backslash"), sink));
 }
 
@@ -228,7 +232,7 @@ int main(void) {
     RUN(dom_codes_map_to_adb_raw_codes);
     RUN(the_extended_keyboard_block_is_mapped);
     RUN(every_key_a_lisa_has_survives);
-    RUN(option_comes_from_alt_and_the_lisa_has_no_backquote_or_backslash);
+    RUN(option_comes_from_alt_and_the_lisa_has_no_backslash);
     RUN(control_is_retried_as_command_where_refused);
     RUN(a_repeat_is_not_a_transition_and_every_down_gets_its_up);
     RUN(a_refused_key_is_not_held);

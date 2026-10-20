@@ -52,6 +52,19 @@ describe('CreateImageDialog', () => {
     expect(cp[1][1]).toBe(true);
   });
 
+  // S1018-29: an 800K drive was offered a 1.4 MB blank, and then started empty.
+  it('offers no 1.4 MB floppy for a drive that reads none', () => {
+    const { container } = render(CreateImageDialog, {
+      open: true,
+      kind: 'fd',
+      highDensity: false,
+      onClose: () => {},
+      onCreated: () => {},
+    });
+    expect(container.querySelector('input[value="800K"]')).not.toBeNull();
+    expect(container.querySelector('input[value="1440K"]')).toBeNull();
+  });
+
   const scsiDisks = [
     {
       label: '20 MB (HD20SC)',

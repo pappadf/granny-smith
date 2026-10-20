@@ -21,7 +21,20 @@
   import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { MEDIA_TYPES } from '@/lib/media';
   import { gsEval } from '@/bus/emulator';
-  import { mountImage, insertFloppy } from '@/bus/media';
+  import { mountImage, insertFloppy, imageInUseUnder } from '@/bus/media';
+  import {
+    CD_DIR,
+    CHECKPOINT_DIR,
+    FDHD_DIR,
+    FD_DIR,
+    HD_DIR,
+    PROMS_DIR,
+    ROMS_DIR,
+    SAVED_CHECKPOINT_DIR,
+    SCRATCH_DIR,
+    UPLOAD_DIR,
+    VROMS_DIR,
+  } from '@/lib/opfsPaths';
   import { showNotification } from '@/state/toasts.svelte';
   import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
@@ -40,6 +53,51 @@
   import { pathIsAncestorOrSelf, pathKey, pathKeyToArray } from '@/lib/treePath';
 
   const DRAG_MIME = 'application/x-gs-tree-path';
+
+  // The folders the app itself keeps things in.  Moving or renaming one
+  // emptied the Images tab (it lists these by path) or left half a copy
+  // behind; deleting one removed a whole store.  Their contents can still be
+  // moved, renamed and deleted.
+  const APP_FOLDERS = new Set([
+    '/opfs/images',
+    ROMS_DIR,
+    VROMS_DIR,
+    PROMS_DIR,
+    FD_DIR,
+    FDHD_DIR,
+    HD_DIR,
+    CD_DIR,
+    CHECKPOINT_DIR,
+    SAVED_CHECKPOINT_DIR,
+    UPLOAD_DIR,
+    SCRATCH_DIR,
+    '/opfs/shared',
+  ]);
+
+  // Whether `paths` may be renamed, moved or deleted (`verb`); when not, the
+  // user is told why.  An app folder is refused, and so is anything that is
+  // or holds an image the running machine is using: the machine keeps
+  // writing to that path, so a change under it made every later
+  // checkpoint, Save State and Resume fail.
+  async function refuseChange(paths: string[], verb: string): Promise<boolean> {
+    const folder = paths.find((p) => APP_FOLDERS.has(p));
+    if (folder) {
+      showNotification(
+        `Can't ${verb} '${folder}': the app keeps its files there. Its contents can be changed.`,
+        'warning',
+      );
+      return true;
+    }
+    const used = await imageInUseUnder(paths);
+    if (used) {
+      showNotification(
+        `Can't ${verb} '${used.split('/').pop()}' while the machine is using it. Eject it first.`,
+        'warning',
+      );
+      return true;
+    }
+    return false;
+  }
 
   // Cache: pathKey → loaded children. Cleared on user-initiated mutations.
   const childrenCache = $state<Record<string, TreeNode[]>>({});
@@ -265,6 +323,16 @@
       // Sources share a parent, so they're uniformly in-image (copy out) or
       // OPFS (move).
       const fromImage = isInImageSpace(sources[0][sources[0].length - 1]);
+      if (
+        !fromImage &&
+        (await refuseChange(
+          sources.map((s) => s[s.length - 1]),
+          'move',
+        ))
+      ) {
+        handleDragEnd();
+        return;
+      }
       const verb = fromImage ? 'Copying' : 'Moving';
       const progress: ProgressFn = (name, i, total) =>
         startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, verb);
@@ -513,7 +581,8 @@
   // cumulative-path key (same as every other mutation), not pathKey([parent]).
   let renameParentKey = '';
 
-  function beginRename(path: string[]) {
+  async function beginRename(path: string[]) {
+    if (await refuseChange([path[path.length - 1]], 'rename')) return;
     renameTarget = path[path.length - 1];
     renameParentKey = pathKey(path.slice(0, -1));
     renameOpen = true;
@@ -544,8 +613,15 @@
   }
 
   // Open the styled confirmation; the actual delete runs on confirm.
-  function doDelete(targets: string[][]) {
+  async function doDelete(targets: string[][]) {
     if (!targets.length) return;
+    if (
+      await refuseChange(
+        targets.map((t) => t[t.length - 1]),
+        'delete',
+      )
+    )
+      return;
     const names = targets.map((t) => t[t.length - 1].split('/').pop() ?? '');
     confirmMessage =
       targets.length === 1
@@ -606,7 +682,7 @@
       showNotification('Only files can be saved', 'warning');
       return;
     }
-    let result: BulkResult;
+    let result: Awaited<ReturnType<typeof downloadFiles>>;
     try {
       result = await downloadFiles(files, (name, i, total) =>
         startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Saving'),
@@ -621,6 +697,16 @@
       showNotification(`Saving '${files[0].split('/').pop()}'`, 'info');
     } else {
       showNotification(`Saving ${files.length} files`, 'info');
+    }
+    // A browser download holds one fork: an application inside an image
+    // came out as an empty file, with nothing said.
+    if (result.forkless.length) {
+      const names =
+        result.forkless.slice(0, 3).join("', '") + (result.forkless.length > 3 ? '…' : '');
+      showNotification(
+        `Saved the data fork only: '${names}' also has a resource fork, which a browser download cannot hold (a 68K application keeps all its code there).`,
+        'warning',
+      );
     }
   }
 </script>

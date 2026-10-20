@@ -70,6 +70,8 @@ void log_foreach_category(void (*fn)(const log_category_t *cat, void *ud), void 
 // Sink invoked for each fully formatted line (including trailing '\n').
 typedef void (*log_sink_fn)(const char *line, void *user);
 void log_set_sink(log_sink_fn fn, void *user); // NULL: only the per-category stdout/file sinks
+// Takes the lines of the categories with stdout on, in place of stdout (NULL: stdout again)
+void log_set_stdout_sink(log_sink_fn fn, void *user);
 
 // Context hooks ---------------------------------------------------------------
 // The logger is a leaf: what it knows about the running machine comes in

@@ -732,6 +732,10 @@
       "instr": 270329784,
       "tolerance": 0.2
     },
+    "suite-tnt/pm7500-76-cd": {
+      "instr": 2500000000,
+      "tolerance": 0.2
+    },
     "suite-tnt/pm7500-76-8bpp-restart": {
       "instr": 5000000000,
       "tolerance": 0.2

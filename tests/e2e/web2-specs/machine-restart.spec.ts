@@ -45,17 +45,24 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   expect(stem0).toBeTruthy();
   expect(file0).toBeTruthy();
 
+  // This boot went straight to the core, which builds the machine without
+  // running it, so the page still shows no machine -- and the Debug
+  // toolbar's Continue/Stop/Restart are disabled with no machine (S1018-76).
+  // Run it, as every page boot path does (bus/boot.ts prepareFreshMachine):
+  // the run-state push puts the page's status at running.
+  await gsCallInPage(page, 'scheduler.run');
+
   // Power-cycle via the Debug toolbar's Restart button — the UI path that
   // routes through bus/debug.ts restart() → machine.restart.
   await page.locator('button.ptab[data-tab="debug"]').click();
-  await page.getByRole('button', { name: 'Restart' }).click();
-  // Restart asks first while the page shows the machine running or paused
-  // (#242); this boot went straight to the core, so it may not -- answer
-  // the question if it comes.
+  const restart = page.getByRole('button', { name: 'Restart' });
+  await expect(restart).toBeEnabled({ timeout: 30_000 });
+  await restart.click();
+  // Restart asks first while the machine runs (#242).
   const confirm = page.getByRole('dialog').getByRole('button', { name: 'Restart' });
+  await expect(confirm).toBeVisible({ timeout: 60_000 });
+  await confirm.click();
   const restarted = page.locator('.toast .msg').filter({ hasText: 'Machine restarted' });
-  await expect(confirm.or(restarted).first()).toBeVisible({ timeout: 60_000 });
-  if (await confirm.isVisible()) await confirm.click();
   await expect(restarted).toBeVisible({ timeout: 60_000 });
 
   // The HD survived the power-cycle as the SAME open instance.

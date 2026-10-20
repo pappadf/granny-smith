@@ -15,9 +15,16 @@ describe('fitZoom', () => {
     expect(machine.zoom).toBe(200);
   });
 
-  it('never goes below 100 % (a larger screen scrolls)', () => {
-    fitZoom(1152, 870, 1, 800, 500);
-    expect(machine.zoom).toBe(100);
+  it('shrinks a large screen below 100 % to fit (a 21-inch 1152x870)', () => {
+    fitZoom(1152, 870, 1, 1360, 504);
+    expect(machine.zoom).toBe(50);
+    fitZoom(1152, 870, 1, 1360, 796);
+    expect(machine.zoom).toBe(90);
+  });
+
+  it('never goes below 50 % (a larger screen scrolls)', () => {
+    fitZoom(1152, 870, 1, 300, 200);
+    expect(machine.zoom).toBe(50);
   });
 
   it('counts tall pixels (the Lisa: 1.5)', () => {
@@ -29,5 +36,12 @@ describe('fitZoom', () => {
     setZoom(170);
     fitZoom(640, 480, 1, 1380, 560);
     expect(machine.zoom).toBe(170);
+  });
+
+  it('lets the user zoom down to 50 % and no further', () => {
+    setZoom(60);
+    expect(machine.zoom).toBe(60);
+    setZoom(40);
+    expect(machine.zoom).toBe(50);
   });
 });

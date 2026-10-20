@@ -118,6 +118,12 @@ void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *paci
 // Destroy an emulator instance: call machine teardown and free all resources.
 void system_destroy(config_t *config);
 
+// Shut the active machine down: stop it, take it out of the active slot and
+// destroy it, so no machine is left (machine.created is false) until the
+// next machine.boot or checkpoint.load.  Emits the machine_shut_down event.
+// False when no machine is active.
+bool system_shut_down(void);
+
 // Pulse the machine's vertical-blanking line: the scheduler's per-frame tick,
 // dispatched to the substrate's trigger_vbl (defined in machines/machine.c).
 void trigger_vbl(config_t *restrict config);

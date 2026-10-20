@@ -27,15 +27,22 @@ vi.mock('@/bus/media', () => ({
   mountImage: vi.fn(),
   machineDevices: async () => [],
   deviceLabel: () => '',
+  imageInUseUnder: async (paths: string[]) => paths.find((p) => images.mounted[p]) ?? null,
 }));
 
 import ImageCategorySection from '@/components/panel-views/images/ImageCategorySection.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { images } from '@/state/images.svelte';
+import { dialogs } from '@/state/dialogs.svelte';
+import { toasts, _resetForTests as resetToasts } from '@/state/toasts.svelte';
+import { machine } from '@/state/machine.svelte';
+import { ejectMedia } from '@/bus/media';
 
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
+  dialogs.current = null;
+  resetToasts();
   images.mounted = {};
   drives.count = 2;
   drives.present = [false, false];
@@ -96,5 +103,75 @@ describe('ImageCategorySection — floppy drive choice', () => {
     const items = labelsOf(await menuFor('Disk_Tools.dsk'));
     expect(items).toContain('Insert');
     expect(items.some((l) => l.startsWith('Insert into drive'))).toBe(false);
+  });
+});
+
+describe('ImageCategorySection — rename and delete', () => {
+  const click = (items: HTMLElement[], label: string) =>
+    fireEvent.click(items.find((e) => e.textContent?.trim() === label)!);
+
+  // S1018-02: a rename or delete under a running machine made every later
+  // checkpoint, Save State and Resume fail.
+  it.each(['Rename', 'Delete'])('refuses %s of a mounted image', async (label) => {
+    images.mounted['/opfs/images/fd/Disk_Tools.dsk'] = { kind: 'fd', bus: 'floppy', drive: 0 };
+    await click(await menuFor('Disk_Tools.dsk'), label);
+    await waitFor(() =>
+      expect(toasts.active.some((t) => /while the machine is using it/.test(t.msg))).toBe(true),
+    );
+    expect(dialogs.current).toBeNull();
+  });
+
+  // S1018-70: a name another image has is refused under the field.
+  it('refuses a name another image already has', async () => {
+    await click(await menuFor('Disk_Tools.dsk'), 'Rename');
+    await waitFor(() => expect(dialogs.current?.kind).toBe('text'));
+    const q = dialogs.current as { validate: (v: string) => string };
+    expect(q.validate('System_7.0_Install.dsk')).toMatch(/already exists/);
+    expect(q.validate('Disk_Tools.dsk')).toBe('');
+    expect(q.validate('fresh.dsk')).toBe('');
+  });
+});
+
+// S1018-03: Eject of a floppy the Mac is using lost its unsaved writes
+// without a word.  It asks first, and ejects only when confirmed.
+describe('ImageCategorySection — eject of a floppy in use', () => {
+  const where = { kind: 'fd', bus: 'floppy', drive: 0 } as const;
+  beforeEach(() => {
+    images.mounted['/opfs/images/fd/Disk_Tools.dsk'] = where;
+    vi.mocked(ejectMedia).mockReset();
+    vi.mocked(ejectMedia).mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof ejectMedia>>);
+  });
+  const eject = async () =>
+    fireEvent.click(
+      (await menuFor('Disk_Tools.dsk')).find((e) => e.textContent?.trim() === 'Eject')!,
+    );
+
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])('asks first, warning of lost writes (confirmed: %s)', async (answer, ejects) => {
+    machine.status = 'running';
+    try {
+      await eject();
+      await waitFor(() => expect(dialogs.current?.kind).toBe('confirm'));
+      const q = dialogs.current as { message: string; resolve: (ok: boolean) => void };
+      expect(q.message).toMatch(/not yet written to it is lost/);
+      expect(ejectMedia).not.toHaveBeenCalled();
+      dialogs.current = null;
+      q.resolve(answer);
+      await waitFor(() => expect(ejectMedia).toHaveBeenCalledTimes(ejects));
+      if (!answer) await new Promise((r) => setTimeout(r, 0));
+      expect(ejectMedia).toHaveBeenCalledTimes(ejects);
+      expect(images.mounted['/opfs/images/fd/Disk_Tools.dsk'] ? 0 : 1).toBe(ejects);
+    } finally {
+      machine.status = 'no-machine';
+    }
+  });
+
+  it('ejects without asking when no machine is running', async () => {
+    machine.status = 'no-machine';
+    await eject();
+    await waitFor(() => expect(ejectMedia).toHaveBeenCalledWith(where));
+    expect(dialogs.current).toBeNull();
   });
 });

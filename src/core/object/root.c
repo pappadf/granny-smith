@@ -187,7 +187,8 @@ static DEF_METHOD(method_root_quit) {
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
 // detour. Its one declared slot is an any-kind rest, so it takes any
-// number of arguments (up to OBJ_VALIDATE_MAX_ARGS). Returns true.
+// number of arguments (up to OBJ_VALIDATE_MAX_ARGS). Returns nothing: the
+// printed line is the whole answer.
 static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
@@ -217,7 +218,7 @@ static DEF_METHOD(method_root_echo) {
         }
     }
     out_putc('\n');
-    return val_bool(true);
+    return val_none();
 }
 
 static const arg_decl_t root_path_args[] = {
@@ -268,7 +269,7 @@ static const member_t emu_root_members[] = {
     {.kind = MK_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = root_echo_args, .nargs = 1, .result = VK_BOOL, .fn = method_root_echo}      },
+     .method = {.args = root_echo_args, .nargs = 1, .result = VK_NONE, .fn = method_root_echo}      },
 };
 
 static const class_desc_t emu_root_class = {

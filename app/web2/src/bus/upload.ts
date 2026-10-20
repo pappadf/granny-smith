@@ -35,7 +35,8 @@
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
 // through the worker (files.mv/files.rm).
 
-import { gsEval, gsErrorText, isModuleReady, whenModuleReady } from './emulator';
+import { gsEval, gsErrorText, gsOk, isModuleReady, whenModuleReady } from './emulator';
+import { routePrintLine } from './logSink';
 import { xferChunkBytes, xferReadAll, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -49,12 +50,13 @@ import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
   identifyRom,
+  validateUnstated,
   type MediaTypeId,
   type MediaTypeDescriptor,
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
-import { opfsSafeName } from './fsOps';
-import { importImage, isQcow2File, type DiskCategory } from './importImage';
+import { opfsSafeName, adSidecarPath } from './fsOps';
+import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -221,7 +223,7 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
         (await fileHasCheckpointSignature(file))
           ? {
               stored: false,
-              reason: 'is a checkpoint: drop a checkpoint on its own',
+              reason: 'is a checkpoint: load a checkpoint on its own',
               severity: 'error',
             }
           : await acceptOne(file, !single),
@@ -234,6 +236,11 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
   if (!single) {
     const { msg, severity } = dropSummary(names, outcomes);
     showNotification(msg, severity);
+    // The one-line toast cuts the reasons off after the first: each file
+    // that was not stored, and why, goes to the terminal too.
+    outcomes.forEach((o, i) => {
+      if (!o.stored) routePrintLine(`upload: '${names[i]}' ${o.reason}`);
+    });
   } else if (!outcomes[0].stored && !outcomes[0].told) {
     showNotification(`'${names[0]}' ${outcomes[0].reason}`, outcomes[0].severity);
   }
@@ -251,11 +258,12 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
   // A large file is a disk image (or an archive holding one): streamed into
   // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
   // there; it falls through to the staged flow below.  A QCOW2 image of any
-  // size is converted there too.
-  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file))) {
+  // size is converted there too, and a gzip of any size unpacked.
+  if (file.size > LARGE_IMPORT_BYTES || (await isQcow2File(file)) || (await isGzipFile(file))) {
     let small = null as FileOutcome | null;
     const out = await importImage({ kind: 'blob', blob: file }, file.name, {
       categories: ['cdrom', 'hd'],
+      unstated: true,
       onSmall: async (path, name) => {
         small = await probeStaged(path, name, quiet);
         return small.stored ? small.path : null;
@@ -285,15 +293,40 @@ async function actOnStored(
   autoBootOnRom: boolean,
 ): Promise<void> {
   const roms = stored.filter((s) => s.category === 'rom');
-  if (autoBootOnRom && roms.length === 1) await maybeBootFromRom(roms[0].path);
+  // A machine this drop just booted takes its disks, though its run state
+  // may not have reached the page yet.
+  let booted = false;
+  if (autoBootOnRom && roms.length === 1) booted = await maybeBootFromRom(roms[0].path);
   else if (autoBootOnRom && roms.length > 1)
     showNotification(`Not booting: the drop holds ${roms.length} ROMs`, 'info');
   const mounted = new Set<MediaTypeId>();
   for (const s of stored) {
     if (s.category === 'rom' || mounted.has(s.category)) continue;
     mounted.add(s.category);
-    await autoMountIfEmpty(s.path, s.category);
+    await autoMountIfEmpty(s.path, s.category, booted);
   }
+}
+
+// Several files dropped on one Images section: each is stored as that
+// category (acceptFilesAsCategory), a Lisa ROM's two chips as one ROM, and
+// only the first stored goes into the machine.  A drop used to store the
+// first file and ignore the rest without a word.  True when any was stored.
+export async function acceptFilesIntoCategory(
+  files: File[],
+  category: MediaTypeId,
+): Promise<boolean> {
+  let stored = false;
+  for (let i = 0; i < files.length;) {
+    const pair =
+      category === 'rom' &&
+      files[i].size === LISA_CHIP_BYTES &&
+      files[i + 1]?.size === LISA_CHIP_BYTES;
+    const take = files.slice(i, i + (pair ? 2 : 1));
+    i += take.length;
+    if ((await acceptFilesAsCategory(take, category, { autoMount: !stored })) !== null)
+      stored = true;
+  }
+  return stored;
 }
 
 // Category-strict entry — used by the New Machine dialog dropdowns and
@@ -389,15 +422,18 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
         endActivity();
       }
     }
-    const safe = sanitizeName(file.name) || 'file.bin';
+    // Only what OPFS cannot hold is replaced (a ':' or '/'); spaces and
+    // accented letters are kept, and a changed name is said.
+    const safe = opfsSafeName(file.name);
     const finalPath = `${targetDir}/${safe}`;
     startActivity(file.name);
     try {
       // Write straight to the chosen folder on the worker (Safari-safe, coherent
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
       const ok = await streamToOpfs(finalPath, file);
+      const as = safe === file.name ? '' : ` as '${safe}'`;
       showNotification(
-        ok ? `'${file.name}' saved to ${targetDir}` : `Could not load ${file.name}`,
+        ok ? `'${file.name}' saved to ${targetDir}${as}` : `Could not load ${file.name}`,
         ok ? 'info' : 'error',
       );
     } finally {
@@ -428,17 +464,21 @@ async function importDiskFile(
 // ROM uses maybeBootFromRom instead (full cold boot); HD / VROM stay
 // on disk until explicitly mounted from the Images tab. Toast on the
 // outcome either way.
-async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
-  // With no machine running, a refusal is not news: the image is stored and
-  // that is all (it used to warn "this machine has no floppy drive").
-  const quietRefusal = machine.status !== 'running' && machine.status !== 'paused';
+async function autoMountIfEmpty(
+  persistedPath: string,
+  category: MediaTypeId,
+  justBooted = false,
+): Promise<void> {
+  // With no machine running, the image is stored and that is all (after a
+  // Shut down the core has no machine, and no drive to insert it into).
+  if (!justBooted && machine.status !== 'running' && machine.status !== 'paused') return;
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
     const r = await insertFloppy(persistedPath, true);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
-    } else if (!quietRefusal) {
+    } else {
       showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
     return;
@@ -450,7 +490,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
-    } else if (!quietRefusal) {
+    } else {
       showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
@@ -480,7 +520,9 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
 //   vrom   — catalog.vroms.identify: Format-Block CRC against the catalog
 //   prom   — $55AA + a reachable PCIR + Open Firmware code type
 //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
-//   cdrom  — ISO 9660 / HFS / APM signature inside the file
+//   cdrom  — ISO 9660 inside the file (validateUnstated: a bare HFS or
+//            partitioned image is a hard disk; only the CD-ROM section's own
+//            Add takes one as a disc)
 //   hd     — permissive fallback
 //
 // vrom and prom cannot claim each other's files even though both are
@@ -507,7 +549,7 @@ async function probeAs(
       if (chip) return { stored: false, reason: loneChipReason(chip), severity: 'error' };
     }
     const descriptor = MEDIA_TYPES[id];
-    const result = await descriptor.validate(path, gsEval);
+    const result = await validateUnstated(id, path, gsEval);
     // This IS that kind of file, refused: say why and stop, rather than
     // letting the permissive hd probe store it as a disk image.
     if (result.reject) return { stored: false, reason: result.reject, severity: 'error' };
@@ -570,17 +612,21 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
   return null;
 }
 
-// Where to store `name` in `dir`: its own name when nothing is there or the
-// file there is byte-identical to `source`, else the first "name N.ext"
-// free.
-async function freeStorePath(dir: string, name: string, source: string): Promise<string> {
+// Where to store `name` in `dir`: its own name when nothing is there, the
+// file there when it is byte-identical to `source` (`same`: it is stored
+// already), else the first "name N.ext" free.
+async function freeStorePath(
+  dir: string,
+  name: string,
+  source: string,
+): Promise<{ path: string; same: boolean }> {
   const dot = name.lastIndexOf('.');
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : '';
   for (let n = 1; ; n++) {
     const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
-    if ((await gsEval('files.path_exists', [path])) !== true) return path;
-    if ((await gsEval('files.path_compare', [source, path])) === -1) return path;
+    if ((await gsEval('files.path_exists', [path])) !== true) return { path, same: false };
+    if ((await gsEval('files.path_compare', [source, path])) === -1) return { path, same: true };
   }
 }
 
@@ -644,14 +690,29 @@ async function persist(
   // place and this one is stored beside it ("name 2.ext"), so two media of
   // one name -- two floppies of a URL, two uploads -- never overwrite each
   // other.
-  const finalPath = await freeStorePath(targetDir, finalName, sourcePath);
-  // Moved, not copied, so storing never holds the file twice.
-  const exists = (await gsEval('files.path_exists', [finalPath])) === true;
-  const verb = exists || inArchive ? 'files.cp' : 'files.mv';
-  const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;
-  if (!ok) {
-    if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
-    return null;
+  const { path: finalPath, same } = await freeStorePath(targetDir, finalName, sourcePath);
+  // The same file stored already is left as it is: copying over it failed
+  // ("could not be stored") when a drive had it open.  Anything else is
+  // moved, not copied, so storing never holds the file twice.
+  if (!same) {
+    // files.mv answers nothing on success, files.cp true: gsOk covers both
+    const ok = gsOk(await gsEval(inArchive ? 'files.cp' : 'files.mv', [sourcePath, finalPath]));
+    if (!ok) {
+      if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
+      return null;
+    }
+    // A member copied out of a Mac archive brings its resource fork and
+    // Finder info along as an AppleDouble "._" sidecar (files.cp).  Only a
+    // disk image can need one (an NDIF's block map is in its resource fork);
+    // beside a ROM or a floppy it is no medium, and is not kept (S1018-51).
+    const sidecar = adSidecarPath(finalPath);
+    if (
+      inArchive &&
+      descriptor.id !== 'hd' &&
+      descriptor.id !== 'cdrom' &&
+      (await gsEval('files.path_exists', [sidecar])) === true
+    )
+      await gsEval('files.rm', [sidecar]);
   }
   if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.
@@ -854,11 +915,11 @@ async function storeLisaChips(
 // If the user dropped a ROM and no machine is running yet, boot a default
 // configuration so they go straight to a usable Mac without going through
 // the Configuration slide. Picks the first compatible model from the ROM
-// info; the user can switch later.
-async function maybeBootFromRom(romPath: string): Promise<void> {
-  if (machine.status === 'running' || machine.status === 'paused') return;
+// info; the user can switch later.  True when it booted one.
+async function maybeBootFromRom(romPath: string): Promise<boolean> {
+  if (machine.status === 'running' || machine.status === 'paused') return false;
   const info = await identifyRom(gsEval, romPath);
-  if (!info || !info.compatible.length) return;
+  if (!info || !info.compatible.length) return false;
   const model = info.compatible[0];
   // One boot document — the core validates, installs the ROM itself and
   // boots the model's own default RAM.  A rejected document leaves the
@@ -867,13 +928,15 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   const booted = await gsEval('machine.boot', { model, rom: romPath });
   if (booted !== true) {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
-    return;
+    return false;
   }
   clearMounts();
   await reconcileUiWithMachine('boot');
   await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
-  showNotification(`Booted ${model} from the loaded ROM`, 'info');
+  // By the machine's name (reconciled above), not its model id ("iisi").
+  showNotification(`Booted ${machine.model ?? model} from the loaded ROM`, 'info');
+  return true;
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {

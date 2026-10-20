@@ -27,7 +27,7 @@ describe('URL configuration parameters', () => {
   it('media and page parameters are not configuration edits', () => {
     const p = parseUrlMediaParams(
       new URLSearchParams(
-        'rom=/r&HD0=/h&fd1=/f&model=iix&speed=turbo&skin=x&config=e30&addressing=32',
+        'rom=/r&HD0=/h&fd1=/f&model=iix&speed=turbo&audio_latency=80&skin=x&config=e30&addressing=32',
       ),
     );
     expect(p.settings.options).toEqual([{ id: 'addressing', value: '32', name: 'addressing' }]);
@@ -134,6 +134,15 @@ describe('URL configuration parameters', () => {
       startup: { bus: 'scsi', unit: 1 },
     });
     expect((apply('pmg3dt', 'startup=none').config as { startup: unknown }).startup).toBeNull();
+  });
+
+  // S1018-56: the Plus's ROM boots the highest SCSI ID; it has no setting.
+  it('startup= on a model with no startup device setting is reported and left out', () => {
+    expect(apply('plus', 'startup=scsi:0')).toEqual({
+      config: null,
+      warnings: ['startup=scsi:0: Macintosh Plus has no startup device setting'],
+    });
+    expect(apply('plus', 'startup=none')).toEqual({ config: null, warnings: [] });
   });
 
   it('a storage= the model cannot take is reported and left out', () => {

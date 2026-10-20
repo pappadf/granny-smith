@@ -5,9 +5,10 @@
 // Parameter names are case-insensitive (`ROM=`, `HD0=`); `hd` / `fd` mean the
 // first bay / drive.  A value is fetched as given; it may continue through a
 // container (`…/roms.zip/Mac%20IIci.ROM`) — see lib/mediaUrl.ts for the
-// addressing rules.  What a file is stored and shown as comes from its slot
-// and the time it was fetched (state/urlBoot urlMediaName), never from the
-// URL; a ROM is stored under its own content id.
+// addressing rules.  What a file is stored and shown as is the file's name
+// from the URL, or, when the URL names none, its slot and the time it was
+// fetched (lib/mediaUrl urlMediaFileName); a ROM is stored under its own
+// content id.
 //
 // Each parameter value is fetched, one at a time (relative paths resolve
 // against the page origin), streamed to a scratch file of its own
@@ -55,7 +56,7 @@ import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { routePrintLine } from './logSink';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import type { SchedulerMode } from '@/state/machine.svelte';
+import { machine, type SchedulerMode } from '@/state/machine.svelte';
 import {
   urlBoot,
   queueUrlFile,
@@ -65,7 +66,7 @@ import {
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted, clearMounts } from '@/state/images.svelte';
-import { unzipAll } from '@/lib/archive';
+import { unzipAll, type UnzippedFile } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -111,7 +112,8 @@ import {
   insertFloppy,
   type MediaResult,
 } from './media';
-import { importImage, type DiskCategory, type ImportSource } from './importImage';
+import { importImage, storedDmgName, type DiskCategory, type ImportSource } from './importImage';
+import { decompressor } from '@/lib/zipStream';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -223,13 +225,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // in parallel, every large image was in flight at once.
   const paths = new Map<string, string | undefined>();
   if (params.rom) {
-    queueUrlFile('rom');
-    if (params.romPair) queueUrlFile('rom2');
+    queueUrlFile('rom', params.rom);
+    if (params.romPair) queueUrlFile('rom2', params.romPair);
   }
-  if (params.vrom) queueUrlFile('vrom');
-  for (const fd of params.floppies) queueUrlFile(fd.slot);
-  for (const hd of params.hardDisks) queueUrlFile(hd.slot);
-  if (params.cd) queueUrlFile('cd');
+  if (params.vrom) queueUrlFile('vrom', params.vrom);
+  for (const fd of params.floppies) queueUrlFile(fd.slot, fd.url);
+  for (const hd of params.hardDisks) queueUrlFile(hd.slot, hd.url);
+  if (params.cd) queueUrlFile('cd', params.cd);
   // A blank disk is listed under the name it will have (its extension is
   // the bus's, known once the model is).
   const hash = blankUrlHash(urlMediaEntries(params));
@@ -269,8 +271,22 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   if (!params.rom) {
     // Without a ROM there's no machine to boot; insert floppies into the
-    // existing machine if one is running (matches url-media.js:230-237).
-    await insertUrlFloppies(params, paths);
+    // existing machine if one is running (a resumed one included).  Whatever
+    // does not go in is stored only, and said so: it used to be dropped
+    // without a word, or reported as a drive the absent machine lacked.
+    const live = machine.status === 'running' || machine.status === 'paused';
+    if (live) await insertUrlFloppies(params, paths);
+    const unused = [...paths]
+      .filter(([slot, p]) => p && !(live && slot.startsWith('fd')))
+      .map(([slot]) => slot);
+    if (unused.length)
+      showNotification(
+        `${unused.join(', ')}: stored in Images, not attached: ` +
+          (live
+            ? 'a link without rom= only inserts floppies into the running machine'
+            : 'no machine is running, and a link without rom= boots none'),
+        'warning',
+      );
     return false;
   }
 
@@ -365,6 +381,12 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
     const dev = configured?.[n];
+    // A position the model does not have, said as fd1= says it (the core's
+    // refusal names its 0-based shell argument).
+    if (!dev && !ownStorage && profile && !hardDiskBus(profile, n)) {
+      notAttached(hd.slot, `this machine has no hard disk ${n + 1}`);
+      continue;
+    }
     report(
       hd.slot,
       p,
@@ -526,7 +548,7 @@ async function insertUrlFloppies(
     if (!p) continue;
     const n = parseInt(fd.slot.replace('fd', ''), 10);
     if (n >= drives) {
-      showNotification(`${fd.slot}: this machine has no floppy drive ${n + 1}`, 'error');
+      notAttached(fd.slot, `this machine has no floppy drive ${n + 1}`);
       continue;
     }
     report(fd.slot, p, await insertFloppy(p, true, n));
@@ -536,7 +558,15 @@ async function insertUrlFloppies(
 // Record where a URL medium went, or say that it did not go in.
 function report(slot: string, path: string, r: MediaResult): void {
   if (r.ok) setMounted(path, r.mount);
-  else showNotification(`${slot}: not attached: ${r.reason}`, 'error');
+  else notAttached(slot, r.reason);
+}
+
+// A URL medium that was had but could not go in: its row is marked failed,
+// so a URL boot's closing message names it with the media it went without;
+// outside a URL boot, a toast says so.
+function notAttached(slot: string, why: string): void {
+  updateUrlFile(slot, { status: 'failed', error: why });
+  if (!urlBoot.requested) showNotification(`${slot}: not attached: ${why}`, 'error');
 }
 
 // An image of `category` an earlier download of `url` stored: one whose
@@ -560,10 +590,12 @@ async function storedFromUrl(
   for (const e of entries as { name?: unknown; kind?: unknown }[]) {
     if (typeof e?.name !== 'string' || e.kind === 'directory' || !/\.dmg$/i.test(e.name)) continue;
     const path = `${dir}/${e.name}`;
-    const info = (await gsEval('files.udif_info', [path])) as { origin?: unknown } | null;
+    const info = (await gsEval('files.udif_info', [path])) as {
+      origin?: unknown;
+      bytes?: unknown;
+    } | null;
     if (!info || typeof info !== 'object' || info.origin !== origin) continue;
-    const size = await gsEval('files.path_size', [path]);
-    const bytes = typeof size === 'number' ? size : 0;
+    const bytes = typeof info.bytes === 'number' ? info.bytes : 0;
     updateUrlFile(slot, {
       name: e.name,
       status: 'done',
@@ -652,7 +684,7 @@ async function storeCompact(
       if (before) updateUrlFile(slot, { status: before });
       return false;
     }
-    const name = `${staged.name}.dmg`;
+    const name = storedDmgName(staged.name);
     const stored = await persistAs(part, name, category);
     if (stored.ok) {
       updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name, status: 'done' });
@@ -697,7 +729,7 @@ async function fetchAndImport(
     updateUrlFile(slot, { status: 'failed', error: msg });
     return undefined;
   }
-  const storeAs = urlMediaNameFor(slot);
+  const storeAs = urlMediaNameFor(slot, url);
   updateUrlFile(slot, { name: storeAs, status: 'downloading' });
   let res: Response;
   try {
@@ -764,8 +796,20 @@ async function fetchAndImport(
       `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
       'info',
     );
-  updateUrlFile(slot, { name, status: 'done' });
+  // The row's size is the disk's: what was received is the compressed
+  // download, and only as of the last progress report (S1018-48).
+  const disk = await diskBytes(out.path);
+  updateUrlFile(slot, { name, status: 'done', ...(disk ? { received: disk, total: disk } : {}) });
   return out.path;
+}
+
+// The size of the disk a stored image holds: a UDIF's disk, not its
+// compressed file; null when unknown.
+async function diskBytes(path: string): Promise<number | null> {
+  const info = (await gsEval('files.udif_info', [path])) as { bytes?: unknown } | null;
+  if (info && typeof info === 'object' && typeof info.bytes === 'number') return info.bytes;
+  const size = await gsEval('files.path_size', [path]);
+  return typeof size === 'number' ? size : null;
 }
 
 // Fetch the two chips of a ROM dumped as byte-wide halves, and store them
@@ -834,7 +878,7 @@ async function fetchAndStage(
     if (downloaded) await discardStaging(downloaded);
     return null;
   }
-  const storeAs = urlMediaNameFor(slot);
+  const storeAs = urlMediaNameFor(slot, url);
   updateUrlFile(slot, { name: storeAs, status: downloaded ? 'unpacking' : 'downloading' });
   const staged = downloaded ?? scratchPath(`url_${slot}`);
   let handedOver = false;
@@ -868,10 +912,23 @@ async function fetchAndStage(
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
       if (!(await extractMember(slot, staged, plan))) return null;
-    } else if (archive === 'zip' || /zip/i.test(ct)) {
+    } else if (archive === 'gz' || (!archive && /gzip/i.test(ct))) {
+      // A gzip body: what it holds (a floppy, a ROM).  Not a zip, though its
+      // Content-Type ("application/gzip") says "zip" too.
+      updateUrlFile(slot, { status: 'unpacking' });
+      const gz = await xferReadAll(staged);
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(gz);
+          c.close();
+        },
+      }).pipeThrough(decompressor('gzip'));
+      await discardStaging(staged);
+      if (!(await streamToOpfs(staged, body))) return null;
+    } else if (archive === 'zip' || /\bzip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
-      const first = (await unzipAll(await xferReadAll(staged)))[0];
+      const first = (await unzipStaged(staged, plan.fileName))[0];
       if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
     } else if (archive) {
@@ -918,7 +975,9 @@ function progressReporter(slot: string): (bytes: number) => void {
 async function extractMember(slot: string, staged: string, plan: MediaFetchPlan): Promise<boolean> {
   const member = plan.member ?? '';
   if (plan.container === 'zip') {
-    const entries = (await unzipAll(await xferReadAll(staged))).filter((f) => f.name);
+    const entries = (await unzipStaged(staged, plan.containerName ?? plan.fileName)).filter(
+      (f) => f.name,
+    );
     const hit = findMember(
       entries.map((f) => f.name),
       member,
@@ -932,6 +991,18 @@ async function extractMember(slot: string, staged: string, plan: MediaFetchPlan)
     return !!data && (await streamToOpfs(staged, data));
   }
   return unpackMacArchive(slot, staged, member, plan);
+}
+
+// The files of the zip staged at `staged` (named `name`), or a MediaUrlError
+// saying it is not one: jszip's own message ("Can't find end of central
+// directory : is this a zip file ?" and a link to its documentation) reached
+// the user as it was.
+async function unzipStaged(staged: string, name: string): Promise<UnzippedFile[]> {
+  try {
+    return await unzipAll(await xferReadAll(staged));
+  } catch {
+    throw new MediaUrlError(`${name} is not a zip archive this page can read`);
+  }
 }
 
 // Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,

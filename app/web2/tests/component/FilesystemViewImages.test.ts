@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
 const { gsEvalMock, mediaMock, core } = vi.hoisted(() => ({
   gsEvalMock: vi.fn(),
-  core: { machineCreated: false },
+  core: { machineCreated: false, inUse: null as string | null },
   mediaMock: {
     insertFloppy: vi.fn(),
     mountImage: vi.fn(),
@@ -28,6 +28,7 @@ vi.mock('@/bus/emulator', () => ({
 vi.mock('@/bus/media', () => ({
   insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
   mountImage: (...a: unknown[]) => mediaMock.mountImage(...a),
+  imageInUseUnder: async () => core.inUse,
 }));
 
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
@@ -36,6 +37,7 @@ import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { makeDataTransfer, labels, rowFor } from '../helpers/fsTree';
+import { toasts, _resetForTests as resetToasts } from '@/state/toasts.svelte';
 
 // Backend whose /opfs root holds a disk image, a plain file, and a target
 // folder. Tracks readFile / delete / move so the download and drag tests can
@@ -98,6 +100,7 @@ beforeEach(() => {
   (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   core.machineCreated = false;
+  core.inUse = null;
   for (const m of Object.values(mediaMock)) {
     m.mockReset();
     m.mockResolvedValue({ ok: true, mount: { kind: 'fd', bus: 'floppy', drive: 0 } });
@@ -274,6 +277,31 @@ describe('FilesystemView — disk-image descent', () => {
     });
   });
 
+  // S1018-34: an application came out as a 0-byte file with nothing said.
+  // (The mock answers every in-image path_size, the resource fork's too.)
+  it('says when a download leaves out a resource fork, and removes its sidecar', async () => {
+    resetToasts();
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+    await fireEvent.contextMenu(rowFor(container, 'Read Me'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Save to computer…',
+    ) as HTMLElement;
+    await fireEvent.click(download);
+    await waitFor(() =>
+      expect(
+        toasts.active.some((t) => /data fork only: 'Read Me' also has a resource fork/.test(t.msg)),
+      ).toBe(true),
+    );
+    expect(backend.deleteCalls.some((p) => /\/\._[^/]*Read_Me$/.test(p))).toBe(true);
+  });
+
   it('downloads a plain OPFS file by reading it directly (no files.cp)', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
@@ -412,6 +440,34 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
     await fireEvent.dragOver(rowFor(container, 'extracted'), { dataTransfer: dt });
     expect(dt.dropEffect).toBe('move');
+  });
+
+  // S1018-02: moving or deleting an image the machine is using left it
+  // writing to a vanished path, and every later checkpoint failed.
+  it('refuses to move or delete an image the machine is using', async () => {
+    resetToasts();
+    core.inUse = '/opfs/notes.txt';
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('notes.txt'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+    await waitFor(() =>
+      expect(toasts.active.some((t) => /while the machine is using it/.test(t.msg))).toBe(true),
+    );
+    expect(backend.moveCalls).toEqual([]);
+
+    await fireEvent.contextMenu(rowFor(container, 'notes.txt'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const del = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Delete',
+    ) as HTMLElement;
+    await fireEvent.click(del);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.body.textContent).not.toContain("This can't be undone");
+    expect(backend.deleteCalls).toEqual([]);
   });
 });
 

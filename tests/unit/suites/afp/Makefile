@@ -8,6 +8,9 @@ EXTRA_CFLAGS := -DAFP_MAX_ENUM_ENTRIES=1023u -DAFP_VOL_ID_MAX=16u
 # The AFP server plus the four persistence/state modules it sits on. The
 # transport (appletalk.c) is stubbed in stub_atalk.c so the suite can drive
 # afp_handle_command() directly, with no guest and no wire.
+# rename() goes through stub_atalk.c, which can refuse directories as
+# the browser's OPFS backend does.
+EXTRA_LDFLAGS := -Wl,--wrap=rename
 EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_volume.c \
               ../../../../src/core/network/afp_params.c \

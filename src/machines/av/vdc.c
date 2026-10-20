@@ -538,6 +538,11 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
         object_attach(machine_object(), vdc->object);
     }
 
+    // Say where the capture clock stands: a restore brings it back running
+    // without a gate transition, and a page reloaded since (or one that ran
+    // another machine) would otherwise keep the wrong camera state.
+    platform_video_in_state(vdc->clock_on);
+
     LOG(1, "VDC init (SAA7191B + SAA7186, source %s)", vdc_src_name(vdc->src_mode));
     return vdc;
 }

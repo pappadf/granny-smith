@@ -63,6 +63,10 @@ interface RomIdentifyResult {
   id?: string;
   intact?: boolean;
   reason?: string;
+  // The known ROM whose id the file carries at another size (a truncated
+  // dump); "" / 0 otherwise.
+  expected_name?: string;
+  expected_size?: number;
 }
 
 // Shape returned by C-side `catalog.vroms.identify`. Identity is keyed off the
@@ -174,6 +178,15 @@ export async function identifyCardRom(
   };
 }
 
+// Why a disk image that did not validate cannot be read, when it is a UDIF,
+// NDIF or QCOW2 image the core cannot read ("is a QCOW2 image that cannot
+// be read in place (it uses ...)"), else undefined: the upload said only
+// "is not a valid Hard Disk image", the reason was in the terminal.
+async function containerRefusal(path: string, gsEval: GsEval): Promise<string | undefined> {
+  const why = await gsEval('files.image_error', [path]);
+  return typeof why === 'string' && why ? `is ${why}` : undefined;
+}
+
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
   rom: {
     id: 'rom',
@@ -181,6 +194,13 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     persistDir: ROMS_DIR,
     async validate(path, gsEval) {
       const info = await parseRomIdentify(gsEval, path);
+      // A known ROM's id at the wrong size: a dump cut short.  It used to fall
+      // through to the permissive hard-disk probe and be stored as a disk.
+      if (!info?.recognised && info?.expected_size && info.size)
+        return {
+          valid: false,
+          reject: `looks like the ${info.expected_name}, but it is ${info.size / 1024} KB where that ROM is ${info.expected_size / 1024} KB — the dump is probably damaged`,
+        };
       if (!info?.recognised) return { valid: false };
       // A known ROM that fails its own checksum is never stored: its id is
       // the good dump's, and a damaged ROM in the picker helps nobody.
@@ -304,7 +324,12 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_hd', [path])) === true };
+      // identify_hd refuses a disk smaller than the smallest floppy (a ROM, a
+      // card's ROM or a cut-short dump, S1018-26).  It measures the disk, not
+      // the file: a UDIF or QCOW2 of a mostly empty disk is far smaller than
+      // the disk it holds, so the file's size says nothing here.
+      if ((await gsEval('machine.scsi.identify_hd', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 
@@ -313,7 +338,24 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('machine.scsi.identify_cdrom', [path])) === true };
+      if ((await gsEval('machine.scsi.identify_cdrom', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 };
+
+// Validate the file at `path` as `id` for an upload of no stated kind (a
+// drop, Home's Load ROM): as MEDIA_TYPES[id] does, except that a CD-ROM is
+// only an image holding ISO 9660.  A bare HFS or partitioned image is a hard
+// disk then (S1018-06): the CD-ROM section's own Add, which validates with
+// MEDIA_TYPES.cdrom, still takes one as a disc.
+export async function validateUnstated(
+  id: MediaTypeId,
+  path: string,
+  gsEval: GsEval,
+): Promise<ValidateResult> {
+  const result = await MEDIA_TYPES[id].validate(path, gsEval);
+  if (id !== 'cdrom' || !result.valid) return result;
+  if ((await gsEval('machine.scsi.identify_iso', [path])) === true) return result;
+  return { valid: false };
+}

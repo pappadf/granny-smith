@@ -14,6 +14,7 @@ vi.mock('@/bus/emulator', () => ({
     res && typeof res === 'object' && 'error' in res
       ? String((res as { error: unknown }).error)
       : String(res),
+  gsOk: (res: unknown) => !(res && typeof res === 'object' && 'error' in res) && res !== false,
   isModuleReady: () => true,
 }));
 
@@ -25,7 +26,7 @@ beforeEach(() => {
 
 describe('BrowserOpfs.delete', () => {
   it('routes through the worker via files.rm', async () => {
-    gsEvalMock.mockResolvedValue(true);
+    gsEvalMock.mockResolvedValue(null); // success answers nothing
     await new BrowserOpfs().delete('/opfs/images/fd/System Tools.image');
     expect(gsEvalMock).toHaveBeenCalledWith('files.rm', ['/opfs/images/fd/System Tools.image']);
   });
@@ -42,7 +43,7 @@ describe('BrowserOpfs.delete', () => {
 
 describe('BrowserOpfs.move', () => {
   it('routes through the worker via files.mv', async () => {
-    gsEvalMock.mockResolvedValue(true);
+    gsEvalMock.mockResolvedValue(null); // success answers nothing
     await new BrowserOpfs().move('/opfs/a.txt', '/opfs/sub/a.txt');
     expect(gsEvalMock).toHaveBeenCalledWith('files.mv', ['/opfs/a.txt', '/opfs/sub/a.txt']);
   });

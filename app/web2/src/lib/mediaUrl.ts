@@ -34,9 +34,8 @@ export interface MediaFetchPlan {
   // The container's kind when `member` is set.
   container: 'zip' | 'mac' | null;
   // The file's own name (the member's base name, or the URL's last segment),
-  // decoded: what error messages call it, and the import's hint for a
-  // streamed UDIF (.dmg).  What the file is stored and shown as is the
-  // caller's (bus/urlMedia.ts names URL media by slot and time).
+  // decoded: what error messages call it, the import's hint for a streamed
+  // UDIF (.dmg), and what the file is stored and shown as (urlMediaFileName).
   fileName: string;
   // The container's file name when the value named a member, for messages.
   containerName: string | null;
@@ -121,16 +120,42 @@ export function planMediaFetch(value: string, base: string): MediaFetchPlan {
   return planUrl(url);
 }
 
-// The name a file fetched for URL slot `slot` is stored and shown under:
-// the slot and the local date and time ("hd0_2026-10-04_17-42-05").  A URL
-// says nothing reliable about what it serves (…/view_archive.php?file=…), so
-// none of it goes into the name.  A ROM is stored under its own content id
-// whatever it is called (lib/media.ts).
+// The name a file fetched for URL slot `slot` is stored and shown under
+// when its URL names no file (urlMediaFileName): the slot and the local date
+// and time ("hd0_2026-10-04_17-42-05").  A ROM is stored under its own
+// content id whatever it is called (lib/media.ts).
 export function urlMediaName(slot: string, at: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, '0');
   const date = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}`;
   const time = `${p(at.getHours())}-${p(at.getMinutes())}-${p(at.getSeconds())}`;
   return `${slot}_${date}_${time}`;
+}
+
+// A URL path segment that is the server's script, not the file it serves.
+const SCRIPT_EXT = /\.(php\d?|cgi|aspx?|jsp|pl|py|cfm)$/i;
+
+// What a file fetched for URL slot `slot` from `value` is stored and shown
+// as: the file's own name from the URL ("System 7.5.3.img"; the member's,
+// for a value that continues through a container), made safe for OPFS as
+// an upload's is.  A URL whose last segment is a server script
+// (…/view_archive.php?file=…), or names nothing, says nothing of the file:
+// then the slot and the time (urlMediaName).
+export function urlMediaFileName(
+  slot: string,
+  value: string,
+  base: string,
+  at: Date = new Date(),
+): string {
+  let name = '';
+  try {
+    name = planMediaFetch(value, base).fileName ?? '';
+  } catch {
+    // The fetch reports what is wrong with the URL.
+  }
+  // As bus/fsOps opfsSafeName: what OPFS or Windows reject, and trailing dots.
+  name = name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '');
+  if (!name || name.startsWith('.') || SCRIPT_EXT.test(name)) return urlMediaName(slot, at);
+  return name;
 }
 
 // Find `member` among a container's entry names: the exact path, then the

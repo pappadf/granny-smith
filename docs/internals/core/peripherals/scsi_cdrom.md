@@ -984,6 +984,12 @@ CD-ROM image (ISO 9660, HFS, or Apple Partition Map), `false` otherwise.
 What it detected (size, filesystem), or why it refused, goes to the `scsi`
 log category at level 2 (`log.set scsi 2`); nothing is printed.
 
+`machine.scsi.identify_iso(path)` is the narrower test an upload of no
+stated kind (a drop, Home's Load ROM) files a CD-ROM by: `true` only when
+the image holds an ISO 9660 volume (alone or beside a partition map), so a
+bare HFS or partitioned image dropped is a hard disk.  The Images panel's
+CD-ROM section validates with `identify_cdrom`.
+
 ### 10.2 `machine.scsi.attach_cdrom(path, id)`
 
 Attach a CD-ROM image to the SCSI bus (default SCSI ID 3; the top-level

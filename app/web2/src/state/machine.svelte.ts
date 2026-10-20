@@ -1,6 +1,8 @@
 // Machine state — current emulator status, model info, drive activity glyphs,
 // scheduler mode, zoom level.
 
+import { showNotification } from '@/state/toasts.svelte';
+
 // 'crashed': the emulator's worker died (a wasm trap or abort); nothing more
 // can run in this page (bus/emulator.ts markBridgeDead).
 export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped' | 'crashed';
@@ -142,7 +144,7 @@ export const machine: MachineState = $state({
   zoom: 200,
 });
 
-const ZOOM_MIN = 100;
+const ZOOM_MIN = 50;
 const ZOOM_MAX = 300;
 
 // Whether the user has chosen a zoom.  Until they do, the display fits the
@@ -155,10 +157,10 @@ export function setZoom(value: number): void {
   machine.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(value)));
 }
 
-// The largest zoom, in 10 % steps from 100 % up to the 200 % default, at
+// The largest zoom, in 10 % steps from 50 % up to the 200 % default, at
 // which a `width` × `height` screen (pixel aspect parH/parW) fits a
 // `boxW` × `boxH` display area.  Applied only while the user has not set a
-// zoom; at 100 % a screen still too big for the area scrolls.
+// zoom; at 50 % a screen still too big for the area scrolls.
 export function fitZoom(
   width: number,
   height: number,
@@ -222,6 +224,30 @@ export function setPerfStats(
 // identity re-fire even for back-to-back saves.
 export function setCheckpointSaved(ms: number): void {
   machine.checkpoint = { at: Date.now(), ms };
+  checkpointFailureToastAt = null;
+}
+
+// Core-pushed quick-checkpoint (autosave) failure: the save was not written,
+// and the last one on disk is all a reload would resume.  Said once per run
+// of failures: an autosave every few seconds that keeps failing would
+// otherwise fill the screen.  A save that works ends the run; a run that
+// lasts is said again after CHECKPOINT_FAILURE_REPEAT_MS.
+export const CHECKPOINT_FAILURE_REPEAT_MS = 10 * 60_000;
+let checkpointFailureToastAt: number | null = null;
+
+// Returns whether a toast was shown.
+export function noteCheckpointFailed(error: string, now = Date.now()): boolean {
+  if (
+    checkpointFailureToastAt !== null &&
+    now - checkpointFailureToastAt < CHECKPOINT_FAILURE_REPEAT_MS
+  )
+    return false;
+  checkpointFailureToastAt = now;
+  showNotification(
+    `Automatic save failed${error ? ` (${error})` : ''}: the machine's state was not saved, so a reload resumes an older state.`,
+    'error',
+  );
+  return true;
 }
 
 // ---- Drive activity ----

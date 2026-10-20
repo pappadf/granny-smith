@@ -14,8 +14,9 @@ things, and the only way to do some.
 - The right-hand side of the panel is a **command browser**: every command
   and setting as a tree, with a one-line description. Click an entry to
   see its usage.
-- Results print below the command; most commands that do something print
-  `true` when they succeed.
+- Results print below the command. A command that only does something,
+  such as `echo`, `ls`, `mkdir` or `log.set`, prints nothing more when it
+  succeeds; when it fails, the reason is printed.
 
 | Keys | Does |
 |---|---|
@@ -98,6 +99,7 @@ The browser storage is `/opfs`; your images are in `/opfs/images/<kind>/`.
 | Command | Does |
 |---|---|
 | `run`, `stop` | Run and stop the machine (as the toolbar's run/pause) |
+| `machine.shutdown` | Shut the machine down, as the toolbar's **Shut down**: nothing of it is left |
 | `machine.restart` | Power-cycle the machine: memory is cleared; PRAM, the clock and disks stay |
 | `reset` (`machine.reset`) | Press the reset switch: keeps memory, PRAM and disks |
 | `machine.screen.save("<file>.png")` | Save a screenshot of the Mac's screen |

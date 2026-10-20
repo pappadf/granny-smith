@@ -17,7 +17,7 @@
 # type, the statusBits layout the driver reads, and the job end on EOF.
 
 TEST_NAME := AppleTalk ImageWriter (LocalTalk Option card)
-TEST_DESC := Chooser AppleTalk ImageWriter -> Virtual ImageWriter; Print Directory over PAP to a PDF; paper-out alert and recovery.
+TEST_DESC := Chooser AppleTalk ImageWriter -> Virtual ImageWriter; Print Directory over PAP to a PDF; paper-out alert and recovery; an abandoned job leaves the next at top of form.
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
