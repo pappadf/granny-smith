@@ -88,6 +88,8 @@ struct av_psc {
     av_psc_dreq_fn dreq_fn; // live SCSI DREQ, published in the VIA2 IFR
     av_psc_chan_touch_fn scsi_touch_fn; // "the guest programmed the SCSI channel"
     void *scsi_touch_ctx;
+    av_psc_chan_touch_fn scc_touch_fn; // "the guest programmed an SCC channel"
+    void *scc_touch_ctx;
     void *dreq_ctx;
     dma_mem_port_t mem; // guest-physical port for DMA (dma_mem.h)
     av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
@@ -310,6 +312,18 @@ void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ct
     psc->scsi_touch_ctx = ctx;
 }
 
+void av_psc_set_scc_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx) {
+    if (!psc)
+        return;
+    psc->scc_touch_fn = fn;
+    psc->scc_touch_ctx = ctx;
+}
+
+// True for the SCC's channels (4 SCC A rx, 5 SCC B, 6 SCC A tx).
+static bool psc_is_scc_chan(int n) {
+    return n == AV_PSC_DMA_SCCA_RX || n == AV_PSC_DMA_SCCB || n == AV_PSC_DMA_SCCA_TX;
+}
+
 void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx) {
     psc->dreq_fn = fn;
     psc->dreq_ctx = ctx;
@@ -414,9 +428,16 @@ static void psc_ctrl_write(av_psc_t *psc, int n, uint32_t lane, uint8_t value) {
         LOG(3, "DMA ch%d %s", n, sense ? "pause" : "run");
     }
     if ((bits & 0x08) && sense) { // SWRESET: paused, both sets disarmed
+        // The channel also starts over at set 0 with no completion pending:
+        // the ROM's LocalTalk transmit (.MPP, $409850F6) writes $8800 after
+        // a frame's terminal count -- which flipped the active set and set
+        // IF -- and spins until the word reads exactly $C400 (SENSE, FROZEN,
+        // PAUSE; no CIRQ, kmSET 0).
+        const uint8_t done = PSC_CS_ENABLED | PSC_CS_IF | PSC_CS_TERMCNT;
         ch->pause = true;
-        ch->cs[0] &= (uint8_t)~PSC_CS_ENABLED;
-        ch->cs[1] &= (uint8_t)~PSC_CS_ENABLED;
+        ch->cs[0] &= (uint8_t)~done;
+        ch->cs[1] &= (uint8_t)~done;
+        ch->active_set = 0;
         LOG(2, "DMA ch%d swreset", n);
     }
     if (bits & 0x10) // CIE
@@ -594,6 +615,8 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
             psc_ctrl_write(psc, n, sub, value);
         if (n == AV_PSC_DMA_SCSI && psc->scsi_touch_fn)
             psc->scsi_touch_fn(psc->scsi_touch_ctx);
+        if (psc_is_scc_chan(n) && psc->scc_touch_fn)
+            psc->scc_touch_fn(psc->scc_touch_ctx);
         return;
     }
     if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
@@ -602,6 +625,8 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
         psc_set_write(psc, n, s, off & 0xF, value);
         if (n == AV_PSC_DMA_SCSI && psc->scsi_touch_fn)
             psc->scsi_touch_fn(psc->scsi_touch_ctx);
+        if (psc_is_scc_chan(n) && psc->scc_touch_fn)
+            psc->scc_touch_fn(psc->scc_touch_ctx);
         return;
     }
 

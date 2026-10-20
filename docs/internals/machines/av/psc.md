@@ -57,7 +57,7 @@ The behaviors that hang a driver if wrong, all implemented and unit-tested:
 | Control bit 0 = active set | drivers read it and index the sets accordingly |
 | FROZEN (14) asserts after PAUSE | `PausePSC` spins forever otherwise |
 | DMAFLUSH (9) self-clears | clients poll until it reads 0 |
-| SWRESET (11) leaves the channel paused, clears ENABLED in **both** sets | teardown/recovery |
+| SWRESET (11) leaves the channel paused, clears ENABLED in **both** sets, and restarts it at set 0 with no completion pending (IF, TERMCNT clear) | teardown/recovery; the LocalTalk transmit spins until the word reads exactly `$C400` after each frame |
 | Sense bit (15) on control and CmdStat writes | enables and arms silently invert without it |
 | Completion: ENABLED clears, TERMCNT + IF set, **active set flips** | gapless double-buffered streaming |
 | Cnt holds the residual and is writable | `StopPSCRead` zeroes it in a read-verify loop |
@@ -76,6 +76,18 @@ device pump can probe without touching its FIFO, and `av_psc_dma_remaining`
 the active set's count — the New Age reads it to see terminal count on the
 byte that ends a set, which is what ends its command (the second set may
 already be armed for the next one).
+
+**The SCC channels (4, 5, 6).** Writes to their registers call a second
+hook (`av_psc_set_scc_touch_hook`), and av.c moves a transmit set (channel 5
+for SCC B, 6 for SCC A) that is ready memory → device into the SCC's data
+register at once, where the bytes join the SDLC frame as CPU writes would.
+At once, because the ROM's LocalTalk driver (.MPP, `$40985070`–`$409851A0`)
+hands each data frame (LLAP header included) to channel 5 and, right after
+the un-pause, with interrupts masked, resets the Tx underrun/EOM latch and
+turns the transmitter off: the frame must be in the SCC by then. It writes
+only lapENQ and lapRTS by hand. Without this the AV Quadras sent no DDP
+frame at all, and the Chooser listed nothing. Receive DMA (channel 4, port A
+only) is not modelled: the port B LocalTalk driver reads by hand.
 
 **Not modelled:** the MACE receive channel's "chain mode" (where Cnt counts
 buffers rather than bytes), and FIFO depth/latency — nothing in scope needs

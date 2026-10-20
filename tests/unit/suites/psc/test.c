@@ -264,6 +264,26 @@ TEST(test_fdc_double_buffer) {
 }
 
 // 5. Memory→device direction, and the direction gate.
+// 6. The ROM's LocalTalk transmit (.MPP): one frame per SWRESET.  After a
+//    frame's terminal count (which flips the active set and raises IF),
+//    SENSE|SWRESET must leave the word reading exactly $C400 -- set 0, no
+//    CIRQ -- or the driver spins on it forever before its next frame.
+TEST(test_swreset_restarts_at_set_0) {
+    for (int frame = 0; frame < 2; frame++) {
+        w16(CTRL(5), HW_SENSE | HW_SWRESET);
+        ASSERT_EQ_INT(r16(CTRL(5)), 0xC400);
+        w32(SET(5, 0) + 4, 9);
+        w32(SET(5, 0) + 0, 0x6000);
+        w16(SET(5, 0) + 8, HW_DIR); // memory -> device
+        w16(SET(5, 0) + 8, HW_IF);
+        w16(SET(5, 0) + 8, HW_SENSE | HW_ENABLED);
+        w16(CTRL(5), HW_PAUSE); // un-pause
+        uint8_t out[9];
+        ASSERT_EQ_INT(av_psc_dma_device_out(s_st.psc, 5, out, 9), 9);
+        ASSERT_EQ_INT(r16(CTRL(5)) & (HW_KMSET | HW_CIRQ), HW_KMSET | HW_CIRQ); // set flipped, IF up
+    }
+}
+
 TEST(test_write_direction) {
     memcpy(&s_mem[0x6000], "PSC WRITE DATA!!", 16);
     pause_psc(0);
@@ -328,6 +348,7 @@ int main(void) {
     RUN(test_scsi_stop_read);
     RUN(test_mace_isr_and_reset);
     RUN(test_fdc_double_buffer);
+    RUN(test_swreset_restarts_at_set_0);
     RUN(test_write_direction);
     RUN(test_no_dma_above_rom_base);
     RUN(test_dsp_overrun_lanes);
