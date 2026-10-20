@@ -893,6 +893,26 @@
       "media_gated": true
     },
     {
+      "machine": "se30",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": true,
+      "suite": "suite-se30"
+    },
+    {
+      "machine": "se30",
+      "system": "7.5",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": true,
+      "suite": "suite-se30"
+    },
+    {
       "machine": "q840av",
       "system": "7.1",
       "card": "civic",
