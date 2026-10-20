@@ -175,6 +175,8 @@ uint32_t scheduler_current_speed_x256(struct scheduler *s) {
         sp = s->pacing.max_speed_x256;
     if (s->pacing.mode != schedule_accelerated && sp > SPEED_X256_ONE)
         sp = SPEED_X256_ONE; // paced tops out at the original's speed
+    if (s->hold_authentic && sp > SPEED_X256_ONE)
+        sp = SPEED_X256_ONE; // the machine holds the original's speed for now
     return sp;
 }
 
@@ -1328,6 +1330,14 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
     s->saved.cpi = cpi;
     // The effective CPI is derived from the authentic one; keep it in step
     scheduler_update_cpi_eff(s);
+}
+
+// Hold (or release) the original speed; re-derive the effective CPI on a change.
+void scheduler_hold_authentic_speed(struct scheduler *restrict s, bool hold) {
+    if (!s || s->hold_authentic == hold)
+        return;
+    s->hold_authentic = hold;
+    scheduler_update_cpi_eff(s); // asserts it is between sprints
 }
 
 // Run the scheduler for a specified number of instructions

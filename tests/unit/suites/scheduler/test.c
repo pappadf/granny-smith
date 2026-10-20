@@ -850,6 +850,33 @@ TEST(test_accelerated_speed_clamp) {
     teardown(s);
 }
 
+// A machine's hold on the authentic speed: held, an 8x accelerated setting
+// runs a frame at exactly the 1x instruction count; released, at 8x again.
+TEST(test_hold_authentic_speed) {
+    scheduler_t *s = fresh_scheduler(false);
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
+    uint64_t ref = cpu_instr_count() - i0;
+    teardown(s);
+
+    s = fresh_scheduler(false);
+    test_set_mode(s, schedule_accelerated);
+    test_set_speed(s, 8.0);
+    scheduler_hold_authentic_speed(s, true);
+    ASSERT_TRUE(scheduler_effective_speed_x256(s) == 256);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
+    ASSERT_TRUE(cpu_instr_count() - i0 == ref);
+
+    scheduler_hold_authentic_speed(s, false);
+    ASSERT_TRUE(scheduler_effective_speed_x256(s) == 8 * 256);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
+    double ratio = (double)(cpu_instr_count() - i0) / (double)ref;
+    ASSERT_TRUE(ratio > 8.0 * 0.99 && ratio < 8.0 * 1.01);
+    teardown(s);
+}
+
 // Accelerated shares the paced wall-clock accumulator: the frame-unit rate
 // converges to the Mac VBL rate and per-tick bursts stay capped — the speed
 // multiplier must never change how many frame-units a host tick earns.
@@ -1909,6 +1936,7 @@ int main(void) {
     RUN(test_accelerated_budget_exact);
     RUN(test_accelerated_mode_switch_hygiene);
     RUN(test_accelerated_speed_clamp);
+    RUN(test_hold_authentic_speed);
     RUN(test_accelerated_paced_pacing);
     RUN(test_governor_starts_at_floor_paced);
     RUN(test_governor_starts_at_floor_accelerated);
