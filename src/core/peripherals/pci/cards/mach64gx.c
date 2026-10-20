@@ -1984,15 +1984,42 @@ static void mach64_context_apply(mach64_t *m, uint32_t index, uint32_t v) {
     }
 }
 
-// A context DWORD out of VRAM.  The blocks are register images, so they
-// are stored LITTLE-endian — confirmed by DWORD $16 reading back as the
-// $00070007 the driver wrote to DP_MIX.
+// The byte swap between the two views of VRAM: the XOR that turns an
+// offset in the big-endian view (the one m->vram holds) into the same byte
+// in the chip's own little-endian order, per MEM_PIX_WIDTH (0 at 8 bpp, 1
+// at 15/16 bpp, 3 at 24/32 bpp).  Both the GX's and the Rage Pro's drivers
+// program MEM_PIX_WIDTH alongside CRTC_PIX_WIDTH on every mode set.
+static uint32_t mach64_aper_swap(const mach64_t *m) {
+    switch ((m->reg[DW_MEM_CNTL] >> 24) & 7u) { // MEM_PIX_WIDTH
+    case CRTC_PIX_15BPP:
+    case CRTC_PIX_16BPP:
+        return 1;
+    case CRTC_PIX_24BPP:
+    case CRTC_PIX_32BPP:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+// A context DWORD out of VRAM.  The blocks are register images, so the
+// chip reads them LITTLE-endian out of its own byte order — confirmed by
+// DWORD $16 reading back as the $00070007 the driver wrote to DP_MIX.
+// m->vram holds the big-endian view the Mac driver writes through, which
+// is the chip's order swapped within each pixel of MEM_PIX_WIDTH, so the
+// swap is undone first.  At 8 bpp the two orders are the same; at 15/16
+// and 32 bpp, reading the bytes as they lie made every context load
+// garbage ($08C80000 read as $C8080000) and the desktop broke the moment
+// the depth went past 256 colours.
 static uint32_t mach64_context_dword(const mach64_t *m, uint32_t base, uint32_t index) {
     uint32_t at = base + index * 4u;
     if (at + 4u > m->vram_size)
         return 0;
-    const uint8_t *b = m->vram + at;
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    uint32_t swap = mach64_aper_swap(m); // within a dword, so `at ^ swap` stays inside it
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < 4; i++)
+        v |= (uint32_t)m->vram[(at + i) ^ swap] << (8u * i); // byte i of the chip's order
+    return v;
 }
 
 static void mach64_context_load(mach64_t *m, uint32_t value) {
@@ -2447,22 +2474,6 @@ static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek);
 
 #define MACH64_APER_REGS1 (-3)
 
-// The byte swap between the Rage Pro's two views of VRAM: the XOR that
-// turns an offset in one into the same byte in the other, per
-// MEM_PIX_WIDTH (0 at 8 bpp, 1 at 15/16 bpp, 3 at 24/32 bpp).
-static uint32_t gp_aper_swap(const mach64_t *m) {
-    switch ((m->reg[DW_MEM_CNTL] >> 24) & 7u) { // MEM_PIX_WIDTH
-    case CRTC_PIX_15BPP:
-    case CRTC_PIX_16BPP:
-        return 1;
-    case CRTC_PIX_24BPP:
-    case CRTC_PIX_32BPP:
-        return 3;
-    default:
-        return 0;
-    }
-}
-
 // The Rage Pro's BAR0: the little-endian aperture in the lower 8 MB with
 // block 1 (when BUS_EXT_REG_EN) and block 0 (unless BUS_APER_REG_DIS) in
 // its last 2 KB, and the big-endian aperture in the upper 8 MB (PRG p. 30).
@@ -2479,14 +2490,14 @@ static uint32_t gp_aper_swap(const mach64_t *m) {
 // writing the same 16 bytes at $FCE85 of each megabyte and reading them
 // back, so an alias passes every step, the driver believes in 4 MB and
 // offers 1024 x 768 in millions -- a 3 MB frame -- which blanks the
-// screen.  (The GX keeps its alias below: its driver's probe needs it.)
+// screen.  (The GX does the same below, for its own driver's probe.)
 static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
     if (offset < MACH64_APER_8MB) {
         if (offset >= MACH64_MMIO_OFF_8MB && !(m->reg[DW_BUS_CNTL] & BUS_APER_REG_DIS))
             return MACH64_APER_REGS;
         if (offset >= RAGEPRO_BLOCK1_OFF && offset < MACH64_MMIO_OFF_8MB && (m->reg[DW_BUS_CNTL] & BUS_EXT_REG_EN))
             return MACH64_APER_REGS1;
-        offset ^= gp_aper_swap(m);
+        offset ^= mach64_aper_swap(m);
     } else {
         offset -= MACH64_APER_8MB;
     }
@@ -2522,9 +2533,17 @@ static int64_t aper_map(mach64_t *m, uint32_t offset, bool peek) {
     }
     if (offset >= mach64_mmio_offset(m))
         return MACH64_APER_REGS;
-    // VRAM smaller than the aperture aliases through it, which is what
-    // makes the driver's write/read-back sizing probe find the real size.
-    return (int64_t)(offset & (m->vram_size - 1u));
+    // Past the installed VRAM the aperture decodes to nothing: writes are
+    // lost and reads float high.  It must not alias.  The 7.6 driver sizes
+    // VRAM by programming MEM_SIZE for 6 MB, writing $12345678 at
+    // $5FF000 and reading it back, then 4 MB at $3FF000, then 2 MB.  With
+    // an alias the 6 MB step passed on every card, so the driver kept its
+    // draw-engine contexts at "the top of 6 MB" -- $1FFxxx on a 4 MB card,
+    // inside the 3 MB frame of 1024 x 768 in millions, which overwrote
+    // them with desktop pixels and every operation after that drew garbage.
+    if (offset >= m->vram_size)
+        return MACH64_APER_NONE;
+    return (int64_t)offset;
 }
 
 // Say so, once, when the guest reaches past the first copy of the aperture
@@ -3015,7 +3034,7 @@ static void mach64_compose(mach64_t *m) {
     // pixel.  At 8 bpp the two agree; at 32 bpp, read straight, each dword's
     // four bytes of 2-bit pixels come out reversed and the arrow is drawn in
     // shuffled 4-pixel pieces.
-    uint32_t swap = m->gp ? gp_aper_swap(m) : 0;
+    uint32_t swap = m->gp ? mach64_aper_swap(m) : 0;
 
     for (uint32_t row = oy; row < CUR_SIZE; row++) {
         uint32_t y = py + (row - oy);
