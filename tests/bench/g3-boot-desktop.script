@@ -28,6 +28,10 @@ def scen_phase(name, slots) {
 }
 
 if $MODE == "boot" {
+    # CPI pinned at 2, the value the stretches and guards were placed with,
+    # so a change of the machine's default CPI does not move them (the
+    # checkpoint carries it into MODE=run)
+    scheduler.cpi = 2
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
     checkpoint.save "${$CKPT}"
