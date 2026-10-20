@@ -10,6 +10,12 @@
 
 def bench_boot() {
     machine.boot model="pmg3dt" ram=65536 rom="${$TEST_DATA}/roms/pmg3dt-pmg3mt-78f57389.rom"
+    # CPI pinned at 2, the value the checkpoint was placed with, so a change
+    # of the machine's default CPI does not move the row to other code (at
+    # CPI 1 the same budget lands at 3.6 G instructions, where A is 21 %
+    # higher only because the code is different; on one guest state the
+    # two CPIs cost the same per instruction).
+    scheduler.cpi = 2
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
     # The cable in, as the checkpoint was placed with: with no cable (the
