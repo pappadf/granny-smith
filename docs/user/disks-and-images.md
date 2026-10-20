@@ -119,7 +119,9 @@ What you can do:
 
 - **Browse inside** disk images and archives: expand them like folders to
   see the Mac files on an HFS disk, the members of a StuffIt archive, and
-  so on (read-only).
+  so on (read-only). A disk or archive stored compressed inside an archive
+  (a disk in a `.sit.hqx`, say) expands too when it is at most 64 MB
+  unpacked; a larger one does not, so a listing never unpacks one that big.
 - **Right-click** an item: **Rename**, **Save to computer…** (several
   selected: **Save files…**), **Export as raw image…**, **Unpack** (extract
   an archive into a folder next to it), **Delete**.

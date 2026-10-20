@@ -545,16 +545,23 @@ void vfs_init(void) {
     source_set_path_opener(vfs_path_opener);
 }
 
+// The largest compressed archive member the listing decodes to see whether
+// it is a disk image or an archive: a disk inside a .sit.hqx or a deflated
+// zip member is then offered like a stored one.  A larger member is not
+// probed (decoding it would cost more than a listing should).
+#define VFS_EXPAND_DECODE_MAX (64ull * 1024 * 1024)
+
 bool vfs_is_expandable(const char *path) {
     int err = 0;
     source_t *data = vfs_open_source(path, GS_FORK_DATA, &err);
     if (!data)
         return false;
-    // Only a file whose head and tail are cheap to read now is probed:
-    // deciding for a compressed archive member not yet decoded would mean
-    // decoding all of it.
+    // A file whose head and tail are cheap to read now is probed as it is.
+    // A compressed member is decoded to find out, up to the cap: the decode
+    // fills peeler's sink (memory for a small fork, a scratch file for a
+    // large one), so the head and the tail come from one pass.
     bool yes = false;
-    if (source_tier(data) <= GS_TIER_INDEXED) {
+    if (source_tier(data) <= GS_TIER_INDEXED || source_size(data) <= VFS_EXPAND_DECODE_MAX) {
         source_t *rsrc = vfs_open_source(path, GS_FORK_RSRC, NULL);
         yes = format_is_namespace(data, rsrc);
         source_release(rsrc);

@@ -178,8 +178,8 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
 source_t *vfs_open_source(const char *path, source_fork_t fork, int *err);
 
 // True when the file at `path` is an image or archive the VFS can descend
-// into (the listing's "expandable" flag).  Files that are expensive to probe
-// (a compressed archive member) answer false.
+// into (the listing's "expandable" flag).  A compressed archive member is
+// decoded to find out when it is at most 64 MB; a larger one answers false.
 bool vfs_is_expandable(const char *path);
 
 // Register the namespace formats and install vfs_open_source as the storage
