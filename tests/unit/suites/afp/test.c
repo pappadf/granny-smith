@@ -390,6 +390,40 @@ TEST(vol_parms_report_real_sizes_and_dates) {
     fixture_down();
 }
 
+// FPGetVolParms for Bytes Free and Bytes Total only.
+static void get_vol_space(uint32_t *out_free, uint32_t *out_total) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put16(0x00C0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_VOL_PARMS));
+    *out_free = rd32(g_reply + 2);
+    *out_total = rd32(g_reply + 6);
+}
+
+TEST(vol_parms_hold_an_afp20_session_below_1_gb) {
+    fixture_up("volspace20");
+
+    // System 6's client gives a volume larger than 65535 x 16 KB 32 KB
+    // allocation blocks, and its Finder then calls every file about 2 GB on
+    // disk; so an AFP 2.0 session is held to 65535 x 16 KB.
+    uint32_t free21, total21, free20, total20;
+    get_vol_space(&free21, &total21);
+    login_as("AFPVersion 2.0");
+    get_vol_space(&free20, &total20);
+    ASSERT_TRUE(total20 <= 65535u * 16384u);
+    ASSERT_TRUE(free20 <= total20);
+    ASSERT_TRUE(total20 <= total21);
+    // Below the ceiling both sessions see the same host figures.
+    if (total21 <= 65535u * 16384u)
+        ASSERT_EQ_INT((int)total21, (int)total20);
+    else
+        ASSERT_EQ_INT((int)(65535u * 16384u), (int)total20);
+
+    login_as("AFPVersion 2.1");
+    fixture_down();
+}
+
 TEST(set_vol_parms_persists_the_backup_date) {
     fixture_up("setvol");
 
@@ -4081,6 +4115,7 @@ int main(void) {
     ASSERT_TRUE(atalk_server_init() != NULL);
     afp_plug(afp_link_new());
     RUN(vol_parms_report_real_sizes_and_dates);
+    RUN(vol_parms_hold_an_afp20_session_below_1_gb);
     RUN(set_vol_parms_persists_the_backup_date);
 
     RUN(set_parms_finds_finder_info_behind_every_preceding_bit);

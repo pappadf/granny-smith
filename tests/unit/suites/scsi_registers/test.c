@@ -220,6 +220,34 @@ TEST(test_select_with_no_target_bit_goes_free) {
     scsi_delete(scsi);
 }
 
+// A drive with no medium still answers selection: an empty CD-ROM drive is on
+// the bus.  The 5380 path used to answer only for an ID holding an image, so
+// System 7's CD driver never found an empty drive and a disc inserted later
+// never mounted.
+TEST(test_empty_cdrom_drive_answers_selection) {
+    scsi_t *scsi = attach_disk();
+    scsi_add_device(scsi, 3, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048, true);
+
+    wr(scsi, ODR, 1 << 3 | 1 << 7);
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_command);
+    scsi_delete(scsi);
+}
+
+// ...and an ID with no device at all still does not.
+TEST(test_select_of_absent_id_goes_free) {
+    scsi_t *scsi = attach_disk();
+
+    wr(scsi, ODR, 1 << 5 | 1 << 7);
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
+    scsi_delete(scsi);
+}
+
 // ANSI X3.131-1986 Table 5-1, the encoding every controller publishes: the 5380
 // in CSR bits 4:2, the 53C96 in STATREG bits 2:0, the 53C825 in SSTAT1/SBCL,
 // MESH in bus_status0.  Four chips carried four copies of this table and one of
@@ -420,6 +448,8 @@ int main(void) {
     RUN(test_select_from_command_is_declined);
     RUN(test_bus_still_usable_after_declines);
     RUN(test_select_with_no_target_bit_goes_free);
+    RUN(test_empty_cdrom_drive_answers_selection);
+    RUN(test_select_of_absent_id_goes_free);
     unlink(g_path);
     printf("All scsi_registers tests passed\n");
     return 0;

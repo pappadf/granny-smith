@@ -162,6 +162,12 @@ bool scc_sdlc_ready(const scc_t *restrict scc);
 // 1 = B): flush it as a Tx underrun/EOM would on real hardware.
 void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch);
 
+// Which channels are requesting an interrupt now (bit 0 = channel A, bit 1
+// = channel B): an enabled RR3 source of that channel with WR9 MIE set.
+// For a host that routes each channel's interrupt to its own source, as
+// Heathrow does (ESCC ch-a $0F, ch-b $10); irq_cb still reports the OR.
+unsigned scc_irq_channels(const scc_t *scc);
+
 // A DMA engine drains up to `n` received bytes from channel `ch`'s FIFO
 // (0 = A, 1 = B) into `dst`, with the same status side effects as CPU data
 // reads.  Returns the count transferred.

@@ -35,3 +35,16 @@ the motor reaches it. Motor spin-up from rest takes `MOTOR_SPINUP_TIME_NS`
 `floppy_insert` accepts only images the image layer classifies as floppy
 media — 400K and 800K GCR, 720K and 1440K MFM — and refuses anything else,
 whatever the caller validated before it.
+
+## Ejecting a disk
+
+Every eject ends in `floppy_drive_eject`: the IWM/SWIM eject command, the
+SWIM3, the New Age, the IIfx SWIM IOP and the host's `eject()`. It writes the
+modified GCR tracks back into the image, drops the track cache, and hands the
+image to `config_release_image`, which closes it and frees its slot in the
+machine's tracked images. The file is released at once, so it can be copied,
+renamed, deleted or replaced; inserting it again opens it afresh. A checkpoint
+taken while the disk was in still restores, since the restore reopens the
+image from the checkpoint's own image list. The Lisa's Sony drive is not a
+`floppy_t` and keeps an ejected diskette open for a faithful reinsert (its
+writes and page-label tags live only in that open image).

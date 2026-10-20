@@ -25,6 +25,9 @@
 # System 7.5.3 on the 840AV stops with "illegal instruction" behind Apple's
 # own driver as well, so that row boots 7.1 instead.
 #   two-volumes     two wrapped disks on one bus: two driver copies, two drives
+#   plus-608-fd     the Plus boots System 6.0.8 from floppy with the bare 7.0.1
+#                   volume on the bus: the driver's accRun announces it and it
+#                   mounts beside the floppy
 #   checkpoint      a checkpoint of a machine running off a wrapped disk
 #                   restores to the same running desktop
 #   driverless      a partitioned disk with no driver (Disk Copy / SheepShaver
@@ -183,6 +186,25 @@ def row_two_volumes() {
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-two-volumes.png")
 }
 
+# ---- plus-608-fd -------------------------------------------------------------------
+# The Plus boots the 6.0.8 floppy; the wrapped volume is not the startup disk,
+# so its driver posts the disk-inserted event from accRun once the system is
+# up, and the Finder mounts it.  That Control call's exit used to store the
+# result through A0 after the announce loop had left the event code (diskEvt,
+# 7) there: a word write to $17, an address error on the 68000 -- "Sorry, a
+# system error occurred. ID = 02" on every such boot.
+def row_plus_608_fd() {
+    machine.boot model="plus" ram=4096 rom="${$ROM_PLUS}"
+    machine.rtc.time = "2026-04-26T21:30:00" # a fixed clock, as boot_desktop
+    machine.floppy.drive[0].insert "${$WORK_DIR}/fd608.dsk"
+    assert machine.scsi.attach_hd("${$vol701}", 0) "plus-608-fd: attach_hd failed"
+    scheduler.run 150000000
+    wait_stable(1600000000)
+    assert_desktop("plus-608-fd")
+    assert files.images[image_index($vol701)].reads > 0 "plus-608-fd: the volume was never read"
+    check_desktop("goldens/plus-6.0.8-512x342x1-fd-bare-701-mounted.png")
+}
+
 # ---- checkpoint -------------------------------------------------------------------
 # The prefix is not in the file, so a restore has to re-wrap the image
 # (IMAGE_CKPT_WRAPPED); a restored machine that lost it would read the bare
@@ -268,6 +290,13 @@ if have_media($vol753) && have_media($vol701) {
     if row_on("pm6100-753") { row_end("pm6100-753", try(row_pm6100_753(), "FAILED")) }
     if row_on("pm7500-753") { row_end("pm7500-753", try(row_pm7500_753(), "FAILED")) }
     if row_on("two-volumes") { row_end("two-volumes", try(row_two_volumes(), "FAILED")) }
+    if row_on("plus-608-fd") {
+        if have_media("${$WORK_DIR}/fd608.dsk") {
+            row_end("plus-608-fd", try(row_plus_608_fd(), "FAILED"))
+        } else {
+            echo "skip: plus-608-fd (no 6.0.8 floppy at ${$WORK_DIR}/fd608.dsk)"
+        }
+    }
     if row_on("checkpoint") { row_end("checkpoint", try(row_checkpoint(), "FAILED")) }
     if row_on("trimmed") {
         if have_media($voltrim753) {

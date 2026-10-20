@@ -203,5 +203,6 @@ void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
 // channel goes idle, so the guest programming that channel (psc.c) starts it
 // again.
 void av_scsi_pump_arm(void *ctx); // an av_psc_chan_touch_fn
+void av_scc_dma_arm(void *ctx); // an av_psc_chan_touch_fn
 
 #endif // GS_MACHINES_AV_H

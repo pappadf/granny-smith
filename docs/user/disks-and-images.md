@@ -94,7 +94,7 @@ Right-click an image:
 
 | Action | What it does |
 |---|---|
-| **Insert** / **Eject** | Put a floppy or CD into the running machine's drive, or take it out. With several drives, choose which ("Insert into …"). Ejecting a floppy here asks first: it pulls the disk out without the Mac's knowledge, so anything the Mac has not yet written to it is lost. To eject a floppy safely, eject it in the Mac (drag it to the Trash or press ⌘E). |
+| **Insert** / **Eject** | Put a floppy or CD into the running machine's drive, or take it out. With several drives, choose which ("Insert into …"). Ejecting a floppy here asks first: it pulls the disk out without the Mac's knowledge, so anything the Mac has not yet written to it is lost. To eject a floppy safely, eject it in the Mac (drag it to the Trash or press ⌘E). Once ejected, either way, the floppy's file is free again: it can be renamed, replaced or deleted, and the files on it copied out. (A Lisa keeps each disk it has had open until the machine shuts down, so that one inserted again comes back as the Lisa left it.) |
 | **Mount** / **Unmount** | Attach a hard-disk image to the running machine, or detach it. |
 | **Save to computer…** | Download the stored file. |
 | **Export as raw image…** | Download a `.dmg` as a plain, uncompressed image. |
@@ -119,7 +119,9 @@ What you can do:
 
 - **Browse inside** disk images and archives: expand them like folders to
   see the Mac files on an HFS disk, the members of a StuffIt archive, and
-  so on (read-only).
+  so on (read-only). A disk or archive stored compressed inside an archive
+  (a disk in a `.sit.hqx`, say) expands too when it is at most 64 MB
+  unpacked; a larger one does not, so a listing never unpacks one that big.
 - **Right-click** an item: **Rename**, **Save to computer…** (several
   selected: **Save files…**), **Export as raw image…**, **Unpack** (extract
   an archive into a folder next to it), **Delete**.

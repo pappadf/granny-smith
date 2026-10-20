@@ -87,17 +87,19 @@ void via_output(via_t *via, int port, uint8_t value) {
 static struct {
     event_callback_t cb;
     void *src;
+    uint64_t data;
     bool live;
 } s_events[MAX_EVENTS];
 
 event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
                                     uint64_t cycles, uint64_t ns, bool periodic) {
     (void)periodic;
-    (void)s, (void)data, (void)cycles, (void)ns;
+    (void)s, (void)cycles, (void)ns;
     for (int i = 0; i < MAX_EVENTS; i++)
         if (!s_events[i].live) {
             s_events[i].cb = cb;
             s_events[i].src = src;
+            s_events[i].data = data;
             s_events[i].live = true;
             return NULL;
         }
@@ -144,8 +146,9 @@ static void run_events(void) {
                 continue;
             event_callback_t cb = s_events[i].cb;
             void *src = s_events[i].src;
+            uint64_t data = s_events[i].data;
             s_events[i].live = false;
-            cb(src, 0);
+            cb(src, data);
         }
     }
 }

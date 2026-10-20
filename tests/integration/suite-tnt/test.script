@@ -8,6 +8,9 @@
 #                    boot wall used to kill.
 #   pm9500-76-mach64 pm9500, which has no onboard video: the same chain,
 #                    every pixel drawn by an ATI Mach64 GX in PCI socket A1.
+#   pm9500-mach64-depths  the same card with 4 MB and a 17" Multiple Scan:
+#                    1024x768 picked from the Control Strip, then thousands
+#                    and millions of colours, each drawing a Finder window.
 #   tnt-voodoo2-display  pm8500 + a Voodoo2 in A1: the card takes the
 #                    monitor from Control's live desktop and gives it back
 #                    byte-identical.
@@ -169,6 +172,62 @@ def row_pm9500_76_mach64() {
     check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
     report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
     report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
+}
+
+# ---- pm9500-mach64-depths ---------------------------------------------------
+# The deep modes of a 4 MB card (S1018-21).  Two faults hid here, and each
+# one broke a depth this row now draws a Finder window in:
+#
+#   * Thousands.  The driver keeps the draw engine's state in context blocks
+#     in VRAM and writes them through the big-endian aperture, which swaps
+#     within each pixel of MEM_PIX_WIDTH.  Read back without undoing that
+#     swap, every block loaded at 16 bpp was garbage ($08C80000 as
+#     $C8080000) and windows were erased to the desktop pattern.
+#   * Millions.  The aperture aliased past the installed 4 MB, so the
+#     driver's 6 MB write/read-back probe passed and it put the blocks at
+#     "the top of 6 MB" -- $1FFxxx, inside the 3 MB frame of 1024 x 768 at
+#     32 bpp.  The first desktop fill overwrote them.
+#
+# The resolution and depth are chosen the way a user does it, from the
+# Control Strip's two monitor modules, so the driver's own mode switch runs.
+def mach64_strip(x, y, item_x, item_y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    run_ticks(30)
+    machine.adb.mouse.move $item_x $item_y "global"
+    run_ticks(10)
+    machine.adb.mouse.click false
+    run_ticks(300)
+}
+
+def row_pm9500_mach64_depths() {
+    machine.boot model=pm9500 ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m,monitor=17in_multi"
+    machine.rtc.time = "2026-04-26T21:30:36"
+    machine.scsi.attach_hd "${$hd_76}" 0
+    scheduler.run 4000000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+    assert machine.screen.width == 832 "the 17-inch Multiple Scan starts at 832 x 624"
+
+    # Close the Energy Saver message; then the resolution module (third
+    # item, "1024 x 768, 75Hz").
+    machine.adb.keyboard.press "Return"
+    run_ticks(30)
+    mach64_strip(130, 611, 180, 594)
+    assert machine.screen.width == 1024 && machine.screen.height == 768 "1024 x 768 was not taken"
+
+    # The depth module: "Thousands of Colors", then open the startup disk.
+    mach64_strip(100, 755, 150, 726)
+    assert machine.screen.depth == 16 "thousands is 16 bpp"
+    double_click(984, 52)
+    run_ticks(300)
+    check_ex("goldens/pm9500-mach64-1024x768x16-window.png", 0, 860, 20, 940)
+
+    # "Millions of Colors": the window redraws over a 3 MB frame.
+    mach64_strip(100, 755, 150, 739)
+    assert machine.screen.depth == 32 "millions is 32 bpp"
+    check_ex("goldens/pm9500-mach64-1024x768x32-window.png", 0, 860, 20, 940)
+    report_row("7.6", "mach64_gx", "1024x768 thousands millions")
 }
 
 # ---- tnt-voodoo2-display ----------------------------------------------------
@@ -416,6 +475,13 @@ if row_on("pm9500-76-mach64") {
         row_end("pm9500-76-mach64", try(row_pm9500_76_mach64(), "FAILED"))
     } else {
         echo "skip: pm9500-76-mach64 (7.6 image not fetched)"
+    }
+}
+if row_on("pm9500-mach64-depths") {
+    if have_media($hd_76) {
+        row_end("pm9500-mach64-depths", try(row_pm9500_mach64_depths(), "FAILED"))
+    } else {
+        echo "skip: pm9500-mach64-depths (7.6 image not fetched)"
     }
 }
 if row_on("tnt-voodoo2-display") {

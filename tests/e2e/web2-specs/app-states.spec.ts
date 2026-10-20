@@ -237,9 +237,15 @@ for (const skin of SKINS) {
       );
       // The zoom the snapshot was taken at: left alone, the page fits the
       // screen to the display area, which depends on the window.
+      // Until a zoom is chosen the page refits on every resize of the area,
+      // and a refit that lands between fill and Enter rewrites the field, so
+      // Enter then commits the fitted value: retry until 200% sticks.
       const zoom = page.getByRole("textbox", { name: "Zoom level" });
-      await zoom.fill("200%");
-      await zoom.press("Enter");
+      await expect(async () => {
+        await zoom.fill("200%");
+        await zoom.press("Enter");
+        await expect(zoom).toHaveValue("200%", { timeout: 1_000 });
+      }).toPass({ timeout: 15_000 });
       // In Real mode the speed governor slows the CPU when the host falls
       // behind, and a loaded CI runner does during the boot: the status bar
       // then carries a speed readout (0.88x) that moves everything after it.

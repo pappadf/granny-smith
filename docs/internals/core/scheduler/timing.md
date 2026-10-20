@@ -41,9 +41,11 @@ machines 1 (Apple's MIPS ratings read as MHz / MIPS give about 4.0 for every
 `mac030_build_core` picks by CPU model; the AV Quadras also price reads of
 cache-inhibited RAM at their DRAM read time, `g_uncached_read_cycles`, which
 the ROM's DSP handshake needs, see [dsp.md](../../machines/av/dsp.md)); the
-Lisa/Mac XL uses 4 (its
-long-standing effective value); the 601 PDM machines use 1 and the TNT and
-Gossamer machines 2 (see `tnt.c`).
+Lisa/Mac XL uses 10 (its video fetch owns every other 400 ns memory slot, so
+each instruction takes whole 800 ns bus cycles: the boot ROM's calibrated
+"about 5.6 µs" self-test loop is 9.3 cycles an instruction, and at the old 4
+its ~20 ms retrace wait lasted under one frame — CPU error 42; see `lisa.c`);
+the 601 PDM machines use 1 and the TNT and Gossamer machines 2 (see `tnt.c`).
 
 ### Effective CPI (the speed governor and accelerated mode)
 
@@ -59,7 +61,10 @@ and in paced and accelerated alike the governor *raises* it (down to
 frame-unit per VBL period, so the budget converts to fewer instructions and the
 frame-units stay on real time — see docs/internals/core/scheduler/scheduler.md
 §2.3. Either way the cycle timebase (and thus every cycle-derived peripheral
-clock) stays real-time. The sub-cycle remainder of each sprint
+clock) stays real-time. Guest code that times a hardware signal with an
+instruction loop sees the loop shortened too: the Lisa boot ROM's video
+self-test (CPU error 42) passes only at 1x, so a Lisa is started in Real
+mode and accelerated once the boot ROM has handed over. The sub-cycle remainder of each sprint
 (`cycle_frac_x256`) carries in scheduler state, so `cpu_cycles` advances by
 exact integers and no fraction is ever dropped. Formulas below are written with
 plain `CPI`; read `cpi_eff_x256 / 256` for the general case.
@@ -372,7 +377,7 @@ Each machine sets its CPU clock frequency via `scheduler_set_frequency()`:
 
 | Machine | CPU | Frequency | CPI |
 |---------|-----|-----------|-----|
-| Lisa 2 / Mac XL | 68000 @ 5.09375 MHz | 5,093,750 Hz | 4 |
+| Lisa 2 / Mac XL | 68000 @ 5.09375 MHz | 5,093,750 Hz | 10 |
 | Plus | 68000 @ 7.8336 MHz | 7,833,600 Hz | 10 |
 | SE/30, IIx, IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
 | IIsi | 68030 @ 20 MHz | 20,000,000 Hz | 4 |

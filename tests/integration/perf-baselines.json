@@ -388,6 +388,10 @@
       "instr": 402035803,
       "tolerance": 0.2
     },
+    "suite-iici/iici-71-cd-insert": {
+      "instr": 652228173,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-71-hd": {
       "instr": 371771273,
       "tolerance": 0.2
@@ -489,7 +493,7 @@
       "tolerance": 0.2
     },
     "suite-iisi/iisi-608-hd": {
-      "instr": 60000000,
+      "instr": 40000000,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-701-depths": {
@@ -716,8 +720,16 @@
       "instr": 734827198,
       "tolerance": 0.2
     },
+    "suite-se30/se30-71-hd-addr32": {
+      "instr": 673005445,
+      "tolerance": 0.2
+    },
     "suite-se30/se30-75-hd": {
       "instr": 1072967384,
+      "tolerance": 0.2
+    },
+    "suite-se30/se30-75-hd-addr32": {
+      "instr": 1071561785,
       "tolerance": 0.2
     },
     "suite-se30/se30-checkpoint": {
@@ -732,12 +744,12 @@
       "instr": 270329784,
       "tolerance": 0.2
     },
-    "suite-tnt/pm7500-76-cd": {
-      "instr": 2500000000,
-      "tolerance": 0.2
-    },
     "suite-tnt/pm7500-76-8bpp-restart": {
       "instr": 5000000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt/pm7500-76-cd": {
+      "instr": 2500000000,
       "tolerance": 0.2
     },
     "suite-tnt/pm7500-76-hd": {

@@ -94,7 +94,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         }
         // Expandable: a non-empty file the registry recognises (read from a
         // bounded probe of its head and tail; a compressed archive member is
-        // not decoded to find out).
+        // decoded to find out only up to vfs_is_expandable's cap).
         bool expandable = false;
         if (!(mode & VFS_MODE_DIR) && size > 0) {
             char child[VFS_PATH_MAX];
