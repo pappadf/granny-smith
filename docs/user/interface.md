@@ -67,7 +67,7 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 |---|---|
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
 | Speed | The processor's speed factor when it is not the original's: in Faster mode (for example **3×**), or when your computer cannot keep up (for example **0.5×**, see §2). |
-| MIPS | Emulated instructions per second, in millions, while the processor runs: time it spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted. |
+| MIPS | Emulated instructions, in millions, per second the emulator spends running the processor: time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, so it is the rate the emulator executes at, whatever the speed setting. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |
 | **Caps Lock** (⇪) | The Mac's Caps Lock key. It follows your keyboard's Caps Lock; click it to latch Caps Lock on a keyboard without one. |

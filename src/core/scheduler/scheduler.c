@@ -1183,8 +1183,8 @@ uint64_t scheduler_cpu_cycles(struct scheduler *restrict s) {
     return current_cpu_cycles(s);
 }
 
-uint64_t scheduler_sleep_cycles(struct scheduler *s) {
-    return s ? s->sleep_cycles : 0;
+double scheduler_sleep_host_ms(struct scheduler *s) {
+    return s ? s->sleep_host_ms : 0;
 }
 
 // Get current emulated time in nanoseconds
@@ -1364,6 +1364,11 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     if (debugger_active)
         debug_note_pc();
 
+    // When the current sleep (a run of stopped iterations) began on the host
+    // clock, negative while awake: the clock is read once per sleep and once
+    // per wake-up, not per event slept through
+    double sleep_t0 = -1;
+
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
 
@@ -1378,6 +1383,8 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             // skip past (and clear) that window, dropping the heartbeat.
             cpu->poll_interrupt(cpu->ctx);
             if (cpu->is_stopped(cpu->ctx)) { // still halted: sleep until the next event
+                if (sleep_t0 < 0)
+                    sleep_t0 = host_time_ms();
                 // With nothing queued, sleep out the budget instead: the
                 // frame then completes and the next one pulses the VBL,
                 // which is what wakes a STOP'd Mac whose queue has run dry.
@@ -1392,11 +1399,14 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
                 uint64_t advance = min_u64(cte, remaining_cycles);
                 remaining_cycles -= advance;
                 s->saved.cpu_cycles += advance;
-                s->sleep_cycles += advance;
                 process_event_queue(&s->cpu_events, s->saved.cpu_cycles);
                 cpu->poll_interrupt(cpu->ctx); // event may have raised the IPL → take it (clears stopped)
             }
             continue;
+        }
+        if (sleep_t0 >= 0) { // awake again: the sleep ends here
+            s->sleep_host_ms += host_time_ms() - sleep_t0;
+            sleep_t0 = -1;
         }
 
         uint64_t cycles_to_execute = remaining_cycles;
@@ -1549,6 +1559,8 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             break;
         }
     }
+    if (sleep_t0 >= 0) // the budget ran out asleep
+        s->sleep_host_ms += host_time_ms() - sleep_t0;
 
     GS_ASSERT(s->sprint_burndown <= s->sprint_total);
     if (s->cpu_events != NULL)
