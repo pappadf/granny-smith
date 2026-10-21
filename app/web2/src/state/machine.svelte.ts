@@ -173,6 +173,30 @@ export function fitZoom(
   machine.zoom = Math.max(ZOOM_MIN, Math.min(200, Math.floor(fits / 10) * 10));
 }
 
+// Whether the user has chosen a pacing mode in this page (the toolbar, or
+// ?speed=).  Until they do, each machine runs at its model's default
+// (defaultSchedulerMode), applied as it appears (bus/boot.ts).
+let schedulerChosen = false;
+
+export function markSchedulerChosen(): void {
+  schedulerChosen = true;
+}
+
+export function isSchedulerChosen(): boolean {
+  return schedulerChosen;
+}
+
+export function _resetSchedulerChoiceForTests(): void {
+  schedulerChosen = false;
+}
+
+// The pacing a machine starts at when the user has chosen none: Faster,
+// except on a model whose profile asks for Real (capabilities.realtime_default:
+// the Lisa family).
+export function defaultSchedulerMode(realtimeDefault: boolean): SchedulerMode {
+  return realtimeDefault ? 'live' : 'accel';
+}
+
 // Pure state update. Pushing the mode to the emulator core lives in
 // bus/emulator.ts (applySchedulerMode), which calls this on success.
 export function setSchedulerMode(mode: SchedulerMode): void {

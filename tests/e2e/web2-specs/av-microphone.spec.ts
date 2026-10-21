@@ -48,8 +48,8 @@ import {
 } from "../helpers/av";
 
 test.use({
-  // Real-time media feeds the guest: keep web2's default pacing.
-  gsSpeed: null,
+  // Real-time media feeds the guest: run in Real.
+  gsSpeed: "paced",
   launchOptions: { args: FAKE_MEDIA_ARGS },
 });
 

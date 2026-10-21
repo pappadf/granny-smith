@@ -289,8 +289,14 @@ host_pacing_t *platform_pacing(void) {
     return &s_pacing;
 }
 
-// The instruction count at the last perf sample (MIPS is the delta).
+// The instruction count at the last perf sample (MIPS is the delta), the
+// host time the run loop has taken since (run_ms), and the scheduler's sleep
+// meter then: MIPS is instructions per host second the CPU spent awake, so a
+// guest that dozes most of the window (Mac OS X idling at the desktop) still
+// shows the rate it runs at while it runs, whatever the speed setting.
 static uint64_t last_instr = 0;
+static double run_ms = 0;
+static double last_sleep_ms = 0;
 static uint64_t last_jit_insns = 0; // the translation tier's instruction total at the last sample
 // The activity lights' state and the counter baselines they compare against.
 static drive_activity_t lights;
@@ -448,11 +454,21 @@ void em_main_tick(void) {
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
         uint64_t instr_now = cpu_instr_count();
+        scheduler_t *perf_sched = system_scheduler();
+        double sleep_now = scheduler_sleep_host_ms(perf_sched);
 
         if (last_time > 0) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
-            double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
+            // The run loop's host time less its sleeping: the time the CPU
+            // was executing.  Not the emulated awake share of the wall time:
+            // a doze is fast-forwarded, so above 1x its emulated seconds
+            // cost next to no host time, and that scaling reported the
+            // speed multiple times the clock rate (2000 MIPS at 8x).
+            double slept_ms = sleep_now - last_sleep_ms;
+            double awake_ms = run_ms - slept_ms;
+            double mips =
+                awake_ms > 0 && instr_now > last_instr ? (double)(instr_now - last_instr) / (awake_ms * 1000.0) : 0;
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
@@ -486,6 +502,8 @@ void em_main_tick(void) {
         last_jit_insns = js_now.insns;
         last_time = current_time;
         last_instr = instr_now;
+        run_ms = 0;
+        last_sleep_ms = sleep_now;
     }
 
     // Execute based on emulation state
@@ -504,7 +522,9 @@ void em_main_tick(void) {
 
         // The active machine is read plainly: every writer (machine.boot,
         // checkpoint.load) is a request served on this thread.
+        double run_t0 = emscripten_get_now();
         scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
+        run_ms += emscripten_get_now() - run_t0;
 
         // Update video if framebuffer changed
         em_video_update();
@@ -572,6 +592,8 @@ void em_main_tick(void) {
 void platform_machine_attached(void) {
     last_time = 0; // the next perf sample only sets the baseline
     last_instr = cpu_instr_count();
+    run_ms = 0;
+    last_sleep_ms = scheduler_sleep_host_ms(system_scheduler());
     for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
         if (lights.light[k] != DRIVE_LIGHT_IDLE)
             event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,

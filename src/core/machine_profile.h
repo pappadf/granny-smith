@@ -443,6 +443,12 @@ typedef struct hw_profile {
     // independent, and a machine could plausibly have one without the other.
     bool has_audio_in;
 
+    // The machine starts at real-time pacing in a front end whose user has
+    // not picked one, instead of the accelerated default (the Lisa family).
+    // Drives the exported `realtime_default` capability; a front-end
+    // preference only, the core's own pacing default is paced either way.
+    bool realtime_default;
+
     // Auxiliary CPU cores (heterogeneous multi-CPU, cores.md): peripheral
     // processors that execute real guest code but do not own time — the AV
     // family's DSP3210.  Sentinel-terminated (name == NULL); NULL when the

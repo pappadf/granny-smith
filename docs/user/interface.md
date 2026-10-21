@@ -38,6 +38,11 @@ into the **More** (**…**) menu at its end; Run and Shut down always stay.
 | **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). Slows down the same way as Real when your computer cannot keep up. |
 | **Max** | Runs everything as fast as possible to skip ahead; games and sound run fast too. Useful for long installs and boots. |
 
+Every machine starts in **Faster**, except the Lisa and the Macintosh XL,
+which start in **Real** (see [Machines](machines.md)).  Once you pick a mode
+on the toolbar, or with the `speed=` [URL parameter](url-parameters.md),
+every machine you start in that page runs in it.
+
 The mode applies to every machine you run in this page; a link can preset
 it with `speed=` ([URL parameters](url-parameters.md) §4).
 
@@ -62,7 +67,7 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 |---|---|
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
 | Speed | The processor's speed factor when it is not the original's: in Faster mode (for example **3×**), or when your computer cannot keep up (for example **0.5×**, see §2). |
-| MIPS | Emulated instructions per second, in millions. |
+| MIPS | Emulated instructions, in millions, per second the emulator spends running the processor: time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, so it is the rate the emulator executes at, whatever the speed setting. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |
 | **Caps Lock** (⇪) | The Mac's Caps Lock key. It follows your keyboard's Caps Lock; click it to latch Caps Lock on a keyboard without one. |

@@ -984,7 +984,7 @@ export async function resumeEmulator(): Promise<void> {
 }
 
 // UI mode name → core `pacing.mode` value.
-const CORE_MODE: Record<SchedulerMode, string> = {
+export const CORE_MODE: Record<SchedulerMode, string> = {
   live: 'paced',
   accel: 'accelerated',
   turbo: 'turbo',

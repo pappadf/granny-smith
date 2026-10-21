@@ -59,8 +59,9 @@ Lisa and XL have no AppleTalk setting: Serial B, the port the Lisa was built
 to use for AppleBus, is always on the emulated AppleTalk network, for
 software that drives it as LocalTalk. Their ImageWriter connects to Serial A.
 
-Start a Lisa or XL in **Real** or **Max**, and switch to **Faster** only once
-it has left the boot ROM's self-test. The self-test times the screen's
+A Lisa or XL starts in **Real** (every other machine starts in **Faster**).
+Keep it in **Real** or **Max**, and switch to **Faster** only once it has
+left the boot ROM's self-test. The self-test times the screen's
 retrace with a loop sized for the original processor; a faster one finishes
 the loop early and stops with CPU error 42, as an accelerated real Lisa
 would.

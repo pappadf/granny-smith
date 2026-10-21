@@ -214,7 +214,7 @@
           class="gs-statusbar__item sb-item sb-mips"
           title="Emulated CPU throughput: {machine.mips.toFixed(
             1,
-          )} million instructions/second ({machine.ticksPerSecond.toFixed(
+          )} million instructions per second while the CPU is awake, time it sleeps not counted ({machine.ticksPerSecond.toFixed(
             0,
           )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
             1,

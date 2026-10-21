@@ -374,9 +374,10 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    // CPI 2, the TNT rationale: a 750 running the 68k emulator sustains
-    // well under one instruction per clock.
-    scheduler_set_cpi(cfg->scheduler, 2);
+    // CPI 1: the 750 sustains close to one instruction per clock, and with
+    // the translation tier the host can pace 267 MIPS of busy guest at 1x
+    // (CPI 2 halved a fully busy guest to 134 MIPS of real time).
+    scheduler_set_cpi(cfg->scheduler, 1);
     // Time base and decrementer at bus/4 = 16,705,000 Hz (the tree's
     // timebase-frequency $00FEE5E8; MPC750UM §2.1.1).
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, board->bus_hz / 4u);

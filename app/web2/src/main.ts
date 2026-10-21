@@ -22,7 +22,7 @@ import {
 } from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
 import { checkStoragePersistence } from '@/bus/storageHealth';
-import { setSchedulerMode } from '@/state/machine.svelte';
+import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
@@ -120,13 +120,16 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
-  // ?speed= is the toolbar's pacing preference from the start.  The core's
+  // ?speed= is the toolbar's pacing preference from the start, and a choice:
+  // no machine's default overrides it.  The core's
   // pacing is the host's setting, there with or without a machine, so it is
   // pushed as soon as the core is up (below) and every machine the page then
   // boots or restores runs under it.
   const urlMode = urlSchedulerMode(mediaParams.speed);
-  if (urlMode) setSchedulerMode(urlMode);
-  else if (mediaParams.speed !== null)
+  if (urlMode) {
+    setSchedulerMode(urlMode);
+    markSchedulerChosen();
+  } else if (mediaParams.speed !== null)
     // An unknown value (or one of the retired aliases, `max`, `realtime`,
     // `hardware`) used to be dropped without a word.
     showNotification(

@@ -1449,6 +1449,8 @@ const hw_profile_t machine_lisa = {
     .default_storage = lisa_default_storage,
     .builtin_video = &lisa_builtin_video,
 
+    .realtime_default = true, // the page starts it at Real, not Faster
+
     .board = &lisa_board,
     .substrate = &lisa_substrate,
 };
@@ -1477,6 +1479,8 @@ const hw_profile_t machine_macxl = {
     .storage = macxl_storage,
     .default_storage = lisa_default_storage,
     .builtin_video = &lisa_builtin_video,
+
+    .realtime_default = true, // the page starts it at Real, as the Lisa 2
 
     .board = &macxl_board,
     .substrate = &lisa_substrate,

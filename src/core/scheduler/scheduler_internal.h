@@ -158,6 +158,11 @@ struct scheduler {
     bool mode_open;
     bool mode_bounded; // the mode has an instruction budget
     uint32_t speed_reported_x256; // the last effective speed announced (speed event)
+    // Host wall time, in ms, spent fast-forwarding a stopped CPU (STOP, PPC
+    // doze/nap) to its next event: run time that retired no instructions.
+    // A host-side meter (the page's MIPS figure counts awake time only), so
+    // never checkpointed.
+    double sleep_host_ms;
     bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
 
     // Pointers last

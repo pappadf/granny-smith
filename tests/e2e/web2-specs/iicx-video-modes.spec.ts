@@ -33,9 +33,9 @@ import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { terminalRun as typeLine } from '../helpers/terminal';
 
-// Keep web2's default pacing: the splash capture relies on the paced boot
-// sitting at the splash until the spec stops the machine.
-test.use({ gsSpeed: null });
+// Real pacing, not web2's default Faster: the splash capture relies on the
+// paced boot sitting at the splash until the spec stops the machine.
+test.use({ gsSpeed: 'paced' });
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>

@@ -117,11 +117,11 @@
       "tolerance": 0.2
     },
     "default-configs/pmg3dt": {
-      "instr": 720000000,
+      "instr": 1440000000,
       "tolerance": 0.2
     },
     "default-configs/pmg3mt": {
-      "instr": 810000000,
+      "instr": 1620000000,
       "tolerance": 0.2
     },
     "default-configs/q660av": {
@@ -149,15 +149,15 @@
       "tolerance": 0.2
     },
     "g3-osx-10-0-finder/finder": {
-      "instr": 5416035027,
+      "instr": 6173555819,
       "tolerance": 0.2
     },
     "gossamer-checkpoint/restored-desktop": {
-      "instr": 2250000000,
+      "instr": 4250000000,
       "tolerance": 0.2
     },
     "gossamer-restore-fail/finder": {
-      "instr": 3147084947,
+      "instr": 4224742625,
       "tolerance": 0.2
     },
     "iici-aux3-8bpp/login": {
@@ -365,15 +365,15 @@
       "tolerance": 0.2
     },
     "suite-gossamer/g3dt-floppy": {
-      "instr": 4519567250,
+      "instr": 5790623876,
       "tolerance": 0.2
     },
     "suite-gossamer/g3dt-hd": {
-      "instr": 4485289992,
+      "instr": 5725336170,
       "tolerance": 0.2
     },
     "suite-gossamer/g3mt-hd": {
-      "instr": 4653575867,
+      "instr": 6039415220,
       "tolerance": 0.2
     },
     "suite-iici/iici-24ac-dual": {

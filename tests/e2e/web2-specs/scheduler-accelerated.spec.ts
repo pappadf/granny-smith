@@ -26,8 +26,8 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun as typeLine } from '../helpers/terminal';
 
-// Keep web2's default pacing: it measures pacing itself.
-test.use({ gsSpeed: null });
+// Real pacing, not web2's default Faster: it measures pacing itself.
+test.use({ gsSpeed: 'paced' });
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
@@ -129,7 +129,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // --- Real-Time baseline ---------------------------------------------------
-  // Default mode is live/paced; the cycle rate must sit at the SE/30's clock
+  // The page starts in live/paced (speed=paced); the cycle rate must sit at the SE/30's clock
   // and instructions at cycles/CPI (authentic 4).
   expect(await probeString(page, 'scheduler.mode')).toBe('paced');
   const live = await measureRates(page, 6);
