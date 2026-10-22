@@ -41,7 +41,7 @@ tests/
 ├── integration/                    # Headless emulator integration tests
 │   ├── lib/                       #   Shared row/wait/golden library (include'd)
 │   ├── suite-<family>/            #   Per-machine suites (rows, goldens/)
-│   └── <name>/                    #   One directory per test (config.mk, test.script)
+│   └── <name>/                    #   One directory per test (config.mk, test.lua)
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
@@ -92,7 +92,7 @@ switch.
 
 Integration tests exercise the full emulator in headless mode (native binary,
 no browser). Each test has a `config.mk` (ROM/disk paths, arguments) and a
-`test.script` (shell commands + expected-output checks).
+`test.lua` (a Lua script that drives the emulator and asserts).
 
 ### Running Integration Tests
 
@@ -387,10 +387,11 @@ not flake — absorb legitimate ones with a reviewed
 
 ### Writing a New Integration Test
 
-1. Create `tests/integration/foo/` with `config.mk` and `test.script`.
+1. Create `tests/integration/foo/` with `config.mk` and `test.lua`.
 2. `config.mk` sets `TEST_ROM`, `TEST_ARGS`, `TEST_TIER`, and optionally
    `TEST_SETUP`/`TEST_RUNNER`.
-3. `test.script` contains shell commands sent to the headless emulator.
+3. `test.lua` is the Lua script the headless emulator runs
+   (`docs/internals/core/lua/lua.md`).
    A boot assertion belongs as a row in its machine's suite, not a new
    directory — new directories are for genuinely new mechanisms.
 4. Run: `make -C tests/integration test-foo`

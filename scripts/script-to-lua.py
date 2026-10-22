@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """script-to-lua.py — convert a shell-v2 `.script` file to Lua 5.4.
 
 Usage:
