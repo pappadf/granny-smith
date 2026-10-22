@@ -326,6 +326,11 @@ void ppc_mmu_ctx_free(ppc_mmu_ctx_t *c) {
     }
     if (g_ctx_count == 1)
         g_mem_code_marked_hook = NULL;
+    // The device-entry records must not write into freed tables
+    memory_dev_entries_forget(c->user_read);
+    memory_dev_entries_forget(c->user_write);
+    memory_dev_entries_forget(c->sv_read);
+    memory_dev_entries_forget(c->sv_write);
     free(c->user_read);
     free(c->user_write);
     free(c->sv_read);
@@ -339,6 +344,10 @@ void ppc_mmu_ctx_free(ppc_mmu_ctx_t *c) {
 static void ctx_ensure_arrays(ppc_mmu_ctx_t *c) {
     if (!c->owns_user_arrays || (c->user_read && c->user_pages == g_page_count))
         return;
+    if (c->user_read) {
+        memory_dev_entries_forget(c->user_read);
+        memory_dev_entries_forget(c->user_write);
+    }
     free(c->user_read);
     free(c->user_write);
     c->user_read = (uintptr_t *)calloc(g_page_count ? g_page_count : 1, sizeof(uintptr_t));
