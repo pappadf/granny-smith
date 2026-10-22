@@ -106,7 +106,7 @@ static DEF_SETTER(sched_attr_cpi_set) {
 // accelerated multiplier. The setting is the host's: it outlives machines
 // and is never checkpointed.
 static DEF_GETTER(sched_attr_speed) {
-    return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
+    return val_float((double)scheduler_effective_speed_x256(sched_self_from(self)) / 256.0);
 }
 static DEF_SETTER(sched_attr_speed_set) {
     return pacing_write_speed(sched_self_from(self), "scheduler.speed", in.f);
@@ -214,10 +214,10 @@ static const member_t scheduler_members[] = {
      .attr = {.type = VK_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
     {.kind = MK_ATTR,
      .name = "speed",
-     .doc = "CPU speed multiplier in force (live): below 1 when the host cannot keep up in paced or "
-            "accelerated, above 1 in accelerated. Write 0 for auto (adaptive governor, between min_speed "
-            "and max_speed) or 1.0..8.0 to pin a fixed accelerated multiplier. Timebase (VBL/VIA/sound) "
-            "stays real-time regardless", .flags = 0,
+     .doc = "How fast the machine runs against the original (live): the CPU multiplier in paced and "
+            "accelerated (below 1 when the host cannot keep up, above 1 in accelerated, where the timebase "
+            "stays real-time), the measured emulated-to-host time ratio in turbo. Write 0 for auto (adaptive "
+            "governor, between min_speed and max_speed) or 1.0..8.0 to pin a fixed accelerated multiplier", .flags = 0,
      .attr = {.type = VK_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
     {.kind = MK_ATTR,
      .name = "speed_auto",

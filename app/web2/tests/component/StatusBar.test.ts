@@ -45,7 +45,7 @@ describe('StatusBar', () => {
 
   it('shows the CPU speed for a running machine, not a stopped one', () => {
     machine.scheduler = 'accel';
-    machine.acceleratedSpeed = 8;
+    machine.cpuSpeed = 8;
     try {
       machine.status = 'running';
       const running = render(StatusBar);
@@ -56,7 +56,32 @@ describe('StatusBar', () => {
       expect(stopped.container.querySelector('.sb-speed')).toBeNull();
     } finally {
       machine.scheduler = 'live';
-      machine.acceleratedSpeed = 1;
+      machine.cpuSpeed = 1;
+    }
+  });
+
+  it('shows 1× in Real mode too, so the MIPS figure has its reference', () => {
+    machine.scheduler = 'live';
+    machine.cpuSpeed = 1;
+    machine.status = 'running';
+    const { container } = render(StatusBar);
+    expect(container.querySelector('.sb-speed .label')?.textContent).toBe('1×');
+  });
+
+  it('formats the Max-mode ratio to a tenth below 10× and whole above', () => {
+    machine.scheduler = 'turbo';
+    machine.status = 'running';
+    try {
+      machine.cpuSpeed = 7.3;
+      const a = render(StatusBar);
+      expect(a.container.querySelector('.sb-speed .label')?.textContent).toBe('7.3×');
+      a.unmount();
+      machine.cpuSpeed = 112;
+      const b = render(StatusBar);
+      expect(b.container.querySelector('.sb-speed .label')?.textContent).toBe('112×');
+    } finally {
+      machine.scheduler = 'live';
+      machine.cpuSpeed = 1;
     }
   });
 

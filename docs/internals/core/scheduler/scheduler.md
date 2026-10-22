@@ -907,7 +907,10 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   period, leaving the rest for a run loop that shares its frame. Emulated time outruns real time on a fast host. The first tick after
   init / checkpoint restore / mode switch has no `host_secs_per_vbl` estimate yet
   (it's `NAN`) and is explicitly guarded to run exactly 1 frame-unit — a float→int
-  conversion of NaN is undefined behaviour.
+  conversion of NaN is undefined behaviour. The tail of each tick also measures
+  what the mode achieved — the frame-units run times the VBL period, over the
+  host time since the previous tick — into `turbo_ratio` (EWMA, `TURBO_RATIO_ALPHA`),
+  which is the mode's speed figure (§10.6).
 
 A smoothed EWMA of host seconds per VBL/loop drives the turbo heuristic; a >1 s gap
 (tab backgrounded) resets rather than fast-forwarding. `scheduler_apply_pacing` resets
@@ -977,6 +980,79 @@ the end of `scheduler_run_frame` for a stop from inside the frame (budget, break
 or from `scheduler_stop_reason` itself for one from outside (a `scheduler.stop` leaf
 served between ticks). A machine that is already stopped reports nothing. The mode
 fields live outside the checkpointed block: a restored machine starts with no mode open.
+
+### 10.6 The two speed figures
+
+The status bar shows two numbers about speed, and each is one quantity with one
+definition, derived from a signal the scheduler already has. They answer two
+different questions and must not be read as one.
+
+**Speed (×): how fast the emulated machine runs against the original.**
+`scheduler_effective_speed_x256` (scheduler.c), announced on change as the `speed`
+event and read back as `scheduler.speed`. It is the CPU multiplier times the rate
+the guest's clock runs at against real time:
+
+| Mode | Clock vs real time | CPU multiplier | Speed figure |
+|---|---|---|---|
+| paced | 1 by construction (the accumulator, §10.3) | the governor's pick, 1× unless the host fell behind (§2.3) | the multiplier: `1×`, or `0.5×` on an overloaded host |
+| accelerated | 1 by construction | the pin or the governor's rung, up to `max_speed` | the multiplier: `1.5×` … `8×` |
+| unthrottled | as fast as the host allows | 1 (authentic CPI) | the measured ratio `turbo_ratio`, quantized to a tenth below 10× and a whole number above; `1×` until the first tick has measured it |
+
+Two things make this one definition rather than two. First, in paced and accelerated
+the ratio of emulated to real time is 1 *by design*: a deviation is lag the
+accumulator repays within a few ticks, not speed, so the multiplier is the whole
+figure and the chip steps exactly along the governor's ladder (§2.3) instead of
+jittering around 1.00. Second, in unthrottled the multiplier is exactly 1 and the
+whole figure is the clock, so the measured ratio is the whole figure. Sleep does not
+enter: a dozing guest at 1× is a machine running at the original's speed that happens
+to be idle, as the original would be.
+
+The multiplier is the governor's state, so it changes a few times a second at most and
+is pushed on change. The turbo ratio is a measurement; the EWMA and the quantization
+keep its announcements to the same cadence. The headless pump never calls
+`scheduler_main_loop`, so its unthrottled speed reads `1×` — there is no display to
+read it on, and `scheduler.run N` is budget-driven, not time-driven.
+
+**MIPS: how fast this host emulates, in instructions per host second, while the
+guest CPU is awake.** Measured in the browser's run loop (`em_main.c`, the perf
+sample every `PERF_UPDATE_INTERVAL` ticks): the instructions retired in the window,
+over the host time the run loop spent inside `scheduler_main_loop` *less* the host
+time `scheduler_run_instructions` spent fast-forwarding a stopped CPU to its next
+event (`scheduler_sleep_host_ms`: two clock reads per sleep, none per event slept
+through). Three consequences, all intended:
+
+- **Sleep does not dilute it.** A Mac OS X desktop that dozes 99 % of the time shows
+  the rate the host achieves during the 1 % it runs, not 1 MIPS. This is what the
+  speed figure needs for a reference: the original's CPU would sleep too.
+- **It is the host's rate, not the guest's.** Under paced a fast host runs each
+  frame's instructions in part of the frame and waits out the rest, so the figure is
+  *above* what the guest retires per real second (a 60 MHz, CPI 1 Power Macintosh 6100
+  retires 60 M per second at `1×` and the host may show 160). Read together: the host
+  could run this machine at 160 MIPS; Real holds it to 1×. Under unthrottled the two
+  coincide.
+- **At idle it is low, and that is true.** The denominator is the run loop's time,
+  which includes the VBL pulse, event callbacks and the device work they do, not only
+  `run_sprint`; an idle guest wakes a thousand times a second for a few thousand
+  instructions each, so that fixed cost is most of its awake time and the host's rate
+  on that workload is a fraction of what it reaches on a busy user program (10–30
+  against 150–200 for the PowerPC translation tier). Excluding the device work would
+  take a clock read per sprint, and would measure a quantity no benchmark uses. The
+  figure to compare an engine by is a busy guest's, or `tests/bench` and
+  `perf-bench.spec.ts`, which measure a defined workload in unthrottled.
+
+What the two do *not* say: neither is "the guest's MIPS", instructions per emulated
+second. That is `frequency / CPI × speed × awake share`, follows from the speed figure
+and the machine's constants (§2.1), and would read the authentic rate in every mode but
+unthrottled whatever the host does — which is why it is not shown.
+
+> **History.** The MIPS figure was redefined four times in October 2026: wall-clock
+> instructions per second (idle OS X read 1 MIPS); instructions over the emulated awake
+> share of wall time (a fast-forwarded doze costs no host time, so an idle G3 at 8× read
+> 2000); instructions over awake host time (the definition above, which a 6100 under
+> Real "contradicted" at 160 only because the 1× chip was hidden); and a minimum of that
+> and the guest's emulated rate (a Plus in unthrottled would have read 0.78). The last two
+> complaints were the same misreading, cured by always showing the speed beside it and by
+> this section, not by another term.
 
 ---
 
@@ -1085,7 +1161,7 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 | `scheduler.stop`            | Stop execution immediately.                                |
 | `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; strict: the legacy aliases are rejected). The host's setting, the same one as `pacing.mode`, reached through the running machine. |
 | `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). A checkpoint carries it, override included. |
-| `scheduler.speed`           | Multiplier in force (live): below 1 when the host cannot keep up in `paced` or `accelerated`, above 1 in `accelerated`. Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin the accelerated multiplier; the host's setting (`pacing.speed`). |
+| `scheduler.speed`           | How fast the machine runs against the original (live, §10.6): the CPU multiplier in `paced` and `accelerated` (below 1 when the host cannot keep up, above 1 in `accelerated`), the measured emulated-to-host time ratio in `turbo`. Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin the accelerated multiplier; the host's setting (`pacing.speed`). |
 | `scheduler.speed_auto`      | RO: true while the adaptive governor is choosing the speed (`speed = 0`). |
 | `scheduler.min_speed`       | Floor on the governor (0.25 .. 1.0, default 0.25): how far the CPU may slow on an overloaded host; 1.0 never slows it. The host's setting (`pacing.min_speed`). |
 | `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. The host's setting (`pacing.max_speed`). |

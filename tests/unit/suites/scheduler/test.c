@@ -572,6 +572,40 @@ TEST(test_turbo_first_tick_and_batching) {
     teardown(s);
 }
 
+// Turbo's speed figure: the CPU multiplier is 1 and the clock outruns real
+// time, so scheduler_effective_speed_x256 is the measured ratio of emulated
+// to host time -- 1x before the first tick measures it, then what the ticks
+// achieve (within the EWMA's smoothing and the quantization to tenths), and
+// back to 1x the moment the pacing leaves turbo.
+TEST(test_turbo_speed_is_the_achieved_ratio) {
+    scheduler_t *s = fresh_scheduler(false);
+    test_set_mode(s, schedule_unthrottled);
+    ASSERT_TRUE(scheduler_effective_speed_x256(s) == SPEED_X256_ONE); // nothing measured yet
+    g_host.secs_per_instr = 0.002 / 10852.0; // ~2 ms of host time per frame-unit
+
+    double now = 0.0;
+    for (int i = 0; i < 300; i++) {
+        now = g_host.now + 1.0 / 60.0;
+        tick_at(now);
+    }
+    // What the last 100 ticks achieved, measured from the outside
+    uint64_t v0 = g_host.vbls;
+    double t0 = g_host.now;
+    for (int i = 0; i < 100; i++) {
+        now = g_host.now + 1.0 / 60.0;
+        tick_at(now);
+    }
+    double achieved = (double)(g_host.vbls - v0) * VBL_PERIOD / (g_host.now - t0);
+    double shown = (double)scheduler_effective_speed_x256(s) / 256.0;
+    ASSERT_TRUE(achieved > 2.0); // the host fast-forwards
+    ASSERT_TRUE(shown > achieved * 0.85 && shown < achieved * 1.15);
+    ASSERT_TRUE(fabs(shown - floor(shown * 10.0 + 0.5) / 10.0) < 0.5 / 256.0 + 1e-9); // a tenth, within x256
+
+    test_set_mode(s, schedule_paced);
+    ASSERT_TRUE(scheduler_effective_speed_x256(s) == SPEED_X256_ONE); // reset with the pacing
+    teardown(s);
+}
+
 // Mode switch hygiene: turbo's estimators must not leak into paced pacing,
 // and cpu_cycles must stay monotonic across the switch.
 TEST(test_mode_switch_estimator_reset) {
@@ -1901,6 +1935,7 @@ int main(void) {
     RUN(test_paced_no_spiral);
     RUN(test_paced_background_reset);
     RUN(test_turbo_first_tick_and_batching);
+    RUN(test_turbo_speed_is_the_achieved_ratio);
     RUN(test_mode_switch_estimator_reset);
     RUN(test_single_timeline_across_modes);
     RUN(test_cpi_mode_independent);
