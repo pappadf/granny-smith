@@ -475,6 +475,14 @@ static uint8_t rr3_enabled(const scc_t *scc, int ch) {
     return (uint8_t)(scc->ch[0].rr[3] & mask);
 }
 
+unsigned scc_irq_channels(const scc_t *scc) {
+    if (!scc || !(scc->ch[0].wr[9] & WR9_MIE))
+        return 0;
+    uint8_t req = (uint8_t)(rr3_enabled(scc, 0) | rr3_enabled(scc, 1));
+    return (req & (RR3_CHANNEL_A_EXT | RR3_CHANNEL_A_TX | RR3_CHANNEL_A_RX) ? 1u : 0u) |
+           (req & (RR3_CHANNEL_B_EXT | RR3_CHANNEL_B_TX | RR3_CHANNEL_B_RX) ? 2u : 0u);
+}
+
 // Update the interrupt request lines based on pending SCC interrupts
 static void update_irqs(scc_t *scc) {
     uint8_t requesting = (uint8_t)(rr3_enabled(scc, 0) | rr3_enabled(scc, 1));
@@ -719,8 +727,14 @@ static uint8_t rr2(scc_t *scc, int ch) {
 }
 
 static uint8_t rr8(scc_channel_t *ch) {
-    // clear any pending rx interrupt
-    ch->scc->ch[0].rr[3] &= ch->index ? ~RR3_CHANNEL_B_RX : ~RR3_CHANNEL_A_RX;
+    // Reading a character clears a Receive Character Available interrupt,
+    // but not a latched Special Receive Condition: that one holds until
+    // Error Reset (Z8530 UM §4.4.3).  A DMA engine that drains the CRC
+    // bytes after the end-of-frame byte (Heathrow's DBDMA under the Open
+    // Transport LocalTalk driver) must leave the end-of-frame interrupt
+    // standing for the driver to take.
+    if (!ch->rx_special)
+        ch->scc->ch[0].rr[3] &= ch->index ? ~RR3_CHANNEL_B_RX : ~RR3_CHANNEL_A_RX;
     update_irqs(ch->scc);
 
     // if rx fifo is empty - do nothing
@@ -812,17 +826,57 @@ static void port_tx_byte(scc_t *scc, unsigned int ch, uint8_t value) {
         scc->port[ch].dev->tx_byte(scc->port[ch].dev_ctx, value);
 }
 
-static void tx_underrun(scc_channel_t *ch) {
+// One SDLC byte on a LocalTalk line (230.4 kbit/s)
+#define SDLC_BYTE_NS 34722u
+
+// The Tx Underrun/EOM latch goes to 1: an External/Status source when WR15
+// bit 6 enables it.  RR3 only drives INT when WR1 enables External/Status
+// interrupts (rr3_enabled).
+static void tx_eom_latch(scc_channel_t *ch) {
     ch->rr[0] |= RR0_TX_UNDERRUN_EOM;
+    if (ch->wr[15] & WR15_TX_UNDERRUN) {
+        ch->scc->ch[0].rr[3] |= ch->index ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
+        update_irqs(ch->scc);
+    }
+}
+
+// The frame's last bytes have left the Tx FIFO (source=scc, data=channel)
+static void tx_eom_callback(void *source, uint64_t data) {
+    scc_t *scc = (scc_t *)source;
+    tx_eom_latch(&scc->ch[data & 1]);
+}
+
+static void tx_underrun(scc_channel_t *ch) {
+    scc_t *scc = ch->scc;
+    size_t len = (size_t)ch->tx.len;
 
     if (!TX_EMPTY(ch)) {
         LOG(4, "scc:tx underrun len=%d", ch->tx.len);
         log_frame_preview(7, "scc:tx bytes", ch->tx.buf, (size_t)ch->tx.len);
-        scc_t *scc = ch->scc;
         if (ch->index == 1 && SDLC_MODE(ch) && scc->frame_sink)
             scc->frame_sink(scc->frame_ctx, ch->tx.buf, (size_t)ch->tx.len);
         ch->tx.len = 0;
     }
+
+    // A driver that asks for the Tx Underrun/EOM interrupt (WR15 bit 6)
+    // gets it when the frame has drained from the 4-byte Tx FIFO, as on
+    // the wire, not inside its own WR0 "reset Tx underrun/EOM" write.  The
+    // Open Transport LocalTalk driver on the Heathrow Macs ends each DBDMA
+    // frame with that command and only then sets the flag its handler
+    // checks with RR0 bit 6: an interrupt taken inside the write is
+    // ignored, the driver's watchdog calls the send failed, resets the
+    // channel and sends the lapRTS again, never the data frame.  Anything
+    // else (the classic .MPP polls the latch right after the command) sees
+    // the latch at once.
+    if ((ch->wr[15] & WR15_TX_UNDERRUN) && scc->scheduler) {
+        size_t queued = len < 4 ? len : 4;
+        ch->rr[0] &= ~RR0_TX_UNDERRUN_EOM;
+        remove_event_by_data(scc->scheduler, tx_eom_callback, scc, (uint64_t)ch->index);
+        scheduler_new_cpu_event(scc->scheduler, tx_eom_callback, scc, (uint64_t)ch->index, 0,
+                                (uint64_t)(queued ? queued : 1) * SDLC_BYTE_NS);
+        return;
+    }
+    tx_eom_latch(ch);
 }
 
 // A DMA engine reached terminal count on a transmit: the Tx FIFO runs dry
@@ -965,12 +1019,6 @@ static void wr3(scc_channel_t *ch, uint8_t value) {
 
 // transmit buffer
 static void wr8(scc_channel_t *c, uint8_t value) {
-    // TX underrun IRQ not yet implemented. WR15 bit is guest-controlled, so
-    // log instead of asserting; the worst observable consequence is a missed
-    // interrupt on a transmitter the guest set up specifically to expect one.
-    if (c->wr[15] & WR15_TX_UNDERRUN)
-        LOG(1, "scc: ch%d TX underrun IRQ enabled (WR15) but not modeled", c->index);
-
     c->rr[0] &= ~RR0_TX_UNDERRUN_EOM;
 
     // clear tx irq
@@ -1056,10 +1104,14 @@ static void wr8(scc_channel_t *c, uint8_t value) {
     }
     // Tap the byte for the host-side capture before the SDLC framing buffer
     // sees it: in async mode nothing ever drains tx.buf, so the capture is the
-    // only place an emulated serial console's text survives.
-    if (ASYNC_MODE(c))
+    // only place an emulated serial console's text survives.  A byte sent in
+    // local loopback stays on the chip: the IIci ROM's start-up self-test
+    // sends 255 bytes that way, and a printer on the port printed them as two
+    // pages of garbage at every boot (S1018-11).
+    bool on_line = !(c->wr[14] & 0x10);
+    if (on_line && ASYNC_MODE(c))
         port_tx_byte(c->scc, c->index, value);
-    else
+    else if (on_line)
         sent_capture(c->scc, c->index, value);
 
     int prev_len = c->tx.len;
@@ -1709,6 +1761,10 @@ static void reset_ch(scc_t *restrict scc, int ch) {
 
     rx_queue_reset(&scc->ch[ch]);
 
+    // A frame still draining from the Tx FIFO is gone with the reset
+    if (scc->scheduler)
+        remove_event_by_data(scc->scheduler, tx_eom_callback, scc, (uint64_t)ch);
+
     // the transmit buffer is empty upon reset
     scc->ch[ch].rr[0] |= RR0_TX_BUFFER_EMPTY;
     scc->ch[ch].tx_ip_armed = true;
@@ -1772,6 +1828,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
         scheduler_new_event_type(scheduler, "scc", scc, "brg", &brg_zero_count_callback);
         scheduler_new_event_type(scheduler, "scc", scc, "tx", &tx_paced_callback);
         scheduler_new_event_type(scheduler, "scc", scc, "line_in", &line_in_callback);
+        scheduler_new_event_type(scheduler, "scc", scc, "tx_eom", &tx_eom_callback);
     }
 
     // If a checkpoint is provided, restore channel plain-data (everything up to the

@@ -182,6 +182,16 @@
       "suite": "iici-aux3-8bpp"
     },
     {
+      "machine": "iici",
+      "system": "7.1",
+      "card": "mdc_8_24 substitute",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iici"
+    },
+    {
       "machine": "iicx",
       "system": "6.0.8",
       "card": "824gc",
@@ -828,8 +838,7 @@
       "height": 480,
       "depth": 16,
       "addr32": false,
-      "suite": "suite-quadra",
-      "blocked": "#132 — System 7.1 on an MCU Quadra cannot launch the Finder with any second SCSI target on the bus, and the CD bay now is one (a machine with a CD drive carries it from power-on); row q950-71-hd is skipped until the defect is fixed"
+      "suite": "suite-quadra"
     },
     {
       "machine": "q950",
@@ -882,6 +891,26 @@
       "addr32": false,
       "suite": "suite-se30",
       "media_gated": true
+    },
+    {
+      "machine": "se30",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": true,
+      "suite": "suite-se30"
+    },
+    {
+      "machine": "se30",
+      "system": "7.5",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": true,
+      "suite": "suite-se30"
     },
     {
       "machine": "q840av",
@@ -1121,6 +1150,16 @@
       "width": 640,
       "height": 480,
       "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm9500",
+      "system": "7.6",
+      "card": "mach64_gx",
+      "width": 1024,
+      "height": 768,
+      "depth": 32,
       "addr32": true,
       "suite": "suite-tnt"
     },

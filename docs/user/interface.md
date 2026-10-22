@@ -13,9 +13,9 @@ From left to right:
 | Control | What it does |
 |---|---|
 | **Run** / **Pause** | Pause the machine, or let it run again. A paused machine keeps its state; the Debug panel can inspect it. |
-| **Shut down** | Turn the machine off and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. |
+| **Shut down** | Turn the machine off for good and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. The machine and its automatic checkpoint are gone, so a reload offers no **Resume**; to keep it, use **Save State** or **Create Checkpoint** first. |
 | **Real · Faster · Max** | The speed mode — see §2. |
-| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 100 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
+| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 50 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
 | **Save State** | Download the whole machine — memory, devices and disks — as one file you can open again later. See [Saving and resuming](saving-and-resuming.md). |
 | Camera, microphone | Shown only on machines with video and sound inputs (the AV Quadras). See [Sound, camera and 3D](sound-and-video.md). |
 | **Appearance** | Choose the look of the emulator (§5). |
@@ -26,13 +26,22 @@ From left to right:
 
 The speed and zoom controls are active only while a machine is running.
 
+When the toolbar is too narrow for all of them (a phone, or a display
+squeezed by the panel), the controls that do not fit move, from the right,
+into the **More** (**…**) menu at its end; Run and Shut down always stay.
+
 ## 2. Speed modes
 
 | Mode | Behaviour |
 |---|---|
-| **Real** | Runs at the original Mac's speed. |
-| **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). |
+| **Real** | Runs at the original Mac's speed. If your computer cannot keep up, the processor is slowed down (as far as 0.25×) so that the clock, sound and animations stay at the correct speed; the status bar shows the factor, and it goes back to 1× once the computer keeps up again. |
+| **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). Slows down the same way as Real when your computer cannot keep up. |
 | **Max** | Runs everything as fast as possible to skip ahead; games and sound run fast too. Useful for long installs and boots. |
+
+Every machine starts in **Faster**, except the Lisa and the Macintosh XL,
+which start in **Real** (see [Machines](machines.md)).  Once you pick a mode
+on the toolbar, or with the `speed=` [URL parameter](url-parameters.md),
+every machine you start in that page runs in it.
 
 The mode applies to every machine you run in this page; a link can preset
 it with `speed=` ([URL parameters](url-parameters.md) §4).
@@ -40,8 +49,9 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 ## 3. Display
 
 - The Mac's screen is fitted to the display area — as large as fits, up to
-  200 % — until you choose a zoom yourself. A screen larger than the area
-  even at 100 % scrolls; or use full screen.
+  200 %, and below 100 % (down to 50 %) for a screen bigger than the area —
+  until you choose a zoom yourself. A screen larger than the area even at
+  50 % scrolls; or use full screen.
 - **Click the screen** to give the Mac the mouse and keyboard; press
   **Esc** to get them back. See [Mouse and keyboard](mouse-and-keyboard.md).
 - **Drop files** onto the display: a ROM boots a machine (when none is
@@ -56,8 +66,8 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 | Item | Meaning |
 |---|---|
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
-| Speed | In Faster mode, the speed factor (for example **3×**). |
-| MIPS | Emulated instructions per second, in millions. |
+| Speed | The processor's speed factor when it is not the original's: in Faster mode (for example **3×**), or when your computer cannot keep up (for example **0.5×**, see §2). |
+| MIPS | Emulated instructions, in millions, per second the emulator spends running the processor: time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, so it is the rate the emulator executes at, whatever the speed setting. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |
 | **Caps Lock** (⇪) | The Mac's Caps Lock key. It follows your keyboard's Caps Lock; click it to latch Caps Lock on a keyboard without one. |

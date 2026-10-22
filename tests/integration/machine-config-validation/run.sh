@@ -12,6 +12,7 @@ TNT="$ROMS/pm7500-pm8500-pm9500-96cd923d.rom"
 G3="$ROMS/pmg3dt-pmg3mt-78f57389.rom"
 ANS="$ROMS/ans500-ans700-962f6c13.rom"
 LISA="$ROMS/lisa2-revh-098917b2.rom"
+PLUS="$ROMS/plus-v3-4d1f8172.rom"
 
 fail=0
 n=0
@@ -96,6 +97,9 @@ boot_case v9-absent iici "$IICI" '{"startup":{"bus":"scsi","unit":5}}' 'startup:
 boot_case v9-bus ans500 "$ANS" \
     '{"storage":[{"bus":"scsi2","unit":4,"type":"hd"}],"startup":{"bus":"scsi2","unit":4}}' \
     'startup: ID 4 · Front bay 4 on "Internal SCSI bus 1" — this machine'"'"'s startup record cannot name that bus'
+# A model with no startup-device record (the Plus boots the highest SCSI ID)
+# ignores the member rather than refusing a saved document that names one.
+boot_case v9-none plus "$PLUS" '{"startup":{"bus":"scsi","unit":0}}' OK
 
 # V10: Open Firmware variables the model's NVRAM has, values they take.
 boot_case v10-model iici "$IICI" '{"nvram":{"auto-boot?":"true"}}' \

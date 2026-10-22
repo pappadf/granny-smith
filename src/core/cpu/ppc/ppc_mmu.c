@@ -237,6 +237,10 @@ static bool sv_soa_ready(ppc_t *p) {
         return false;
     }
     uintptr_t *old_r = g_ppc_sv_read, *old_w = g_ppc_sv_write;
+    if (old_r) { // the device-entry records must not write into freed tables
+        memory_dev_entries_forget(old_r);
+        memory_dev_entries_forget(old_w);
+    }
     g_ppc_sv_read = r;
     g_ppc_sv_write = w;
     g_mem_extra_write = w;
@@ -779,8 +783,8 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
     if (lpage >= g_page_count || ppage >= g_page_count)
         return;
     page_entry_t *pe = &g_page_table[ppage];
-    if (!pe->host_base || pe->dev)
-        return; // not plain host memory
+    if (!pe->dev && !pe->host_base)
+        return; // neither host memory nor a device
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[lpage])
         return; // logical logpoint: stay slow
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[ppage])
@@ -791,8 +795,19 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
     // the fast path — through the WRONG host mapping — so keep it empty.
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[lpage])
         return;
+    if (pe->dev) { // a device page goes in the table as its descriptor
+        const mem_dev_desc_t *d = memory_dev_desc_for_page(ppage);
+        if (!d)
+            return;
+        track_add(&g_ut, lpage);
+        memory_dev_entry_install(g_user_read, lpage, d);
+        user_wok_set(lpage, 0);
+        if (write_ok)
+            memory_dev_entry_install(g_user_write, lpage, d);
+        return;
+    }
     track_add(&g_ut, lpage);
-    uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT));
     g_user_read[lpage] = adjusted;
     user_wok_set(lpage, (write_ok && pe->writable) ? adjusted : 0);
     if (write_ok && pe->writable) // refused on a predecoded code page (memory.h)
@@ -827,7 +842,7 @@ static void sv_soa_fill(ppc_t *p, uint32_t ea, uint32_t pa, bool write_ok) {
     if (lpage >= g_page_count || ppage >= g_page_count)
         return;
     page_entry_t *pe = &g_page_table[ppage];
-    if (!pe->host_base || pe->dev)
+    if (!pe->dev && !pe->host_base)
         return;
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[lpage])
         return;
@@ -836,8 +851,18 @@ static void sv_soa_fill(ppc_t *p, uint32_t ea, uint32_t pa, bool write_ok) {
         return;
     if (!sv_soa_ready(p))
         return;
+    if (pe->dev) { // a device page goes in the table as its descriptor
+        const mem_dev_desc_t *d = memory_dev_desc_for_page(ppage);
+        if (!d)
+            return;
+        track_add(&g_svt, lpage);
+        memory_dev_entry_install(g_ppc_sv_read, lpage, d);
+        if (write_ok)
+            memory_dev_entry_install(g_ppc_sv_write, lpage, d);
+        return;
+    }
     track_add(&g_svt, lpage);
-    uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT);
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)pe->host_base - (lpage << MEM_PAGE_SHIFT));
     g_ppc_sv_read[lpage] = adjusted;
     if (write_ok && pe->writable) // refused on a code page (memory.h)
         g_ppc_sv_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted, 0);
@@ -922,6 +947,20 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
+        // A device page served from the TLB gets its table entry,
+        // so the next access to it skips this walk entirely.
+        if (dt && (te->pa_page >> MEM_PAGE_SHIFT) < g_page_count && g_page_table[te->pa_page >> MEM_PAGE_SHIFT].dev) {
+            if (user) {
+                user_soa_fill(ea, te->pa_page, te->w_ok);
+                if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
+                    return false; // *addr stays the EA
+            } else {
+                sv_soa_fill(p, ea, te->pa_page, te->w_ok);
+                uintptr_t *tab = store ? g_ppc_sv_write : g_ppc_sv_read;
+                if (tab && g_active_read == g_ppc_sv_read && tab[ea >> MEM_PAGE_SHIFT])
+                    return false;
+            }
+        }
         *addr = te->pa_page | (ea & 0xFFFu);
         if (user && dt)
             user_phys_fallback(*addr, store); // the slot may have refilled since the miss

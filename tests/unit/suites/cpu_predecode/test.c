@@ -232,7 +232,7 @@ TEST(test_host_written) {
     reset_cpu(0x6000);
     run(10, 10);
     ASSERT_EQ_INT(3, (int)cpu_get_dn(CPU, 0));
-    uint8_t *host = (uint8_t *)(g_supervisor_read[6] + 0x6000);
+    uint8_t *host = MEM_ENTRY_HOST(g_supervisor_read[6], 0x6000);
     uint8_t patch[2] = {0x70, 0x04}; // MOVEQ #4,D0
     memory_host_written(host, 2);
     memcpy(host, patch, 2);

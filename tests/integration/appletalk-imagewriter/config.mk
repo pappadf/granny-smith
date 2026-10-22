@@ -11,13 +11,16 @@
 # A second print with the printer out of paper: the card's statusBits word
 # in its OpenConnReply says so (Technical Note NW20), the driver shows its
 # out-of-paper alert instead of sending, and after paper is added and
-# Continue clicked the job prints.
+# Continue clicked the job prints.  Deselected, the word's bit 11 brings the
+# driver's "select light is off" alert; selected again and Continue clicked,
+# even minutes later, the job prints.
 #
 # What it guards: the card's PAP server (appletalk_imagewriter.c), its NBP
-# type, the statusBits layout the driver reads, and the job end on EOF.
+# type, the statusBits layout the driver reads, its Tickles and unending
+# SendData retries, and the job end on EOF.
 
 TEST_NAME := AppleTalk ImageWriter (LocalTalk Option card)
-TEST_DESC := Chooser AppleTalk ImageWriter -> Virtual ImageWriter; Print Directory over PAP to a PDF; paper-out alert and recovery.
+TEST_DESC := Chooser AppleTalk ImageWriter -> Virtual ImageWriter; Print Directory over PAP to a PDF; paper-out and deselect alerts and recovery; a cancelled job leaves the next at top of form.
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

@@ -68,6 +68,14 @@
 #define AFP_VOL_FALLBACK_TOTAL (1024u * 1024u * 1024u)
 #define AFP_VOL_FALLBACK_FREE  (512u * 1024u * 1024u)
 
+// An AFP 2.0 session (System 6) is held below 1 GB: its client fakes an HFS
+// VCB of at most 65535 allocation blocks, so a larger volume gets 32 KB
+// blocks, and System 6's Finder reports any file on a volume with 32 KB
+// blocks as about 2 GB on disk.  65535 blocks of 16 KB is the most that
+// keeps 16 KB blocks (exactly 1 GB already makes the client's block count
+// wrap to 0).
+#define AFP_VOL_SIZE_CEILING_20 (65535u * 16384u)
+
 // The sessions holding one handle -- a volume, or its desktop database.
 typedef struct {
     uint16_t ids[AFP_MAX_SESSIONS];

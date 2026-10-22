@@ -10,6 +10,9 @@
 //   - log events -- emitted by src/platform/wasm/em_main.c's log sink via
 //     log_set_sink.  Every formatted log line lands here regardless of
 //     per-category stdout=on/off; they feed the Logs view only.
+//   - log print events -- the same lines of the stdout=on categories, which
+//     the core sends on the event ring instead of stdout
+//     (log_set_stdout_sink); they feed the console.
 //
 // The console consumes the first two as ConsoleRecords (lib/consoleModel):
 // the app's console model exists from the start (state/console), so they
@@ -35,6 +38,13 @@ export function routePrintLine(line: string): void {
 // Module.printErr: a stderr line.
 export function routeErrorLine(line: string): void {
   routeConsole({ kind: 'stderr', line });
+}
+
+// A log event's stdout copy (log:print): the line Module.print would have
+// had, one console line per text line.
+export function routeLogPrint(line: string): void {
+  const text = line.endsWith('\n') ? line.slice(0, -1) : line;
+  for (const l of text.split('\n')) routePrintLine(l);
 }
 
 export function routeLogEmit(line: string): void {

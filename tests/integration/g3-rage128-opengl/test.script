@@ -33,30 +33,30 @@ def gl_goto(x, y) {
     let k = 0
     while $k < 8 {
         machine.adb.mouse.move $x $y
-        scheduler.run 60000000
+        scheduler.run 120000000
         let k = $k + 1
     }
 }
 def gl_click(x, y) {
     gl_goto($x, $y)
     machine.adb.mouse.click true
-    scheduler.run 50000000
+    scheduler.run 100000000
     machine.adb.mouse.click false
-    scheduler.run 300000000
+    scheduler.run 600000000
 }
 def gl_cmdkey(k) {
     machine.adb.keyboard.down "Command"
-    scheduler.run 30000000
+    scheduler.run 60000000
     machine.adb.keyboard.down $k
-    scheduler.run 30000000
+    scheduler.run 60000000
     machine.adb.keyboard.up $k
     machine.adb.keyboard.up "Command"
-    scheduler.run 1000000000
+    scheduler.run 2000000000
 }
 # Select a Finder item by typing its name, then File > Open.
 def gl_open(name, run) {
     machine.adb.keyboard.type "${$name}"
-    scheduler.run 500000000
+    scheduler.run 1000000000
     gl_cmdkey("o")
     scheduler.run $run
 }
@@ -64,29 +64,29 @@ def gl_open(name, run) {
 machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
 machine.rtc.time = "2026-10-01T12:00:00"
 machine.scsi.attach_hd "${$hd}" 0
-scheduler.run 12000000000
+scheduler.run 24000000000
 assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
 
 machine.scsi.attach_cdrom("${$cd}", 3)
-scheduler.run 4000000000
+scheduler.run 8000000000
 # Quit the Setup Assistant (first boot) and confirm.
 gl_cmdkey("q")
-scheduler.run 1000000000
-gl_click(461, 173)
 scheduler.run 2000000000
+gl_click(461, 173)
+scheduler.run 4000000000
 # The CD's icon on the desktop, then Sample Apps (the window's first
 # folder), GLUT, book.
 gl_click(592, 105)
 gl_cmdkey("o")
-scheduler.run 4000000000
+scheduler.run 8000000000
 gl_click(85, 97)
 gl_cmdkey("o")
-scheduler.run 3000000000
-gl_open("GLUT", 3000000000)
-gl_open("book", 4000000000)
+scheduler.run 6000000000
+gl_open("GLUT", 6000000000)
+gl_open("book", 8000000000)
 
 let p0 = machine.pci.slot[1].card.regs.prims3d
-gl_open("checker", 8000000000)
+gl_open("checker", 16000000000)
 let p1 = machine.pci.slot[1].card.regs.prims3d
 echo "g3-rage128-opengl: checker drew ${$p1 - $p0} primitives"
 assert $p1 > $p0 "checker draws through the 3D engine"
@@ -96,9 +96,9 @@ check_ex("goldens/checker.png", 0, 440, 20, 640)
 # Each sample is quit before the next opens from the book window.
 def gl_sample(name) {
     gl_cmdkey("q")
-    scheduler.run 2000000000
+    scheduler.run 4000000000
     let a = machine.pci.slot[1].card.regs.prims3d
-    gl_open($name, 8000000000)
+    gl_open($name, 16000000000)
     let b = machine.pci.slot[1].card.regs.prims3d
     echo "g3-rage128-opengl: ${$name} drew ${$b - $a} primitives"
     assert $b > $a "${$name} draws through the 3D engine"

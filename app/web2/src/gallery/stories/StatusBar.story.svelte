@@ -22,7 +22,9 @@
   machine.ram = '8 MB';
   machine.drives = { hd: true, fd: true, cd: true };
   machine.scheduler = v === 'running' ? 'accel' : 'live';
-  machine.acceleratedSpeed = 2.5;
+  // A speed other than 1x shows in every mode (the governor slows Real mode
+  // too), so only the Faster-mode variant carries one.
+  machine.acceleratedSpeed = v === 'running' ? 2.5 : 1;
   machine.mips = status === 'running' ? 12.3 : 0;
   if (v === 'activity' || v === 'idle-activity') {
     machine.driveActivity = { hd: 'read', fd: 'write', cd: 'idle' };

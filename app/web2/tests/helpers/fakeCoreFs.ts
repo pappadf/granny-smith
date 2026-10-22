@@ -54,19 +54,20 @@ export function installFakeCoreFs(
     heap.u8.set(part, WINDOW_PTR);
     return part.length;
   });
-  // Recursive, and true when the path never existed (rm_tree).
+  // Recursive, and success when the path never existed (rm_tree).  Like
+  // files.mv and files.mkdir, success answers nothing (null).
   bridge.reply('files.rm', (args: unknown) => {
     const [path] = args as [string];
     for (const p of [...files.keys()]) if (under(p, path)) files.delete(p);
-    return true;
+    return null;
   });
   bridge.reply('files.mv', (args: unknown) => {
     const [from, to] = args as [string, string];
     const f = files.get(from);
-    if (!f) return false;
+    if (!f) return { error: `files.mv: cannot move '${from}'` };
     files.delete(from);
     files.set(to, f);
-    return true;
+    return null;
   });
   bridge.reply('files.cp', (args: unknown) => {
     const [from, to] = args as [string, string];
@@ -75,11 +76,19 @@ export function installFakeCoreFs(
     files.set(to, f.slice());
     return true;
   });
-  bridge.reply('files.mkdir', true);
+  bridge.reply('files.mkdir', null);
   bridge.reply('files.path_exists', (args: unknown) => files.has((args as [string])[0]));
   bridge.reply('files.path_size', (args: unknown) => {
     const f = files.get((args as [string])[0]);
     return f ? f.length : { error: 'no such file' };
+  });
+  // -1 when identical, else the offset of the first difference.
+  bridge.reply('files.path_compare', (args: unknown) => {
+    const [a, b] = (args as [string, string]).map((p) => files.get(p));
+    if (!a || !b) return { error: 'no such file' };
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
+    return a.length === b.length ? -1 : n;
   });
   // Nothing is an archive.
   bridge.reply('files.archive.identify', '');

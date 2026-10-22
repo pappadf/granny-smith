@@ -150,11 +150,11 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
       wrapped = true;
   }
   expect(wrapped).toBe(true);
-  // Stored under the slot and the time, not a name from the URL.
+  // Stored under the file's name from the URL (S1018-48).
   const names: string[] = [];
   for (let i = 0; i < images; i++)
     names.push(String(await gsEvalInPage(page, `files.images[${i}].filename`)));
-  expect(names.some((n) => /\/hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/.test(n))).toBe(true);
+  expect(names.some((n) => /\/System7_5_3(?: \d+)?\.dmg$/.test(n))).toBe(true);
 
   // And the machine boots System 7.5.3 from it to the Finder: a boot drive,
   // an open System file, and an application heap apart from the system's.

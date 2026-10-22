@@ -1432,9 +1432,19 @@ static value_t add_drives(const hw_profile_t *p, const char *spec, doc_t *d) {
     return err;
 }
 
-// startup (V9).
+// Can any of the model's buses hold the startup device?
+static bool has_startup_bus(const hw_profile_t *p) {
+    for (const storage_bus_decl_t *b = p->storage; b && b->id; b++)
+        if (b->startup_ok)
+            return true;
+    return false;
+}
+
+// startup (V9).  A model with no startup-device record at all (the Plus,
+// whose ROM boots the highest SCSI ID) ignores the member: a document saved
+// before it lost the setting, or a link, may still name a device.
 static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
-    if (v->kind == VK_NONE) {
+    if (v->kind == VK_NONE || !has_startup_bus(p)) {
         d->startup = (machine_startup_t){.none = true};
         return val_none();
     }

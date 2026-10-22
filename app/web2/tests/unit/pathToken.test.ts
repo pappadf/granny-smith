@@ -23,6 +23,23 @@ describe('pathToken', () => {
     expect(replaceTokenAt('', 0, 'help ')).toEqual({ text: 'help ', cursor: 5 });
   });
 
+  it('inserts in front of a token the cursor is at the start of (S1018-74)', () => {
+    // Between two spaces: nothing replaced, the cursor after the insert.
+    expect(replaceTokenAt('echo AAA  BBB', 9, 'time ')).toEqual({
+      text: 'echo AAA time  BBB',
+      cursor: 14,
+    });
+    // At the start of a word: the word stays, a space apart.
+    expect(replaceTokenAt('echo AAA BBB', 9, 'time ')).toEqual({
+      text: 'echo AAA time BBB',
+      cursor: 14,
+    });
+    expect(replaceTokenAt('echo BBB', 5, 'machine.cpu.pc')).toEqual({
+      text: 'echo machine.cpu.pc BBB',
+      cursor: 20,
+    });
+  });
+
   it('reads the resolved part and the partial segment of a token', () => {
     const line = 'machine.floppy.drive[0].ins';
     expect(completionFocus(line, { start: 24, end: 27 }, ['insert'])).toEqual({

@@ -462,13 +462,15 @@ CtlIcon:
 	move.l	a1,csParam(a0)          | csParam -> icon + mask
 	bra.s	CtlDone
 CtlAccRun:
-	bsr	Announce
+	move.l	a0,-(sp)                | Announce walks the VCB queue and posts
+	bsr	Announce                | events through A0; DrvExit needs the pb
+	movea.l	(sp)+,a0
 	moveq	#noErr,d0
 	bra.s	CtlDone
 
 | --- Announce: A1 = DCE.  Post a disk-inserted event for each of our drives
 | that has none yet and no mounted volume; once every drive is announced,
-| stop asking for periodic time.
+| stop asking for periodic time.  Clobbers D0-D1/D6-D7/A0/A2-A3.
 Announce:
 	movea.l	dCtlStorage(a1),a2
 	moveq	#0,d7                   | D7 = drive index

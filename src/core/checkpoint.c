@@ -62,10 +62,19 @@ LOG_USE_CATEGORY_NAME("ckpt");
 // Must exceed 4 MB RAM + ROM content + peripheral state + per-block headers.
 #define QUICK_BUF_CAPACITY (8 * 1024 * 1024)
 
-// Upper bound on a single read-path malloc driven by an on-disk size field.
-// Real checkpoints are bounded by RAM — 512 MiB on the largest supported
-// machine (the Apple Network Server), whose barely-compressible RAM block
-// RLE-encodes to just over its raw size; 1 GiB is roughly 2x worst-case.
+// Past this size the quick buffer grows by a fraction, not by doubling
+// (buf_append).
+#define QUICK_BUF_LINEAR_GROWTH ((size_t)64 * 1024 * 1024)
+
+// A v2 block is RLE-encoded, and decoded, this many raw bytes at a time, so
+// a large RAM block costs one piece buffer rather than a second copy of RAM,
+// and the busy heartbeat is bumped between pieces.
+#define RLE_PIECE_BYTES ((size_t)4 * 1024 * 1024)
+
+// Upper bound on a single read-path malloc driven by an on-disk size field
+// (the v3 quick buffer; v2 blocks decode in place, see rle_decode_stream).
+// Real checkpoints are bounded by RAM — 768 MiB on the largest supported
+// machine (the G3), plus well under a sixteenth of that in device state.
 // A corrupt header claiming more is rejected rather than driving an OOM
 // on 32-bit (WASM) builds.
 #define CHECKPOINT_MAX_ALLOC ((size_t)1024 * 1024 * 1024)
@@ -202,6 +211,59 @@ static bool rle_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t o
     return (op == out_size);
 }
 
+// RLE-decode `comp_size` bytes read from `f` straight into `out`: the same
+// stream rle_decode reads, without a compressed copy in memory.  Bytes left
+// over once `out` is full are skipped, as rle_decode ignores them, so the
+// stream stays aligned on the next block.  Returns true on success.
+static bool rle_decode_stream(FILE *f, uint64_t comp_size, uint8_t *out, size_t out_size) {
+    uint64_t left = comp_size; // compressed bytes not yet consumed
+    size_t op = 0;
+    size_t beat = 0; // output position of the last heartbeat
+    while (left > 0 && op < out_size) {
+        // Chunk header: marker(1) + count(4); bounds in the subtraction
+        // form, as in rle_decode
+        uint8_t hdr[5];
+        if (left < sizeof hdr || fread(hdr, 1, sizeof hdr, f) != sizeof hdr)
+            return false;
+        left -= sizeof hdr;
+        uint32_t count;
+        memcpy(&count, hdr + 1, 4);
+        if (count > out_size - op)
+            return false;
+        if (hdr[0] == 0x01) {
+            // RUN: fill count bytes with the next byte value
+            int val = left > 0 ? fgetc(f) : EOF;
+            if (val == EOF)
+                return false;
+            left--;
+            memset(out + op, val, count);
+        } else if (hdr[0] == 0x00) {
+            // LIT: count raw bytes, read in place
+            if (count > left || fread(out + op, 1, count, f) != count)
+                return false;
+            left -= count;
+        } else {
+            return false;
+        }
+        op += count;
+        // A large block takes seconds to read: keep proving we are alive
+        if (op - beat >= RLE_PIECE_BYTES) {
+            checkpoint_busy_heartbeat();
+            beat = op;
+        }
+    }
+    if (op != out_size)
+        return false;
+    // Skip trailing compressed bytes in bounded steps (fseek takes a long)
+    while (left > 0) {
+        long step = left > (uint64_t)RLE_PIECE_BYTES ? (long)RLE_PIECE_BYTES : (long)left;
+        if (fseek(f, step, SEEK_CUR) != 0)
+            return false;
+        left -= (uint64_t)step;
+    }
+    return true;
+}
+
 // Internal checkpoint handle definition (opaque in headers via common.h)
 struct checkpoint {
     FILE *file;
@@ -229,9 +291,16 @@ struct checkpoint {
 // Append raw bytes to the accumulation buffer, return true on success
 static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
     if (cp->buf_used + len > cp->buf_cap) {
-        // Grow the buffer to fit (double or exact fit, whichever is larger)
+        // Grow the buffer to fit: double while small, and past
+        // QUICK_BUF_LINEAR_GROWTH leave a sixteenth of headroom instead.
+        // Doubling there is what made every save of a 768 MB machine fail:
+        // the RAM block alone sizes the buffer to ~805 MB, the next small
+        // block asked for 1.6 GB more, and the wasm heap is 2 GB.  The
+        // headroom absorbs the ROM and device blocks that follow RAM.
         size_t needed = cp->buf_used + len;
         size_t new_cap = cp->buf_cap * 2;
+        if (needed >= QUICK_BUF_LINEAR_GROWTH)
+            new_cap = needed + needed / 16;
         if (new_cap < needed)
             new_cap = needed;
         uint8_t *new_buf = (uint8_t *)realloc(cp->buf, new_cap);
@@ -511,43 +580,27 @@ static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t s
             checkpoint->error = true;
             return;
         }
-        if (comp_size > CHECKPOINT_MAX_ALLOC) {
-            LOG(0, "Error: v2 RLE compressed size %llu exceeds CHECKPOINT_MAX_ALLOC (%zu)",
-                (unsigned long long)comp_size, (size_t)CHECKPOINT_MAX_ALLOC);
+        // The encoder's worst case is 12 bytes per 5 (a 1-byte literal and
+        // a 4-byte run, repeated); anything claiming more is corrupt.
+        if (comp_size > (uint64_t)size * 3 + 16) {
+            LOG(0, "Error: v2 RLE compressed size %llu is impossible for a %zu-byte block",
+                (unsigned long long)comp_size, size);
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
             return;
         }
-        uint8_t *comp_buf = (uint8_t *)malloc((size_t)comp_size);
-        if (!comp_buf) {
-            LOG(0, "Error: Out of memory for RLE decompression (%llu bytes)", (unsigned long long)comp_size);
-            if (saved_file)
-                free(saved_file);
-            checkpoint->error = true;
-            return;
-        }
-        got = fread(comp_buf, 1, (size_t)comp_size, checkpoint->file);
-        if (got != (size_t)comp_size) {
-            LOG(0, "Error: Failed to read %llu RLE bytes from checkpoint (got %zu)", (unsigned long long)comp_size,
-                got);
-            free(comp_buf);
-            if (saved_file)
-                free(saved_file);
-            checkpoint->error = true;
-            return;
-        }
-        // Decode RLE into output buffer
-        if (!rle_decode(comp_buf, (size_t)comp_size, (uint8_t *)data, size)) {
+        // Decode straight from the stream into the output buffer: no
+        // compressed copy, which for a large machine's RAM block would be a
+        // second RAM-sized allocation on the 2 GB wasm heap
+        if (!rle_decode_stream(checkpoint->file, comp_size, (uint8_t *)data, size)) {
             LOG(0, "Error: RLE decompression failed for %zu-byte block at %s:%d", size, file ? file : "(unknown)",
                 line);
-            free(comp_buf);
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
             return;
         }
-        free(comp_buf);
     } else {
         LOG(0, "Error: Unknown compression flag 0x%02x in checkpoint", flag);
         if (saved_file)
@@ -658,19 +711,29 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
             checkpoint->error = true;
         }
     } else {
-        // Large block: flag=1 then RLE-compressed data
-        // First pass: compute exact compressed size (dry run with NULL output)
-        size_t comp_size = rle_encode((const uint8_t *)data, size, NULL, 0);
-        uint8_t *comp_buf = (uint8_t *)malloc(comp_size);
+        // Large block: flag=1 then RLE-compressed data, encoded one
+        // RLE_PIECE_BYTES piece at a time.  No chunk crosses a piece
+        // boundary, so the pieces concatenate into one valid stream.
+        const uint8_t *in = (const uint8_t *)data;
+        // First pass: the exact compressed size (dry runs with NULL output),
+        // and the largest piece's, which sizes the one encode buffer
+        size_t comp_size = 0, piece_max = 0;
+        for (size_t off = 0; off < size; off += RLE_PIECE_BYTES) {
+            size_t n = size - off < RLE_PIECE_BYTES ? size - off : RLE_PIECE_BYTES;
+            size_t c = rle_encode(in + off, n, NULL, 0);
+            comp_size += c;
+            if (c > piece_max)
+                piece_max = c;
+            checkpoint_busy_heartbeat(); // a 768 MB RAM block takes seconds
+        }
+        uint8_t *comp_buf = (uint8_t *)malloc(piece_max);
         if (!comp_buf) {
-            LOG(0, "Error: Out of memory for RLE compression (%zu bytes)", comp_size);
+            LOG(0, "Error: Out of memory for RLE compression (%zu bytes)", piece_max);
             checkpoint->error = true;
             return;
         }
-        // Second pass: encode into buffer
-        rle_encode((const uint8_t *)data, size, comp_buf, comp_size);
 
-        // Write flag + compressed size + compressed data
+        // Write flag + compressed size, then each piece's compressed data
         uint8_t flag = 0x01;
         w = fwrite(&flag, 1, 1, checkpoint->file);
         if (w != 1) {
@@ -685,12 +748,17 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
             checkpoint->error = true;
             return;
         }
-        w = fwrite(comp_buf, 1, comp_size, checkpoint->file);
-        if (w != comp_size) {
-            LOG(0, "Error: Failed to write %zu RLE bytes to checkpoint (wrote %zu)", comp_size, w);
-            free(comp_buf);
-            checkpoint->error = true;
-            return;
+        for (size_t off = 0; off < size; off += RLE_PIECE_BYTES) {
+            size_t n = size - off < RLE_PIECE_BYTES ? size - off : RLE_PIECE_BYTES;
+            size_t c = rle_encode(in + off, n, comp_buf, piece_max);
+            w = fwrite(comp_buf, 1, c, checkpoint->file);
+            if (w != c) {
+                LOG(0, "Error: Failed to write %zu RLE bytes to checkpoint (wrote %zu)", c, w);
+                free(comp_buf);
+                checkpoint->error = true;
+                return;
+            }
+            checkpoint_busy_heartbeat();
         }
         free(comp_buf);
     }
@@ -700,6 +768,14 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 
 // Open a checkpoint file for reading (auto-detects v2 or v3 format)
 checkpoint_t *checkpoint_open_read(const char *filename) {
+    // A restore builds a machine beside the running one; on a large machine
+    // the idle quick-save buffer (RAM-sized) is what would not fit beside
+    // both on the 2 GB wasm heap.  Give it back; the next save regrows it.
+    if (!g_quick_in_flight && g_quick_write_cap > QUICK_BUF_CAPACITY) {
+        free(g_quick_write_buf);
+        g_quick_write_buf = NULL;
+        g_quick_write_cap = 0;
+    }
     checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint) + CHECKPOINT_STDIO_BUFFER_BYTES);
     if (!cp)
         return NULL;

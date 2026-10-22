@@ -38,12 +38,24 @@ LOG_USE_CATEGORY_NAME("pci");
 // A BUILTIN_FALLBACK stand-in's seat (below).
 static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s);
 
-#define PCI_MAX_BUSES   4
-#define PCI_MAX_DEVICES 32 // IDSEL AD11..AD31 (0..10 never exist)
-#define PCI_MAX_WINDOWS 4
-#define PCI_MAX_SLOTS   16 // slot numbers are 1-based
+#define PCI_MAX_BUSES     4
+#define PCI_MAX_DEVICES   32 // IDSEL AD11..AD31 (0..10 never exist)
+#define PCI_MAX_WINDOWS   4
+#define PCI_WINDOW_RANGES (PCI_MAX_DEVICES * (PCI_BAR_SLOTS + PCI_FIXED_REGIONS))
+#define PCI_MAX_SLOTS     16 // slot numbers are 1-based
 
 // One decode window a bridge forwards onto its bus.
+// One decoding region of a window's decode table, in probe priority order:
+// a BAR (`lo` = its base, `span` = its size) or a fixed region (with the
+// sparse decoder's match).
+typedef struct pci_range {
+    uint32_t lo, span;
+    uint32_t match_mask, match_value;
+    const memory_interface_t *iface;
+    void *ctx;
+    bool bar;
+} pci_range_t;
+
 typedef struct pci_window {
     pci_bus_t *bus;
     pci_space_t space;
@@ -53,7 +65,17 @@ typedef struct pci_window {
     uint32_t pci_mask; // address bits the bridge actually drives
     char what[32];
     memory_interface_t iface;
+    // The decode table: every region that decodes in this window's space,
+    // rebuilt when the bus decode generation moves on (window_ranges).
+    pci_range_t range[PCI_WINDOW_RANGES];
+    int range_count;
+    uint32_t range_gen;
 } pci_window_t;
+
+// Bumped wherever what a window decodes can change: a BAR transition, a
+// region declared, a device seated.  Every window's decode table rebuilds
+// on its next access after a bump.
+static uint32_t g_pci_decode_gen = 1;
 
 struct pci_bus {
     pci_root_t *root;
@@ -188,12 +210,15 @@ typedef struct pci_decode {
     const memory_interface_t *iface;
     void *ctx;
     uint32_t sub;
+    bool bar; // decoded by a BAR (linear), not a fixed region
 } pci_decode_t;
 
-// Locate whatever decodes `pci_addr` in `w`'s space.  False when nothing
-// does — which is the fault path, and the whole BART contract.
-static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t *out) {
+// Rebuild `w`'s decode table: the regions window_probe would consider, in
+// its order (device order; within a device the BARs, then the fixed
+// regions), with the BAR sizes looked up once here instead of per access.
+static void window_ranges_build(pci_window_t *w) {
     const pci_bus_t *bus = w->bus;
+    int n = 0;
     for (int d = 0; d < PCI_MAX_DEVICES; d++) {
         const pci_device_t *dev = bus->dev[d];
         if (!dev)
@@ -208,12 +233,10 @@ static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t
             if ((w->space == PCI_SPACE_IO) != is_io)
                 continue;
             uint32_t size = pci_cfg_bar_size(dev, b);
-            if (pci_addr - bk->base < size) {
-                out->iface = bk->iface;
-                out->ctx = bk->ctx;
-                out->sub = pci_addr - bk->base;
-                return true;
-            }
+            if (!size)
+                continue;
+            w->range[n++] =
+                (pci_range_t){.lo = bk->base, .span = size, .iface = bk->iface, .ctx = bk->ctx, .bar = true};
         }
         // Then the non-BAR regions: parts that predate BAR-based I/O decode
         // at strapped addresses, and a sparse decoder answers only its own
@@ -222,15 +245,36 @@ static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t
             const pci_fixed_region_t *fr = &dev->fixed[r];
             if (!fr->iface || !fr->mapped || fr->space != w->space)
                 continue;
-            if (pci_addr - fr->base >= fr->span)
-                continue;
-            if ((pci_addr & fr->match_mask) != fr->match_value)
-                continue;
-            out->iface = fr->iface;
-            out->ctx = fr->ctx;
-            out->sub = pci_addr - fr->base;
-            return true;
+            w->range[n++] = (pci_range_t){.lo = fr->base,
+                                          .span = fr->span,
+                                          .match_mask = fr->match_mask,
+                                          .match_value = fr->match_value,
+                                          .iface = fr->iface,
+                                          .ctx = fr->ctx,
+                                          .bar = false};
         }
+    }
+    w->range_count = n;
+    w->range_gen = g_pci_decode_gen;
+}
+
+// Locate whatever decodes `pci_addr` in `w`'s space.  False when nothing
+// does — which is the fault path, and the whole BART contract.
+static bool window_locate(const pci_window_t *cw, uint32_t pci_addr, pci_decode_t *out) {
+    pci_window_t *w = (pci_window_t *)cw; // the decode table is a cache of the bus state
+    if (__builtin_expect(w->range_gen != g_pci_decode_gen, 0))
+        window_ranges_build(w);
+    for (int i = 0; i < w->range_count; i++) {
+        const pci_range_t *r = &w->range[i];
+        if (pci_addr - r->lo >= r->span)
+            continue;
+        if ((pci_addr & r->match_mask) != r->match_value)
+            continue;
+        out->iface = r->iface;
+        out->ctx = r->ctx;
+        out->sub = pci_addr - r->lo;
+        out->bar = r->bar;
+        return true;
     }
     return false;
 }
@@ -356,6 +400,32 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     d.iface->write_uint32(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap32(value) : value);
 }
 
+// Resolve one window page for the fast tables (memory.h,
+// mem_dev_desc_t).  `out` NULL asks only whether `iface` is a PCI window.
+// A page resolves when a single BAR decodes all of it linearly; anything
+// else (a fixed or sparse region, a partial claim, nothing) stays on the
+// window's per-access path.
+static bool window_resolve_page(const memory_interface_t *iface, void *ctx, uint32_t offset, mem_dev_desc_t *out) {
+    if (iface->read_uint8 != window_read8)
+        return false;
+    if (!out)
+        return true;
+    const pci_window_t *w = (const pci_window_t *)ctx;
+    uint32_t a0 = window_pci_addr(w, offset), a1 = window_pci_addr(w, offset + MEM_PAGE_SIZE - 1);
+    if (a1 - a0 != MEM_PAGE_SIZE - 1)
+        return false;
+    pci_decode_t d0, d1;
+    if (!window_locate(w, a0, &d0) || !window_locate(w, a1, &d1))
+        return false;
+    if (!d0.bar || !d1.bar || d0.iface != d1.iface || d0.ctx != d1.ctx || d1.sub - d0.sub != MEM_PAGE_SIZE - 1)
+        return false;
+    out->iface = d0.iface;
+    out->ctx = d0.ctx;
+    out->sub_base = d0.sub;
+    out->lane_reverse = w->bus->lane_reverse ? 1 : 0;
+    return true;
+}
+
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
                         uint32_t pci_mask, const char *what) {
     if (!bus)
@@ -384,6 +454,7 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.peek_uint16 = window_peek16;
     w->iface.peek_uint32 = window_peek32;
     memory_map_add(bus->cfg->memory_map, map_base, size, w->what, &w->iface, w);
+    memory_map_set_dev_resolver(bus->cfg->memory_map, window_resolve_page); // flushes resolved pages
 }
 
 const memory_interface_t *pci_bus_window_iface(pci_bus_t *bus, int window) {
@@ -399,6 +470,7 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window) {
 }
 
 void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
+    memory_dev_entries_flush(); // resolved window pages carry the lane mode
     if (!bus || bus->lane_reverse == on)
         return;
     bus->lane_reverse = on;
@@ -422,6 +494,7 @@ void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t 
     if (!dev || bar < 0 || bar >= PCI_BAR_SLOTS)
         return;
     pci_bar_backing_t *bk = &dev->backing[bar];
+    g_pci_decode_gen++;
     bk->kind = iface ? PCI_BACKING_IFACE : PCI_BACKING_NONE;
     bk->iface = iface;
     bk->ctx = ctx;
@@ -446,6 +519,7 @@ void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t 
         fr->match_mask = match_mask;
         fr->match_value = match_value;
         fr->mapped = false; // pci_device_regions_changed applies the gate
+        g_pci_decode_gen++;
         return;
     }
     LOG(0, "%s: no free fixed-region slot (PCI_FIXED_REGIONS = %d)",
@@ -456,6 +530,8 @@ void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t 
 // the ONE place a BAR transition happens, so a device driver never has to
 // track where it currently answers.
 void pci_device_regions_changed(pci_device_t *dev) {
+    memory_dev_entries_flush(); // resolved window pages may have moved
+    g_pci_decode_gen++; // and the windows' decode tables
     if (!dev)
         return;
     // Non-BAR regions have no latch to move: their address is strapped, so
@@ -540,6 +616,7 @@ void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num) {
     dev->bus = bus;
     dev->device_num = device_num;
     bus->dev[device_num] = dev;
+    g_pci_decode_gen++;
     pci_device_regions_changed(dev); // a hardwired command register may
                                      // already decode (command_reset)
 }
@@ -888,6 +965,7 @@ void pci_root_delete(pci_root_t *root) {
             }
             bus->dev[d] = NULL;
         }
+        g_pci_decode_gen++;
         free(bus);
         root->bus[i] = NULL;
     }

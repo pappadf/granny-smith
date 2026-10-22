@@ -145,7 +145,7 @@ test("HD= of a QCOW2 image is stored as a UDIF of its guest disk", async ({
     undefined,
     { timeout: 60_000 },
   );
-  const STORED = /^hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.dmg$/;
+  const STORED = /^MacOSPuma(?: \d+)?\.dmg$/;
   await expect
     .poll(
       async () => (await storedDisks(page)).filter((d) => STORED.test(d.name)).length,

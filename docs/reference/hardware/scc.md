@@ -749,6 +749,22 @@ chip rather than convenience:
   with nothing sent raises nothing.  The latch is set at channel reset, so
   enabling Tx interrupts on a freshly reset, empty channel still interrupts
   once, which the Mac drivers use to prime their output.
+- **The Tx Underrun/EOM interrupt (WR15 bit 6) comes when the frame has
+  drained.**  WR0 "reset Tx underrun/EOM" ends an SDLC frame: the frame
+  goes to the network at once, and when WR15 bit 6 is set the latch drops
+  and rises again, with an External/Status interrupt, after the bytes the
+  4-byte Tx FIFO would still hold (one LocalTalk byte, 34.7 us, each;
+  `tx_eom_callback`).  The Open Transport LocalTalk driver on the beige G3
+  sets the flag its handler checks only after that write, and an interrupt
+  taken inside it was ignored.  Without the enable the latch reads 1 at
+  once, which the classic .MPP polls for.
+- **A Special Receive Condition holds until Error Reset.**  Reading a
+  character clears Receive Character Available, but not an end-of-frame
+  Special Receive Condition (`rx_special`), so a DMA engine that drains the
+  CRC bytes after the frame leaves it for the driver to take.
+- **Per-channel requests** (`scc_irq_channels`): the INT callback reports
+  the OR of both channels; a host that wires each channel to its own
+  interrupt source, as Heathrow does, asks which channels request.
 
 ## A front end in place of the chip: the SDLC divert
 

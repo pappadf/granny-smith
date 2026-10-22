@@ -18,7 +18,9 @@
 //      results) must match the host's IEEE arithmetic exactly — host FP
 //      is the correctness-by-definition reference, used here as the
 //      ORACLE while the emulator itself stays integer-only.
-//   3. Ops-level integration through the interpreter: CR1 records, the
+//   3. A differential test of the host fast path against the integer
+//      path on edge-aimed operands (identical result and FPSCR).
+//   4. Ops-level integration through the interpreter: CR1 records, the
 //      MSR[FP] gate, and the precise FEX program exception (SRR0 = the
 //      causing instruction, SRR1[11], frD suppression).
 //
@@ -754,6 +756,104 @@ static void test_interpreter_integration(void) {
     CHECK(!(P->fpscr & PPC_FPSCR_VXVC)); // VE=1 keeps VXVC out
 }
 
+// Differential test of the host fast path: ppc_sf_arith (fast path first)
+// against ppc_sf_arith_soft (integer-only) on operands aimed at the fast
+// path's edges -- cancellation, ties at single precision, the envelope's
+// exponent bounds -- plus raw random patterns; the result, the
+// write-back flag and the whole FPSCR image must match.  GS_FPU_DIFF_N
+// overrides the per-shape iteration count.
+static uint64_t diff_rng = 0x9E3779B97F4A7C15ull;
+
+static uint64_t diff_next(void) {
+    diff_rng ^= diff_rng << 13;
+    diff_rng ^= diff_rng >> 7;
+    diff_rng ^= diff_rng << 17;
+    return diff_rng;
+}
+
+// A normal double with a biased exponent in [lo, hi] and a random sign.
+static uint64_t diff_normal(uint32_t lo, uint32_t hi) {
+    uint64_t e = lo + diff_next() % (hi - lo + 1);
+    return (diff_next() & 0x800FFFFFFFFFFFFFull) | (e << 52);
+}
+
+// An operand of one of the shapes the fast path must get right or decline.
+static uint64_t diff_operand(int shape) {
+    switch (shape) {
+    case 0:
+        return diff_next(); // any pattern: specials, denormals
+    case 1:
+        return diff_normal(1023 - 30, 1023 + 30); // everyday magnitudes
+    case 2:
+        return diff_normal(100, 150); // the envelope's low edge
+    case 3:
+        return diff_normal(1990, 2046); // the high edge
+    case 4: { // few significant bits: exact results, single-representable
+        uint64_t x = diff_normal(1023 - 8, 1023 + 8);
+        return x & ~((1ull << (20 + diff_next() % 33)) - 1u);
+    }
+    default:
+        return diff_normal(1, 2046);
+    }
+}
+
+static void test_fast_path_differential(void) {
+    static const ppc_sf_op_t ops[] = {PPC_SF_ADD,  PPC_SF_SUB,  PPC_SF_MUL,   PPC_SF_DIV,
+                                      PPC_SF_MADD, PPC_SF_MSUB, PPC_SF_NMADD, PPC_SF_NMSUB};
+    const char *env = getenv("GS_FPU_DIFF_N");
+    long n = env ? atol(env) : 20000;
+    long mismatches = 0;
+    for (unsigned oi = 0; oi < sizeof ops / sizeof ops[0]; oi++) {
+        for (int single = 0; single <= 1; single++) {
+            for (int shape = 0; shape < 6; shape++) {
+                for (long i = 0; i < n; i++) {
+                    uint64_t a = diff_operand(shape), b = diff_operand(shape), c = diff_operand(shape);
+                    switch (diff_next() % 4) {
+                    case 0: // cancellation: b close to -a (add) or -a*c (madd)
+                        if (ops[oi] >= PPC_SF_MADD) {
+                            double p = 0;
+                            uint64_t pu;
+                            double da, dc;
+                            memcpy(&da, &a, 8);
+                            memcpy(&dc, &c, 8);
+                            p = da * dc;
+                            memcpy(&pu, &p, 8);
+                            b = pu ^ ((ops[oi] == PPC_SF_MSUB || ops[oi] == PPC_SF_NMSUB) ? 0 : 0x8000000000000000ull);
+                            b += (uint64_t)(diff_next() % 5) - 2u;
+                        } else {
+                            b = (a ^ (ops[oi] == PPC_SF_SUB ? 0 : 0x8000000000000000ull)) + (diff_next() % 9) - 4u;
+                        }
+                        break;
+                    case 1: // a near a single-precision tie
+                        a = (a & ~0x1FFFFFFFull) | 0x10000000ull;
+                        break;
+                    default:
+                        break;
+                    }
+                    uint32_t f0 = (uint32_t)diff_next();
+                    if (diff_next() & 1)
+                        f0 &= ~PPC_FPSCR_RN; // mostly round to nearest
+                    f0 = ppc_fpscr_derive(f0);
+                    uint32_t ff = f0, fs = f0;
+                    uint64_t rf = 0x5A5A5A5A5A5A5A5Aull, rs = rf;
+                    int wf = ppc_sf_arith(ops[oi], a, b, c, single, &ff, &rf);
+                    int ws = ppc_sf_arith_soft(ops[oi], a, b, c, single, &fs, &rs);
+                    checks++;
+                    if (wf != ws || ff != fs || rf != rs) {
+                        if (mismatches++ < 10)
+                            printf("FAIL fast path: op %d single %d a $%016llX b $%016llX c $%016llX fpscr $%08X: "
+                                   "fast %d $%016llX $%08X, soft %d $%016llX $%08X\n",
+                                   (int)ops[oi], single, (unsigned long long)a, (unsigned long long)b,
+                                   (unsigned long long)c, f0, wf, (unsigned long long)rf, ff, ws,
+                                   (unsigned long long)rs, fs);
+                        failures++;
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main(void) {
     // 32-bit context, hand-built like the ppc suite (the harness's own
     // init is 24-bit-Plus-shaped).
@@ -790,6 +890,7 @@ int main(void) {
     test_estimates_directed();
     test_estimates_envelope();
     test_interpreter_integration();
+    test_fast_path_differential();
 
     // The cross-host corpus digest: `make wasm-check` compares this line
     // against the emcc/node build of the same sweep.

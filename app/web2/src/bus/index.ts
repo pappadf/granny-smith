@@ -1,6 +1,5 @@
-export { initEmulator } from './boot';
+export { initEmulator, shutdownEmulator } from './boot';
 export {
-  shutdownEmulator,
   pauseEmulator,
   resumeEmulator,
   applySchedulerMode,

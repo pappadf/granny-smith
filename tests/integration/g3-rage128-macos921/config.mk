@@ -15,7 +15,7 @@ TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
 
 TEST_ARGS := model=pmg3dt ram=65536
 
-# One boot of ~12 G instructions.
+# One boot of ~24 G instructions.
 TEST_TIMEOUT := 2400
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

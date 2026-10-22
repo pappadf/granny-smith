@@ -268,7 +268,16 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4);
+    // CPI by CPU, both from Apple's "Macintosh Family: MIPS Ratings" (Tech
+    // Info Library, Oct 1996) read as MHz / MIPS, which folds in the memory
+    // system's wait states as this one constant must.  The 68030 machines sit
+    // at 4.0 (IIx/IIcx/SE/30 3.9 MIPS at 15.67 MHz, IIfx 10 MIPS at 40 MHz).
+    // The 68040 sits at 1.14 (22 MIPS at 25 MHz, 35 at 40 MHz), and Apple's
+    // 68040 description states 1.3 cycles per instruction; 1 is the nearest
+    // integer.  The 68040 machines build on this core too, and used to
+    // inherit the 68030's 4, which ran a Quadra at a quarter of its speed.
+    scheduler_set_cpi(cfg->scheduler, cfg->machine->cpu_model == CPU_MODEL_68040 ? 1 : 4);
+    g_uncached_read_cycles = 0; // a board that prices uncached reads sets it after this
 }
 
 void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
@@ -282,10 +291,7 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
 void mac030_clear_page(uint32_t page_index) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = NULL;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = false;
+    memory_page_clear(page_index);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = 0;
     if (g_user_read)
@@ -301,12 +307,9 @@ void mac030_clear_page(uint32_t page_index) {
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
+    memory_page_set_host(page_index, host_ptr, writable);
     uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
     if (g_user_read)

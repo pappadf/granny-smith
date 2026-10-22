@@ -137,8 +137,8 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
       r.getAttribute('data-position'),
     );
     expect(rows).toEqual(['scsi:0', 'scsi:3']);
-    expect(labels($(c, '#cfg-startup'))).toContain('No default (search all drives)');
-    expect($(c, '#cfg-startup')!.value).toBe('scsi:0');
+    // Its ROM boots the highest SCSI ID: no startup device to choose.
+    expect($(c, '#cfg-startup')).toBeNull();
   });
 
   it('an empty floppy position has no disk picker until a drive is put there', async () => {
@@ -146,6 +146,25 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
     expect($(c, '#cfg-fd1')).toBeNull();
     choose($(c, '#cfg-fd-type-fd1')!, 'hd');
     await waitFor(() => expect($(c, '#cfg-fd1')).not.toBeNull());
+  });
+
+  it('cancelling Create blank image puts the picker back, with the focus', async () => {
+    const c = await open('plus');
+    const fd0 = $(c, '#cfg-fd0')!;
+    choose(fd0, 'Disk_Tools.dsk');
+    await waitFor(() => expect(fd0.value).toBe('Disk_Tools.dsk'));
+    choose(fd0, 'Create blank image...');
+    const cancel = await waitFor(() => {
+      const b = Array.from(document.querySelectorAll('.modal-card button')).find(
+        (x) => x.textContent?.trim() === 'Cancel',
+      );
+      expect(b).toBeDefined();
+      return b as HTMLButtonElement;
+    });
+    await fireEvent.click(cancel);
+    await waitFor(() => expect(document.querySelector('.modal-card')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(fd0));
+    expect(fd0.value).toBe('Disk_Tools.dsk');
   });
 
   it('a model change and Reset to defaults reload the defaults', async () => {
@@ -176,8 +195,24 @@ describe('WelcomeConfigSlide: storage', () => {
     await waitFor(() => expect(c.querySelector('[data-position="scsi:4"]')).not.toBeNull());
   });
 
-  it('removing the startup disk moves the startup choice', async () => {
+  // S1018-27: one image at two SCSI ids is two targets writing one file.
+  it('a hard-disk image another device has is not offered', async () => {
     const c = await open('plus');
+    await fireEvent.click(c.querySelector('[data-testid="cfg-add-device-scsi"]')!);
+    choose($(c, '#cfg-add-type-scsi')!, 'hd');
+    choose($(c, '#cfg-add-unit-scsi')!, '4');
+    await fireEvent.click(button(c, 'Add'));
+    await waitFor(() => expect($(c, '#cfg-media-scsi-4')).not.toBeNull());
+    choose($(c, '#cfg-media-scsi-0')!, 'hd1.img');
+    await waitFor(() => expect(labels($(c, '#cfg-media-scsi-4'))).not.toContain('hd1.img'));
+    expect(labels($(c, '#cfg-media-scsi-4'))).toContain('hd2.img');
+    expect(labels($(c, '#cfg-media-scsi-0'))).toContain('hd1.img');
+  });
+
+  it('removing the startup disk moves the startup choice', async () => {
+    const c = await open('iix');
+    choose($(c, '#cfg-media-scsi-0')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('scsi:0'));
     const remove = c.querySelector('[data-position="scsi:0"] button') as HTMLButtonElement;
     await fireEvent.click(remove);
     await waitFor(() => expect(c.querySelector('[data-position="scsi:0"]')).toBeNull());
@@ -204,13 +239,24 @@ describe('WelcomeConfigSlide: storage', () => {
     expect(labels($(c, '#cfg-opt-keyswitch'))).toEqual(['Unlocked', 'Service', 'Locked']);
     expect(c.textContent).toContain('Internal SCSI bus 0');
     expect(c.textContent).toContain('Internal SCSI bus 1');
-    expect($(c, '#cfg-startup')!.value).toBe('scsi:2');
+    choose($(c, '#cfg-media-scsi-2')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('scsi:2'));
   });
 
   it('the Lisa: one ProFile, no SCSI', async () => {
     const c = await open('lisa');
     expect(c.textContent).toContain('ProFile port');
     expect(c.querySelector('[data-bus="scsi"]')).toBeNull();
+  });
+
+  // S1018-55: with the ProFile empty the boot ROM would stop at error 42
+  // looking for it; the disk is the default again once it has an image.
+  it('the Lisa starts up from no default until the ProFile has an image', async () => {
+    const c = await open('lisa');
+    expect($(c, '#cfg-startup')!.value).toBe('');
+    expect(Array.from($(c, '#cfg-startup')!.options).map((o) => o.value)).toEqual(['']);
+    choose($(c, '#cfg-media-profile-0')!, 'hd1.img');
+    await waitFor(() => expect($(c, '#cfg-startup')!.value).toBe('profile:0'));
   });
 
   it('a hard disk with no image is dropped at Start, with a notice; images go to their device', async () => {
@@ -280,6 +326,12 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
   });
 
   it('a PCI card’s options are rendered from the tree, with the monitor’s device', async () => {
+    // Its expansion ROM is loaded.
+    fake.patch = (id, t) => {
+      if (id !== 'pm7500') return;
+      for (const card of t.cards as Array<Record<string, unknown>>)
+        if (card.id === 'mach64_gx') card.status = 'ok';
+    };
     const c = await open('pm7500');
     await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
     choose($(c, '#cfg-add-card')!, 'mach64_gx');
@@ -308,7 +360,8 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
     expect($(c, '#cfg-card-opt-pci_1-raster')).toBeNull();
   });
 
-  it('a card whose ROM is missing is offered disabled, with the reason', async () => {
+  // S1018-51: the list marks each such card, instead of a note under it.
+  it('a card whose ROM is missing is marked in the list; chosen, it says why and cannot be added', async () => {
     fake.patch = (id, t) => {
       if (id !== 'pm9500') return;
       const cards = t.cards as Array<Record<string, unknown>>;
@@ -316,10 +369,31 @@ describe('WelcomeConfigSlide: cards and the monitor', () => {
     };
     const c = await open('pm9500');
     expect(c.textContent).toContain('It will start with no screen');
+    // No note under the section names the card before the list is opened.
+    expect(c.textContent).not.toContain('expansion ROM (.prom)');
     await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
     const opt = Array.from($(c, '#cfg-add-card')!.options).find((o) => o.value === 'mach64_gx')!;
-    expect(opt.disabled).toBe(true);
-    expect(opt.textContent).toContain('expansion ROM (.prom)');
+    expect(opt.dataset.badge).toBe('ROM needed');
+    expect(opt.dataset.badgeIntent).toBe('warning');
+    choose($(c, '#cfg-add-card')!, 'mach64_gx');
+    await waitFor(() =>
+      expect(c.querySelector('[data-testid="cfg-add-card-needs"]')?.textContent).toContain(
+        'expansion ROM (.prom)',
+      ),
+    );
+    expect(c.querySelector('[data-testid="cfg-add-card-needs"]')?.textContent).toContain(
+      'Load ROM…',
+    );
+    expect((button(c, 'Add') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a card on the substitute ROM is marked in the list', async () => {
+    const c = await open('iici');
+    await fireEvent.click(c.querySelector('[data-testid="cfg-add-card"]')!);
+    const opt = Array.from($(c, '#cfg-add-card')!.options).find((o) => o.value === 'mdc_8_24')!;
+    expect(opt.dataset.badge).toBe('Substitute ROM');
+    expect(opt.disabled).toBe(false);
+    expect(c.querySelector('[data-testid="cfg-add-card-needs"]')).toBeNull();
   });
 });
 

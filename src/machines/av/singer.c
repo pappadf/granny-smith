@@ -1158,6 +1158,10 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
         scheduler_new_cpu_event(cfg->scheduler, &singer_frame_event, s, 0, 0, (uint64_t)(240.0 * 1e9 / 24000.0));
     }
 
+    // Likewise the guest's record gate (see av_vdc_init): a restore brings
+    // it back open with no sndComCtl edge to announce it.
+    platform_audio_in_state((s->last_com & SND_IN_EN) != 0);
+
     // The shared host stream + capture sink (stereo at the codec rate).
     s->open_rate = singer_rate(s);
     audio_out_open(s->open_rate, 2);

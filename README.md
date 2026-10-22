@@ -57,6 +57,7 @@ NuBus display cards fit any machine with free slots, even one with built-in vide
 The emulated computer models have been tested with various combinations of the following operating systems:
 
 - **Mac OS System 2 to 9.2.1**
+- **Mac OS X 10.0.3 and 10.1**
 - **A/UX 3.0.1**
 - **Lisa Office System 3.1**
 - **Lisa Xenix 3.0**
@@ -69,7 +70,6 @@ The emulated computer models have been tested with various combinations of the f
 
 ## Work In Progress
 
-- New pre-decoded interpreter/execution model
 - Power Macintosh 9500MP running BeOS
 - ATI Rage 128
 
@@ -79,22 +79,19 @@ Two principles guide the project: **stay true to the hardware**, and **keep it s
 
 True to the hardware means that compatibility is achieved by behaving like the real underlying hardware, not by patching around differences. Machines boot their original, unpatched ROMs, and every needed on-board device the software touches is modeled. Chip behaviour is pinned against Apple documentation, chip datasheets, Apple's own system software sources.
 
-Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C11 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to achieve "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
+Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C11 core with no special runtime requirements.
 
 ## Getting Started
 
-You will need a ROM image and a bootable system disk image for the machine you want to run.
+1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/v0.9.3/)** in a Chromium-based browser.
+2. Load a ROM for the machine you want (Granny Smith includes no Apple ROMs) and a disk with system software.
+3. Choose **New Machine**, pick the model and its disks, and click **Start**.
 
-1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/v0.9.3/)** in any modern browser
-2. On first launch, upload a ROM for your chosen model (any of the models above); it is verified against a checksum table of every known ROM and persisted in the browser's OPFS storage, so you only need to do this once
-3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
-4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
-5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
-6. ROMs and disks can also be fetched from any CORS-enabled URL, including from inside a `.zip` or `.sit` archive (`…/x.zip/<member>`)
+[Getting started](docs/user/getting-started.md) walks through each step; the rest of the user guide is in [docs/user/](docs/user/).
 
-Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), bare HFS volumes or driverless partitioned disks (such as many archive.org images), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
+Disk images can be raw (`.dsk`, `.img`), UDIF (`.dmg`, read and written), QCOW2 (imported and staged, then converted on the fly), bare HFS volumes or driverless partitioned disks (such as many archive.org images), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
 
-Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind. End-user documentation lives in [docs/user/](docs/user/), and the UI offers Midnight (the default), Starlight and Aqua skins.
+Every subsystem is exposed through a self-describing object model, reachable from the built-in Terminal console (syntax highlighting, completion, signature hints, and a structural command browser) — breakpoints, watchpoints, logpoints, and MMU translation on every MMU kind.
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/guide/ARCHITECTURE.md](docs/guide/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 

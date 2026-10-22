@@ -17,11 +17,15 @@
      * the core knows each bus's image format and sizes.
      */
     disks?: BlankDisk[];
+    /** For kind==='fd': whether the drive reads high-density (1.4 MB) disks.
+     *  An 800K drive (the Plus, the Lisa) was offered one, and the machine
+     *  then started with the drive empty. */
+    highDensity?: boolean;
     onClose: () => void;
     /** Called with the bare filename of the newly created image. */
     onCreated: (name: string) => void;
   }
-  let { open, kind, disks = [], onClose, onCreated }: Props = $props();
+  let { open, kind, disks = [], highDensity = true, onClose, onCreated }: Props = $props();
 
   let diskIndex = $state(0); // the chosen entry of `disks`
   let fdDensity = $state<'800K' | '1440K'>('800K');
@@ -32,6 +36,10 @@
   $effect(() => {
     void disks;
     diskIndex = 0;
+  });
+  // A drive that reads no 1.4 MB disk is never left asking for one.
+  $effect(() => {
+    if (!highDensity) fdDensity = '800K';
   });
 
   // Timestamp keeps generated names unique without a manual rename step.
@@ -91,7 +99,7 @@
         bind:value={fdDensity}
         options={[
           { value: '800K', label: '800 KB (double density)' },
-          { value: '1440K', label: '1.4 MB (high density)' },
+          ...(highDensity ? [{ value: '1440K' as const, label: '1.4 MB (high density)' }] : []),
         ]}
       />
     {/if}

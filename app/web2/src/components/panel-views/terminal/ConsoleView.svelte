@@ -20,6 +20,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { ConsoleHistory } from '@/lib/consoleHistory';
   import { copyText } from '@/lib/clipboard';
+  import { showNotification } from '@/state/toasts.svelte';
   import { highlightParts } from '@/lib/highlight';
   import { stickToBottom } from '@/lib/stickToBottom.svelte';
   import { revealInSystem } from '@/state/system.svelte';
@@ -163,13 +164,17 @@
     const clicked = entryOf(ev.target as Element);
     const selText = outputSelection();
     const touched = selectedEntries();
-    const copy = (text: string) => () => void copyText(text);
+    // No command among what was selected or clicked (an output line):
+    // nothing to copy as commands, so the item is greyed (S1018-80).
+    const commands = commandsText(touched.length ? touched : clicked ? [clicked] : []);
+    // A refused copy is said, not dropped without a word.
+    const copy = (text: string) => async () => {
+      if (!(await copyText(text)))
+        showNotification('Could not copy: the browser did not allow the clipboard', 'warning');
+    };
     const items: ContextMenuItem[] = [
       { label: 'Copy', action: copy(selText || clicked?.text || '') },
-      {
-        label: 'Copy as commands',
-        action: copy(commandsText(touched.length ? touched : clicked ? [clicked] : [])),
-      },
+      { label: 'Copy as commands', disabled: !commands, action: copy(commands) },
     ];
     if (clicked && clicked.job !== null)
       items.push({
@@ -304,8 +309,8 @@
         data-id={e.id}
       >
         {#if e.kind === 'value' && e.json !== undefined}
-          <ValueTree value={e.json} onlink={onObjectLink}>
-            {#snippet label()}{@render marked(e.text)}{/snippet}
+          <ValueTree value={e.json} text={e.text} onlink={onObjectLink}>
+            {#snippet label(t)}{@render marked(t)}{/snippet}
           </ValueTree>
         {:else if e.kind === 'command' && e.spans && !find.active}
           {#each highlightParts(e.text, e.spans) as p, i (i)}{#if p.cls}<span class="hl-{p.cls}"

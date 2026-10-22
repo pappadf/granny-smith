@@ -400,7 +400,10 @@ void lisa_fdc_write32(lisa_fdc_t *fdc, uint32_t offset, uint32_t value) {
 
 // === Media ==================================================================
 
-void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
+// Put `image` in the drive (or empty it) without the insertion event: retain
+// it for reinserts, set the geometry and the disk-in bytes.  Shared by a user
+// insertion and a checkpoint restore, where the disk was already in the drive.
+static void fdc_attach(lisa_fdc_t *fdc, image_t *image) {
     // Faithful reinsert: if this disk was inserted before, re-use the retained
     // image (it carries any writes — e.g. the boot diskette's overmount_stamp);
     // the freshly-opened `image` is redundant.  Otherwise retain it for future
@@ -440,6 +443,10 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
     image_set_diskcopy_identity(image, LISA_DC42_NAME, disk_size(image) <= 400 * 1024 ? LISA_DC42_FORMAT_400K : 0);
     fdc->num_sides = (image && disk_size(image) > 500000) ? 2 : 1; // 400 KB = 1 side
     fdc_update_disktype(fdc);
+}
+
+void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
+    fdc_attach(fdc, image);
     if (image) {
         // Disk insertion raises FDIR (IPL 1) so the OS Sony driver's DISK_INT runs,
         // reads $C05F, sees the disk-inserted event, and sets disk_present:=gooddisk
@@ -453,6 +460,11 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
         fdc->ram[FDC_DRVSTAT] |= DRVSTAT_DISKIN2 | DRVSTAT_OR2;
         fdc_update_int(fdc);
     }
+}
+// Re-derive FDIR from shared RAM and drive it through the callback.
+void lisa_fdc_update_int(lisa_fdc_t *fdc) {
+    if (fdc)
+        fdc_update_int(fdc);
 }
 void lisa_fdc_eject(lisa_fdc_t *fdc) {
     fdc->image = NULL;
@@ -661,7 +673,7 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
     // read back exactly what lisa_fdc_checkpoint wrote, in the same order.  The
     // diskette that was in the drive is resolved in the restored image list
-    // (the FDC does not own images -- the tracked list does) and inserted once
+    // (the FDC does not own images -- the tracked list does) and reattached once
     // the rest of the state is read.
     image_t *disk = NULL;
     if (cp) {
@@ -701,8 +713,12 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
         if (fdc->ram[FDC_IMSK] == 0)
             fdc->ram[FDC_IMSK] = IMSK_BOTH;
     }
+    // Reattach, not insert: the disk was already in the drive, and the restored
+    // RAM holds the true event/mask state, so latching a disk-in event here
+    // would be a phantom insertion nothing acknowledges (#325).  FDIR follows
+    // from that RAM once the machine is built (lisa_fdc_update_int).
     if (disk)
-        lisa_fdc_insert(fdc, disk);
+        fdc_attach(fdc, disk);
     return fdc;
 }
 

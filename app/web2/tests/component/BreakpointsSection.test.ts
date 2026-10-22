@@ -2,6 +2,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import BreakpointsSection from '@/components/panel-views/debug/BreakpointsSection.svelte';
 import { debug } from '@/state/debug.svelte';
+import { toasts, _resetForTests as resetToasts } from '@/state/toasts.svelte';
 import { listBreakpoints, type Breakpoint } from '@/bus/debug';
 
 let bpList: Breakpoint[] = [];
@@ -12,6 +13,8 @@ vi.mock('@/bus/debug', () => ({
   listBreakpoints: vi.fn(async () => bpList.slice()),
   addBreakpoint: vi.fn(async (addr: number, cond?: string) => {
     adds.push({ addr, cond });
+    // The core refuses a condition that does not parse.
+    if (cond?.startsWith('(((')) return `invalid breakpoint condition '${cond}': expected ')'`;
     bpList.push({ id: bpList.length + 1, addr, enabled: true, condition: cond, hits: 0 });
     return true;
   }),
@@ -52,6 +55,37 @@ describe('BreakpointsSection', () => {
       expect(adds.length).toBe(1);
       expect(adds[0].addr).toBe(0x400e);
     });
+  });
+
+  // S1018-36: an invalid condition is refused with the core's reason, not
+  // added as one that is always true; the form stays open to correct it.
+  it('a condition that does not parse is refused with its reason', async () => {
+    resetToasts();
+    const { container } = render(BreakpointsSection);
+    await fireEvent.click(container.querySelector('.add-btn') as HTMLElement);
+    await waitFor(() => expect(container.querySelector('.add-row')).not.toBeNull());
+    const addrInput = container.querySelector('input.add-addr') as HTMLInputElement;
+    addrInput.value = 'C80C';
+    await fireEvent.input(addrInput);
+    const condInput = container.querySelector('input.add-cond') as HTMLInputElement;
+    condInput.value = '((( nonsense';
+    await fireEvent.input(condInput);
+    await fireEvent.keyDown(condInput, { key: 'Enter' });
+    await waitFor(() =>
+      expect(toasts.active.map((t) => t.msg)).toContain(
+        "Failed to add breakpoint: invalid breakpoint condition '((( nonsense': expected ')'",
+      ),
+    );
+    expect(container.querySelectorAll('.bp-row').length).toBe(0);
+    expect(container.querySelector('.add-row')).not.toBeNull();
+  });
+
+  it('+ on a collapsed section opens it, so the add row can be seen', async () => {
+    debug.sections.breakpoints = false;
+    const { container } = render(BreakpointsSection);
+    await fireEvent.click(container.querySelector('.add-btn') as HTMLElement);
+    expect(debug.sections.breakpoints).toBe(true);
+    await waitFor(() => expect(container.querySelector('.add-row')).not.toBeNull());
   });
 
   it('renders one row per breakpoint in the list', async () => {

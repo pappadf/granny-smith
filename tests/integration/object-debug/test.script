@@ -43,6 +43,14 @@ echo "${debug.breakpoints.add(0x400400, "machine.cpu.d0 == 0")}"
 assert debug.breakpoints[3].addr == 0x400400
 assert debug.breakpoints[3].condition == "machine.cpu.d0 == 0"
 
+# A condition that does not parse is refused, with the parser's reason, and
+# nothing is added (it used to be stored and read as true at every hit).
+assert try(debug.breakpoints.add(0x400500, "((( nonsense"), none) == none "an invalid condition must be refused"
+assert len(debug.breakpoints.entries) == 3 "a refused add added a breakpoint"
+# Checking a condition evaluates nothing: this one would clear the list.
+echo "${debug.breakpoints.add(0x400400, "debug.breakpoints.clear() == none")}"
+assert len(debug.breakpoints.entries) == 3 "adding the condition evaluated it"
+
 # Clear via the new collection method, verify legacy list is empty too.
 echo "${debug.breakpoints.clear()}"
 echo "${len(debug.breakpoints.entries)} breakpoints"

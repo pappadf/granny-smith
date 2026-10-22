@@ -8,6 +8,8 @@ export interface ConsoleInputApi {
   // Replace the path token at the cursor with `text`.
   replaceToken(text: string): void;
   focusEnd(): void;
+  // Focus, the cursor where it is.
+  focus(): void;
 }
 
 let input: ConsoleInputApi | null = null;
@@ -23,9 +25,12 @@ export function writeToConsole(text: string): boolean {
   return true;
 }
 
-export function focusConsole(): boolean {
+// Focus the console input: the cursor at the end, or (atEnd false) where
+// it is -- after an insert, so typing goes on from the insert (S1018-74).
+export function focusConsole(atEnd = true): boolean {
   if (!input) return false;
-  input.focusEnd();
+  if (atEnd) input.focusEnd();
+  else input.focus();
   return true;
 }
 

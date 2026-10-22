@@ -23,6 +23,11 @@ __attribute__((weak)) bool platform_path_is_volatile(const char *path) {
     return path && strncmp(path, "/tmp/", 5) == 0;
 }
 
+// The host filesystem persists.
+__attribute__((weak)) bool platform_storage_persistent(void) {
+    return true;
+}
+
 // Background-checkpoint auto state.  The headless build has no auto-checkpoint
 // loop, so the defaults stub out; em_main.c overrides them to read/write the
 // live `checkpoint_auto_enabled` flag.

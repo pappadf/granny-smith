@@ -335,6 +335,39 @@ TEST(test_form_feed_and_pages) {
     ASSERT_EQ_INT(g_pages, 3);
 }
 
+// An abandoned or empty job leaves the paper at the next top of form, so the
+// next job starts on a new page rather than where the last one stopped
+TEST(test_top_of_form_after_job) {
+    setup(IW_MODEL_IW2);
+    FEED("\n\n\n"); // paper moved, nothing printed
+    iw_interp_end_job(&g_in);
+    iw_interp_top_of_form(&g_in);
+    ASSERT_EQ_INT(g_in.st.y, 1584);
+    ASSERT_EQ_INT(g_pages, 0);
+    // Already at a top of form: no blank form fed
+    iw_interp_top_of_form(&g_in);
+    ASSERT_EQ_INT(g_in.st.y, 1584);
+    // The next job prints at the top of the second sheet
+    iw_interp_begin_job(&g_in);
+    FEED("\x1bG0001\x01\r");
+    ASSERT_EQ_INT(g_in.st.page_top, 1584);
+    ASSERT_TRUE(px(0, 0));
+    iw_interp_end_job(&g_in);
+    ASSERT_EQ_INT(g_pages, 1); // the blank first sheet made no page
+
+    // Cut sheets: the sheet in the printer is ejected, the next one loaded
+    setup(IW_MODEL_IW2);
+    g_cfg.cut_sheet = true;
+    FEED("\n");
+    iw_interp_end_job(&g_in);
+    iw_interp_top_of_form(&g_in);
+    ASSERT_EQ_INT(g_in.st.page_top, 1584);
+    ASSERT_EQ_INT(g_in.st.y, g_in.st.tof);
+    iw_interp_top_of_form(&g_in);
+    ASSERT_EQ_INT(g_in.st.page_top, 1584);
+    ASSERT_EQ_INT(g_pages, 0);
+}
+
 TEST(test_reverse_clamped_at_sheet_top) {
     setup(IW_MODEL_IW2);
     FEED("\x1br\x1bT50\n");
@@ -578,6 +611,7 @@ int main(void) {
     RUN(test_cr_lf_and_can);
     RUN(test_backspace_overprint);
     RUN(test_form_feed_and_pages);
+    RUN(test_top_of_form_after_job);
     RUN(test_reverse_clamped_at_sheet_top);
     RUN(test_perforation_skip);
     RUN(test_colour);

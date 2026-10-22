@@ -197,9 +197,11 @@ static void mdu_trigger_vbl(config_t *cfg) {
 
 // The RBV's built-in video as a display device: the BUILTIN pseudo-slot's
 // card supplies its monitors.  Its startup modes are its pseudo-slot's PRAM
-// record, as each ROM writes it for the 13" RGB -- BoardID ($001F IIci,
-// $0028 IIsi), savedMode, the monitor's sResource $86 -- and honours a
-// seeded one at 1, 2, 4 and 8 bpp (measured).
+// record, as each ROM writes it -- BoardID ($001F IIci, $0028 IIsi),
+// savedMode, the monitor's sResource ($86 for the 13" RGB, $81 for the 15"
+// Portrait) -- and honours a seeded one at 1, 2, 4 and 8 bpp on the 13" RGB
+// and 1, 2 and 4 on the Portrait, which has no 8 bpp mode (measured).  With
+// no Portrait row the New Machine dialog offered no mode for it (S1018-15).
 #define RBV_STARTUP(board)                                                                                             \
     {                                                                                                                  \
         {.monitor = "13in_rgb",                                                                                        \
@@ -207,6 +209,11 @@ static void mdu_trigger_vbl(config_t *cfg) {
          .height = 480,                                                                                                \
          .record = {0x00, (board), 0x80, 0x86, 0, 0, 0, 0},                                                            \
          .modes = {{1, 0x80}, {2, 0x81}, {4, 0x82}, {8, 0x83}}},                                                       \
+        {.monitor = "15in_portrait",                                                                                   \
+         .width = 640,                                                                                                 \
+         .height = 870,                                                                                                \
+         .record = {0x00, (board), 0x80, 0x81, 0, 0, 0, 0},                                                            \
+         .modes = {{1, 0x80}, {2, 0x81}, {4, 0x82}}},                                                                  \
         {0},                                                                                                           \
 }
 static const builtin_startup_t iici_startup[] = RBV_STARTUP(0x1F);

@@ -14,7 +14,7 @@ TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
 
 TEST_ARGS := model=pmg3dt ram=65536
 
-# One boot, the Finder walk to the samples, three GL programs: ~70 G
+# One boot, the Finder walk to the samples, three GL programs: ~140 G
 # instructions.
 TEST_TIMEOUT := 6000
 

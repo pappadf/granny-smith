@@ -6,6 +6,7 @@
   import { debug, inspectMmuWalk } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import { showNotification } from '@/state/toasts.svelte';
   import { fmtSize, runEnd } from '@/lib/mmu';
 
   // The mapped address ranges, from the core's machine.cpu.mmu.map: runs
@@ -27,7 +28,10 @@
   function scan() {
     const s = parseHex(startInput);
     const e = endInput.trim() === '' ? undefined : parseHex(endInput);
-    if (s === null || e === null) return;
+    if (s === null || e === null) {
+      showNotification(`Invalid ${s === null ? 'start' : 'end'} address`, 'error');
+      return;
+    }
     range = { start: s, end: e };
   }
 

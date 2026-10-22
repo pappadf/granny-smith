@@ -319,11 +319,21 @@ paper). Bits known [9]:
 |---|---|
 | 14 | SheetFeeder installed |
 | 13 | Paper out |
+| 12 | Cover open (driver) |
+| 11 | Deselected: the Select light is off (driver) |
 | 10 | Paper jam (reported for running out of paper when a SheetFeeder is fitted) |
 
+Bits 12 and 11 are read from AppleTalk ImageWriter 2.7 (System 6.0.8), not
+from [9]: its status check maps bit 13 to "is out of paper" (ALRT −8178),
+bit 12 to "The cover is open" (−8177), bit 11 to "The 'select' light is off.
+Please push the 'select' switch, then click Continue" (−8175) and bit 10 to
+"The paper supply is empty or jammed" (−8176). Without bit 11, a deselected
+card that only stops reading leaves the driver at "is not responding"
+(−8180), which has only Cancel.
+
 The note warns that the card sometimes returns all ones in the high byte,
-which the driver must treat as invalid [9]. The driver does not poll status
-while it prints: it reads the OpenConnReply's word (observed).
+which the driver must treat as invalid [9]. The driver reads the
+OpenConnReply's word, and sends SendStatus while it prints (observed).
 
 ## 9. What host drivers send
 
@@ -351,7 +361,8 @@ preceded by `ESC K0`.
 ## 10. Open questions
 
 - The remaining statusBits (NW20's Figure 5 is an image not yet
-  transcribed), and whether the card's flow quantum is 8.
+  transcribed; bits 12 and 11 are known only from the driver), and whether
+  the card's flow quantum is 8.
 - What the ImageWriter II prints for MouseText in a proportional pitch (it
   has no proportional MouseText shapes), and whether draft is ever used
   with proportional spacing.

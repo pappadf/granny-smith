@@ -514,8 +514,13 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             uint32_t target_bits = scsi->chip5380->reg.odr & ~(1u << scsi->bus.initiator) & 0xFFu;
             scsi->bus.target = target_bits ? platform_ntz32(target_bits) : 7;
 
-            // [6]: target will assert BSY - if no target, the bus will be free again
-            if (!target_bits || !scsi->device_images[scsi->bus.target])
+            // [6]: target will assert BSY - if no target, the bus will be free again.
+            // A drive answers whether or not it holds a medium: an empty CD-ROM
+            // drive is on the bus (as on the 53C96 and MESH front-ends), and the
+            // command layer answers NOT READY for what needs a disc.  Testing for
+            // an image here hid an empty drive from the ROM scan and from System
+            // 7's CD driver, which then never saw a disc inserted later.
+            if (!target_bits || !scsi_device_present(scsi, scsi->bus.target))
                 phase_free(scsi);
             else
                 phase_command(scsi);
@@ -2122,9 +2127,15 @@ static DEF_SETTER(scsi_attr_loopback_set) {
     return val_none();
 }
 
+// The smallest disk taken as a hard disk: the smallest floppy's size.
+#define IDENTIFY_HD_MIN_BYTES (400u * 1024u)
+
 // `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
-// it opens, isn't a floppy-sized image, and has a non-zero size.  Why, and
-// the closest drive model, go to the scsi log category.
+// it opens, isn't a floppy-sized image, and its disk is at least as large as
+// the smallest floppy.  Smaller is a ROM, a card's ROM or a cut-short dump
+// (S1018-26).  The size is the disk's, not the file's: a UDIF or QCOW2 of a
+// mostly empty disk is far smaller than the disk it holds.  Why, and the
+// closest drive model, go to the scsi log category.
 static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
@@ -2138,6 +2149,11 @@ static DEF_METHOD(scsi_method_identify_hd) {
         return val_bool(false);
     }
     uint64_t sz = image_get_raw_size(img);
+    if (sz < IDENTIFY_HD_MIN_BYTES) {
+        LOG(2, "identify_hd: %s is smaller than the smallest floppy (%llu bytes)", path, (unsigned long long)sz);
+        image_close(img);
+        return val_bool(false);
+    }
     const struct drive_model *best = drive_catalog_find_closest(sz);
     LOG(2, "identify_hd: %s is an HD image: %llu bytes, %s %s %s", path, (unsigned long long)sz,
         sz == best->size ? "matches" : "nearest model", best->vendor, best->product);
@@ -2182,6 +2198,28 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
         is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
+}
+
+// `scsi.identify_iso(path)` — true if the image holds an ISO 9660 volume
+// (alone or as a hybrid's other side).  An upload of no stated kind (a drop,
+// Home's Load ROM) is filed as a CD-ROM only then: a bare HFS or partitioned
+// image is a hard disk (S1018-06), though identify_cdrom accepts it as a disc.
+static DEF_METHOD(scsi_method_identify_iso) {
+    const char *path = argv[0].s;
+    image_t *img = image_open_readonly(path);
+    if (!img) {
+        LOG(2, "identify_iso: cannot open %s", path);
+        return val_bool(false);
+    }
+    bool is_iso = false;
+    if (!image_is_floppy(image_get_type(img))) {
+        source_t *src = image_source(img);
+        is_iso = iso_probe_source(src, 0, disk_size(img));
+        source_release(src);
+    }
+    LOG(2, "identify_iso: %s %s", path, is_iso ? "holds ISO 9660" : "has no ISO 9660 volume");
+    image_close(img);
+    return val_bool(is_iso);
 }
 
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
@@ -2260,6 +2298,11 @@ static const member_t scsi_static_members[] = {
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom}},
+    {.kind = MK_METHOD,
+     .name = "identify_iso",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True if the image holds an ISO 9660 volume",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}  },
 };
 
 static const class_desc_t scsi_static_class = {
@@ -2313,6 +2356,11 @@ static const member_t scsi_members[] = {
      .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_cdrom} },
+    {.kind = MK_METHOD,
+     .name = "identify_iso",
+     .flags = M_CAT_ADVANCED,
+     .doc = "True if the image holds an ISO 9660 volume",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = VK_BOOL, .fn = scsi_method_identify_iso}   },
     {.kind = MK_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),

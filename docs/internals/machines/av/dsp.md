@@ -84,6 +84,40 @@ cleanup* stopped the DSP.)  There is no `$81` timeout on a healthy
 boot.  `suite-av` rows `av-dsp-boot` and `av-dsp-determinism` assert
 all of this.
 
+**Uncached reads and the boot handshake.**  The `boot` selector's stage-3
+poll (`$4099C95C`) waits for `data+$198` bit 1 in a fixed loop of $80000
+iterations, five instructions each, reading a page the system maps
+cache-inhibited (page descriptor CM = 2).  The kernel takes roughly 85–135 ms
+to set the bit, so the loop's cost per iteration decides whether the host
+waits long enough.  At CPI 1 the five instructions alone give 65 ms on the
+840AV, and the poll would give up, call `stop` and hold the DSP in reset for
+the session.  What makes the real loop long enough is the read itself: an
+uncached access goes to DRAM, a single read taking 6 bus clocks on the 840AV
+and 4 on the 660AV (Apple, *Macintosh Quadra 840AV and Macintosh Centris
+660AV Developer Note*, Table 2-3, p. 20).  The boards set
+`uncached_read_cycles` to those values; the 040 MMU then keeps cache-inhibited
+RAM pages off the read fast path, and the slow path charges the cycles as an
+I/O penalty.  That gives the loop 144 ms on the 840AV and 189 ms on the 660AV;
+measured headless, the kernel answers after 95 ms and 126 ms.
+
+**Known limit — accelerated boot.**  The DSP's budget is per main-CPU
+*cycle* (`ratio_x256`), so under accelerated pacing the 68040 runs more
+instructions against the same DSP pace, and the RTM init's handshake
+with the kernel is lost: at a pinned 4x or 8x the kernel boots (0.5–1.1 M
+DSP instructions) and the host then gives up on it and holds it in reset
+for the rest of the session — no sound output or input.  Reproducible
+headlessly with `scheduler.mode = "accelerated"; scheduler.speed = 4`
+before the boot, and byte-identically on main's scheduler before the
+adaptive-governor work, so it predates it.  In the browser even 2x loses
+it about one boot in three (the kernel runs to exactly 2,199,920
+instructions and is reset — the install's failure cleanup).  The browser
+AV specs that boot accelerated hold real time until the kernel idles
+(`machine.dsp.state` running, `emr` $8000) and accelerate only then.
+Two candidate fixes, neither done: a host-side timeout counted in 68040
+work, or a DSP whose pace should follow the host's (with the risk that
+the frame period it calibrates in timer ticks at boot goes stale when
+the speed moves later).
+
 ## Object node
 
 `machine.dsp`: `state` (`reset`/`running`/`idle`/`crashed`), `pc`, `ps`,

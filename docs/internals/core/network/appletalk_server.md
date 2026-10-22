@@ -860,6 +860,14 @@ Bit 0 is the least-significant bit.
 |    7 | Bytes Total       | long | Unsigned.                                             |
 |    8 | Volume Name       | int  | Offset to Pascal string within parameter block.       |
 
+Bytes Free and Bytes Total come from the host filesystem (`statvfs`), clamped
+to 2 GB − 1 KB. An AFP 2.0 session (System 6) is clamped further, to 65535 ×
+16 KB (just under 1 GB): its client builds an HFS volume record of at most
+65535 allocation blocks, so a larger volume gets 32 KB blocks, and System 6's
+Finder then reports every file as about 2 GB on disk ("16 bytes used,
+2,097,600K on disk"). At 16 KB blocks it reports "16K on disk". System 7.5
+(AFP 2.1) handles 32 KB blocks and keeps the 2 GB figure.
+
 **Volume Attributes bits (bit 0 of bitmap selects this 16-bit field)**
 
 |  Bit | Name                        | Meaning                                        |
@@ -1343,6 +1351,7 @@ _The reply doesn't carry any payload_
    - To rename a directory: search access to all ancestors (including parent), and write access to the parent directory.
    - To rename a file: search access to all ancestors except the parent, and read & write access to the parent directory.
 - The user must have previously called `FPOpenVol` for the volume.
+- **On the host:** the object and its sidecar are renamed together (the sidecar's failure puts the object back). A directory the host filesystem will not rename -- WasmFS's OPFS backend renames files only -- is recreated under the new name and its entries moved into it one by one, subdirectories the same way; a failure part-way moves them back. `FPMoveAndRename` does the same.
 
 ---
 

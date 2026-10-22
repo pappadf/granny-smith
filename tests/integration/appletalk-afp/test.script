@@ -93,4 +93,29 @@ assert appletalk.afp.volumes["My Volume"].catalog_generation == 2 "catalog gener
 assert appletalk.afp.volumes["My Volume"].open_forks == 0 "browsing leaked an open fork"
 assert appletalk.afp.stats.open_forks == 0 "a fork is open server-wide after browsing"
 
+# The client builds an HFS volume record for the share from Bytes Total.  An
+# AFP 2.0 session is told less than 1 GB, so the record has 16 KB allocation
+# blocks: at 32 KB System 6's Finder calls every file about 2 GB on disk.
+# The AFP volume is the second VCB in the queue (VCBQHdr.qHead = $358).
+let afp_vcb = machine.memory.peek.l(machine.memory.peek.l(0x358))
+assert machine.memory.peek.l($afp_vcb + 28) == 16384 "the AFP volume's allocation block is not 16 KB"
+
+# Select README, File > Get Info (Cmd-I): "17 bytes used, 16K on disk".  The
+# dates are the host file's, and the free space behind is the host disk's, so
+# both are left out.
+machine.adb.mouse.move 110 100
+scheduler.run 2000000
+machine.adb.mouse.click true
+machine.adb.mouse.click false
+wait_mouse_taken(100000000)
+scheduler.run 10000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x22
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+wait_keys_taken(100000000)
+scheduler.run 60000000
+check_ex2("readme-info.png", 165, 70, 190, 245, 60, 250, 80, 440)
+
 quit

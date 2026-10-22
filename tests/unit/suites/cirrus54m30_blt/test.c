@@ -733,3 +733,11 @@ int main(void) {
     fprintf(stderr, "[ OK ] cirrus54m30\n");
     return 0;
 }
+
+// pci.c registers its page resolver and flushes resolved device pages
+// (memory.h, mem_dev_desc_t); this suite links pci.c without memory.c.
+void memory_map_set_dev_resolver(memory_map_t *mem, memory_dev_resolver_t fn) {
+    (void)mem;
+    (void)fn;
+}
+void memory_dev_entries_flush(void) {}

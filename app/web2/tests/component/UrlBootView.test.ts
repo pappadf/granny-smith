@@ -1,5 +1,5 @@
 import { render, fireEvent } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import UrlBootView from '@/components/display/UrlBootView.svelte';
 import DisplayContent from '@/components/display/DisplayContent.svelte';
@@ -40,20 +40,22 @@ describe('urlBoot state', () => {
     expect(slotLabel('cd')).toBe('CD-ROM');
   });
 
-  it('names a listed file by its slot and time, and keeps that name', () => {
+  it("names a listed file by the URL's file name, else its slot and time, and keeps that name", () => {
     beginUrlBoot('iici');
-    queueUrlFile('hd0');
+    queueUrlFile('hd0', 'https://h/view.php?id=1');
+    queueUrlFile('fd0', 'https://h/disks/Disk%20Tools.img');
     const name = urlBoot.files[0].name;
     expect(name).toMatch(/^hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
-    expect(urlMediaNameFor('hd0')).toBe(name);
-    expect(urlMediaNameFor('fd0')).toMatch(/^fd0_/);
+    expect(urlMediaNameFor('hd0', 'https://h/view.php?id=1')).toBe(name);
+    expect(urlMediaNameFor('fd0', 'https://h/disks/Disk%20Tools.img')).toBe('Disk Tools.img');
+    expect(urlMediaNameFor('cd', 'https://h/os.iso')).toBe('os.iso');
   });
 
   it('lists files only while the page is booting from its URL', () => {
-    queueUrlFile('rom');
+    queueUrlFile('rom', 'https://h/plus.rom');
     expect(urlBoot.files).toHaveLength(0);
     beginUrlBoot('iici');
-    queueUrlFile('rom');
+    queueUrlFile('rom', 'https://h/plus.rom');
     expect(urlBoot.files.map((f) => f.slot)).toEqual(['rom']);
   });
 });
@@ -61,7 +63,7 @@ describe('urlBoot state', () => {
 describe('UrlBootView', () => {
   it('says a file was already stored instead of downloaded', () => {
     beginUrlBoot('iici');
-    queueUrlFile('hd0');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('hd0', {
       name: 'hd0_2026-10-01_10-00-00.dmg',
       status: 'done',
@@ -77,8 +79,8 @@ describe('UrlBootView', () => {
 
   it('shows the headline and one progress bar per file', () => {
     beginUrlBoot('iici');
-    queueUrlFile('rom');
-    queueUrlFile('hd0');
+    queueUrlFile('rom', 'https://h/rom.img');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('rom', { status: 'done', received: 524288, total: 524288 });
     updateUrlFile('hd0', { status: 'downloading', received: 13107200, total: 26214400 });
     const { container } = render(UrlBootView);
@@ -96,7 +98,7 @@ describe('UrlBootView', () => {
 
   it('uses an indeterminate bar when the server sends no length', () => {
     beginUrlBoot(null);
-    queueUrlFile('hd0');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('hd0', { status: 'downloading', received: 3 * 1024 * 1024, total: null });
     const { container } = render(UrlBootView);
     const bar = container.querySelector('[role="progressbar"]');
@@ -107,7 +109,7 @@ describe('UrlBootView', () => {
 
   it('shows a downloaded disk being compressed into the store, then stored', () => {
     beginUrlBoot(null);
-    queueUrlFile('hd0');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('hd0', {
       status: 'storing',
       received: 40 * 1024 * 1024,
@@ -127,7 +129,7 @@ describe('UrlBootView', () => {
 
   it('says why a failed boot stopped and offers the start screen', async () => {
     beginUrlBoot(null);
-    queueUrlFile('rom');
+    queueUrlFile('rom', 'https://h/rom.img');
     updateUrlFile('rom', { status: 'failed', error: 'mac_rom_archive.zip: not found' });
     setUrlBootStage('failed', 'There is no ROM to boot.');
     const { container, getByRole } = render(UrlBootView);
@@ -139,8 +141,8 @@ describe('UrlBootView', () => {
 
   it('marks the disks still waiting as not needed when the ROM fails', () => {
     beginUrlBoot(null);
-    queueUrlFile('rom');
-    queueUrlFile('hd0');
+    queueUrlFile('rom', 'https://h/rom.img');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('rom', { status: 'failed', error: 'not found' });
     skipQueuedUrlFiles();
     setUrlBootStage('failed', 'There is no ROM to boot.');
@@ -183,6 +185,18 @@ describe('PreviewNoticeDialog with a URL boot', () => {
     expect(queryByText(/preview build/)).toBeNull();
   });
 
+  it('opens on the start screen after the URL-booted machine is shut down', async () => {
+    beginUrlBoot('iici');
+    const { queryByText } = render(PreviewNoticeDialog);
+    machine.status = 'running';
+    urlBoot.showProgress = false;
+    await tick();
+    expect(queryByText(/preview build/)).toBeNull();
+    machine.status = 'stopped';
+    await tick();
+    expect(queryByText(/preview build/)).not.toBeNull();
+  });
+
   it('opens on an ordinary first visit', () => {
     const { queryByText } = render(PreviewNoticeDialog);
     expect(queryByText(/preview build/)).not.toBeNull();
@@ -190,7 +204,7 @@ describe('PreviewNoticeDialog with a URL boot', () => {
 
   it('marks an unpacking file with its own bar state', () => {
     beginUrlBoot(null);
-    queueUrlFile('hd0');
+    queueUrlFile('hd0', 'https://h/hd0.img');
     updateUrlFile('hd0', { status: 'unpacking', received: 1024, total: 1024 });
     const { container } = render(UrlBootView);
     const bar = container.querySelector('[data-slot="hd0"] [role="progressbar"]');

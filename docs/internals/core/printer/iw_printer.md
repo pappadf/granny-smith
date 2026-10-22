@@ -156,9 +156,15 @@ on its own PAP socket (9), separate from the LaserWriter's server
 accepts one connection, pulls data with SendData (flow quantum 8, 10 ms of
 guest time between transactions, held while the printer is paused), feeds
 each Data packet to `iw_printer_feed()`, and ends the job at the EOF. It
-answers OpenConn and SendStatus with the statusBits payload (imagewriter.md §8)
-and holds the workstation's own reads until the job ends, then answers them
-with EOF. Nothing travels back over AppleTalk for `ESC ?`.
+answers OpenConn and SendStatus with the statusBits payload (imagewriter.md §8):
+paper out, or, with paper, bit 11 while the printer is deselected, so the
+driver shows "The 'select' light is off" with Continue. It holds the
+workstation's own reads until the job ends, then answers them with EOF.
+Nothing travels back over AppleTalk for `ESC ?`. As PAP asks, its SendData
+is retried without end and it sends its own Tickle every 60 s: the driver can
+sit on that alert for minutes, and without our Tickles the workstation's
+connection timer ran out after two and its next write failed ("The AppleTalk
+network is not responding").
 
 ## 6. Jobs
 

@@ -106,16 +106,18 @@ export async function collectionEntries(
 
 // What changed in the model.  Every change may have changed values.
 export interface MembersChange {
-  // Everything (a machine booted): all structure was dropped.
+  // Everything (a machine booted or shut down): all structure was dropped.
   reload: boolean;
   // Structure dropped at and under these paths.
   dropped: string[];
 }
 
 // The core events that change what the views show, and the structure each
-// drops (null: values only).  The machine booting drops everything.
+// drops (null: values only).  A machine booting or shutting down drops
+// everything.
 const EVENT_DROPS: Record<string, string | null> = {
   'state:machine_booted': '',
+  'state:machine_shut_down': '',
   'notify:floppy': 'machine.floppy',
   'notify:media': 'machine.scsi',
   'notify:checkpoint_saved': 'checkpoint',

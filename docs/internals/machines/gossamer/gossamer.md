@@ -99,6 +99,25 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   at interrupt time: a bus error at "Welcome to Mac OS".  The cells' DBDMA
   port now moves 4 KB per activation, kicked every 10 us while a DMA
   command is pending, the scheme MESH already uses.
+- **LocalTalk under Open Transport** (Mac OS 9's native driver on ESCC
+  channel B, frames by DBDMA 6/7) needs four things of the ESCC:
+  - each channel interrupts on its own source, ch-a `$0F` and ch-b `$10`
+    (`gos_scc_irq`, `scc_irq_channels`).  The driver's handler is bound to
+    ch-b alone; with both sources raised, the 68k SCC dispatcher took the
+    channel B event first and reset the External/Status latch;
+  - only `+$00`–`+$3F` of the `+$13000` aperture reach the cell.  The
+    driver writes `$00`, `$01` to `+$A0` before a frame; decoded as A
+    control, that left channel A's register pointer at 1, and the driver's
+    next "select RR3" landed in WR1;
+  - the Tx Underrun/EOM External/Status interrupt (WR15 bit 6), raised
+    when the frame has drained from the Tx FIFO, not inside the WR0
+    "reset Tx underrun/EOM" write that ends it — the driver sets the flag
+    its handler checks only after that write;
+  - a Special Receive Condition (end of frame) that survives the DMA
+    reading the CRC bytes, until Error Reset.
+
+  Without them the G3 sent lapENQ and lapRTS and never a data frame, and
+  received nothing; `gossamer-appletalk-afp` pins the whole path.
 
 ## 2. Object-model surface
 
@@ -150,6 +169,9 @@ shortly after boot.
   DBDMA, loopback set from Forth, the BOOTP request of `boot enet`.
 - `gossamer-checkpoint` — a mid-boot save, a restore in a fresh process
   and the same desktop frame.
+- `gossamer-appletalk-afp` — Mac OS 9.2.1 over LocalTalk: the Chooser
+  lists the emulated AppleShare server, logs in as Guest and lists the
+  volume (§1.2).
 - `g3-osx-10-0-finder` — Mac OS X 10.0.3 from the minimal ATA disk in
   the test data (a UDIF, its NVRAM patch and 17" monitor in the sidecar
   configuration): BootX, the kernel, automatic login and the Finder at
@@ -168,8 +190,9 @@ shortly after boot.
 - **BMAC has no wire**: frames go nowhere unless looped back, and only
   `machine.bmac.receive` delivers one.  Mac OS 9 networking over it is
   unexercised.
-- **LocalTalk on the SCC through DBDMA** is exercised only as far as the
-  boot needs.
+- **LocalTalk on the SCC through DBDMA** is exercised as far as an
+  AppleShare login and volume list; what the ESCC register at `+$A0` does
+  is not known, and writes to it are dropped.
 - Shut Down from the Finder ends in a system error.
 - **Open Firmware cannot read a SCSI CD-ROM over MESH.**  Its MESH
   package (`do-cmd`) programs a transfer only while the bus still shows

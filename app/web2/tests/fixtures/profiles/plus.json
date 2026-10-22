@@ -166,7 +166,7 @@
           "label": "CD-ROM drive"
         }
       ],
-      "startup": true,
+      "startup": false,
       "blank_disks": [
         {
           "label": "20 MB (HD20SC)",
@@ -265,10 +265,7 @@
         "type": "cd"
       }
     ],
-    "startup": {
-      "bus": "scsi",
-      "unit": 0
-    },
+    "startup": null,
     "cards": [],
     "displays": {
       "builtin": {

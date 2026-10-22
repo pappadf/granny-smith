@@ -7,8 +7,11 @@
 // integer-only ("software floating point"): every significand operation,
 // rounding decision, and status bit is computed in integer code, so results
 // and FPSCR images are byte-identical on every host (native and WASM) by
-// construction instead of by auditing host-FP corner cases.  Host doubles
-// remain the test oracle, not the implementation.
+// construction instead of by auditing host-FP corner cases.  The one
+// exception is a fast path for the common arithmetic case (ppc_sf_arith):
+// a host double operation whose exact rounding error, recovered with an
+// error-free transformation, yields the same result and FPSCR image; any
+// operand or result outside its envelope runs the integer path.
 //
 // All semantics cite Motorola/IBM, "PowerPC 601 RISC Microprocessor User's
 // Manual", 1995 (601UM): FPSCR bits Table 2-1 (folio 2-9/2-10), exception
@@ -118,6 +121,12 @@ typedef enum {
 // enabled-invalid / enabled-zero-divide suppression cases, 601UM folio
 // 5-37), 1 otherwise.
 int ppc_sf_arith(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c, int single, uint32_t *fpscr, uint64_t *frt);
+
+// The same operation on the integer-only path alone.  ppc_sf_arith first
+// tries a host-double fast path whose result and FPSCR image are proven
+// identical (ppc_softfp.c, "Host fast path") and falls back to this; the
+// unit tests compare the two.
+int ppc_sf_arith_soft(ppc_sf_op_t op, uint64_t a, uint64_t b, uint64_t c, int single, uint32_t *fpscr, uint64_t *frt);
 
 // frsp: round a double to single precision (601UM folio 10-80).
 int ppc_sf_frsp(uint64_t b, uint32_t *fpscr, uint64_t *frt);

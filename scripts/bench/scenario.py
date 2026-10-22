@@ -5,7 +5,7 @@
 
 Times what a user waits for -- a menu opening, a window's genie into the
 Dock -- rather than a CPU-bound window.  A scenario is a script in
-tests/bench/ (osx-interactive.script) that boots to a state and saves a
+tests/bench/ (osx-interactive.script, g3-boot-desktop.script) that boots to a state and saves a
 checkpoint (MODE=boot), then loads it and plays its interactions, each a
 fixed stretch of scheduler slots, printing one @@SCEN line per interaction
 with its host wall time and the guest instructions it retired (MODE=run).
@@ -55,6 +55,12 @@ SCENARIOS = {
         "model": "pmg3dt",
         "ram": 262144,
         "config": "systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.json",
+    },
+    "g3-boot-desktop": {
+        "rom": "roms/pmg3dt-pmg3mt-78f57389.rom",
+        "model": "pmg3dt",
+        "ram": 262144,
+        "disk": "systems/mac_os_9_2_1_516mb_g3.img",
     },
 }
 
@@ -116,7 +122,7 @@ def run_scenario(binary, scen, name, mode, setup, test_data, tag, timeout):
         "rom=" + os.path.join(test_data, scen["rom"]),
         "model=" + scen["model"],
         "ram=%d" % scen["ram"],
-        "config=" + os.path.join(test_data, scen["config"]),
+    ] + (["config=" + os.path.join(test_data, scen["config"])] if "config" in scen else []) + [
         "script=" + driver,
         "--var", "TEST_DATA=" + test_data,
         "--var", "CKPT=" + os.path.join(binary.work, name, "state.gsc"),
@@ -149,8 +155,8 @@ def main():
 
     scen = SCENARIOS[a.scenario]
     test_data = os.path.abspath(a.test_data)
-    for k in ("rom", "config"):
-        if not os.path.exists(os.path.join(test_data, scen[k])):
+    for k in ("rom", "config", "disk"):
+        if k in scen and not os.path.exists(os.path.join(test_data, scen[k])):
             sys.exit("missing test data: %s (fetch it: scripts/fetch-test-data.sh)" % scen[k])
     configs = [c.strip() for c in a.configs.split(",") if c.strip()]
     for c in configs:
@@ -198,11 +204,14 @@ def main():
         row = "%-14s" % ph
         for b, c in cells:
             m = statistics.median(results[(b.label, c)][ph])
-            totals.setdefault((b.label, c, ph[-1]), 0.0)
-            totals[(b.label, c, ph[-1])] += m
+            rnd = ph[-1] if ph[-1] in "12" else "all"  # a scenario without rounds has one total
+            totals.setdefault((b.label, c, rnd), 0.0)
+            totals[(b.label, c, rnd)] += m
             row += "%*.0f" % (w, m)
         print(row)
-    for rnd, label in (("1", "cold total"), ("2", "warm total")):
+    for rnd, label in (("1", "cold total"), ("2", "warm total"), ("all", "total")):
+        if not any(k[2] == rnd for k in totals):
+            continue
         print("%-14s" % label + "".join("%*.0f" % (w, totals.get((b.label, c, rnd), 0)) for b, c in cells))
 
     bad = [ph for ph in phases if len(set(instr[ph].values())) != 1]

@@ -1003,17 +1003,111 @@ static bool afp_sidecar_remove(const char *full) {
     return remove(sidecar) == 0 || errno == ENOENT;
 }
 
+// Move every entry of directory `from` into the existing directory `to`,
+// renaming files and, where a subdirectory will not rename, recreating it
+// and moving its entries the same way.  Sidecars are ordinary files and go
+// with their entries.  0 on success, -1 with errno set when an entry would
+// not move (what moved before it stays moved).
+static int afp_move_entries(const char *from, const char *to) {
+    DIR *dir = opendir(from);
+    if (!dir)
+        return -1;
+    // Collect the names first: renaming entries out of a directory while
+    // reading it may skip some
+    char **names = NULL;
+    size_t n = 0, cap = 0;
+    struct dirent *ent;
+    int rc = 0;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            char **grown = realloc(names, cap * sizeof(*names));
+            if (!grown) {
+                rc = -1;
+                errno = ENOMEM;
+                break;
+            }
+            names = grown;
+        }
+        if (!(names[n] = strdup(ent->d_name))) {
+            rc = -1;
+            errno = ENOMEM;
+            break;
+        }
+        n++;
+    }
+    closedir(dir);
+    for (size_t i = 0; i < n && rc == 0; i++) {
+        char a[PATH_MAX], b[PATH_MAX];
+        if ((size_t)snprintf(a, sizeof a, "%s/%s", from, names[i]) >= sizeof a ||
+            (size_t)snprintf(b, sizeof b, "%s/%s", to, names[i]) >= sizeof b) {
+            errno = ENAMETOOLONG;
+            rc = -1;
+            break;
+        }
+        if (rename(a, b) == 0)
+            continue;
+        struct stat st;
+        if (stat(a, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            rc = -1;
+            break;
+        }
+        // A subdirectory that will not rename: recreate it and move its entries
+        if ((mkdir(b, 0755) != 0 && errno != EEXIST) || afp_move_entries(a, b) != 0 || rmdir(a) != 0)
+            rc = -1;
+    }
+    int err = errno;
+    for (size_t i = 0; i < n; i++)
+        free(names[i]);
+    free(names);
+    errno = err;
+    return rc;
+}
+
+// Rename a directory on a backend that renames files only (WasmFS's OPFS
+// backend, S1018-23): create `new_full`, move the entries into it and remove
+// `old_full`.  On failure the entries are moved back.  0 on success, -1 with
+// errno set.
+static int afp_rename_dir_by_entries(const char *old_full, const char *new_full) {
+    if (mkdir(new_full, 0755) != 0)
+        return -1;
+    if (afp_move_entries(old_full, new_full) == 0 && rmdir(old_full) == 0)
+        return 0;
+    int err = errno;
+    if (afp_move_entries(new_full, old_full) != 0 || rmdir(new_full) != 0)
+        LOG(1, "AFP: moving '%s' to '%s' failed (%s), and moving its contents back failed", old_full, new_full,
+            strerror(err));
+    errno = err;
+    return -1;
+}
+
+// rename(), and for a directory the filesystem will not rename, the move
+// entry by entry.  0 on success, -1 with errno set.
+static int afp_rename_path(const char *old_full, const char *new_full) {
+    if (rename(old_full, new_full) == 0)
+        return 0;
+    int err = errno;
+    struct stat st;
+    if (stat(old_full, &st) != 0 || !S_ISDIR(st.st_mode) || stat(new_full, &st) == 0) {
+        errno = err;
+        return -1;
+    }
+    return afp_rename_dir_by_entries(old_full, new_full);
+}
+
 // Rename a file or directory and its sidecar together: the data first, then
 // the sidecar, and when the sidecar cannot follow, the data is put back, so
 // no file is left apart from its resource fork and Finder Info.  False, with
 // nothing moved, on failure (and a log line if even the undo failed).
 static bool afp_rename_with_sidecar(const char *old_full, const char *new_full) {
-    if (rename(old_full, new_full) != 0)
+    if (afp_rename_path(old_full, new_full) != 0)
         return false;
     if (afp_sidecar_rename(old_full, new_full))
         return true;
     int err = errno;
-    if (rename(new_full, old_full) != 0)
+    if (afp_rename_path(new_full, old_full) != 0)
         LOG(1, "AFP: '%s' moved to '%s' but its sidecar did not (%s), and moving it back failed", old_full, new_full,
             strerror(err));
     errno = err;

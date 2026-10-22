@@ -175,7 +175,8 @@ static bool init_test_memory(void) {
         g_page_table[p].writable = true;
         // Write entries through memory_write_fill: the code-page marks must
         // be able to find and suppress them.
-        uintptr_t adjusted = (uintptr_t)(g_mem + (p << MEM_PAGE_SHIFT)) - ((uint32_t)p << MEM_PAGE_SHIFT);
+        uintptr_t adjusted =
+            MEM_RAM_ENTRY((uintptr_t)(g_mem + (p << MEM_PAGE_SHIFT)) - ((uint32_t)p << MEM_PAGE_SHIFT));
         uintptr_t wadj =
             memory_write_fill((uint32_t)p, g_mem + (p << MEM_PAGE_SHIFT), adjusted, MEM_WT_SUPER | MEM_WT_USER);
         g_supervisor_read[p] = adjusted;

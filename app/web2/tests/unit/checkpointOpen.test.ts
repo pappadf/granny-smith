@@ -57,7 +57,7 @@ beforeEach(() => {
     return true;
   });
   bridge.reply('checkpoint.load', true);
-  bridge.reply('files.rm', true);
+  bridge.reply('files.rm', null);
   core.ready = true;
   core.started = Promise.resolve();
 });

@@ -13,9 +13,9 @@ import {
   setSchedulerMode,
   setAcceleratedSpeed,
   setCheckpointSaved,
+  noteCheckpointFailed,
   setDriveActivity,
   setPerfStats,
-  type MachineStatus,
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
@@ -56,7 +56,13 @@ import { onDownloadChunk } from './download';
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { audioTargetLatencyFromQuery } from '@/audio/latency';
 import { getOrCreateMachine } from '@/lib/machineId';
-import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
+import {
+  routePrintLine,
+  routeErrorLine,
+  routeConsole,
+  routeLogEmit,
+  routeLogPrint,
+} from './logSink';
 import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
 import { bridgeBusy } from '@/state/activity.svelte';
 import {
@@ -836,6 +842,10 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'notify:checkpoint_saved':
       setCheckpointSaved(num(d.elapsed_ms));
       break;
+    case 'notify:checkpoint_failed':
+      // An autosave that did not happen; once per run of failures.
+      noteCheckpointFailed(typeof d.error === 'string' ? d.error : '');
+      break;
     case 'notify:printer_status':
       if (typeof d.status === 'string')
         setPrinterStatus(
@@ -845,6 +855,10 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'log:log':
       if (typeof d.line === 'string') routeLogEmit(d.line);
+      break;
+    case 'log:print':
+      // A log line of a stdout=on category: the console shows it.
+      if (typeof d.line === 'string') routeLogPrint(d.line);
       break;
     case 'log:output':
       // A job's printed text, in order: the console shows it.
@@ -945,7 +959,7 @@ export async function setCapsLock(on: boolean): Promise<void> {
   const r = await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', [
     'capslock',
   ]);
-  if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
+  if (!gsOk(r)) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
 // The status bar's engine menu: the CPU engine the next instructions run on.
@@ -979,16 +993,6 @@ export async function setCpuEngine(choice: CpuEngineChoice): Promise<void> {
   if (choice !== 'jit' && choice !== 'jit-kernel') machine.jitPct = 0;
 }
 
-export async function shutdownEmulator(): Promise<void> {
-  const res = await gsEval('scheduler.stop');
-  if (!gsOk(res)) {
-    showNotification(`Stop failed: ${gsErrorText(res)}`, 'error');
-    return;
-  }
-  machine.status = 'stopped' as MachineStatus;
-  showNotification('Machine stopped', 'info');
-}
-
 export async function pauseEmulator(): Promise<void> {
   const res = await gsEval('scheduler.stop');
   // On success the mode_ended event reflects the new state.
@@ -1001,7 +1005,7 @@ export async function resumeEmulator(): Promise<void> {
 }
 
 // UI mode name → core `pacing.mode` value.
-const CORE_MODE: Record<SchedulerMode, string> = {
+export const CORE_MODE: Record<SchedulerMode, string> = {
   live: 'paced',
   accel: 'accelerated',
   turbo: 'turbo',

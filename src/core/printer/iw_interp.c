@@ -593,6 +593,13 @@ void iw_interp_end_job(iw_interp_t *in) {
     sheet_setup(in);
 }
 
+void iw_interp_top_of_form(iw_interp_t *in) {
+    commit_line(in);
+    // Already at a top of form: a form feed here would waste a page
+    if (mod_pos(in->st.y - in->st.tof, sheet_len(in)) != 0)
+        form_motion(in);
+}
+
 void iw_interp_begin_job(iw_interp_t *in) {
     in->st.pages_done = 0;
     in->st.placeholder_used = false;

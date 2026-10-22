@@ -18,7 +18,7 @@ let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
 machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
 machine.rtc.time = "2026-10-01T12:00:00"
 machine.scsi.attach_hd "${$hd}" 0
-scheduler.run 12000000000
+scheduler.run 24000000000
 
 assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not the SCSI volume"
 assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"

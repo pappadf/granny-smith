@@ -53,7 +53,7 @@ machine.memory.poke.l(0xFEC00000, 0x00700080)
 assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "B1 stays empty"
 # Open Firmware probes the socket, sizes the card's 16 MB BAR0 and assigns
 # it at the bottom of the PCI memory window.
-scheduler.run 700000000
+scheduler.run 1400000000
 machine.memory.poke.l(0xFEC00000, 0x10680080)
 assert machine.memory.peek.l(0xFEE00000) == 0x00000081 "Open Firmware must assign BAR0 at $81000000"
 machine.memory.poke.l(0xFEC00000, 0x00000000)

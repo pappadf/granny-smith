@@ -218,6 +218,17 @@ TEST(test_ppc_foreign_half_not_recognised) {
     free(d);
 }
 
+// A known ROM's id at another size is that ROM cut short (or padded): found
+// by rom_lookup_other_size, so rom.identify can name it; never at its own size.
+TEST(test_lookup_other_size) {
+    const rom_info_t *plus = rom_lookup_other_size("4d1f8172", 64 * 1024);
+    ASSERT_TRUE(plus != NULL);
+    ASSERT_EQ_INT((int)plus->rom_size, 128 * 1024);
+    ASSERT_TRUE(rom_lookup_other_size("4d1f8172", 128 * 1024) == NULL);
+    ASSERT_TRUE(rom_lookup_other_size("00000000", 64 * 1024) == NULL);
+    ASSERT_TRUE(rom_lookup_other_size("", 64 * 1024) == NULL);
+}
+
 // Non-ROM inputs are kind NONE with no id.
 TEST(test_not_a_rom) {
     uint8_t b[7] = {0};
@@ -321,6 +332,25 @@ TEST(test_load_pair_order_independent) {
     free(pb);
 }
 
+// Each chip of a Lisa image is told apart by its share of the reset vectors
+// (SSP $00000480, PC in the ROM at $FExxxx); nothing else is a chip.
+TEST(test_lisa_chip) {
+    uint8_t combined[FULL];
+    make_lisa(combined, 0x0248);
+    wr_be32(combined + 4, 0x00FE00F6u); // the reset PC every Lisa ROM carries
+    uint8_t hi[HALF], lo[HALF];
+    split(combined, hi, lo);
+    ASSERT_TRUE(rom_lisa_chip(hi, HALF) == ROM_LISA_CHIP_HIGH);
+    ASSERT_TRUE(rom_lisa_chip(lo, HALF) == ROM_LISA_CHIP_LOW);
+    // The whole image, a chip of the wrong size, and other 8 KB files are not.
+    ASSERT_TRUE(rom_lisa_chip(combined, FULL) == ROM_LISA_CHIP_NONE);
+    ASSERT_TRUE(rom_lisa_chip(hi, HALF - 2) == ROM_LISA_CHIP_NONE);
+    uint8_t other[HALF];
+    memset(other, 0x52, sizeof(other));
+    ASSERT_TRUE(rom_lisa_chip(other, HALF) == ROM_LISA_CHIP_NONE);
+    ASSERT_TRUE(rom_lisa_chip(NULL, HALF) == ROM_LISA_CHIP_NONE);
+}
+
 int main(void) {
     RUN(test_interleave_roundtrip);
     RUN(test_lisa_identity);
@@ -328,10 +358,12 @@ int main(void) {
     RUN(test_68k_identity);
     RUN(test_ppc_identity);
     RUN(test_ppc_foreign_half_not_recognised);
+    RUN(test_lookup_other_size);
     RUN(test_not_a_rom);
     RUN(test_table_integrity);
     RUN(test_variants_tell_shared_models_apart);
     RUN(test_load_pair_order_independent);
+    RUN(test_lisa_chip);
     printf("[PASS] All ROM identity tests passed\n");
     return 0;
 }
