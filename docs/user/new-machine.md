@@ -98,6 +98,13 @@ on the Plus).
    disk: until you choose its image this shows **No default** (on a Lisa
    or Macintosh XL with an empty ProFile, that lets a startup floppy such
    as MacWorks boot).
+   A disk image's Mac OS volumes are listed by name, one entry each
+   ("Hard disk · Primary ATA bus Master · Macintosh HD"). On the Power
+   Mac G3 the volume chosen on an ATA disk is the one Open Firmware
+   starts, so this is how a Mac OS X disk boots: choose its volume (a
+   Mac OS X volume is chosen for you when the disk has one). Every new G3
+   carries Apple's Mac OS X patch in its NVRAM, as one that has run
+   Mac OS X does, and still starts Mac OS 8 and 9 from SCSI or ATA.
    The Plus has no **Start up from**: its ROM always starts from the disk
    with the highest SCSI ID.
 
