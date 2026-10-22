@@ -108,6 +108,59 @@ describe('rom media descriptor', () => {
   });
 });
 
+// S1018-26: a known ROM's id at the wrong size (the first 64 KB of a Plus
+// ROM) is refused as a damaged dump, not stored as a hard disk.
+describe('rom media descriptor — a cut-short dump', () => {
+  it('names the ROM and both sizes', async () => {
+    const result = await MEDIA_TYPES.rom.validate(
+      '/opfs/upload/plus-trunc.rom',
+      romIdentify({
+        recognised: false,
+        size: 64 * 1024,
+        expected_name: 'Macintosh Plus (Rev 3, Loud Harmonicas)',
+        expected_size: 128 * 1024,
+      }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reject).toBe(
+      'looks like the Macintosh Plus (Rev 3, Loud Harmonicas), but it is 64 KB where that ROM is 128 KB — the dump is probably damaged',
+    );
+  });
+});
+
+describe('hd media descriptor', () => {
+  const core =
+    (size: number, isHd: boolean): GsEval =>
+    async (path: string) =>
+      path === 'files.path_size' ? size : path === 'machine.scsi.identify_hd' ? isHd : '';
+
+  // S1018-26: a 32 KB PCI ROM is refused by identify_hd, which measures the
+  // disk (src/core/peripherals/scsi.c).  The file's size is not the disk's:
+  // the UDIF the import stores for a mostly empty 64 MB disk is a few
+  // hundred KB, and it is a hard disk.
+  it("takes identify_hd's verdict, not the file's size", async () => {
+    expect((await MEDIA_TYPES.hd.validate('/x.prom', core(32 * 1024, false))).valid).toBe(false);
+    expect((await MEDIA_TYPES.hd.validate('/x.dmg', core(300 * 1024, true))).valid).toBe(true);
+    expect((await MEDIA_TYPES.hd.validate('/x.img', core(20 * 1024 * 1024, true))).valid).toBe(
+      true,
+    );
+  });
+
+  // S1018-43: a QCOW2 / UDIF the core cannot read said only "is not a valid
+  // Hard Disk image"; the reason was in the terminal.
+  it('refuses a container image the core cannot read, with its reason', async () => {
+    const why =
+      'a UDIF image that cannot be read in place (it uses a compression this emulator does not decode)';
+    const gsEval: GsEval = async (path: string) =>
+      path === 'files.path_size' ? 20 * 1024 * 1024 : path === 'files.image_error' ? why : false;
+    for (const cat of ['hd', 'cdrom'] as const) {
+      const r = await MEDIA_TYPES[cat].validate('/x.dmg', gsEval);
+      expect(r.valid).toBe(false);
+      expect(r.reject).toBe(`is ${why}`);
+    }
+  });
+});
+
 describe('fd media descriptor', () => {
   const sized = (size: number) =>
     (async (path: string) => (path === 'files.path_size' ? size : null)) as unknown as GsEval;
@@ -116,9 +169,11 @@ describe('fd media descriptor', () => {
     for (const size of [
       409600,
       819200,
+      737280,
       1474560, // raw
       409684,
       819284,
+      737364,
       1474644, // Disk Copy 4.2, no tags
       419284,
       838484, // Disk Copy 4.2 with 12 tag bytes per sector (GCR disks)

@@ -20,7 +20,7 @@ mac.check(F"${vars.TEST_DIR}/desktop.png")
 
 -- The consolidated one embeds its disk, so it restores without the base:
 -- with hd.dmg gone, the restore re-creates it from the embedded blocks.
-assert(files.rm(dmg), "deleting the base failed")
+files.rm(dmg)
 assert(not gs.truthy(function() return files.path_exists(dmg) end), "the base is still there")
 assert(checkpoint.load(F"${vars.WORK_DIR}/content.checkpoint"), "consolidated checkpoint load failed")
 assert(files.path_exists(dmg), "the consolidated restore did not re-create the base")

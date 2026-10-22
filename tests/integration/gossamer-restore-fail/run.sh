@@ -14,7 +14,7 @@ TRUNCATED_FILE="$TEST_TMPDIR/g3-truncated.gs"
 
 echo "Step 1: save a checkpoint of a bare G3"
 cat > "$TEST_TMPDIR/step1.lua" << EOF
-scheduler.run(100000000)
+scheduler.run(200000000)
 assert(checkpoint.save("$CHECKPOINT_FILE"), "step1 checkpoint save failed")
 quit()
 EOF
@@ -37,15 +37,15 @@ assert(files.hd_create("$TEST_TMPDIR/ata.img", "HD500SC"), "create the ATA disk"
 machine.rtc.time = "2026-10-01T12:00:00"
 machine.scsi.attach_hd("$TEST_TMPDIR/hd.img", 0)
 assert(machine.ata.attach_hd("$TEST_TMPDIR/ata.img", 0), "attach the ATA disk")
-scheduler.run(1000000000)
+scheduler.run(2000000000)
 assert(not gs.truthy(function() return checkpoint.load("$TRUNCATED_FILE") end), "the truncated checkpoint loaded")
 assert(machine.ata.devices == "hd - - -", "the running machine lost its ATA disk")
 local ata_reads = files.images[1].reads
--- Up to 11 G more, sampled every 250 M: done once the Finder is the current
+-- Up to 22 G more, sampled every 250 M: done once the Finder is the current
 -- application (CurApName, \$910, reads "Finder") and the ATA disk has been
 -- read since the failed restore.
 local spent = 0
-while spent < 11000000000 and not (gs.try(function() return machine.cpu.mmu.peek(0x910, 4) end, 0) == 0x0646696E and gs.try(function() return machine.cpu.mmu.peek(0x914, 2) end, 0) == 0x6465 and files.images[1].reads > ata_reads) do
+while spent < 22000000000 and not (gs.try(function() return machine.cpu.mmu.peek(0x910, 4) end, 0) == 0x0646696E and gs.try(function() return machine.cpu.mmu.peek(0x914, 2) end, 0) == 0x6465 and files.images[1].reads > ata_reads) do
     scheduler.run(250000000)
     spent = spent + 250000000
 end

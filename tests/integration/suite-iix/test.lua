@@ -257,6 +257,16 @@ local function sweep_cell(sense, sister, spid, w, h, settle, golden)
     assert(machine.screen.height == h, F"jmfb-sweep ${golden}: height != ${h}")
     assert(machine.rtc.pram.peek(0x48) == spid, F"jmfb-sweep ${golden}: savedMode rewritten by ROM")
     mac.check(golden)
+    -- The splash comes while the 24-bit System still brackets some accesses
+    -- with SwapMMUMode, so MMU32bit can read 1 for up to ~250k instructions at
+    -- a time; a fixed instant that lands inside one reports a 24-bit boot as
+    -- 32-bit.  Step past such a bracket before the record reads the mode (a
+    -- boot that really is 32-bit stays at 1 and still reports it).
+    local k = 0
+    while debug.mac.globals.read("MMU32bit") == 1 and k < 100 do
+        scheduler.run(20000)
+        k = k + 1
+    end
     -- Claim the cell so the contract protects it: these are (card x geometry x
     -- depth) cells, taken at ROM stage — the same shape iix-portrait-603
     -- already declares.

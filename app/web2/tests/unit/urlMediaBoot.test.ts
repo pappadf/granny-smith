@@ -6,6 +6,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
+import { tree } from '../helpers/configTree';
+import type { MachineProfile } from '@/bus/profile';
+import { gzipSync } from 'node:zlib';
 
 const heap = fakeHeap();
 
@@ -17,14 +20,19 @@ vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
 }));
-// Two floppy drives, both present in the default configuration.
+// Two floppy drives, both present in the default configuration, and one
+// hard disk (SCSI ID 0).
 vi.mock('@/bus/profile', () => ({
   getProfile: vi.fn(async () => ({
     floppies: [
       { id: 'fd0', label: 'Internal floppy drive', types: [{ id: '800k' }], default: '800k' },
       { id: 'fd1', label: 'External floppy drive', types: [{ id: '800k' }], default: '800k' },
     ],
-    defaults: { floppies: { fd0: '800k', fd1: '800k' } },
+    storage: [{ id: 'scsi', blank_disks: [] }],
+    defaults: {
+      floppies: { fd0: '800k', fd1: '800k' },
+      storage: [{ bus: 'scsi', unit: 0, type: 'hd' }],
+    },
   })),
 }));
 vi.mock('@/bus/media', () => ({
@@ -35,12 +43,15 @@ vi.mock('@/bus/media', () => ({
   })),
   attachHardDisk: vi.fn(async (_p: string, n: number) => ({ ok: true, mount: { bay: n } })),
   attachCdrom: vi.fn(async () => ({ ok: true, mount: {} })),
+  attachMedia: vi.fn(async () => ({ ok: true, mount: {} })),
+  machineDevices: vi.fn(async () => []),
 }));
 
 const { processUrlMedia } = await import('@/bus/urlMedia');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
+const { machine } = await import('@/state/machine.svelte');
 
 // A ROM the fake core recognises: 64 KB whose first byte is 'R'.
 const PLUS_ROM = new Uint8Array(64 * 1024).fill(0x52);
@@ -119,7 +130,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
     expect(media.insertFloppy).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/FD0: 'fd0_[\d_-]+' is not a valid Floppy Disk image/);
+    expect(toastText()).toMatch(/FD0: 'bad.dsk' is not a valid Floppy Disk image/);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -128,27 +139,70 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['floppy.img'] = FLOPPY;
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=floppy.img'))).toBe(true);
     expect(media.attachHardDisk).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/);
+    expect(toastText()).toMatch(/HD0: 'floppy.img' is not a valid Hard Disk image/);
     expect(scratchLeft()).toEqual([]);
     expect([...files.keys()].some((p) => p.startsWith('/opfs/images/hd/'))).toBe(false);
+  });
+
+  // S1018-31: a gzip body went to jszip (its Content-Type has "zip" in it),
+  // whose "Can't find end of central directory" was the row's error.
+  it('a gzipped floppy is unpacked, stored and inserted', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['sys.dsk.gz'] = gzipSync(FLOPPY) as Uint8Array<ArrayBuffer>;
+    bridge.reply('files.archive.identify', (args: unknown) => {
+      const f = files.get((args as [string])[0]);
+      return f && f[0] === 0x1f && f[1] === 0x8b ? 'gz' : '';
+    });
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk.gz'));
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
+    expect(stored).toBeDefined();
+    expect(files.get(stored!)?.length).toBe(819200);
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  // S1018-44: a file that is not a zip, named as one with a member path.
+  it('a member of a file that is not a zip says so, not jszip', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disks.zip'] = JUNK;
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=disks.zip/sys.dsk'));
+    expect(toastText()).toMatch(/disks[.]zip is not a zip archive this page can read/);
+    expect(toastText()).not.toMatch(/central directory/);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
   });
 
   it('a valid floppy is stored and inserted from its store, not from scratch', async () => {
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk'));
-    // Stored under the slot and the time, not the URL's name.
-    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_'));
-    expect(stored).toBeDefined();
+    // Stored under the file's name from the URL (S1018-48).
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/'));
+    expect(stored).toBe('/opfs/images/fd/sys.dsk');
     expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
     expect(scratchLeft()).toEqual([]);
+  });
+
+  it('a hard disk position the model lacks is said as fd1= says it, and its row fails', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disk.img'] = new Uint8Array(1 << 20).fill(0x11); // over the 400 KB floor
+    const { beginUrlBoot, urlBoot, _resetUrlBootForTests } = await import('@/state/urlBoot.svelte');
+    beginUrlBoot(null);
+    try {
+      expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd1=disk.img'))).toBe(true);
+      expect(urlBoot.files.find((f) => f.slot === 'hd1')?.status).toBe('failed');
+    } finally {
+      _resetUrlBootForTests();
+    }
+    expect(media.attachHardDisk).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/Booted plus without Hard disk 2: this machine has no hard disk 2/);
+    expect(toastText()).not.toMatch(/machine\.attach_hd/);
   });
 
   it('two ROM halves of different sizes are both discarded', async () => {
     served['a.bin'] = new Uint8Array(32 * 1024).fill(0x52);
     served['b.bin'] = new Uint8Array(16 * 1024).fill(0x52);
     expect(await processUrlMedia(new URLSearchParams('rom=a.bin&rom=b.bin'))).toBe(false);
-    expect(toastText()).toMatch(/the two halves differ in size/);
+    expect(toastText()).toMatch(/two halves that differ in size/);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -164,7 +218,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['one.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=one.dsk'));
     const first = written.filter((p) => p.includes('url_fd0'));
-    const firstPath = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_')) ?? '';
+    const firstPath = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/')) ?? '';
     const mounted = files.get(firstPath);
     expect(mounted).toBeDefined();
     written.length = 0;
@@ -178,6 +232,28 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(written).not.toContain(firstPath);
     expect(files.get(firstPath)).toBe(mounted);
     expect(scratchLeft()).toEqual([]);
+  });
+});
+
+describe('URL media without rom=: into the running machine, or said to be unused', () => {
+  afterEach(() => {
+    machine.status = 'no-machine';
+  });
+
+  it('with a machine running (a resumed one), the floppy goes into it', async () => {
+    machine.status = 'running';
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/sys.dsk', true, 0);
+    expect(toastText()).not.toMatch(/not attached/);
+  });
+
+  it('with no machine, the floppy is stored and the toast says why it is not inserted', async () => {
+    served['sys.dsk'] = FLOPPY;
+    expect(await processUrlMedia(new URLSearchParams('fd0=sys.dsk'))).toBe(false);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/fd0: stored in Images, not attached: no machine is running/);
+    expect(toastText()).not.toMatch(/no floppy drive/);
   });
 });
 
@@ -201,7 +277,7 @@ describe("the URL's vROM is the boot's", () => {
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&vrom=junk.vrom'))).toBe(true);
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
-    expect(toastText()).toMatch(/VROM: 'vrom_[\d_-]+' is not a valid Video ROM image/);
+    expect(toastText()).toMatch(/VROM: 'junk.vrom' is not a valid Video ROM image/);
     expect(toastText()).toMatch(/Booting plus without the URL's video ROM/);
     expect(scratchLeft()).toEqual([]);
   });
@@ -240,6 +316,28 @@ describe('URL media: a disk an earlier download stored is used, not fetched agai
     expect(scratchLeft()).toEqual([]);
   });
 
+  // S1018-48: the row said the compressed file's size ("1.2 MB" for a 20 MB
+  // disk); it says the disk's.
+  it("the row of an image used again says the disk's size, not the file's", async () => {
+    const path = storedImage(URL_HD);
+    bridge.reply('files.udif_info', (args: unknown) =>
+      (args as [string])[0] === path
+        ? { gs_profile: true, origin: URL_HD, bytes: 20 * 1024 * 1024 }
+        : { error: 'not a UDIF' },
+    );
+    served['plus.rom'] = PLUS_ROM;
+    const { beginUrlBoot, urlBoot, _resetUrlBootForTests } = await import('@/state/urlBoot.svelte');
+    beginUrlBoot(null);
+    try {
+      await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`));
+      const row = urlBoot.files.find((f) => f.slot === 'hd0');
+      expect(row?.reused).toBe(true);
+      expect(row?.received).toBe(20 * 1024 * 1024);
+    } finally {
+      _resetUrlBootForTests();
+    }
+  });
+
   it('an image with another origin is left alone: the URL is downloaded', async () => {
     storedImage('https://h/disks/other.img');
     served['plus.rom'] = PLUS_ROM;
@@ -266,7 +364,7 @@ describe('URL media: a disk an earlier download stored is used, not fetched agai
     await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`));
     const stored = [...files.keys()].filter((p) => p.startsWith('/opfs/images/hd/'));
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatch(/^\/opfs\/images\/hd\/hd0_[\d_-]+\.dmg$/);
+    expect(stored[0]).toBe('/opfs/images/hd/big.dmg');
     expect(media.attachHardDisk).toHaveBeenCalledWith(stored[0], 0);
     expect([...origins.values()]).toEqual([URL_HD]);
     expect(scratchLeft()).toEqual([]);
@@ -374,5 +472,79 @@ describe('URL media: blank: creates a blank disk, reused on reload', () => {
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:400k'))).toBe(true);
     expect(media.insertFloppy).not.toHaveBeenCalled();
     expect(toastText()).toMatch(/FD0: a blank 400K floppy cannot be created/);
+  });
+});
+
+describe("URL media: cd= is the configuration's CD-ROM drive", () => {
+  // An ISO 9660 disc: 2 KB blocks, as the fake core's identify_cdrom sees it.
+  const DISC = new Uint8Array(4096).fill(0x43);
+  beforeEach(() => {
+    bridge.reply('machine.scsi.identify_cdrom', () => true);
+  });
+  afterEach(() => vi.mocked(media.machineDevices).mockImplementation(async () => []));
+
+  it("without config=, the default configuration's drive (machine.attach_cdrom)", async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&cd=disc.iso'))).toBe(true);
+    expect(media.attachCdrom).toHaveBeenCalledTimes(1);
+    expect(media.attachMedia).not.toHaveBeenCalled();
+  });
+
+  it("with config=, the drive the configuration places (a G3's on ATA)", async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    vi.mocked(media.machineDevices).mockImplementation(async (type) =>
+      type === 'cd'
+        ? [
+            {
+              bus: 'ata1',
+              busLabel: 'Secondary ATA bus',
+              unit: 0,
+              position: '',
+              type,
+              present: false,
+            },
+          ]
+        : [],
+    );
+    const config = btoa(JSON.stringify({ storage: [{ bus: 'ata1', unit: 0, type: 'cd' }] }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    expect(
+      await processUrlMedia(new URLSearchParams(`rom=plus.rom&cd=disc.iso&config=${config}`)),
+    ).toBe(true);
+    expect(media.attachCdrom).not.toHaveBeenCalled();
+    expect(media.attachMedia).toHaveBeenCalledWith(
+      'ata1',
+      0,
+      'cd',
+      expect.stringMatching(/^\/opfs\//),
+    );
+  });
+  it('with storage=, likewise', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['disc.iso'] = DISC;
+    // The G3's tree, its secondary ATA bus taking a CD-ROM drive.
+    const g3 = tree('pmg3dt') as unknown as MachineProfile;
+    g3.storage.find((b) => b.id === 'ata1')!.accepts.push({ id: 'cd', label: 'CD-ROM drive' });
+    const profile = await import('@/bus/profile');
+    vi.mocked(profile.getProfile).mockResolvedValueOnce(g3);
+    vi.mocked(media.machineDevices).mockImplementation(async (type) =>
+      type === 'cd'
+        ? [{ bus: 'ata1', busLabel: '', unit: 0, position: '', type, present: false }]
+        : [],
+    );
+    expect(
+      await processUrlMedia(new URLSearchParams('rom=plus.rom&cd=disc.iso&storage=ata1:0:cd')),
+    ).toBe(true);
+    expect(media.attachCdrom).not.toHaveBeenCalled();
+    expect(media.attachMedia).toHaveBeenCalledWith(
+      'ata1',
+      0,
+      'cd',
+      expect.stringMatching(/^\/opfs\//),
+    );
   });
 });

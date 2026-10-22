@@ -59,6 +59,7 @@ typedef struct expr_ctx {
     struct object *root; // bare paths resolve against this; may be NULL
     expr_binding_fn binding; // $name lookup; may be NULL
     void *binding_ud; // user-data for binding callback
+    bool parse_only; // a syntax check (expr_check): resolve, read and call nothing
 } expr_ctx_t;
 
 // Read a normalized path (`a.b`, `a.b[0]`, `a.b["key"]` segment text)
@@ -82,6 +83,14 @@ value_t expr_object_path_read(struct object *root, const char *path);
 //
 // `src` is consumed entirely; trailing garbage is an error.
 value_t expr_eval(const char *src, const expr_ctx_t *ctx);
+
+// Check the syntax of `src` without evaluating it: nothing is resolved,
+// read or called (no binding, no tree path, no method, no user function),
+// so it has no side effects and needs no machine.  Returns VK_NONE when
+// `src` is a well-formed expression, else VK_ERROR saying what is wrong --
+// the error expr_eval would report for the same text.  Whether its paths
+// resolve, and what types its operands have, is left to evaluation.
+value_t expr_check(const char *src, const expr_ctx_t *ctx);
 
 // Same as expr_eval, but advances *p past the consumed expression. The
 // caller is responsible for passing a position that is the start of the

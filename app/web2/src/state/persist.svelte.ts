@@ -29,6 +29,7 @@ const KEYS = {
   panelSize: 'gs-panel-size',
   // View-state keys, each in a `{v, data}` envelope.
   debugSections: 'gs-debug-sections',
+  debugSectionsModel: 'gs-debug-sections-model',
   debugMemory: 'gs-debug-memory',
   debugMmu: 'gs-debug-mmu',
   logsAutoscroll: 'gs-logs-autoscroll',
@@ -109,6 +110,8 @@ export function loadPersistedState(): void {
   // View-state keys — all best-effort.
   const sections = readEnvelope<Record<string, boolean>>(KEYS.debugSections);
   if (sections) Object.assign(debug.sections, sections);
+  const sectionsModel = readEnvelope<string>(KEYS.debugSectionsModel);
+  if (typeof sectionsModel === 'string') debug.sectionsModel = sectionsModel;
 
   const mem = readEnvelope<{ address?: number; mode?: MemoryMode }>(KEYS.debugMemory);
   if (mem) {
@@ -190,6 +193,7 @@ export function startPersistEffects(): void {
 
   // View-state effects.
   $effect(() => writeEnvelope(KEYS.debugSections, { ...debug.sections }));
+  $effect(() => writeEnvelope(KEYS.debugSectionsModel, debug.sectionsModel));
   $effect(() =>
     writeEnvelope(KEYS.debugMemory, { address: debug.memoryAddress, mode: debug.memoryMode }),
   );

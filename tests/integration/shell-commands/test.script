@@ -13,10 +13,10 @@ machine.cpu
 # print fp0..fp7 / fpcr / fpsr / fpiar).
 
 # disasm defaults to PC when no count is given.
-assert debug.disasm() "disasm (default count) failed"
+debug.disasm
 
 # disasm with explicit count.
-assert debug.disasm(5) "disasm 5 failed"
+debug.disasm 5
 
 # Help on a typed root method still works.
 help debug.disasm

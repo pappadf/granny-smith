@@ -1,5 +1,6 @@
 -- Converted from test.script by scripts/script-to-lua.py
--- The AppleTalk ImageWriter: Chooser, Print Directory over PAP, paper out.
+-- The AppleTalk ImageWriter: Chooser, Print Directory over PAP, paper out,
+-- and the print after an abandoned job.
 -- See config.mk.  Screen coordinates are the Plus's 512x342 desktop.
 
 local mac = dofile("../lib/mac.lua")
@@ -87,6 +88,43 @@ click(440, 118)
 scheduler.run(300000000)
 assert(machine.imagewriter.jobs == 2, "the job did not print after paper was added")
 assert(machine.imagewriter.last_pdf_crc == 0x0f4f3a4e, "the resumed job's PDF differs")
+
+-- Deselected: the card's statusBits say so (bit 11), and the driver shows
+-- "The 'select' light is off" with Continue instead of sending.  Selected
+-- again, the alert waits for Continue -- here over two minutes of guest
+-- time, which the connection outlives only because the card tickles the
+-- workstation and keeps its SendData going -- and the job prints whole.
+machine.imagewriter.selected = false
+print_directory()
+scheduler.run(150000000)
+mac.check("select-light-off.png")
+assert(machine.imagewriter.jobs == 2, "a deselected printer printed")
+assert(machine.imagewriter.bytes == 8280, "data was sent to a deselected printer")
+machine.imagewriter.selected = true
+scheduler.run(300000000)
+click(440, 118)
+scheduler.run(300000000)
+assert(machine.imagewriter.jobs == 3, "the job did not print after the printer was selected again")
+assert(machine.imagewriter.last_job_pages == 1, "the resumed directory listing is not one page")
+assert(machine.imagewriter.last_pdf_crc == 0x0f4f3a4e, "the resumed job's PDF differs")
+
+-- Cancelled at that alert, the job is given up ("could not be printed") and
+-- makes no document; the next one starts at top of form: the same one-page
+-- document, not one shifted down the page onto two.
+machine.imagewriter.selected = false
+print_directory()
+scheduler.run(150000000)
+click(440, 91)
+scheduler.run(100000000)
+machine.imagewriter.selected = true
+assert(machine.imagewriter.jobs == 3, "the cancelled job became a document")
+click(113, 167)
+scheduler.run(50000000)
+print_directory()
+scheduler.run(300000000)
+assert(machine.imagewriter.jobs == 4, "the print after the cancelled job did not become a document")
+assert(machine.imagewriter.last_job_pages == 1, "the print after the cancelled job is not one page")
+assert(machine.imagewriter.last_pdf_crc == 0x0f4f3a4e, "the print after the cancelled job does not start at top of form")
 
 echo("PASS: appletalk-imagewriter")
 quit()

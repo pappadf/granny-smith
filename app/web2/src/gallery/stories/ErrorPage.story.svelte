@@ -7,7 +7,12 @@
 
   $effect(() => {
     if (!host) return;
-    if (variant === 'webgl') renderWebGLErrorPage(host, { ok: false, reason: 'no-webgl2' });
+    if (variant === 'webgl')
+      renderWebGLErrorPage(host, {
+        ok: false,
+        failure: 'context-lost',
+        detail: 'getParameter(VIEWPORT) returned null (renderer: Apple GPU)',
+      });
     else renderStartupErrorPage(host, 'the emulator worker did not start within 30 s');
   });
 </script>

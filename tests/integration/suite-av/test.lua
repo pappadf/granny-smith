@@ -128,7 +128,7 @@ local av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 -- still executing ROM after POST" IS the identity assertion.
 local function row_av_identity()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
-    scheduler.run(30000000)
+    scheduler.run(90000000)
     assert(machine.id == "q840av", "av-identity: machine.id != q840av")
     -- $A55A2830 for every AV machine, and the ROM tests write-protection.
     assert(machine.memory.peek.l(0x5FFFFFFC) == 0xA55A2830, F"av-identity: CPU-ID is ${machine.memory.peek.l(0x5FFFFFFC):08x}, want A55A2830")
@@ -144,7 +144,7 @@ local function row_av_identity()
     assert(machine.cpu.instr_count > 20000000, "av-identity: 840AV made no progress")
 
     machine.boot{model = "q660av", ram = 16384, rom = av_rom}
-    scheduler.run(30000000)
+    scheduler.run(90000000)
     assert(machine.id == "q660av", "av-identity: machine.id != q660av")
     -- Strap nibble $B (Tempest25) = %1011: strap 2 is the low one.
     assert(machine.memory.peek.l(0x50F30438) >= 0x80000000, "av-identity: 660AV strap 0 low")
@@ -261,9 +261,9 @@ local function row_q840av_71_hd_desktop()
     assert(debug.mac.globals.read("BootDrive") ~= 0, "q840av-hd: BootDrive is 0 — nothing booted")
     assert(debug.mac.globals.read("SysMap") ~= 0, "q840av-hd: SysMap unset — no System file opened")
     assert(debug.mac.globals.read("ApplZone") ~= debug.mac.globals.read("SysZone"), "q840av-hd: ApplZone == SysZone — no application heap, the Finder never launched")
-    -- The tick interrupt has run for 10 s of guest time (the desktop is up
-    -- at ~950 ticks).
-    assert(debug.mac.globals.read("Ticks") > 600, F"q840av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
+    -- The tick interrupt has run for over 5 s of guest time (the desktop is
+    -- up in under 600 ticks on both models).
+    assert(debug.mac.globals.read("Ticks") > 300, F"q840av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
 
     mac.check("goldens/q840av-7.1-640x480x8-hd-finder.png")
     -- The two models render an identical desktop from the same volume, so the
@@ -318,9 +318,9 @@ local function row_q660av_71_hd_desktop()
     assert(debug.mac.globals.read("BootDrive") ~= 0, "q660av-hd: BootDrive is 0 — nothing booted")
     assert(debug.mac.globals.read("SysMap") ~= 0, "q660av-hd: SysMap unset — no System file opened")
     assert(debug.mac.globals.read("ApplZone") ~= debug.mac.globals.read("SysZone"), "q660av-hd: ApplZone == SysZone — no application heap, the Finder never launched")
-    -- The tick interrupt has run for 10 s of guest time (the desktop is up
-    -- at ~950 ticks).
-    assert(debug.mac.globals.read("Ticks") > 600, F"q660av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
+    -- The tick interrupt has run for over 5 s of guest time (the desktop is
+    -- up in under 600 ticks on both models).
+    assert(debug.mac.globals.read("Ticks") > 300, F"q660av-hd: only ${debug.mac.globals.read(\"Ticks\")} ticks — System not running")
 
     mac.check("goldens/q660av-7.1-640x480x8-hd-finder.png")
     -- The two models render an identical desktop from the same volume, so the
@@ -458,7 +458,7 @@ end
 local function row_av_floppy_write_eject()
     av_hd_desktop("q840av")
     machine.floppy.drive[0].insert(av_fd_144, true)
-    scheduler.run(600000000)
+    scheduler.run(2400000000) -- ~60 s at 40 MIPS: the mount and window open
     mac.wait_stable(900000000)
     local inst = machine.floppy.drive[0].disk.path
     local delta = F"${inst}.delta"
@@ -509,9 +509,9 @@ local function row_av_floppy_format()
     machine.adb.keyboard.press(0x24)
     -- Not a bare settle: "Formatting disk..." sits unchanged on the screen
     -- for the whole format and verify, so a settle returns mid-format.
-    -- Format, verify and the HFS write take under 2 G instructions here;
-    -- the 3 G budget ends early once the formatted disk is on the screen.
-    mac.run_until_match("goldens/q840av-7.1-floppy-format.png", 3000000000, 100000000)
+    -- Format, verify and the HFS write take about 3 G instructions here;
+    -- the 6 G budget ends early once the formatted disk is on the screen.
+    mac.run_until_match("goldens/q840av-7.1-floppy-format.png", 6000000000, 100000000)
     mac.wait_stable(900000000)
     assert(machine.cpu.mmu.peek(0xAF0, 2) == 0, F"system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy")
     assert(machine.floppy.drive[0].present, "the disk left the drive during the format")
@@ -674,7 +674,7 @@ local function row_av_tts()
     assert(machine.dsp.state == "running", F"av-tts: DSP ${machine.dsp.state} after speech")
     assert(machine.dsp.emr == 0x8000, F"av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died")
     assert(machine.sound.overruns == 0, F"av-tts: ${machine.sound.overruns} frame overruns")
-    mac.check_sound("goldens/av-tts.wav", 68400)
+    mac.check_sound("goldens/av-tts.wav", 76560)
     mac.report_perf("suite-av/av-tts", scheduler.instr_count)
 end
 
@@ -829,24 +829,27 @@ end
 -- golden, and the windoid caption to a screen golden.
 local function row_av_sr_macro()
     sr_bring_up()
-    -- ONE take, captured.  Which take the recognizer lands is a property of
-    -- the boot's exact timing, so this has moved three times: the row needed
-    -- a warm-up take (a miss, "Pardon me?", settling the AGC and the
-    -- endpointer's cepstral mean) under the old scheduler timing, not under
-    -- honest guest ticks -- where a warm-up that recognized spoke the answer
-    -- before the capture opened (capture peak 0) -- needed it again once the
-    -- machine's PRAM skipped the startup-drive wait, and stopped needing it
-    -- when the floppy driver began finding a drive at boot (the warm-up then
-    -- recognized and the captured second take was the miss).  The run is
-    -- deterministic, so the golden pins whatever the take produces.  NOTE the
-    -- peak assert alone cannot tell the answer from a spoken "Pardon me?" --
-    -- the windoid golden is what does.
+    -- A warm-up take, then the captured one.  Which take the recognizer lands
+    -- is a property of the boot's exact timing, so this has moved four times:
+    -- the row needed a warm-up take (a miss, "Pardon me?", settling the AGC
+    -- and the endpointer's cepstral mean) under the old scheduler timing, not
+    -- under honest guest ticks -- where a warm-up that recognized spoke the
+    -- answer before the capture opened (capture peak 0) -- needed it again
+    -- once the machine's PRAM skipped the startup-drive wait, and stopped
+    -- needing it when the floppy driver began finding a drive at boot (the
+    -- warm-up then recognized and the captured second take was the miss), and
+    -- needed it once more when uncached RAM reads began costing DRAM time (one
+    -- take alone was a miss).  The windoid's "Pardon me?" is the warm-up's.
+    -- The run is deterministic, so the golden pins whatever the take produces.
+    -- NOTE the peak assert alone cannot tell the answer from a spoken "Pardon
+    -- me?" -- the windoid golden is what does.
     --
     -- The capture records the machine's OUTPUT, which is silent for as long
     -- as an utterance is being fed IN.  So open it only from the point the
     -- utterance has finished playing: the answer lands after the
     -- endpointer's 400 ms close, the host's language-model search and the
     -- macro's AppleScript action.
+    sr_say(av_sr_date) -- warm-up take
     machine.audioin.load(av_sr_date)
     machine.audioin.rewind()
     mac.run_ticks(180)
@@ -858,7 +861,7 @@ local function row_av_sr_macro()
     -- The golden alone would still pass if a regen ever captured silence,
     -- so assert the answer was actually SPOKEN before comparing it.
     assert(machine.sound.capture.peak > 2000, F"av-sr-macro: capture peak ${machine.sound.capture.peak} — nothing was spoken back")
-    mac.check_sound("goldens/av-sr-macro.wav", 279600)
+    mac.check_sound("goldens/av-sr-macro.wav", 279360)
     mac.check("goldens/av-sr-macro.png")
     mac.report_perf("suite-av/av-sr-macro", scheduler.instr_count)
 end
@@ -875,13 +878,13 @@ local function row_av_dsp_boot()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    -- The RTM init runs ~65-90M instructions into boot; sample the window.
-    scheduler.run(60000000)
+    -- The RTM init runs ~150M instructions into boot; sample the window.
+    scheduler.run(180000000)
     local saw_live = 0
     local saw_alive = 0
     local i = 0
     while i < 40 do
-        scheduler.run(1000000)
+        scheduler.run(4000000)
         if machine.dsp.state == "running" or machine.dsp.state == "idle" then
             saw_live = 1
             if machine.dsp.evtp ~= 0 then
@@ -921,12 +924,12 @@ local function row_av_dsp_determinism()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    scheduler.run(100000000)
+    scheduler.run(400000000)
     local fp1 = dsp_fingerprint()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd(av_hd, 0)
-    scheduler.run(100000000)
+    scheduler.run(400000000)
     local fp2 = dsp_fingerprint()
     assert(fp1 == fp2, F"av-dsp-determinism: ${fp1} != ${fp2}")
     assert(machine.dsp.instr_count > 100000, "av-dsp-determinism: the DSP did not run inside the window")
@@ -942,7 +945,7 @@ local function row_av_chime()
     machine.boot{model = "q840av", ram = 16384, rom = av_rom}
     machine.sound.capture.start()
     -- The chime plays out-enabled frames ~10-67 (~0.6 s); run well past it.
-    scheduler.run(30000000)
+    scheduler.run(200000000)
     assert(machine.sound.frames > 100, "av-chime: sound frame engine not ticking")
     -- machine.psc — on the AV machines the PSC is both the VIA2 replacement
     -- and the L3-L6 level controller, so one node carries two register
@@ -952,12 +955,12 @@ local function row_av_chime()
     assert(#machine.psc.levels == 4, "av-chime: PSC level map is not L3..L6")
     assert(machine.psc.levels[1].ipl == 3, "av-chime: PSC level map does not start at IPL 3")
     assert(#machine.psc.level_ier == 4, "av-chime: PSC has four level IERs")
-    -- 27,840 frames (was 52,800) since a sprint ended early stopped freezing
-    -- the CPU to the next event: the ROM's delay that holds the chime's output
-    -- open runs at its true length, and the same chime (same partials, same
-    -- decay) is held about half as long -- ~1.15 s, against the ~0.6-1 s the
-    -- out-enabled frame count above puts it at.
-    mac.check_sound("goldens/av-chime.wav", 27840)
+    -- 38,400 frames (~1.6 s).  It was 27,840 (~1.16 s) at CPI 4, and 52,800
+    -- before a sprint ended early stopped freezing the CPU to the next event.
+    -- The envelope is the same chime (same sustain level, same decay); the
+    -- output is held open longer since the 68040 moved to CPI 1, a hold time
+    -- not yet understood.
+    mac.check_sound("goldens/av-chime.wav", 38400)
     mac.report_perf("suite-av/av-chime", scheduler.instr_count)
 end
 

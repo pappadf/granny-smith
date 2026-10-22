@@ -23,6 +23,12 @@ describe('loadPersistedState — view-state keys', () => {
     expect(debug.sections.mmu).toBe(true);
   });
 
+  it('restores the model the Debug layout belongs to (S1018-83)', () => {
+    localStorage.setItem('gs-debug-sections-model', V1('plus'));
+    loadPersistedState();
+    expect(debug.sectionsModel).toBe('plus');
+  });
+
   it('restores Memory addr + mode', () => {
     localStorage.setItem('gs-debug-memory', V1({ address: 0x00abcd00, mode: 'physical' }));
     loadPersistedState();

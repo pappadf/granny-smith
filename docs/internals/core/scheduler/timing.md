@@ -35,24 +35,39 @@ execution timeline is a pure function of the frame-unit count — identical in
 the paced and unthrottled pacing modes and on both targets.
 
 Current values: the Plus uses 10 (calibrated against its 7.8336 MHz 68000 —
-real hardware sustains ~0.7 MIPS); the 030 machines use 4 (4-clock bus cycle at
-15.6672 MHz with 1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing
-effective value).
+real hardware sustains ~0.7 MIPS); the 68030 machines use 4 and the 68040
+machines 1 (Apple's MIPS ratings read as MHz / MIPS give about 4.0 for every
+68030 Mac and 1.14 for the 68040 Quadras; the shared core in
+`mac030_build_core` picks by CPU model; the AV Quadras also price reads of
+cache-inhibited RAM at their DRAM read time, `g_uncached_read_cycles`, which
+the ROM's DSP handshake needs, see [dsp.md](../../machines/av/dsp.md)); the
+Lisa/Mac XL uses 10 (its video fetch owns every other 400 ns memory slot, so
+each instruction takes whole 800 ns bus cycles: the boot ROM's calibrated
+"about 5.6 µs" self-test loop is 9.3 cycles an instruction, and at the old 4
+its ~20 ms retrace wait lasted under one frame — CPU error 42; see `lisa.c`);
+the 601 PDM machines use 1 and the TNT and Gossamer machines 2 (see `tnt.c`).
 
-### Effective CPI (accelerated mode)
+### Effective CPI (the speed governor and accelerated mode)
 
 The sprint arithmetic actually runs on an **effective CPI** in x256 fixed point
-(`cpi_eff_x256`). In paced/unthrottled it is exactly `cpi << 8` and every
-computation below is bit-identical to the plain integer form. The `accelerated`
-mode lowers it — never raises it — by
-the `scheduler.speed` multiplier (a pinned 1x..8x, or by default the adaptive
-governor's pick on a quantized ladder up to `scheduler.max_speed` — see
-docs/internals/core/scheduler/scheduler.md §2.3), so a frame-unit's fixed cycle budget
-converts to proportionally more instructions while the cycle timebase (and thus
-every cycle-derived peripheral clock) stays real-time. The sub-cycle remainder
-of each sprint (`cycle_frac_x256`) carries in scheduler state, so `cpu_cycles`
-advances by exact integers and no fraction is ever dropped. Formulas below are
-written with plain `CPI`; read `cpi_eff_x256 / 256` for the general case.
+(`cpi_eff_x256`). At 1x — unthrottled always, paced and accelerated whenever the
+speed in force is 1x — it is exactly `cpi << 8` and every computation below is
+bit-identical to the plain integer form. The `accelerated` mode lowers it by the
+`scheduler.speed` multiplier (a pinned 1x..8x, or by default the adaptive
+governor's pick on a quantized ladder up to `scheduler.max_speed`), so a
+frame-unit's fixed cycle budget converts to proportionally more instructions;
+and in paced and accelerated alike the governor *raises* it (down to
+`scheduler.min_speed`, 0.25x by default) when the host cannot emulate one
+frame-unit per VBL period, so the budget converts to fewer instructions and the
+frame-units stay on real time — see docs/internals/core/scheduler/scheduler.md
+§2.3. Either way the cycle timebase (and thus every cycle-derived peripheral
+clock) stays real-time. Guest code that times a hardware signal with an
+instruction loop sees the loop shortened too: the Lisa boot ROM's video
+self-test (CPU error 42) passes only at 1x, so a Lisa is started in Real
+mode and accelerated once the boot ROM has handed over. The sub-cycle remainder of each sprint
+(`cycle_frac_x256`) carries in scheduler state, so `cpu_cycles` advances by
+exact integers and no fraction is ever dropped. Formulas below are written with
+plain `CPI`; read `cpi_eff_x256 / 256` for the general case.
 
 ## The Sprint Model
 
@@ -311,13 +326,15 @@ target — the headless target ignores host time entirely (see
 
 | Mode | Behaviour (WASM target) |
 |------|-------------------------|
-| `schedule_paced` (default; "Real-Time") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. |
+| `schedule_paced` (default; "Real-Time") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. On a host that cannot emulate a frame-unit per VBL period the governor slows the guest CPU (effective CPI up, as far as `min_speed`) so the frame-units stay on time. |
 | `schedule_unthrottled` ("Fast-Forward") | As many frame-units as fit in the turbo slice (`scheduler_set_turbo_slice`: 16 ms in web2, whose loop re-enters at once in turbo), or, without one, in `TURBO_HOST_HEADROOM` (70%) of the host loop period — as fast as the host allows. |
 
 Both modes use the same sprint and event machinery, the same per-machine CPI,
-and the same I/O penalties. The mode affects **only** how many frame-units a
-host tick batches — the guest's execution sequence at a given frame-unit count
-is identical in both modes (and matches headless).
+and the same I/O penalties. The mode affects how many frame-units a host tick
+batches — the guest's execution sequence at a given frame-unit count is
+identical in both modes (and matches headless) as long as the governor is at
+1x, which it always is in unthrottled and headless, and in paced on a host
+that keeps up (or with `min_speed = 1`).
 
 ## Target-Specific Pacing
 
@@ -333,7 +350,8 @@ the run loop issues frame-units.
 how many frame-units to run this tick (per the current pacing mode), and runs
 that many via `scheduler_run_frame()`. In `schedule_paced` this keeps the
 emulated machine synced to wall-clock (browser render rhythm); in
-`schedule_unthrottled` it fills half of each tick with emulation.
+`schedule_unthrottled` it fills the turbo slice, or 70% of each tick, with
+emulation.
 
 ### Headless target: unthrottled, one frame-unit at a time
 
@@ -359,9 +377,19 @@ Each machine sets its CPU clock frequency via `scheduler_set_frequency()`:
 
 | Machine | CPU | Frequency | CPI |
 |---------|-----|-----------|-----|
+| Lisa 2 / Mac XL | 68000 @ 5.09375 MHz | 5,093,750 Hz | 10 |
 | Plus | 68000 @ 7.8336 MHz | 7,833,600 Hz | 10 |
-| SE/30 | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
-| IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
+| SE/30, IIx, IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
+| IIsi | 68030 @ 20 MHz | 20,000,000 Hz | 4 |
+| IIci | 68030 @ 25 MHz | 25,000,000 Hz | 4 |
+| IIfx | 68030 @ 40 MHz | 40,000,000 Hz | 4 |
+| Quadra 700, 900, 660AV | 68040 @ 25 MHz | 25,000,000 Hz | 1 |
+| Quadra 950 | 68040 @ 33.33 MHz | 33,333,333 Hz | 1 |
+| Quadra 840AV | 68040 @ 40 MHz | 40,000,000 Hz | 1 |
+| Power Mac 6100, 7100, 8100 | 601 @ 60, 66, 80 MHz | profile | 1 |
+| Power Mac 7500 | 601 @ 100 MHz | 100,000,000 Hz | 2 |
+| Power Mac 8500, 9500; ANS 500, 700 | 604 @ 120, 132, 132, 150 MHz | profile | 2 |
+| Power Mac G3 Desktop, Minitower | 750 @ 267.28, 300.69 MHz | profile | 2 |
 
 The frequency is used to convert between cycles and wall-clock time (for
 nanosecond-based event scheduling and the `scheduler_time_ns()` query).
@@ -381,7 +409,8 @@ The scheduler enforces these invariants at key transition points:
 1. `cpu_cycles` is monotonically increasing
 2. All events in the queue have `timestamp >= cpu_cycles`
 3. Events are sorted by increasing timestamp
-4. Relaxed: first event's timestamp + CPI >= cpu_cycles (allows instruction
+4. Relaxed: first event's timestamp + one instruction (at the larger of the
+   authentic and the effective CPI) >= cpu_cycles (allows instruction
    atomicity overshoot)
 
 ### Event Queue
@@ -391,9 +420,11 @@ The scheduler enforces these invariants at key transition points:
 
 ## Checkpoint Interaction
 
-The scheduler saves its plain-data fields (including `cpu_cycles`, `mode`,
-`total_instructions`, the CPI constant) to checkpoints. Event queues are
-serialized using registered event type names rather than function pointers.
+The scheduler saves its plain-data fields (`cpu_cycles`, `total_instructions`,
+the CPI constant, the I/O remainders, `frame_cycles_left`) to checkpoints; the
+pacing — mode, speed, floor and cap — is the host's and is never saved. Event
+queues are serialized using registered event type names rather than function
+pointers, with a periodic's interval.
 (Checkpoint files are gated on an exact build-ID match, so a checkpoint never
 crosses builds — pre-two-modes checkpoints with the old three-value mode enum
 and dual CPI fields are rejected by that gate, not migrated.)

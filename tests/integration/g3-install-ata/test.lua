@@ -31,7 +31,7 @@ if mac.have_media(cd) then
     assert(machine.ata.attach_hd(hd, 0), "A1: attach the disk as ATA unit 0")
     assert(machine.ata.attach_cdrom(cd, 1), "A1: attach the CD as ATAPI unit 1")
     assert(machine.ata.devices == "hd atapi - -", "A1: cell 0 does not hold the disk and the CD")
-    scheduler.run(13000000000)
+    scheduler.run(26000000000)
     mac.check_ex("finder-cd.png", 0, 440, 20, 640)
 
     -- --- A2 ---------------------------------------------------------------------
@@ -48,7 +48,7 @@ if mac.have_media(cd) then
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
     assert(machine.ata.attach_hd(installed, 0), "A4: attach the installed disk as ATA unit 0")
-    scheduler.run(12000000000)
+    scheduler.run(24000000000)
     assert(debug.mac.globals.read("DSErrCode") == 0, "A4: a system error during the ATA boot")
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/ata-desktop.png") end, nil)
     mac.check_ex("ata-desktop.png", 0, 440, 20, 640)

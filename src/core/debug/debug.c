@@ -327,6 +327,19 @@ static value_t debug_shell_binding(void *ud, const char *name) {
     return shell_binding_get(name);
 }
 
+// Refuse a breakpoint condition that does not parse, before it is stored:
+// a syntax check only (expr_check), so adding or editing a breakpoint reads
+// and calls nothing.  VK_NONE when `expr` is well-formed, else VK_ERROR
+// naming the condition and what is wrong with it.
+static value_t check_breakpoint_condition(const char *expr) {
+    value_t r = expr_check(expr, NULL);
+    if (!val_is_error(&r))
+        return r;
+    value_t e = val_err("invalid breakpoint condition '%s': %s", expr, r.err ? r.err : "syntax error");
+    value_free(&r);
+    return e;
+}
+
 // Evaluate a breakpoint condition expression using the full ${...}
 // expression grammar (see src/core/object/expr.c).  Supports anything
 // expr_eval supports — paths (cpu.pc, cpu.d0), method calls
@@ -337,8 +350,10 @@ static value_t debug_shell_binding(void *ud, const char *name) {
 //   memory.peek.l(0x1201D420) == 0xE000
 //   cpu.supervisor && cpu.pc >= 0x10000000
 //
-// Unknown / parse-failed / VK_ERROR expressions evaluate to true so a
-// typo doesn't silently swallow hits.
+// A condition that does not parse is refused when it is set
+// (check_breakpoint_condition); one whose evaluation fails at the hit (a
+// path that does not resolve there, a type error) evaluates to true, so the
+// failure does not silently swallow hits.
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
         return true;
@@ -2374,7 +2389,15 @@ static DEF_SETTER(bp_attr_condition_set) {
         value_free(&in);
         return val_err("breakpoint detached");
     }
-    // Empty string clears the condition.
+    // Empty string clears the condition; one that does not parse is refused
+    // and the old one stays.
+    if (in.s && *in.s) {
+        value_t err = check_breakpoint_condition(in.s);
+        if (val_is_error(&err)) {
+            value_free(&in);
+            return err;
+        }
+    }
     breakpoint_set_condition(bp, (in.s && *in.s) ? in.s : NULL);
     value_free(&in);
     return val_none();
@@ -2735,6 +2758,14 @@ static DEF_METHOD(bp_method_add) {
     // dereferenced an index as a pointer.
     addr_space_t space =
         (argc >= 3 && argv[2].kind == VK_ENUM && argv[2].enm.idx == 1) ? ADDR_SPACE_PHYSICAL : ADDR_SPACE_LOGICAL;
+    // A condition that does not parse is refused before anything is added
+    // (it used to be stored and then read as true at every hit).
+    const char *cond = (argc >= 2 && argv[1].kind == VK_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    if (cond) {
+        value_t err = check_breakpoint_condition(cond);
+        if (val_is_error(&err))
+            return err;
+    }
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
     // stacking a duplicate that would fire twice and need removing twice.
@@ -2745,8 +2776,8 @@ static DEF_METHOD(bp_method_add) {
         bp = add_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].kind == VK_STRING && argv[1].s && *argv[1].s)
-        breakpoint_set_condition(bp, argv[1].s);
+    if (cond)
+        breakpoint_set_condition(bp, cond);
     return val_obj(breakpoint_get_entry_object(bp));
 }
 
@@ -3148,7 +3179,7 @@ static const arg_decl_t debug_exceptions_args[] = {
 static DEF_METHOD(debug_method_exceptions) {
     int filter = (argc >= 1) ? (int)argv[0].i : 0;
     debug_exc_trace_dump(filter);
-    return val_bool(true);
+    return val_none();
 }
 
 // `debug.disasm([addr], [count])` — disassemble forward.
@@ -3197,7 +3228,7 @@ static DEF_METHOD(debug_method_disasm) {
         out_printf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
-    return val_bool(true);
+    return val_none();
 }
 
 static const arg_decl_t debug_disasm_args[] = {
@@ -3434,7 +3465,7 @@ static DEF_METHOD(debug_method_step) {
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))
         scheduler_run_frame(s, system_config(), platform_pacing());
-    return val_bool(true);
+    return val_none();
 }
 
 static const value_t k_int1 = {.kind = VK_INT, .i = 1};
@@ -3451,7 +3482,7 @@ static const member_t debug_members[] = {
      .name = "disasm",
      .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_BOOL, .fn = debug_method_disasm}},
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = VK_NONE, .fn = debug_method_disasm}},
     {.kind = MK_METHOD,
      .name = "frame",
      .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
@@ -3467,12 +3498,12 @@ static const member_t debug_members[] = {
      .name = "step",
      .examples = EXAMPLES("debug.step", "debug.step 100"),
      .doc = "Run count instructions and stop, through the frame loop exactly as scheduler.run does (VBL and timers "
-            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_step}},
+            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = VK_NONE, .fn = debug_method_step}},
     {.kind = MK_METHOD,
      .name = "exceptions",
      .examples = EXAMPLES("debug.exceptions", "debug.exceptions 1"),
      .doc = "Dump the always-on 256-entry exception trace ring",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = VK_BOOL, .fn = debug_method_exceptions}},
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = VK_NONE, .fn = debug_method_exceptions}},
 };
 
 static const class_desc_t debug_class = {
@@ -3704,7 +3735,7 @@ static DEF_METHOD(screen_method_save) {
         return val_err("screen.save: framebuffer not available");
     if (save_framebuffer_as_png(d, path) < 0)
         return val_err("screen.save: failed to save '%s'", path);
-    return val_bool(true);
+    return val_none();
 }
 
 // `screen.match(reference)` — bitwise compare the framebuffer against
@@ -4057,7 +4088,7 @@ static const member_t screen_members[] = {
     {.kind = MK_METHOD,
      .name = "save",
      .doc = "Save the current framebuffer to a PNG file",
-     .method = {.args = screen_save_args, .nargs = 1, .result = VK_BOOL, .fn = screen_method_save}},
+     .method = {.args = screen_save_args, .nargs = 1, .result = VK_NONE, .fn = screen_method_save}},
     {.kind = MK_METHOD,
      .name = "match",
      .flags = M_CAT_ADVANCED,

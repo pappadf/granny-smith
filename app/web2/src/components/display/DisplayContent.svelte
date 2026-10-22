@@ -6,9 +6,8 @@
   import ScreenView from './ScreenView.svelte';
   import DropOverlay from './DropOverlay.svelte';
 
-  // After Shut Down, machine.status === 'stopped' and the user is back on
-  // Welcome (so they can pick a new config). The StatusBar stays visible —
-  // handled in StatusBar.svelte, not here.
+  // After Shut Down there is no machine (machine.status === 'no-machine') and
+  // the user is back on Welcome, as at the first load, to pick a new config.
   //
   // Layering note: ScreenView is always mounted so bus.emulator.bootstrap()
   // can hand Emscripten a stable canvas reference at page load. Welcome

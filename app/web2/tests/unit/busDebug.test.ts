@@ -11,6 +11,7 @@ const {
   writeRegister,
   stepInto,
   loadDebugFrame,
+  listWatchpoints,
 } = await import('@/bus/debug');
 const { debug } = await import('@/state/debug.svelte');
 
@@ -62,6 +63,24 @@ describe('bus/debug against the real object-model paths', () => {
     expect(bridge.paths()).not.toContain('debug.breakpoints.add');
   });
 
+  it('lists each watchpoint with the mode the core holds (S1018-38)', async () => {
+    bridge.reply('debug.watchpoints.meta.indices', (args: unknown[] | undefined) =>
+      args?.[0] === 'entries' ? [1, 2, 3] : { error: 'x' },
+    );
+    // `mode` is an enum attribute: the core answers it tagged.
+    const modes = { 1: ['write', 1], 2: ['read', 2], 3: ['rw', 3] } as const;
+    for (const [id, [label, index]] of Object.entries(modes)) {
+      const base = `debug.watchpoints.entries[${id}]`;
+      bridge.reply(`${base}.addr`, 0x400);
+      bridge.reply(`${base}.end_addr`, 0x401);
+      bridge.reply(`${base}.mode`, { enum: label, index });
+      bridge.reply(`${base}.enabled`, true);
+      bridge.reply(`${base}.hit_count`, 0);
+    }
+    const list = await listWatchpoints();
+    expect(list.map((w) => w.mode)).toEqual(['write', 'read', 'rw']);
+  });
+
   it('removes by address by finding the id first', async () => {
     twoBreakpoints();
     bridge.reply('debug.breakpoints.entries[5].remove', null);
@@ -70,8 +89,13 @@ describe('bus/debug against the real object-model paths', () => {
     expect(await removeBreakpointAt(0x999999)).toBe(false);
   });
 
-  it('reports a failed add', async () => {
-    expect(await addBreakpoint(0x400100)).toBe(false);
+  it('reports a failed add, with the reason', async () => {
+    bridge.reply('debug.breakpoints.add', {
+      error: "invalid breakpoint condition '((( x': expected ')'",
+    });
+    expect(await addBreakpoint(0x400100, '((( x')).toBe(
+      "invalid breakpoint condition '((( x': expected ')'",
+    );
     bridge.reply('debug.breakpoints.add', { kind: 'object' });
     expect(await addBreakpoint(0x400100, ' d0 == 1 ')).toBe(true);
     expect(bridge.calls.at(-1)).toEqual({
@@ -97,7 +121,7 @@ describe('bus/debug against the real object-model paths', () => {
   });
 
   it('steps, and makes the panes re-fetch', async () => {
-    bridge.reply('debug.step', true);
+    bridge.reply('debug.step', null);
     const gen = debug.refreshGen;
     await stepInto(1);
     expect(bridge.calls).toEqual([{ path: 'debug.step', args: [1] }]);

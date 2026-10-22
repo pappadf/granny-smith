@@ -10,6 +10,7 @@
 // status/message → disconnect flow the boot ROM performs is exercised
 // deterministically without the real scsi.c / image.c stack.
 
+#include "memory.h"
 #include "scsi_53c96.h"
 #include "test_assert.h"
 
@@ -112,6 +113,15 @@ int scsi_get_bus_phase(const struct scsi *bus) {
 int scsi_get_bus_phase_peek(const struct scsi *bus) {
     (void)bus;
     return mb.phase;
+}
+
+// The mock bus has no REQ settle window: data-out bytes never wait, so
+// memory_io_penalty (a no-op here, cpi_x256 == 0) is never charged.
+sprint_io_t g_sprint_io;
+
+uint64_t scsi_bus_await_data_out_req(struct scsi *bus) {
+    (void)bus;
+    return 0;
 }
 
 void scsi_push_data_out_byte(struct scsi *bus, uint8_t byte) {

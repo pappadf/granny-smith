@@ -228,6 +228,10 @@ for (const machine of MACHINES) {
     else await page.waitForTimeout(8_000);
 
     const results: Record<string, number[]> = { switch: [], predecode: [] };
+    // The interpreters alone: the PowerPC translation tier (on by default
+    // in the wasm build; ppc_jit.md) stays off in both arms
+    await terminalRun(page, "jit.enabled = 0");
+    expect(await probeString(page, "jit.enabled")).toBe("0");
     for (let pair = 1; pair <= PAIRS; pair++) {
       for (const [exec, on] of [
         ["switch", 0],

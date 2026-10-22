@@ -6,6 +6,7 @@
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import { showNotification } from '@/state/toasts.svelte';
   import Button from '@/components/ui/Button.svelte';
   import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
   import Separator from '@/components/ui/Separator.svelte';
@@ -52,7 +53,10 @@
 
   function commitAddress() {
     const v = parseHex(inputValue);
-    if (v === null) return;
+    if (v === null) {
+      showNotification('Invalid memory address', 'error');
+      return;
+    }
     debug.memoryAddress = v;
     void refresh();
   }

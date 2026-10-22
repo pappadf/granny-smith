@@ -22,7 +22,8 @@ arrow("up", 0x183, 0x40)
 
 -- The Lisa's keymap takes the same raw codes.
 machine.boot{model = "lisa", rom = F"${vars.TEST_DATA}/roms/lisa2-revh-098917b2.rom"}
-assert(machine.adb.keyboard.press("left") ~= false, "the Lisa accepts the left arrow")
+-- The Lisa accepts the left arrow (a refused key is an error)
+machine.adb.keyboard.press("left")
 
 echo("keyboard-arrows-ok")
 quit()

@@ -163,7 +163,8 @@ TEST(test_the_named_keys) {
         {0x3B, 0x22, "Left"      },
         {0x3C, 0x23, "Right"     },
         {0x38, 0x7E, "Shift"     },
-        {0x3A, 0x68, "Option"    },
+        {0x3A, 0x7C, "Option"    },
+        {0x32, 0x68, "Backquote" },
         {0x37, 0x7F, "Command"   },
         {0x39, 0x7D, "Alpha Lock"},
         {0x47, 0x20, "Pad Clear" },
@@ -211,7 +212,7 @@ TEST(test_every_mapped_code_is_a_real_lisa_key) {
         }
         // $30..$3F and a handful of others are marked "unused" in the ROM.
         // A key with no ASCII is fine ONLY if it is one of the named ones.
-        static const uint8_t no_ascii_but_real[] = {0x68, 0x78, 0x7D, 0x7E, 0x7F};
+        static const uint8_t no_ascii_but_real[] = {0x68, 0x78, 0x7C, 0x7D, 0x7E, 0x7F};
         if (rom_ascii(lisa) == 0x00) {
             bool ok = false;
             for (size_t k = 0; k < sizeof no_ascii_but_real; k++)
@@ -231,7 +232,6 @@ TEST(test_every_mapped_code_is_a_real_lisa_key) {
 TEST(test_absent_keys_are_refused) {
     ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x36)); // Control
     ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x7A)); // F1
-    ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x32)); // backquote
     ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x2A)); // backslash
     ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x43)); // keypad *
     ASSERT_EQ_INT(LISA_NO_KEY, lisa_keycode_for_adb(0x45)); // keypad +

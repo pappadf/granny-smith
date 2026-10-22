@@ -21,7 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <unistd.h>
 
 // Save the image list into a checkpoint stream.  Layout:
 //   uint32_t count
@@ -81,13 +80,28 @@ static void restore_image_tags(image_t *img, checkpoint_t *cp) {
     image_set_tags(img, tags, tag_bytes, tag_count); // the image owns them now
 }
 
+// Whether the base image at `path` is there to open: through the same path
+// opener the image itself is opened with, so a disk inside an archive
+// (/opfs/upload/disks.zip/System.dsk) is found.  access() asks the host,
+// which has no such file, and the restore then tried to create one inside
+// the archive and printed a false "cannot recreate the missing base" over a
+// restore that went on to succeed (S1018-32).
+static bool base_present(const char *path) {
+    int err = 0;
+    source_t *s = source_open_path(path, GS_FORK_DATA, &err);
+    if (!s)
+        return false;
+    source_release(s);
+    return true;
+}
+
 // Restore the image list from a checkpoint stream and attach each image
 // back onto the machine's tracked images.  Mirrors save layout; fails loudly via
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
     // Bounded and terminated by the reader rather than by the writer's
-    // promise: `name` goes on to access(), image_open_with_geometry() and
+    // promise: `name` goes on to base_present(), image_open_with_geometry() and
     // out_printf("%s"), so a file that omits the NUL used to read off the end of
     // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
@@ -106,7 +120,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         // base is reopened with `geom` so a non-512 device (the ProFile) restores
         // at its real block size rather than the default 512.
         bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
-        if (raw_size > 0 && consolidated && access(name, F_OK) != 0) {
+        if (raw_size > 0 && consolidated && !base_present(name)) {
             // A consolidated checkpoint carries every block inline and the
             // restore below writes them all into a fresh delta, so the base
             // file's CONTENT is never read through — it only has to exist so

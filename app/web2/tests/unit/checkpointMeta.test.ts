@@ -37,6 +37,16 @@ describe('formatCheckpointLabel', () => {
   it('falls back to raw input on malformed timestamp', () => {
     expect(formatCheckpointLabel('nope')).toBe('Checkpoint nope');
   });
+
+  it('is in local time, as the names a user creates are', () => {
+    const tz = process.env.TZ;
+    process.env.TZ = 'Europe/Stockholm';
+    try {
+      expect(formatCheckpointLabel('20261018T080700Z')).toBe('Checkpoint 2026-10-18 10:07');
+    } finally {
+      process.env.TZ = tz;
+    }
+  });
 });
 
 describe('checkpointCreatedToDate', () => {

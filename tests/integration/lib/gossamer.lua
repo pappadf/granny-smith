@@ -91,11 +91,11 @@ function gos_boot_prompt(model, ram_kb) -- global: included file
     machine.adb.keyboard.down("Option")
     machine.adb.keyboard.down("o")
     machine.adb.keyboard.down("f")
-    scheduler.run(400000000)
+    scheduler.run(800000000)
     local settled = 0
     local n = 0
     while settled < 2 and n < 20 do
-        scheduler.run(100000000)
+        scheduler.run(200000000)
         if gos_in_of() then
             settled = settled + 1
         else
@@ -108,9 +108,15 @@ function gos_boot_prompt(model, ram_kb) -- global: included file
     machine.adb.keyboard.up("Option")
     machine.adb.keyboard.up("Command")
     assert(gos_in_of(), F"${model}: Command-Option-O-F did not stop the boot in Open Firmware (pc ${machine.cpu.pc:08x})")
-    scheduler.run(20000000)
-    machine.adb.keyboard.type("ttya io\n")
+    -- A Return first: a key that arrives while the firmware is still
+    -- drawing its prompt can be lost (the `t` of `ttya`, when the Rage Pro's
+    -- VRAM probe moved the prompt a little later), and a lost Return costs
+    -- nothing.  The command follows once the prompt is up.
+    scheduler.run(40000000)
+    machine.adb.keyboard.type("\n")
     scheduler.run(200000000)
+    machine.adb.keyboard.type("ttya io\n")
+    scheduler.run(400000000)
     local drained = machine.scc.a.sent()
     return gos_go()
 end
@@ -120,7 +126,7 @@ end
 -- From the CD's Finder desktop (the disc's window open, the blank disk the
 -- first entry in Drive Setup's list): Utilities -> Drive Setup, initialize
 -- the blank disk as one Mac OS partition, quit, then Mac OS Install through
--- its Continue screens and the license to Start, and the ~40 G-instruction
+-- its Continue screens and the license to Start, and the ~80 G-instruction
 -- copy.  Leaves the installer's "installation process has finished" dialog
 -- up and checks it against `golden` (menu-bar clock excluded).  Every
 -- coordinate is the 640x480 desktop the Rage Pro comes up in.
@@ -158,6 +164,6 @@ function gos_install_921(golden) -- global: included file
     mac.click(449, 306)
     mac.run_ticks(900)
     mac.click(514, 383) -- Start
-    scheduler.run(40000000000)
+    scheduler.run(80000000000)
     mac.check_ex(golden, 0, 440, 20, 640)
 end

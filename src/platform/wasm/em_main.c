@@ -52,6 +52,8 @@
 #include "mouse.h"
 #include "platform.h"
 #include "platform_hooks.h"
+#include "ppc_jit.h"
+#include "predecode.h"
 #include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"
@@ -220,10 +222,13 @@ static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud)
     // boot/restart (app/web2 lib/capslock.ts).
     if (k < 0 || k == 0x39)
         return EM_FALSE;
-    // A key the machine refuses is left to the browser -- except Control,
-    // which host_keys retries as Command where the keyboard has no Control
-    // (the Lisa: SCO Xenix reads Apple-D as Control-D), so Control-D is not
-    // left for the browser to take as "bookmark".
+    // Control is retried as Command where the keyboard has no Control (the
+    // Lisa: SCO Xenix reads Apple-D as Control-D).  The return value only
+    // reports whether the machine took the key: this callback is proxied to
+    // the emulator pthread, so Emscripten never acts on it with
+    // preventDefault().  While the screen has the keyboard, the browser's
+    // defaults are suppressed on the main thread instead (app/web2
+    // lib/screenKeys.ts, #352), whether the machine took the key or not.
     return host_keys_down(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 
@@ -284,8 +289,15 @@ host_pacing_t *platform_pacing(void) {
     return &s_pacing;
 }
 
-// The instruction count at the last perf sample (MIPS is the delta).
+// The instruction count at the last perf sample (MIPS is the delta), the
+// host time the run loop has taken since (run_ms), and the scheduler's sleep
+// meter then: MIPS is instructions per host second the CPU spent awake, so a
+// guest that dozes most of the window (Mac OS X idling at the desktop) still
+// shows the rate it runs at while it runs, whatever the speed setting.
 static uint64_t last_instr = 0;
+static double run_ms = 0;
+static double last_sleep_ms = 0;
+static uint64_t last_jit_insns = 0; // the translation tier's instruction total at the last sample
 // The activity lights' state and the counter baselines they compare against.
 static drive_activity_t lights;
 static double ticks_per_second = 0;
@@ -442,22 +454,56 @@ void em_main_tick(void) {
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
         uint64_t instr_now = cpu_instr_count();
+        scheduler_t *perf_sched = system_scheduler();
+        double sleep_now = scheduler_sleep_host_ms(perf_sched);
 
         if (last_time > 0) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
-            double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
+            // The run loop's host time less its sleeping: the time the CPU
+            // was executing.  Not the emulated awake share of the wall time:
+            // a doze is fast-forwarded, so above 1x its emulated seconds
+            // cost next to no host time, and that scaling reported the
+            // speed multiple times the clock rate (2000 MIPS at 8x).
+            double slept_ms = sleep_now - last_sleep_ms;
+            double awake_ms = run_ms - slept_ms;
+            double mips =
+                awake_ms > 0 && instr_now > last_instr ? (double)(instr_now - last_instr) / (awake_ms * 1000.0) : 0;
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
+            // The engine the status bar names: the switch cores with predecode
+            // off (the translation tier runs only from the predecoded loop),
+            // the tier on a PowerPC with it on, the predecoded cores
+            // otherwise; with the tier, the share of the interval's
+            // instructions that ran translated
+            ppc_jit_status_t js;
+            ppc_jit_status(&js);
+            const char *engine = !predecode_enabled()             ? "interpreter"
+                                 : (js.on && system_cpu_is_ppc()) ? "jit"
+                                                                  : "predecoded";
+            double jit_pct = 0;
+            if (engine[0] == 'j' && instr_now > last_instr && js.insns >= last_jit_insns) {
+                jit_pct = 100.0 * (double)(js.insns - last_jit_insns) / (double)(instr_now - last_instr);
+                if (jit_pct > 100)
+                    jit_pct = 100;
+            }
             event_emitf(GS_EVENT_STATE,
                         "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
-                        "\"poll_max_ms\":%.3f}",
-                        mips, ticks_per_second, tick_max, tick_p50, poll_max);
+                        "\"poll_max_ms\":%.3f,\"engine\":\"%s\",\"jit_pct\":%.1f,\"jit_sup\":%s,"
+                        "\"jit_regions\":%llu,\"jit_kb\":%llu,\"ppc\":%s}",
+                        mips, ticks_per_second, tick_max, tick_p50, poll_max, engine, jit_pct,
+                        js.supervisor ? "true" : "false", (unsigned long long)js.regions,
+                        (unsigned long long)(js.bytes / 1024), system_cpu_is_ppc() ? "true" : "false");
         }
 
+        ppc_jit_status_t js_now;
+        ppc_jit_status(&js_now);
+        last_jit_insns = js_now.insns;
         last_time = current_time;
         last_instr = instr_now;
+        run_ms = 0;
+        last_sleep_ms = sleep_now;
     }
 
     // Execute based on emulation state
@@ -476,7 +522,9 @@ void em_main_tick(void) {
 
         // The active machine is read plainly: every writer (machine.boot,
         // checkpoint.load) is a request served on this thread.
+        double run_t0 = emscripten_get_now();
         scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
+        run_ms += emscripten_get_now() - run_t0;
 
         // Update video if framebuffer changed
         em_video_update();
@@ -544,6 +592,8 @@ void em_main_tick(void) {
 void platform_machine_attached(void) {
     last_time = 0; // the next perf sample only sets the baseline
     last_instr = cpu_instr_count();
+    run_ms = 0;
+    last_sleep_ms = scheduler_sleep_host_ms(system_scheduler());
     for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
         if (lights.light[k] != DRIVE_LIGHT_IDLE)
             event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
@@ -602,6 +652,19 @@ static void js_log_sink(const char *line, void *user) {
     if (!line)
         return;
     event_emit_text(GS_EVENT_LOG, "log", "line", line);
+}
+
+// The stdout copy of a log line (its category has stdout on), for the
+// Terminal console.  On stdout each line would be one postMessage from this
+// pthread to the page, unbounded: a verbose category at Max speed queued
+// them faster than the page could take them and hung it for good
+// (S1018-04).  The event ring is bounded and drops what the page cannot
+// keep up with.
+static void js_log_stdout_sink(const char *line, void *user) {
+    (void)user;
+    if (!line)
+        return;
+    event_emit_text(GS_EVENT_LOG, "print", "line", line);
 }
 
 // ============================================================================
@@ -986,6 +1049,10 @@ static void install_background_checkpoint_handlers(void) {
 // /opfs/upload is the user's, and is not touched.
 #define SCRATCH_DIR "/opfs/upload/.scratch"
 
+// Whether /opfs is the browser's storage (main() sets it false when it had
+// to fall back to memory).
+static bool g_storage_persistent = true;
+
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
 // ============================================================================
@@ -1004,10 +1071,20 @@ int main(void) {
     // during global constructors on the main thread).
     // The web app creates its directory structure under /opfs; users can also
     // create arbitrary paths under /opfs for their own persistent storage.
+    // Tried twice: a transient refusal (suspected after a reload while the
+    // origin's previous page still hung) should not cost the session its
+    // storage.
     backend_t opfs = wasmfs_create_opfs_backend();
     if (!opfs || wasmfs_create_directory("/opfs", 0777, opfs) != 0) {
+        fprintf(stderr, "OPFS backend not available, trying once more\n");
+        opfs = wasmfs_create_opfs_backend();
+        g_storage_persistent = opfs && wasmfs_create_directory("/opfs", 0777, opfs) == 0;
+    }
+    if (!g_storage_persistent) {
         // No OPFS (a private window, storage blocked): /opfs on memory, so
-        // the page still works, but nothing it writes survives a reload.
+        // the page still works, but nothing it writes survives a reload.  The
+        // page reads files.persistent and says so for as long as it is open:
+        // empty folders here used to look like every stored file was lost.
         fprintf(stderr, "OPFS unavailable: /opfs is memory-backed, nothing will persist\n");
         backend_t fallback = wasmfs_create_memory_backend();
         if (!fallback || wasmfs_create_directory("/opfs", 0777, fallback) != 0)
@@ -1068,6 +1145,8 @@ int main(void) {
     // process-wide, so it also forwards any categories registered later
     // (system_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
+    // ... and the console's copy (stdout=on) the same road, not stdout.
+    log_set_stdout_sink(js_log_stdout_sink, NULL);
 
     // The mailbox is open for business. JS gates its first gsEval on
     // READY so requests issued during the boot window don't dispatch
@@ -1116,6 +1195,11 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
     snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
     event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
     event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
+}
+
+// files.persistent: false once main() fell back to a memory-backed /opfs.
+bool platform_storage_persistent(void) {
+    return g_storage_persistent;
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in

@@ -28,11 +28,13 @@ TEST_ARGS := model=iici ram=8192
 
 # The q840av-71 row's volume: the AV suite's System 7.1 disk with its partition
 # map and driver stripped off (the extraction is skipped when that disk is
-# absent, and the row then skips).  The driverless row's disk: the bare 7.5.3
+# absent, and the row then skips).  The plus-608-fd row's floppy: a copy of
+# the 6.0.8 system disk, so the guest's writes never reach the test data.
+# The driverless row's disk: the bare 7.5.3
 # volume put behind a partition map with no driver, the shape Disk Copy and
 # SheepShaver write.  The trimmed row's: the bare 7.5.3 volume cut off after
 # its last allocation block in use.
-TEST_SETUP := mkdir -p "$(WORK_DIR)" && { [ ! -f "$(TEST_DATA)/systems/system_7_1_77mb_av.img" ] || python3 "$(TEST_DATA)/../../scripts/apm-extract-hfs.py" "$(TEST_DATA)/systems/system_7_1_77mb_av.img" "$(WORK_DIR)/av71_bare.img"; } && { [ ! -f "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" ] || python3 "$(TEST_DATA)/../../scripts/hfs-to-driverless-apm.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/driverless753.img" && python3 "$(TEST_DATA)/../../scripts/hfs-trim.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/trimmed753.img"; }
+TEST_SETUP := mkdir -p "$(WORK_DIR)" && { [ ! -f "$(TEST_DATA)/systems/system_7_1_77mb_av.img" ] || python3 "$(TEST_DATA)/../../scripts/apm-extract-hfs.py" "$(TEST_DATA)/systems/system_7_1_77mb_av.img" "$(WORK_DIR)/av71_bare.img"; } && { [ ! -f "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" ] || python3 "$(TEST_DATA)/../../scripts/hfs-to-driverless-apm.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/driverless753.img" && python3 "$(TEST_DATA)/../../scripts/hfs-trim.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/trimmed753.img"; } && { [ ! -f "$(TEST_DATA)/systems/System_6_0_8.dsk" ] || cp "$(TEST_DATA)/systems/System_6_0_8.dsk" "$(WORK_DIR)/fd608.dsk"; }
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

@@ -29,18 +29,18 @@ local function g3_hd_boot(row, model)
     machine.boot{model = model, ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd(hd, 0)
-    -- 6 G in, mid-boot, the g3dt row saves the fixture gossamer-checkpoint
+    -- 12 G in, mid-boot, the g3dt row saves the fixture gossamer-checkpoint
     -- restores in a fresh process (the state it would reach itself).
-    scheduler.run(6000000000)
+    scheduler.run(12000000000)
     if row == "g3dt-hd" then mac.fixture_save("g3dt-921-midboot") end
-    -- Up to 6 G more: the row's frame (the desktop with the Setup Assistant
+    -- Up to 12 G more: the row's frame (the desktop with the Setup Assistant
     -- open, outside the menu clock) and the startup sound, sampled every
-    -- 250 M.  REGEN runs all 12 G, where the goldens were captured.
+    -- 250 M.  REGEN runs all 24 G, where the goldens were captured.
     if mac.REGEN_MODE == "1" then
-        scheduler.run(6000000000)
+        scheduler.run(12000000000)
     else
-        local spent = 6000000000
-        while spent < 12000000000 do
+        local spent = 12000000000
+        while spent < 24000000000 do
             scheduler.run(250000000)
             spent = spent + 250000000
             if machine.sound.frames > 110000 and machine.screen.matches(F"goldens/${row}.png", 0, 440, 20, 640) then break end
@@ -65,7 +65,7 @@ g3_hd_boot("g3dt-hd", "pmg3dt")
 
 -- --- g3dt-floppy -------------------------------------------------------------
 assert(machine.floppy.drive[0].insert("../../data/systems/ans_nt_boot_floppy_daea7d6.img", false), "g3dt-floppy: insert the 1.44 MB disk")
-mac.run_until_match_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640, 3000000000, 250000000)
+mac.run_until_match_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640, 6000000000, 250000000)
 gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/g3dt-floppy.png") end, nil)
 mac.check_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640)
 mac.report_perf("suite-gossamer/g3dt-floppy", scheduler.instr_count)

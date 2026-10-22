@@ -16,6 +16,10 @@
 --                    generic GS vROM (7.0.1, 8 MB)
 --   se30-75-hd       **SE/30 x 7.5**: prepared 7.5 image over SCSI —
 --                    absorbs se30-scsi's HD-boot coverage (16 MB)
+--   se30-75-hd-addr32  the same boot in 32-bit mode (MODE32): the frame
+--                    buffer at the slot-$E base $FE000000
+--   se30-71-hd-addr32  7.1 + 32-bit enabler in 32-bit mode: the vSyncEnA
+--                    (VIA1 PB6) gate on the slot-$E video interrupt
 --   se30-checkpoint  **GLUE-family checkpoint round-trip**
 --
 -- Each row also picks a distinct supported RAM configuration, so the
@@ -27,6 +31,7 @@ local ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 local disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
 local sys_701 = "../../data/systems/System_7_0_1.image"
 local hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+local hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 
 -- ---- se30-nomedia -----------------------------------------------------------
 -- With no media the ROM finds no startup device and draws the floppy "?" icon
@@ -151,6 +156,48 @@ local function row_se30_75_hd()
     mac.report_perf("suite-se30/se30-75-hd", scheduler.instr_count)
 end
 
+-- ---- se30-75-hd-addr32 ------------------------------------------------------
+-- The 7.5 boot with the configuration's addressing option at 32-bit (MODE32
+-- on the image).  In 32-bit mode the Slot Manager puts the frame buffer at the
+-- slot-$E base -- the video sResource's MinorBaseOS is 0, so ScrnBase is
+-- $FE008040, where in 24-bit mode it is $FEE08040.  The VRAM used to decode
+-- only at $FEE00000, so the machine booted to a Finder no one could see: a
+-- gray screen to the end.
+local function row_se30_75_hd_addr32()
+    machine.boot{model = "se30", ram = 16384, rom = vars.ROM, config = "{\"options\":{\"addressing\":\"32\"}}"}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_75, 0)
+    scheduler.run(1000000000)
+    mac.wait_stable(2500000000)
+    assert(machine.ram == 16384, "se30-75-hd-addr32: machine.ram != 16384")
+    assert(debug.mac.globals.read("ScrnBase") == 0xFE008040, "se30-75-hd-addr32: ScrnBase is not the 32-bit slot-$E base")
+    mac.assert_addr(true)
+    mac.check_ex("goldens/se30-7.5-512x342-finder.png", 0, 380, 20, 512)
+    mac.report_row("7.5", "builtin", "hd-boot scsi addr32")
+    mac.report_perf("suite-se30/se30-75-hd-addr32", scheduler.instr_count)
+end
+
+-- ---- se30-71-hd-addr32 -----------------------------------------------------
+-- 7.1 with the 32-bit enabler, 32-bit addressing on.  The ROM boots 24-bit;
+-- the enabler closes the video driver (which leaves VIA1 PB6, vSyncEnA, high)
+-- and restarts the machine in 32-bit mode.  The slot-$E vSync request used to
+-- be raised every VBL whatever PB6 said, so one landing in that window found
+-- no handler in SlotQDT: SysError 51 and a Sad Mac 0000000F/00000033.  The
+-- window is timing-sensitive -- any logpoint or breakpoint single-steps the
+-- run and dodges it -- so this row deliberately runs without one.
+local function row_se30_71_hd_addr32()
+    machine.boot{model = "se30", ram = 8192, rom = vars.ROM, config = "{\"options\":{\"addressing\":\"32\"}}"}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_71, 0)
+    scheduler.run(600000000)
+    mac.wait_stable(2500000000)
+    assert(machine.ram == 8192, "se30-71-hd-addr32: machine.ram != 8192")
+    mac.assert_addr(true)
+    mac.check("goldens/se30-7.1-512x342-hd-addr32-finder.png")
+    mac.report_row("7.1", "builtin", "hd-boot scsi addr32 enabler")
+    mac.report_perf("suite-se30/se30-71-hd-addr32", scheduler.instr_count)
+end
+
 -- ---- se30-checkpoint --------------------------------------------------------
 -- The GLUE device set's save/restore round-trip, in process — boot, save, wipe
 -- with a fresh boot, load, re-match.
@@ -180,6 +227,20 @@ if mac.row_on("se30-75-hd") then
         mac.row("se30-75-hd", row_se30_75_hd)
     else
         echo("skip: se30-75-hd (7.5 prepared image not fetched)")
+    end
+end
+if mac.row_on("se30-75-hd-addr32") then
+    if mac.have_media(hd_75) then
+        mac.row("se30-75-hd-addr32", row_se30_75_hd_addr32)
+    else
+        echo("skip: se30-75-hd-addr32 (7.5 prepared image not fetched)")
+    end
+end
+if mac.row_on("se30-71-hd-addr32") then
+    if mac.have_media(hd_71) then
+        mac.row("se30-71-hd-addr32", row_se30_71_hd_addr32)
+    else
+        echo("skip: se30-71-hd-addr32 (7.1 prepared image not fetched)")
     end
 end
 mac.row("se30-checkpoint", row_se30_checkpoint)

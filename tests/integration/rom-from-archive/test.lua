@@ -11,7 +11,8 @@ for _, e in ipairs(files.list(zip)) do
     names = F"${names}|${e.name}"
 end
 assert(names == "|plus.rom|README.txt", F"the members, in archive order (got ${names})")
-assert(files.cat(F"${zip}/README.txt"), "a member opens through files.cat")
+-- A member opens through files.cat (a failure is an error)
+files.cat(F"${zip}/README.txt")
 assert(files.path_size(zip) < files.path_size(vars.ROM), "the member is deflated")
 assert(files.path_size(member) == 131072, "the member's size")
 assert(files.path_compare(member, vars.ROM) == -1, "the member decodes to the ROM")

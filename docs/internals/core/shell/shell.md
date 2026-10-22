@@ -120,6 +120,13 @@ context:
   `contains(haystack, needle)` (substring test over two strings —
   what a row uses to assert on a guest serial console's text, since
   the machines that boot Unix narrate rather than draw).
+  `expr_check` runs the same grammar as a syntax check only
+  (`expr_ctx_t.parse_only`): no path, binding, method or user function
+  is touched, both sides of `&&` / `||` / `?:` are parsed for their
+  errors, and the error is the one evaluation would report.  A
+  breakpoint condition is checked this way when it is added
+  (`debug.breakpoints.add`) or edited (`.condition = …`), and refused
+  if it does not parse; one that parses but fails at a hit still fires.
 
 ## Strings and interpolation
 

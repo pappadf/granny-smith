@@ -65,12 +65,9 @@ LOG_USE_CATEGORY_NAME("board");
 void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (page_index >= (uint32_t)g_page_count)
         return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
+    memory_page_set_host(page_index, host_ptr, writable);
     uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
     // Supervisor arrays hold the eager physical identity view; the user
     // arrays belong to the PPC MMU front end and are only cleared here.
     if (g_supervisor_read)
@@ -87,10 +84,7 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
 void gos_clear_page(uint32_t page_index) {
     if (page_index >= (uint32_t)g_page_count)
         return;
-    g_page_table[page_index].host_base = NULL;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = false;
+    memory_page_clear(page_index);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = 0;
     if (g_supervisor_write)
@@ -183,14 +177,18 @@ static void gos_via1_irq(void *context, bool active) {
         gos_set_source(cfg, GOS_INT_VIA, active);
 }
 
-// The SCC's one INT line -> both channel sources ($0F/$10); the guest
-// discriminates via RR3 (the TNT wiring).
+// Each ESCC channel interrupts on its own Heathrow source: ch-a $0F, ch-b
+// $10.  Mac OS 9 binds the native Open Transport LocalTalk driver's
+// handler to ch-b alone; with a channel B event raised on both sources,
+// the 68k SCC dispatcher took it first and reset the External/Status
+// latch, and the LocalTalk driver's handler never ran.
 static void gos_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     if (!gos_st(cfg))
         return;
-    gos_set_source(cfg, GOS_INT_SCCA, active);
-    gos_set_source(cfg, GOS_INT_SCCB, active);
+    unsigned chans = active ? scc_irq_channels(cfg->scc) : 0;
+    gos_set_source(cfg, GOS_INT_SCCA, (chans & 1) != 0);
+    gos_set_source(cfg, GOS_INT_SCCB, (chans & 2) != 0);
 }
 
 static void gos_mesh_irq(void *ctx, bool level) {
@@ -376,9 +374,10 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    // CPI 2, the TNT rationale: a 750 running the 68k emulator sustains
-    // well under one instruction per clock.
-    scheduler_set_cpi(cfg->scheduler, 2);
+    // CPI 1: the 750 sustains close to one instruction per clock, and with
+    // the translation tier the host can pace 267 MIPS of busy guest at 1x
+    // (CPI 2 halved a fully busy guest to 134 MIPS of real time).
+    scheduler_set_cpi(cfg->scheduler, 1);
     // Time base and decrementer at bus/4 = 16,705,000 Hz (the tree's
     // timebase-frequency $00FEE5E8; MPC750UM §2.1.1).
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, board->bus_hz / 4u);
@@ -640,11 +639,12 @@ static bool gossamer_fd_present(config_t *cfg, int drive) {
 
 // The board's storage: the MESH SCSI bus (the internal 50-pin cable and the
 // external DB-25 on one bus, with no named bay) and Heathrow's two ATA
-// buses.  A stock machine has its hard disk and CD-ROM drive on ATA; here
-// they stay on SCSI until the ROM's expected ATA placement is checked, and
-// an ATA bus takes hard disks (an ATAPI CD-ROM drive there is not yet a
-// construction input).  The startup record names a SCSI ID, so only the SCSI
-// bus can hold the startup device.
+// buses.  A stock machine has its hard disk and CD-ROM drive on ATA; the
+// default configuration keeps them on SCSI until the ROM's expected ATA
+// placement is checked.  An ATA bus takes hard disks and ATAPI CD-ROM
+// drives: the Mac OS X 10.0 install CD boots and installs from the secondary
+// bus's master (Open Firmware's ide@21000/@0).  The startup record names a
+// SCSI ID, so only the SCSI bus can hold the startup device.
 const storage_bus_decl_t gossamer_storage[] = {
     {.id = "scsi",
      .label = "SCSI",
@@ -662,14 +662,14 @@ const storage_bus_decl_t gossamer_storage[] = {
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 0,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {.id = "ata1",
      .label = "Secondary ATA bus",
      .kind = STORAGE_KIND_ATA,
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 2,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {0},
 };
 

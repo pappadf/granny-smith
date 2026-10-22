@@ -8,11 +8,11 @@ TEST_ROM := roms/pmg3dt-pmg3mt-78f57389.rom
 
 TEST_ARGS := model=pmg3dt ram=65536
 
-# Two boots of ~12 G instructions each.
+# Two boots of ~24 G instructions each.
 TEST_TIMEOUT := 3600
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
-# The g3dt row saves its 6 G mid-boot state for gossamer-checkpoint
+# The g3dt row saves its 12 G mid-boot state for gossamer-checkpoint
 # (lib/mac.script, "checkpoint fixtures").
 TEST_PROVIDES := g3dt-921-midboot
 

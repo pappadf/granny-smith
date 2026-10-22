@@ -132,6 +132,10 @@ the window's wall time instead (`bench_window` reports both): the one that
 is fair to a wasm build whose engine compiles on background threads, such
 as the PowerPC translation tier's `jit` executor, where user CPU time
 would charge it for the optimizing compiles running beside the emulator.
+For the same reason the `jit` executor's windows run unpinned: on one core
+those compile threads take the emulator's time, and the tier measured 41
+MIPS on `g3dt-boot` pinned against 72 unpinned (the predecoded executor's
+own 72).
 
 B also sees what A cannot, including effects nobody wrote: two builds whose
 CPU code is identical differed by up to 4 % on single rows (the PowerPC rows
@@ -269,6 +273,61 @@ python3 scripts/bench/run.py --head build/headless-fast-node/gs-headless \
     --base build/headless-fast/gs-headless --rows pm8500-finder,g3dt-boot \
     --metrics B --pairing alternate
 ```
+
+## Interactive scenarios
+
+The rows above are CPU-bound windows.  Interactive use is not: a menu
+opening or a window's genie into the Dock is a burst of work between idle
+stretches, and what matters is how long the user waits for the burst.
+`scripts/bench/scenario.py` times such bursts.  A scenario is a script in
+`tests/bench/` that boots to a state and saves a checkpoint (`MODE=boot`),
+then loads it and plays scripted input, each interaction a fixed stretch of
+scheduler slots, printing one `@@SCEN` line with the stretch's host wall
+time and the guest instructions it retired (`MODE=run`).  Guards in the
+script (framebuffer checksums of the regions an interaction changes) fail
+the run if an interaction stopped doing what it claims.
+
+`osx-interactive` is Mac OS X 10.0.3 with the Aqua look (gs-test-data
+`systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg`) on the beige G3 at the
+Finder: open and close the File menu, minimize the Finder window into the
+Dock, restore it from the Dock.  It plays them twice in one process, round
+1 cold and round 2 warm (the translation tier compiles in round 1).  OS X
+has no Toolbox cursor globals, so the script points with relative ADB moves
+from the top-left corner (2-count steps, where OS X 10.0's acceleration is
+a flat 2.26 pixels per count).
+
+`g3-boot-desktop` is a whole Mac OS 9.2.1 boot on the beige G3 at 256 MB
+(gs-test-data `systems/mac_os_9_2_1_516mb_g3.img`), checkpointed at power-on
+and run in three fixed stretches: start-up (2 G scheduler slots), extensions
+(3 G) and the desktop coming up (3.2 G), about 4.55 G guest instructions in
+all.  It covers what the CPU-bound rows' windows leave out: device polling,
+code loading (the code-page marks) and the 68K emulator.  The guard is the
+whole screen's checksum at the desktop.
+
+```bash
+python3 scripts/bench/scenario.py --scenario g3-boot-desktop \
+    --bin native=build/headless-fast/gs-headless --configs predecode,switch --runs 3
+```
+
+The runner boots each binary once (a checkpoint refuses another build),
+then runs every configuration `--runs` times in separate processes, the
+configurations interleaved, and prints the median milliseconds per
+interaction with cold and warm totals.  The configurations are
+`predecode`, `switch`, and on a wasm build `jit` (the translation tier on
+user code) and `jit-sup` (`jit.supervisor`: kernel code too).  Every run
+must retire the same guest instructions in each interaction whatever the
+executor; a difference is reported as a correctness bug and fails the run.
+
+```bash
+python3 scripts/bench/scenario.py --bin native=build/headless-fast/gs-headless \
+    --bin node=build/headless-fast-node/gs-headless --runs 3
+```
+
+The scale: the G3 runs at 267 MHz with a CPI of 1, so a fully busy guest
+retires 267 M instructions a second, and the genie's minimize and restore
+each carry 120–160 M instructions of work.  Node's compiles are
+synchronous, so the cold round charges the translation tier for compiling
+in a way the browser, which compiles on other threads, does not.
 
 ## Page heat
 

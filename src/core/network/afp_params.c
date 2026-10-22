@@ -707,9 +707,10 @@ int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t d
 // ============================================================================
 
 // Free/total bytes for a share, from the host filesystem and clamped to what
-// a 32-bit classic client can hold.  A statvfs failure falls back to a fixed
-// pair so an OPFS quirk can never make the volume look full.
-static void afp_volume_space(const vol_t *v, uint32_t *out_free, uint32_t *out_total) {
+// a 32-bit classic client can hold (and below 1 GB for an AFP 2.0 client, see
+// AFP_VOL_SIZE_CEILING_20).  A statvfs failure falls back to a fixed pair so
+// an OPFS quirk can never make the volume look full.
+static void afp_volume_space(const vol_t *v, bool afp21, uint32_t *out_free, uint32_t *out_total) {
     uint64_t free_bytes = AFP_VOL_FALLBACK_FREE;
     uint64_t total_bytes = AFP_VOL_FALLBACK_TOTAL;
     struct statvfs vfs;
@@ -720,10 +721,11 @@ static void afp_volume_space(const vol_t *v, uint32_t *out_free, uint32_t *out_t
     } else {
         LOG(2, "AFP: statvfs('%s') unavailable — reporting the fallback volume size", v->root);
     }
-    if (total_bytes > AFP_VOL_SIZE_CEILING)
-        total_bytes = AFP_VOL_SIZE_CEILING;
-    if (free_bytes > AFP_VOL_SIZE_CEILING)
-        free_bytes = AFP_VOL_SIZE_CEILING;
+    uint64_t ceiling = afp21 ? AFP_VOL_SIZE_CEILING : AFP_VOL_SIZE_CEILING_20; // per negotiated version
+    if (total_bytes > ceiling)
+        total_bytes = ceiling;
+    if (free_bytes > ceiling)
+        free_bytes = ceiling;
     if (free_bytes > total_bytes)
         free_bytes = total_bytes;
     *out_free = (uint32_t)free_bytes;
@@ -778,7 +780,7 @@ int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *out, int 
     struct stat root_st;
     bool have_root = stat(v->root, &root_st) == 0;
     uint32_t bytes_free = 0, bytes_total = 0;
-    afp_volume_space(v, &bytes_free, &bytes_total);
+    afp_volume_space(v, afp21, &bytes_free, &bytes_total);
 
     int p = param_start;
     int var_base = param_start + fixed_len;

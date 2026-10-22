@@ -71,6 +71,11 @@ local q950_rom = "../../data/roms/q950-3dc27823.rom"
 --     the exact rational removes that residue. Two frames in 58,777. Confirmed
 --     bit-reproducible at the new value the same way as the old: three separate
 --     processes, same count.
+--
+--     It became 62,104 when the 68040 machines moved from CPI 4 to CPI 1.  The
+--     budget went from 30 M to 120 M slots so the window spans the same 120 M
+--     cycles of guest time; the ROM now reaches the chime sooner within it,
+--     because its code before the chime runs four times faster.
 --   * A sample-exact golden is nevertheless impossible here, for an unrelated
 --     reason: sound.match refuses the comparison with "sample rate changed
 --     mid-capture". The ASC reads a steady 22,257 Hz whenever it is sampled, so
@@ -83,9 +88,9 @@ local q950_rom = "../../data/roms/q950-3dc27823.rom"
 local function row_q700_chime()
     machine.boot{model = "q700", ram = 8192, rom = quadra_rom}
     machine.sound.capture.start()
-    scheduler.run(30000000)
+    scheduler.run(120000000)
     machine.sound.capture.stop()
-    assert(machine.sound.capture.frames == 58639, F"q700-chime: capture length ${machine.sound.capture.frames}, want 58639 (bit-reproducible across processes — a change here is a real change)")
+    assert(machine.sound.capture.frames == 62104, F"q700-chime: capture length ${machine.sound.capture.frames}, want 62104 (bit-reproducible across processes — a change here is a real change)")
     assert(debug.mac.globals.read("MemTop") == 0x800000, "q700-chime: RAM sizing wrong")
     assert(debug.mac.globals.read("ROMBase") == 0x40800000, "q700-chime: ROMBase wrong")
     local t0 = debug.mac.globals.read("Ticks")
@@ -224,7 +229,7 @@ end
 -- difference between "unsupported" and "silently wrong".
 local function sense_is(code, w, h, what)
     machine.boot{model = "q700", ram = 8192, rom = quadra_rom, video_sense = code}
-    scheduler.run(30000000)
+    scheduler.run(60000000)
     assert(machine.screen.width == w, F"q700-dafb-senses: sense ${code} (${what}) gave width ${machine.screen.width}, want ${w}")
     assert(machine.screen.height == h, F"q700-dafb-senses: sense ${code} (${what}) gave height ${machine.screen.height}, want ${h}")
 end

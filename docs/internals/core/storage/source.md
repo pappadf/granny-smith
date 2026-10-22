@@ -82,8 +82,11 @@ compressed StuffIt or Compact Pro fork are `EARNED` -- decoded a buffer at a
 time as reads reach them, into a sink that keeps what was decoded -- and
 `RANDOM` once the sink holds all of it; a BinHex fork is `WHOLE` (decoded in
 full on first read: its files are small). A decode-through wrapper is
-`EARNED`. `vfs_is_expandable` probes only what is cheap to read now
-(`INDEXED` or better), so listing a directory never decodes a member.
+`EARNED`. `vfs_is_expandable` probes what is cheap to read now (`INDEXED`
+or better) as it is, and decodes a compressed member of at most 64 MB to
+probe it (one pass into the sink serves both its head and its tail), so a
+disk inside a `.sit.hqx` or a deflated zip member is offered like a stored
+one; a larger member is not decoded and is not marked expandable.
 
 ### 3.3 Path opening
 

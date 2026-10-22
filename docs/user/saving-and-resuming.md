@@ -27,6 +27,10 @@ asks:
 - **Start fresh** — the checkpoint is discarded and you get the Home
   screen.
 
+A machine you **Shut down** is not offered: shutting down discards its
+automatic checkpoint along with the machine. To come back to it later, use
+**Save State** (§5) or **Create Checkpoint** (§4) before you shut it down.
+
 A page opened from a link with a `rom=` parameter boots that link's
 machine instead and does not ask.
 
@@ -47,7 +51,8 @@ name, machine, date and size (click a column heading to sort). It holds two
 kinds:
 
 - **Autosave** entries — each machine's automatic checkpoint (§1), always
-  its latest state. Resuming (§2) continues from it.
+  its latest state. Resuming (§2) continues from it. **Shut down** deletes
+  it.
 - **Checkpoints you create** — click **Create Checkpoint** (top right) to
   keep the running machine's state as it is now, under a name of its own.
   Each is a complete, self-contained copy (memory and disks), so you can
@@ -86,7 +91,8 @@ To restore it:
 
 - **Kept between visits:** stored ROMs and images, checkpoints, the shared
   folder — everything under `/opfs` — plus your preferences (appearance,
-  panel layout, zoom, recent machines).
+  panel layout, recent machines). The zoom is not kept: after a reload the
+  screen is fitted to the display area again.
 - **Lost** when you clear the site's data in the browser settings, or in a
   private window when it closes.
 - **Checkpoints belong to one version of the emulator.** A checkpoint or

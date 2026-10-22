@@ -72,7 +72,7 @@ assert(machine.cpu.mmu.translate(machine.cpu.pc, {fetch = true}).valid, "fetch-s
 
 -- 68040.
 machine.boot{model = "q700", rom = "../../data/roms/q700-q900-420dbff3.rom"}
-scheduler.run(40000000)
+scheduler.run(80000000)
 assert(machine.cpu.mmu.enabled, "the ROM turned the 040 MMU on")
 check_walk(machine.cpu.pc)
 check_walk(0x00000000)

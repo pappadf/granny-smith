@@ -22,7 +22,7 @@ static const uint32_t pm8500_ram_options_kb[] = {
     327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
-// external 53C94 chain is present but empty until the CD-ROM phase.
+// 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
 
 // PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
@@ -102,7 +102,7 @@ const hw_profile_t machine_pm8500 = {
 
     .ram_options = pm8500_ram_options_kb,
     .storage = tnt_storage_8500,
-    .default_storage = tnt_default_storage, // no CD-ROM drive yet: see pm7500.c
+    .default_storage = tnt_default_storage, // the CD-ROM drive on the 53C94: see pm7500.c
     .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,

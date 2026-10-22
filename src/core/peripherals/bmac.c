@@ -487,6 +487,10 @@ bmac_t *bmac_init(checkpoint_t *cp, const uint8_t mac[6]) {
         return NULL;
     for (int i = 0; i < 3; i++)
         b->srom[SROM_MAC_WORD + i] = (uint16_t)(bitrev8(mac[2 * i]) | (bitrev8(mac[2 * i + 1]) << 8));
+    // No cable: there is no host network behind the cell, and a link that
+    // reads up sends Mac OS X's ipconfig into a DHCP wait it cannot win
+    // (several guest seconds idle at "Initializing network").
+    b->link_down = true;
     bmac_reset(b);
     if (cp)
         system_read_checkpoint_data(cp, b, offsetof(bmac_t, irq));

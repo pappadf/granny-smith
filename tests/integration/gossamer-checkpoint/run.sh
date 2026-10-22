@@ -11,18 +11,18 @@ set -e
 CHECKPOINT_FILE="$TEST_TMPDIR/g3.gs"
 
 # Under `make test` suite-gossamer has already saved this very state (its
-# g3dt row, 6 G in): restore that instead of booting there again.
+# g3dt row, 12 G in): restore that instead of booting there again.
 FIXTURE="${FIXTURE_DIR:+$FIXTURE_DIR/g3dt-921-midboot.gsc}"
 if [ -n "$FIXTURE" ] && [ -f "$FIXTURE" ]; then
     echo "Step 1: suite-gossamer's mid-boot fixture ($(stat -c%s "$FIXTURE") bytes)"
     CHECKPOINT_FILE="$FIXTURE"
 else
 
-echo "Step 1: boot the 9.2.1 disk 6 G instructions, save checkpoint"
+echo "Step 1: boot the 9.2.1 disk 12 G instructions, save checkpoint"
 cat > "$TEST_TMPDIR/step1.lua" << EOF
 machine.rtc.time = "2026-10-01T12:00:00"
 machine.scsi.attach_hd("$TEST_TMPDIR/hd.img", 0)
-scheduler.run(6000000000)
+scheduler.run(12000000000)
 assert(checkpoint.save("$CHECKPOINT_FILE"), "step1 checkpoint save failed")
 quit()
 EOF
@@ -44,10 +44,10 @@ echo ""
 echo "Step 2: restore in a fresh process, finish the boot, match the golden"
 cat > "$TEST_TMPDIR/step2.lua" << EOF
 assert(checkpoint.load("$CHECKPOINT_FILE"), "step2 checkpoint load failed")
--- Up to 6 G more, sampled every 250 M: done at the first frame that is the
+-- Up to 12 G more, sampled every 250 M: done at the first frame that is the
 -- desktop golden (outside the menu clock).
 local spent = 0
-while spent < 6000000000 and not gs.try(function() return machine.screen.matches("hd-desktop.png", 0, 440, 20, 640) end, false) do
+while spent < 12000000000 and not gs.try(function() return machine.screen.matches("hd-desktop.png", 0, 440, 20, 640) end, false) do
     scheduler.run(250000000)
     spent = spent + 250000000
 end

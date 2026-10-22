@@ -9,7 +9,7 @@ import {
   formatCheckpointLabel,
   manifestMachine,
 } from '@/lib/checkpointMeta';
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -193,10 +193,12 @@ export class BrowserOpfs implements OpfsBackend {
       );
       const m = manifestMachine(manifest?.machine);
       let sizeBytes = 0;
+      let hasState = false;
       try {
         const dirEntries = await this.list(e.path);
         for (const f of dirEntries) {
           if (f.kind !== 'file') continue;
+          if (f.name === 'state.checkpoint') hasState = true;
           const fileDir = await getDirAtPath(e.path);
           const fh = await fileDir.getFileHandle(f.name);
           const file = await fh.getFile();
@@ -205,6 +207,10 @@ export class BrowserOpfs implements OpfsBackend {
       } catch {
         // Best effort — keep sizeBytes = 0.
       }
+      // A machine's directory exists before its first checkpoint (and after
+      // Start fresh): with nothing to load it is no row ("Autosave … · 0 B"
+      // on a fresh profile).
+      if (!hasState) continue;
       out.push({
         path: e.path,
         dirName: e.name,
@@ -241,7 +247,7 @@ export class BrowserOpfs implements OpfsBackend {
     // stale-inode bug this routing exists to prevent — propagate it instead.
     if (isModuleReady()) {
       const res = await gsEval('files.mv', [src, dst]);
-      if (res !== true) throw new Error(gsErrorText(res));
+      if (!gsOk(res)) throw new Error(gsErrorText(res));
       return;
     }
     // Module not up yet (no worker cache to desync) — direct OPFS fallback.
@@ -305,7 +311,7 @@ export class BrowserOpfs implements OpfsBackend {
     // makes the UI's per-item failure accounting real instead of dead code.
     if (isModuleReady()) {
       const res = await gsEval('files.rm', [path]);
-      if (res !== true) throw new Error(gsErrorText(res));
+      if (!gsOk(res)) throw new Error(gsErrorText(res));
       return;
     }
     // Module not up yet (no worker cache to desync) — direct OPFS fallback.

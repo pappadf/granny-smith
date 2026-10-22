@@ -26,6 +26,7 @@
 #define TT040_E(tt)      (((tt) >> 15) & 1) // enable
 #define TT040_SFIELD(tt) (((tt) >> 13) & 3) // 0=user only, 1=super only, 2/3=both
 #define TT040_W(tt)      (((tt) >> 2) & 1) // write protect
+#define TT040_CM(tt)     (((tt) >> 5) & 3) // cache mode: 2/3 = cache-inhibited
 // Writable bit mask: BASE|MASK|E|S-field|U1U0|CM|W
 #define TT040_WRITE_MASK 0xFFFFE364u
 

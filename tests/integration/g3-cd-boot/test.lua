@@ -25,9 +25,9 @@ local mac = dofile("../lib/mac.lua")
 local cd = F"${vars.EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
 
 local function finder(label, golden)
-    -- ~13 G instructions: Open Firmware, the 68k Start Manager's media hunt,
+    -- ~26 G instructions: Open Firmware, the 68k Start Manager's media hunt,
     -- the CD's System and extensions, the Finder opening the disc's window.
-    scheduler.run(13000000000)
+    scheduler.run(26000000000)
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/${label}.png") end, nil)
     mac.check_ex(golden, 0, 440, 20, 640)
 end

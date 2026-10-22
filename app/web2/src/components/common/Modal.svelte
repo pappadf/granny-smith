@@ -52,6 +52,14 @@
     return () => document.removeEventListener('keydown', onKey);
   });
 
+  // A dialog needs the cursor: one that opens while the screen holds the
+  // pointer (a shortcut, a power button reached by keyboard) lets it go
+  // first; the core's pointerlockchange handler then releases the guest's
+  // button and keys, as for Esc.
+  $effect(() => {
+    if (open && document.pointerLockElement) document.exitPointerLock();
+  });
+
   // Focus moves into the card when it opens (unless a field inside took
   // it already) and back to where it was when it closes.
   $effect(() => {

@@ -28,7 +28,7 @@ local function ladder(label, compat, fcr)
     -- 700M instructions: the boot program, the boot beep, Open Firmware's
     -- probe and device tree, the NanoKernel's init, and the 68k Start
     -- Manager through its media hunt.
-    scheduler.run(700000000)
+    scheduler.run(1400000000)
 
     -- The boot program ORs $00040E0C into PICR1 (the PICR1/PICR2 writes at
     -- the top of the boot program) and fills L2CR from its by-PID table:
@@ -114,7 +114,7 @@ assert(debug.mac.globals.read("Ticks") ~= 0, "G8: 68k tick handler not running (
 local k0 = debug.mac.globals.read("Ticks")
 local t0 = debug.mac.globals.read("Time")
 local c0 = scheduler.cycles
-scheduler.run(400000000)
+scheduler.run(800000000)
 local dticks = debug.mac.globals.read("Ticks") - k0
 local dtime = debug.mac.globals.read("Time") - t0
 local dcyc = scheduler.cycles - c0
@@ -142,7 +142,7 @@ mac.check("gray-desktop.png")
 -- ATI driver offering 640 x 480 alone.
 local function multiscan(monitor, ext)
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM, config = F"{\"displays\":{\"builtin\":{\"monitor\":\"${monitor}\"}}}"}
-    scheduler.run(700000000)
+    scheduler.run(1400000000)
     assert(machine.pci.slot[4].card.monitor.sensed_primary == 6, F"G12 ${monitor}: primary sense != 6")
     assert(machine.pci.slot[4].card.monitor.sensed_extended == ext, F"G12 ${monitor}: extended sense != ${ext:02x}")
 end

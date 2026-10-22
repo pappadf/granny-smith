@@ -84,7 +84,11 @@ an exported wasm function is still callable from the browser main thread
 runs the core on the main thread, with the main thread's pthread context,
 while the worker is inside `em_main_tick`. Only the handful of built-in
 Emscripten callbacks (pointer lock, mouse, keyboard, visibility) are
-proxied to the worker for us. Calling into the core from the main thread
+proxied to the worker for us. A proxied callback's return value is never
+seen by the DOM listener, so it cannot `preventDefault()` an event: browser
+shortcuts are suppressed on the main thread instead, while the screen holds
+the pointer lock (`app/web2/src/lib/screenKeys.ts`, #352), which also asks
+before a page with a live machine unloads. Calling into the core from the main thread
 races the worker for scheduler, machine and device state, uses WasmFS/OPFS
 handles from a thread that did not open them, and can deadlock or stall on
 the runtime's mutexes. So every JS→C request goes through the mailbox, and
@@ -264,7 +268,8 @@ printout reads as it did when stdout reached the terminal directly. A
 job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
 "client":c,"text":...}` records in the order the job produced it, before
 the job's result. Outside any request — boot messages, a breakpoint hit —
-text still goes to stdout and `Module.print`.
+text still goes to stdout and `Module.print`, except log lines, which come
+as `log:print` events (below).
 
 **Transfer buffers.** Bulk data reaches the page through a buffer in the
 core's heap that an I/O job owns: the job publishes it under a handle,
@@ -311,9 +316,11 @@ callbacks is emitted at its source too; the page routes each in
 | `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
-| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms, engine, jit_pct, jit_sup, jit_regions, jit_kb, ppc}`: `engine` is `interpreter` (predecode off), `predecoded` or `jit` (the PowerPC translation tier on, a PowerPC machine); `jit_pct` the share of the sample's instructions that ran translated |
+| `state:renderer` | the core thread's display update, once, after the render thread gave up: no WebGL 2 context, one lost while it came up, one lost later (checked every animation frame, before any GL call), or display shaders the driver would not build; the page replaces the UI with the graphics error page | `{status, detail}`, `status` one of `no_context`, `context_dead`, `context_lost`, `shader_failed` |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
+| `state:machine_shut_down` | `system_shut_down` (`machine.shutdown`): the machine is gone and none replaces it | `{}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
@@ -321,6 +328,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}`; a printed document adds `kind: "document", printer, job, pages, title` |
 | `log:log` | the log sink, every line | `{line}` |
+| `log:print` | the log's stdout sink, every line of a category with `stdout` on (in place of stdout, whose one-`postMessage`-per-line road could bury the page) | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
 What still crosses as a `Module.on*` callback is a platform transport
@@ -442,13 +450,25 @@ Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
      against the skin registry.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
-2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
-   creates an off-DOM canvas and asks for a `webgl2` context. If
-   missing (e.g. Chrome GPU process dead, hardware acceleration
-   disabled), the app renders a full-page error overlay via
-   [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts) and
-   does **not** mount Svelte. The error page is vanilla DOM so it
-   survives a degraded framework runtime.
+2. **Graphics check.** [`lib/gpuDiagnostics.ts`](../../app/web2/src/lib/gpuDiagnostics.ts)
+   checks each link the renderer needs, in order: WebGL at all, WebGL 2 on
+   an off-DOM canvas, OffscreenCanvas transfer, and WebGL 2 on an
+   OffscreenCanvas inside a worker
+   ([`lib/gpuProbe.worker.ts`](../../app/web2/src/lib/gpuProbe.worker.ts)),
+   as the emulator renders. Getting a context is not enough: each context
+   is probed ([`lib/gpuProbe.ts`](../../app/web2/src/lib/gpuProbe.ts)) for
+   being lost already and for drawing a known colour that reads back
+   right, because a browser whose GPU process is stuck (seen in Safari,
+   cleared only by a browser restart) hands out contexts that are lost from
+   the start or draw nothing. On a failure the app renders a full-page
+   error via [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts)
+   that names the failure (`data-failure`) and lists what to try, usually
+   quitting and restarting the browser, and does **not** mount Svelte. The
+   error page is vanilla DOM so it survives a degraded framework runtime.
+   A worker probe that cannot start or does not answer in 5 s is skipped,
+   never fatal. The verdict is left in `window.__gsGraphics`. WebGPU is
+   not checked here: only the Voodoo2's GPU mode uses it, and its absence
+   just withholds that option (the reason is logged to the console).
 3. Mount the Svelte tree.
 4. Post-mount async (after `App.svelte`'s effects have run):
    - `await whenModuleReady()` (resolved by `bus/emulator.ts::bootstrap`
@@ -624,7 +644,7 @@ Enter commits and Esc cancels. A commit takes one of two paths:
 - after every console job and SYSTEM action;
 - every 2 s while the machine runs and the page is in the foreground.
 
-On `state:machine_booted` the whole tree reloads, keeping the open levels
+On `state:machine_booted` and `state:machine_shut_down` the whole tree reloads, keeping the open levels
 by path.
 
 **Revealing a node.** Ctrl/Cmd-click on a console object link opens SYSTEM
@@ -678,8 +698,14 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    what single drops would do, and no more: a ROM boots only when it is the
    drop's only ROM, and per category only the first file goes into an empty
    drive.  A checkpoint is loaded only when dropped on its own; in a drop
-   with other files it is rejected ("drop a checkpoint on its own"), since
-   loading it would replace the machine they were meant for.
+   with other files it is rejected ("load a checkpoint on its own"), since
+   loading it would replace the machine they were meant for.  The two
+   8 KB chip dumps of a Lisa / Macintosh XL boot ROM (`341-0175`/`341-0176`,
+   `341-0346`/`341-0347`) are told apart first (`machine.rom.identify`'s
+   `lisa_chip`): two of one drop or pick are interleaved, in whichever order
+   verifies, and stored as the one ROM (`storeRomPair`, which `rom=…&rom=…`
+   uses too); a chip on its own is refused as half a ROM, never stored as a
+   disk.
 3. **Drag-and-drop onto the Filesystem tab** —
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
@@ -759,7 +785,8 @@ typed-dispatch and introspection surface.
 - **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
-  → bool.
+  → bool.  **`machine.scsi.identify_iso(path)`** → bool: the image holds ISO
+  9660, what a drop files a CD-ROM by (`validateUnstated` in lib/media.ts).
 - **`files.archive.identify(path)`** → the archive format (`sit`, `cpt`,
   `zip`, `hqx`, `bin`, `gz`) or an empty string.
   **`files.archive.extract(path, out_dir)`** → bool; powers the
@@ -798,6 +825,10 @@ typed-dispatch and introspection surface.
   machine and creates a fresh one from a complete configuration document
   (model and rom required; nothing is inherited from the previous
   machine).
+- **`machine.shutdown`** — the toolbar's Shut down: stops the machine and
+  destroys it with nothing in its place, so the core is as before the first
+  boot (`machine.created` false). The page then discards the machine's
+  background checkpoint (`checkpoint.clear`), so a reload offers no Resume.
 - **`machine.restart`** — power-cycles the running machine: a reset with
   the RAM cold. Nothing is torn down, so PRAM/NVRAM, the clock, the
   mounted media, the Caps Lock latch and the LaserWriter survive; the

@@ -25,6 +25,7 @@
 #include "pdm.h"
 
 #include "log.h"
+#include "monitor_catalog.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -165,18 +166,32 @@ static pixel_format_t pdm_depth_format(uint8_t code) {
 // 256/2^depth — the V8/Sonora convention the driver programs ($7F white /
 // $FF black at 1 bpp).  display.h's renderer indexes clut[pixel], so the
 // view materializes that window; 8 bpp is the identity.
+//
+// A monochrome monitor (the 15" Portrait) has one video input.  The ROM's
+// Sonora driver loads its grays into the blue channel only, leaving red and
+// green at 0 (measured), so that channel is the one the monitor shows: the
+// picture is blue as luminance, not the RGB triple (which drew pure blue,
+// S1018-58).
 static void pdm_video_refresh_clut(pdm_state_t *st) {
     pdm_amic_t *a = &st->amic;
     pdm_video_t *v = &st->video;
     uint32_t bpp = display_bpp(v->display.format);
     if (bpp > 8)
         return; // direct format: CLUT bypassed
+    bool mono = false;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++) {
+        if (m->sense == v->sense) {
+            const monitor_catalog_entry_t *c = monitor_catalog_find(m->monitor);
+            mono = c && c->grays;
+            break;
+        }
+    }
     uint32_t len = 1u << bpp;
     uint32_t skip = 256u >> bpp;
     for (uint32_t i = 0; i < len; i++) {
         const uint8_t *e = a->clut[(skip - 1) + i * skip];
-        v->clut_view[i].r = e[0];
-        v->clut_view[i].g = e[1];
+        v->clut_view[i].r = mono ? e[2] : e[0];
+        v->clut_view[i].g = mono ? e[2] : e[1];
         v->clut_view[i].b = e[2];
         v->clut_view[i].a = 255;
     }

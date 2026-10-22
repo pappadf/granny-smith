@@ -28,7 +28,7 @@ if mac.have_media(cd) then
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd(hd, 0)
     assert(machine.scsi.attach_cdrom(cd, 3), "I1: attach the CD")
-    scheduler.run(13000000000)
+    scheduler.run(26000000000)
     mac.check_ex("finder-cd.png", 0, 440, 20, 640)
 
     -- --- I2 ---------------------------------------------------------------------
@@ -41,7 +41,7 @@ if mac.have_media(cd) then
     machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd(installed, 0)
-    scheduler.run(12000000000)
+    scheduler.run(24000000000)
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/hd-desktop.png") end, nil)
     mac.check_ex("hd-desktop.png", 0, 440, 20, 640)
 else

@@ -477,11 +477,12 @@ end
 -- and an unbounded wait for it never ends.  The ceiling below is the same
 -- rule wait_stable and wait_match already follow: an instruction budget,
 -- and a loud failure when it is spent.  A tick costs ~65 k instructions
--- on an SE/30 and ~550 k on a 601/604 (freq / CPI over 60 Hz), so 4 M per
--- tick leaves the slowest-per-tick machine ~7x of headroom -- enough that
--- only a guest that has genuinely stopped keeping Ticks hits it.  The +30
--- floors short waits, which are the ones a stalled tick would trip first.
-M.RUN_TICKS_BUDGET = 4000000
+-- on an SE/30, ~550 k on a 601/604 and ~4.5 M on the G3 (freq / CPI over
+-- 60 Hz), so 16 M per tick leaves the slowest-per-tick machine ~3.5x of
+-- headroom -- enough that only a guest that has genuinely stopped keeping
+-- Ticks hits it.  The +30 floors short waits, which are the ones a stalled
+-- tick would trip first.
+M.RUN_TICKS_BUDGET = 16000000
 
 function M.run_ticks(n)
   local t0 = debug.mac.globals.read("Ticks")

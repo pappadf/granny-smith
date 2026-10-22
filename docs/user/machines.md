@@ -9,8 +9,10 @@ terminal.
 
 A machine starts only with its original ROM. Load ROM files with
 **Load ROM...** on the Home screen, by dropping them on the window, or from
-a link. Each ROM is recognised by its checksum (the 8-digit number below,
-which is also how the Images panel lists it), never by its file name.
+a link. Each ROM is recognised by its checksum (the 8-digit number below),
+never by its file name. The Images panel lists a ROM by an id that starts
+with this checksum in lower case and continues with a second, longer one
+(`9feb69b3-dedc602cfc3b9221` for `9FEB69B3`).
 
 | ROM checksum | ROM | Boots |
 |---|---|---|
@@ -23,6 +25,7 @@ which is also how the Images panel lists it), never by its file name.
 | `3DC27823` | Quadra 950 | Quadra 950 |
 | `5BF10FD1` | Quadra 840AV / 660AV | Quadra 840AV, Centris/Quadra 660AV |
 | `9FEB69B3` | Power Macintosh 6100/7100/8100 v1.0 | Power Mac 6100, 7100, 8100 |
+| `9B7A3AAD` | Power Macintosh 7100 v1.1 | Power Mac 7100 |
 | `96CD923D`, `9630C68B` | Power Macintosh 7500/8500/9500 v1, v2 | Power Mac 7500, 8500, 9500 |
 | `9630C68B`, `962F6C13`, `49B2BE8F` | Apple Network Server (2.26B6, Win NT, 1.1.20.1, 1.1.22, 2.0 prototype) | Network Server 500, 700 |
 | `78F57389`, `79D68D63` | Power Macintosh G3 (Rev C, Rev A) | G3 Desktop, G3 Minitower |
@@ -46,14 +49,22 @@ built-in video where it has one.
 |---|---|---|---|---|---|
 | Macintosh Plus | `plus` | 4 MB; 1, 2, 2.5, 4 MB | built-in 9″, 512×342 black and white | 800K internal + 800K external | SCSI (external connector); CD-ROM possible |
 | Macintosh SE/30 | `se30` | 8 MB; 1–128 MB | built-in 9″ | 1.4 MB SuperDrive (+ optional external) | SCSI; CD-ROM |
-| Lisa 2 | `lisa` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364 | one internal drive | ProFile on the parallel port |
-| Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364 | one internal drive | internal ProFile |
+| Lisa 2 | `lisa` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 720×364, tall pixels | one internal drive | ProFile on the parallel port |
+| Macintosh XL | `macxl` | 1 MB; 0.5, 1, 1.5, 2 MB | built-in 12″, 608×431, square pixels | one internal drive | internal ProFile |
 
-The Lisa's screen has tall pixels; Granny Smith draws them 1.5 times taller
-than wide so the picture has the right proportions. The Lisa and XL have no
-AppleTalk setting: Serial B, the port the Lisa was built to use for AppleBus,
-is always on the emulated AppleTalk network, for software that drives it as
-LocalTalk. Their ImageWriter connects to Serial A.
+The Lisa 2's screen has tall pixels; Granny Smith draws them 1.5 times taller
+than wide so the picture has the right proportions. The Macintosh XL has the
+screen modification MacWorks XL expects: 608×431 with square pixels. The
+Lisa and XL have no AppleTalk setting: Serial B, the port the Lisa was built
+to use for AppleBus, is always on the emulated AppleTalk network, for
+software that drives it as LocalTalk. Their ImageWriter connects to Serial A.
+
+A Lisa or XL starts in **Real** (every other machine starts in **Faster**).
+Keep it in **Real** or **Max**, and switch to **Faster** only once it has
+left the boot ROM's self-test. The self-test times the screen's
+retrace with a loop sized for the original processor; a faster one finishes
+the loop early and stops with CPU error 42, as an accelerated real Lisa
+would.
 
 ## 3. Macintosh II family
 
@@ -98,14 +109,15 @@ you can connect to your camera and microphone — see
 | Power Mac 6100 | `pm6100` | 16 MB; 8–72 MB | built-in (13″, 15″ Portrait, 12″) | SCSI hard disk, CD-ROM | — |
 | Power Mac 7100 | `pm7100` | 24 MB; 8–136 MB | built-in | SCSI: two hard disks, CD-ROM | NuBus B–D |
 | Power Mac 8100 | `pm8100` | 32 MB; 8–264 MB | built-in | SCSI, CD-ROM | NuBus B–D |
-| Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays | PCI A1–C1 |
-| Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays | PCI A1–C1 |
-| Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays | PCI A1–F2 |
-| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM, two ATA buses | PCI A1–C1 |
+| Power Mac 7500 | `pm7500` | 32 MB; 8–512 MB | built-in (12″–21″) | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 8500 | `pm8500` | 32 MB; 16–512 MB | built-in | internal SCSI bays; CD-ROM | PCI A1–C1 |
+| Power Mac 9500 | `pm9500` | 64 MB; 16–512 MB | PCI graphics card in A1 | internal SCSI bays; CD-ROM | PCI A1–F2 |
+| Power Mac G3 Desktop | `pmg3dt` | 64 MB; 32–768 MB | built-in ATI Rage Pro (13″, 15″/17″/20″ multiple-scan, 21″) | SCSI hard disk + CD-ROM; two ATA buses (hard disks, ATAPI CD-ROM) | PCI A1–C1 |
 | Power Mac G3 Minitower | `pmg3mt` | 64 MB; 32–768 MB | built-in ATI Rage Pro | as the Desktop | PCI A1–C1 |
 
-Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have no CD-ROM
-drive in their default configuration. PCI cards you can add: the **Apple
+Power Macs always run in 32-bit mode. The 7500, 8500 and 9500 have their
+CD-ROM drive at ID 3 on a second SCSI bus, the one that also goes to the
+external connector; the hard disk bays are on the fast internal bus. PCI cards you can add: the **Apple
 Accelerated PCI Graphics Card** (ATI Mach64 GX) and the **3dfx Voodoo2** 3D
 card.
 

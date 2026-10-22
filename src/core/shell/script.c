@@ -987,9 +987,9 @@ static value_t script_binding_cb(void *ud, const char *name) {
 }
 
 void script_expr_ctx(expr_ctx_t *out) {
-    out->root = object_root();
-    out->binding = script_binding_cb;
-    out->binding_ud = NULL;
+    // The whole context, so a field the caller's stack left unset (parse_only)
+    // cannot carry garbage into the evaluation.
+    *out = (expr_ctx_t){.root = object_root(), .binding = script_binding_cb, .binding_ud = NULL};
 }
 
 // Include stack (`include "path"`, script_run_file): the chain of files

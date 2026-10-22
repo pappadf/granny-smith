@@ -165,7 +165,14 @@ declrom_builder_t *gsvrom_generate(gsvrom_personality_t p, const nubus_monitor_t
         declrom_vidsrsrc_t v = {
             .name = t->vid_name,
             .drhw = t->drhw,
-            .flags = 2, // fOpenAtStart
+            // fOpenAtStart, plus f32BitMode where Apple's own ROM for the
+            // card declares it (every video sResource of the 8•24, the 24AC
+            // and the 8•24 GC carries $0006; the SE/30's carries none).
+            // Without it a 32-bit-mode System builds the screen's GDevice
+            // without ext32Device, and 7.1's Finder on it hits memory-full
+            // system errors (SysError 25) over and over and never draws
+            // its desktop (S1018-19).
+            .flags = (uint16_t)(p == GSVROM_SE30 ? 2 : 2 | 4),
             .use_major = false,
             .base = t->fb_minor,
             .length = window_length(p, m),

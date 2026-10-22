@@ -10,6 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Lua is the script language** — Lua 5.4 is embedded (`third-party/lua/`, MIT) and the object tree is bound to it (`src/core/lua/`, `docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`, `include` or `shell.script_run` runs on it, `shell.lua(text)` runs source text, and the integration tests and their libraries are Lua (`tests/integration/lib/mac.lua`; `scripts/script-to-lua.py` converted the corpus). The tree's root children are globals; `machine.boot{model = "plus", rom = vars.ROM}` passes named arguments as a trailing table; tree errors are Lua errors. The shell's own script language still runs the terminal's lines, the debugger's conditions and its own tests.
 
+## [v0.10.0] — 2026-10-22
+
+### Added
+- **Predecoded interpreter cores** for the 68K (68000/68030/68040) and PowerPC (601/604/750), on by default — the switch cores stay as the reference and the `predecode.enabled = 0` fallback; pm8500 at the desktop goes from 57 to 78 MIPS in the browser.
+- **PowerPC WebAssembly JIT** (browser builds) — hot guest code translated to WebAssembly at run time, on by default with kernel code included, verified byte-identical against the predecoded interpreter; PM6100 2.2× in the browser.
+- **Mac OS X 10.0.3 and 10.1** boot to the Finder on the beige Power Macintosh G3, from an ATA disk or the ATAPI install CD.
+- **QCOW2 (v2/v3) disk import** — staged and converted to UDIF on the fly, in bounded memory.
+- **Open Firmware NVRAM in the machine configuration**, and 64-bit disk offsets so a 10 GiB disk is addressed in full on wasm32.
+- **CPU engine in the status bar** — click-open menu picks the engine (switch / predecoded / JIT).
+- **URL parameters** — `cd=`, `storage=`, `startup=` and `nvram.<name>=`.
+- Floppy images insert straight into a drive from the Images tab; an interactive Mac OS X scenario benchmark and a beige-G3 boot row.
+
+### Changed
+- **The speed governor runs in Real-Time too, and below 1×** — a host that cannot keep up gets a slower Mac, not a slow-motion one (the clock, VBL and sound stay real-time); `pacing.min_speed` floors it.
+- **Authentic speeds** — the 68040 Quadras run at CPI 1; uncached reads are priced on the AVs.
+- **Turbo re-enters at once** (16 ms slices) instead of filling 70% of each display frame; canvas/WebGL render on their own thread.
+- **Rage Pro** — 6 MB VRAM by default, no VRAM alias past installed memory, fixed hardware cursor; BMAC reports no cable by default.
+- **PowerPC soft-float host fast path** — in round-to-nearest with normal operands and a normal result, fadd/fsub/fmul/fdiv/fmadd run one host double op, bit-exact including FPSCR flags; all special cases keep the integer soft-float path.
+- PowerPC boot performance: device pages in the MMU fast table and loop speedups.
+- Scheduler: the governor and pacing settings are their own modules; web2 on Vite 8.
+
+### Fixed
+- **SCSI: 53C96 data-out byte loss** — every WRITE came up short, hanging System 7.1 on the Quadra 700/900/950.
+- **PowerPC `sraw` carry**; CI runs the predecoded CPU suites.
+- **Storage and checkpoints** — Save State restore writes only changed blocks (a second restore of a large machine no longer runs out of browser storage); named checkpoint copies listed beside the autosaves; shut down discards the autosave; 768 MB machines checkpoint again; the PM 7500/8500/9500 get a CD-ROM drive.
+- **Uploads and media** — the Images pickers accept any file (`.vrom`, `.dmg`, `.qcow2`, extension-less); a multi-file drop stores every file; a dropped HFS/partitioned image is a hard disk, only ISO 9660 is a CD; floppies inserted from Images are writable; 720K MFM floppies accepted; refusals say why.
+- **Clock and keys** — the guest clock is seeded with the host's local time; browser shortcuts (F5, Ctrl-D) are suppressed while the screen holds the keyboard; two Lisa/Mac XL ROM chips interleave into one ROM.
+- **Lisa restore** — a checkpoint with a diskette no longer re-inserts it and latches level 1; a machine restored in user mode no longer runs through the supervisor memory view.
+- Verbose logging at Max speed no longer hangs the page; zoom fits the display and goes down to 50%.
+
 ## [v0.9.4] — 2026-10-11
 
 ### Added

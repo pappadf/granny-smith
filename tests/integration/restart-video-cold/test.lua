@@ -13,7 +13,7 @@ end
 
 cold("iicx", "iix-iicx-se30-97221136.rom", 30000000)
 cold("iifx", "iifx-4147dd77.rom", 40000000)
-cold("q700", "q700-q900-420dbff3.rom", 30000000)
-cold("q840av", "q840av-q660av-5bf10fd1.rom", 150000000)
+cold("q700", "q700-q900-420dbff3.rom", 60000000)
+cold("q840av", "q840av-q660av-5bf10fd1.rom", 300000000)
 
 quit()

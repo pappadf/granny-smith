@@ -319,6 +319,13 @@ static bool source_read_cb(void *ctx, uint64_t offset, uint8_t *buf, size_t size
 // How an image is opened.
 typedef enum { OPEN_READONLY, OPEN_CREATE, OPEN_REOPEN } open_mode_t;
 
+// Why this thread's last open of a container image failed (image_open_error).
+static _Thread_local char t_open_error[256];
+
+const char *image_open_error(void) {
+    return t_open_error;
+}
+
 // Build an image over (`data`, `rsrc`), named `name`.  For OPEN_CREATE the
 // delta goes in `dir` (a fresh instance); for OPEN_REOPEN `dir` is the
 // instance stem.  NULL (with errno set) on failure.
@@ -326,6 +333,7 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
                                   open_mode_t mode, const char *dir) {
     uint32_t block_size = geometry_block_size(geom);
     format_unwrapped_t u;
+    t_open_error[0] = '\0';
     format_unwrap(data, rsrc, &u);
     // A UDIF, NDIF or QCOW2 image that would not open is no disk: read raw
     // it is its container, which no guest should see.  (DiskCopy 4.2 and
@@ -334,16 +342,17 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0 ||
                             strcmp(u.failed_format, "qcow2") == 0)) {
         bool qcow2 = strcmp(u.failed_format, "qcow2") == 0;
-        out_printf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
-                   strcmp(u.failed_format, "udif") == 0   ? "UDIF"
-                   : strcmp(u.failed_format, "ndif") == 0 ? "NDIF"
-                                                          : "QCOW2",
-                   qcow2 && u.failed_rc == -ENOTSUP
-                       ? "it uses a backing file, encryption, an external data file or zstd compression"
-                   : qcow2 && u.failed_rc == -EFBIG ? "its cluster map is too fragmented"
-                   : u.failed_rc == -EFBIG   ? "a chunk is too large to decode on demand; import it to re-chunk it"
-                   : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
-                                             : strerror(-u.failed_rc));
+        snprintf(t_open_error, sizeof t_open_error, "a %s image that cannot be read in place (%s)",
+                 strcmp(u.failed_format, "udif") == 0   ? "UDIF"
+                 : strcmp(u.failed_format, "ndif") == 0 ? "NDIF"
+                                                        : "QCOW2",
+                 qcow2 && u.failed_rc == -ENOTSUP
+                     ? "it uses a backing file, encryption, an external data file or zstd compression"
+                 : qcow2 && u.failed_rc == -EFBIG ? "its cluster map is too fragmented"
+                 : u.failed_rc == -EFBIG          ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                 : u.failed_rc == -ENOTSUP        ? "it uses a compression this emulator does not decode"
+                                                  : strerror(-u.failed_rc));
+        out_printf("image: '%s' is %s\n", name, t_open_error);
         int frc = u.failed_rc;
         format_unwrapped_free(&u);
         errno = frc == -ENOTSUP ? ENOTSUP : EINVAL;

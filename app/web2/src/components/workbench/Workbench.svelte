@@ -76,19 +76,25 @@
     background: var(--gs-surface-app);
     position: relative;
   }
-  /* Panel sizing rules apply to a child component with the .gs-panel class. */
+  /* Panel sizing rules apply to a child component with the .gs-panel class.
+     The stored size is capped so the display keeps the 120 px a sash drag
+     leaves it (WorkbenchSash MIN_DISPLAY_PX) in a narrower window too: a
+     440 px left panel used to cover a phone-width page, Home and all. */
   .gs-workbench.panel-bottom > :global(.gs-panel) {
     height: var(--gs-panel-size);
+    max-height: calc(100% - 120px);
     width: 100%;
     border-top: var(--gs-border-width) solid var(--gs-border);
   }
   .gs-workbench.panel-left > :global(.gs-panel) {
     width: var(--gs-panel-size);
+    max-width: calc(100% - 120px);
     height: 100%;
     border-right: var(--gs-border-width) solid var(--gs-border);
   }
   .gs-workbench.panel-right > :global(.gs-panel) {
     width: var(--gs-panel-size);
+    max-width: calc(100% - 120px);
     height: 100%;
     border-left: var(--gs-border-width) solid var(--gs-border);
   }

@@ -64,7 +64,7 @@ static DEF_METHOD(mouse_method_move) {
     // one uniform path.
     if (system_input_mouse_move((int)x, (int)y, modestr) < 0)
         return val_err("mouse.move: machine rejected request");
-    return val_bool(true);
+    return val_none();
 }
 
 static DEF_METHOD(mouse_method_click) {
@@ -78,7 +78,7 @@ static DEF_METHOD(mouse_method_click) {
     // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
     if (system_input_mouse_button(down, modestr) < 0)
         return val_err("mouse.click: machine rejected request");
-    return val_bool(true);
+    return val_none();
 }
 
 // `pending`: host input the guest has not taken yet -- poll it to wait for a
@@ -138,11 +138,11 @@ static const member_t mouse_members[] = {
     {.kind = MK_METHOD,
      .name = "move",
      .doc = "Set mouse position; optional mode chooses the routing path",
-     .method = {.args = mouse_move_args, .nargs = 3, .result = VK_BOOL, .fn = mouse_method_move}  },
+     .method = {.args = mouse_move_args, .nargs = 3, .result = VK_NONE, .fn = mouse_method_move}  },
     {.kind = MK_METHOD,
      .name = "click",
      .doc = "Press or release the mouse button; optional mode chooses the routing path",
-     .method = {.args = mouse_click_args, .nargs = 2, .result = VK_BOOL, .fn = mouse_method_click}},
+     .method = {.args = mouse_click_args, .nargs = 2, .result = VK_NONE, .fn = mouse_method_click}},
     {.kind = MK_METHOD,
      .name = "trace",
      .doc = "Toggle the 1 Hz mouse-position trace logger",

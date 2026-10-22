@@ -14,13 +14,19 @@ import {
   hasUrlMedia,
   urlSchedulerMode,
 } from '@/bus/urlMedia';
-import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
+import {
+  whenModuleReady,
+  onEmulatorCrash,
+  onRendererFailure,
+  applySchedulerMode,
+} from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
-import { setSchedulerMode } from '@/state/machine.svelte';
+import { checkStoragePersistence } from '@/bus/storageHealth';
+import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
-import { checkWebGL2Available } from '@/lib/webglCheck';
+import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
 // A deploy replaces every hashed file.  A page still running the previous
@@ -81,12 +87,14 @@ async function probeOpfs(): Promise<string | null> {
 }
 
 async function bootApp(target: HTMLElement): Promise<unknown> {
-  // Probe WebGL 2 before mounting. The emulator worker can't recover from
-  // a missing GPU context — show a full-page block so the user isn't
-  // stuck in a half-broken UI (Display dead, terminal alive).
-  const webgl = checkWebGL2Available();
-  if (!webgl.ok) {
-    renderWebGLErrorPage(target, webgl);
+  // Check the graphics before mounting: WebGL 2 on the page and in a worker,
+  // alive and drawing (lib/gpuDiagnostics.ts).  The emulator worker can't
+  // recover from a missing or dead GPU context — show a full-page block that
+  // names the failure and says what to do (usually: restart the browser), so
+  // the user isn't stuck in a half-broken UI or a cryptic crash.
+  const graphics = await diagnoseGraphics();
+  if (!graphics.ok) {
+    renderWebGLErrorPage(target, graphics);
     return null;
   }
 
@@ -112,13 +120,16 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
-  // ?speed= is the toolbar's pacing preference from the start.  The core's
+  // ?speed= is the toolbar's pacing preference from the start, and a choice:
+  // no machine's default overrides it.  The core's
   // pacing is the host's setting, there with or without a machine, so it is
   // pushed as soon as the core is up (below) and every machine the page then
   // boots or restores runs under it.
   const urlMode = urlSchedulerMode(mediaParams.speed);
-  if (urlMode) setSchedulerMode(urlMode);
-  else if (mediaParams.speed !== null)
+  if (urlMode) {
+    setSchedulerMode(urlMode);
+    markSchedulerChosen();
+  } else if (mediaParams.speed !== null)
     // An unknown value (or one of the retired aliases, `max`, `realtime`,
     // `hardware`) used to be dropped without a word.
     showNotification(
@@ -144,9 +155,24 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
 
     // A worker that dies later (a wasm trap, an abort) cannot be recovered in
     // this page: every request now fails at once; say so and offer a reload.
+    // A crash and a renderer failure each replace the UI; the first one wins
+    // (a renderer failure can be followed by a crash).
+    let failed = false;
     onEmulatorCrash((reason) => {
+      if (failed) return;
+      failed = true;
       void unmount(mounted);
       renderStartupErrorPage(target, reason, 'The emulator stopped');
+    });
+
+    // The renderer gave up (no context, a lost one, shaders the driver would
+    // not build): the screen is dead even though the core runs on, so say why.
+    onRendererFailure((status, detail) => {
+      const diagnosis = rendererFailure(status, detail);
+      if (!diagnosis || failed) return;
+      failed = true;
+      void unmount(mounted);
+      renderWebGLErrorPage(target, diagnosis);
     });
 
     // Expose a single boolean flag for the headless diagnostic harness
@@ -159,14 +185,20 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     installEvalHookForAutomation();
     installUiHookForAutomation();
 
+    // Before anything else: if the worker had to put /opfs on memory, say
+    // so now and keep saying so (the banner), before the user adds anything.
+    await checkStoragePersistence();
+
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
     if (urlMode) await applySchedulerMode(urlMode);
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.
-    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
-    if (resumed) return;
+    // A link without a ROM still offers the saved machine; its media then go
+    // into whichever machine is running (the resumed one), or are stored and
+    // said to be unused -- Resume used to drop them silently.
+    if (!urlBoots) await maybeOfferBackgroundCheckpoint();
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
     // be ignored.

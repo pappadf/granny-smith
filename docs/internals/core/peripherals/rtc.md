@@ -15,9 +15,15 @@ covers how the emulator seeds, keeps and resets it.
 The clock is a **simulated-time counter**. It advances once per second of
 emulated time (the `one_second` scheduler event), never by host time.
 
-1. **Created → the host wall clock.** `rtc_init` seeds `seconds` from
-   `time(NULL)` plus the 1904 epoch offset. A machine nobody gives a time
-   boots at the real current time, which is what the web UI wants.
+1. **Created → the host wall clock, in local time.** `rtc_init` seeds
+   `seconds` from `time(NULL)` plus the host's current UTC offset
+   (`localtime_r`'s `tm_gmtoff`, DST included) plus the 1904 epoch offset.
+   The Mac RTC counts *local* seconds — the OS displays the counter as-is
+   and keeps the zone separately — so a UTC seed showed a clock hours off
+   (#351). A machine nobody gives a time boots at the real current local
+   time, which is what the web UI wants. In the browser `localtime_r` is
+   Emscripten's, which reads JS `Date` in the calling thread, so the zone is
+   the browser's even on the worker; headless honours `TZ`.
 2. **Set → it sticks.** `machine.rtc.time = N` writes the live counter.
    A test that wants a deterministic clock writes it **on the line after
    the boot**: `machine.boot` leaves the guest at zero instructions

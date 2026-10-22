@@ -85,7 +85,8 @@ static int ends_with_ci(const char *str, const char *suffix) {
 // Two unit conventions are accepted intentionally, matching how period
 // product brochures and Unix-side tooling each use them:
 //   - "mb" / "gb"  -> decimal (10^6 / 10^9) -- catalog lookup, snaps to
-//                     the closest known drive model size (>= target).
+//                     the closest known drive model size (>= target); a
+//                     size past the largest model is refused (0).
 //                     Apple advertised these drives by decimal MB.
 //   - "k" / "m"    -> binary  (2^10 / 2^20) -- exact byte count, no
 //                     model rounding.  Matches dd / mkfs / hdiutil
@@ -113,7 +114,10 @@ size_t drive_catalog_parse_size(const char *str) {
             target = (size_t)(val * 1000ULL * 1000ULL * 1000ULL);
         else
             target = (size_t)(val * 1000ULL * 1000ULL);
-        // find the closest model >= target
+        // find the closest model >= target; past the largest there is none
+        // (it used to answer the largest: blank:3gb made a 1 GB disk)
+        if (target > catalog[catalog_count - 1].size)
+            return 0;
         const struct drive_model *m = drive_catalog_find_closest(target);
         return m->size;
     }

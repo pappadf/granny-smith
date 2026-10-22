@@ -184,6 +184,16 @@ const rom_info_t *rom_lookup(const char *id, size_t size) {
     return NULL;
 }
 
+const rom_info_t *rom_lookup_other_size(const char *id, size_t size) {
+    if (!id || !*id)
+        return NULL;
+    for (size_t i = 0; i < rom_table_count; i++) {
+        if (rom_table[i].rom_size != size && strcmp(rom_table[i].id, id) == 0)
+            return &rom_table[i];
+    }
+    return NULL;
+}
+
 const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, rom_identity_t *out) {
     rom_identity_t local;
     rom_identity_t *id = out ? out : &local;
@@ -258,6 +268,7 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
     if (!data)
         return -1;
     out->info = rom_identify_data(data, file_size, &out->identity);
+    out->lisa_chip = rom_lisa_chip(data, file_size);
     free(data);
     out->size = file_size;
     return 0;
@@ -276,6 +287,22 @@ void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, s
         out[2 * i] = hi[i]; // even byte = high data byte
         out[2 * i + 1] = lo[i]; // odd byte = low data byte
     }
+}
+
+// One chip holds every other byte of the image, so each opens with its share
+// of the reset vectors every Lisa ROM starts with: the SSP $00000480 and a PC
+// in the ROM at $FExxxx (00 00 04 80 00 FE ..).  The high-byte chip starts
+// 00 04 00 (the even bytes), the low-byte chip 00 80 FE (the odd ones).
+rom_lisa_chip_t rom_lisa_chip(const uint8_t *data, size_t size) {
+    static const uint8_t high[] = {0x00, 0x04, 0x00}; // even bytes of 00 00 04 80 00 FE
+    static const uint8_t low[] = {0x00, 0x80, 0xFE}; // odd bytes of the same
+    if (!data || size != LISA_ROM_SIZE / 2)
+        return ROM_LISA_CHIP_NONE;
+    if (memcmp(data, high, sizeof(high)) == 0)
+        return ROM_LISA_CHIP_HIGH;
+    if (memcmp(data, low, sizeof(low)) == 0)
+        return ROM_LISA_CHIP_LOW;
+    return ROM_LISA_CHIP_NONE;
 }
 
 // Read two Lisa/XL ROM chip files and interleave them into a fresh 16 KB image.
@@ -386,12 +413,16 @@ static DEF_GETTER(rom_attr_name) {
 
 // rom.identify(path) → typed info map describing the ROM file:
 //   { recognised, supported, compatible, name, variant, size, kind, id, intact,
-//     reason }
+//     reason, lisa_chip, expected_name, expected_size }
 // recognised: the id is in the ROM table; supported: its row names at least
 // one emulated model (compatible).  An unrecognised file still reports its
 // kind, id, intact and reason.  id is the only field anything names a file by,
-// and only when intact.  Returns VK_ERROR if the path can not be opened (caller
-// treats that as "no info, skip this entry").
+// and only when intact.  lisa_chip is "high" or "low" when the file is one chip
+// of a two-chip Lisa / Macintosh XL ROM (half the image: never a ROM on its
+// own), else "".  expected_name / expected_size name the known ROM whose id
+// the file carries at another size (a truncated dump), else "" / 0.  Returns
+// VK_ERROR if the path can not be opened (caller treats that as "no info,
+// skip this entry").
 static DEF_METHOD(rom_method_identify) {
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
@@ -416,6 +447,15 @@ static DEF_METHOD(rom_method_identify) {
     val_map_put(b, "id", val_str(fi.identity.id));
     val_map_put(b, "intact", val_bool(fi.identity.intact));
     val_map_put(b, "reason", val_str(fi.identity.reason));
+    // Which chip of a two-chip Lisa ROM the file is, if any.
+    const char *chip = fi.lisa_chip == ROM_LISA_CHIP_HIGH ? "high" : fi.lisa_chip == ROM_LISA_CHIP_LOW ? "low" : "";
+    val_map_put(b, "lisa_chip", val_str(chip));
+    // A file that carries a known ROM's id at another size: a dump cut short
+    // or padded.  The ROM's name and size, so the refusal can say what the
+    // file was meant to be (it is not recognised, and never stored as a ROM).
+    const rom_info_t *near = fi.info ? NULL : rom_lookup_other_size(fi.identity.id, fi.size);
+    val_map_put(b, "expected_name", val_str(near ? near->family_name : ""));
+    val_map_put(b, "expected_size", val_int(near ? (int64_t)near->rom_size : 0));
     return val_map_finish(b);
 }
 
@@ -450,8 +490,8 @@ static const member_t rom_members[] = {
      .attr = {.type = VK_STRING, .get = rom_attr_name, .set = NULL}                                                                                                                  },
     {.kind = MK_METHOD,
      .name = "identify",
-     .doc = "Return a typed info map for a ROM file "
-            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)",    .method = {.args = rom_path_arg, .nargs = 1, .result = VK_MAP, .fn = rom_method_identify}},
+     .doc = "Return a typed info map for a ROM file (recognised/supported/compatible/name/"
+            "variant/size/kind/id/intact/reason/lisa_chip/expected_name/expected_size)",    .method = {.args = rom_path_arg, .nargs = 1, .result = VK_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {

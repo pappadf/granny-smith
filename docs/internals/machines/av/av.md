@@ -157,7 +157,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 
 ## What is deliberately not modelled
 
-GeoPort/DMA serial, Ethernet beyond the register stub, and
+GeoPort serial receive DMA (transmit DMA is modelled, for LocalTalk: [psc.md](psc.md)), Ethernet beyond the register stub, and
 NuBus cards in the AV slots.  The DSP3210 **is** modelled — a live core
 executing Apple's RTM kernel out of the ROM ([dsp.md](dsp.md)) — as is the
 Singer sound datapath in both directions ([singer.md](singer.md):

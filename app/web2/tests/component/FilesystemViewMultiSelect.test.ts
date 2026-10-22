@@ -156,4 +156,71 @@ describe('FilesystemView — multi-select', () => {
     await fireEvent.keyDown(tree, { key: 'ArrowUp' });
     await waitFor(() => expect(selectedLabels(container)).toEqual(['b.txt']));
   });
+
+  it('Enter and → open the /opfs root again after Enter closed it (S1018-73)', async () => {
+    const container = await renderExpanded();
+    const tree = container.querySelector('ul[role="tree"]') as HTMLElement;
+    const rootRow = () => rowFor(container, '/opfs');
+    // Keys go to whatever has focus, as in a browser. A clicked row takes
+    // focus (tabindex -1); jsdom's click does not do that by itself.
+    const key = (k: string) =>
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: k });
+    await fireEvent.click(rowFor(container, 'dst'));
+    rowFor(container, 'dst').focus();
+    await key('ArrowUp');
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['/opfs']));
+    expect(rootRow().getAttribute('aria-expanded')).toBe('true');
+    // Closing the root takes away the focused 'dst' row; focus must stay in
+    // the tree or every later key goes nowhere.
+    await key('Enter');
+    await waitFor(() => expect(rootRow().getAttribute('aria-expanded')).toBe('false'));
+    await waitFor(() => expect(tree.contains(document.activeElement)).toBe(true));
+    expect(selectedLabels(container)).toEqual(['/opfs']);
+    await key('Enter');
+    await waitFor(() => expect(rootRow().getAttribute('aria-expanded')).toBe('true'));
+    await key('ArrowLeft');
+    await waitFor(() => expect(rootRow().getAttribute('aria-expanded')).toBe('false'));
+    await key('ArrowRight');
+    await waitFor(() => expect(rootRow().getAttribute('aria-expanded')).toBe('true'));
+    await waitFor(() => expect(container.textContent).toContain('a.txt'));
+    expect(selectedLabels(container)).toEqual(['/opfs']);
+  });
+
+  it('→ and Enter open and close a folder below the root (S1018-73)', async () => {
+    const container = await renderExpanded();
+    const tree = container.querySelector('ul[role="tree"]') as HTMLElement;
+    const key = (k: string) =>
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: k });
+    backend.list = async (dir: string) =>
+      dir === '/opfs/dst'
+        ? [{ name: 'inner.txt', path: '/opfs/dst/inner.txt', kind: 'file' as const }]
+        : MultiOpfs.prototype.list.call(backend, dir);
+    // The keys act on the row's whole path: they used to drop the '/opfs'
+    // ancestor, so Enter selected a row that is not there and toggled
+    // nothing, and → listed the folder under a key no row reads.
+    await fireEvent.click(rowFor(container, 'a.txt'));
+    rowFor(container, 'a.txt').focus();
+    await key('ArrowUp');
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['dst']));
+    await key('ArrowRight');
+    await waitFor(() => expect(container.textContent).toContain('inner.txt'));
+    expect(rowFor(container, 'dst').getAttribute('aria-expanded')).toBe('true');
+    await key('Enter');
+    await waitFor(() =>
+      expect(rowFor(container, 'dst').getAttribute('aria-expanded')).toBe('false'),
+    );
+    expect(selectedLabels(container)).toEqual(['dst']);
+    await key('Enter');
+    await waitFor(() => expect(container.textContent).toContain('inner.txt'));
+    await fireEvent.click(rowFor(container, 'inner.txt'));
+    rowFor(container, 'inner.txt').focus();
+    await key('ArrowUp');
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['dst']));
+    await key('Enter');
+    await waitFor(() =>
+      expect(rowFor(container, 'dst').getAttribute('aria-expanded')).toBe('false'),
+    );
+    await waitFor(() => expect(tree.contains(document.activeElement)).toBe(true));
+    expect(selectedLabels(container)).toEqual(['dst']);
+  });
 });

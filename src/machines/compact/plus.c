@@ -148,8 +148,8 @@ static display_t *plus_display(config_t *cfg) {
 static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
     if (p >= g_page_count)
         return;
-    uintptr_t adjusted = (uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT);
-    g_page_table[p].host_base = host_ptr;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - ((uintptr_t)p << MEM_PAGE_SHIFT));
+    memory_page_set_host(p, host_ptr, g_page_table[p].writable);
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
@@ -600,9 +600,19 @@ static const floppy_slot_t plus_floppy_slots[] = {
 };
 
 // The Plus has no internal bay: its one SCSI bus is the DB-25 on the back, so
-// every device is "External".
+// every device is "External".  Nor has it a startup-device record: its ROM
+// has no Start Manager table in parameter memory and boots the highest SCSI
+// ID, so the bus cannot hold the startup device (no "Start up from").
 static const storage_bus_decl_t plus_storage[] = {
-    MAC_SCSI_BUS("scsi", "SCSI", MEDIA_BUS_SCSI, NULL, true),
+    {.id = "scsi",
+     .label = "SCSI",
+     .kind = STORAGE_KIND_SCSI,
+     .media_bus = MEDIA_BUS_SCSI,
+     .units = MAC_SCSI_UNITS,
+     .reserved = MAC_SCSI_RESERVED,
+     .external_connector = true,
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = false},
     {0},
 };
 

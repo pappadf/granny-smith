@@ -244,6 +244,10 @@ void iw_interp_feed(iw_interp_t *in, const uint8_t *data, size_t len);
 // (handing it to page_done when it has dots).  The paper position is kept.
 void iw_interp_end_job(iw_interp_t *in);
 
+// Unless the print line is at a top of form, move the paper on to the next
+// one, as a form feed does (a cut sheet is ejected).  Nothing is printed.
+void iw_interp_top_of_form(iw_interp_t *in);
+
 // A new job starts on fresh paper: the next sheet begins at the print line
 // (the paper the last job used has been torn off), settings unchanged.
 void iw_interp_begin_job(iw_interp_t *in);

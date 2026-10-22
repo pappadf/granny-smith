@@ -19,4 +19,28 @@ assert(machine.floppy.drive[0].present, "diskette not inserted")
 
 scheduler.run(120000000)
 mac.check("desktop.png")
+
+-- Checkpoint round trip with the diskette still in the drive (#325).  The
+-- restore must reattach the diskette, not re-insert it: an insertion latches a
+-- disk-in event and raises FDIR / level 1 that nothing acknowledges, and the
+-- OS hung on the hourglass.  Straight after the load no interrupt source may
+-- be pending: the saved machine had none.
+assert(machine.irq == 0, "an interrupt was pending at the save")
+assert(checkpoint.save(F"${vars.WORK_DIR}/floppy.gscp"), "checkpoint save failed")
+assert(checkpoint.load(F"${vars.WORK_DIR}/floppy.gscp"), "checkpoint load failed")
+assert(machine.irq == 0, "the restore raised an interrupt nothing will acknowledge")
+assert(machine.floppy.drive[0].present, "the diskette did not come back with the checkpoint")
+
+-- The restored desktop still responds: pressing on the Housekeeping menu
+-- title pulls the menu down, with Eject Micro Diskette enabled.  (The restored
+-- CPU resumes in user mode; it must translate through its process context,
+-- not the supervisor one, or its first fetch bus-errors into a system error.)
+scheduler.run(5000000)
+mac.check("desktop.png")
+machine.adb.mouse.move(250, 6, "global")
+scheduler.run(3000000)
+machine.adb.mouse.click(true)
+scheduler.run(3000000)
+mac.check("menu-restored.png")
+machine.adb.mouse.click(false)
 quit()

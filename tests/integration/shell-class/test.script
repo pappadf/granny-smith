@@ -62,7 +62,8 @@ assert shell.complete("files.ls /", 10).span.start == 10 "path span after slash"
 # Self-contained fixture: a directory in the test's cwd, unique enough
 # that it is the only completion for its prefix.
 files.mkdir "cmpl_probe_dir"
-assert files.mkdir("cmpl_probe_dir") "mkdir of a directory already there is success"
+# A directory already there is success (an error would end the script)
+files.mkdir "cmpl_probe_dir"
 assert shell.complete("files.ls cmpl_probe_d", 21).candidates == "[cmpl_probe_dir/]" "directory gets a slash"
 # Completion is deliberately suppressed inside $(...), "..." and ${...}.
 # The $ is split off via string concat so the script parser doesn't try to

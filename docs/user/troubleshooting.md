@@ -9,7 +9,9 @@ problem.
 | Symptom | Fix |
 |---|---|
 | The page reloads once on the first visit | Normal: it installs a helper that enables the multi-threaded features the emulator needs. |
-| **Hardware acceleration required** / **WebGL is unavailable** | The emulator needs WebGL 2. Turn on hardware acceleration in the browser settings ("Use hardware acceleration when available"), restart the browser, update the graphics driver, then click **Retry**. `chrome://gpu` (or `about:support` in Firefox) shows what the browser reports. |
+| **The browser’s graphics stopped working**, **WebGL 2 is unavailable in background workers**, **The emulator could not get its graphics context**, **The browser took the emulator’s graphics away** | The browser’s graphics (GPU) process is stuck. Quit the browser completely and open it again — closing the window is not enough (on a Mac, use **Quit** or ⌘Q) — then click **Reload**. If it persists, check `chrome://gpu` (or `about:support` in Firefox) and update the graphics driver. |
+| **WebGL is unavailable** / **WebGL 2 is required** | The emulator needs WebGL 2. Turn on hardware acceleration in the browser settings ("Use hardware acceleration when available"), restart the browser, and update it if it is old. |
+| **This browser is too old for the emulator** | Update the browser (Safari 17 or later), or use a current Chrome, Edge or Firefox. |
 | **Browser storage is unavailable** | Allow site data for the page, or leave private/incognito browsing, then reload. |
 | **The emulator could not start** | Click **Reload** — especially right after the emulator has been updated. |
 | Odd drawing or no sound in Safari or Firefox | Use a Chromium-based browser (Chrome, Edge, Brave). Safari is not supported yet; Firefox works only partly. |
@@ -26,6 +28,7 @@ problem.
 | The machine starts but shows a floppy with a blinking **?** | It found no startup disk. Check the notices: a disk from a link may have failed to download, or may not be bootable on this model. In the New Machine dialog, check **Start up from**. |
 | The Mac chimes twice and restarts at the start of System 7.6 or later | Set **Addressing** to **32-bit** (or `addressing=32` in a link). The system otherwise switches the mode itself and restarts — harmless, but slower. |
 | A Power Mac 7500/8500/9500 will not start from a System 7.5 disk | These models need System 7.6 or later. |
+| The Network Server Diagnostic Utility reports **Memory installed = 0 Mbytes** and **Power-On Self Test = 00000000** | Normal on a new machine's first start, as on a real server whose battery was just replaced: the self-test records the memory it finds in NVRAM, which Open Firmware clears on its first start. **Restart** (debug toolbar, or `machine.restart`) once and start the utility again. |
 | "Image saved but not inserted" when loading a disk | The image is stored; insert it from the Images panel or choose it in the dialog's drive menu. |
 | A large link takes minutes before anything happens | The files are downloaded whole before the machine starts; the progress view shows how far it is. A 2 GB disk takes several minutes. |
 
@@ -45,8 +48,10 @@ problem.
 
 | Symptom | Fix |
 |---|---|
+| A red bar at the top: **Browser storage could not be opened: nothing will be saved** | The page runs, but everything you add is kept in memory only and is gone when the page is closed or reloaded. Allow site data for the page, or leave private/incognito browsing, then reload. Your files from earlier visits are not deleted: they come back once the storage opens. |
+| **Automatic save failed** | The latest automatic save was not written, so a reload resumes an earlier state. It is said once while the failures go on, and again after ten minutes if they do not stop. Usually the browser's storage is full: free space as below, or use **Save State** to keep the machine. |
 | No **Continue from saved checkpoint?** after the emulator was updated | Checkpoints belong to the build that made them; after an update they cannot be resumed. Start the machine again from its disks ([Saving and resuming](saving-and-resuming.md) §6). |
-| "Not enough browser storage", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
+| "Not enough browser storage", "Could not import … (the browser's storage is full …)", or "Could not copy … into the browser's storage" when opening a saved-state file | Delete images and checkpoints you no longer need, in the Images and Checkpoints panels. Large hard disks are stored compressed already; a saved-state file is copied into storage while it is opened, so it needs about its own size free. |
 | My changes to a disk are not in the file I saved from the Images panel | Stored images are never changed; the Mac's changes live with the machine. Use the shared folder or **Save State** ([Disks and images](disks-and-images.md) §6). |
 
 ## 5. Current limitations

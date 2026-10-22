@@ -22,6 +22,38 @@ assert(not gs.truthy(function() return files.list(F"${dmg}/partition1") end), "a
 machine.floppy.drive[0].insert(fd, true)
 assert(not gs.truthy(function() return files.list(F"${fd}/partition1") end), "a writable floppy is still served by the VFS")
 
+-- A checkpoint taken with the floppy in, for the restore below.
+assert(checkpoint.save(F"${vars.WORK_DIR}/in.checkpoint"), "checkpoint save with the floppy in")
+
+-- Ejected, the floppy's file is released at once: the VFS serves it again and
+-- a file inside it copies out, resource fork and all.  The image used to stay
+-- open until the machine went away ("cannot read resource fork ... Resource
+-- busy").
+machine.floppy.drive[0].eject()
+assert(files.list(F"${fd}/partition1"), "an ejected floppy is still refused by the VFS")
+files.cp(F"${fd}/partition1/System Folder/Finder", F"${vars.WORK_DIR}/Finder")
+assert(files.path_exists(F"${vars.WORK_DIR}/._Finder"), "the Finder copied out of the ejected floppy without its resource fork")
+
+-- Deleted and replaced by another file under the same name, it inserts and
+-- ejects again like a new disk.
+files.rm(fd)
+assert(not gs.truthy(function() return files.path_exists(fd) end), "the ejected floppy could not be removed")
+files.cp(ro, fd)
+machine.floppy.drive[0].insert(fd, true)
+assert(not gs.truthy(function() return files.list(F"${fd}/partition1") end), "the re-inserted floppy is served by the VFS")
+machine.floppy.drive[0].eject()
+assert(files.list(F"${fd}/partition1"), "the floppy ejected a second time is still refused")
+
+-- A checkpoint taken while the disk was in restores after the eject, disk and
+-- all; one taken after it restores with the drive empty.
+assert(checkpoint.save(F"${vars.WORK_DIR}/out.checkpoint"), "checkpoint save with the drive empty")
+assert(checkpoint.load(F"${vars.WORK_DIR}/in.checkpoint"), "the checkpoint taken with the floppy in does not restore")
+assert(machine.floppy.drive[0].present, "the restored machine lost its floppy")
+assert(machine.floppy.drive[0].disk.filename == fd, "the restored drive holds another disk")
+assert(checkpoint.load(F"${vars.WORK_DIR}/out.checkpoint"), "the checkpoint taken with the drive empty does not restore")
+assert(not machine.floppy.drive[0].present, "the drive ejected before the save holds a disk after the restore")
+machine.floppy.drive[0].insert(fd, true)
+
 -- Attached before the VFS ever mounted it.  The notification this replaced
 -- was sent at attach time and found no mount to mark, so the first mount made
 -- afterwards served the file as if nothing held it.

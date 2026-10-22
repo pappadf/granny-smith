@@ -1,0 +1,128 @@
+# osx-interactive — interactive use of Mac OS X 10.0.3 (Aqua) on the beige G3:
+# the work a user waits for, not a CPU-bound window.  Run by
+# scripts/bench/scenario.py (docs/guide/BENCHMARKS.md, "Interactive
+# scenarios"); not a metric-A/B row.
+#
+# The disk is gs-test-data `systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg`
+# with its sidecar configuration (Apple's Gossamer nvramrc patch, the ATA
+# boot-device, the 17" multiple-scan monitor), attached over a delta.
+#
+#   MODE=boot  boot to the Finder (10 G + 15 G scheduler slots, the second
+#              stretch letting the desktop settle into its idle state) and
+#              save CKPT
+#   MODE=run   load CKPT and play the interactions twice (round 1 cold, round
+#              2 warm: the translation tier compiles in round 1): open and
+#              close the Finder's File menu, minimize the Finder window into
+#              the Dock (the genie), restore it from the Dock.  Each is a
+#              fixed stretch of scheduler slots, so every build and executor
+#              runs the same guest instructions; each prints one @@SCEN line
+#              with its host wall time and the guest instructions it retired.
+#   MODE=live  the same on the running machine, already at the Finder, with
+#              no checkpoint (the browser run: a checkpoint of this 256 MB
+#              machine takes longer than the page's 3 s heartbeat watch)
+#
+# The pointer: OS X keeps no Toolbox cursor globals, so "global" moves do not
+# work.  osx_goto() slams the pointer into the top-left corner and walks it
+# out in 2-count ADB steps, where OS X 10.0's acceleration is a flat 2.26
+# pixels per count (measured).
+#
+# Guards: framebuffer checksums of the regions the interactions change.  The
+# File menu appears and goes away again; the window leaves its place for the
+# Dock and comes back pixel for pixel.  A scenario that stopped doing what it
+# claims fails its run rather than timing something else.
+
+def osx_goto(x, y) {
+    let i = 0
+    while $i < 20 {
+        machine.adb.mouse.move -100 -100 "relative"
+        scheduler.run 20000000
+        $i = $i + 1
+    }
+    let cx = $x * 100 / 226
+    let cy = $y * 100 / 226
+    while $cx > 0 || $cy > 0 {
+        let sx = $cx
+        if $cx >= 2 {
+            $sx = 2
+        }
+        let sy = $cy
+        if $cy >= 2 {
+            $sy = 2
+        }
+        machine.adb.mouse.move $sx $sy "relative"
+        scheduler.run 20000000
+        $cx = $cx - $sx
+        $cy = $cy - $sy
+    }
+    scheduler.run 50000000
+}
+
+def osx_click() {
+    machine.adb.mouse.click true
+    scheduler.run 30000000
+    machine.adb.mouse.click false
+}
+
+# Run `slots` scheduler slots and report the host time and the guest
+# instructions they took
+def scen_phase(name, slots) {
+    let w0 = scheduler.host_wall_ns
+    let i0 = machine.cpu.instr_count
+    scheduler.run $slots
+    let di = machine.cpu.instr_count - $i0
+    let ns = scheduler.host_wall_ns - $w0
+    echo "@@SCEN {\"phase\":\"${$name}\",\"ns\":${$ns},\"instr\":${$di}}"
+}
+
+# The regions the guards read: the File menu's drop-down, and the Finder
+# window below its title bar (the buttons there keep a rollover tint after
+# the restore)
+def menu_sum() {
+    return machine.screen.checksum(24, 110, 300, 318)
+}
+def window_sum() {
+    return machine.screen.checksum(70, 68, 474, 610)
+}
+
+if $MODE == "boot" {
+    # CPI pinned at 2, the value the stretches and guards were placed with,
+    # so a change of the machine's default CPI does not move them (the
+    # checkpoint carries it into MODE=run)
+    scheduler.cpi = 2
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.attach_media "ata0" 0 "hd" "${$TEST_DATA}/systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg"
+    scheduler.run 10000000000
+    scheduler.run 15000000000
+    assert machine.screen.width == 1024 "osx-interactive: the desktop is not at 1024 x 768 (${machine.screen.width})"
+    checkpoint.save "${$CKPT}"
+    echo "@@SCEN {\"phase\":\"boot\",\"instr\":${machine.cpu.instr_count}}"
+} else {
+    if $MODE == "run" {
+        checkpoint.load "${$CKPT}"
+    }
+    # The configuration under test (scenario.py's driver defines it: the
+    # executor, the translation tier's switches)
+    try(scen_setup(), none)
+    let menu0 = menu_sum()
+    let win0 = window_sum()
+    let r = 1
+    while $r <= 2 {
+        osx_goto(128, 11)
+        osx_click()
+        scen_phase("menu-open${$r}", 300000000)
+        assert menu_sum() != $menu0 "osx-interactive: the File menu did not open (round ${$r})"
+        osx_click()
+        scen_phase("menu-close${$r}", 300000000)
+        assert menu_sum() == $menu0 "osx-interactive: the File menu did not close (round ${$r})"
+        osx_goto(104, 58)
+        osx_click()
+        scen_phase("minimize${$r}", 1500000000)
+        assert window_sum() != $win0 "osx-interactive: the window did not leave for the Dock (round ${$r})"
+        osx_goto(719, 728)
+        osx_click()
+        scen_phase("restore${$r}", 1500000000)
+            assert window_sum() == $win0 "osx-interactive: the window did not come back from the Dock (round ${$r})"
+        $r = $r + 1
+    }
+}
+quit

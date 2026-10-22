@@ -1115,6 +1115,87 @@ TEST(storage_read_blocks_one_base_read_per_run) {
     teardown_sandbox();
 }
 
+// A consolidated restore compares each incoming block with the base a run at
+// a time: one base read per staging chunk, not one per block.  Under
+// WasmFS/OPFS each read is a call to the browser's storage thread, and a
+// read per block made loading a saved checkpoint of a 10 MB disk take most
+// of a minute (S1018-32).
+TEST(storage_load_state_one_base_read_per_run) {
+    setup_sandbox();
+    const uint64_t blocks = 2048;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x21);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_save_state(storage, state, file_write_cb));
+    fclose(state);
+
+    source_t *host = source_host(BASE_FILE, NULL);
+    ASSERT_TRUE(host != NULL);
+    storage_config_t config2 = make_config(NULL, DELTA2_FILE, JOURNAL2_FILE, blocks);
+    config2.base = peel_source_new(&counting_base_ops, host, host);
+    source_release(host);
+    storage_t *reloaded = NULL;
+    ASSERT_OK(storage_new(&config2, &reloaded));
+    source_release(config2.base); // storage holds its own reference
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    g_base_reads = 0;
+    ASSERT_OK(storage_load_state(reloaded, state, file_read_cb));
+    fclose(state);
+    ASSERT_EQ_INT(1, g_base_reads); // 1 MB of disk: one staging chunk
+
+    uint8_t want[STORAGE_BLOCK_SIZE], got[STORAGE_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want));
+        ASSERT_OK(storage_read_block(reloaded, (size_t)lba * STORAGE_BLOCK_SIZE, got));
+        ASSERT_TRUE(memcmp(want, got, STORAGE_BLOCK_SIZE) == 0);
+    }
+    ASSERT_OK(storage_delete(storage));
+    ASSERT_OK(storage_delete(reloaded));
+    teardown_sandbox();
+}
+
+// The same restore onto a base shorter than the disk that ends mid-block,
+// over several staging chunks: past the base, and in its partial last block,
+// the base compares as zeros, as storage_read_block reads it there.
+TEST(storage_load_state_short_base) {
+    setup_sandbox();
+    const uint64_t blocks = 20000;
+    const uint64_t base_blocks = 9000;
+    create_base_image_bs(BASE_FILE, base_blocks, STORAGE_BLOCK_SIZE, 0x33);
+    ASSERT_TRUE(truncate(BASE_FILE, (off_t)((base_blocks - 1) * STORAGE_BLOCK_SIZE + 200)) == 0);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_save_state(storage, state, file_write_cb));
+    fclose(state);
+
+    storage_config_t config2 = make_config(BASE_FILE, DELTA2_FILE, JOURNAL2_FILE, blocks);
+    storage_t *reloaded = NULL;
+    ASSERT_OK(storage_new(&config2, &reloaded));
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_load_state(reloaded, state, file_read_cb));
+    fclose(state);
+
+    uint8_t want[STORAGE_BLOCK_SIZE], got[STORAGE_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want));
+        ASSERT_OK(storage_read_block(reloaded, (size_t)lba * STORAGE_BLOCK_SIZE, got));
+        ASSERT_TRUE(memcmp(want, got, STORAGE_BLOCK_SIZE) == 0);
+    }
+    ASSERT_OK(storage_delete(storage));
+    ASSERT_OK(storage_delete(reloaded));
+    teardown_sandbox();
+}
+
 // A base that fails every read touching blocks [g_bad_lo, g_bad_hi) with
 // -EIO, as a corrupt compressed chunk or a host I/O error fails it, and
 // serves the parent's bytes everywhere else.
@@ -1228,6 +1309,8 @@ int main(void) {
     RUN(storage_v1_delta_still_opens);
     RUN(storage_read_blocks_matches_per_block);
     RUN(storage_read_blocks_one_base_read_per_run);
+    RUN(storage_load_state_one_base_read_per_run);
+    RUN(storage_load_state_short_base);
     RUN(storage_unreadable_base_block_is_an_error);
     RUN(storage_save_state_unreadable_base_fails);
     return 0;

@@ -64,10 +64,24 @@ LOG_USE_CATEGORY_NAME("cops");
 // future editor would have reinstated the Xenix bug from inside this file.
 #define COPS_MOUSE_4MS_CYCLES 20375
 
-// Response pacing: re-check host consumption this many CPU cycles apart.  The
-// host's GETDATA polls IFR within microseconds, so a tight cadence is safe and
-// never overruns an unread byte (the pump waits while IFR CA1 is still set).
+// Response pacing: re-check host consumption this many CPU cycles apart (the
+// pump never overruns an unread byte: it waits while IFR CA1 is still set).
 #define COPS_PUMP_CYCLES 48
+
+// Once the host has read a byte, the next one follows ~100 us later (509
+// cycles at 5.09375 MHz), not at the next check.  A host may read ORA and
+// clear IFR in a separate write a few instructions later -- the Xenix 3.0
+// loader and kernel both do (MOVE.B ORA,D0 ... MOVE.B #3,IFR) -- and a byte
+// presented in between has its flag cleared unseen and is lost.  Presenting
+// at the first check that saw the flag clear raced that window once the Lisa
+// ran at its real 10 cycles per instruction.  No document gives the COPS's
+// byte rate (docs/reference/machines/lisa/cops.md §6); the hosts only need a
+// byte drained within ~10 ms, far above 100 us.
+#define COPS_BYTE_GAP_CYCLES 509
+
+// The pump event's data: checking for consumption, or the gap has run out.
+#define PUMP_CHECK 0
+#define PUMP_SEND  1
 
 // CRDY (PB6) is the COPS's free-running ready/busy line: the COP421 loops
 // through its scan, periodically becoming "ready" (CRDY low) to accept a host
@@ -365,14 +379,19 @@ static void cops_present_byte(cops_t *c, uint8_t byte) {
 // Response pump: deliver the next queued byte once the host has consumed the
 // previous one (IFR CA1 clear).  Reschedules itself while bytes remain.
 static void cops_pump(void *source, uint64_t data) {
-    (void)data;
     cops_t *c = (cops_t *)source;
     c->pump_scheduled = false;
     if (fifo_empty(c))
         return;
     if (via_get_ifr(c->via1) & IFR_CA1_BIT) {
         // Previous byte still unread — try again shortly.
-        scheduler_new_cpu_event(c->sched, &cops_pump, c, 0, COPS_PUMP_CYCLES, 0);
+        scheduler_new_cpu_event(c->sched, &cops_pump, c, PUMP_CHECK, COPS_PUMP_CYCLES, 0);
+        c->pump_scheduled = true;
+        return;
+    }
+    if (data != PUMP_SEND) {
+        // Read: leave the host its read-then-clear window before the next byte.
+        scheduler_new_cpu_event(c->sched, &cops_pump, c, PUMP_SEND, COPS_BYTE_GAP_CYCLES, 0);
         c->pump_scheduled = true;
         return;
     }

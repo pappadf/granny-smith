@@ -307,12 +307,9 @@ static void iifx_trigger_vbl(config_t *cfg);
 static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
+    memory_page_set_host(page_index, host_ptr, writable);
     uint32_t guest_base = page_index << MEM_PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - guest_base);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
     if (g_user_read)
@@ -460,11 +457,7 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
 static void iifx_arm_rom_trap_page(iifx_state_t *st, config_t *cfg, uint32_t page_index) {
     if (page_index >= g_page_count)
         return;
-    g_page_table[page_index].host_base = NULL;
-    g_page_table[page_index].dev = &st->rom_interface;
-    g_page_table[page_index].dev_context = cfg;
-    g_page_table[page_index].base_addr = (uint32_t)IIFX_ROM_START;
-    g_page_table[page_index].writable = false;
+    memory_page_set_device(page_index, &st->rom_interface, cfg, (uint32_t)IIFX_ROM_START);
     if (g_supervisor_read)
         g_supervisor_read[page_index] = 0;
     if (g_supervisor_write)

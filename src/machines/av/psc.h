@@ -75,6 +75,9 @@ void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx);
 // channel.
 typedef void (*av_psc_chan_touch_fn)(void *ctx);
 void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx);
+// The same for the three SCC channels (SCC A rx, SCC B, SCC A tx): their
+// transmit engine lives with the SCC in av.c.
+void av_psc_set_scc_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx);
 
 // Drive a level-sensitive VIA2-window source (SCSI interrupt, bit 3).
 void av_psc_via2_source(av_psc_t *psc, int bit, bool active);

@@ -961,6 +961,55 @@ TEST(read_toc_honours_the_msf_bit) {
     scsi_delete(scsi);
 }
 
+// The AppleCD vendor READ TOC (C1h): the control byte's bits 7-6 pick the
+// request and every answer is 4-byte BCD records, as System 7's Apple CD-ROM
+// driver reads them (00b, 01b, then 10b with 0x3C bytes).  A zero control
+// nibble in a 10b entry is an audio track, which mounted a data disc as
+// "Audio CD 1"; the data track must read 0x14.
+TEST(apple_read_toc_answers_by_request_type) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[64];
+    int phase = 0;
+
+    // 00b: first and last track, BCD
+    const uint8_t range_cdb[10] = {0xC1, 0, 0, 0, 0, 0, 0, 0x00, 0x04, 0x00};
+    size_t n = issue_cdb10(scsi, range_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 4);
+    ASSERT_EQ_INT(r[0], 0x01);
+    ASSERT_EQ_INT(r[1], 0x01);
+    ASSERT_EQ_INT(r[2], 0x00);
+    ASSERT_EQ_INT(r[3], 0x00);
+
+    // 01b: the lead-out at 4096 blocks + 150 = 4246 frames = 00:56:46, BCD
+    const uint8_t leadout_cdb[10] = {0xC1, 0, 0, 0, 0, 0, 0, 0x00, 0x04, 0x40};
+    n = issue_cdb10(scsi, leadout_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 4);
+    ASSERT_EQ_INT(r[0], 0x00);
+    ASSERT_EQ_INT(r[1], 0x56);
+    ASSERT_EQ_INT(r[2], 0x46);
+    ASSERT_EQ_INT(r[3], 0x00);
+
+    // 10b: 15 entries from track 1, each the data track at 00:02:00
+    const uint8_t tracks_cdb[10] = {0xC1, 0, 0, 0, 0, 0x01, 0, 0x00, 0x3C, 0x80};
+    n = issue_cdb10(scsi, tracks_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 0x3C);
+    for (int i = 0; i < 0x3C; i += 4) {
+        ASSERT_EQ_INT(r[i], 0x14); // ADR 1, control 4: data
+        ASSERT_EQ_INT(r[i + 1], 0x00);
+        ASSERT_EQ_INT(r[i + 2], 0x02);
+        ASSERT_EQ_INT(r[i + 3], 0x00);
+    }
+
+    // 11b is reserved
+    const uint8_t bad_cdb[10] = {0xC1, 0, 0, 0, 0, 0, 0, 0x00, 0x04, 0xC0};
+    issue_cdb10(scsi, bad_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_status);
+    scsi_delete(scsi);
+}
+
 // AAh asks for the lead-out alone, so the descriptor list is one entry shorter
 // -- and the TOC data length follows the REQUEST.  It does not follow the
 // allocation length: X3.131-1994 Table 261 calls it the length "available to be
@@ -1215,6 +1264,7 @@ int main(void) {
     RUN(host_eject_return_codes_are_distinct);
     RUN(eject_leaves_no_locked_empty_drive);
     RUN(read_toc_honours_the_msf_bit);
+    RUN(apple_read_toc_answers_by_request_type);
     RUN(read_toc_lead_out_only_and_the_length_is_what_is_available);
     RUN(read_toc_rejects_a_track_the_disc_does_not_have);
     RUN(read_toc_answers_the_session_and_full_formats);

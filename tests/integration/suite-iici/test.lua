@@ -20,11 +20,17 @@
 --                   sizes correctly (was a known defect; fixed and enforced)
 --   iici-71-hd      **IIci x 7.1** on the built-in RBV — a cell once wrongly
 --                   believed unreachable (8 MB)
+--   iici-71-cd-insert 7.1 with the Apple CD-ROM driver and the CD-ROM drive
+--                   empty at start-up; a data disc inserted at the desktop
+--                   mounts under its own volume name
 --   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C beside
 --                   the live built-in RBV, booting 7.1 to the Finder, with the
 --                   24AC engine counters asserted. Was a known defect
 --                   (seating the card hung the boot at Welcome); fixed and
 --                   enforced.
+--   iici-824-substitute  7.1 (32-bit mode) on a Display Card 8•24 running
+--                   the substitute declaration ROM, the built-in port
+--                   unplugged: the Finder comes up (S1018-19).
 --   iici-checkpoint **MDU-family checkpoint round-trip**:
 --                   save → reboot into a different machine → load →
 --                   re-match. Was a known defect (restored screen came back
@@ -43,6 +49,9 @@ local sys_701 = "../../data/systems/System_7_0_1.image"
 local hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 local hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
 local hd_71_gc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
+local hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
+-- A plain ISO 9660 data disc (volume GS_TEST_DISC), built by config.mk's TEST_SETUP
+local iso_plain = F"${vars.WORK_DIR}/plain.iso"
 local mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 
 -- ---- iici-chime -------------------------------------------------------------
@@ -210,6 +219,32 @@ local function row_iici_76_hd_addr32()
     mac.report_perf("suite-iici/iici-76-hd-addr32", scheduler.instr_count)
 end
 
+-- ---- iici-71-cd-insert ------------------------------------------------------
+-- The default CD-ROM drive (ID 3) is empty at start-up; System 7.1's Apple
+-- CD-ROM driver must still find it, so a data disc inserted at the desktop
+-- mounts.  Two faults hid it.  The NCR 5380 front-end answered a selection only
+-- for an ID holding a medium, so an empty drive was absent from the bus, the
+-- driver never installed, and an inserted disc never appeared (the 53C96 and
+-- MESH front-ends already answered).  And the drive's vendor READ TOC (C1h)
+-- ignored the control byte's request type, so the driver read the data track
+-- as audio and mounted a plain ISO 9660 disc as "Audio CD 1"; the golden
+-- shows it under its own volume name, GS_TEST_DISC.
+local function row_iici_71_cd_insert()
+    machine.boot{model = "iici", ram = 8192, video_card = "builtin_rbv_video", rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_71, 0)
+    assert(machine.scsi.device[3].type == "cdrom", "iici-71-cd-insert: no CD-ROM drive at ID 3")
+    assert(not machine.scsi.device[3].medium_present, "iici-71-cd-insert: the drive is not empty")
+    scheduler.run(300000000)
+    mac.wait_stable(1200000000)
+    machine.scsi.device[3].insert(iso_plain)
+    scheduler.run(200000000)
+    mac.wait_stable(1200000000)
+    mac.check("goldens/iici-7.1-640x480x1-cd-inserted.png")
+    mac.report_row("7.1", "rbv", "cd-insert 5380 apple-cd-driver")
+    mac.report_perf("suite-iici/iici-71-cd-insert", scheduler.instr_count)
+end
+
 -- ---- iici-71-hd -------------------------------------------------------------
 -- NEW CELL IIci x 7.1 on the built-in RBV, and the row that retired a wrong
 -- defect record. It said "the IIci hangs at Welcome booting either prepared 7.1
@@ -318,6 +353,34 @@ local function row_iici_24ac_dual()
     mac.check("goldens/iici-7.1-640x480x1-24ac-dual-finder.png")
     mac.report_row("7.1", "rbv+24ac", "dual-display hd-boot 24ac-engine")
     mac.report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
+end
+
+-- ---- iici-824-substitute ----------------------------------------------------
+-- The only monitor is on a Macintosh Display Card 8•24 in socket $C that runs
+-- the emulator's substitute declaration ROM (what a user without Apple's ROM
+-- gets), and System 7.1 runs in 32-bit mode.  The substitute's video
+-- sResources lacked f32BitMode, which every video sResource of Apple's own
+-- 8•24 ROM carries ($0006), so the screen's GDevice came up without
+-- ext32Device; the Finder then hit memory-full system errors (SysError 25)
+-- over and over and the desktop stayed empty -- menu bar and pattern, no
+-- icons, no menus (S1018-19).
+local function row_iici_824_substitute()
+    machine.boot{model = "iici", ram = 8192, rom = vars.ROM, config = "{\"cards\":[{\"slot\":\"nubus_c\",\"card\":\"mdc_8_24\",\"options\":{\"rom\":\"substitute\"}}],\"displays\":{\"builtin\":{\"monitor\":\"none\"},\"nubus_c\":{\"monitor\":\"13in_rgb\"}}}"}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_71, 0)
+    assert(machine.nubus.slot[12].card.substitute, "iici-824-substitute: the card is not on its substitute ROM")
+    scheduler.run(1500000000)
+    mac.wait_stable(1500000000)
+    -- The main screen is the card's, and it is a 32-bit device (gdFlags bit 8,
+    -- ext32Device) as on Apple's ROM.
+    local gd = machine.cpu.mmu.peek(machine.cpu.mmu.peek(0x8A4, 4), 4)
+    assert((machine.cpu.mmu.peek(gd + 20, 2) & 0x0100) ~= 0, "iici-824-substitute: the main GDevice is not ext32Device")
+    assert(machine.screen.width == 640, "iici-824-substitute: no picture from the card")
+    -- The same settled 7.1 desktop the built-in RBV shows in iici-71-hd, pixel
+    -- for pixel (the card is at 640x480x1 too), so that row's golden is reused;
+    -- the asserts above are what tell the two configurations apart.
+    mac.check("goldens/iici-7.1-640x480x1-finder.png")
+    mac.report_row("7.1", "mdc_8_24 substitute", "hd-boot 32-bit card-only")
 end
 
 -- ---- iici-checkpoint --------------------------------------------------------
@@ -492,8 +555,22 @@ if mac.row_on("iici-71-hd") then
         echo("skip: iici-71-hd (7.1 prepared image not fetched)")
     end
 end
+if mac.row_on("iici-71-cd-insert") then
+    if mac.have_media(hd_71) and mac.have_media(iso_plain) then
+        mac.row("iici-71-cd-insert", row_iici_71_cd_insert)
+    else
+        echo("skip: iici-71-cd-insert (7.1 CD image or the ISO fixture missing)")
+    end
+end
 mac.row("iici-lowram", row_iici_lowram)
 mac.row("iici-24ac-dual", row_iici_24ac_dual)
+if mac.row_on("iici-824-substitute") then
+    if mac.have_media(hd_71) then
+        mac.row("iici-824-substitute", row_iici_824_substitute)
+    else
+        echo("skip: iici-824-substitute (7.1 image not fetched)")
+    end
+end
 mac.row("iici-checkpoint", row_iici_checkpoint)
 if mac.row_on("iici-mactest-diag") then
     if mac.have_media(mactest_img) then

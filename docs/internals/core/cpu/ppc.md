@@ -1,13 +1,21 @@
 # PPC core — MPC601/MPC604/MPC750 main CPU
 
-`src/core/cpu/ppc/` implements the PowerPC 601 and 604 as a **main CPU** —
+`src/core/cpu/ppc/` implements the PowerPC 601, 604 and 750 as a **main CPU** —
 the first non-68K architecture to own emulated time.  The module is named `ppc`, not `ppc601`:
 the decode tree and register file are architectural 32-bit PowerPC with
 model-specific behavior behind `cpu_model` discrimination, exactly the way
-`cpu.c` discriminates 68000/030/040.  Two models exist —
-`CPU_MODEL_PPC601` (the PDM machines) and `CPU_MODEL_PPC604` (the TNT
-machines; see "The 604 model" below).  `ppc_init` takes the model;
-`ppc_reset` preserves it.
+`cpu.c` discriminates 68000/030/040.  Three models exist —
+`CPU_MODEL_PPC601` (the PDM machines and the 7500), `CPU_MODEL_PPC604` (the
+other TNT machines; see "The 604 model" below) and `CPU_MODEL_PPC750` (the
+beige G3; "The 750 model").  `ppc_init` takes the model; `ppc_reset`
+preserves it.
+
+Execution runs on two interpreter tiers, the switch core (`ppc_run.c`, the
+reference) and the predecoded executor (`ppc_pd_run.h`,
+[predecode.md](predecode.md) §3.9-§3.10, the default), and in the wasm
+builds a third: hot pages translated to WebAssembly
+([ppc/ppc_jit.md](ppc/ppc_jit.md); on by default there, kernel code
+included).  Little-endian mode runs on the switch core's generic step.
 
 Sources of truth: Motorola/IBM, *PowerPC 601 RISC Microprocessor User's
 Manual*, 1995 (MPC601UM/AD) for the 601; *PowerPC 604 RISC Microprocessor
@@ -124,8 +132,22 @@ in memory.c to keep their hands off the user arrays.
   256 MB segment, so invalidation is proportional to fills and a
   segment-register write drops only its own segment's -- Mac OS X switches
   SR0-3 on every trap), a 256-entry direct-mapped translation TLB for
-  the non-SoA paths, and a fetch window + 64-entry fetch TLB holding
-  instruction-page host pointers.  All of it lives in file statics — NOT
+  the non-SoA paths, and a fetch window + 256-entry fetch TLB holding
+  instruction-page host pointers and, per entry, the page's predecoded
+  block.  A segment-register write that changes the value (`ppc_set_sr`;
+  rewriting the same value is free) zeroes that segment's fills and scans
+  both TLBs for its entries, and drops the fetch window.  The per-segment
+  fill lists hold up to 2048 pages (`PPC_SEG_TRACK_MAX`); an overflowed
+  segment is zeroed whole.  On the Mac OS X 10.1 boot (2.13 M full
+  invalidations before; SR0-3 change about 464 K times each) the segment
+  scoping took native from 90 s to 78 s, and the supervisor-translated
+  fills to 59 s (Node predecoded 140.6 s → 89.7 s).  A single global fill
+  list was tried and dropped (each `mtsr` walked thousands of entries: 84 s
+  against 78 s), as was tagging translation-TLB entries with their
+  segment-register value at fill so `mtsr` need not scan (no gain: the
+  scans are about 2.3 % of the Mac OS X warm round, and the fetch TLB
+  would keep its scan anyway, because translated code reads its entries).
+  An MSR write drops only the window, never the fetch TLB.  All of it lives in file statics — NOT
   in the checkpointed `ppc_t` blob (host pointers in the stream would
   break checkpoint byte-determinism) — and rebuilds lazily after restore.
 - **Debug surface**: `machine.cpu.mmu.translate(ea, [supervisor], [fetch])`
@@ -316,9 +338,13 @@ precedent).  The deltas, each keyed on `cpu_model`:
   reciprocal (relative error < 2⁻⁶¹).  Both report only their architected
   FPSCR effects — never XX; FR/FI ("undefined") read cleared.  `fsqrt`
   remains illegal: the 604 does not implement it.
-- **Superscalar timing is not modeled**: the 604 keeps the sprint/CPI-1.0
-  model and 601-style branch folding, for the same
-  determinism-and-measurement reasons as the 601.
+- **Superscalar timing is not modeled**: the 604 keeps the sprint model
+  and 601-style branch folding, for the same determinism-and-measurement
+  reasons as the 601.  The TNT scheduler counts two cycles per
+  instruction (`tnt.c`) and the Gossamer one counts one (`gossamer.c`);
+  for the 267 MHz G3 that sets a real-time pace of about 267 M
+  instructions a second.  Both are modelling choices, not measurements,
+  so "times a real G3" comparisons are relative to this model.
 - **Object model**: `machine.cpu` adds `dbat0u..dbat3l` and `tbu`/`tbl`
   (aliases of the rtcu/rtcl storage); the members are static per class,
   so they exist — inert — on the 601 too.

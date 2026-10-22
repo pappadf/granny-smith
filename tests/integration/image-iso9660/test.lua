@@ -3,6 +3,7 @@
 -- bare volume: one synthetic partition holding the disc's files.
 local iso = F"${vars.WORK_DIR}/disc.iso"
 assert(files.probe(iso), "the disc is recognised as a disk")
+assert(machine.scsi.identify_iso(iso), "an upload of the disc is filed as a CD-ROM")
 local names = ""
 for _, e in ipairs(files.list(F"${iso}/partition1")) do
     names = F"${names}|${e.name}"
@@ -32,6 +33,7 @@ assert(files.path_compare(F"${hy}/partition2/Hello.txt", "config.mk") == -1, "th
 assert(files.path_compare(F"${hy}/ISO9660/Read Me.txt", "config.mk") == -1, "the ISO side reads (name matched without case)")
 assert(not gs.truthy(function() return files.path_exists(F"${iso}/iso9660") end), "a disc that is only ISO has no iso9660 entry")
 assert(not gs.truthy(function() return files.path_exists(F"${hy}/partition3") end), "the ISO side is not a partitionN")
+assert(machine.scsi.identify_iso(hy), "an upload of the hybrid is filed as a CD-ROM")
 
 -- Apple's "AA" entry is the file's Finder info, and a copy out keeps it.
 assert(files.path_compare(F"${hy}/iso9660/Read Me.txt/finf", F"${vars.WORK_DIR}/readme.finf") == -1, "Finder info from AA")

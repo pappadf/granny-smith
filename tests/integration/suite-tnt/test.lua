@@ -9,12 +9,18 @@
 --                    boot wall used to kill.
 --   pm9500-76-mach64 pm9500, which has no onboard video: the same chain,
 --                    every pixel drawn by an ATI Mach64 GX in PCI socket A1.
+--   pm9500-mach64-depths  the same card with 4 MB and a 17" Multiple Scan:
+--                    1024x768 picked from the Control Strip, then thousands
+--                    and millions of colours, each drawing a Finder window.
 --   tnt-voodoo2-display  pm8500 + a Voodoo2 in A1: the card takes the
 --                    monitor from Control's live desktop and gives it back
 --                    byte-identical.
 --   pm7500-76-8bpp-restart  pm7500 with the display pinned to 256 colours
 --                    in the Grand Central NVRAM, power-cycled: the second
 --                    boot reaches the Finder at 640x480 8 bpp (#115).
+--   pm7500-76-cd     pm7500 with a disc in the default configuration's
+--                    CD-ROM drive (ID 3 on the 53C94 bus, machine.scsi2):
+--                    System 7.6 mounts it beside the startup volume.
 --
 -- ---- the boot chain (tnt_hd_boot) -------------------------------------------
 -- The boot-driver selection matches (XPRAM $77 "Default OS" = 1 through the
@@ -167,6 +173,62 @@ local function row_pm9500_76_mach64()
     mac.check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
     mac.report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
     mac.report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
+end
+
+-- ---- pm9500-mach64-depths ---------------------------------------------------
+-- The deep modes of a 4 MB card (S1018-21).  Two faults hid here, and each
+-- one broke a depth this row now draws a Finder window in:
+--
+--   * Thousands.  The driver keeps the draw engine's state in context blocks
+--     in VRAM and writes them through the big-endian aperture, which swaps
+--     within each pixel of MEM_PIX_WIDTH.  Read back without undoing that
+--     swap, every block loaded at 16 bpp was garbage ($08C80000 as
+--     $C8080000) and windows were erased to the desktop pattern.
+--   * Millions.  The aperture aliased past the installed 4 MB, so the
+--     driver's 6 MB write/read-back probe passed and it put the blocks at
+--     "the top of 6 MB" -- $1FFxxx, inside the 3 MB frame of 1024 x 768 at
+--     32 bpp.  The first desktop fill overwrote them.
+--
+-- The resolution and depth are chosen the way a user does it, from the
+-- Control Strip's two monitor modules, so the driver's own mode switch runs.
+local function mach64_strip(x, y, item_x, item_y)
+    machine.adb.mouse.move(x, y, "global")
+    mac.wait_cursor(20)
+    machine.adb.mouse.click(true)
+    mac.run_ticks(30)
+    machine.adb.mouse.move(item_x, item_y, "global")
+    mac.run_ticks(10)
+    machine.adb.mouse.click(false)
+    mac.run_ticks(300)
+end
+
+local function row_pm9500_mach64_depths()
+    machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "mach64_gx", pci_option = "vram=4m,monitor=17in_multi"}
+    machine.rtc.time = "2026-04-26T21:30:36"
+    machine.scsi.attach_hd(hd_76, 0)
+    scheduler.run(4000000000)
+    assert(debug.mac.globals.read("DSErrCode") == 0, F"system error ${debug.mac.globals.read(\"DSErrCode\"):04x} during startup")
+    assert(machine.screen.width == 832, "the 17-inch Multiple Scan starts at 832 x 624")
+
+    -- Close the Energy Saver message; then the resolution module (third
+    -- item, "1024 x 768, 75Hz").
+    machine.adb.keyboard.press("Return")
+    mac.run_ticks(30)
+    mach64_strip(130, 611, 180, 594)
+    assert(machine.screen.width == 1024 and machine.screen.height == 768, "1024 x 768 was not taken")
+
+    -- The depth module: "Thousands of Colors", then open the startup disk.
+    mach64_strip(100, 755, 150, 726)
+    assert(machine.screen.depth == 16, "thousands is 16 bpp")
+    mac.double_click(984, 52)
+    mac.run_ticks(300)
+    mac.check_ex("goldens/pm9500-mach64-1024x768x16-window.png", 0, 860, 20, 940)
+
+    -- "Millions of Colors": the window redraws over a 3 MB frame.
+    mach64_strip(100, 755, 150, 739)
+    assert(machine.screen.depth == 32, "millions is 32 bpp")
+    mac.check_ex("goldens/pm9500-mach64-1024x768x32-window.png", 0, 860, 20, 940)
+    mac.report_row("7.6", "mach64_gx", "1024x768 thousands millions")
 end
 
 -- ---- tnt-voodoo2-display ----------------------------------------------------
@@ -360,6 +422,39 @@ local function row_pm7500_76_8bpp_restart()
     mac.report_perf("suite-tnt/pm7500-76-8bpp-restart", scheduler.instr_count)
 end
 
+-- ---- pm7500-76-cd -----------------------------------------------------------
+-- The factory CD-ROM drive, on the bus the real machine has it on: the
+-- 53C94's (machine.scsi2), not MESH.  The default configuration carries it,
+-- so `cd=` and a CD drop have a drive to go into.  The disc is a bare HFS
+-- volume (no partition map), which the Apple CD-ROM driver mounts as is.
+-- Getting there takes the SCSI Manager's old-API path: a DMA select ($C1)
+-- that waits for the 53C94's DREQ, which the HAL reads as DBDMA channel 0's
+-- device status bit s5 -- before that was wired the Finder never came up.
+local cd_disc = "../../data/systems/SSW-7.6-1.4M/Disk Tools 1.img"
+local function row_pm7500_76_cd()
+    machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM}
+    machine.rtc.time = "2026-04-26T21:30:36"
+    assert(machine.scsi2.device[3].type == "cdrom", "the default configuration has no CD-ROM drive at machine.scsi2 ID 3")
+    machine.scsi.attach_hd(hd_76, 0)
+    machine.attach_cdrom(cd_disc)
+    scheduler.run(2500000000)
+
+    assert(debug.mac.globals.read("BootDrive") == 0x8023, F"pm7500-cd: BootDrive ${debug.mac.globals.read(\"BootDrive\"):04x}, not set")
+    assert(debug.mac.globals.read("DSErrCode") == 0, F"pm7500-cd: system error ${debug.mac.globals.read(\"DSErrCode\"):04x} during startup")
+
+    -- Two volumes on the VCB queue (VCBQHdr.qHead at $358), the second the
+    -- disc: its vcbVN (a Pascal string at +$2C) is "Disk Tools 1" (read_cstring
+    -- answers it quoted).
+    local vcb = machine.memory.peek.l(0x358)
+    assert(vcb ~= 0, "no volume mounted")
+    local disc = machine.memory.peek.l(vcb)
+    assert(disc ~= 0, "the disc did not mount (one volume on the VCB queue)")
+    assert(machine.memory.peek.l(disc) == 0, "more than two volumes mounted")
+    assert(machine.memory.peek.b(disc + 0x2C) == 12 and machine.memory.read_cstring(disc + 0x2D, 12) == "\"Disk Tools 1\"", "the second volume is not the disc")
+    mac.report_row("7.6", "control", "hd-boot cd-mount 53c94")
+    mac.report_perf("suite-tnt/pm7500-76-cd", scheduler.instr_count)
+end
+
 -- ---- row dispatch -----------------------------------------------------------
 
 if mac.row_on("pm7500-76-hd") then
@@ -383,6 +478,13 @@ if mac.row_on("pm9500-76-mach64") then
         echo("skip: pm9500-76-mach64 (7.6 image not fetched)")
     end
 end
+if mac.row_on("pm9500-mach64-depths") then
+    if mac.have_media(hd_76) then
+        mac.row("pm9500-mach64-depths", row_pm9500_mach64_depths)
+    else
+        echo("skip: pm9500-mach64-depths (7.6 image not fetched)")
+    end
+end
 if mac.row_on("tnt-voodoo2-display") then
     if mac.have_media(hd_76) then
         mac.row("tnt-voodoo2-display", row_tnt_voodoo2_display)
@@ -395,6 +497,13 @@ if mac.row_on("pm7500-76-8bpp-restart") then
         mac.row("pm7500-76-8bpp-restart", row_pm7500_76_8bpp_restart)
     else
         echo("skip: pm7500-76-8bpp-restart (7.6 image not fetched)")
+    end
+end
+if mac.row_on("pm7500-76-cd") then
+    if mac.have_media(hd_76) and mac.have_media(cd_disc) then
+        mac.row("pm7500-76-cd", row_pm7500_76_cd)
+    else
+        echo("skip: pm7500-76-cd (7.6 image or Disk Tools disc not fetched)")
     end
 end
 

@@ -11,6 +11,7 @@
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
+#include "out.h"
 #include "system_internal.h"
 #include "vrom.h"
 
@@ -543,6 +544,14 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
         card->bus = bus;
         card->slot = n;
         card->substitute = seat->substitute;
+        // Say so when a new machine's card runs the substitute declaration
+        // ROM: it can offer fewer modes and depths than Apple's (S1018-62)
+        if (card->substitute && !cp)
+            out_printf("NuBus slot $%X: %s runs Granny Smith's substitute declaration ROM%s\n", n,
+                       kind->display_name ? kind->display_name : kind->id,
+                       seat->custom_mode[0]                                              ? " (custom mode)"
+                       : vrom_card_resolvable(kind->id, seat->rom[0] ? seat->rom : NULL) ? ""
+                                                                                         : " (Apple's ROM not loaded)");
 
         // Each card is a part of its own, after the slot table: on a restore
         // its block gives the declaration ROM it runs, which init takes, and

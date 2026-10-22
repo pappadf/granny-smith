@@ -9,10 +9,10 @@ assert(files.images[0].writes == 0)
 scheduler.run(30000000)
 assert(files.images[0].reads > 0, "the boot read the floppy")
 
--- Ejected, the image does no more I/O: its light cannot come on.
+-- Ejected, the image is closed at once: it leaves the tracked images, so its
+-- counters no longer feed the light.
 echo(F"${machine.floppy.drive[0].eject()}")
-local seen = files.images[0].reads
+assert(gs.try(function() return files.images[0].reads end, "gone") == "gone", "an ejected disk is still tracked")
 scheduler.run(5000000)
-assert(files.images[0].reads == seen, "an ejected disk is not read")
 
 quit()

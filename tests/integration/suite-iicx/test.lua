@@ -205,7 +205,10 @@ local function row_iicx_gc_beep()
     -- parameter RAM valid (the ROM skips its own PRAMInit): 5427 frames.
     -- Re-captured again when ADB auto-poll stopped running on a clock of its
     -- own (Talks now start only when a device has data): 5423 frames.
-    mac.check_sound("goldens/iicx-gc-beep.wav", 5424)
+    -- Re-captured again when the empty CD-ROM drive at ID 3 began answering
+    -- the 5380's selection (the ROM scan and the Sound Manager's start see
+    -- one more device): 5423 frames, the same waveform one sample later.
+    mac.check_sound("goldens/iicx-gc-beep.wav", 5423)
 
     -- Sample-exact compare against the golden (fails the test on any divergence).
     -- Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -233,7 +236,7 @@ local function row_iicx_gc_beep()
     machine.adb.mouse.click(false)
     scheduler.run(40000000)
 
-    mac.check_sound("goldens/iicx-gc-beep2.wav", 5423)
+    mac.check_sound("goldens/iicx-gc-beep2.wav", 5427)
     -- The pre-volume waveform is the first beep's (up to the timing-phase
     -- effect below): the Sound Manager re-renders the same table and no state
     -- leaks between beeps.  The second beep is

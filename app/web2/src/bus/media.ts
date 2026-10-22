@@ -124,7 +124,8 @@ export async function attachCdrom(path: string): Promise<MediaResult> {
 
 // Insert a floppy into `drive`, or, with no drive, into the first empty one
 // of the machine's drives — the physical
-// metaphor of dropping a disk into a Mac.
+// metaphor of dropping a disk into a Mac.  Every UI path inserts writable,
+// as a drop does; `writable` false inserts the disk locked.
 export async function insertFloppy(
   path: string,
   writable: boolean,
@@ -186,4 +187,26 @@ export async function ejectMedia(mount: MountInfo): Promise<{ ok: boolean; reaso
       ? await gsEval(`machine.floppy.drive[${mount.drive}].eject`)
       : await gsEval('machine.eject_media', [mount.bus ?? '', mount.drive]);
   return gsOk(r) ? { ok: true } : { ok: false, reason: gsErrorText(r) };
+}
+
+// Every image the running machine is using: what its drives hold (readMounts)
+// and what the page recorded attaching.  Renaming, moving or deleting one of
+// these under the machine leaves it writing to a path that no longer exists,
+// so every checkpoint (and Save State, and the next Resume) fails.
+export async function pathsInUse(): Promise<Set<string>> {
+  const out = new Set(Object.keys(images.mounted));
+  try {
+    for (const p of Object.keys(await readMounts())) out.add(p);
+  } catch {
+    // No machine to ask: the page's own record is all there is.
+  }
+  return out;
+}
+
+// The first image in use that is one of `paths` or lies under one of them (a
+// folder, an archive holding the medium), or null.
+export async function imageInUseUnder(paths: string[]): Promise<string | null> {
+  const used = await pathsInUse();
+  for (const p of paths) for (const u of used) if (u === p || u.startsWith(`${p}/`)) return u;
+  return null;
 }
