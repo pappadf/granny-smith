@@ -86,6 +86,9 @@ void scheduler_set_turbo_slice(double secs) {
 // 120 Hz host the averages settle in half the wall time they take at 60 Hz.
 // Host-side only -- nothing guest-visible depends on it.
 #define HOST_EWMA_ALPHA 0.1
+// Smoothing of turbo's achieved speed (turbo_ratio): about half a second of
+// ticks at the 16 ms slice, so the figure settles rather than flickers
+#define TURBO_RATIO_ALPHA 0.05
 // Seed for the host-loop-period estimator: one 60 Hz display frame, the
 // common browser requestAnimationFrame rate.  Only a starting point -- the
 // EWMA converges on the real period within a few dozen ticks at any rate.
@@ -1299,16 +1302,28 @@ void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *p
     scheduler_update_cpi_eff(s);
 }
 
-// The speed multiplier actually applied to the CPU right now, x256 fixed point
-// (256 = 1x = authentic). This is 1x in unthrottled; in paced the governor's
-// pick (1x unless the host fell behind); in accelerated mode the live
-// multiplier (pinned or the governor's current rung). It is what a UI should
-// display as "how much faster (or slower) than the original this CPU is
-// running" — a slowly-varying, core-driven signal (the governor steps it on a
-// ≥2 s dwell), suited to a push-on-change notification rather than polling.
+// How fast the emulated machine runs against the original, x256 fixed point
+// (256 = 1x): the CPU multiplier times the rate its clock runs at against
+// real time.  In paced and accelerated the clock is held to real time, so
+// this is the multiplier alone -- the governor's pick (1x unless the host
+// fell behind) or, in accelerated, the pin or the governor's rung.  In
+// unthrottled the multiplier is 1 and the clock outruns real time, so it is
+// the measured ratio of emulated to host time (turbo_ratio), quantized to a
+// tenth below 10x and to a whole number above, so the figure changes a few
+// times a second at most; 1x until the first tick has measured it (and on
+// the headless pump, which never ticks).  It is what a UI displays as "how
+// much faster (or slower) than the original this machine is running" -- a
+// slowly-varying, core-driven signal, announced on change (speed event).
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s) {
-    if (!s || s->pacing.mode == schedule_unthrottled)
+    if (!s)
         return SPEED_X256_ONE;
+    if (s->pacing.mode == schedule_unthrottled) {
+        if (isnan(s->turbo_ratio) || s->turbo_ratio <= 0.0)
+            return SPEED_X256_ONE;
+        double q = s->turbo_ratio < 10.0 ? floor(s->turbo_ratio * 10.0 + 0.5) / 10.0 : floor(s->turbo_ratio + 0.5);
+        uint32_t x = (uint32_t)(q * 256.0 + 0.5);
+        return x > 0 ? x : 1;
+    }
     return scheduler_current_speed_x256(s);
 }
 
@@ -1624,6 +1639,7 @@ static void host_timing_reset(struct scheduler *s) {
     s->vbl_acc_error = 0.0;
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = HOST_LOOP_PERIOD_SEED;
+    s->turbo_ratio = NAN;
 }
 
 // What one host tick earned: the frame-units to run, and -- under paced or
@@ -1739,6 +1755,20 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
         s->host_secs_per_vbl = delta / denom;
     else
         s->host_secs_per_vbl = s->host_secs_per_vbl * (1.0 - HOST_EWMA_ALPHA) + (delta * HOST_EWMA_ALPHA) / denom;
+
+    // Turbo's achieved speed: the emulated time this tick ran over the host
+    // time since the last one -- what a tick buys against real time, which
+    // is what the speed figure means in a mode whose clock is not held to
+    // it.  Smoothed, and announced when the quantized figure moves.
+    if (s->pacing.mode == schedule_unthrottled && executed_vbls > 0 && current_period > 0.0) {
+        double ratio = executed_vbls * MAC_VBL_PERIOD / current_period;
+        if (isnan(s->turbo_ratio))
+            s->turbo_ratio = ratio;
+        else
+            s->turbo_ratio += TURBO_RATIO_ALPHA * (ratio - s->turbo_ratio);
+        if (scheduler_effective_speed_x256(s) != s->speed_reported_x256)
+            scheduler_announce_speed(s);
+    }
 
     // Adaptive governor: paced and accelerated with speed = auto learn the
     // host's headroom from the measured per-frame emulation cost. Evaluated

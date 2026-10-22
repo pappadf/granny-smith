@@ -36,7 +36,7 @@ into the **More** (**…**) menu at its end; Run and Shut down always stay.
 |---|---|
 | **Real** | Runs at the original Mac's speed. If your computer cannot keep up, the processor is slowed down (as far as 0.25×) so that the clock, sound and animations stay at the correct speed; the status bar shows the factor, and it goes back to 1× once the computer keeps up again. |
 | **Faster** | Runs the processor faster while keeping games, sound and animations at the correct speed — like adding a CPU accelerator card. The status bar shows the factor (1.5× … 8×). Slows down the same way as Real when your computer cannot keep up. |
-| **Max** | Runs everything as fast as possible to skip ahead; games and sound run fast too. Useful for long installs and boots. |
+| **Max** | Runs everything as fast as possible to skip ahead; games and sound run fast too. The status bar shows how much faster than the original the machine is going (for example **12×**). Useful for long installs and boots. |
 
 Every machine starts in **Faster**, except the Lisa and the Macintosh XL,
 which start in **Real** (see [Machines](machines.md)).  Once you pick a mode
@@ -66,8 +66,8 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 | Item | Meaning |
 |---|---|
 | State | **Running**, **Paused**, **Stopped** or **Crashed**. |
-| Speed | The processor's speed factor when it is not the original's: in Faster mode (for example **3×**), or when your computer cannot keep up (for example **0.5×**, see §2). |
-| MIPS | Emulated instructions, in millions, per second the emulator spends running the processor: time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, so it is the rate the emulator executes at, whatever the speed setting. |
+| Speed | How fast the machine runs compared with the original: **1×** is the original's speed. In Faster mode it is the processor's speed factor (for example **3×**); when your computer cannot keep up it drops below 1× (for example **0.5×**, see §2); in Max mode it is how much faster than real time everything is running (for example **12×**). |
+| MIPS | How fast your computer emulates this machine: emulated instructions, in millions, per second while the processor is awake. Time the processor spends asleep waiting for an interrupt (an idle Mac OS X, a STOP) is not counted, as the original would sleep too. It is your computer's rate, not the machine's: in Real mode the processor is held to the original's speed, so this says how fast it *could* go. An idle machine reads low because its short wake-ups cost more per instruction than steady work; the figure to compare computers or CPU engines by is a busy machine's. |
 | **HD**, **FD**, **CD** | Hard disk, floppy and CD-ROM activity lights; shown only for drives the machine has. |
 | **CP** | Flashes on each automatic checkpoint (every ~15 seconds); hover to see when the last one was taken. |
 | **Caps Lock** (⇪) | The Mac's Caps Lock key. It follows your keyboard's Caps Lock; click it to latch Caps Lock on a keyboard without one. |
