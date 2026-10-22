@@ -326,8 +326,8 @@ target — the headless target ignores host time entirely (see
 
 | Mode | Behaviour (WASM target) |
 |------|-------------------------|
-| `schedule_paced` (default; "Real-Time") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. On a host that cannot emulate a frame-unit per VBL period the governor slows the guest CPU (effective CPI up, as far as `min_speed`) so the frame-units stay on time. |
-| `schedule_unthrottled` ("Fast-Forward") | As many frame-units as fit in the turbo slice (`scheduler_set_turbo_slice`: 16 ms in web2, whose loop re-enters at once in turbo), or, without one, in `TURBO_HOST_HEADROOM` (70%) of the host loop period — as fast as the host allows. |
+| `schedule_paced` (default; "Real") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. On a host that cannot emulate a frame-unit per VBL period the governor slows the guest CPU (effective CPI up, as far as `min_speed`) so the frame-units stay on time. |
+| `schedule_unthrottled` ("Max") | As many frame-units as fit in the turbo slice (`scheduler_set_turbo_slice`: 16 ms in web2, whose loop re-enters at once in turbo), or, without one, in `TURBO_HOST_HEADROOM` (70%) of the host loop period — as fast as the host allows. The achieved ratio of emulated to host time is measured per tick and is the mode's speed figure (scheduler.md §10.6). |
 
 Both modes use the same sprint and event machinery, the same per-machine CPI,
 and the same I/O penalties. The mode affects how many frame-units a host tick

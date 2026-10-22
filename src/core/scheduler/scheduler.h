@@ -333,10 +333,12 @@ bool scheduler_is_running(struct scheduler *restrict s);
 // --speed alike: "paced", "accelerated", "turbo".  False for anything else.
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
 
-// The speed multiplier actually applied to the CPU right now, x256 fixed point
-// (256 = 1x). 1x in unthrottled; the governor's pick (at most 1x) in paced; in
-// accelerated mode the live pinned or governed multiplier. Divide by 256.0 for
-// the display value.
+// How fast the machine runs against the original right now, x256 fixed point
+// (256 = 1x): the CPU multiplier in paced (the governor's pick, at most 1x)
+// and accelerated (pinned or governed), where the clock is held to real
+// time; the measured emulated-to-host time ratio in unthrottled, where the
+// multiplier is 1 and the clock outruns it (1x until measured).  Announced
+// on change as the speed event.  Divide by 256.0 for the display value.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
 
 // Emit the speed event for the current effective speed, whether or not it

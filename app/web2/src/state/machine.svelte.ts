@@ -78,12 +78,15 @@ interface MachineState {
   // state: toggled from the status bar, pushed to the live machine, and
   // re-asserted after every boot/restart (bus/emulator.ts).
   capsLock: boolean;
-  // Effective CPU speed multiplier the core is currently applying (1 = the
-  // original Mac's speed). The adaptive governor moves it: above 1 in `accel`
-  // mode, below 1 in `accel` and `live` alike when this computer cannot
-  // emulate a frame per VBL period; pushed from the core on change
-  // (bus/emulator.ts handleSchedulerSpeed). Always 1 in `max`.
-  acceleratedSpeed: number;
+  // How fast the machine runs against the original (1 = the original Mac's
+  // speed), pushed from the core on change (bus/emulator.ts
+  // handleSchedulerSpeed; scheduler_effective_speed_x256).  In `live` and
+  // `accel` it is the CPU multiplier the governor applies: above 1 in
+  // `accel`, below 1 in both when this computer cannot emulate a frame per
+  // VBL period.  In `max` it is the measured ratio of emulated time to real
+  // time, since there the whole machine, clock included, outruns the
+  // original.
+  cpuSpeed: number;
   // Live performance readout, pushed from the core ~1 Hz:
   // emulated MIPS from instruction-count deltas, and the RAF tick rate the
   // main loop is achieving. 0 until the first push after machine start.
@@ -129,7 +132,7 @@ export const machine: MachineState = $state({
   checkpoint: null,
   scheduler: 'live',
   capsLock: false,
-  acceleratedSpeed: 1,
+  cpuSpeed: 1,
   mips: 0,
   ticksPerSecond: 0,
   tickMaxMs: 0,
@@ -201,17 +204,16 @@ export function defaultSchedulerMode(realtimeDefault: boolean): SchedulerMode {
 // bus/emulator.ts (applySchedulerMode), which calls this on success.
 export function setSchedulerMode(mode: SchedulerMode): void {
   machine.scheduler = mode;
-  // Any mode switch resets the core's governor to the authentic floor
-  // (scheduler_apply_pacing → scheduler_governor_reset), so the applied speed is
-  // 1x until the governor earns headroom again. Mirror that immediately; the
-  // core's push then tracks the climb. (Not a guess — it matches the
-  // documented governor-reset behaviour, like the optimistic mode mirror.)
-  machine.acceleratedSpeed = 1;
+  // Any mode switch resets the core's governor and its turbo measurement
+  // (scheduler_apply_pacing → governor_reset, host_timing_reset), so the
+  // speed is 1x until the governor earns headroom or the first turbo tick
+  // measures. Mirror that immediately; the core's push then tracks it.
+  machine.cpuSpeed = 1;
 }
 
-// Core-pushed effective CPU speed multiplier (bus/emulator.ts handleSchedulerSpeed).
-export function setAcceleratedSpeed(multiplier: number): void {
-  machine.acceleratedSpeed = multiplier;
+// Core-pushed speed against the original (bus/emulator.ts handleSchedulerSpeed).
+export function setCpuSpeed(multiplier: number): void {
+  machine.cpuSpeed = multiplier;
 }
 
 // Core-pushed live performance metrics (bus/emulator.ts handlePerfUpdate).

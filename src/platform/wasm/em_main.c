@@ -291,9 +291,11 @@ host_pacing_t *platform_pacing(void) {
 
 // The instruction count at the last perf sample (MIPS is the delta), the
 // host time the run loop has taken since (run_ms), and the scheduler's sleep
-// meter then: MIPS is instructions per host second the CPU spent awake, so a
-// guest that dozes most of the window (Mac OS X idling at the desktop) still
-// shows the rate it runs at while it runs, whatever the speed setting.
+// meter then: MIPS is instructions per host second the CPU spent awake -- the
+// host's rate, beside the speed figure that says how the machine compares
+// with the original (docs/internals/core/scheduler/scheduler.md §10.6) -- so
+// a guest that dozes most of the window (Mac OS X idling at the desktop)
+// still shows the rate the host runs it at while it runs.
 static uint64_t last_instr = 0;
 static double run_ms = 0;
 static double last_sleep_ms = 0;
