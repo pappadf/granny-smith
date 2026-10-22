@@ -146,7 +146,7 @@ Combinations the project tests regularly. Others may well work too.
 | Quadra 840AV / 660AV | System 7.1 with its enabler, 7.6 (840AV) |
 | Power Mac 6100 / 7100 / 8100 | System 7.5 – 7.6, Mac OS 8.1 – 9.0.4; MkLinux DR3 |
 | Power Mac 7500 / 8500 / 9500 | System 7.6, Mac OS 8.1; MkLinux DR3 (7500) |
-| Power Mac G3 | Mac OS 9.2.1 (install from CD and boot); Mac OS X 10.0.3 (from ATA, with the Mac OS X NVRAM patch) |
+| Power Mac G3 | Mac OS 9.2.1 (install from CD and boot); Mac OS X 10.0.3 (from ATA) |
 | Network Server 500 | AIX 4.1.5, Windows NT 4.0 for PowerPC, Network Server Diagnostic Utility |
 | Lisa 2 | Lisa Office System 3.1, Lisa Workshop, SCO Xenix 3.0 |
 | Macintosh XL | MacWorks XL 3.0 |
@@ -159,10 +159,12 @@ Notes:
   **Addressing** to 32-bit (see §3).
 - MacWorks XL starts from its loader floppy, then asks for the MacWorks
   system disk.
-- Mac OS X 10.1 has booted to the Finder on the Power Mac G3 (Rev C ROM)
-  from an ATA disk, but not out of the box: like a real beige G3, the
-  machine's Open Firmware needs Apple's Mac OS X patch in NVRAM. A disk
-  that was set up on a real beige G3 installs the patch itself when Mac OS
-  starts from it; a disk installed on another machine (for example a
-  converted QCOW2 image) does not, and the patch has to be entered by hand
-  at the Open Firmware prompt.
+- Mac OS X (10.0.3, 10.1) starts on the Power Mac G3 (Rev C ROM) from an
+  ATA disk: in New Machine, put the disk on an ATA bus and choose its
+  Mac OS X volume in **Start up from** (it is chosen for you when the disk
+  has one). Like a real beige G3, Open Firmware needs Apple's Mac OS X
+  patch in NVRAM to load Mac OS X; every new G3 starts with it, as one
+  that has run Mac OS X does, so a disk installed on another machine (a
+  converted QCOW2 image) needs nothing typed at the Open Firmware prompt.
+  Mac OS X does not start from a SCSI disk yet: Open Firmware's SCSI
+  driver cannot read one in the emulator.

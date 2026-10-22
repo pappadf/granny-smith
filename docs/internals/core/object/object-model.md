@@ -839,7 +839,10 @@ absent key is the model's default, and within `options`, `floppies` and
 `displays` an absent member takes its default (an absent display device
 is unplugged when another one is connected).  `"storage": []` is a
 machine with no drives; `"startup": null` is "no default startup device"
-(the ROM searches).  A `model` member must agree with `model=`.  Images
+(the ROM searches).  `startup` may also name a `partition`: the startup
+volume's partition number on that disk as attached (`files.partitions`),
+which a family whose firmware boots a partition seeds (the G3's Open
+Firmware `boot-device`, for an ATA disk); the others ignore it.  A `model` member must agree with `model=`.  Images
 are not configuration: they are attached after the boot to the device at a
 position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
 n)` and `attach_cdrom(path)` name the default configuration's Nth hard

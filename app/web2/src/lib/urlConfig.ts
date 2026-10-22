@@ -25,7 +25,9 @@
 //   for it, the plugged-in one first.
 // - storage=<bus>:<unit>:<type>[,…]: the whole storage list, as the
 //   headless drive= spells an entry (`storage=ata0:0:hd,ata1:0:cd`).
-// - startup=<bus>:<unit> (or `none`): the startup device.  Without it, a
+// - startup=<bus>:<unit>[:<partition>] (or `none`): the startup device, and
+//   on a machine whose firmware boots a partition (the G3) the volume's
+//   partition number on that disk (files.partitions).  Without it, a
 //   storage= boots from its first hard disk, as the core picks.  A model
 //   with no startup-device setting (the Plus) leaves it out.
 // - nvram.<variable>=<value>: an Open Firmware variable, as setenv sets it
@@ -162,12 +164,17 @@ function parseStorage(profile: MachineProfile, s: string): StorageDevice[] | str
   return out;
 }
 
-// startup=: "<bus>:<unit>", or "none" for no startup device; undefined when
-// it is neither.
-function parseStartup(s: string): { bus: string; unit: number } | null | undefined {
+// startup=: "<bus>:<unit>[:<partition>]", or "none" for no startup device;
+// undefined when it is neither.
+function parseStartup(
+  s: string,
+): { bus: string; unit: number; partition?: number } | null | undefined {
   if (s.trim().toLowerCase() === 'none') return null;
-  const m = /^\s*([^:\s]+):(\d+)\s*$/.exec(s);
-  return m ? { bus: m[1], unit: Number(m[2]) } : undefined;
+  const m = /^\s*([^:\s]+):(\d+)(?::(\d+))?\s*$/.exec(s);
+  if (!m) return undefined;
+  return m[3] === undefined
+    ? { bus: m[1], unit: Number(m[2]) }
+    : { bus: m[1], unit: Number(m[2]), partition: Number(m[3]) };
 }
 
 // "1152x870x8" → [1152, 870, 8]; "1152x870" → [1152, 870, null]; else null.
@@ -263,7 +270,9 @@ export function applyUrlConfig(
   if (params.startup !== null) {
     const parsed = parseStartup(params.startup);
     if (parsed === undefined)
-      warnings.push(`startup=${params.startup}: a startup device is <bus>:<unit>, or none`);
+      warnings.push(
+        `startup=${params.startup}: a startup device is <bus>:<unit>[:<partition>], or none`,
+      );
     else if (!profile.storage.some((b) => b.startup)) {
       // No startup-device setting (the Plus's ROM boots the highest SCSI
       // ID): nothing to set, and the core would ignore it.

@@ -302,7 +302,45 @@
   let booting = $derived(
     profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
   );
-  let startups = $derived(profile && booting ? mc.startupChoices(profile, booting) : []);
+  // The Mac OS volumes of each hard disk image chosen, by OPFS path
+  // (files.partitions, numbered as the attached disk's partitions), and by
+  // storage position: "Start up from" offers a disk's volumes by name.
+  let volumesByPath = $state<Record<string, mc.DiskPartition[]>>({});
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, not state
+  const volumesAsked = new Set<string>();
+  function hdPath(name: string): string {
+    return hdPaths[name] ?? `/opfs/images/hd/${name}`;
+  }
+  async function lookUpVolumes(path: string): Promise<void> {
+    volumesAsked.add(path);
+    const r = await gsEval('files.partitions', [path]).catch(() => null);
+    // An image the core cannot read offers no volumes: the disk itself.
+    volumesByPath = { ...volumesByPath, [path]: Array.isArray(r) ? (r as mc.DiskPartition[]) : [] };
+  }
+  $effect(() => {
+    for (const d of doc?.storage ?? []) {
+      const name = d.type === 'hd' ? mediaImages[mc.positionKey(d)] : undefined;
+      if (name && !volumesAsked.has(hdPath(name))) void lookUpVolumes(hdPath(name));
+    }
+  });
+  let volumes = $derived.by(() => {
+    const out: Record<string, mc.DiskPartition[]> = {};
+    for (const d of doc?.storage ?? []) {
+      const name = d.type === 'hd' ? mediaImages[mc.positionKey(d)] : undefined;
+      const known = name ? volumesByPath[hdPath(name)] : undefined;
+      if (known) out[mc.positionKey(d)] = known;
+    }
+    return out;
+  });
+  // A disk whose volumes are known starts up from one of them: the one
+  // chosen, else its Mac OS X volume, else its first.
+  $effect(() => {
+    const v = volumes;
+    if (!doc) return;
+    const next = mc.settleStartupPartition(doc, v);
+    if (next !== doc) doc = next;
+  });
+  let startups = $derived(profile && booting ? mc.startupChoices(profile, booting, volumes) : []);
   let warnings = $derived(profile && doc ? mc.configWarnings(profile, doc) : []);
   // A card entry's display status, for its row.
   function cardStatus(slot: string): string {
@@ -363,11 +401,18 @@
     mediaImages = image ? { ...rest, [mc.positionKey({ bus: d.bus, unit })]: image } : rest;
   }
   function startupValue(): string {
-    return booting?.startup ? mc.positionKey(booting.startup) : '';
+    return booting?.startup ? mc.startupKey(booting.startup) : '';
   }
   function setStartupFrom(value: string): void {
-    const [bus, unit] = value.split(':');
-    edit((_, d) => mc.setStartup(d, value ? { bus, unit: Number(unit) } : null));
+    const [bus, unit, partition] = value.split(':');
+    edit((_, d) =>
+      mc.setStartup(
+        d,
+        value
+          ? { bus, unit: Number(unit), ...(partition ? { partition: Number(partition) } : {}) }
+          : null,
+      ),
+    );
   }
 
   // Cards: the inline "Add card" form.
@@ -911,8 +956,8 @@
                 value={startupValue()}
                 onchange={(e) => setStartupFrom((e.target as HTMLSelectElement).value)}
               >
-                {#each startups as s (mc.positionKey(s))}
-                  <option value={mc.positionKey(s)}>{s.label}</option>
+                {#each startups as s (mc.startupKey(s))}
+                  <option value={mc.startupKey(s)}>{s.label}</option>
                 {/each}
                 <option value="">No default (search all drives)</option>
               </Select>

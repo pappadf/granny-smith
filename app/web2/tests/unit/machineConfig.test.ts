@@ -58,9 +58,52 @@ describe('storage', () => {
   });
 
   it('the startup list holds only devices on a bus whose record can name them', () => {
+    const p = q900();
+    const doc = mc.addDevice(p, mc.defaultDocument(p), 'scsi2', 'hd');
+    expect(mc.startupChoices(p, doc).map((s) => s.bus)).toEqual(['scsi', 'scsi']);
+  });
+
+  it('a disk whose volumes are known is one startup choice per volume, by name', () => {
     const p = profile('pmg3dt');
     const doc = mc.addDevice(p, mc.defaultDocument(p), 'ata0', 'hd');
-    expect(mc.startupChoices(p, doc).map((s) => s.bus)).toEqual(['scsi', 'scsi']);
+    const volumes = {
+      'ata0:0': [
+        { partition: 3, name: 'Macintosh HD', filesystem: 'HFS+', powerpc_booter: true },
+        { partition: 4, name: 'Data', filesystem: 'HFS', powerpc_booter: false },
+      ],
+    };
+    const choices = mc.startupChoices(p, doc, volumes).filter((s) => s.bus === 'ata0');
+    expect(choices.map((s) => mc.startupKey(s))).toEqual(['ata0:0:3', 'ata0:0:4']);
+    expect(choices[0].label).toMatch(/· Macintosh HD$/);
+  });
+
+  it('the startup partition follows the disk: its Mac OS X volume, else its first', () => {
+    const p = profile('pmg3dt');
+    let doc = mc.addDevice(p, mc.defaultDocument(p), 'ata0', 'hd');
+    doc = mc.setStartup(doc, { bus: 'ata0', unit: 0 });
+    const vols = (booter: number) => ({
+      'ata0:0': [3, 4].map((n) => ({
+        partition: n,
+        name: `V${n}`,
+        filesystem: 'HFS+',
+        powerpc_booter: n === booter,
+      })),
+    });
+    // Not looked at yet: the document stands.
+    expect(mc.settleStartupPartition(doc, {})).toBe(doc);
+    doc = mc.settleStartupPartition(doc, vols(4));
+    expect(doc.startup).toEqual({ bus: 'ata0', unit: 0, partition: 4 });
+    // A chosen volume the disk has stays chosen.
+    doc = mc.setStartup(doc, { bus: 'ata0', unit: 0, partition: 3 });
+    expect(mc.settleStartupPartition(doc, vols(4))).toBe(doc);
+    // Another image, with no volume there: the disk's default again.
+    doc = mc.setStartup(doc, { bus: 'ata0', unit: 0, partition: 9 });
+    expect(mc.settleStartupPartition(doc, vols(0)).startup?.partition).toBe(3);
+    // A disk with no volumes names none.
+    expect(mc.settleStartupPartition(doc, { 'ata0:0': [] }).startup).toEqual({
+      bus: 'ata0',
+      unit: 0,
+    });
   });
 
   it('the startup list names devices by unit number, not by bay', () => {

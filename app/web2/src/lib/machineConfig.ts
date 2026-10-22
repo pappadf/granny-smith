@@ -162,23 +162,83 @@ export function setDeviceUnit(doc: ConfigDocument, index: number, unit: number):
   if (!d) return doc;
   const wasStartup = !!next.startup && next.startup.bus === d.bus && next.startup.unit === d.unit;
   d.unit = unit;
-  if (wasStartup) next.startup = { bus: d.bus, unit };
+  if (wasStartup && next.startup) next.startup = { ...next.startup, bus: d.bus, unit };
   return next;
 }
 
+// A Mac OS volume of a hard disk image, as files.partitions reports it: its
+// partition number on the disk as attached, its name, its filesystem, and
+// whether its partition carries PowerPC boot code (Mac OS X's BootX).
+export interface DiskPartition {
+  partition: number;
+  name: string;
+  filesystem: string;
+  powerpc_booter: boolean;
+}
+
+export interface StartupChoice {
+  bus: string;
+  unit: number;
+  partition?: number;
+  label: string;
+}
+
 // The devices the startup record can name: hard disks and CD-ROM drives on
-// a bus whose record can name them.
+// a bus whose record can name them.  A hard disk whose volumes are known
+// (`partitions`, by storage position) is one choice per volume, by name.
 export function startupChoices(
   profile: MachineProfile,
   doc: ConfigDocument,
-): Array<{ bus: string; unit: number; label: string }> {
+  partitions: Record<string, DiskPartition[]> = {},
+): StartupChoice[] {
   return doc.storage
     .filter((d) => storageBus(profile, d.bus)?.startup)
-    .map((d) => ({
-      bus: d.bus,
-      unit: d.unit,
-      label: `${deviceTypeLabel(profile, d.bus, d.type)} · ${storageLabel(profile, d)}`,
-    }));
+    .flatMap((d) => {
+      const label = `${deviceTypeLabel(profile, d.bus, d.type)} · ${storageLabel(profile, d)}`;
+      const parts = d.type === 'hd' ? (partitions[positionKey(d)] ?? []) : [];
+      if (parts.length === 0) return [{ bus: d.bus, unit: d.unit, label }];
+      return parts.map((p) => ({
+        bus: d.bus,
+        unit: d.unit,
+        partition: p.partition,
+        label: `${label} · ${p.name}`,
+      }));
+    });
+}
+
+// The key a startup choice is selected under: its position, and its
+// partition when it names one ("ata0:0:3").
+export function startupKey(s: { bus: string; unit: number; partition?: number }): string {
+  return s.partition ? `${positionKey(s)}:${s.partition}` : positionKey(s);
+}
+
+// The volume a disk starts up from when none is chosen: the one with
+// PowerPC boot code (Mac OS X on a G3), else the first.
+export function defaultStartupPartition(parts: DiskPartition[]): number | undefined {
+  return (parts.find((p) => p.powerpc_booter) ?? parts[0])?.partition;
+}
+
+// Keep the startup device's partition one its disk has: with the disk's
+// volumes known, a missing or stale partition becomes the disk's default;
+// a disk known to have none names none; a disk not looked at yet keeps what
+// the document says.  Returns `doc` itself when nothing changes.
+export function settleStartupPartition(
+  doc: ConfigDocument,
+  partitions: Record<string, DiskPartition[]>,
+): ConfigDocument {
+  const s = doc.startup;
+  if (!s) return doc;
+  const parts = partitions[positionKey(s)];
+  if (!parts) return doc;
+  const want = parts.some((p) => p.partition === s.partition)
+    ? s.partition
+    : defaultStartupPartition(parts);
+  if (want === s.partition) return doc;
+  const next = cloneDocument(doc);
+  next.startup = want
+    ? { bus: s.bus, unit: s.unit, partition: want }
+    : { bus: s.bus, unit: s.unit };
+  return next;
 }
 
 // A device's place as a sentence fragment: "SCSI ID 0", the bus named only
@@ -200,7 +260,7 @@ function firstStartupDevice(
 
 export function setStartup(
   doc: ConfigDocument,
-  startup: { bus: string; unit: number } | null,
+  startup: { bus: string; unit: number; partition?: number } | null,
 ): ConfigDocument {
   const next = cloneDocument(doc);
   next.startup = startup;

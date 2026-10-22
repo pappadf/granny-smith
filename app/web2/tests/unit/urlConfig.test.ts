@@ -134,6 +134,10 @@ describe('URL configuration parameters', () => {
       startup: { bus: 'scsi', unit: 1 },
     });
     expect((apply('pmg3dt', 'startup=none').config as { startup: unknown }).startup).toBeNull();
+    expect(
+      (apply('pmg3dt', 'storage=ata0:0:hd&startup=ata0:0:3').config as { startup: unknown })
+        .startup,
+    ).toEqual({ bus: 'ata0', unit: 0, partition: 3 });
   });
 
   // S1018-56: the Plus's ROM boots the highest SCSI ID; it has no setting.
@@ -157,7 +161,7 @@ describe('URL configuration parameters', () => {
       'storage=scsi-0-hd: scsi-0-hd is not <bus>:<unit>:<type>',
     ]);
     expect(apply('pmg3dt', 'startup=scsi').warnings).toEqual([
-      'startup=scsi: a startup device is <bus>:<unit>, or none',
+      'startup=scsi: a startup device is <bus>:<unit>[:<partition>], or none',
     ]);
   });
 
