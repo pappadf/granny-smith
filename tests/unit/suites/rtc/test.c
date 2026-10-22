@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // The RTC drives VIA1 for its one-second interrupt (CA2) and the transceiver
 // handshake.  This suite constructs the chip with no VIA (rtc_set_via is never
@@ -324,7 +325,35 @@ static void test_construction_defaults(void) {
     rtc_delete(rtc);
 }
 
+// A fresh chip holds the host's LOCAL time (#351): the Mac RTC counts local
+// seconds since 1904, so a seed from UTC put the guest's clock hours off.
+// Fixed POSIX zones (no DST) make the expected offset exact; the seed and the
+// bracketing time() calls may straddle a second, hence the [before, after].
+static void check_seed_in_zone(const char *tz, int64_t offset) {
+    setenv("TZ", tz, 1);
+    tzset();
+    int64_t before = (int64_t)time(NULL);
+    rtc_t *rtc = rtc_init(NULL, NULL, true, NULL);
+    int64_t after = (int64_t)time(NULL);
+    if (!rtc)
+        return;
+    // Mac seconds back to UTC unix seconds: undo the epoch and the zone.
+    int64_t seeded = (int64_t)rtc_get_seconds(rtc) - 2082844800 - offset;
+    CHECK(seeded >= before && seeded <= after, "TZ=%s: seed is %lld s off the host's local time", tz,
+          (long long)(seeded < before ? seeded - before : seeded - after));
+    rtc_delete(rtc);
+}
+
+static void test_seed_is_host_local_time(void) {
+    check_seed_in_zone("UTC0", 0);
+    check_seed_in_zone("EST5", -5 * 3600); // POSIX signs are inverted: 5 h west
+    check_seed_in_zone("IST-5:30", 5 * 3600 + 30 * 60); // a half-hour zone east
+    unsetenv("TZ");
+    tzset();
+}
+
 int main(void) {
+    test_seed_is_host_local_time();
     test_fresh_chip_accepts_a_command();
     test_construction_defaults();
     test_protect_covers_both_windows();

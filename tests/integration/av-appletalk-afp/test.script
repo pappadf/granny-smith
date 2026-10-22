@@ -1,0 +1,67 @@
+# AppleShare from the AV Quadras: Chooser -> AppleShare over LocalTalk.
+# See config.mk.  Coordinates are global, on the 640x480 desktop.
+
+include "../lib/mac.script"
+
+let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
+let av_hd = "../../data/systems/system_7_1_77mb_av.img"
+
+# Click at global (x, y) once the cursor is there.
+def gclick(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    machine.adb.mouse.click false
+    wait_mouse_taken(100000000)
+}
+
+# Boot `model` from the 7.1 AV disk, open the Chooser and pick AppleShare:
+# the NBP lookup that lists the server goes out through PSC channel 5.
+# Both models draw the same 640x480 Chooser from the same disk, so they share
+# one golden; machine.id says which model drew it.
+def av_chooser_appleshare(model, golden) {
+    machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd "${$av_hd}" 0
+    wait_desktop(1500000000)
+    assert machine.id == $model "booted the wrong model"
+    # The share outlives machine.boot: publish it once.
+    if appletalk.afp.volumes.count == 0 {
+        assert appletalk.afp.volumes.add("Shared", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+    }
+    machine.adb.mouse.move 300 300 "global"
+    wait_cursor(20)
+    machine.adb.mouse.move 20 8 "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    scheduler.run 8000000
+    machine.adb.mouse.move 60 132 "global"
+    scheduler.run 6000000
+    machine.adb.mouse.click false
+    scheduler.run 150000000
+    gclick(148, 115)
+    run_until_match($golden, 200000000, 5000000)
+    check($golden)
+    assert appletalk.stats.ddp_in > 0 "no DDP frame came from the guest"
+    assert appletalk.stats.llap_tx > 0 "the server answered nothing"
+}
+
+if have_media($av_hd) {
+    # --- Quadra 840AV: list, then Guest, then the volume list ----------------
+    av_chooser_appleshare("q840av", "server-listed.png")
+    gclick(380, 111)
+    scheduler.run 10000000
+    gclick(428, 302)
+    scheduler.run 150000000
+    gclick(453, 258)
+    run_until_match("q840av-volume-list.png", 600000000, 10000000)
+    check("q840av-volume-list.png")
+    assert appletalk.afp.sessions.count == 1 "the 840AV opened no ASP session"
+
+    # --- Centris/Quadra 660AV: the same lookup lists the server --------------
+    av_chooser_appleshare("q660av", "server-listed.png")
+} else {
+    skip_test("needs ${$av_hd}")
+}
+
+quit

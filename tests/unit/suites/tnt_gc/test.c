@@ -212,6 +212,10 @@ void scsi_53c96_write(struct scsi_53c96 *c, uint32_t reg, uint8_t value) {
     (void)reg;
     (void)value;
 }
+bool scsi_53c96_dreq(struct scsi_53c96 *c) {
+    (void)c;
+    return false;
+}
 
 // --- VIA/SCC apertures are not exercised here; the island dispatch
 // references the accessors, so give them inert interfaces ---
@@ -525,6 +529,10 @@ TEST(test_dbdma_island_routing) {
     ASSERT_TRUE(stat & DBDMA_RUN);
     ASSERT_EQ_INT((int)(stat & DBDMA_ACTIVE), 0);
     ASSERT_EQ_INT((int)reg_read(0x8800 + DBDMA_REG_CMDPTRLO), 0x110);
+    // Byte reads see the little-endian register a byte at a time (the
+    // SCSI Manager reads channel 0's s-bits as the low status byte).
+    for (uint32_t j = 0; j < 4; j++)
+        ASSERT_EQ_INT(tnt_gc_read8(&s_cfg, 0x8800 + DBDMA_REG_STATUS + j), (int)((stat >> (8 * j)) & 0xFFu));
     // The NOP's interrupt pulsed Grand Central event bit 8 (channel ==
     // interrupt number).
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> 8) & 1, 1);

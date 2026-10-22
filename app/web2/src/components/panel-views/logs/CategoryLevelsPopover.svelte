@@ -20,8 +20,10 @@
 
   async function onLevelChange(cat: string, ev: Event) {
     const t = ev.target as HTMLInputElement;
-    const v = parseInt(t.value, 10);
-    if (!Number.isFinite(v) || v < 0) {
+    // Any non-negative integer: the core has no upper limit, and some
+    // categories use levels well above 9.
+    const v = Number(t.value);
+    if (t.value.trim() === '' || !Number.isInteger(v) || v < 0) {
       t.value = String(logs.catLevels[cat] ?? 0);
       return;
     }
@@ -56,7 +58,7 @@
           <span class="cat-name">{cat}</span>
           <NumberInput
             min="0"
-            max="9"
+            step="1"
             style="width: 56px"
             value={logs.catLevels[cat]}
             onchange={(e) => onLevelChange(cat, e)}

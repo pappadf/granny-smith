@@ -24,9 +24,9 @@ include "../lib/mac.script"
 let cd = "${$EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
 
 def finder(label, golden) {
-    # ~13 G instructions: Open Firmware, the 68k Start Manager's media hunt,
+    # ~26 G instructions: Open Firmware, the 68k Start Manager's media hunt,
     # the CD's System and extensions, the Finder opening the disc's window.
-    scheduler.run 13000000000
+    scheduler.run 26000000000
     try(machine.screen.save("${$RESULTS_DIR}/${$label}.png"), none)
     check_ex($golden, 0, 440, 20, 640)
 }

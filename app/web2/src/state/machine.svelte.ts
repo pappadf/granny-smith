@@ -1,6 +1,8 @@
 // Machine state — current emulator status, model info, drive activity glyphs,
 // scheduler mode, zoom level.
 
+import { showNotification } from '@/state/toasts.svelte';
+
 // 'crashed': the emulator's worker died (a wasm trap or abort); nothing more
 // can run in this page (bus/emulator.ts markBridgeDead).
 export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped' | 'crashed';
@@ -77,9 +79,10 @@ interface MachineState {
   // re-asserted after every boot/restart (bus/emulator.ts).
   capsLock: boolean;
   // Effective CPU speed multiplier the core is currently applying (1 = the
-  // original Mac's speed). Only meaningful — and only shown — in `accel` mode,
-  // where the adaptive governor moves it; pushed from the core on change
-  // (bus/emulator.ts handleSchedulerSpeed). 1 in every other mode.
+  // original Mac's speed). The adaptive governor moves it: above 1 in `accel`
+  // mode, below 1 in `accel` and `live` alike when this computer cannot
+  // emulate a frame per VBL period; pushed from the core on change
+  // (bus/emulator.ts handleSchedulerSpeed). Always 1 in `max`.
   acceleratedSpeed: number;
   // Live performance readout, pushed from the core ~1 Hz:
   // emulated MIPS from instruction-count deltas, and the RAF tick rate the
@@ -141,7 +144,7 @@ export const machine: MachineState = $state({
   zoom: 200,
 });
 
-const ZOOM_MIN = 100;
+const ZOOM_MIN = 50;
 const ZOOM_MAX = 300;
 
 // Whether the user has chosen a zoom.  Until they do, the display fits the
@@ -154,10 +157,10 @@ export function setZoom(value: number): void {
   machine.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(value)));
 }
 
-// The largest zoom, in 10 % steps from 100 % up to the 200 % default, at
+// The largest zoom, in 10 % steps from 50 % up to the 200 % default, at
 // which a `width` × `height` screen (pixel aspect parH/parW) fits a
 // `boxW` × `boxH` display area.  Applied only while the user has not set a
-// zoom; at 100 % a screen still too big for the area scrolls.
+// zoom; at 50 % a screen still too big for the area scrolls.
 export function fitZoom(
   width: number,
   height: number,
@@ -168,6 +171,30 @@ export function fitZoom(
   if (zoomChosen || width <= 0 || height <= 0 || boxW <= 0 || boxH <= 0) return;
   const fits = Math.min(boxW / width, boxH / (height * aspect)) * 100;
   machine.zoom = Math.max(ZOOM_MIN, Math.min(200, Math.floor(fits / 10) * 10));
+}
+
+// Whether the user has chosen a pacing mode in this page (the toolbar, or
+// ?speed=).  Until they do, each machine runs at its model's default
+// (defaultSchedulerMode), applied as it appears (bus/boot.ts).
+let schedulerChosen = false;
+
+export function markSchedulerChosen(): void {
+  schedulerChosen = true;
+}
+
+export function isSchedulerChosen(): boolean {
+  return schedulerChosen;
+}
+
+export function _resetSchedulerChoiceForTests(): void {
+  schedulerChosen = false;
+}
+
+// The pacing a machine starts at when the user has chosen none: Faster,
+// except on a model whose profile asks for Real (capabilities.realtime_default:
+// the Lisa family).
+export function defaultSchedulerMode(realtimeDefault: boolean): SchedulerMode {
+  return realtimeDefault ? 'live' : 'accel';
 }
 
 // Pure state update. Pushing the mode to the emulator core lives in
@@ -221,6 +248,30 @@ export function setPerfStats(
 // identity re-fire even for back-to-back saves.
 export function setCheckpointSaved(ms: number): void {
   machine.checkpoint = { at: Date.now(), ms };
+  checkpointFailureToastAt = null;
+}
+
+// Core-pushed quick-checkpoint (autosave) failure: the save was not written,
+// and the last one on disk is all a reload would resume.  Said once per run
+// of failures: an autosave every few seconds that keeps failing would
+// otherwise fill the screen.  A save that works ends the run; a run that
+// lasts is said again after CHECKPOINT_FAILURE_REPEAT_MS.
+export const CHECKPOINT_FAILURE_REPEAT_MS = 10 * 60_000;
+let checkpointFailureToastAt: number | null = null;
+
+// Returns whether a toast was shown.
+export function noteCheckpointFailed(error: string, now = Date.now()): boolean {
+  if (
+    checkpointFailureToastAt !== null &&
+    now - checkpointFailureToastAt < CHECKPOINT_FAILURE_REPEAT_MS
+  )
+    return false;
+  checkpointFailureToastAt = now;
+  showNotification(
+    `Automatic save failed${error ? ` (${error})` : ''}: the machine's state was not saved, so a reload resumes an older state.`,
+    'error',
+  );
+  return true;
 }
 
 // ---- Drive activity ----

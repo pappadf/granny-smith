@@ -21,7 +21,7 @@ static const uint32_t pm7500_ram_options_kb[] = {
     311296, 327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
-// external 53C94 chain is present but empty until the CD-ROM phase.
+// 53C94 carries the CD-ROM drive and the external chain (machine.scsi2).
 
 // PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
@@ -116,15 +116,12 @@ const hw_profile_t machine_pm7500 = {
     .ram_options = pm7500_ram_options_kb,
     // Factory configuration: an internal CD-ROM drive at SCSI ID 3, "Most
     // configurations also include a built-in CD-ROM drive" (Power Macintosh
-    // 7500/8500 Developer Note, S1).  It is not in the default configuration
-    // yet, and that is not an oversight: on the real machine the CD sits on
-    // the SLOW 5 MB/s Curio 53C94 bus, the one also brought out to the
-    // external DB-25, not on the 10 MB/s MESH bus that carries the internal
-    // hard disk ("a SCSI bus for external SCSI devices and for the internal
-    // CD-ROM drive", ibid. S3).  The 53C94 is built with NO bus attached
-    // (tnt.c), so there is nowhere correct to put it.  Measured: seating a
-    // SONY CD-ROM at ID 3 on MESH instead breaks tnt-voodoo2-glide's Mac OS
-    // 8.1 startup.
+    // 7500/8500 Developer Note, S1).  It sits on the SLOW 5 MB/s Curio 53C94
+    // bus, the one also brought out to the external DB-25, not on the 10 MB/s
+    // MESH bus that carries the internal hard disk ("a SCSI bus for external
+    // SCSI devices and for the internal CD-ROM drive", ibid. S3) -- tnt.c
+    // builds that bus as `machine.scsi2`.  Measured: seating it on MESH
+    // instead breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
     .storage = tnt_storage_7500,
     .default_storage = tnt_default_storage,
     .appletalk = true,

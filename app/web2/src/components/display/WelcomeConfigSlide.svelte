@@ -176,9 +176,14 @@
     '400k': 84 + 409_600 + 9_600,
     '800k': 84 + 819_200 + 19_200,
   };
+  // A 720K disk is MFM, which those (GCR) drives do not read, though it is
+  // smaller than an 800K one.
+  const MFM_720K = new Set([737_280, 737_280 + 84]);
   function floppyChoices(type: string): string[] {
     const max = FLOPPY_MAX[type];
-    return max ? fdNames.filter(fitsUnder(fdPaths, max)) : fdNames;
+    if (!max) return fdNames;
+    const fits = fitsUnder(fdPaths, max);
+    return fdNames.filter((n) => fits(n) && !MFM_720K.has(mediaSizes[fdPaths[n]]));
   }
   // A bus whose blank disks are ProFile images (files.profile_create, the
   // argument a block count) takes ProFile-sized disks: its menu left out
@@ -190,6 +195,17 @@
     if (!profile) return hdNames;
     const max = 2 * 1024 * Math.max(...blanks.map((b) => Number(b.arg) || 0));
     return hdNames.filter(fitsUnder(hdPaths, max));
+  }
+
+  // The hard-disk images `key`'s menu offers: the bus's, less any another
+  // device has.  One image at two SCSI ids is two targets writing one file.
+  function diskChoicesFor(bus: StorageBus, key: string): string[] {
+    const taken = new Set(
+      Object.entries(mediaImages)
+        .filter(([k, v]) => k !== key && v)
+        .map(([, v]) => v),
+    );
+    return diskChoices(bus).filter((n) => !taken.has(n));
   }
 
   async function refreshOpfs() {
@@ -279,7 +295,14 @@
   );
   let modeChoices = $derived(connected ? (connected.modes[monitorId] ?? []) : []);
   let modeValue = $derived(connected && doc ? (doc.displays[connected.id]?.mode ?? '') : '');
-  let startups = $derived(profile && doc ? mc.startupChoices(profile, doc) : []);
+  // What Start will boot: a hard disk with no image is dropped and the
+  // startup device moves off it, so "Start up from" offers and shows that
+  // document's -- "No default" while the only hard disk (a Lisa's ProFile)
+  // has no image, the disk again once it has one (S1018-55).
+  let booting = $derived(
+    profile && doc ? mc.dropImagelessDisks(profile, doc, mediaImages).doc : null,
+  );
+  let startups = $derived(profile && booting ? mc.startupChoices(profile, booting) : []);
   let warnings = $derived(profile && doc ? mc.configWarnings(profile, doc) : []);
   // A card entry's display status, for its row.
   function cardStatus(slot: string): string {
@@ -340,7 +363,7 @@
     mediaImages = image ? { ...rest, [mc.positionKey({ bus: d.bus, unit })]: image } : rest;
   }
   function startupValue(): string {
-    return doc?.startup ? mc.positionKey(doc.startup) : '';
+    return booting?.startup ? mc.positionKey(booting.startup) : '';
   }
   function setStartupFrom(value: string): void {
     const [bus, unit] = value.split(':');
@@ -351,8 +374,9 @@
   let addingCard = $state(false);
   let addCardId = $state('');
   let addSlot = $state('');
-  // Every card of the tree, the ones that cannot be added now disabled with
-  // the reason (an unavailable ROM, no free slot it fits).
+  // Every card of the tree, each that cannot be added now with the reason
+  // (an unavailable ROM, no free slot it fits).  One without its ROM stays
+  // choosable, so the form can say what it needs and offer to load it.
   let cardChoices = $derived(
     profile && doc
       ? profile.cards.map((c) => {
@@ -367,9 +391,13 @@
         })
       : [],
   );
-  let addSlotChoices = $derived(cardChoices.find((c) => c.card.id === addCardId)?.slots ?? []);
+  let addChoice = $derived(cardChoices.find((c) => c.card.id === addCardId));
+  let addSlotChoices = $derived(addChoice?.slots ?? []);
+  // A card the form can show: one that can be added, or one that only needs
+  // its ROM loaded.
+  const offered = (c: (typeof cardChoices)[number]) => !c.reason || c.card.status === 'unavailable';
   function openAddCard(): void {
-    const first = cardChoices.find((c) => !c.reason);
+    const first = cardChoices.find((c) => !c.reason) ?? cardChoices.find(offered);
     addCardId = first?.card.id ?? '';
     addSlot = first?.slots[0]?.id ?? '';
     addingCard = true;
@@ -379,7 +407,7 @@
       addSlot = addSlotChoices[0]?.id ?? '';
   });
   function confirmAddCard(): void {
-    if (!addCardId || !addSlot) return;
+    if (!addCardId || !addSlot || addChoice?.reason) return;
     const [id, slot] = [addCardId, addSlot];
     edit((p, d) => mc.addCard(p, d, id, slot));
     addingCard = false;
@@ -401,6 +429,12 @@
   let createKind = $state<'hd' | 'fd'>('hd');
   let createDisks = $state<BlankDisk[]>([]);
   let createTarget = $state(''); // "fd0" or "scsi:0"
+  let createHighDensity = $state(true); // the floppy drive reads 1.4 MB disks
+  // The picker the dialog was opened from, and the value it showed: the
+  // dialog's every close puts both back (the picker showed "Create blank
+  // image..." or nothing, and focus went to the hidden Home slide).
+  let createSelect: HTMLSelectElement | null = null;
+  let createPrevious = '';
 
   // The new value of an image picker: the pick, or for "Upload image…" the
   // uploaded file -- or, when that was cancelled, the previous value (and
@@ -426,13 +460,16 @@
   async function onFloppyImage(e: Event, id: string): Promise<void> {
     const select = e.target as HTMLSelectElement;
     if (select.value === CREATE_SENTINEL) {
-      select.value = floppyImages[id] ?? NO_DISK;
+      openCreate(select, floppyImages[id] || NO_DISK);
       createKind = 'fd';
       createTarget = id;
+      // The 400K / 800K drives (FLOPPY_MAX) read no high-density disk.
+      const pos = profile?.floppies.find((p) => p.id === id);
+      createHighDensity = !((doc?.floppies[id] ?? pos?.default ?? '') in FLOPPY_MAX);
       createOpen = true;
       return;
     }
-    const v = await pickImage(select, floppyImages[id] ?? NO_DISK, 'fd');
+    const v = await pickImage(select, floppyImages[id] || NO_DISK, 'fd');
     floppyImages = { ...floppyImages, [id]: v === NO_DISK ? '' : v };
   }
 
@@ -440,7 +477,7 @@
     const select = e.target as HTMLSelectElement;
     const empty = type === 'cd' ? NO_DISC : CHOOSE_IMAGE;
     if (select.value === CREATE_SENTINEL) {
-      select.value = mediaImages[key] || empty;
+      openCreate(select, mediaImages[key] || empty);
       createKind = 'hd';
       createDisks = disks;
       createTarget = key;
@@ -451,11 +488,30 @@
     mediaImages = { ...mediaImages, [key]: v === empty ? '' : v };
   }
 
+  function openCreate(select: HTMLSelectElement, previous: string): void {
+    select.value = previous;
+    createSelect = select;
+    createPrevious = previous;
+  }
+
+  // The dialog closed (Cancel, Esc, or a disk made): the picker shows its
+  // value -- the new disk, or what it showed before -- and has the focus.
+  async function closeCreate(value: string): Promise<void> {
+    createOpen = false;
+    await tick();
+    const select = createSelect;
+    createSelect = null;
+    if (!select?.isConnected) return;
+    select.value = value;
+    select.focus();
+  }
+
   async function onImageCreated(name: string) {
     createOpen = false;
     await refreshOpfs();
     if (createKind === 'fd') floppyImages = { ...floppyImages, [createTarget]: name };
     else mediaImages = { ...mediaImages, [createTarget]: name };
+    await closeCreate(name);
   }
 
   // --- Start ---------------------------------------------------------------------
@@ -629,7 +685,7 @@
         {#if profile.slots.length > 0}
           <div class="section-head">
             <SectionHeading class="config-section" rule>Expansion cards</SectionHeading>
-            {#if !addingCard && cardChoices.some((c) => !c.reason)}
+            {#if !addingCard && cardChoices.some(offered)}
               <Button size="sm" icon="plus" onclick={openAddCard} data-testid="cfg-add-card"
                 >Add card</Button
               >
@@ -673,9 +729,23 @@
           {#if addingCard}
             <div class="add-form">
               <Select id="cfg-add-card" bind:value={addCardId} aria-label="Card">
+                <!-- A card on the emulator's substitute ROM, or without the
+                     ROM it needs, is marked in the list (S1018-51). -->
                 {#each cardChoices as ch (ch.card.id)}
-                  <option value={ch.card.id} disabled={!!ch.reason}
-                    >{ch.card.label}{ch.reason ? ` — ${ch.reason}` : ''}</option
+                  {@const badge =
+                    ch.card.status === 'unavailable'
+                      ? 'ROM needed'
+                      : ch.card.status === 'substitute'
+                        ? 'Substitute ROM'
+                        : undefined}
+                  <option
+                    value={ch.card.id}
+                    disabled={!offered(ch)}
+                    data-badge={badge}
+                    data-badge-intent={ch.card.status === 'unavailable' ? 'warning' : 'info'}
+                    >{ch.card.label}{ch.reason && ch.card.status !== 'unavailable'
+                      ? ` — ${ch.reason}`
+                      : ''}</option
                   >
                 {/each}
               </Select>
@@ -684,21 +754,25 @@
                   <option value={s.id}>{s.label}</option>
                 {/each}
               </Select>
-              <Button size="sm" variant="primary" onclick={confirmAddCard} disabled={!addSlot}
-                >Add</Button
+              <Button
+                size="sm"
+                variant="primary"
+                onclick={confirmAddCard}
+                disabled={!addSlot || !!addChoice?.reason}>Add</Button
               >
               <Button size="sm" variant="ghost" onclick={() => (addingCard = false)}>Cancel</Button>
             </div>
+            {#if addChoice?.card.status === 'unavailable'}
+              {@const needs = addChoice.card}
+              <p class="item-note" data-testid="cfg-add-card-needs">
+                {addChoice.reason}.
+                <Link
+                  href="#upload"
+                  onclick={(e: Event) => (e.preventDefault(), uploadCardRom(needs))}>Load ROM…</Link
+                >
+              </p>
+            {/if}
           {/if}
-          {#each cardChoices.filter((ch) => ch.card.status === 'unavailable') as ch (ch.card.id)}
-            <p class="item-note">
-              {ch.card.label}: {ch.reason}.
-              <Link
-                href="#upload"
-                onclick={(e: Event) => (e.preventDefault(), uploadCardRom(ch.card))}>Load ROM…</Link
-              >
-            </p>
-          {/each}
         {/if}
 
         {#each warnings as w (w)}
@@ -787,7 +861,7 @@
                   onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
                 >
                   <option>{empty}</option>
-                  {#each d.type === 'cd' ? cdNames : diskChoices(bus) as n (n)}
+                  {#each d.type === 'cd' ? cdNames : diskChoicesFor(bus, key) as n (n)}
                     <option>{n}</option>
                   {/each}
                   <option>{UPLOAD_SENTINEL}</option>
@@ -865,7 +939,8 @@
   open={createOpen}
   kind={createKind}
   disks={createDisks}
-  onClose={() => (createOpen = false)}
+  highDensity={createHighDensity}
+  onClose={() => void closeCreate(createPrevious)}
   onCreated={onImageCreated}
 />
 

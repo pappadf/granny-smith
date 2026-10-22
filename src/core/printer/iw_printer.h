@@ -71,6 +71,11 @@ void iw_printer_feed(iw_printer_t *p, const uint8_t *data, size_t len);
 // End the current job now (PAP EOF, eject()): the document goes to the sink.
 void iw_printer_end_job(iw_printer_t *p);
 
+// End a job that came over LocalTalk: as iw_printer_end_job, and when the
+// job was cut off (`abandoned`) or printed nothing, the paper goes on to the
+// next top of form, so the next job starts on a new page.
+void iw_printer_end_network_job(iw_printer_t *p, bool abandoned);
+
 // The machine's printer while it is connected to LocalTalk, else NULL: the
 // PAP server's ImageWriter personality prints on it.
 iw_printer_t *iw_printer_localtalk(void);

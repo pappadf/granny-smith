@@ -24,8 +24,8 @@
 uint8_t lisa_keycode_for_adb(int adb_code);
 
 // The boot ROM's AsciiTable, indexed by (lisa_keycode - 0x20), 96 entries.
-// $00 means "this key has no ASCII form" (Option, Tab, Alpha Lock, Shift,
-// Command) or an unused slot.  Exposed for the test that verifies the map
+// $00 means "this key has no ASCII form" (Option, `~, Tab, Alpha Lock,
+// Shift, Command) or an unused slot.  Exposed for the test that verifies the map
 // above against it, and for nothing else.
 extern const unsigned char lisa_rom_ascii_table[96];
 

@@ -154,12 +154,17 @@ describe('the frontend never branches on a bus, slot, card or model id', () => {
 
 // Parameter memory is device state the core seeds from the configuration
 // when it builds a machine; the frontend never writes it (no PRAM or NVRAM
-// poke, no boot-device byte, on the boot path or anywhere else).
+// poke, no boot-device byte, on the boot path or anywhere else).  The one
+// exception is lib/urlConfig.ts, which only fills the configuration
+// document's `nvram` member from a URL's nvram.<name>= parameters: the core
+// validates that member and seeds the NVRAM from it, as it does for config=.
+const PRAM_EXEMPT = new Set(['lib/urlConfig.ts']);
 describe('the frontend never writes PRAM or NVRAM', () => {
   it('names no parameter-memory surface in src/', () => {
     const PRAM = /rtc\.pram|pram_init|\bnvram\b|boot_device/i;
     const offenders: string[] = [];
     for (const file of walk(SRC)) {
+      if (PRAM_EXEMPT.has(relative(SRC, file).replace(/\\/g, '/'))) continue;
       readFileSync(file, 'utf8')
         .split('\n')
         .forEach((line, i) => {

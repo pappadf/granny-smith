@@ -207,6 +207,34 @@ test.describe('checkpoint save → reload → resume', () => {
     await expect(resumeModal(page)).toHaveCount(0);
   });
 
+  // Shut down tears the machine down and discards its autosave (S1018-39,
+  // S1018-40): no machine is left, and a reload does not offer to resume it.
+  test('Shut down leaves no machine and a reload does not offer Resume', async ({ page }) => {
+    test.setTimeout(180_000);
+    await gotoWeb2(page);
+    await uploadRom(page, PLUS_ROM);
+    await startMachine(page, 'plus');
+    await page.waitForTimeout(2_000);
+    await createCheckpoint(page);
+
+    await page.getByRole('button', { name: 'Shut down' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Shut Down' }).click();
+    await expect(page.locator('.toast .msg').filter({ hasText: 'Machine shut down' })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator('.welcome-layer')).toHaveCount(1);
+    expect(await gsEvalInPage(page, 'machine.created')).toBe(false);
+    // The Checkpoints tab drops the autosave row; the created one stays.
+    await expect(page.locator('.checkpoints-view .tbody .tr')).toHaveCount(1, { timeout: 10_000 });
+    await expect(
+      page.locator('.checkpoints-view .tbody .tr').filter({ hasText: /^\s*Autosave/ }),
+    ).toHaveCount(0);
+
+    await reloadWeb2(page);
+    await expect(page.locator('.welcome-layer')).toHaveCount(1, { timeout: 30_000 });
+    await expect(resumeModal(page)).toHaveCount(0);
+  });
+
   test('SE/30: restore after reload keeps the SE/30 profile (regression: Plus fallback)', async ({
     page,
   }) => {

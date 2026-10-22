@@ -29,21 +29,18 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
     vfs_dir_t *dir = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
-    if (rc < 0) {
-        out_printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
-        return val_bool(false);
-    }
+    if (rc < 0)
+        return val_err("ls: cannot open directory '%s': %s", path, strerror(-rc));
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
         out_printf("%s\n", entry.name);
-    bool ok = (r == 0);
-    if (r < 0) {
-        // Surface readdir errors instead of silently truncating the listing.
-        out_printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
-    }
     be->closedir(dir);
-    return val_bool(ok);
+    // Surface readdir errors instead of silently truncating the listing.
+    if (r < 0)
+        return val_err("ls: readdir error in '%s': %s", path, strerror(-r));
+    // The listing is the answer: nothing to print after it
+    return val_none();
 }
 
 // `files.list([path])` — like `files.ls`, but returns a structured listing the
@@ -97,7 +94,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         }
         // Expandable: a non-empty file the registry recognises (read from a
         // bounded probe of its head and tail; a compressed archive member is
-        // not decoded to find out).
+        // decoded to find out only up to vfs_is_expandable's cap).
         bool expandable = false;
         if (!(mode & VFS_MODE_DIR) && size > 0) {
             char child[VFS_PATH_MAX];
@@ -132,8 +129,8 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
     const char *dir = argv[0].s;
     if (!dir || !*dir)
         return val_err("files.mkdir: expected a non-empty path");
-    // The result is the whole answer: no printout beside it.  A directory
-    // already there is success (mkdir -p), so a caller making sure a
+    // Success prints nothing and answers nothing; a failure is an error.  A
+    // directory already there is success (mkdir -p), so a caller making sure a
     // directory exists needs no check first; anything else in the way, or
     // a refusal, is an error naming why.
     int rc = vfs_mkdir(dir);
@@ -144,7 +141,7 @@ value_t files_method_mkdir(struct object *self, const member_t *m, int argc, con
     }
     if (rc < 0)
         return val_err("files.mkdir: cannot create directory '%s': %s", dir, strerror(-rc));
-    return val_bool(true);
+    return val_none();
 }
 
 value_t files_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -157,10 +154,8 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
     vfs_file_t *f = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
-    if (rc < 0) {
-        out_printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
-        return val_bool(false);
-    }
+    if (rc < 0)
+        return val_err("cat: cannot open '%s': %s", path, strerror(-rc));
     // A heap chunk: this runs at the bottom of a deep shell call chain, and
     // a WASM stack is small.
     enum { CAT_CHUNK = 4096 };
@@ -170,15 +165,12 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
         return val_err("cat: out of memory");
     }
     uint64_t off = 0;
-    bool ok = true;
+    int rr = 0;
     for (;;) {
         size_t got = 0;
-        int rr = be->read(f, off, buf, CAT_CHUNK, &got);
-        if (rr < 0) {
-            out_printf("cat: read error on '%s': %s\n", path, strerror(-rr));
-            ok = false;
+        rr = be->read(f, off, buf, CAT_CHUNK, &got);
+        if (rr < 0)
             break;
-        }
         if (got == 0)
             break;
         // The sink (out.h): the job's output, or stdout.
@@ -187,7 +179,10 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
     }
     free(buf);
     be->close(f);
-    return val_bool(ok);
+    if (rr < 0)
+        return val_err("cat: read error on '%s': %s", path, strerror(-rr));
+    // The contents are the answer: nothing to print after them
+    return val_none();
 }
 
 // `files.cd(path)` -- make a directory the current one: the directory

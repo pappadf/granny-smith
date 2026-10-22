@@ -37,6 +37,23 @@ describe('ContextMenu', () => {
     expect(danger?.textContent?.trim()).toBe('Delete');
   });
 
+  // S1018-51: a select's option marked data-badge (the Add-card list's
+  // "Substitute ROM" / "ROM needed") shows it as a pill in the menu.
+  it('draws an item badge as a pill beside its label', async () => {
+    openContextMenu(
+      [
+        { label: 'Display Card 8•24', action: () => undefined, badge: 'Substitute ROM' },
+        { label: 'Voodoo2', action: () => undefined },
+      ],
+      40,
+      40,
+    );
+    await flushFrames();
+    const items = document.querySelectorAll('.context-menu .item');
+    expect(items[0].querySelector('.gs-badge')?.textContent).toBe('Substitute ROM');
+    expect(items[1].querySelector('.gs-badge')).toBeNull();
+  });
+
   it('clicking an item fires its action and dismisses the menu', async () => {
     const action = vi.fn();
     openContextMenu([{ label: 'Open', action }], 40, 40);

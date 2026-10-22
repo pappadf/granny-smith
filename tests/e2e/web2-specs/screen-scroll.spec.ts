@@ -51,7 +51,7 @@ test("a zoomed screen scrolls to its top-left and bottom-right edges", async ({
   await expect(
     page
       .locator(".toast .msg")
-      .filter({ hasText: "Booted plus from the loaded ROM" }),
+      .filter({ hasText: "Booted Macintosh Plus from the loaded ROM" }),
   ).toBeVisible({ timeout: 60_000 });
 
   // 400% of 512x342 is 2048x1368: larger than the display on both axes.

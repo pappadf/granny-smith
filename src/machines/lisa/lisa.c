@@ -89,6 +89,11 @@ typedef struct lisa_state {
 #define MACXL_SCREEN_W 608
 #define MACXL_SCREEN_H 431
 
+// Where the boot ROM answers in the CPU's view, setup mode and segment 127 alike.
+#define LISA_ROM_BASE 0x00FE0000u
+// Cycles per instruction at the real machine's pace (see lisa_init).
+#define LISA_CPI 10
+
 // The Lisa-family board descriptor: the four facts that differ between the
 // Lisa 2 and the Macintosh XL, which is the same board sold with the "3A"
 // boot ROM and MacWorks.  Data only, no hooks, so hw_profile_t.board names
@@ -998,11 +1003,18 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // CPU budget ~1.5x, which on a throughput-bound host shows up as a sluggish
     // "?" blink and a choppy cursor.
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    // Keep the Lisa's long-standing effective CPI of 4 (the pre-two-modes
-    // default-mode value every Lisa test budget was derived at). The authentic
-    // 68000 average would be ~12; moving the Lisa to it is a separate decision
-    // with its own test re-pin, out of scope for the two-modes change.
-    scheduler_set_cpi(cfg->scheduler, 4);
+    // 10 cycles per instruction, the real machine's pace.  The video fetch
+    // owns every other 400 ns memory slot, so every 68000 instruction takes a
+    // whole number of 800 ns (4-cycle) bus cycles
+    // (docs/reference/machines/lisa/video.md §1.5): the boot ROM's own
+    // calibrated loop, BTST Dn,(An) / BEQ.S / DBF at 8 + 8 + 12 cycles, is
+    // the "about 5.6 us per loop" its source states, 9.3 cycles each.  10 is
+    // the whole number at or above that (the Plus, the same 68000 behind a
+    // video interleave, runs at 10 too).  At the old 4 the ROM's video
+    // self-test (VIDCHK), which waits ~20 ms of loop for a vertical retrace,
+    // lasted under half a frame and failed with CPU error 42 whenever it
+    // started in the wrong half (S1018-54).
+    scheduler_set_cpi(cfg->scheduler, LISA_CPI);
 
     machine_part_irq(cfg, checkpoint);
 
@@ -1155,6 +1167,12 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (!checkpoint) {
         cfg->rt.irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
+    } else {
+        // Level 1's sub-sources are not checkpointed: recompute each from its
+        // device's restored state so cfg->rt.irq agrees with the hardware (#325).
+        ls->l1_via2 = (via_get_ifr(cfg->via2) & 0x80) != 0; // VIA2 aggregate IRQ
+        ls->l1_vbl = lisa_mmu_vbl_active(ls->mmu); // latched, unacknowledged VBL
+        lisa_fdc_update_int(ls->fdc); // FDIR -> PB4 and l1_floppy, then level 1
     }
     return 0;
 }
@@ -1431,6 +1449,8 @@ const hw_profile_t machine_lisa = {
     .default_storage = lisa_default_storage,
     .builtin_video = &lisa_builtin_video,
 
+    .realtime_default = true, // the page starts it at Real, not Faster
+
     .board = &lisa_board,
     .substrate = &lisa_substrate,
 };
@@ -1459,6 +1479,8 @@ const hw_profile_t machine_macxl = {
     .storage = macxl_storage,
     .default_storage = lisa_default_storage,
     .builtin_video = &lisa_builtin_video,
+
+    .realtime_default = true, // the page starts it at Real, as the Lisa 2
 
     .board = &macxl_board,
     .substrate = &lisa_substrate,

@@ -165,6 +165,7 @@ export interface MachineProfile {
     video_in?: boolean;
     audio_in?: boolean;
     aux_cpus?: Array<{ name?: string; arch?: string; freq?: number }>;
+    realtime_default?: boolean;
   };
   options: ConfigOption[];
   floppies: FloppyPosition[];

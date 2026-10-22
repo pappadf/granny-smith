@@ -21,7 +21,8 @@ import {
   applySchedulerMode,
 } from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
-import { setSchedulerMode } from '@/state/machine.svelte';
+import { checkStoragePersistence } from '@/bus/storageHealth';
+import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
@@ -119,13 +120,16 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
-  // ?speed= is the toolbar's pacing preference from the start.  The core's
+  // ?speed= is the toolbar's pacing preference from the start, and a choice:
+  // no machine's default overrides it.  The core's
   // pacing is the host's setting, there with or without a machine, so it is
   // pushed as soon as the core is up (below) and every machine the page then
   // boots or restores runs under it.
   const urlMode = urlSchedulerMode(mediaParams.speed);
-  if (urlMode) setSchedulerMode(urlMode);
-  else if (mediaParams.speed !== null)
+  if (urlMode) {
+    setSchedulerMode(urlMode);
+    markSchedulerChosen();
+  } else if (mediaParams.speed !== null)
     // An unknown value (or one of the retired aliases, `max`, `realtime`,
     // `hardware`) used to be dropped without a word.
     showNotification(
@@ -181,14 +185,20 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     installEvalHookForAutomation();
     installUiHookForAutomation();
 
+    // Before anything else: if the worker had to put /opfs on memory, say
+    // so now and keep saying so (the banner), before the user adds anything.
+    await checkStoragePersistence();
+
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
     if (urlMode) await applySchedulerMode(urlMode);
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.
-    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
-    if (resumed) return;
+    // A link without a ROM still offers the saved machine; its media then go
+    // into whichever machine is running (the resumed one), or are stored and
+    // said to be unused -- Resume used to drop them silently.
+    if (!urlBoots) await maybeOfferBackgroundCheckpoint();
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
     // be ignored.

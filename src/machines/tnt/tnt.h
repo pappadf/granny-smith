@@ -401,10 +401,11 @@ typedef struct tnt_state {
     struct object *nvram_object; // machine.nvram node (grand_central.c)
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
-    struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
-    // The Network Servers' second fast/wide bus (`machine.scsi2`, Open
-    // Firmware's `scsi-int2` / `probe-scsi2`), carrying backplane bays 4-6.
-    // NULL on the Macintosh boards, which have exactly one visible bus.
+    struct scsi_53c96 *scsi96; // the 53C94 (no bus attached on the Network Servers)
+    // `machine.scsi2`.  On the Network Servers, the second fast/wide bus
+    // (Open Firmware's `scsi-int2` / `probe-scsi2`), carrying backplane bays
+    // 4-6; on the Macintosh boards, the 53C94's bus: the CD-ROM drive and the
+    // external chain.
     struct scsi *scsi2;
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)

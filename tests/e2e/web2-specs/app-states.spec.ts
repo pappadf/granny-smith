@@ -69,9 +69,9 @@ const TABS = [
   "logs",
 ];
 
-// Keep web2's default pacing: the toolbar's pacing control is in every
-// screenshot, and the baselines show it at Real.
-test.use({ viewport: { width: 1280, height: 800 }, gsSpeed: null });
+// Real pacing, not web2's default Faster: the toolbar's pacing control is
+// in every screenshot, and the baselines show it at Real.
+test.use({ viewport: { width: 1280, height: 800 }, gsSpeed: "paced" });
 
 // The skin comes from the persisted preference; the preview
 // notice is already dismissed, so no first-visit modal covers the page.
@@ -237,9 +237,22 @@ for (const skin of SKINS) {
       );
       // The zoom the snapshot was taken at: left alone, the page fits the
       // screen to the display area, which depends on the window.
+      // Until a zoom is chosen the page refits on every resize of the area,
+      // and a refit that lands between fill and Enter rewrites the field, so
+      // Enter then commits the fitted value: retry until 200% sticks.
       const zoom = page.getByRole("textbox", { name: "Zoom level" });
-      await zoom.fill("200%");
-      await zoom.press("Enter");
+      await expect(async () => {
+        await zoom.fill("200%");
+        await zoom.press("Enter");
+        await expect(zoom).toHaveValue("200%", { timeout: 1_000 });
+      }).toPass({ timeout: 15_000 });
+      // In Real mode the speed governor slows the CPU when the host falls
+      // behind, and a loaded CI runner does during the boot: the status bar
+      // then carries a speed readout (0.88x) that moves everything after it.
+      // Floor the governor at 1x -- the setting a budget-pinned run uses --
+      // so the shot has the same status bar whatever the runner's load.
+      await gsEvalInPage(page, "scheduler.min_speed", [1]);
+      await expect(page.locator(".gs-statusbar .sb-speed")).toHaveCount(0);
       await gsEvalInPage(page, "scheduler.stop");
       await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
         "Paused",

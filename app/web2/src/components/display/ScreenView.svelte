@@ -82,8 +82,11 @@
   // guarantee).  A request made from the worker's mousedown callback was
   // refused there, so the click asks here; the core follows the lock through
   // its pointerlockchange callback.  A paused or stopped machine reads no
-  // deltas, so it is not grabbed.
-  function grab(): void {
+  // deltas, so it is not grabbed.  Only the primary button grabs: a
+  // right-click on the unlocked screen is the browser's (its context menu),
+  // and used to take the pointer as well.
+  function grab(e: MouseEvent): void {
+    if (e.button !== 0) return;
     if (!canvas || machine.status !== 'running' || document.pointerLockElement === canvas) return;
     try {
       // A promise where the browser has one; a refusal also fires

@@ -169,13 +169,17 @@ function saveBlob(blob: Blob, filename: string): void {
 
 // Download one file. A plain OPFS file is read straight from OPFS; a file
 // inside a (read-only) image has its data fork copied out to a file of its
-// own in the scratch area first, then read and removed.
-async function downloadOne(target: string): Promise<boolean> {
+// own in the scratch area first, then read and removed.  The download is
+// the data fork alone: `rsrc` is the size of the resource fork it leaves
+// out (0 for none), which for an application is all of it.
+async function downloadOne(target: string): Promise<{ ok: boolean; rsrc: number }> {
   const name = basename(target) || 'download';
   try {
     if (isInImageSpace(target)) {
+      const r = await gsEval('files.path_size', [`${target}/rsrc/_raw`]);
+      const rsrc = typeof r === 'number' ? r : 0;
       const scratch = scratchPath(sanitizeName(name) || 'download');
-      if ((await gsEval('files.cp', [target, scratch])) !== true) return false;
+      if ((await gsEval('files.cp', [target, scratch])) !== true) return { ok: false, rsrc };
       try {
         // readFile returns a lazy File backed by the OPFS entry; the browser
         // streams it AFTER the anchor click. Materialise the bytes before
@@ -185,14 +189,16 @@ async function downloadOne(target: string): Promise<boolean> {
         saveBlob(new Blob([bytes]), name);
       } finally {
         await opfs.delete(scratch);
+        // The copy wrote the forks and Finder info beside it, as AppleDouble.
+        await opfs.delete(adSidecarPath(scratch)).catch(() => {});
       }
-    } else {
-      saveBlob(await opfs.readFile(target), name);
+      return { ok: true, rsrc };
     }
-    return true;
+    saveBlob(await opfs.readFile(target), name);
+    return { ok: true, rsrc: 0 };
   } catch (err) {
     console.error('download failed', err);
-    return false;
+    return { ok: false, rsrc: 0 };
   }
 }
 
@@ -272,14 +278,21 @@ export async function downloadRawImage(
   }
 }
 
-// Download the given files to the host.
-export async function downloadFiles(filePaths: string[], onItem?: ProgressFn): Promise<BulkResult> {
+// Download the given files to the host.  `forkless`: the basenames saved
+// without the resource fork they have (a Mac file inside an image).
+export async function downloadFiles(
+  filePaths: string[],
+  onItem?: ProgressFn,
+): Promise<BulkResult & { forkless: string[] }> {
   const failures: string[] = [];
+  const forkless: string[] = [];
   for (let i = 0; i < filePaths.length; i++) {
     onItem?.(basename(filePaths[i]), i, filePaths.length);
-    if (!(await downloadOne(filePaths[i]))) failures.push(basename(filePaths[i]));
+    const r = await downloadOne(filePaths[i]);
+    if (!r.ok) failures.push(basename(filePaths[i]));
+    else if (r.rsrc > 0) forkless.push(basename(filePaths[i]));
   }
-  return { total: filePaths.length, failures, firstError: '' };
+  return { total: filePaths.length, failures, firstError: '', forkless };
 }
 
 // Extract a peeler-recognised archive into a sibling "<base>_unpacked" folder.

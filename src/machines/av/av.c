@@ -465,6 +465,47 @@ void av_scsi_pump_arm(void *ctx) {
     scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
 }
 
+// The PSC's SCC transmit channels.  The ROM's LocalTalk driver (.MPP,
+// $40985070-$409851A0) sends a data frame through channel 5 (SCC B; 6 is
+// SCC A's transmit channel): SWRESET, PAUSE, one set armed memory -> device
+// with the whole frame (LLAP header included), WR0 reset Tx CRC, un-pause --
+// and then at once, interrupts masked, WR0 reset Tx underrun/EOM and Tx off.
+// So the bytes must be in the SCC by the time the un-pause write returns:
+// the engine moves the armed set into the SCC's data register right there,
+// where the bytes assemble into the SDLC frame exactly as CPU writes would,
+// the set reaches terminal count, and the driver's EOM reset closes the
+// frame.  (No wire time is modelled, as for CPU-written frames.)
+#define AV_SCC_TX_MAX 4096 // bytes moved per call (a frame is at most 603)
+
+// Move channel `chan`'s armed memory -> device set into SCC data port
+// `data_off` (bData 4, aData 6).
+static void av_scc_tx_deliver(config_t *cfg, int chan, uint32_t data_off) {
+    av_state_t *st = av_st(cfg);
+    const memory_interface_t *mi = scc_get_memory_interface(cfg->scc);
+    // Both sets may be armed back to back; each terminal count flips to the other.
+    while (av_psc_dma_dir(st->psc, chan) == 0) {
+        uint8_t buf[AV_SCC_TX_MAX];
+        uint32_t want = av_psc_dma_remaining(st->psc, chan);
+        int n = av_psc_dma_device_out(st->psc, chan, buf, (int)(want < AV_SCC_TX_MAX ? want : AV_SCC_TX_MAX));
+        if (n <= 0)
+            break;
+        for (int i = 0; i < n; i++)
+            mi->write_uint8(cfg->scc, data_off, buf[i]);
+        LOG(3, "scc tx dma ch%d: %d bytes to the SCC", chan, n);
+    }
+}
+
+// The PSC's SCC-channel touch hook (av_psc_chan_touch_fn): a transmit
+// channel whose set is now ready memory -> device sends it.
+void av_scc_dma_arm(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    av_state_t *st = av_st(cfg);
+    if (!cfg || !st || !st->psc || !cfg->scc)
+        return;
+    av_scc_tx_deliver(cfg, AV_PSC_DMA_SCCB, 4);
+    av_scc_tx_deliver(cfg, AV_PSC_DMA_SCCA_TX, 6);
+}
+
 // PSC bus-master DMA: guest-physical accesses through the bus resolver
 // (the sonic memory-hook pattern — the CPU MMU is deliberately not in the
 // path).
@@ -780,6 +821,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The HAL polls PSC-VIA2 IFR bit 0 for the chip's DREQ (see psc.c).
     av_psc_set_dreq_query(st->psc, (av_psc_dreq_fn)scsi_53c96_dreq, st->scsi96);
     av_psc_set_scsi_touch_hook(st->psc, av_scsi_pump_arm, cfg);
+    av_psc_set_scc_touch_hook(st->psc, av_scc_dma_arm, cfg);
 
     // The PSC channel-0 pump (the hardware's DREQ/DACK engine).
     // Registered, not armed: av_scsi_pump_arm() starts it when the guest
@@ -836,6 +878,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     // Shared core (memory_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the single VIA (there is no VIA2 chip on this platform).
     mac030_build_core(cfg, &board->desc->common, cp);
+    g_uncached_read_cycles = board->desc->uncached_read_cycles;
     machine_part_irq(cfg, cp);
 
     mac030_build_lowspeed(cfg, cp, av_scc_irq);

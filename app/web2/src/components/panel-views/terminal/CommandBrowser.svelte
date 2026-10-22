@@ -59,7 +59,7 @@
   function insert(row: BrowserRow): void {
     if (!row.insert) return;
     writeToConsole(row.insert);
-    focusConsole();
+    focusConsole(false);
   }
 
   // Whether the details pane shows the selection's usage.

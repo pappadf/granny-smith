@@ -116,7 +116,7 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
         return val_err("keyboard.press: this machine's keyboard has no '%s' key", as_written);
     system_input_key(code, false);
     LOG(3, "keyboard.press: key=%s adb=0x%02X", as_written, code);
-    return val_bool(true);
+    return val_none();
 }
 
 // `keyboard.down(key)` / `keyboard.up(key)` — the two halves of press, for
@@ -130,7 +130,7 @@ static value_t keyboard_half(const value_t *arg, bool down, const char *what) {
     if (system_input_key(code, down) < 0)
         return val_err("keyboard.%s: this machine's keyboard has no '%s' key", what, as_written);
     LOG(3, "keyboard.%s: key=%s adb=0x%02X", what, as_written, code);
-    return val_bool(true);
+    return val_none();
 }
 
 static value_t keyboard_method_down(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -164,7 +164,7 @@ static value_t keyboard_method_raw(struct object *self, const member_t *m, int a
     if (system_input_key_raw((uint8_t)raw) < 0)
         return val_err("keyboard.raw: this machine has no raw keyboard encoding — use press/down/up with a key name");
     LOG(3, "keyboard.raw: 0x%02llX", raw);
-    return val_bool(true);
+    return val_none();
 }
 
 // `keyboard.type(text)` — tap the keys that produce `text` on a US layout,
@@ -273,15 +273,15 @@ static const member_t keyboard_members[] = {
     {.kind = MK_METHOD,
      .name = "press",
      .doc = "Tap a key (down + up) on the emulated keyboard",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_press}},
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_NONE, .fn = keyboard_method_press}},
     {.kind = MK_METHOD,
      .name = "down",
      .doc = "Hold a key down on the emulated keyboard (pair with up)",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_down}},
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_NONE, .fn = keyboard_method_down}},
     {.kind = MK_METHOD,
      .name = "up",
      .doc = "Release a key held by down",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_up}},
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = VK_NONE, .fn = keyboard_method_up}},
     {.kind = MK_METHOD,
      .name = "type",
      .doc = "Type a short line of text (US layout; newline = Return)",
@@ -290,7 +290,7 @@ static const member_t keyboard_members[] = {
      .name = "raw",
      .flags = M_CAT_ADVANCED,
      .doc = "Inject one byte in this machine's own keyboard encoding (Lisa COPS only)",
-     .method = {.args = keyboard_raw_args, .nargs = 1, .result = VK_BOOL, .fn = keyboard_method_raw}},
+     .method = {.args = keyboard_raw_args, .nargs = 1, .result = VK_NONE, .fn = keyboard_method_raw}},
 };
 
 static const class_desc_t keyboard_class = {

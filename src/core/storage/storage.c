@@ -1336,6 +1336,32 @@ static status_t read_exact(storage_read_callback_t read_cb, void *context, void 
     return (got == (int)size) ? STATUS_OK : STATUS_ERROR;
 }
 
+// The base's blocks [first, first + n) into `buf`, a run at a time, for
+// storage_load_state's comparison.  A block the base does not wholly hold
+// reads as zeros -- what storage_read_block reads there -- and so does one
+// whose read fails, as when each block was read on its own.  One read per
+// run, not per block: under WasmFS/OPFS every read is a call to the browser's
+// storage thread, and a block at a time made loading a saved checkpoint of a
+// 10 MB disk 20,480 of them (S1018-32).
+static void read_base_run(storage_t *storage, uint64_t first, uint64_t n, uint8_t *buf) {
+    const uint32_t bs = storage->block_size;
+    memset(buf, 0, (size_t)n * bs);
+    if (!storage->base)
+        return;
+    uint64_t off = first * bs;
+    uint64_t size = source_size(storage->base);
+    uint64_t whole = size > off ? (size - off) / bs : 0;
+    if (whole > n)
+        whole = n;
+    if (whole && source_read_exact(storage->base, off, buf, (size_t)(whole * bs)) == 0)
+        return;
+    // The run would not read whole: block by block, as before.
+    memset(buf, 0, (size_t)n * bs);
+    for (uint64_t i = 0; i < whole; i++)
+        if (source_read_exact(storage->base, off + i * bs, buf + (size_t)i * bs, bs) != 0)
+            memset(buf + (size_t)i * bs, 0, bs);
+}
+
 status_t storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb) {
     if (!storage || !context || !read_cb)
         return STATUS_E_INVAL;
@@ -1350,17 +1376,23 @@ status_t storage_load_state(storage_t *storage, void *context, storage_read_call
     if (chunk_blocks == 0)
         chunk_blocks = 1;
     uint8_t one_block[STORAGE_MAX_BLOCK_SIZE];
+    uint8_t one_base_block[STORAGE_MAX_BLOCK_SIZE];
     uint8_t *buffer = malloc((size_t)chunk_blocks * storage->block_size);
-    if (!buffer) {
+    // The base, read a run of the same length at a time to compare against.
+    uint8_t *base_run = buffer ? malloc((size_t)chunk_blocks * storage->block_size) : NULL;
+    if (!buffer || !base_run) {
+        free(buffer);
+        free(base_run);
         buffer = one_block;
+        base_run = one_base_block;
         chunk_blocks = 1;
     }
+    uint64_t base_first = 0, base_count = 0; // the blocks base_run holds
 
     status_t rc = STATUS_OK;
     uint64_t run = 0; // blocks staged in buffer
     off_t run_pos = 0; // delta position of the run's first block
     uint8_t incoming[STORAGE_MAX_BLOCK_SIZE];
-    uint8_t original[STORAGE_MAX_BLOCK_SIZE];
     for (uint64_t block = 0; block < storage->block_count; block++) {
         if (read_exact(read_cb, context, incoming, storage->block_size) != STATUS_OK) {
             rc = STATUS_ERROR;
@@ -1373,13 +1405,12 @@ status_t storage_load_state(storage_t *storage, void *context, storage_read_call
         // opening a Save State made a delta as large as the whole disk -- a
         // 500 MB disk took 500 MB of the browser's storage per restore, and
         // the second restore of a big machine ran out of quota and failed.
-        if (storage->base) {
-            if (source_read_exact(storage->base, block_pos(0, block, storage->block_size), original,
-                                  storage->block_size) != 0)
-                memset(original, 0, storage->block_size);
-        } else {
-            memset(original, 0, storage->block_size);
+        if (block >= base_first + base_count) {
+            base_first = block;
+            base_count = storage->block_count - block < chunk_blocks ? storage->block_count - block : chunk_blocks;
+            read_base_run(storage, base_first, base_count, base_run);
         }
+        const uint8_t *original = base_run + (size_t)(block - base_first) * storage->block_size;
         if (memcmp(incoming, original, storage->block_size) == 0) {
             bitmap_clear(storage->bitmap, (uint32_t)block);
             continue;
@@ -1414,8 +1445,10 @@ status_t storage_load_state(storage_t *storage, void *context, storage_read_call
          fwrite(buffer, storage->block_size, run, storage->delta_fp) != run))
         rc = STATUS_E_IO;
 
-    if (buffer != one_block)
+    if (buffer != one_block) {
         free(buffer);
+        free(base_run);
+    }
     if (rc != STATUS_OK)
         return rc;
 

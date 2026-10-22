@@ -7,6 +7,7 @@ import {
   MediaUrlError,
   interleaveHalves,
   urlMediaName,
+  urlMediaFileName,
 } from '@/lib/mediaUrl';
 
 const PAGE = 'https://pappadf.github.io/gs-pages/staging/';
@@ -119,12 +120,41 @@ describe('planMediaFetch — no host gets routing of its own', () => {
 });
 
 describe('urlMediaName', () => {
-  it('is the slot and the local date and time, nothing from the URL', () => {
+  it('is the slot and the local date and time', () => {
     expect(urlMediaName('hd0', new Date(2026, 9, 4, 7, 5, 9))).toBe('hd0_2026-10-04_07-05-09');
     expect(urlMediaName('fd1', new Date(2026, 0, 31, 23, 59, 0))).toBe('fd1_2026-01-31_23-59-00');
   });
   it('is a safe stored file name as it is', () => {
     expect(urlMediaName('cd', new Date(2026, 9, 4, 17, 42, 5))).toMatch(/^[A-Za-z0-9._-]+$/);
+  });
+});
+
+// S1018-48: URL media were stored and shown as "rom_2026-10-18_05-51-18".
+describe('urlMediaFileName', () => {
+  const at = new Date(2026, 9, 4, 7, 5, 9);
+  it("is the file's name from the URL", () => {
+    expect(urlMediaFileName('hd0', 'https://h/d/System%207.5.3.img', PAGE, at)).toBe(
+      'System 7.5.3.img',
+    );
+    expect(urlMediaFileName('rom', '/roms/Plus.rom?raw=1', PAGE, at)).toBe('Plus.rom');
+  });
+  it("is the member's name for a value through a container", () => {
+    expect(urlMediaFileName('fd0', 'https://h/disks.zip/Games/Dark%20Castle.dsk', PAGE, at)).toBe(
+      'Dark Castle.dsk',
+    );
+  });
+  it('is made safe for OPFS', () => {
+    expect(urlMediaFileName('fd0', 'https://h/a%3Ab.dsk', PAGE, at)).toBe('a_b.dsk');
+  });
+  it('falls back to the slot and the time when the URL names no file', () => {
+    expect(urlMediaFileName('hd0', 'https://h/view_archive.php?file=x.img', PAGE, at)).toBe(
+      'hd0_2026-10-04_07-05-09',
+    );
+    expect(urlMediaFileName('cd', 'https://h/disks/', PAGE, at)).toBe('cd_2026-10-04_07-05-09');
+    expect(urlMediaFileName('fd0', 'https://h/.hidden', PAGE, at)).toBe('fd0_2026-10-04_07-05-09');
+    expect(urlMediaFileName('fd0', 'not a url::', 'about:blank', at)).toBe(
+      'fd0_2026-10-04_07-05-09',
+    );
   });
 });
 

@@ -157,7 +157,7 @@ static value_t bmac_attr_link_set(struct object *self, const member_t *m, value_
     if (!b)
         return val_err("bmac: no cell");
     bmac_set_link(b, v.b);
-    return val_bool(true);
+    return val_none();
 }
 
 static value_t bmac_attr_tx(struct object *self, const member_t *m) {

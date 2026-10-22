@@ -58,10 +58,14 @@ LOG_USE_CATEGORY_NAME("video");
 // Internal state
 // ============================================================================
 
-// Maximum supported framebuffer area.  Chosen to fit a 1152x870 (1 MP)
-// mode at 32 bpp.  We still allocate per-display, but the
-// scratch upload buffer is sized once (on the heap, when WebGL comes up).
-#define MAX_FB_BYTES (1152u * 870u * 4u)
+// Maximum supported framebuffer area: stride * height, not width * height.
+// The largest monitor any card drives is 1152x870, but a card pads its rows:
+// the PM 7500's 1152x870 at 32 bpp has a 4640-byte stride, 28 KB more than
+// 1152 * 870 * 4, and the screen froze at that size (S1018-16).  1280x1024 at
+// 32 bpp leaves room for any row padding up to 6 KB at 870 rows.  We still
+// allocate per-display, but the scratch upload buffer is sized once (on the
+// heap, when WebGL comes up).
+#define MAX_FB_BYTES (1280u * 1024u * 4u)
 
 // Does this descriptor's raster fit the scratch buffer?  A larger one is
 // refused, not clamped: the clamp bounded the memcpy INTO the scratch but

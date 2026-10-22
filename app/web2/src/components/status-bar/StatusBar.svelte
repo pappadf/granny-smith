@@ -25,18 +25,35 @@
     crashed: 'Crashed',
   };
 
+  // Every non-empty label, laid invisibly under the shown one to size the field.
+  const stateSizers = Object.values(stateLabel).filter((l) => l);
+
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
 
-  // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
-  // (1x in every other mode), so gate on the mode too. The governor's ladder
-  // gives 1/1.5/2/3/4/6/8x — show up to one decimal, dropping a trailing .0.
-  const showSpeed = $derived(machine.scheduler === 'accel');
+  // CPU speed readout: the multiplier the core applies. Shown in Faster mode
+  // always, and in any mode whenever it is not 1x — the governor slows the
+  // CPU below 1x in Real mode too when this computer cannot keep up. The
+  // governor's ladder gives eighths below 1x (0.25 … 0.875) and 1.5/2/3/4/6/8x
+  // above — one decimal above 1x, two below (0.38x, not 0.4x), dropping
+  // trailing zeros.
+  // Only for a machine that can run: a stopped one has no speed.
+  const showSpeed = $derived(
+    (machine.status === 'running' || machine.status === 'paused') &&
+      (machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1),
+  );
   const speedLabel = $derived(
     Number.isInteger(machine.acceleratedSpeed)
       ? `${machine.acceleratedSpeed}×`
-      : `${machine.acceleratedSpeed.toFixed(1)}×`,
+      : machine.acceleratedSpeed < 1
+        ? `${machine.acceleratedSpeed.toFixed(2).replace(/0$/, '')}×`
+        : `${machine.acceleratedSpeed.toFixed(1)}×`,
+  );
+  const speedTitle = $derived(
+    machine.acceleratedSpeed < 1
+      ? `CPU slowed to ${speedLabel} the original Mac's speed because this computer cannot keep up; the clock, sound and animation stay real-time`
+      : `CPU running at ${speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time`,
   );
 
   // Background-checkpoint heartbeat — same flash idiom as the drive
@@ -154,17 +171,41 @@
 {#if visible}
   <div class="gs-statusbar" data-state={barState} role="status">
     <div class="statusbar-left">
+      <!-- Fixed width (the widest label sizes it) so the indicators that
+           follow never shift when the state changes. -->
       <div class="gs-statusbar__item sb-item sb-state" title="Machine state">
-        {#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
-            class="dot"
-            state={barState}
-          />{/if}<span class="label">{stateLabel[machine.status]}</span>
-      </div>
-      {#if showSpeed}
-        <div
-          class="gs-statusbar__item sb-item sb-speed"
-          title="CPU running at {speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time"
+        <span class="glyph"
+          >{#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
+              class="dot"
+              state={barState}
+            />{/if}</span
+        ><span class="text"
+          ><span class="label">{stateLabel[machine.status]}</span>{#each stateSizers as s (s)}<span
+              class="sizer"
+              aria-hidden="true">{s}</span
+            >{/each}</span
         >
+      </div>
+      {#if machine.drives.hd}
+        <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
+      {/if}
+      {#if machine.drives.fd}
+        <DriveLight label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
+      {/if}
+      {#if machine.drives.cd}
+        <DriveLight label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {/if}
+      <DriveLight label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
+      <ToggleChip
+        class="gs-statusbar__item sb-item sb-caps"
+        pressed={machine.capsLock}
+        label="Caps Lock"
+        title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
+        icon="arrow-up"
+        onToggle={() => void setCapsLock(!machine.capsLock)}
+      />
+      {#if showSpeed}
+        <div class="gs-statusbar__item sb-item sb-speed" title={speedTitle}>
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
       {/if}
@@ -173,7 +214,7 @@
           class="gs-statusbar__item sb-item sb-mips"
           title="Emulated CPU throughput: {machine.mips.toFixed(
             1,
-          )} million instructions/second ({machine.ticksPerSecond.toFixed(
+          )} million instructions per second while the CPU is awake, time it sleeps not counted ({machine.ticksPerSecond.toFixed(
             0,
           )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
             1,
@@ -195,24 +236,6 @@
           <span class="label">{engineLabel}</span>
         </button>
       {/if}
-      {#if machine.drives.hd}
-        <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
-      {/if}
-      {#if machine.drives.fd}
-        <DriveLight label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
-      {/if}
-      {#if machine.drives.cd}
-        <DriveLight label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
-      {/if}
-      <DriveLight label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
-      <ToggleChip
-        class="gs-statusbar__item sb-item sb-caps"
-        pressed={machine.capsLock}
-        label="Caps Lock"
-        title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
-        icon="arrow-up"
-        onToggle={() => void setCapsLock(!machine.capsLock)}
-      />
     </div>
     <div class="statusbar-right">
       {#if bridgeBusy.path}
@@ -331,6 +354,20 @@
   .gs-statusbar__button:focus-visible {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);
+  }
+  .sb-state .glyph {
+    display: inline-flex;
+    justify-content: center;
+    width: var(--gs-size-icon-sm);
+  }
+  .sb-state .text {
+    display: inline-grid;
+  }
+  .sb-state .text > * {
+    grid-area: 1 / 1;
+  }
+  .sb-state .sizer {
+    visibility: hidden;
   }
   .sb-speed {
     font-variant-numeric: var(--gs-numeric);

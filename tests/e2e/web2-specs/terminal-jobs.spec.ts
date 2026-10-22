@@ -11,9 +11,10 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { focusTerminal, consoleLine, terminalRun as typeLine } from '../helpers/terminal';
 
-// Keep web2's default pacing: the bounded run must still be going half a
-// second in, which a 20 M-instruction run only is at real-time speed.
-test.use({ gsSpeed: null });
+// Real pacing, not web2's default Faster: the bounded run must still be
+// going half a second in, which a 20 M-instruction run only is at real-time
+// speed.
+test.use({ gsSpeed: 'paced' });
 
 const terminalRun = (page: Page, line: string) => typeLine(page, line, { settleMs: 250 });
 

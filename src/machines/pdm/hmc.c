@@ -231,12 +231,15 @@ static void pdm_hmc_wait_state(config_t *cfg, bool on) {
         st->wait_interface.peek_uint16 = wait_peek16;
         st->wait_interface.peek_uint32 = wait_peek32;
         pdm_clear_page(0);
-        g_page_table[0].dev = &st->wait_interface;
-        g_page_table[0].dev_context = cfg;
-        g_page_table[0].base_addr = 0;
+        memory_page_set_device(0, &st->wait_interface, cfg, 0);
     } else {
         pdm_fill_page(0, ram_native_pointer(cfg->memory_map, 0), true);
     }
+    // The physical map moved under the MMU's caches (as for the remap above):
+    // the supervisor-translated tables and the translation TLB may hold page
+    // 0's previous meaning.
+    if (cfg->ppc)
+        ppc_mmu_invalidate_all(cfg->ppc);
 }
 
 // ============================================================

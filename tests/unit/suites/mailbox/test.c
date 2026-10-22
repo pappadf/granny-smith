@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static uint8_t *g_region;
@@ -63,6 +64,31 @@ static int stub_eval(const char *path, const char *args, char *out, size_t out_s
     snprintf(out, out_size, "{\"path\":\"%s\",\"args\":%s}", path, args ? args : "null");
     return 0;
 }
+
+// Waiting on another thread: a loop polls its condition, and at the end of
+// each pass that does not yet hold calls WAIT_TICK, which sleeps 100 us and
+// fails the test, naming what it was waiting for, once a wall-clock
+// deadline has passed.  The deadline is in seconds, not passes, so a
+// loaded machine (a parallel suite run, a slow CI runner) does not turn a
+// slow thread into a failure; a pass that holds at once never sleeps.
+#define WAIT_SECONDS 30
+static double now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+static double wait_deadline(void) {
+    return now_seconds() + WAIT_SECONDS;
+}
+#define WAIT_TICK(deadline, what)                                                                                      \
+    do {                                                                                                               \
+        if (now_seconds() > (deadline)) {                                                                              \
+            fprintf(stderr, "[FAIL] %s:%d: timed out after %d s waiting for %s\n", __FILE__, __LINE__, WAIT_SECONDS,   \
+                    (what));                                                                                           \
+            exit(1);                                                                                                   \
+        }                                                                                                              \
+        usleep(100);                                                                                                   \
+    } while (0)
 
 static void fresh(void) {
     job_layer_init(); // this thread plays the emulator thread
@@ -538,6 +564,21 @@ TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
     ASSERT_TRUE(mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
 }
 
+TEST(a_flood_of_log_events_leaves_half_the_ring_for_other_events) {
+    fresh();
+    char big[2000];
+    memset(big, 'e', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    while (mailbox_emit(&g_m, GS_MBX_EVT_LOG, big))
+        ;
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_DROPPED], 1);
+    // The log lines stopped at half the ring: state events still fit.
+    int others = 0;
+    while (mailbox_emit(&g_m, GS_MBX_EVT_STATE, big))
+        others++;
+    ASSERT_TRUE(others >= 1);
+}
+
 TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
     fresh();
     ASSERT_TRUE(!job_thread_running());
@@ -618,9 +659,9 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     ASSERT_TRUE(post_script(41, "threaded"));
     ASSERT_EQ_INT(mailbox_drain(&g_m, 0, NULL), 0); // queued, no answer yet
     // Wait for the job thread to post its call, then serve it.
-    for (int i = 0; i < 20000 && !job_layer_has_work(); i++)
-        usleep(100);
-    ASSERT_TRUE(job_layer_has_work());
+    double deadline = wait_deadline();
+    while (!job_layer_has_work())
+        WAIT_TICK(deadline, "the job thread to post its call");
     mailbox_drain(&g_m, 0, NULL);
     ASSERT_EQ_INT(g_calls_served, 1);
     ASSERT_EQ_INT(g_mode_owner, 2);
@@ -632,9 +673,10 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     g_mode_owner = 0;
     uint32_t id = 0, ok = 0;
     char json[256];
-    for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
+    deadline = wait_deadline();
+    while (take(&id, &ok, json, sizeof json) == 0) {
         mailbox_drain(&g_m, 0, NULL);
-        usleep(100);
+        WAIT_TICK(deadline, "job 41's result once its mode ended");
     }
     ASSERT_EQ_INT(id, 41);
     ASSERT_EQ_INT(ok, 1);
@@ -645,17 +687,19 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     ASSERT_TRUE(post_script(42, "threaded"));
     post_ctl(GS_MBX_REQ_CANCEL, 43, 2, 42);
     mailbox_drain(&g_m, 0, NULL);
-    for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
+    deadline = wait_deadline();
+    while (take(&id, &ok, json, sizeof json) == 0) {
         mailbox_drain(&g_m, 0, NULL);
-        usleep(100);
+        WAIT_TICK(deadline, "the first answer after cancelling job 42");
     }
     // The cancel's own answer and the job's come back; order depends on
     // which the drain wrote first.
     uint32_t id2 = 0, ok2 = 0;
     char json2[256];
-    for (int i = 0; i < 20000 && take(&id2, &ok2, json2, sizeof json2) == 0; i++) {
+    deadline = wait_deadline();
+    while (take(&id2, &ok2, json2, sizeof json2) == 0) {
         mailbox_drain(&g_m, 0, NULL);
-        usleep(100);
+        WAIT_TICK(deadline, "the second answer after cancelling job 42");
     }
     const char *job_json = id == 42 ? json : json2;
     uint32_t job_ok = id == 42 ? ok : ok2;
@@ -925,15 +969,19 @@ TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
     object_root_reset();
 }
 
-// An I/O job that runs until cancelled, on a real worker thread.
+// An I/O job that runs until cancelled, on a real worker thread.  It is
+// always cancelled; the bound, twice the test's own wait, only keeps a
+// broken cancel from leaving the worker spinning after the test has failed.
 static int waiting_work(void *ud, char *err, size_t cap) {
     (void)ud;
-    for (int i = 0; i < 50000; i++) {
+    double start = now_seconds();
+    double limit = 2.0 * WAIT_SECONDS;
+    for (double t = 0; t < limit; t = now_seconds() - start) {
         if (io_cancelled()) {
             snprintf(err, cap, "cancelled");
             return -ECANCELED;
         }
-        io_progress((uint64_t)i, 50000);
+        io_progress((uint64_t)(t * 1000), (uint64_t)(limit * 1000));
         usleep(100);
     }
     return 0;
@@ -1034,7 +1082,8 @@ TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
     uint32_t id = 0, ok = 1;
     char json[128];
     bool saw_cancel_answer = false, saw_job_answer = false;
-    for (int i = 0; i < 20000 && !(saw_cancel_answer && saw_job_answer); i++) {
+    double deadline = wait_deadline();
+    while (!(saw_cancel_answer && saw_job_answer)) {
         uint8_t buf[256];
         uint32_t len, kind;
         while ((kind = take_any(buf, sizeof buf, &len)) != 0) {
@@ -1054,10 +1103,12 @@ TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
                 ASSERT_TRUE(strstr(json, "cancelled") != NULL);
             }
         }
+        if (saw_cancel_answer && saw_job_answer)
+            break;
         mailbox_drain(&g_m, 0, NULL);
-        usleep(100);
+        WAIT_TICK(deadline,
+                  saw_cancel_answer ? "request 91's answer after its cancel" : "the cancel's answer (request 92)");
     }
-    ASSERT_TRUE(saw_cancel_answer && saw_job_answer);
 }
 
 // A job that prints: its text arrives as EVT_LOG output records, in
@@ -1071,7 +1122,8 @@ TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
     char json[256];
     char outputs[512] = "";
     int results = 0;
-    for (int i = 0; i < 20000 && !results; i++) {
+    double deadline = wait_deadline();
+    while (!results) {
         mailbox_drain(&g_m, 0, NULL);
         uint8_t buf[512];
         uint32_t len, kind;
@@ -1091,7 +1143,8 @@ TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
                 results++;
             }
         }
-        usleep(100);
+        if (!results)
+            WAIT_TICK(deadline, "job 101's result");
     }
     ASSERT_EQ_INT(results, 1);
     ASSERT_EQ_INT(id, 101);
@@ -1113,6 +1166,7 @@ int main(void) {
     RUN(both_rings_wrap_across_thousands_of_round_trips);
     RUN(an_event_is_published_at_once_and_ordered_before_the_result);
     RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
+    RUN(a_flood_of_log_events_leaves_half_the_ring_for_other_events);
     RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
     RUN(the_in_process_client_posts_and_reads_like_the_page);

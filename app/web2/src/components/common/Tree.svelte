@@ -1,6 +1,7 @@
 <script lang="ts">
   import TreeItem from '@/components/ui/TreeItem.svelte';
   import Tree from './Tree.svelte';
+  import { tick } from 'svelte';
   import { pathKey } from '@/lib/treePath';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import type { IconName } from '@/lib/icons';
@@ -114,14 +115,16 @@
     return true;
   }
 
-  async function maybeLoadChildren(node: TreeNode): Promise<void> {
+  // `p` is the node's full path; the keyboard handler passes it for rows
+  // deeper than this instance's own nodes.
+  async function maybeLoadChildren(node: TreeNode, p = pathOf(node)): Promise<void> {
     if (node.leaf || !loadChildren) return;
     if (node.children) return;
-    const k = pathKey(pathOf(node));
+    const k = pathKey(p);
     if (cache[k] || loading[k]) return;
     loading[k] = true;
     try {
-      const kids = await loadChildren(pathOf(node));
+      const kids = await loadChildren(p);
       cache[k] = kids;
     } finally {
       loading[k] = false;
@@ -136,8 +139,7 @@
     return selectedKeys ? selectedKeys.has(k) : selectedKey === k;
   }
 
-  function handleRowClick(node: TreeNode, ev?: MouseEvent) {
-    const p = pathOf(node);
+  function handleRowClick(node: TreeNode, ev?: MouseEvent, p = pathOf(node)) {
     const mods: SelectMods | undefined = ev
       ? { shift: ev.shiftKey, meta: ev.metaKey || ev.ctrlKey }
       : undefined;
@@ -146,10 +148,9 @@
     // it must not also expand/collapse or activate the row.
     if (selectedKeys && mods && (mods.shift || mods.meta)) return;
     if (hasChildren(node)) {
+      const wasOpen = !!expanded[pathKey(p)];
       onToggle(p);
-      if (!isOpen(node)) {
-        void maybeLoadChildren(node);
-      }
+      if (!wasOpen) void maybeLoadChildren(node, p);
     } else {
       onActivate?.(p);
     }
@@ -209,8 +210,18 @@
     return last;
   }
 
+  // A key that closes a branch can take away the row that holds focus (a
+  // clicked row keeps it while ↑/↓ move only the selection). Focus then
+  // falls to <body> and every later key goes nowhere, so hand it back to
+  // the tree itself.
+  async function keepFocus(tree: HTMLElement): Promise<void> {
+    await tick();
+    if (!tree.contains(document.activeElement)) tree.focus();
+  }
+
   function onRootKey(ev: KeyboardEvent) {
     if (depth !== 0) return;
+    const tree = ev.currentTarget as HTMLElement;
     const flat = flatten();
     if (!flat.length) return;
     const navKey = currentNavKey();
@@ -233,7 +244,8 @@
       if (row.open !== wantOpen) {
         ev.preventDefault();
         onToggle(row.path);
-        if (wantOpen) void maybeLoadChildren(row.node);
+        if (wantOpen) void maybeLoadChildren(row.node, row.path);
+        else void keepFocus(tree);
       }
       return;
     }
@@ -243,7 +255,10 @@
       if (currentIdx < 0) return;
       ev.preventDefault();
       const row = flat[currentIdx];
-      handleRowClick(row.node);
+      // The row's own path: pathOf() here would leave out the ancestors of
+      // a row that a nested Tree draws.
+      handleRowClick(row.node, undefined, row.path);
+      void keepFocus(tree);
       return;
     }
 

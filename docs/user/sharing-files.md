@@ -25,6 +25,10 @@ client software, which System 7 and later include.
 5. Select the **Shared** volume and click **OK**, then close the Chooser.
 6. The **Shared** volume appears on the Mac's desktop.
 
+The volume's size and free space are capped at what the Mac's system can
+show: just under 1 GB on System 6 and up to 2 GB on later systems, however
+much space the browser actually has.
+
 ### 1.2 Copying files into the Mac
 
 1. Open the **Filesystem** panel and find `/opfs/shared`.

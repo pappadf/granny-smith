@@ -859,6 +859,13 @@ void tnt_scc_dma_init(config_t *cfg) {
 // chip's side-effect-free peek.
 static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
     uint32_t block = offset & 0x1F000u;
+    if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
+        // Byte j of a DBDMA channel's little-endian register: the SCSI
+        // Manager reads channel 0's device status bits (s0-s7) this way
+        int chan = (int)((offset - OFF_DBDMA) >> 8);
+        uint32_t reg = dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFCu);
+        return (uint8_t)(reg >> (8 * (offset & 3u)));
+    }
     switch (block) {
     case OFF_VIA:
     case OFF_VIA + 0x1000: // 16 regs at stride $200 span the 8 KB window
@@ -978,9 +985,15 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
             return;
         }
         break;
-    case OFF_SCSI0:
-        scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
+    case OFF_SCSI0: {
+        tnt_state_t *st = tnt_st(cfg);
+        scsi_53c96_write(st->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
+        // A command that raised DREQ (a DMA select's CDB, a DMA data phase)
+        // restarts DBDMA channel 0, which may have stalled waiting for it
+        if (st->dbdma && scsi_53c96_dreq(st->scsi96) && dbdma_active(st->dbdma, 0))
+            dbdma_kick(st->dbdma, 0);
         return;
+    }
     case OFF_SWIM3:
         tnt_swim3_write(cfg, offset - OFF_SWIM3, value);
         return;

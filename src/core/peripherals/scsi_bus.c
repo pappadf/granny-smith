@@ -290,6 +290,26 @@ void scsi_bus_settle_poll(scsi_t *scsi) {
     scsi->bus.req = true;
 }
 
+// A FIFO initiator offering a DATA OUT byte while the target is still settling.
+// Unlike the 5380, whose CPU writes go straight to the wire, the 53C96 holds
+// what the CPU writes in its FIFO and paces pseudo-DMA writes with DREQ, so
+// nothing is lost to the settle window: the CPU waits instead.  Returns the
+// cycles that wait lasts (0 when REQ is already up) and ends the window, so
+// the byte that follows is transferred.
+uint64_t scsi_bus_await_data_out_req(scsi_t *scsi) {
+    if (!scsi || !scsi->bus.data_out_pending)
+        return 0;
+    uint64_t wait = 0;
+    if (scsi->sched) {
+        uint64_t now = scheduler_cpu_cycles(scsi->sched);
+        if (now < scsi->bus.data_out_ready_cy)
+            wait = scsi->bus.data_out_ready_cy - now;
+    }
+    scsi->bus.data_out_pending = false;
+    scsi->bus.req = true;
+    return wait;
+}
+
 // Transition SCSI bus to data-out phase (initiator to target).
 //
 // The phase does NOT change here -- see bus.data_out_pending in
@@ -1386,11 +1406,10 @@ void run_cmd(scsi_t *scsi) {
         scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INCOMPATIBLE_MEDIUM, 0x00);
         break;
 
-    // Sony vendor READ TOC (C1h): the AppleCD SC's Sony CDU-8002 vendor command,
-    // used exclusively by the early Apple CD-ROM driver (System 7.x).  Its TOC
-    // Data Format (Sony CDU-541 manual §5.2.23, Table 5-23) uses 6-byte track
-    // descriptors, NOT the SCSI-2 (43h) 8-byte layout — answering with the 43h
-    // format makes the driver mis-read a data disc as an audio CD.
+    // Vendor READ TOC (C1h): the AppleCD SC's CDU-8002 vendor command, used
+    // by the early Apple CD-ROM driver (System 7.x).  Its answers are 4-byte
+    // BCD records chosen by the control byte's bits 7-6, NOT the SCSI-2 (43h)
+    // layout (scsi_cdrom_read_toc_sony).
     case CMD_SONY_READ_TOC:
         if (scsi->devices[target].type == scsi_dev_cdrom)
             scsi_cdrom_read_toc_sony(scsi);

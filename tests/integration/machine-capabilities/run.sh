@@ -260,8 +260,10 @@ for m in pm7500 pm8500 pm9500 pm9500mp; do
     assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '{"id":"scsi","label":"Internal fast SCSI","kind":"scsi"' "$m has the internal MESH bus"
     assert_contains "$m" '{"unit":1,"label":"ID 1 · 3.5″ bay","short":"ID 1"}' "$m has the 3.5-inch bay at ID 1"
-    # No CD-ROM drive until the 53C94 has a bus (pm7500.c).
-    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"}]' "$m opens with the hard disk alone"
+    # The factory CD-ROM drive at ID 3 on the 53C94's bus (pm7500.c).
+    assert_contains "$m" '{"id":"scsi2","label":"SCSI","kind":"scsi"' "$m offers the 53C94 bus"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has the CD-ROM bay at ID 3"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi2","unit":3,"type":"cd"}]' "$m opens with the hard disk and the CD-ROM drive"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"

@@ -789,7 +789,7 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
     if (g_mem_logpoint_phys_page_count && phys_index < g_page_count && g_mem_logpoint_phys_page_count[phys_index])
         return;
 
-    uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
+    uintptr_t adjusted = MEM_RAM_ENTRY((uintptr_t)host_ptr - logical_page);
     uintptr_t wadj = memory_write_fill(
         page_index, host_ptr, adjusted,
         host_writable ? ((fill_super ? MEM_WT_SUPER : 0u) | (fill_user ? MEM_WT_USER : 0u)) : 0u); // 0 on a code page

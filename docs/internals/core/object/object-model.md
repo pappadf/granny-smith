@@ -208,9 +208,9 @@ domains:
 | Order | Node | Domain | Holds |
 |---|---|---|---|
 | 0 | `machine` | machine | the emulated computer that exists now |
-| 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
+| 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `min_speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
 | 20 | `checkpoint` | emulator | save / load / snapshot |
-| 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `max_speed`), there with or without a machine; advanced |
+| 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `min_speed`, `max_speed`), there with or without a machine; advanced |
 | 22 | `predecode` | emulator | the predecoded executors' switch (`enabled`), tuning (`elide`, `pool_cap`, the thrash rule), counters and `hist` ([predecode.md](../cpu/predecode.md)); advanced |
 | 23 | `jit` | emulator | the PowerPC translation tier's switch (`enabled`), tuning, counters and `trace` ([ppc_jit.md](../cpu/ppc/ppc_jit.md)); `available` is 0 in native builds; advanced |
 | 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
@@ -653,7 +653,9 @@ one thing: whether the machine is torn down. Only building a new machine
 tears down; a reset or a power cycle keeps every device, so the
 non-volatile stores, the mounted media, the Caps Lock latch and the
 LaserWriter survive for the hardware's own reason -- nothing destroyed
-them. A new machine inherits nothing from the old one.
+them. A new machine inherits nothing from the old one. A fifth,
+`machine.shutdown`, only tears down: the machine is destroyed and nothing
+takes its place, so the core is as it was before the first boot.
 
 | Level | Operation | What it does | Entry point |
 |---|---|---|---|
@@ -661,6 +663,7 @@ them. A new machine inherits nothing from the old one.
 | 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`, and each NuBus card's `power_on`) back to its constructed values -- video VRAM included, so the old picture does not outlive the power. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
 | -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, builds the new machine with its ROM, swaps it in and destroys the old one. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
 | -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
+| -- | `machine.shutdown` | **Shut down**: stops the machine and destroys it with nothing swapped in; no machine is left (`machine.created` false) until the next boot or load. Emits `machine_shut_down`. | `machine_method_shutdown` → `system_shut_down` (`src/core/system.c`; `tests/integration/machine-shutdown`) |
 
 Level 1 is the 68k `RESET` instruction: the /RESET net alone, with the CPU
 untouched (`system_reset_devices`). It has no verb -- it is an instruction
@@ -684,11 +687,11 @@ the level contract over every model in the registry.
 | CPU registers | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
 | PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | **Kept** | **Kept** | Restored |
 | NVRAM (`machine.nvram`: Grand Central on TNT/ANS, Heathrow on the beige G3) | Blank | **Kept** | **Kept** | From the checkpoint |
-| RTC time | Host wall clock at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | **Keeps counting** | **Keeps counting** | The saved value |
+| RTC time | Host wall clock (local time) at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | **Keeps counting** | **Keeps counting** | The saved value |
 | Mounted media | None. The old machine's images are closed (`system_destroy`); a CD bay is registered empty | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
 | Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
-| Host pacing (`pacing.mode`, `.speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
+| Host pacing (`pacing.mode`, `.speed`, `.min_speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
 | A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the card's part of the checkpoint, which carries the ROM's bytes (a checkpoint restores without the file) |
 | Each display device's monitor (the document's displays; `monitor=`, `video_sense=`) | The document's, an argument of the device: the built-in port's sense code, each card's monitor row and sense code in its slot entry | Unchanged | Unchanged | From the device's part of the checkpoint (a card's from the bus's slot table) |
@@ -862,7 +865,8 @@ this configuration, a monitor the device does not take, a mode the
 monitor does not have, more than one connected monitor (V7); the legacy
 card or display arguments beside the document's `cards` / `displays`
 (V8); a startup device not in `storage`, or on a bus the machine's startup
-record cannot name (V9); an `nvram` on a model without Open Firmware NVRAM,
+record cannot name (V9; a model with no such record at all, the Plus,
+ignores `startup`); an `nvram` on a model without Open Firmware NVRAM,
 a variable the firmware does not have, a value it cannot take, or more
 than its 2 KB partition holds -- each set on a factory store to find out
 (V10).  `tests/integration/machine-config-validation` pins one case per

@@ -28,7 +28,7 @@ https://<emulator page>/?rom=https://example.com/roms/MacIIci.rom&hd0=https://ex
 
 | Parameter | What it does |
 |---|---|
-| `rom=<url>` | The machine's ROM. Required: a link without `rom=` opens the Home screen. |
+| `rom=<url>` | The machine's ROM. Required to boot: a link without `rom=` opens the Home screen (offering **Resume** as usual); its floppies go into the running or resumed machine, and any other media are only stored in Images, with a notice saying so. |
 | `rom=<url>&rom=<url>` | A ROM dumped as two chip halves (the Lisa's and the Macintosh XL's boot ROMs). Order does not matter; the page tries both and keeps the one whose checksum is correct. |
 | `fd0=<url>`, `fd1=<url>` | Floppy for the first or second floppy drive (when the model has that drive). |
 | `hd0=<url>`, `hd1=<url>`, … | Hard disk for the model's first, second, … hard-disk position. `hd0` is the startup disk — on SCSI, IDE or the Lisa's ProFile alike. With `config=` (§3), the positions are that configuration's hard disks, its startup disk first — so a configuration that puts the disk on another bus gets it there. |
@@ -53,8 +53,9 @@ system software on:
 ```
 
 - A hard disk takes an Apple drive model (`HD20SC` … `HD1000SC`), a size in
-  MB or GB rounded up to the next model (`40mb`, `1gb`), or an exact size
-  (`100m`, `512k`), up to 2 GB. On a Lisa: `blank:5mb` or `blank:10mb`
+  MB or GB rounded up to the next model (`40mb`, `1gb`; a size past the
+  largest model, about 1 GB, is refused), or an exact size (`100m`,
+  `512k`, `2048m`), up to 2 GB. On a Lisa: `blank:5mb` or `blank:10mb`
   (ProFile and Widget sizes).
 - The disk is unformatted, like a new drive: initialise it from the
   installer or with the disk setup utility.
@@ -95,7 +96,10 @@ spaces.
 | `mode=` | `mode=1152x870x8` | Startup video mode: width × height × bits per pixel; `1152x870` alone picks the deepest mode at that size. |
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |
 | model options | `keyswitch=service`, `power_supplies=two` | Any other option the model has. |
-| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other options then edit it. On the Open Firmware Macs (Power Mac 7500/8500/9500, the G3) its `nvram` member sets Open Firmware variables before the machine first runs — `{"nvram": {"boot-command": "0 bootr", "use-nvramrc?": true}}`: any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given (`nvramrc` may span lines). One the firmware does not have stops the boot with a message naming it. |
+| `storage=` | `storage=ata0:0:hd,ata1:0:cd` | The drives, replacing the model's default list: `bus:unit:type` entries (`hd` or `cd`), separated by commas. Bus ids are the ones the New Machine dialog's storage section lists (`scsi`, `ata0`, `ata1`, …). `hd0=`, `hd1=` and `cd=` then go to these drives. |
+| `startup=` | `startup=ata0:0`, `startup=none` | The startup device, as `bus:unit`. Without it, a `storage=` starts up from its first hard disk on a bus the startup record can name. The Plus has no startup device setting, so it ignores `startup=`. |
+| `nvram.<variable>=` | `nvram.boot-command=0 bootr` | An Open Firmware variable, set before the machine first runs (Power Mac 7500/8500/9500, the G3): any variable `printenv` lists, booleans `true`/`false`, numbers hex, strings as given. `nvram.nvramrc=` may span lines (`%0A`). One the firmware does not have stops the boot with a message naming it. |
+| `config=` | `config=<…>` | A complete configuration, as the dialog holds it (base64url-encoded JSON). The other parameters then edit it. Everything but the expansion cards can be said with the readable parameters above, so links rarely need it. |
 
 A value the model does not offer is shown in a notice and left out — the
 machine boots without that change. An option the model does not have at
@@ -106,6 +110,14 @@ instruction, on a 21″ monitor at 1152 × 870 in 256 colours:
 
 ```
 ?rom=https://example.com/roms/MacIIfx.rom&vrom=https://example.com/roms/824-card.rom&hd0=https://example.com/disks/MacOS81.img&memory=16MB&addressing=32&monitor=21in_rgb&mode=1152x870x8
+```
+
+Example — a Power Macintosh G3 booting Mac OS X from a disk on the primary
+ATA bus, with the CD-ROM drive on the secondary bus and the boot command set
+in Open Firmware:
+
+```
+?rom=https://example.com/roms/G3.rom&hd0=https://example.com/disks/MacOSX.img&model=pmg3dt&storage=ata0:0:hd,ata1:0:cd&nvram.use-nvramrc?=true&nvram.boot-command=0+bootr
 ```
 
 ## 4. Page settings
@@ -145,9 +157,12 @@ size (a 2 GB disk is several minutes on a fast connection).
 
 ### 5.3 What is stored, and what happens on reload
 
-- Each file is stored in the browser, named after its slot and the time it
-  was fetched (`hd0_2026-10-04_17-42-05`); a ROM is stored under its
-  checksum. You will find them in the Images panel.
+- Each file is stored in the browser under its own name from the URL
+  (`System 7.5.3.img`; the member's name for a file inside an archive). A
+  URL that names no file (one ending in `/`, or a server script such as
+  `…/download.php?id=…`) is named after its slot and the time it was fetched
+  (`hd0_2026-10-04_17-42-05`). A ROM is stored under its checksum. You will
+  find them in the Images panel.
 - Hard disks and CDs are stored compressed (`.dmg`) and remember the URL
   they came from. Opening a link again with the same `hd0=`/`cd=` value
   reuses the stored copy ("Already stored") instead of downloading it

@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
+import { gzipSync } from 'node:zlib';
 
 const heap = fakeHeap();
 
@@ -18,16 +19,23 @@ vi.mock('@/bus/boot', () => ({
   prepareFreshMachine: vi.fn(async () => {}),
   recordRecentBoot: vi.fn(async () => {}),
 }));
+// The terminal: a drop's rejections are printed there too (S1018-66).
+const printed = vi.hoisted(() => [] as string[]);
+vi.mock('@/bus/logSink', () => ({
+  routePrintLine: (line: string) => printed.push(line),
+}));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
   mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
 }));
 
-const { acceptFiles, dropSummary } = await import('@/bus/upload');
+const { acceptFiles, acceptFilesRaw, acceptFilesIntoCategory, dropSummary } =
+  await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
 const boot = await import('@/bus/boot');
+const { machine } = await import('@/state/machine.svelte');
 
 // jsdom's Blob has no arrayBuffer(); the browser's does.
 if (!Blob.prototype.arrayBuffer) {
@@ -46,6 +54,19 @@ const rom = (name: string, id: number) => {
   b[1] = id;
   return new File([b], name);
 };
+// Nor stream().
+if (!Blob.prototype.stream) {
+  Blob.prototype.stream = function (this: Blob) {
+    const read = () => this.arrayBuffer();
+    return new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new Uint8Array(await read()));
+        c.close();
+      },
+    });
+  } as typeof Blob.prototype.stream;
+}
+
 // An 800 KB floppy image.
 const floppy = (name: string) => new File([new Uint8Array(819200).fill(0xa5)], name);
 const notes = () => new File([new TextEncoder().encode('just some notes\n')], 'notes.txt');
@@ -99,6 +120,10 @@ describe('a drop of several files', () => {
     );
     // No per-file "added" messages: the summary is the account.
     expect(toastText().some((m) => / added$/.test(m))).toBe(false);
+    // The toast is one line; each rejection is in the terminal in full.
+    expect(printed).toContain(
+      "upload: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
+    );
   });
 
   it("boots the drop's only ROM and mounts only the first floppy, into an empty drive", async () => {
@@ -128,7 +153,7 @@ describe('a drop of several files', () => {
     expect(bridge.paths()).not.toContain('checkpoint.load');
     expect(files.has('/opfs/images/fd/a.dsk')).toBe(true);
     expect(toastText()).toContain(
-      "1 stored (1 floppy), 1 rejected: 'state.checkpoint' is a checkpoint: drop a checkpoint on its own",
+      "1 stored (1 floppy), 1 rejected: 'state.checkpoint' is a checkpoint: load a checkpoint on its own",
     );
     expect(scratchLeft()).toEqual([]);
   });
@@ -136,10 +161,27 @@ describe('a drop of several files', () => {
 
 describe('a single file', () => {
   it('keeps its own messages and auto-actions', async () => {
-    await acceptFiles([floppy('a.dsk')]);
+    machine.status = 'running';
+    try {
+      await acceptFiles([floppy('a.dsk')]);
+    } finally {
+      machine.status = 'no-machine';
+    }
     expect(toastText()).toContain('a.dsk added');
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
     expect(scratchLeft()).toEqual([]);
+  });
+
+  it('after Shut down a floppy is stored, not inserted into the stopped machine', async () => {
+    machine.status = 'stopped';
+    try {
+      await acceptFiles([floppy('a.dsk')]);
+    } finally {
+      machine.status = 'no-machine';
+    }
+    expect(toastText()).toContain('a.dsk added');
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText().some((m) => /Inserted/.test(m))).toBe(false);
   });
 
   it('says why it was not stored', async () => {
@@ -183,5 +225,140 @@ describe('dropSummary', () => {
         ],
       ),
     ).toEqual({ msg: '2 stored (1 hard disk, 1 CD-ROM)', severity: 'info' });
+  });
+});
+
+// S1018-25: a Filesystem-tab drop keeps the file's name; only what OPFS
+// cannot hold is replaced, and then the toast says what it was saved as.
+describe('a drop into the Filesystem tab', () => {
+  it('keeps spaces and accents, and names a changed name', async () => {
+    const text = (name: string) => new File([new TextEncoder().encode('hi')], name);
+    await acceptFilesRaw([text('Read Me café.txt'), text('a:b.txt')], '/opfs/shared');
+    expect(files.has('/opfs/shared/Read Me café.txt')).toBe(true);
+    expect(files.has('/opfs/shared/a_b.txt')).toBe(true);
+    expect(toastText()).toContain("'Read Me café.txt' saved to /opfs/shared");
+    expect(toastText()).toContain("'a:b.txt' saved to /opfs/shared as 'a_b.txt'");
+  });
+});
+
+// S1018-73 (IM-09): a drop of several files on one Images section stored the
+// first and ignored the rest.
+describe('a drop of several files on an Images section', () => {
+  it('stores every file, and inserts only the first', async () => {
+    machine.status = 'running'; // with no machine the files are only stored
+    expect(await acceptFilesIntoCategory([floppy('a.dsk'), floppy('b.dsk')], 'fd')).toBe(true);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/a.dsk',
+      '/opfs/images/fd/b.dsk',
+    ]);
+    expect(media.insertFloppy).toHaveBeenCalledTimes(1);
+    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
+  });
+});
+
+// S1018-31: a gzipped floppy was staged as it is and found to hold "no
+// mountable media"; it is unpacked, and what it holds stored.
+describe('a gzipped floppy', () => {
+  it('is unpacked and stored as the floppy it holds', async () => {
+    const gz = new File([gzipSync(new Uint8Array(819200).fill(0xa5))], 'sys608.dsk.gz');
+    await acceptFiles([gz]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/sys608.dsk',
+    ]);
+    expect(scratchLeft()).toEqual([]);
+  });
+});
+
+// S1018-28: adding a file stored already copied it over itself, which failed
+// ("could not be stored") once a drive had held it.  It is left as it is; a
+// different file of that name is stored beside it.
+describe('adding a file of a name stored already', () => {
+  it('leaves the same file as it is, and stores a different one beside it', async () => {
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    bridge.calls.length = 0;
+    await acceptFilesIntoCategory([floppy('sys.dsk')], 'fd');
+    const writes = bridge.calls.filter(
+      (c) =>
+        (c.path === 'files.cp' || c.path === 'files.mv') &&
+        (c.args as string[])[1] === '/opfs/images/fd/sys.dsk',
+    );
+    expect(writes).toEqual([]);
+    expect(toastText().some((m) => /Failed|could not/.test(m))).toBe(false);
+    expect(scratchLeft()).toEqual([]);
+
+    const other = new File([new Uint8Array(819200).fill(0x5a)], 'sys.dsk');
+    await acceptFilesIntoCategory([other], 'fd');
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort()).toEqual([
+      '/opfs/images/fd/sys 2.dsk',
+      '/opfs/images/fd/sys.dsk',
+    ]);
+  });
+});
+
+// S1018-06: a dropped HFS or partitioned hard disk was filed as a CD-ROM, as
+// the CD probe took any HFS/APM signature.  A drop files an image as a CD only
+// when it holds ISO 9660; the CD-ROM section's own Add still takes the disk.
+describe('a dropped disk image', () => {
+  // A 2 MB image the fake core finds a disk (HFS: 'H', ISO 9660: 'I').
+  const disk = (name: string, kind: 'H' | 'I') =>
+    new File([new Uint8Array(2 * 1024 * 1024).fill(kind.charCodeAt(0))], name);
+  const kindOf = (args: unknown) => files.get((args as [string])[0])?.[0];
+  beforeEach(() => {
+    bridge.reply('machine.scsi.identify_hd', (a: unknown) => kindOf(a) !== undefined);
+    bridge.reply('machine.scsi.identify_cdrom', (a: unknown) => kindOf(a) !== undefined);
+    bridge.reply('machine.scsi.identify_iso', (a: unknown) => kindOf(a) === 0x49);
+  });
+  const stored = () => [...files.keys()].filter((p) => p.startsWith('/opfs/images/')).sort();
+
+  it('is a hard disk when it holds no ISO 9660', async () => {
+    await acceptFiles([disk('hfs.img', 'H')]);
+    expect(stored()).toEqual(['/opfs/images/hd/hfs.img']);
+  });
+
+  it('is a CD-ROM when it holds ISO 9660', async () => {
+    await acceptFiles([disk('disc.iso', 'I')]);
+    expect(stored()).toEqual(['/opfs/images/cd/disc.iso']);
+  });
+
+  it('is still a disc when added to the CD-ROM section', async () => {
+    await acceptFilesIntoCategory([disk('hfs.img', 'H')], 'cdrom');
+    expect(stored()).toEqual(['/opfs/images/cd/hfs.img']);
+  });
+});
+
+// S1018-51: a floppy taken out of a dropped Mac archive was stored with the
+// AppleDouble "._" sidecar files.cp writes for its Finder info.
+describe('a floppy in a dropped Mac archive', () => {
+  it('is stored without its AppleDouble sidecar', async () => {
+    const archive = new File(
+      [new TextEncoder().encode('(This file must be converted')],
+      'm.sit.hqx',
+    );
+    const isArchive = (p: string) => /m\.sit\.hqx$/.test(p);
+    bridge.reply('files.archive.identify', (a: unknown) =>
+      isArchive((a as [string])[0]) ? 'hqx' : '',
+    );
+    bridge.reply('files.list', (a: unknown) => {
+      const dir = (a as [string])[0];
+      if (!isArchive(dir)) return [];
+      files.set(`${dir}/MacTest Disk.image`, new Uint8Array(819200).fill(0xa5));
+      return [{ name: 'MacTest Disk.image', kind: 'file' }];
+    });
+    // As the core's cp does for a file with Finder info.
+    bridge.reply('files.cp', (a: unknown) => {
+      const [from, to] = a as [string, string];
+      const f = files.get(from);
+      if (!f) return false;
+      files.set(to, f.slice());
+      files.set(
+        to.replace(/[^/]+$/, (n) => `._${n}`),
+        new Uint8Array(82),
+      );
+      return true;
+    });
+    await acceptFiles([archive]);
+    expect([...files.keys()].filter((p) => p.startsWith('/opfs/images/'))).toEqual([
+      '/opfs/images/fd/MacTest Disk.image',
+    ]);
   });
 });

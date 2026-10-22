@@ -100,6 +100,11 @@ typedef struct av_board_desc {
     uint32_t ram_onboard;
     uint8_t simm_slots;
     uint8_t simm_first_bank;
+    // Bus clocks of a single DRAM read by the main processor, which a read of
+    // a cache-inhibited page costs (840AV/660AV Developer Note, Table 2-3).
+    // The RTM's DSP boot handshake polls such a page in a counted loop; see
+    // docs/internals/machines/av/dsp.md.
+    uint8_t uncached_read_cycles;
 } av_board_desc_t;
 
 // Decompose `ram` bytes into the board's YMCA banks: the soldered bank,
@@ -198,5 +203,6 @@ void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
 // channel goes idle, so the guest programming that channel (psc.c) starts it
 // again.
 void av_scsi_pump_arm(void *ctx); // an av_psc_chan_touch_fn
+void av_scc_dma_arm(void *ctx); // an av_psc_chan_touch_fn
 
 #endif // GS_MACHINES_AV_H

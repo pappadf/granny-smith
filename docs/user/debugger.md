@@ -33,7 +33,7 @@ The left side has collapsible sections:
 | **FPU** | The floating-point registers, on machines that have an FPU |
 | **Memory** | A hex and text view of memory at an address you enter, by logical or physical address |
 | **MMU** | On machines with a memory-management unit: its **State**, the address **Map**, the translation **Descriptors**, and **Translate** (look up one address), for supervisor or user mode |
-| **Breakpoints** | Stop when the processor reaches an address. Click **+** to add one |
+| **Breakpoints** | Stop when the processor reaches an address. Click **+** to add one, optionally with a condition — an expression such as `machine.cpu.d0 == 0`, so it stops only when that is true. A condition that is not a valid expression is refused, with the reason |
 | **Watchpoints** | Stop when memory at an address is read or written. Click **+** to add one |
 | **Call stack** | The chain of subroutine calls leading to the current instruction |
 

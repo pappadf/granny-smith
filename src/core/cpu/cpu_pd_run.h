@@ -975,9 +975,9 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
         cpu->halted = 0;
         PD_HW_RESET(cpu);
     }
-#ifdef CPU_DECODER_IS_68030
+    // Active SoA pair from the current mode: a restored or swapped-in machine
+    // arrives with the supervisor pair selected whatever its SR says.
     cpu_select_soa(cpu->supervisor);
-#endif
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
     cpu_check_interrupt(cpu);
     // The same-PC retry latch is decided here and in write_sr, never per
@@ -1513,7 +1513,8 @@ relookup:
         // same user page differently in the two spaces), and a PMOVE /
         // PFLUSH through the generic step can remap it.
         if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 1u) &&
-            g_active_read[bus >> MEM_PAGE_SHIFT] + (page_lo & g_address_mask) == (uintptr_t)blk->host) {
+            MEM_ENTRY_IS_RAM(g_active_read[bus >> MEM_PAGE_SHIFT]) &&
+            MEM_ENTRY_HOST(g_active_read[bus >> MEM_PAGE_SHIFT], page_lo & g_address_mask) == blk->host) {
             cur = blk->e + ((pc - page_lo) >> 1);
             goto top; // same block, same mapping: no memory access
         }
@@ -1524,8 +1525,8 @@ relookup:
         page_lo = pc & ~(uint32_t)MEM_PAGE_MASK;
         if (!(pc & 1u)) {
             uintptr_t base = g_active_read[bus >> MEM_PAGE_SHIFT];
-            if (base != 0) {
-                blk = predecode_find((uint8_t *)(base + (page_lo & g_address_mask)), page_lo, PD_ARCH_68K);
+            if (MEM_ENTRY_IS_RAM(base)) {
+                blk = predecode_find(MEM_ENTRY_HOST(base, page_lo & g_address_mask), page_lo, PD_ARCH_68K);
                 if (!blk) {
                     g_pd_stats.relookup_nopool++;
                     pd_held = true;

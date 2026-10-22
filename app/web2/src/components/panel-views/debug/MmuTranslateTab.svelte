@@ -5,6 +5,7 @@
   import { debug } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import { showNotification } from '@/state/toasts.svelte';
   import Button from '@/components/ui/Button.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
 
@@ -30,7 +31,10 @@
 
   function translate() {
     const v = parseHex(inputValue);
-    if (v === null) return;
+    if (v === null) {
+      showNotification('Invalid address to translate', 'error');
+      return;
+    }
     debug.mmuTransAddr = v;
   }
 

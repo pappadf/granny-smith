@@ -394,10 +394,7 @@ void floppy_disk_control(floppy_t *floppy) {
             // EJECT (CA0=1, CA1=1, CA2=1)
             if (IWM_CA2(floppy)) {
                 LOG(1, "Drive %d: Eject requested", drv);
-                iwm_flush_modified_tracks(drive, floppy->disk[drv], drv);
-                floppy_drive_drop_tracks(floppy, (unsigned)drv);
-                floppy->disk[drv] = NULL;
-                floppy_notify_present(drv, false);
+                floppy_drive_eject(floppy, (unsigned)drv);
                 LOG(1, "Drive %d: Ejected", drv);
             }
         } else {
@@ -832,14 +829,20 @@ void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive) {
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
         return false;
-    // Mirror the in-controller eject flow (see the IWM CA0/1/2=1 path
-    // around line 240): flush modified tracks first while the image is
-    // still valid, drop the cached GCR buffers, then null the slot.
-    // The image_t* itself is owned by the machine's tracked images (system.c) and freed at system
-    // teardown; calling image_close here would double-free.
-    iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
+    // Every eject comes here: the IWM/SWIM CA0/1/2=1 command, the SWIM3,
+    // the New Age, the IIfx SWIM IOP and the host's eject().  Flush modified
+    // tracks first while the image is still valid, drop the cached GCR
+    // buffers, then null the slot.
+    image_t *disk = floppy->disk[drive];
+    iwm_flush_modified_tracks(&floppy->drives[drive], disk, (int)drive);
     floppy_drive_drop_tracks(floppy, drive);
     floppy->disk[drive] = NULL;
+    // The machine's tracked images own the image_t; it is closed now rather
+    // than at teardown, so the ejected file is free at once (copy, rename,
+    // delete, replace) the way a real disk is out of the drive.  Inserting
+    // it again opens it afresh.  A restore of a checkpoint taken while it was
+    // in reopens it from the checkpoint's own image list.
+    config_release_image(system_running(), disk);
     floppy_notify_present((int)drive, false);
     return true;
 }

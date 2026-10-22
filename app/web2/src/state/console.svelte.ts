@@ -14,7 +14,7 @@
 
 import { ConsoleModel, type ConsoleEntry } from '@/lib/consoleModel';
 import { bumpImagesRevision } from '@/state/images.svelte';
-import type { HlSpan } from '@/lib/highlight';
+import { loadHighlight, type HlSpan } from '@/lib/highlight';
 import {
   gsEvalLine,
   getRuntimePrompt,
@@ -90,7 +90,11 @@ export function createConsole(): Console {
         if (disposed) return;
         const { text, spans } = queue.shift()!;
         state.queued = queue.length;
-        model.command(text, spans);
+        // Submitted before the input's colours came back (typed and run at
+        // once, pasted and run): ask for them now (S1018-78).
+        const hl = spans ?? (text.trim() === 'clear' ? undefined : await loadHighlight(text));
+        if (disposed) return;
+        model.command(text, hl);
         // `clear` is the console's own: no round trip.
         if (text.trim() === 'clear') {
           model.clear();

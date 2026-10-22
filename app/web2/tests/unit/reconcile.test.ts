@@ -5,10 +5,13 @@ import { bridge } from '../helpers/bridgeMock';
 
 vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).emulatorModule());
 
-const { initEmulator, restartEmulator, reconcileUiWithMachine } = await import('@/bus/boot');
+const { initEmulator, restartEmulator, shutdownEmulator, reconcileUiWithMachine } =
+  await import('@/bus/boot');
+const { toasts, _resetForTests: resetToasts } = await import('@/state/toasts.svelte');
 const { maybeOfferBackgroundCheckpoint, resolveResume } = await import('@/bus/checkpoint');
 const { clearProfileCache } = await import('@/bus/profile');
-const { machine } = await import('@/state/machine.svelte');
+const { machine, markSchedulerChosen, _resetSchedulerChoiceForTests } =
+  await import('@/state/machine.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { images } = await import('@/state/images.svelte');
 
@@ -17,13 +20,18 @@ const { images } = await import('@/state/images.svelte');
 const RECONCILE_MARK = 'machine.id';
 
 // A running SE/30, as the core would answer after a boot or a restore.
-function se30(mode = 'paced'): void {
+// `realtime` is its profile's realtime_default (the Lisa family's).
+function se30(mode = 'paced', realtime = false): void {
   bridge.reply('machine.boot', true);
-  bridge.reply('machine.restart', true);
+  bridge.reply('machine.restart', null);
   bridge.reply('machine.id', 'se30');
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
-  bridge.reply('catalog.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
+  bridge.reply('catalog.profile', {
+    id: 'se30',
+    capabilities: { mmu: { kind: '68030_pmmu' }, realtime_default: realtime },
+  });
+  bridge.reply('pacing.mode', null);
   // An enum reads as {enum, index} over the bridge.
   const index = ['paced', 'accelerated', 'turbo'].indexOf(mode);
   bridge.reply('scheduler.mode', (args: unknown) => (args ? null : { enum: mode, index }));
@@ -43,6 +51,8 @@ describe('one post-boot reconciliation, every path', () => {
     machine.ram = null;
     machine.scheduler = 'live';
     machine.mmuKind = 'none';
+    // The tests below choose a pacing; the rest run as the user who has not.
+    markSchedulerChosen();
   });
 
   it('a dialog boot reconciles, then runs', async () => {
@@ -191,13 +201,32 @@ describe('one post-boot reconciliation, every path', () => {
     expect(images.mounted).toEqual({});
   });
 
-  it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
+  it("a chosen pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');
     await reconcileUiWithMachine('boot');
     expect(machine.scheduler).toBe('live');
     expect(bridge.paths()).not.toContain('scheduler.mode');
+    expect(bridge.paths()).not.toContain('pacing.mode');
     expect(images.fdDriveCount).toBe(-1);
+  });
+
+  // Until the user picks a pacing (the toolbar, ?speed=), each machine that
+  // appears gets its model's default: Faster, or Real where the profile asks
+  // for it (the Lisa family).
+  it("with no pacing chosen, a machine starts at its model's default", async () => {
+    _resetSchedulerChoiceForTests();
+    se30();
+    await reconcileUiWithMachine('boot');
+    expect(machine.scheduler).toBe('accel');
+    expect(bridge.calls.find((c) => c.path === 'pacing.mode')?.args).toEqual(['accelerated']);
+
+    bridge.reset();
+    clearProfileCache();
+    se30('paced', true);
+    await reconcileUiWithMachine('restore');
+    expect(machine.scheduler).toBe('live');
+    expect(bridge.calls.find((c) => c.path === 'pacing.mode')?.args).toEqual(['paced']);
   });
 
   it('a restore of the same model keeps the Debug layout; another model resets it', async () => {
@@ -209,6 +238,15 @@ describe('one post-boot reconciliation, every path', () => {
     bridge.reply('machine.id', 'plus');
     await reconcileUiWithMachine('restore');
     expect(debug.sections.registers).toBe(false);
+  });
+
+  it('a Resume after a reload keeps the layout saved with its model (S1018-83)', async () => {
+    se30();
+    // As loaded from localStorage on a fresh page: the layout and its model.
+    debug.sections.registers = true;
+    debug.sectionsModel = 'se30';
+    await reconcileUiWithMachine('restore');
+    expect(debug.sections.registers).toBe(true);
   });
 
   it('a restore sets the run state from the core, from Welcome too (#239)', async () => {
@@ -234,6 +272,44 @@ describe('one post-boot reconciliation, every path', () => {
     expect(machine.status).toBe('running');
     dispatchCoreEvent(EVT_STATE, '{"event":"mode_ended","mode":1}');
     expect(machine.status).toBe('paused');
+  });
+
+  // Shut down tears the machine down in the core and discards its autosave
+  // (S1018-39, S1018-40): the page then shows no machine, as at a first load.
+  it('a shut down leaves no machine and discards its checkpoint', async () => {
+    se30();
+    await initEmulator(BOOT);
+    machine.status = 'running';
+    images.mounted['/opfs/images/fd/a.img'] = { kind: 'fd', drive: 0 };
+    bridge.reset();
+    bridge.reply('machine.shutdown', true);
+    bridge.reply('checkpoint.clear', true);
+    resetToasts();
+    await shutdownEmulator();
+    expect(bridge.paths()).toEqual(['machine.shutdown', 'checkpoint.clear']);
+    expect(machine.status).toBe('no-machine');
+    expect(machine.model).toBeNull();
+    expect(machine.ram).toBeNull();
+    expect(machine.mmuKind).toBe('none');
+    expect(machine.drives).toEqual({ hd: false, fd: false, cd: false });
+    expect(images.mounted).toEqual({});
+    expect(toasts.active.map((t) => t.msg)).toContain('Machine shut down');
+  });
+
+  it('a refused shut down changes nothing and says why', async () => {
+    se30();
+    await initEmulator(BOOT);
+    machine.status = 'running';
+    bridge.reset();
+    bridge.reply('machine.shutdown', { error: 'machine.shutdown: no machine is running' });
+    resetToasts();
+    await shutdownEmulator();
+    expect(bridge.paths()).toEqual(['machine.shutdown']);
+    expect(machine.status).toBe('running');
+    expect(machine.model).toBe('Macintosh SE/30');
+    expect(toasts.active.map((t) => t.msg)).toContain(
+      'Shut down failed: machine.shutdown: no machine is running',
+    );
   });
 
   it('the resume prompt reconciles after checkpoint.load', async () => {

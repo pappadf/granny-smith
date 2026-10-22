@@ -142,7 +142,7 @@ struct iw_printer {
     byteq_t input; // serial bytes not yet interpreted
     byteq_t capture; // this job's input, when capturing
     pdf_writer_t *pdf; // this job's document, from its first page
-    char status[64];
+    char status[128]; // room for the job's title (PRINTER_TITLE_MAX)
     iw_title_fn title_fn; // the machine's title source, or NULL
     struct object *object;
 };
@@ -185,11 +185,16 @@ static const char *printer_slug(const iw_printer_t *p) {
 
 // Recompose the status text and tell the platform when it changed.
 static void update_status(iw_printer_t *p) {
-    char s[64];
+    char s[sizeof(p->status)];
     if (p->set.paper_out)
         snprintf(s, sizeof(s), "status: out of paper");
     else if (p->set.panel_deselected || !p->interp.st.selected)
         snprintf(s, sizeof(s), "status: deselected");
+    else if (p->job.job_active && strcmp(p->job.title, "Print") != 0 && !strchr(p->job.title, ';'))
+        // The job's name, as the LaserWriter's status gives it (not the
+        // stand-in title, nor one the "; " separators would split)
+        snprintf(s, sizeof(s), "status: printing; job: %s; page: %u", p->job.title,
+                 (unsigned)p->interp.st.pages_done + 1);
     else if (p->job.job_active)
         snprintf(s, sizeof(s), "status: printing; page: %u", (unsigned)p->interp.st.pages_done + 1);
     else
@@ -398,6 +403,15 @@ void iw_printer_end_job(iw_printer_t *p) {
     // What is still queued belongs to this job
     flush_input(p);
     job_end(p);
+}
+
+void iw_printer_end_network_job(iw_printer_t *p, bool abandoned) {
+    if (!p || !p->job.job_active)
+        return;
+    uint32_t jobs = p->job.jobs; // a document delivered counts a job
+    iw_printer_end_job(p);
+    if (abandoned || p->job.jobs == jobs)
+        iw_interp_top_of_form(&p->interp);
 }
 
 // Interpret `len` bytes, starting a job on the first and splitting jobs at a

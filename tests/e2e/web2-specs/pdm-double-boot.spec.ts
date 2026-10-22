@@ -39,8 +39,9 @@ import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
-// Keep web2's default pacing: its re-chime timing is measured at real-time pacing.
-test.use({ gsSpeed: null });
+// Real pacing, not web2's default Faster: its re-chime timing is measured
+// at real-time pacing.
+test.use({ gsSpeed: 'paced' });
 
 const PDM_ROM = path.resolve(__dirname, '../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom');
 const MACOS81_HD = path.resolve(__dirname, '../../../tmp/macos81.img');

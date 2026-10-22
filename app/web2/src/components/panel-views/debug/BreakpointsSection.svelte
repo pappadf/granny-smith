@@ -8,7 +8,7 @@
   import { listBreakpoints, addBreakpoint, removeBreakpoint, type Breakpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { debug, toggleSection } from '@/state/debug.svelte';
+  import { debug, setSection, toggleSection, bumpBreakpoints } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import Button from '@/components/ui/Button.svelte';
@@ -34,8 +34,11 @@
     void refresh();
   });
 
+  // Also after a breakpoint is added or removed elsewhere (the Disassembly
+  // pane's context menu).
   $effect(() => {
     void machine.status;
+    void debug.breakpointsGen;
     if (debug.sections.breakpoints) void refresh();
   });
 
@@ -54,15 +57,18 @@
       showNotification('Invalid breakpoint address', 'error');
       return;
     }
-    const ok = await addBreakpoint(v, addCond.trim() || undefined);
-    if (!ok) {
-      showNotification('Failed to add breakpoint', 'error');
+    // A condition that does not parse is refused by the core, with its
+    // reason; the form stays open to correct it.
+    const added = await addBreakpoint(v, addCond.trim() || undefined);
+    if (added !== true) {
+      showNotification(`Failed to add breakpoint: ${added}`, 'error');
       return;
     }
     showNotification(`Breakpoint set at $${fmtHex32(v)}`, 'info');
     addAddr = '';
     addCond = '';
     showAdd = false;
+    bumpBreakpoints();
     await refresh();
   }
 
@@ -90,6 +96,7 @@
       showNotification('Failed to remove breakpoint', 'error');
       return;
     }
+    bumpBreakpoints();
     await refresh();
   }
 
@@ -121,7 +128,11 @@
       rest="faded"
       iconSize="md"
       label="Add breakpoint"
-      onclick={() => (showAdd = true)}
+      onclick={() => {
+        // The form is in the section's body: a collapsed section opens to show it.
+        setSection('breakpoints', true);
+        showAdd = true;
+      }}
     />
   {/snippet}
   {#if showAdd}

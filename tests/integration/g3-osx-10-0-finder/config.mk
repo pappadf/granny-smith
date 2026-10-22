@@ -18,7 +18,7 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/mac_os_x_10_0_3_2gb_g3_minimal.json" "$(T
 
 TEST_ARGS := model=pmg3dt ram=262144 config=$(TEST_TMPDIR)/config.json
 
-# One boot: the Finder is up after 10 G of scheduler time.
+# One boot: the Finder is up after 20 G of scheduler time.
 TEST_TIMEOUT := 1800
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

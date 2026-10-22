@@ -59,6 +59,9 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
 // the caller (the machine's image list).
 void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image);
 void lisa_fdc_eject(lisa_fdc_t *fdc);
+// Drive FDIR through the callback from the latched events and the interrupt
+// mask in shared RAM (after a checkpoint restore, once the machine is built).
+void lisa_fdc_update_int(lisa_fdc_t *fdc);
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc);
 // The inserted image (NULL if the drive is empty).
 image_t *lisa_fdc_image(const lisa_fdc_t *fdc);

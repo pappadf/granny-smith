@@ -13,7 +13,9 @@ and so on. [Supported machines](machines.md) lists what each model offers.
 
 ## 1. Machine
 
-1. **Model** — every model whose ROM you have loaded, oldest first. If the list is empty
+1. **Model** — every model whose ROM you have loaded, in family order: the compact
+   Macs, then the Macintosh II, Quadra, Power Macintosh, Network Server and G3
+   families, then the Lisa 2 and Macintosh XL. If the list is empty
    ("No ROMs in storage"), go **Back** and use **Load ROM...** first.
 2. **Memory** — the RAM installed. The default is a typical configuration
    for the model.
@@ -52,11 +54,12 @@ whether the monitor is plugged into it (**connected** / **no monitor**).
 2. Remove a card with its **×**.
 
 NuBus cards: Macintosh Display Card 8•24, 24AC and 8•24 GC. PCI cards:
-the Apple Accelerated PCI Graphics Card and the 3dfx Voodoo2. A card
-marked *substitute* runs on Granny Smith's own declaration ROM because you
-have not loaded Apple's; load the card's ROM with **Load ROM...** to use
-the original. A card marked *unavailable* needs a ROM that has not been
-loaded.
+the Apple Accelerated PCI Graphics Card and the 3dfx Voodoo2. In the card
+list, a card marked **Substitute ROM** runs on Granny Smith's own
+declaration ROM because you have not loaded Apple's; once added, load the
+card's ROM with **Load ROM...** to use the original. A card marked **ROM
+needed** cannot be added until its ROM is loaded: choose it, and the form
+says which ROM it needs and offers **Load ROM...**.
 
 ## 4. Floppy drives
 
@@ -91,6 +94,12 @@ on the Plus).
 4. **Start up from** — the disk the Mac starts from (it sets the Startup
    Disk control panel), or **No default (search all drives)**. A startup
    floppy in the internal drive is always tried first, as on a real Mac.
+   A hard disk with no image is not attached, so it cannot be the startup
+   disk: until you choose its image this shows **No default** (on a Lisa
+   or Macintosh XL with an empty ProFile, that lets a startup floppy such
+   as MacWorks boot).
+   The Plus has no **Start up from**: its ROM always starts from the disk
+   with the highest SCSI ID.
 
 ## 6. Start
 
