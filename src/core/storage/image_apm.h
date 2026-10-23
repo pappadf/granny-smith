@@ -47,6 +47,8 @@ typedef struct apm_partition {
     char name[33]; // pmPartName, NUL-terminated
     char type[33]; // pmParType, NUL-terminated
     uint32_t status; // pmPartStatus flags
+    uint32_t boot_size; // pmBootSize: bytes of boot code (0: none)
+    char processor[17]; // pmProcessor, NUL-terminated ("68000", "powerpc")
     enum apm_fs_kind fs_kind;
 } apm_partition_t;
 

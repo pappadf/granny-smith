@@ -43,6 +43,7 @@
 #include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
+#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -53,6 +54,7 @@
 #include "via.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -662,14 +664,16 @@ const storage_bus_decl_t gossamer_storage[] = {
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 0,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = true},
     {.id = "ata1",
      .label = "Secondary ATA bus",
      .kind = STORAGE_KIND_ATA,
      .media_bus = MEDIA_BUS_ATA,
      .media_unit_base = 2,
      .units = 0x3u,
-     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = true},
     {0},
 };
 
@@ -740,7 +744,85 @@ const pci_slot_decl_t gossamer_pci_slots[] = {
     {0},
 };
 
-// The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition.
+// Apple's Mac OS X patch for this board's Open Firmware 2.4 (the Rev C
+// ROM): the Gossamer script of Mac OS X's `bless` data (hdbootdata, version
+// 1.2.1, 1-30-2001), which the stub System of a Mac OS X disk's HFS wrapper
+// writes on the first start.  Unpatched, the firmware cannot load BootX:
+// `mac-io` has no decode-unit (no path with a unit address resolves), the
+// partition loader claims the low memory the firmware holds, and there is
+// no `bootr` to pass the kernel its arguments.  The script's last line is
+// the factory nvramrc's own fix, kept.  g3.md section 2.8 walks through it.
+// With `boot-device /AAPL,ROM` its `bootr` hands straight to the ROM's
+// Mac OS boot, and a boot-device Open Firmware cannot boot from falls back
+// to it, so Mac OS 8 and 9 start as on a factory store.
+static const char gos_osx_nvramrc[] =
+    "hex\n"
+    ": $D find-device ;\n"
+    ": $E device-end ;\n"
+    ": $L BLpatch ; : $R BRpatch ;\n"
+    ": $X execute ;\n"
+    ": $p 0 to my-self property ;\n"
+    ": $a \" /chosen\" $D $p $E ;\n"
+    ": helpb ['] install-interrupt-vectors ['] noop $R\n"
+    "0 4000 release-mem 8000 2000 release-mem ;\n"
+    "10 buffer: km\n"
+    "dev kbd\n"
+    "get-key-map km swap move\n"
+    "$E\n"
+    ": ck 0 do swap dup 3 >> km + c@ 1 rot 7 and << and or loop ;\n"
+    ": bootr 0d word count encode-string \" machargs\" $a\n"
+    "0 0 1 ck if 0 and else dup 1 = if 3d 0 1 else f 3d 0 2 then ck if 40 or then then\n"
+    "40 and if bye else helpb 1e 0 do ['] boot catch drop 1f4 ms loop then bye ;\n"
+    ": myboot boot-command eval ;\n"
+    "dev /packages/mac-parts\n"
+    ": $M 7F00 - 4 ;\n"
+    "' my-init-program 34 + ' $M $L\n"
+    "' load-partition dup\n"
+    "80 + ' 2drop $L\n"
+    "104 + ' 0 $L\n"
+    "' load 15C + ' 0 $L\n"
+    "$E\n"
+    "dev /packages/obp-tftp\n"
+    ": $M dup 24 - HIS-ENET-HA 6 move 14 + ;\n"
+    "' open 66C - ' $M $L\n"
+    "$E\n"
+    "dev mac-io\n"
+    ": decode-unit parse-1hex ;\n"
+    "$E\n"
+    "ff000000 dup dup 400 28 do-map 4+ w@ 10 and 0=\n"
+    "if 90b7 f3000032 w! then\n"
+    "unselect-dev";
+
+static const char *const gos_osx_patch[][2] = {
+    {"use-nvramrc?", "true"         },
+    {"load-base",    "600000"       },
+    {"nvramrc",      gos_osx_nvramrc},
+    {"boot-command", "0 bootr"      },
+};
+
+// The Open Firmware node of each ATA bus's controller, by storage bus id.
+static const char *gos_ata_of_node(const char *bus) {
+    if (strcmp(bus, "ata0") == 0)
+        return "/pci@80000000/mac-io@10/ide@20000";
+    if (strcmp(bus, "ata1") == 0)
+        return "/pci@80000000/mac-io@10/ide@21000";
+    return NULL;
+}
+
+// The Rev C ROM ($78F57389): the firmware the patch's addresses are for.
+static bool gos_rom_is_rev_c(const config_t *cfg) {
+    const rom_image_t *rom = &cfg->build_opts.rom;
+    if (!rom->data)
+        return false;
+    rom_identity_t id;
+    rom_identity_compute(rom->data, rom->size, &id);
+    return strncmp(id.id, "78f57389", 8) == 0;
+}
+
+// The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition;
+// Open Firmware's partition gets the Mac OS X patch and, for a startup
+// partition on ATA, the boot-device that names it -- what Startup Disk
+// writes on a G3 that has run Mac OS X.
 static void gossamer_seed(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st)
@@ -749,6 +831,25 @@ static void gossamer_seed(config_t *cfg) {
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);
+    if (gos_rom_is_rev_c(cfg)) {
+        for (size_t i = 0; i < sizeof gos_osx_patch / sizeof gos_osx_patch[0]; i++) {
+            const char *err = of_nvram_setenv(st->hr.nvram, gos_osx_patch[i][0], gos_osx_patch[i][1]);
+            if (err)
+                LOG(0, "Mac OS X NVRAM patch %s: %s", gos_osx_patch[i][0], err);
+        }
+        // An ATA startup partition: Open Firmware boots it, BootX when the
+        // partition has one.  SCSI stays /AAPL,ROM -- the ROM's Mac OS boot
+        // reads XPRAM's startup device -- as does a disk with no partition.
+        const machine_startup_t *s = &cfg->build_opts.startup;
+        const char *node = !s->none && s->partition > 0 ? gos_ata_of_node(s->bus) : NULL;
+        if (node) {
+            char dev[96];
+            snprintf(dev, sizeof dev, "%s/@%d:%d", node, s->unit, s->partition);
+            const char *err = of_nvram_setenv(st->hr.nvram, "boot-device", dev);
+            if (err)
+                LOG(0, "boot-device %s: %s", dev, err);
+        }
+    }
     // The configuration's own Open Firmware variables ("nvram"), last, so
     // its boot-device wins over the record above.  machine_config_resolve
     // set each on a factory store already; a failure here is a bug.
