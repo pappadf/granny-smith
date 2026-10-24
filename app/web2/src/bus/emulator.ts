@@ -757,7 +757,12 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
     return;
   }
   const ev: CoreEvent = { kind, event: typeof data.event === 'string' ? data.event : '', data };
-  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) coreEventTrace.shift();
+  // Full: drop the oldest event that is not a mode_* record, so frequent
+  // samples (speed, perf) cannot evict the mode lifecycle the tests read
+  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) {
+    const i = coreEventTrace.findIndex((e) => !e.event.startsWith('mode_'));
+    coreEventTrace.splice(i >= 0 ? i : 0, 1);
+  }
   if (typeof window !== 'undefined')
     (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
   routeCoreEvent(ev);
