@@ -145,7 +145,7 @@ void *g_mem_logical_xlate_ctx = NULL;
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
 uint32_t g_uncached_read_cycles = 0;
-bool g_mem_dcbz_device = false;
+mem_lines_t *g_mem_lines = NULL;
 // 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
 // Slow-path histogram bucket.  The old single `(addr >> 20) & 0xF` indexed
 // address bits 20-23 only, so buckets aliased every 16 MB and $50F00000 (an
@@ -464,6 +464,63 @@ static inline void dev_write32(const page_entry_t *pe, uint32_t addr, uint32_t o
     logpoint_notify_device(addr, 4, value, true);
 }
 
+// ---- Held lines (memory.h, mem_lines_t) -----------------------------------
+
+static void line_release(mem_line_t *l, bool write);
+
+// The held line a device access of `size` at physical `phys` falls in, with
+// its offset in *off; NULL when it is in none.  An access that straddles a
+// line's edge flushes that line first, then goes to the device as usual.
+static mem_line_t *line_find(uint32_t phys, unsigned size, uint32_t *off) {
+    mem_lines_t *set = g_mem_lines;
+    for (uint32_t i = 0; i < MEM_LINES; i++) {
+        mem_line_t *l = &set->line[i];
+        if (!l->held)
+            continue;
+        uint32_t o = phys - l->phys;
+        if (o < MEM_LINE_SIZE && o + size <= MEM_LINE_SIZE) {
+            l->used = ++set->clock;
+            *off = o;
+            return l;
+        }
+        if (phys + size > l->phys && phys < l->phys + MEM_LINE_SIZE) {
+            line_release(l, true);
+            if (!g_mem_lines)
+                return NULL;
+        }
+    }
+    return NULL;
+}
+
+// A device read served by a held line: true with *v filled.
+static inline bool line_read(uint32_t phys, unsigned size, uint32_t *v) {
+    uint32_t off;
+    mem_line_t *l = line_find(phys, size, &off);
+    if (!l)
+        return false;
+    const uint8_t *b = l->bytes + off;
+    *v = size == 1 ? LOAD_BE8(b) : size == 2 ? LOAD_BE16(b) : LOAD_BE32(b);
+    return true;
+}
+
+// A device store taken by a held line: true when it landed there.
+static inline bool line_write_store(uint32_t phys, unsigned size, uint32_t value) {
+    uint32_t off;
+    mem_line_t *l = line_find(phys, size, &off);
+    if (!l)
+        return false;
+    uint8_t *b = l->bytes + off;
+    if (size == 1)
+        STORE_BE8(b, value);
+    else if (size == 2)
+        STORE_BE16(b, value);
+    else
+        STORE_BE32(b, value);
+    l->dirty = 1;
+    l->aged = 0;
+    return true;
+}
+
 // Decide whether a device registered at this logical page should be
 // dispatched directly, or whether the access must instead fall through to the
 // MMU table walk.
@@ -539,8 +596,15 @@ void memory_signal_bus_error(uint32_t addr, bool write) {
 static inline __attribute__((always_inline)) uint32_t load_be_n(const uint8_t *p, unsigned size) {
     return size == 1 ? LOAD_BE8(p) : size == 2 ? LOAD_BE16(p) : LOAD_BE32(p);
 }
+// Only a PowerPC holds a line, and its device accesses reach here with the
+// physical address (its translation runs first; there is no 68K MMU).
 static inline __attribute__((always_inline)) uint32_t dev_read_n(const page_entry_t *pe, uint32_t addr, uint32_t off,
                                                                  unsigned size) {
+    uint32_t lv;
+    if (__builtin_expect(g_mem_lines != NULL, 0) && line_read(addr, size, &lv)) {
+        logpoint_notify_device(addr, size, lv, false);
+        return lv;
+    }
     return size == 1 ? dev_read8(pe, addr, off) : size == 2 ? dev_read16(pe, addr, off) : dev_read32(pe, addr, off);
 }
 
@@ -766,6 +830,11 @@ static inline uint32_t dev_desc_read(const mem_dev_desc_t *d, uint32_t addr, uns
                    g_installed_map->dev_desc[d->ppage] == d && d->valid && d->gen == g_installed_map->dev_gen,
                "stale device entry at $%08X", addr);
     uint32_t off = addr & MEM_PAGE_MASK;
+    uint32_t lv;
+    if (__builtin_expect(g_mem_lines != NULL, 0) && line_read((d->ppage << MEM_PAGE_SHIFT) | off, size, &lv)) {
+        logpoint_notify_device(addr, size, lv, false);
+        return lv;
+    }
     if (d->lane_reverse)
         off ^= 8u - size;
     page_entry_t pe = {.dev = d->iface, .dev_context = d->ctx};
@@ -790,6 +859,10 @@ static inline void dev_desc_write(const mem_dev_desc_t *d, uint32_t addr, uint32
                    g_installed_map->dev_desc[d->ppage] == d && d->valid && d->gen == g_installed_map->dev_gen,
                "stale device entry at $%08X", addr);
     uint32_t off = addr & MEM_PAGE_MASK;
+    if (__builtin_expect(g_mem_lines != NULL, 0) && line_write_store((d->ppage << MEM_PAGE_SHIFT) | off, size, value)) {
+        logpoint_notify_device(addr, size, value, true);
+        return;
+    }
     if (d->lane_reverse)
         off ^= 8u - size;
     page_entry_t pe = {.dev = d->iface, .dev_context = d->ctx};
@@ -801,6 +874,139 @@ static inline void dev_desc_write(const mem_dev_desc_t *d, uint32_t addr, uint32
     else
         dev_write32_raw(&pe, sub, d->lane_reverse ? __builtin_bswap32(value) : value);
     logpoint_notify_device(addr, size, value, true);
+}
+
+// A held line's way out (memory.h, mem_lines_t).  A resolved page goes
+// straight to its handler, the lane reversal applied here as dev_desc_write
+// applies it per access; any other device page goes to its interface (a PCI
+// window, which does the same in window_write_line).  A handler without
+// write_line gets the eight word writes the stores would have made.
+static void line_write(mem_line_t *l) {
+    l->dirty = 0;
+    uint32_t ppage = l->phys >> MEM_PAGE_SHIFT;
+    if (ppage >= g_page_count || !g_page_table)
+        return;
+    const mem_dev_desc_t *d = memory_dev_desc_for_page(ppage);
+    page_entry_t pe;
+    uint32_t sub;
+    bool rev = false;
+    if (d) {
+        pe = (page_entry_t){.dev = d->iface, .dev_context = d->ctx};
+        sub = d->sub_base + (l->phys & MEM_PAGE_MASK);
+        rev = d->lane_reverse != 0;
+    } else {
+        pe = g_page_table[ppage];
+        if (!pe.dev)
+            return; // the page lost its device since the line was allocated
+        sub = l->phys - pe.base_addr;
+    }
+    if (pe.dev->write_line) {
+        uint8_t bus[MEM_LINE_SIZE];
+        for (uint32_t i = 0; i < MEM_LINE_SIZE; i++)
+            bus[i] = l->bytes[rev ? i ^ 7u : i];
+        pe.dev->write_line(pe.dev_context, sub, bus);
+        return;
+    }
+    for (uint32_t o = 0; o < MEM_LINE_SIZE; o += 4) {
+        uint32_t v = LOAD_BE32(l->bytes + o);
+        dev_write32_raw(&pe, rev ? sub + (o ^ 4u) : sub + o, rev ? __builtin_bswap32(v) : v);
+    }
+}
+
+// Release `l`, writing it first if `write` and it is dirty.  It leaves the
+// set before the write: the device's handler may touch memory.
+static void line_release(mem_line_t *l, bool write) {
+    bool out = write && l->dirty;
+    l->held = 0;
+    l->aged = 0;
+    if (--g_mem_lines->count == 0)
+        g_mem_lines = NULL;
+    if (out)
+        line_write(l);
+    l->dirty = 0;
+}
+
+// The held line allocated at `ea` (dcbst, dcbf and dcbi name the line by
+// effective address, as the guest does), or NULL.
+static mem_line_t *line_at_ea(uint32_t ea) {
+    if (!g_mem_lines)
+        return NULL;
+    ea &= ~(MEM_LINE_SIZE - 1u);
+    for (uint32_t i = 0; i < MEM_LINES; i++)
+        if (g_mem_lines->line[i].held && g_mem_lines->line[i].ea == ea)
+            return &g_mem_lines->line[i];
+    return NULL;
+}
+
+void memory_line_clean(uint32_t ea) {
+    mem_line_t *l = line_at_ea(ea);
+    if (!l)
+        return;
+    l->aged = 0;
+    l->used = ++g_mem_lines->clock;
+    if (l->dirty)
+        line_write(l);
+}
+
+void memory_line_flush(uint32_t ea) {
+    mem_line_t *l = line_at_ea(ea);
+    if (l)
+        line_release(l, true);
+}
+
+void memory_line_drop(uint32_t ea) {
+    mem_line_t *l = line_at_ea(ea);
+    if (l)
+        line_release(l, false);
+}
+
+void memory_line_hold(mem_lines_t *set, uint32_t phys, uint32_t ea) {
+    phys &= ~(MEM_LINE_SIZE - 1u);
+    mem_line_t *l = NULL;
+    if (g_mem_lines == set) {
+        for (uint32_t i = 0; i < MEM_LINES && !l; i++)
+            if (set->line[i].held && set->line[i].phys == phys)
+                l = &set->line[i]; // already held: zeroed again
+    }
+    if (!l) {
+        for (uint32_t i = 0; i < MEM_LINES && !l; i++)
+            if (!set->line[i].held)
+                l = &set->line[i];
+        if (!l) { // full: evict the least recently used
+            l = &set->line[0];
+            for (uint32_t i = 1; i < MEM_LINES; i++)
+                if (set->line[i].used - set->clock < l->used - set->clock)
+                    l = &set->line[i];
+            line_release(l, true);
+        }
+        set->count++;
+        g_mem_lines = set;
+    }
+    l->phys = phys;
+    l->ea = ea & ~(MEM_LINE_SIZE - 1u);
+    l->held = 1;
+    l->dirty = 1;
+    l->aged = 0;
+    l->used = ++set->clock;
+    memset(l->bytes, 0, sizeof l->bytes);
+}
+
+void memory_lines_drop_all(mem_lines_t *set) {
+    memset(set, 0, sizeof *set);
+    if (g_mem_lines == set)
+        g_mem_lines = NULL;
+}
+
+void memory_lines_age(void) {
+    for (uint32_t i = 0; i < MEM_LINES && g_mem_lines; i++) {
+        mem_line_t *l = &g_mem_lines->line[i];
+        if (!l->held)
+            continue;
+        if (l->aged)
+            line_release(l, true);
+        else
+            l->aged = 1;
+    }
 }
 
 // Real-mode view on PowerPC machines: the supervisor tables are the physical
@@ -1261,8 +1467,13 @@ static inline __attribute__((always_inline)) void store_be_n(uint8_t *p, uint32_
     else
         STORE_BE32(p, value);
 }
+// As dev_read_n: the held line is checked with `addr` as the physical address.
 static inline __attribute__((always_inline)) void dev_write_n(const page_entry_t *pe, uint32_t addr, uint32_t off,
                                                               uint32_t value, unsigned size) {
+    if (__builtin_expect(g_mem_lines != NULL, 0) && line_write_store(addr, size, value)) {
+        logpoint_notify_device(addr, size, value, true);
+        return;
+    }
     if (size == 1)
         dev_write8(pe, addr, off, (uint8_t)value);
     else if (size == 2)

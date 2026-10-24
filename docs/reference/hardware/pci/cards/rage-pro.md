@@ -129,9 +129,11 @@ installs) is observed to [5]:
   DP_SRC or DP_MIX for them;
 - draw offscreen copies and dialog contents as colour host-data operations at 15 bpp with
   HOST_BIG_ENDIAN_EN set;
-- stream that host data a cache line at a time: `dcbz` the line, `stmw` eight words into it,
-  `dcbst` it. The aperture is mapped cacheable for this, so the card sees one 32-byte burst per
-  line, and never the `dcbz`'s zeros. The stores go not to the BAR0 register alias but to the
+- stream that host data a cache line at a time: one `dcbz` of a HOST_DATA line when the
+  transfer starts, then for every line `stmw` eight words into it, `dcbst` it and `sync`. The
+  aperture is mapped cacheable for this, and a `dcbst` leaves the line valid, so every line
+  after the first is a cache hit and the card sees one 32-byte burst per line, never the
+  `dcbz`'s zeros. The stores go not to the BAR0 register alias but to the
   register aperture BAR2, at `+$E00`: block 0's HOST_DATA through the upper copy of the two
   register blocks (§2.4);
 - start its screen-to-screen blits, a window's scroll among them, through DST_X_Y and
@@ -144,7 +146,7 @@ installs) is observed to [5]:
 - **HOST_DATA through BAR2's upper half.** A model that decodes only BAR2's lower 2 KB drops
   every pixel ATI's driver streams. The symptom is alerts, buttons and menu-bar text drawn as
   blank boxes.
-- **The `dcbz` before each host-data line.** On the hardware it only allocates the line in the
+- **The `dcbz` before a host-data transfer.** On the hardware it only allocates the line in the
   data cache. A model without a data cache that sends its zeros to HOST_DATA feeds the
   operation eight extra words at the start: every later pixel lands 32 bytes on, and a window's
   icons and labels come out 16 pixels to the right at 15 bpp, with a black bar at the left edge.

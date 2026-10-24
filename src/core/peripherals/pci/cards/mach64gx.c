@@ -1833,14 +1833,11 @@ static void mach64_host_feed_colour(mach64_t *m, const mach64_op_t *op, uint32_t
     }
 }
 
-static void mach64_host_feed(mach64_t *m, uint32_t value) {
-    if (!m->host_op.active)
-        return;
-    mach64_op_t op;
-    mach64_op_gather(m, &op);
+// One dword into the operation in flight, `op` its gathered state.
+static void mach64_host_feed_op(mach64_t *m, const mach64_op_t *op, uint32_t value) {
     uint32_t host_w = (m->reg[DW_DP_PIX_WIDTH] >> 16) & 7u;
-    if (host_w && op.mono_sel != DP_MONO_HOST) {
-        mach64_host_feed_colour(m, &op, host_w, value);
+    if (host_w && op->mono_sel != DP_MONO_HOST) {
+        mach64_host_feed_colour(m, op, host_w, value);
         return;
     }
     bool lsb_first = (m->reg[DW_DP_PIX_WIDTH] & 0x80000000u) != 0;
@@ -1854,7 +1851,7 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
 
         uint32_t x = m->host_op.x0 + m->host_op.col;
         uint32_t y = m->host_op.y0 + m->host_op.row;
-        mach64_emit(m, &op, x, y, m->host_op.col, m->host_op.row, mono);
+        mach64_emit(m, op, x, y, m->host_op.col, m->host_op.row, mono);
 
         if (++m->host_op.col >= m->host_op.w) {
             m->host_op.col = 0;
@@ -1863,13 +1860,33 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->blits++;
                 m->display.fb_dirty = true;
                 LOG(3, "Mach64: op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
-                    m->host_op.h, m->host_op.x0, m->host_op.y0, op.dst.base, op.dst.pitch);
+                    m->host_op.h, m->host_op.x0, m->host_op.y0, op->dst.base, op->dst.pitch);
                 return;
             }
             if (byte_align)
                 bit = ((bit >> 3) + 1u) * 8u - 1u; // resume on a byte boundary
         }
     }
+}
+
+static void mach64_host_feed(mach64_t *m, uint32_t value) {
+    if (!m->host_op.active)
+        return;
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    mach64_host_feed_op(m, &op, value);
+}
+
+// Several dwords of host data at once -- a cache line's worth through
+// aux_write_line -- with the operation's state gathered once.  Host data
+// moves nothing that mach64_op_gather reads, so it is the same for each.
+static void mach64_host_feed_n(mach64_t *m, const uint32_t *values, uint32_t n) {
+    if (!m->host_op.active)
+        return;
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    for (uint32_t i = 0; i < n && m->host_op.active; i++)
+        mach64_host_feed_op(m, &op, values[i]);
 }
 
 // ============================================================
@@ -2367,12 +2384,6 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         return true;
     default:
         if (dw >= DW_HOST_DATA0 && dw <= DW_HOST_DATA_LAST) {
-            // The Mac drivers write HOST_DATA a cache line at a time: dcbz,
-            // stmw, dcbst.  The dcbz's zeros never reach the card on the
-            // hardware (memory.h, g_mem_dcbz_device); taken as data, they
-            // shifted the rest of a host blit by 32 bytes.
-            if (g_mem_dcbz_device)
-                return true;
             m->reg[dw] = value;
             mach64_host_feed(m, value);
             return true;
@@ -2753,6 +2764,30 @@ static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     } else {
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
     }
+}
+
+// A cache line through BAR2 (memory.h, write_line): ATI's driver streams
+// host data as lines of block 0's HOST_DATA.  Such a line feeds the
+// operation in one go, as the eight register writes would; any other line is
+// its eight word writes.
+static void aux_write_line(void *ctx, uint32_t offset, const uint8_t *bytes) {
+    mach64_t *m = (mach64_t *)ctx;
+    uint32_t o = offset & RAGEPRO_BAR2_DECODE;
+    int dw0 = (int)((o & 0x3FFu) >> 2);
+    if (o >= 0x400u && dw0 >= DW_HOST_DATA0 && dw0 + 7 <= DW_HOST_DATA_LAST) {
+        uint32_t v[MEM_LINE_SIZE / 4];
+        for (uint32_t i = 0; i < MEM_LINE_SIZE / 4; i++) {
+            const uint8_t *b = bytes + 4u * i;
+            v[i] = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+            m->reg[dw0 + (int)i] = v[i];
+        }
+        mach64_host_feed_n(m, v, MEM_LINE_SIZE / 4);
+        return;
+    }
+    for (uint32_t i = 0; i < MEM_LINE_SIZE; i += 4)
+        aux_write32(ctx, offset + i,
+                    ((uint32_t)bytes[i] << 24) | ((uint32_t)bytes[i + 1] << 16) | ((uint32_t)bytes[i + 2] << 8) |
+                        bytes[i + 3]);
 }
 
 static uint8_t bio_rd8(void *ctx, uint32_t offset, bool peek) {
@@ -4013,6 +4048,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     m->aux_if.peek_uint8 = aux_peek8;
     m->aux_if.peek_uint16 = aux_peek16;
     m->aux_if.peek_uint32 = aux_peek32;
+    m->aux_if.write_line = aux_write_line;
     m->bio_if.read_uint8 = bio_read8;
     m->bio_if.read_uint16 = bio_read16;
     m->bio_if.read_uint32 = bio_read32;
