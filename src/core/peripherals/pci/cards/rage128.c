@@ -1391,10 +1391,6 @@ static const pci_device_ops_t r128_ops = {
 
 static const char *const r128_memory_values[] = {"16m", "32m", NULL};
 static const char *const r128_memory_labels[] = {"16 MB (Rage Orion, Xclaim VR 128)", "32 MB (Nexus 128)", NULL};
-static const char *const r128_monitor_values[] = {"vga", "vga_noddc", "13in_rgb", "21in_rgb", NULL};
-static const char *const r128_monitor_labels[] = {"VGA monitor (DDC)", "VGA monitor (no DDC)",
-                                                  "13\" AppleColor RGB (Apple sense)",
-                                                  "21\" Macintosh color display (Apple sense)", NULL};
 // The rasteriser: the emulator's own (exact, the default) or the host
 // GPU's, where the host has one (the WebGPU takeover, rage128_gpu.c).
 static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
@@ -1404,17 +1400,17 @@ static bool r128_raster_offered(const char *value) {
     return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
+// The monitor is not among the options: the configuration's display row
+// picks it (displays.<slot>.monitor, which the build hands the card as its
+// monitor= option), so the dialog shows one Monitor choice.  monitor= stays
+// accepted below, which is how "vga_noddc" -- a VGA monitor without DDC --
+// is still reached.
 static const pci_card_option_t r128_options[] = {
     {.key = "memory",
      .label = "Video memory",
      .values = r128_memory_values,
      .labels = r128_memory_labels,
      .default_value = "16m"},
-    {.key = "monitor",
-     .label = "Monitor",
-     .values = r128_monitor_values,
-     .labels = r128_monitor_labels,
-     .default_value = "vga"},
     {.key = "raster",
      .label = "Rendering",
      .values = r128_raster_values,

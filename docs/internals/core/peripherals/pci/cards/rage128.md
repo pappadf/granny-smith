@@ -28,7 +28,7 @@ model answers registers and nothing else.
 | **ROM** | the Xclaim VR 128's `113-57406-108` (FCode 1.69, node `ATY,Rage128v`; catalogue default) or the Nexus 128's `113-57502-103` (`ATY,Rage128n`); identities in [`expansion-rom.md`](../../../../../reference/hardware/pci/expansion-rom.md) |
 | **BARs** | BAR0 64 MB prefetchable memory, BAR1 256 B I/O, BAR2 16 KB memory, ROM 128 KB |
 | **Memory** | 16 MB (Rage Orion, Xclaim VR 128); `memory=32m` for the Nexus 128 |
-| **Monitor** | `monitor=vga` (default: a VGA monitor answering DDC), `vga_noddc`, `13in_rgb`, `21in_rgb` |
+| **Monitor** | `monitor=vga` (default: a VGA monitor answering DDC), `vga_noddc`, `13in_rgb`, `21in_rgb`; not an advertised option: a configuration document picks it as `displays.<slot>.monitor` (catalogue `vga`, `13in_rgb`, `21in_rgb`), and `vga_noddc` is reached through `monitor=` alone |
 | **Rendering** | `raster=sw` (default, exact) or `raster=webgpu` (the host GPU, in a browser that has one); `gpu=auto` (default) or `gpu=always`, unadvertised |
 
 ## 1. Responsibilities & design
