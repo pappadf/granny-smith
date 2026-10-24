@@ -52,7 +52,6 @@ function onGpuOverlay(visible: number): void {
 import { onPrinterAttach } from '@/printer/platen';
 import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
-import { onRemoteRequest } from './remoteAfp';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { audioTargetLatencyFromQuery } from '@/audio/latency';
@@ -876,7 +875,7 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'notify:afp_remote_request':
       // A remote AFP volume needs a listing or a file (bus/remoteAfp.ts).
-      onRemoteRequest(d);
+      remoteRequestHandler?.(d);
       break;
     // Annotation records in a job's stream, at the positions they describe:
     // the console turns the text around them into value / error entries.
@@ -899,6 +898,15 @@ function routeCoreEvent(ev: CoreEvent): void {
     default:
       break;
   }
+}
+
+// Who answers the core's remote AFP requests: bus/remoteAfp.ts, once it has
+// put its servers on the network (it then also answers the requests made
+// before).  Set from there rather than imported here, so this module does
+// not pull the upload path in.
+let remoteRequestHandler: ((d: Record<string, unknown>) => void) | null = null;
+export function setRemoteRequestHandler(fn: ((d: Record<string, unknown>) => void) | null): void {
+  remoteRequestHandler = fn;
 }
 
 // The job id of a job-stream record, when it carries one.

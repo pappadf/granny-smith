@@ -7,7 +7,7 @@
 // with appletalk.remote.complete.  What a URI names, and how each answer is
 // built, is lib/remoteAfp.ts.
 
-import { gsEval, gsErrorText, gsOk } from './emulator';
+import { gsEval, gsErrorText, gsOk, setRemoteRequestHandler } from './emulator';
 import { streamToOpfs } from './upload';
 import { AFP_REMOTE_DIR } from '@/lib/opfsPaths';
 import {
@@ -133,6 +133,7 @@ async function canReachMacHut(): Promise<boolean> {
 export async function installRemoteAfp(): Promise<void> {
   settings = readSettings();
   if (settings.disabled) return;
+  setRemoteRequestHandler(onRemoteRequest);
   const limit = await gsEval('appletalk.remote.unpack_limit');
   if (typeof limit === 'number' && limit >= 0) unpackLimit = limit;
   await addServer(INTERNET_ARCHIVE);
