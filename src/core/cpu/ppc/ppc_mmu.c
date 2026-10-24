@@ -1070,6 +1070,13 @@ uint8_t *ppc_mmu_user_store_host(uint32_t ea) {
     return pe->host_base + (pa & MEM_PAGE_MASK);
 }
 
+// dcbz's result for a block at physical address pa: 3 when a device
+// decodes it (memory.h, g_mem_dcbz_device), else 0.
+static int dcbz_target(uint32_t pa) {
+    uint32_t ppage = pa >> MEM_PAGE_SHIFT;
+    return (ppage < g_page_count && g_page_table[ppage].dev) ? 3 : 0;
+}
+
 // dcbz's translated form (601UM Table 6-3; 604UM §4.5.6): a W=1 or I=1
 // mapping takes the alignment exception (R already updated by the walk);
 // a non-memory-forced T=1 segment makes it a no-op (§6.10.6 / PEM "cache
@@ -1078,7 +1085,8 @@ uint8_t *ppc_mmu_user_store_host(uint32_t ea) {
 // clear / HID0[19] set — the reset state until the ROM enables caches).
 // The framebuffer is mapped write-through, so the W case is
 // guest-visible, not a corner.
-// Returns: 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
+// Returns: 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op,
+// 3 = proceed, the block being a device's (dcbz_target).
 int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     uint32_t ea = *addr;
     bool dt = (p->msr & PPC_MSR_DT) != 0;
@@ -1088,7 +1096,7 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
         return 1;
     }
     if (!dt && !(p->sr_t_mask & (1u << (ea >> 28))))
-        return 0; // direct translation: plain zeroing (mask covers the 604 unconditionally)
+        return dcbz_target(ea); // direct translation: plain zeroing (mask covers the 604 unconditionally)
     bool user = (p->msr & PPC_MSR_PR) != 0;
     uint32_t sr = p->sr[ea >> 28];
     // 601 order: T=1 prevails, so the no-op is decided before any walk.
@@ -1120,19 +1128,19 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
         user_soa_fill(ea, out.pa, out.w_ok);
         if (g_user_write[ea >> MEM_PAGE_SHIFT]) {
             *addr = ea;
-            return 0;
+            return dcbz_target(out.pa);
         }
         user_phys_fallback(out.pa, true);
     } else if (dt) {
         sv_soa_fill(p, ea, out.pa, out.w_ok);
         if (g_ppc_sv_write && g_active_write == g_ppc_sv_write && g_ppc_sv_write[ea >> MEM_PAGE_SHIFT]) {
             *addr = ea;
-            return 0;
+            return dcbz_target(out.pa);
         }
         sv_phys_fallback(out.pa, true);
     }
     *addr = out.pa;
-    return 0;
+    return dcbz_target(out.pa);
 }
 
 // ============================================================

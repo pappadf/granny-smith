@@ -145,6 +145,7 @@ void *g_mem_logical_xlate_ctx = NULL;
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
 uint32_t g_uncached_read_cycles = 0;
+bool g_mem_dcbz_device = false;
 // 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
 // Slow-path histogram bucket.  The old single `(addr >> 20) & 0xF` indexed
 // address bits 20-23 only, so buckets aliased every 16 MB and $50F00000 (an

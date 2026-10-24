@@ -449,6 +449,17 @@ static inline void memory_io_esync_penalty(void) {
 // keeps those pages off the read fast path while it is non-zero.
 extern uint32_t g_uncached_read_cycles;
 
+// True while a PowerPC dcbz writes its zeros to a device page under a
+// cacheable mapping.  On the hardware that zeroed block is only allocated in
+// the data cache: the device sees it at the castout or dcbst, by when the
+// guest has normally stored over it (ATI's drivers dcbz a line of the
+// HOST_DATA registers, stmw eight words into it and dcbst it, so the card
+// gets one 32-byte burst).  This core has no data cache, so the zeros go out
+// as writes; a memory-like device takes them, which is what the castout
+// would leave there, and a FIFO the guest only reaches through whole lines
+// drops them.
+extern bool g_mem_dcbz_device;
+
 // Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses
 // taken through the slow path since process start, and a histogram of them by
 // address bucket (memory.c's MEM_SLOWPATH_BUCKET).

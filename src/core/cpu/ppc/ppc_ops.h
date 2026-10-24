@@ -393,7 +393,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_DCBST      OP((void)0)
 #define OP_DCBF       OP((void)0)
 #define OP_DCBI       OP(PRIV()) // supervisor-only
-#define OP_DCBZ       OP(EA_X(); ea &= ~31u; uint32_t xa = ea; int r_ = ppc_dxlate_dcbz(p, iw, &xa); if (r_) break; for (int i_ = 0; i_ < 8; i_++) WRITE(32, xa + 4u * (uint32_t)i_, 0)) // really zeroes the block (§3.8); W/I + T=1 rules in ppc_mmu.c
+#define OP_DCBZ       OP(EA_X(); ea &= ~31u; uint32_t xa = ea; int r_ = ppc_dxlate_dcbz(p, iw, &xa); if (r_ == 1 || r_ == 2) break; g_mem_dcbz_device = (r_ == 3); for (int i_ = 0; i_ < 8; i_++) WRITE(32, xa + 4u * (uint32_t)i_, 0); g_mem_dcbz_device = false) // really zeroes the block (§3.8); W/I + T=1 rules and device pages in ppc_mmu.c
 
 // --- D-form loads/stores ---
 #define OP_LWZ        OP(EA_D();  CHKA_LD(ea, 4); GPR(RT) = LDV(32))

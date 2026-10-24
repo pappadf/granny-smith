@@ -127,7 +127,11 @@ in memory.c to keep their hands off the user arrays.
   that free.  `tlbie` invalidates by congruence class (EA[13-19] mod 128,
   Figure 6-15) — exactly the granularity the kernel's FlushTLB loop
   assumes.  `dcbz` takes the alignment exception on W=1/I=1 mappings and
-  is a no-op in non-memory-forced T=1 segments.
+  is a no-op in non-memory-forced T=1 segments.  On a cacheable mapping of
+  a device page it writes its zeros with `g_mem_dcbz_device` set: on the
+  hardware the zeroed line stays in the data cache until castout or
+  `dcbst`, so a device whose register is a FIFO the guest fills a whole
+  line at a time (the Rage Pro's HOST_DATA) drops them.
 - **Caches**: the user and supervisor-translated SoA fills (tracked per
   256 MB segment, so invalidation is proportional to fills and a
   segment-register write drops only its own segment's -- Mac OS X switches

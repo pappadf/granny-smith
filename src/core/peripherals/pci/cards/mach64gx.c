@@ -2189,6 +2189,16 @@ static void mach64_engine_line(mach64_t *m) {
 #define GUI_TRAJ_PAT_MONO_EN  0x01000000u // GUI_TRAJ_CNTL bit 24
 #define SRC_CNTL_PATT_ROT_EN  0x02u
 
+// The same family's DST_X_Y ($BA) and DST_WIDTH_HEIGHT ($BB, which starts
+// the operation): DST_Y_X and DST_HEIGHT_WIDTH with the halves the other way
+// round, by the field-order rule below.  ATI's Mac accelerator starts its
+// screen-to-screen blits -- a window's scroll -- through them; ignored, the
+// scroll copied nothing and only the newly exposed strip was redrawn.  The
+// field order is the trace's: $0044000D / $004100D1 for the 209 x 65 content
+// of a window at (13,68).
+#define DW_DST_X_Y          0xBA
+#define DW_DST_WIDTH_HEIGHT 0xBB
+
 // SET_DST_PITCH: 0 = USR_DST_PITCH, otherwise a pitch in pixels.
 static const uint16_t gp_set_dst_pitch[16] = {0,    320,  352,  384, 640, 800,  896, 512,
                                               1024, 1152, 1280, 400, 832, 1600, 448, 2048};
@@ -2243,6 +2253,21 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         if (!m->gp)
             return false;
         gp_set_gui_engine2(m, value);
+        return true;
+    case DW_DST_X_Y:
+        if (!m->gp)
+            return false;
+        m->reg[DW_DST_X] = value & 0xFFFFu;
+        m->reg[DW_DST_Y] = (value >> 16) & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_DST_WIDTH_HEIGHT: // and GO
+        if (!m->gp)
+            return false;
+        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+        m->reg[DW_DST_HEIGHT] = (value >> 16) & 0xFFFFu;
+        m->reg[dw] = value;
+        mach64_engine_run(m);
         return true;
     // FIELD ORDER.  In ATI's combined `A_B` register names the FIRST-named
     // field is the LOW halfword and the second is the HIGH halfword, so
@@ -2342,6 +2367,12 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         return true;
     default:
         if (dw >= DW_HOST_DATA0 && dw <= DW_HOST_DATA_LAST) {
+            // The Mac drivers write HOST_DATA a cache line at a time: dcbz,
+            // stmw, dcbst.  The dcbz's zeros never reach the card on the
+            // hardware (memory.h, g_mem_dcbz_device); taken as data, they
+            // shifted the rest of a host blit by 32 bytes.
+            if (g_mem_dcbz_device)
+                return true;
             m->reg[dw] = value;
             mach64_host_feed(m, value);
             return true;
