@@ -24,11 +24,6 @@ include "../lib/mac.script"
 let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
 let cd = "../../data/apps/OpenGL_SDK_1.2.img_.bin"
 
-if !have_media($cd) {
-    echo "skip: ${$cd} not present"
-    quit
-}
-
 def gl_goto(x, y) {
     let k = 0
     while $k < 8 {
@@ -61,38 +56,6 @@ def gl_open(name, run) {
     scheduler.run $run
 }
 
-machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
-machine.rtc.time = "2026-10-01T12:00:00"
-machine.scsi.attach_hd "${$hd}" 0
-scheduler.run 24000000000
-assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
-
-machine.scsi.attach_cdrom("${$cd}", 3)
-scheduler.run 8000000000
-# Quit the Setup Assistant (first boot) and confirm.
-gl_cmdkey("q")
-scheduler.run 2000000000
-gl_click(461, 173)
-scheduler.run 4000000000
-# The CD's icon on the desktop, then Sample Apps (the window's first
-# folder), GLUT, book.
-gl_click(592, 105)
-gl_cmdkey("o")
-scheduler.run 8000000000
-gl_click(85, 97)
-gl_cmdkey("o")
-scheduler.run 6000000000
-gl_open("GLUT", 6000000000)
-gl_open("book", 8000000000)
-
-let p0 = machine.pci.slot[1].card.regs.prims3d
-gl_open("checker", 16000000000)
-let p1 = machine.pci.slot[1].card.regs.prims3d
-echo "g3-rage128-opengl: checker drew ${$p1 - $p0} primitives"
-assert $p1 > $p0 "checker draws through the 3D engine"
-try(machine.screen.save("${$RESULTS_DIR}/checker.png"), none)
-check_ex("goldens/checker.png", 0, 440, 20, 640)
-
 # Each sample is quit before the next opens from the book window.
 def gl_sample(name) {
     gl_cmdkey("q")
@@ -105,8 +68,53 @@ def gl_sample(name) {
     try(machine.screen.save("${$RESULTS_DIR}/${$name}.png"), none)
     check_ex("goldens/${$name}.png", 0, 440, 20, 640)
 }
-gl_sample("mipmap")
-gl_sample("fog")
 
-echo "g3-rage128-opengl: ATI's OpenGL renderer draws through the Rage 128's 3D engine"
+# The row itself: the boot, the Finder walk and the three samples.
+def gl_run() {
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd "${$hd}" 0
+    scheduler.run 24000000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+
+    machine.scsi.attach_cdrom("${$cd}", 3)
+    scheduler.run 8000000000
+    # Quit the Setup Assistant (first boot) and confirm.
+    gl_cmdkey("q")
+    scheduler.run 2000000000
+    gl_click(461, 173)
+    scheduler.run 4000000000
+    # The CD's icon on the desktop, then Sample Apps (the window's first
+    # folder), GLUT, book.
+    gl_click(592, 105)
+    gl_cmdkey("o")
+    scheduler.run 8000000000
+    gl_click(85, 97)
+    gl_cmdkey("o")
+    scheduler.run 6000000000
+    gl_open("GLUT", 6000000000)
+    gl_open("book", 8000000000)
+
+    let p0 = machine.pci.slot[1].card.regs.prims3d
+    gl_open("checker", 16000000000)
+    let p1 = machine.pci.slot[1].card.regs.prims3d
+    echo "g3-rage128-opengl: checker drew ${$p1 - $p0} primitives"
+    assert $p1 > $p0 "checker draws through the 3D engine"
+    try(machine.screen.save("${$RESULTS_DIR}/checker.png"), none)
+    check_ex("goldens/checker.png", 0, 440, 20, 640)
+
+    gl_sample("mipmap")
+    gl_sample("fog")
+
+    echo "g3-rage128-opengl: ATI's OpenGL renderer draws through the Rage 128's 3D engine"
+}
+
+# The SDK CD is private test data.  Without it the row skips -- by not
+# running, rather than by an early `quit`: headless stops a script's job
+# asynchronously, so a statement after `quit` can start and be cancelled.
+if have_media($cd) {
+    gl_run()
+} else {
+    echo "skip: ${$cd} not present"
+}
 quit
