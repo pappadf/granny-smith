@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 const PROPER = new Set([
   'Apple', 'Macintosh', 'AppleColor', 'AppleTalk', 'NuBus', 'PCI', 'SCSI', 'ATA', 'CD-ROM',
   'SuperDrive', 'ProFile', 'PowerPC', 'VGA', 'SVGA', 'NTSC', 'PAL', 'RGB', 'ID', 'MB', 'KB',
-  'GB', 'MHz', 'L2', 'Voodoo2', 'Rage', 'Pro', 'ATI',
+  'GB', 'MHz', 'L2', 'Voodoo2', 'Rage', 'Pro', 'ATI', 'Orion', 'Xclaim', 'Nexus',
 ]);
 // Chip and firmware names: detail text, never a label of their own (L2).
 const CHIPS = new Set([

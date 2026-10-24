@@ -3904,7 +3904,12 @@ const pci_card_kind_t mach64_gx_kind = {
 // as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
 // which every G3 built before this list existed carries, its checkpoints
 // included -- straps the 14", the monitor the Rage Pro always had.
-static const char *const ragepro_monitors[] = {"13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"};
+// The sixth, "none", is the port with nothing plugged in -- every sense line
+// floats high, which the chip's FCode reads as "nothing attached" -- how a
+// G3 runs with its display on a PCI card instead; its index is
+// mach64_sense's "none" row.
+static const char *const ragepro_monitors[] = {"13in_rgb",     "multiscan_15", "multiscan_17",
+                                               "multiscan_20", "21in_rgb",     "none"};
 #define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
 
 bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {

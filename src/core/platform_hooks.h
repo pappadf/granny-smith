@@ -84,6 +84,11 @@ bool platform_v2gpu_attach(void *ctrl, uint32_t bytes);
 void platform_v2gpu_detach(void *ctrl);
 int platform_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
 void platform_v2gpu_notify(volatile uint32_t *addr);
+// The Rage 128's takeover (rage128_gpu.c) shares this seam but waits on
+// the EMULATOR thread itself: a wait that may be long (a software adapter
+// compiling a pipeline on first use) calls this to tell the page the core
+// is busy, not dead.  A no-op natively.
+void platform_v2gpu_keepalive(void);
 
 // Host audio-input seam (the AV Singer codec's microphone source,
 // mirroring the video-in seam).  The weak defaults model "no microphone":

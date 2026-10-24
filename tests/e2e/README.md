@@ -64,6 +64,7 @@ tests/e2e/
 │   ├── perf-osx-interactive.spec.ts     # Mac OS X menu, minimize and restore per executor (opt-in: PERF_OSX_INTERACTIVE=1)
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
 │   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
+│   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-lisa-chips.spec.ts    # Two Lisa ROM chips upload as one ROM; a lone chip is refused
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab

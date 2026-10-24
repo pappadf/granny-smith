@@ -28,6 +28,27 @@ import {
   onVoodooGpuOverlay,
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
+import {
+  hideRage128Overlay,
+  isRage128Ctrl,
+  onRage128GpuAttach,
+  onRage128GpuDetach,
+} from '@/gpu/rage128Gpu.svelte';
+
+// The core's GPU transport seam is one for both 3D takeovers (platform_v2gpu_*,
+// em_gpu.c): an attach goes to the worker whose MAGIC its control block
+// carries, and the display path's "hide the overlay" covers both.
+function onGpuAttach(ctrl: number): void {
+  if (isRage128Ctrl(ctrl)) onRage128GpuAttach(ctrl);
+  else onVoodooGpuAttach(ctrl);
+}
+function onGpuDetach(ctrl: number): void {
+  if (!onRage128GpuDetach(ctrl)) onVoodooGpuDetach(ctrl);
+}
+function onGpuOverlay(visible: number): void {
+  if (!visible) hideRage128Overlay();
+  onVoodooGpuOverlay(visible);
+}
 import { onPrinterAttach } from '@/printer/platen';
 import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
@@ -247,9 +268,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
-    onVoodooGpuAttach,
-    onVoodooGpuDetach,
-    onVoodooGpuOverlay,
+    onVoodooGpuAttach: onGpuAttach,
+    onVoodooGpuDetach: onGpuDetach,
+    onVoodooGpuOverlay: onGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
     gsAudioTargetLatency: audioTargetLatencyFromQuery(window.location.search),
@@ -741,7 +762,10 @@ const CORE_EVENT_KINDS: Record<number, CoreEventKind> = {
 };
 
 // The last few events, for automation and the browser console
-// (window.__gsCoreEvents): the e2e tests assert on them.
+// (window.__gsCoreEvents): the e2e tests assert on them.  The cap is per
+// event name, not overall: a chatty event (the speed figure, re-announced as
+// turbo's measured ratio moves) must not push the rare ones a test reads --
+// mode_started / mode_ended -- out of the trace.
 const CORE_EVENT_TRACE_MAX = 64;
 const coreEventTrace: CoreEvent[] = [];
 
@@ -757,12 +781,10 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
     return;
   }
   const ev: CoreEvent = { kind, event: typeof data.event === 'string' ? data.event : '', data };
-  // Full: drop the oldest event that is not a mode_* record, so frequent
-  // samples (speed, perf) cannot evict the mode lifecycle the tests read
-  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) {
-    const i = coreEventTrace.findIndex((e) => !e.event.startsWith('mode_'));
-    coreEventTrace.splice(i >= 0 ? i : 0, 1);
-  }
+  coreEventTrace.push(ev);
+  const same = (e: CoreEvent) => e.kind === ev.kind && e.event === ev.event;
+  if (coreEventTrace.filter(same).length > CORE_EVENT_TRACE_MAX)
+    coreEventTrace.splice(coreEventTrace.findIndex(same), 1);
   if (typeof window !== 'undefined')
     (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
   routeCoreEvent(ev);
