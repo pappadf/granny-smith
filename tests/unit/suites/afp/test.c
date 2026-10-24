@@ -1746,6 +1746,21 @@ TEST(read_past_end_of_fork_is_eof) {
     put8(0);
     ASSERT_EQ_INT((int)ERR_EOF, (int)call(OP_READ));
     ASSERT_EQ_INT(2, g_reply_len);
+    // Reading nothing is not reading past the end, even from the end:
+    // AppleShare passes on an application's zero-length FSRead, and Deja Vu
+    // reads its file to the end and then 0 bytes more, and stopped with
+    // "Error Code = -39" (eofErr) where a disk answers noErr.
+    for (uint32_t at = 4; at <= 6; at += 2) {
+        req_reset();
+        put8(0);
+        put16(ref);
+        put32(at);
+        put32(0);
+        put8(0);
+        put8(0);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+        ASSERT_EQ_INT(0, g_reply_len);
+    }
     close_fork(ref);
     fixture_down();
 }

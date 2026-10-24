@@ -54,9 +54,12 @@ LOG_USE_CATEGORY_NAME("asp");
 // ASP requires a workstation to tickle every 30 seconds; a server may close a
 // session after two minutes of silence (Inside AppleTalk ch. 11).  Expiry runs
 // on a scheduler event so a guest that is reset — never sending CloseSess —
-// still gets its forks and locks back.
+// still gets its forks and locks back.  The tickling goes both ways: the
+// workstation closes a session it has not heard from in two minutes, so the
+// server tickles each session too, from the same event.
 #define ASP_SESSION_TIMEOUT_NS (120ULL * 1000000000ULL)
 #define ASP_SESSION_SWEEP_NS   (15ULL * 1000000000ULL)
+#define ASP_TICKLE_NS          (30ULL * 1000000000ULL)
 
 // ASP SPWrite: the command arrives first, and the server fetches the data
 // with a WriteContinue request to the workstation.  The factor of 8 matches
@@ -88,6 +91,7 @@ struct asp_session {
     uint8_t wss; // workstation session socket (OpenSess user byte 1)
     uint8_t client_node; // LLAP node of the workstation
     uint64_t last_activity_ns; // guest time of the last packet from this client
+    uint64_t last_tickle_ns; // guest time of the last Tickle sent to it
     asp_write_t *write; // an SPWrite waiting for its WriteContinue
     asp_service_t *service; // the server the session was opened with
 };
@@ -274,27 +278,35 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
     return true;
 }
 
-// Send an ASP Attention to one session.  The code travels in the ATP user
-// bytes of a server-originated request to the workstation session socket
-// (Inside AppleTalk ch. 11; AFP_21_22 Table 1-7 for the code values).
-int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
-    asp_session_t *s = asp_by_ref(session_ref);
-    if (!s || !s->client_node || !s->wss)
+// A server-originated request to a session's workstation session socket,
+// with no data: an Attention or a Tickle (Inside AppleTalk ch. 11).
+static int asp_send_to_workstation(asp_session_t *s, const uint8_t user[4], int retry_limit) {
+    if (!s->client_node || !s->wss)
         return -1;
     atp_request_params_t params = {
         .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
         .src_socket = s->service ? s->service->socket : ATALK_HOST_AFP_SOCKET,
-        .bitmap = 0x01, // one response packet is enough for an attention
+        .bitmap = 0x01, // one response packet is enough
         .mode = ATP_TRANSACTION_ALO,
         .trel_timer_hint = 0,
-        .user = {ASP_ATTENTION, s->sess_id, (uint8_t)(code >> 8), (uint8_t)code},
+        .user = {user[0], user[1], user[2], user[3]},
         .payload = NULL,
         .payload_len = 0,
         .retry_timeout_ms = 2000,
-        .retry_limit = 2,
+        .retry_limit = retry_limit,
     };
-    LOG(3, "ASP Attention: session=0x%02X code=0x%04X → node=%u socket=%u", s->sess_id, code, s->client_node, s->wss);
     return atp_request_submit(&params, NULL, NULL) ? 0 : -1;
+}
+
+// Send an ASP Attention to one session.  The code travels in the ATP user
+// bytes (AFP_21_22 Table 1-7 for the code values).
+int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
+    asp_session_t *s = asp_by_ref(session_ref);
+    if (!s)
+        return -1;
+    const uint8_t user[4] = {ASP_ATTENTION, s->sess_id, (uint8_t)(code >> 8), (uint8_t)code};
+    LOG(3, "ASP Attention: session=0x%02X code=0x%04X → node=%u socket=%u", s->sess_id, code, s->client_node, s->wss);
+    return asp_send_to_workstation(s, user, 2);
 }
 
 void atalk_asp_broadcast_attention(uint16_t code) {
@@ -328,12 +340,26 @@ void asp_service_close_sessions(int service) {
             asp_session_release(&g_asp->sessions[i]);
 }
 
+// Whether a command of the session is deferred: the server owes it an answer.
+static bool asp_session_waiting(const asp_session_t *s) {
+    for (int i = 0; i < ASP_MAX_DEFERRED; i++)
+        if (g_asp->deferred[i].in_use && g_asp->deferred[i].sess_ref == s->sess_ref)
+            return true;
+    return false;
+}
+
 // Close every session that has gone quiet past the ASP timeout, returning
-// their forks, locks and desktop references.
+// their forks, locks and desktop references.  A session waiting for a
+// deferred command is not quiet, however long the wait: its workstation is
+// retrying the command, but the retries are ATP duplicates the XO cache
+// takes, and the workstation's own tickles can be far apart.  This closed
+// sessions whose folder listing or file took two minutes to come.
 static void asp_expire_sessions(void) {
     uint64_t now = atalk_now_ns();
     for (int i = 0; i < MAX_ASP_SESS; i++) {
         asp_session_t *s = &g_asp->sessions[i];
+        if (s->in_use && asp_session_waiting(s))
+            s->last_activity_ns = now;
         if (!s->in_use || now < s->last_activity_ns + ASP_SESSION_TIMEOUT_NS)
             continue;
         LOG(1, "ASP: session 0x%04X expired after %llu s of silence", s->sess_ref,
@@ -342,11 +368,31 @@ static void asp_expire_sessions(void) {
     }
 }
 
-// Scheduler callback: expire stale sessions and re-arm while any remain.
+// Tickle each session not tickled for ASP_TICKLE_NS.  Nothing else tells
+// the workstation the server is there while a command waits for its data,
+// and a workstation that hears nothing for two minutes closes the session
+// ("the file server's connection has unexpectedly closed down").  A Tickle
+// gets no response; one try each time is enough.
+static void asp_tickle_sessions(void) {
+    uint64_t now = atalk_now_ns();
+    for (int i = 0; i < MAX_ASP_SESS; i++) {
+        asp_session_t *s = &g_asp->sessions[i];
+        if (!s->in_use || now < s->last_tickle_ns + ASP_TICKLE_NS)
+            continue;
+        const uint8_t user[4] = {ASP_TICKLE, s->sess_id, 0, 0};
+        LOG(6, "ASP Tickle: session=0x%02X → node=%u socket=%u", s->sess_id, s->client_node, s->wss);
+        asp_send_to_workstation(s, user, 0);
+        s->last_tickle_ns = now;
+    }
+}
+
+// Scheduler callback: expire stale sessions, tickle the rest, and re-arm
+// while any remain.
 static void asp_sweep_cb(void *source, uint64_t data) {
     (void)source; // the plugged link's timer: only its timers are registered
     (void)data;
     asp_expire_sessions();
+    asp_tickle_sessions();
     asp_arm_session_sweep();
 }
 
@@ -611,6 +657,7 @@ static void asp_open_session(asp_service_t *svc, const ddp_header_t *ddp, const 
         s->wss = wss;
         s->client_node = ddp->llap.src;
         s->last_activity_ns = atalk_now_ns();
+        s->last_tickle_ns = s->last_activity_ns;
         s->service = svc;
         asp_arm_session_sweep();
         user[0] = svc->socket; // the session's server socket (SSS)

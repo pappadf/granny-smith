@@ -817,6 +817,13 @@ static uint32_t afp_cmd_read(afp_req_t *r) {
     if (rc != AFPERR_NoErr)
         return rc;
 
+    // Nothing asked for is nothing read, wherever it starts: the AppleShare
+    // client passes a zero-length FSRead on (an application that reads a file
+    // to its end and then reads 0 bytes more expects noErr, as from a disk).
+    if (req_count == 0) {
+        r->out_len = 0;
+        return AFPERR_NoErr;
+    }
     uint32_t fork_len = afp_fork_length(fk);
     if (offset >= fork_len)
         return AFPERR_EOFErr;

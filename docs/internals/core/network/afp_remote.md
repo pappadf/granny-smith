@@ -73,6 +73,16 @@ it fail with MiscErr.  A deferred SPWrite is refused with MiscErr rather
 than kept (its data would have to be held), which a read-only volume never
 needs.
 
+A wait can outlast ASP's two-minute session timer at either end.  The
+client's retries mostly end at the XO cache, and System 6's AppleShare stops
+retrying after a while, so the server does not count a session with a
+deferred command as idle (`asp_session_waiting`).  The client closes a
+session it has not heard from in two minutes ("the file server's connection
+has unexpectedly closed down"), so the server tickles every open session
+every 30 seconds of guest time (`asp_tickle_sessions`).  Guest time can run
+much faster than the host's in turbo mode, so a few seconds of downloading
+was enough to lose the session before both.
+
 Requests time out after ten minutes of host time; host-side work (a
 `dir://` read, an unpacking) does not.
 
