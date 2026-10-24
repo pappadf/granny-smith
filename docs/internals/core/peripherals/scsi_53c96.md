@@ -64,6 +64,18 @@ found the hard way during the System 7.1 HD-boot bring-up:
    dropped CDBs and surfaced hundreds of millions of instructions later
    as a CommToolbox null-dispatch crash.
 
+## Behaviours other software pins
+
+- **The interrupt read keeps the sequence step.** The NCR manual has the
+  interrupt read clear the sequence step; the model keeps it until the next
+  selection or reset (the AMD cell in Curio names it Internal State). BeOS
+  5.0.3's PIO data-in loop issues each Transfer Information only while
+  FIFO Flags (`$07`) reads non-zero, and after a completed select with an
+  empty FIFO that is the step (4) in bits 7:5. With the step cleared the
+  loop spins forever on the 9500's CD-ROM drive (`tnt-beos`). Apple's
+  driver reads the step before the interrupt register, so it sees the same
+  values either way.
+
 ## State
 
 `scsi_53c96_checkpoint` serializes the whole chip struct; restore NULLs

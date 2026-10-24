@@ -34,6 +34,30 @@ nothing pending — has no scheduled event and costs zero.  Wake-ups (host
 register writes, device interrupts) run through the glue, which re-arms
 the burst at the next cycle and calls `cpu_reschedule()`.
 
+## Peer cores (the third category)
+
+A **peer core** is a second instance of the main CPU's own module — the
+dual-604 card of the 9500/180MP is the one case
+([tnt/mp.md](../../machines/tnt/mp.md)).  It sits between the two other
+categories:
+
+| | Main CPU | Peer core | Auxiliary core |
+|---|---|---|---|
+| Module | any; owns `sched_cpu_if_t` | the main CPU's (a second `ppc_t`) | its own |
+| Owns time | yes | no — bursts on the one queue | no — bursts on the one queue |
+| Bus access | global fast path | the global fast path, **context-swapped** at burst boundaries (`ppc_mmu_activate`) | injected physical hooks |
+| MMU | fills the SoA tables | its own translation caches and private user SoA arrays | none |
+| Idle | sprints | parked until its doorbell; once running it may spin (no idle heuristic) | parks instead of spinning |
+| Object | `machine.cpu` + `$` aliases | `machine.cpu1`, full path only | `machine.<name>`, full path only |
+
+The fast-path swap is the deliberate exception to the injected-hook rule:
+a peer has architectural translation state of its own (BATs, segments, its
+MSR), so the hooks' "physical bus master" view would be wrong for it, and a
+per-access software translation would tax the core whose purpose is
+throughput.  Swapping is a dozen pointer stores between sprints; the glue
+also closes the sprint-penalty channel and drops both cores' reservations
+at each swap.
+
 ## The main-CPU seam
 
 The scheduler holds a four-entry `sched_cpu_if_t`
