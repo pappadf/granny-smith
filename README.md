@@ -10,7 +10,7 @@
 > **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/v0.9.3/)
 > Use Chromium browser (Safari and Firefox have known issues)
 
-[![Live webcam video digitized by the emulated 840AV](https://i.ytimg.com/vi/zUiRTOQy7RM/hq720.jpg)](https://www.youtube.com/watch?v=zUiRTOQy7RM)
+[![WebAssembly JIT Booring Mac OS X 10.0](https://i.ytimg.com/vi/ZQJO3JfnMM4/hq720.jpg)](https://www.youtube.com/watch?v=ZQJO3JfnMM4)
 
 ## Emulated Computer Models
 
