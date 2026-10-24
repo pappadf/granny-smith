@@ -762,7 +762,10 @@ const CORE_EVENT_KINDS: Record<number, CoreEventKind> = {
 };
 
 // The last few events, for automation and the browser console
-// (window.__gsCoreEvents): the e2e tests assert on them.
+// (window.__gsCoreEvents): the e2e tests assert on them.  The cap is per
+// event name, not overall: a chatty event (the speed figure, re-announced as
+// turbo's measured ratio moves) must not push the rare ones a test reads --
+// mode_started / mode_ended -- out of the trace.
 const CORE_EVENT_TRACE_MAX = 64;
 const coreEventTrace: CoreEvent[] = [];
 
@@ -778,7 +781,10 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
     return;
   }
   const ev: CoreEvent = { kind, event: typeof data.event === 'string' ? data.event : '', data };
-  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) coreEventTrace.shift();
+  coreEventTrace.push(ev);
+  const same = (e: CoreEvent) => e.kind === ev.kind && e.event === ev.event;
+  if (coreEventTrace.filter(same).length > CORE_EVENT_TRACE_MAX)
+    coreEventTrace.splice(coreEventTrace.findIndex(same), 1);
   if (typeof window !== 'undefined')
     (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
   routeCoreEvent(ev);
