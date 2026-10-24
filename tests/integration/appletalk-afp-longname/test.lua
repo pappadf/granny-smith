@@ -1,0 +1,97 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- AppleTalk AFP long names.
+--
+-- A Mac name is at most 31 characters.  This row publishes a share holding a
+-- 40-character name and a 31-character control, mounts it from System 6 as
+-- appletalk-afp does, lists it by name and copies the long-named file to the
+-- local disk.
+--
+-- Measured first (2026-09-24): with names sent whole, the Finder listed the
+-- 40-character name, then the copy stopped with "The file ... couldn't be
+-- written and was skipped (unknown error)" -- HFS cannot create the name --
+-- while the 31-character control copied.  So the server now sends a longer
+-- name as its first bytes and "#<CNID>", 31 in all, and maps that back; this
+-- row pins that the copy goes through.  System 7 was not measured here: no row
+-- mounts AFP from it.
+--
+-- Mouse coordinates are Mac global (512x342); budgets are instruction-exact.
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/afp.lua")
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+-- Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run(30000000)
+
+-- Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+-- add() returns the volume it created, so one call both registers and
+-- verifies — no re-enumeration of the collection needed.
+assert(appletalk.afp.volumes.add("My Volume", F"${vars.WORK_DIR}/share").path == F"${vars.WORK_DIR}/share", "share not registered")
+assert(appletalk.afp.volumes["My Volume"].vol_id > 0, "volume id not assigned")
+
+-- Nothing has talked to the server yet.
+assert(appletalk.afp.stats.commands_served == 0, "AFP traffic before the client ran")
+assert(appletalk.afp.sessions.count == 0, "an ASP session exists before the Chooser ran")
+
+-- Apple menu → Chooser → AppleShare → the server → Guest: the volume list
+-- (lib/afp.script).
+afp_chooser_to_volumes("", "")
+
+-- The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert(appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0", "System 6 negotiates AFP 2.0")
+assert(appletalk.afp.stats.commands_served > 0, "no AFP commands were served")
+
+-- Select "My Volume", then OK — the mount itself — and close the Chooser.
+afp_mount_and_close()
+-- (desktop-mounted.png is pinned by appletalk-afp)
+
+-- Open the volume's window. The gap between the two clicks has to fit inside
+-- DoubleTime, so it is a fraction of the budgets used for single clicks.
+machine.adb.mouse.move(468, 108)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(80000)
+machine.adb.mouse.click(true)
+machine.adb.mouse.click(false)
+mac.wait_mouse_taken(100000000)
+scheduler.run(60000000)
+
+-- Opening the volume listed both files, adopting them into the catalog.
+assert(appletalk.afp.volumes["My Volume"].cnid_count == 3, "the two files were not listed")
+
+-- View > by Name.
+machine.adb.mouse.move(145, 10)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(150, 58)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(40000000)
+
+-- Drag the 40-character file onto the local disk -- the copy HFS refused
+-- while the name went out whole.
+machine.adb.mouse.move(60, 97)
+scheduler.run(2000000)
+machine.adb.mouse.click(true)
+scheduler.run(4000000)
+machine.adb.mouse.move(300, 97)
+scheduler.run(2000000)
+machine.adb.mouse.move(470, 56)
+scheduler.run(4000000)
+machine.adb.mouse.click(false)
+scheduler.run(150000000)
+-- The copy went through: no "couldn't be written" dialog over the window,
+-- the file's six bytes were read for it, and nothing is left open.  Two
+-- regions are left out of the match: the info bar's free space, as in
+-- appletalk-afp, and the Last Modified column.  The client shifts every date
+-- by the gap between the server's clock (the host's) and its own pinned one,
+-- so the column reads the guest clock minus however long the host took from
+-- staging the share to the mount -- 9:30 PM on one run, 9:29 on a slower one.
+mac.check_ex2("longname-copied.png", 58, 140, 80, 420, 82, 290, 114, 403)
+assert(appletalk.afp.stats.bytes_read == 6, "the long-named file's data was not read for the copy")
+assert(appletalk.afp.stats.open_forks == 0, "the copy left a fork open")
+quit()

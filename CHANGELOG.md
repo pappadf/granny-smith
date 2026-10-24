@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Lua is the script language** — Lua 5.4 is embedded (`third-party/lua/`, MIT) and the object tree is bound to it (`src/core/lua/`, `docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`, `include` or `shell.script_run` runs on it, `shell.lua(text)` runs source text, and the integration tests and their libraries are Lua (`tests/integration/lib/mac.lua`; `scripts/script-to-lua.py` converted the corpus). The tree's root children are globals; `machine.boot{model = "plus", rom = vars.ROM}` passes named arguments as a trailing table; tree errors are Lua errors. The shell's own script language still runs the terminal's lines, the debugger's conditions and its own tests.
+
 ## [v0.10.1] — 2026-10-24
 
 ### Fixed

@@ -1,0 +1,407 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Macintosh IIx suite (see config.mk).
+--
+-- Row map (former directory → row; **bold** = new matrix coverage):
+--
+--   iix-nomedia       iix-boot: ROM-only boot, the JMFB paints (1 MB)
+--   iix-824gc-seat    iix-824gc: the 8•24 GC seats in a IIx socket, its
+--                     declaration ROM binds, and the accelerator sits in
+--                     reset on a ROM-only boot (2 MB)
+--   iix-701-fd        **first IIx pixel golden**: iix-floppy was
+--                     checksum-only; this row pixel-matches the 7.0.1
+--                     Finder on the JMFB at 640x480 (8 MB)
+--   iix-portrait-603  **IIx x 6.0.3 at 640x870x1**: the JMFB portrait
+--                     raster, pixel-matched at the ROM stage AND at the
+--                     Finder desktop — the first full desktop anything
+--                     has rendered at portrait geometry. Media is one of
+--                     the unused single-disk images (4 MB)
+--   iix-71-extfd      **IIx x 7.1** and the re-hosted external-floppy
+--                     row: a second disk goes into the EXTERNAL bay (the
+--                     IIx has two) and mounts without a system error
+--                     (16 MB)
+--
+--   iix-gc-accel1     **IIx x 6.0.8 on the 8•24 GC**, re-hosted —
+--                     accelerator engaged (counters asserted). The beep
+--                     choreography once meant to move here stayed on the
+--                     IIcx — see suite-iicx's iicx-gc-beep row for the
+--                     measured reason
+--   iix-gc-decline1   the decline half of that differential ORACLE: same
+--                     golden, accelerator forced to the ROM/QuickDraw
+--                     fallback
+--   iix-jmfb-sweep  **8 of the 16 JMFB depth x resolution cells**, re-hosted
+--                   from iicx-video-modes: the 15" portrait and 21"
+--                   RGB senses at 1/2/4/8 bpp. The IIcx keeps the 13" and 12"
+--                   halves, so the same 16 cells now span two hosts.
+--   iix-75-hd       **IIx x 7.5** — see the sweep row's comment for why this
+--                   is a separate boot row rather than half the sweep.
+
+local mac = dofile("../lib/mac.lua")
+
+local sys_701 = "../../data/systems/System_7_0_1.image"
+local sys_603 = "../../data/systems/System_6_0_3.dsk"
+local disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+local install_71 = "../../data/systems/SSW-7.1-1.4M/Install.img"
+local hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+local hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+-- ---- iix-nomedia ------------------------------------------------------------
+local function row_iix_nomedia()
+    machine.boot{model = "iix", ram = 1024, rom = vars.ROM}
+    -- Power-on blank is no longer all-zero (display sources cold-boot black),
+    -- so compare against this machine's own blank rather than against 0.
+    local blank = machine.screen.checksum()
+    scheduler.run(100000000)
+    assert(machine.id == "iix", "iix-nomedia: machine.id != iix")
+    assert(machine.ram == 1024, "iix-nomedia: machine.ram != 1024")
+    assert(machine.screen.width == 640, "iix-nomedia: screen.width != 640")
+    assert(machine.screen.height == 480, "iix-nomedia: screen.height != 480")
+    assert(machine.screen.checksum() ~= blank, "iix-nomedia: JMFB never painted")
+    mac.report_perf("suite-iix/iix-nomedia", scheduler.instr_count)
+end
+
+-- ---- iix-824gc-seat ---------------------------------------------------------
+-- The card-seat contract: name, declaration ROM, and an accelerator that
+-- is still in reset because no driver has run (ROM-only boot).
+local function row_iix_824gc_seat()
+    machine.boot{model = "iix", ram = 2048, video_card = "824gc", rom = vars.ROM}
+    -- Power-on blank is no longer all-zero (display sources cold-boot black),
+    -- so compare against this machine's own blank rather than against 0.
+    local blank = machine.screen.checksum()
+    scheduler.run(100000000)
+    assert(machine.id == "iix", "iix-824gc-seat: machine.id != iix")
+    assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "iix-824gc-seat: slot $9 card != 8•24 GC")
+    assert(machine.nubus.slot[9].card.declrom.present, "iix-824gc-seat: declaration ROM not present")
+    assert(machine.nubus.slot[9].card.gc.state == "reset", "iix-824gc-seat: gc.state != reset in ROM-only boot")
+    assert(machine.screen.width == 640, "iix-824gc-seat: screen.width != 640")
+    assert(machine.screen.checksum() ~= blank, "iix-824gc-seat: 8•24 GC never painted")
+    mac.report_perf("suite-iix/iix-824gc-seat", scheduler.instr_count)
+end
+
+-- ---- iix-701-fd -------------------------------------------------------------
+-- The IIx's first pixel golden (all three former IIx tests were checksum-only).
+-- JMFB at 13" RGB 640x480, 1 bpp — the sense code and slot-PRAM sister come
+-- from the shared seeding idiom.
+local function row_iix_701_fd()
+    machine.boot{model = "iix", ram = 8192, video_card = "mdc_8_24", video_sense = 6, rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    machine.floppy.drive[0].insert(sys_701)
+    machine.rtc.pram.validate()
+    machine.rtc.pram.poke(0x46, gs.bytes(0x002780a6a6000000, 8))
+    scheduler.run(40000000)
+    local spent = mac.wait_match("goldens/iix-7.0.1-640x480x1-finder.png", 900000000, 20000000)
+    assert(machine.id == "iix", "iix-701-fd: machine.id != iix")
+    assert(machine.ram == 8192, "iix-701-fd: machine.ram != 8192")
+    assert(machine.screen.width == 640, "iix-701-fd: screen.width != 640")
+    assert(machine.screen.height == 480, "iix-701-fd: screen.height != 480")
+    mac.assert_addr(false)
+    mac.report_row("7.0.1", "jmfb", "fd-boot 640x480x1")
+    mac.report_perf("suite-iix/iix-701-fd", spent)
+end
+
+-- ---- iix-portrait-603 -------------------------------------------------------
+-- NEW CELL: the JMFB's portrait monitor (sense $1 → Mac Portrait Display,
+-- 640x870, sister $A1) on the IIx, booting System 6.0.3 — one of the unused
+-- single-disk images, put to work.
+--
+-- The row pins both stages: the ROM's PrimaryInit programming the
+-- 640x870 raster (Welcome screen, pixel-exact) and System 6.0.3 keeping
+-- it all the way to the Finder — so this is the first time any test
+-- renders a full desktop at portrait geometry.
+--
+-- NOTE for suite authors: this row names video_card explicitly -- the
+-- portrait sense applies to the card it names, and without it the row would
+-- run on the slot's default card.
+local function row_iix_portrait_603()
+    machine.boot{model = "iix", ram = 4096, video_card = "mdc_8_24", video_sense = 1, rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    machine.floppy.drive[0].insert(sys_603)
+    machine.rtc.pram.validate()
+    machine.rtc.pram.poke(0x46, gs.bytes(0x002780a1a1000000, 8))
+    -- Straight into the Welcome window (37..52M, measured): the machine's PRAM
+    -- already skips the startup-drive wait.
+    scheduler.run(45000000)
+    assert(machine.id == "iix", "iix-portrait-603: machine.id != iix")
+    assert(machine.ram == 4096, "iix-portrait-603: machine.ram != 4096")
+    assert(machine.screen.width == 640, "iix-portrait-603: screen.width != 640")
+    assert(machine.screen.height == 870, "iix-portrait-603: ROM did not program the portrait raster")
+    assert(machine.rtc.pram.peek(0x48) == 0x80, "iix-portrait-603: savedMode rewritten by ROM")
+    mac.check("goldens/iix-6.0.3-640x870x1-welcome.png")
+    mac.report_row("6.0.3", "jmfb", "rom-stage 640x870x1 portrait")
+
+    -- ...and 6.0.3 keeps the portrait raster through to the desktop.
+    mac.wait_stable(900000000)
+    assert(machine.screen.width == 640, "iix-portrait-603: desktop width != 640")
+    assert(machine.screen.height == 870, "iix-portrait-603: desktop lost the portrait raster")
+    mac.check("goldens/iix-6.0.3-640x870x1-finder.png")
+    mac.report_row("6.0.3", "jmfb", "fd-boot 640x870x1 portrait-desktop")
+    mac.report_perf("suite-iix/iix-portrait-603", scheduler.instr_count)
+end
+
+-- ---- iix-71-extfd -----------------------------------------------------------
+-- NEW CELL IIx x 7.1 and the re-hosted external-floppy row: boot from the
+-- internal bay, then insert a second disk in the EXTERNAL bay and confirm
+-- it mounts with no system error (SysErr $AF0 stays 0).
+local function row_iix_71_extfd()
+    -- The second internal floppy bay ships empty: this row fits a drive.
+    machine.boot{model = "iix", ram = 16384, video_card = "mdc_8_24", video_sense = 6, rom = vars.ROM, config = "{\"floppies\":{\"fd1\":\"hd\"}}"}
+    machine.rtc.time = 3000000000
+    machine.floppy.drive[0].insert(disk_tools_71)
+    machine.rtc.pram.validate()
+    machine.rtc.pram.poke(0x46, gs.bytes(0x002781a6a6000000, 8))
+    scheduler.run(75000000)
+    mac.wait_stable(600000000)
+    assert(machine.id == "iix", "iix-71-extfd: machine.id != iix")
+    assert(machine.ram == 16384, "iix-71-extfd: machine.ram != 16384")
+    assert(machine.screen.width == 640, "iix-71-extfd: screen.width != 640 (JMFB not seated?)")
+    mac.check("goldens/iix-7.1-640x480x2-desktop.png")
+
+    machine.floppy.drive[1].insert(install_71)
+    assert(machine.floppy.drive[1].present, "iix-71-extfd: Install.img not present in FD1")
+    mac.wait_stable(600000000)
+    assert(machine.memory.peek.w(0xaf0) == 0, "iix-71-extfd: system error raised on FD1 insert (Finder bomb?)")
+    mac.check("goldens/iix-7.1-640x480x2-fd1-mounted.png")
+    mac.report_row("7.1", "jmfb", "fd-boot external-fd1")
+    mac.report_perf("suite-iix/iix-71-extfd", scheduler.instr_count)
+end
+
+
+-- ---- iix-gc-accel1 / iix-gc-decline1 ---------------------------------------
+-- RE-HOSTED from the IIcx: the 8•24 GC's accel/decline differential
+-- pair at 1 bpp, giving the IIx its first real workload and putting a GC in
+-- an IIx socket. The pair is the suite's acceleration ORACLE and must stay
+-- a pair on one host: both rows match the SAME golden, because a correct
+-- hardware-accelerated render and a correct ROM/QuickDraw fallback render
+-- are pixel-identical by design. Pixels therefore cannot prove the
+-- accelerator engaged — the gc.* counters do, which is why the accel row
+-- asserts rpc_count > 0 while the decline row forces the fallback with
+-- force_decline and still requires the identical frame.
+--
+-- The accel row also absorbs iicx-824gc-beep (folding the beep into the accel
+-- boot rather than re-running a 200 M-cycle boot to reach a sound capture): it
+-- opens the Control Panel, drags the Speaker Volume slider twice, and matches
+-- both beeps sample-exactly plus the ASC volume register. That choreography is
+-- coordinate-precise and was copied verbatim from the original test, not
+-- retyped.
+
+local function gc_boot_1bpp(label)
+    machine.boot{model = "iix", ram = 8192, video_card = "824gc", rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    return label
+end
+
+local function row_iix_gc_accel1()
+    gc_boot_1bpp("accel")
+    machine.scsi.attach_hd(hd_608_gc, 0)
+    scheduler.run(200000000)
+    mac.wait_stable(600000000)
+    assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "iix-gc-accel1: slot $9 card != 8•24 GC")
+    assert(machine.nubus.slot[9].card.gc.on == true, "iix-gc-accel1: accelerator did not turn on")
+    assert(machine.nubus.slot[9].card.gc.state == "gc-on", "iix-gc-accel1: accelerator state != gc-on")
+    assert(machine.nubus.slot[9].card.gc.error == 0, "iix-gc-accel1: accelerator posted an error")
+    assert(machine.nubus.slot[9].card.gc.rpc_count > 0, "iix-gc-accel1: no RPCs serviced (bring-up never engaged)")
+    assert(machine.screen.width == 640, "iix-gc-accel1: screen width != 640")
+    assert(machine.screen.height == 480, "iix-gc-accel1: screen height != 480")
+    mac.check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    mac.report_row("6.0.8", "824gc", "hd-boot gc-accel-on rpc-counted")
+    mac.report_perf("suite-iix/iix-gc-accel1", scheduler.instr_count)
+end
+
+local function row_iix_gc_decline1()
+    gc_boot_1bpp("decline")
+    machine.nubus.slot[9].card.gc.force_decline = true
+    machine.scsi.attach_hd(hd_608_gc, 0)
+    scheduler.run(200000000)
+    mac.wait_stable(600000000)
+    assert(machine.nubus.slot[9].card.gc.force_decline == true, "iix-gc-decline1: force_decline lost")
+    assert(machine.nubus.slot[9].card.gc.on == true, "iix-gc-decline1: accelerator did not turn on")
+    assert(machine.nubus.slot[9].card.gc.state == "gc-on", "iix-gc-decline1: accelerator state != gc-on")
+    assert(machine.nubus.slot[9].card.gc.error == 0, "iix-gc-decline1: accelerator posted an error")
+    assert(machine.nubus.slot[9].card.gc.rpc_count > 0, "iix-gc-decline1: no RPCs serviced (bring-up never engaged)")
+    assert(machine.screen.width == 640, "iix-gc-decline1: screen width != 640")
+    -- The oracle: the SAME golden as the accel row above.
+    mac.check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    mac.report_perf("suite-iix/iix-gc-decline1", scheduler.instr_count)
+end
+
+-- ---- iix-jmfb-sweep ---------------------------------------------------------
+-- The 8-of-16 JMFB sweep re-host. iicx-video-modes drove all four monitor
+-- senses at four depths on one host; the 15" portrait (sense $1) and 21" RGB
+-- (sense $0) halves live here now, so the same 16 cells span two machines. The
+-- JMFB seats in slot 9 on both, so the sPRAMRec address and the whole seeding
+-- recipe carry over unchanged (verified: the card in slot 9 here reports
+-- "Macintosh Display Card 8*24").
+--
+-- Each cell is a cold boot: seed the slot's sPRAMRec so the Slot Manager's
+-- GET_SLOT_DEPTH picks the wanted sResource at boot, and run into the Welcome
+-- splash (the machine's PRAM already skips the startup-drive wait, which used
+-- to be short-circuited here by synthesising Cmd-Shift-Power in KeyMap
+-- $017A). The frame is the Welcome splash, and the DEPTH is proven by
+-- savedMode, not by the pixels: the splash is black-and-white, so it scans out
+-- identically at 1 and 2 bpp (see the golden-collision waivers).
+local function sweep_cell(sense, sister, spid, w, h, settle, golden)
+    -- Staging named explicitly: the GC rows above seat an 824gc, and an
+    -- unnamed machine.boot inherits it — which is how the same trap produced
+    -- a wrong diagnosis in suite-iici (see its iici-71-hd row).
+    machine.boot{model = "iix", ram = 8192, video_card = "mdc_8_24", video_sense = sense, rom = vars.ROM}
+    machine.floppy.drive[0].insert(sys_701)
+    machine.rtc.pram.validate()
+    machine.rtc.pram.poke(0x46, sister)
+    -- The budget is per-cell and MEASURED: the Welcome splash is a transient
+    -- (bare desktop before, gone again after), so a budget outside a cell's
+    -- window silently captures a bare desktop. 48..52M is inside every cell's
+    -- window today (1 M-step sweep); under the old wait bypass three cells came ~5x
+    -- later than their siblings. Runs are bit-reproducible, so a fixed instant
+    -- is exact; re-measure every cell whenever boot timing changes.
+    scheduler.run(settle)
+    assert(machine.screen.width == w, F"jmfb-sweep ${golden}: width != ${w}")
+    assert(machine.screen.height == h, F"jmfb-sweep ${golden}: height != ${h}")
+    assert(machine.rtc.pram.peek(0x48) == spid, F"jmfb-sweep ${golden}: savedMode rewritten by ROM")
+    mac.check(golden)
+    -- The splash comes while the 24-bit System still brackets some accesses
+    -- with SwapMMUMode, so MMU32bit can read 1 for up to ~250k instructions at
+    -- a time; a fixed instant that lands inside one reports a 24-bit boot as
+    -- 32-bit.  Step past such a bracket before the record reads the mode (a
+    -- boot that really is 32-bit stays at 1 and still reports it).
+    local k = 0
+    while debug.mac.globals.read("MMU32bit") == 1 and k < 100 do
+        scheduler.run(20000)
+        k = k + 1
+    end
+    -- Claim the cell so the contract protects it: these are (card x geometry x
+    -- depth) cells, taken at ROM stage — the same shape iix-portrait-603
+    -- already declares.
+    mac.report_row("7.0.1", "jmfb", F"rom-stage ${w}x${h}x${machine.screen.depth}")
+end
+
+local function row_iix_jmfb_sweep()
+    -- 15" Portrait B&W, sense $1, 640x870.
+    sweep_cell(1, gs.bytes(0x002780a1a1000000, 8), 0x80, 640, 870, 50000000, "goldens/iix-jmfb-15in_bw-640x870-1bpp.png")
+    -- golden-collision-ok: iix-jmfb-15in_bw-640x870-1bpp.png iix-jmfb-15in_bw-640x870-2bpp.png iix-6.0.3-640x870x1-welcome.png
+    -- - three-way, and all three are the same ROM-stage Welcome splash at
+    -- 640x870. 1 bpp vs 2 bpp: the splash is black-and-white, so it scans out
+    -- identically; the depth is proven by the savedMode assert in sweep_cell.
+    -- vs iix-portrait-603's golden: that row seeds the identical sense and
+    -- sPRAMRec and checks the same pre-System frame, so it cannot differ — its
+    -- 6.0.3-specific work is the desktop-geometry assertions that follow it.
+    sweep_cell(1, gs.bytes(0x002781a1a1000000, 8), 0x81, 640, 870, 50000000, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
+    sweep_cell(1, gs.bytes(0x002782a1a1000000, 8), 0x82, 640, 870, 50000000, "goldens/iix-jmfb-15in_bw-640x870-4bpp.png")
+    sweep_cell(1, gs.bytes(0x002783a1a1000000, 8), 0x83, 640, 870, 50000000, "goldens/iix-jmfb-15in_bw-640x870-8bpp.png")
+    -- 21" RGB (Kong), sense $0, 1152x870. References at >= 2 bpp carry Kong's
+    -- gamma pre-distortion — see iicx-video-modes' header for why that is
+    -- correct for a pre-CRT-response capture.
+    sweep_cell(0, gs.bytes(0x002780a7a7000000, 8), 0x80, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
+    sweep_cell(0, gs.bytes(0x002781a7a7000000, 8), 0x81, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
+    sweep_cell(0, gs.bytes(0x002782a7a7000000, 8), 0x82, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
+    sweep_cell(0, gs.bytes(0x002783a7a7000000, 8), 0x83, 1152, 870, 50000000, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")
+    mac.report_perf("suite-iix/iix-jmfb-sweep", scheduler.instr_count)
+end
+
+-- ---- iix-75-hd --------------------------------------------------------------
+-- NEW CELL IIx x 7.5.
+--
+-- The original idea was to take this cell by splitting the re-hosted sweep's
+-- media 4/4 between 7.0.1 and 7.5. That is not buildable, and the reason is
+-- worth recording: a depth cell has to seed slot PRAM, which requires
+-- rtc.pram.validate to stamp the validity tokens — and stamping them suppresses
+-- the boot ROM's own default PRAM init, which is what populates the startup
+-- device. On a floppy boot that costs nothing (the drive is found by scanning),
+-- but a SCSI boot then finds no startup device and parks on the blinking "?"
+-- floppy. Measured 2026-07-28: the sweep recipe against the 7.5 HD image gives
+-- the right geometry (1152x870) and a "?" floppy; restoring the documented
+-- default boot device ($78..$7B = $FFFFFFDF) does not rescue it, so more of the
+-- suppressed init matters than that one field. The same interaction is recorded
+-- from the other direction in iici-aux3-8bpp/config.mk.
+--
+-- So the sweep stays entirely on 7.0.1 floppy media, and IIx x 7.5 is taken by
+-- this plain boot-to-desktop row instead. The cell is what was wanted; only the
+-- mechanism differs. Verified the image is host-portable first: IIx and IIcx
+-- settle on the byte-identical frame from this image with no seeding.
+local function row_iix_75_hd()
+    -- video_sense named too: the sweep above leaves sense $0 (21" RGB, 1152
+    -- wide) staged, and this row is a 640x480 cell.
+    machine.boot{model = "iix", ram = 8192, video_card = "mdc_8_24", video_sense = 6, rom = vars.ROM}
+    machine.rtc.time = 3000000000
+    machine.scsi.attach_hd(hd_75, 0)
+    scheduler.run(400000000)
+    mac.wait_stable(1500000000)
+    assert(machine.id == "iix", "iix-75-hd: machine.id != iix")
+    assert(machine.ram == 8192, "iix-75-hd: machine.ram != 8192")
+    assert(machine.screen.width == 640, "iix-75-hd: screen.width != 640")
+    mac.assert_addr(false)
+    mac.check_ex("goldens/iix-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    mac.report_row("7.5", "jmfb", "hd-boot 5380")
+    mac.report_perf("suite-iix/iix-75-hd", scheduler.instr_count)
+end
+
+-- ---- iix-jmfb-refuse --------------------------------------------------------
+-- The descriptor half of the JMFB: what the card does when the guest programs
+-- geometry its 2 MB VRAM cannot back.  VideoBase is 16 bits in units of 32
+-- bytes, so one move.l reaches 2,097,120 -- and at 24 bpp the driver's own
+-- encoding scales it by 8/3, which reaches 5,592,320, 2.7x past the end.
+-- RowWords is likewise unbounded.
+--
+-- Both writes must be REFUSED, not clamped: the card scans nothing rather than
+-- advertising a raster that runs off the end of VRAM, so screen.checksum -- the
+-- capture path, which walks stride x height -- reports no framebuffer instead
+-- of reading past the allocation.  And the refusal must be recoverable: the
+-- next sane write rebuilds the full raster, byte-identical to before.
+--
+-- This is the integration row that covers display_set_scanout for every card
+-- that routes through it; under the nightly valgrind tier it is also the thing
+-- that would catch a regression as an invalid read rather than as a wrong
+-- picture.
+local function row_iix_jmfb_refuse()
+    machine.boot{model = "iix", ram = 8192, rom = vars.ROM}
+    scheduler.run(80000000)
+    assert(machine.screen.width == 640, "iix-jmfb-refuse: screen.width != 640")
+    assert(machine.screen.height == 480, "iix-jmfb-refuse: screen.height != 480")
+    local good = machine.screen.checksum()
+
+    -- JMFB registers live at slot $9 + $200000; the low half of each long is
+    -- the live word (jmfb.h JMFBVideoBase $08 / JMFBRowWords $0C).
+    local reg_base = 0xF920000A
+    local reg_rw = 0xF920000E
+
+    -- VideoBase = $FFFF -> byte offset 2,097,120, one row-word short of the
+    -- 2 MB end: the 640x480 raster cannot fit behind it.
+    machine.memory.poke.w(reg_base, 0xFFFF)
+    assert(machine.screen.height == 0, "iix-jmfb-refuse: out-of-VRAM VideoBase was accepted")
+    assert(gs.try(function() return machine.screen.checksum() end, "refused") == "refused", "iix-jmfb-refuse: refused descriptor still scanned")
+
+    -- ...and the next sane write brings the same picture back.
+    machine.memory.poke.w(reg_base, 0x0050)
+    assert(machine.screen.height == 480, "iix-jmfb-refuse: descriptor did not recover after VideoBase")
+    assert(machine.screen.checksum() == good, "iix-jmfb-refuse: recovered picture differs after VideoBase")
+
+    -- RowWords = $0FFF -> stride 16,380 at 1 bpp, a 7.8 MB raster.
+    machine.memory.poke.w(reg_rw, 0x0FFF)
+    assert(machine.screen.height == 0, "iix-jmfb-refuse: out-of-VRAM RowWords was accepted")
+    assert(gs.try(function() return machine.screen.checksum() end, "refused") == "refused", "iix-jmfb-refuse: refused stride still scanned")
+
+    machine.memory.poke.w(reg_rw, 0x0014)
+    assert(machine.screen.height == 480, "iix-jmfb-refuse: descriptor did not recover after RowWords")
+    assert(machine.screen.checksum() == good, "iix-jmfb-refuse: recovered picture differs after RowWords")
+    mac.report_perf("suite-iix/iix-jmfb-refuse", scheduler.instr_count)
+end
+
+-- ---- row dispatch -----------------------------------------------------------
+
+mac.row("iix-nomedia", row_iix_nomedia)
+mac.row("iix-824gc-seat", row_iix_824gc_seat)
+mac.row("iix-701-fd", row_iix_701_fd)
+mac.row("iix-portrait-603", row_iix_portrait_603)
+mac.row("iix-71-extfd", row_iix_71_extfd)
+mac.row("iix-gc-accel1", row_iix_gc_accel1)
+mac.row("iix-gc-decline1", row_iix_gc_decline1)
+mac.row("iix-jmfb-refuse", row_iix_jmfb_refuse)
+mac.row("iix-jmfb-sweep", row_iix_jmfb_sweep)
+if mac.row_on("iix-75-hd") then
+    if mac.have_media(hd_75) then
+        mac.row("iix-75-hd", row_iix_75_hd)
+    else
+        echo("skip: iix-75-hd (7.5 prepared image not fetched)")
+    end
+end
+
+mac.suite_done()
+quit()

@@ -98,7 +98,7 @@ VIA1 -> IPL 1
 The IIci boots stock System 7.0.1 from floppy, and 7.1, 7.5 and 7.6 from
 hard disk, to a working Finder desktop. The rows `iici-701-fd`,
 `iici-71-hd`, `iici-75-hd` and `iici-76-hd` of
-[tests/integration/suite-iici](../../../../tests/integration/suite-iici/test.script)
+[tests/integration/suite-iici](../../../../tests/integration/suite-iici/test.lua)
 boot each and pixel-match the desktop.
 
 Deferred (not v1): the optional Parity Generator Card, the 32 KB L2

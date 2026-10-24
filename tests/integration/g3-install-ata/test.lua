@@ -1,0 +1,59 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Mac OS 9.2.1 installed onto a blank ATA disk on a beige G3, booted from an
+-- ATAPI CD-ROM.
+--
+-- A1  the CD as an ATAPI drive (cell 0, device 1) boots to the Finder with a
+--     blank 540 MB disk as cell 0, device 0
+-- A2  Drive Setup lists and initializes the ATA disk (writing Apple's ATA
+--     driver partitions), Mac OS Install copies 9.2.1 onto it — WRITE DMA
+--     and READ DMA on DBDMA channel 11 for the disk, READ(12) packets for
+--     the disc, both devices on the one channel — and reports "The
+--     installation process has finished"
+-- A3  the exported disk carries a System and a Finder
+-- A4  the installed disk, alone on ATA cell 0, boots to its desktop and the
+--     Mac OS Setup Assistant — the ROM's ATA Manager and the installed ATA
+--     driver carrying the boot, virtual memory paging included
+--
+-- MEDIA-GATED: $GS_EXTRA_MEDIA_DIR/macos-9.2.1/macos921.iso.
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/gossamer.lua")
+
+local cd = F"${vars.EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
+local hd = F"${vars.WORK_DIR}/g3-ata-hd.img"
+local installed = F"${vars.WORK_DIR}/g3-ata-installed.img"
+
+if mac.have_media(cd) then
+    -- --- A1 ---------------------------------------------------------------------
+    assert(files.hd_create(hd, "HD500SC"), "A1: create the blank disk")
+    machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert(machine.ata.attach_hd(hd, 0), "A1: attach the disk as ATA unit 0")
+    assert(machine.ata.attach_cdrom(cd, 1), "A1: attach the CD as ATAPI unit 1")
+    assert(machine.ata.devices == "hd atapi - -", "A1: cell 0 does not hold the disk and the CD")
+    scheduler.run(26000000000)
+    mac.check_ex("finder-cd.png", 0, 440, 20, 640)
+
+    -- --- A2 ---------------------------------------------------------------------
+    gos_install_921("install-finished.png")
+    mac.click(453, 288) -- Quit
+    mac.run_ticks(900)
+    assert(machine.ata.export(0, installed), "A2: export the installed disk")
+
+    -- --- A3 ---------------------------------------------------------------------
+    assert(files.path_exists(F"${installed}/partition6/System Folder/System"), "A3: no System on the installed disk")
+    assert(files.path_exists(F"${installed}/partition6/System Folder/Finder"), "A3: no Finder on the installed disk")
+
+    -- --- A4 ---------------------------------------------------------------------
+    machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert(machine.ata.attach_hd(installed, 0), "A4: attach the installed disk as ATA unit 0")
+    scheduler.run(24000000000)
+    assert(debug.mac.globals.read("DSErrCode") == 0, "A4: a system error during the ATA boot")
+    gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/ata-desktop.png") end, nil)
+    mac.check_ex("ata-desktop.png", 0, 440, 20, 640)
+else
+    mac.skip_test("g3-install-ata (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
+end
+
+quit()

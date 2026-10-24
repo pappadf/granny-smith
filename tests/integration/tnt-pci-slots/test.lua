@@ -1,0 +1,257 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- TNT PCI slot topology and the config-cycle contract
+-- (docs/internals/core/peripherals/pci.md).
+--
+-- Three things are pinned here, all of which the hand-rolled Bandit model
+-- either could not express or was never tested for:
+--
+--   * ONE declaration, three views — the machine's pci_slot_decl_t table
+--     feeds catalog.profile, the object model and the runtime, so a slot's
+--     bus / IDSEL / interrupt line cannot disagree between them.
+--   * The config-cycle contract — a registered device answers its type-0
+--     header, an unpopulated IDSEL reads ALL-ONES and swallows writes
+--     (a probe must never hang), and Open Firmware's own probe-slots sizes
+--     and assigns Control's two BARs through the generic header.
+--   * The topology reaches the guest — BoxID's slot-presence pins follow
+--     live population, and each seated card names its kind.
+--
+-- Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
+-- drives them with lwbrx/stwbrx), and machine.memory.peek/poke are raw
+-- big-endian bus views, so every literal below is the byte-swapped form of
+-- the value software sees.  The one-hot IDSEL is the physical AD line wired
+-- to that slot's IDSEL pin: device N is bit N.
+
+-- --- Profile: the slot table, as the configuration layer sees it. -------------
+assert(catalog.profile("pm7500").capabilities.pci, "pm7500 must advertise PCI")
+assert(not catalog.profile("plus").capabilities.pci, "a non-PCI model must not")
+
+-- --- Object model: a node for every declared slot, populated or not. ---------
+-- Three sockets on Bandit 1 at IDSEL 13/14/15 (the ROM's own slot-names
+-- bitmask $0000E000), their strapped INTA-D lines on Grand Central
+-- externals 23/24/25 (Apple's 9500 external-interrupt table).
+assert(machine.pci.slot[1].firmware_name == "A1", "slot 1 label")
+assert(machine.pci.slot[1].bus == 0, "slot 1 is on Bandit 1")
+assert(machine.pci.slot[1].device == 13, "slot 1 IDSEL")
+assert(machine.pci.slot[1].irq == 23, "slot 1 interrupt line")
+assert(machine.pci.slot[2].device == 14, "slot 2 IDSEL")
+assert(machine.pci.slot[2].irq == 24, "slot 2 interrupt line")
+assert(machine.pci.slot[3].device == 15, "slot 3 IDSEL")
+assert(machine.pci.slot[3].irq == 25, "slot 3 interrupt line")
+-- Control is the soldered-down video device the machine names, on the
+-- Chaos display bus.
+assert(machine.pci.slot[4].firmware_name == "VCI", "builtin slot label")
+assert(machine.pci.slot[4].bus == 2, "Control is on the Chaos bus")
+assert(machine.pci.slot[4].device == 11, "Control IDSEL")
+assert(machine.pci.slot[4].card.name == "Control", "Control not seated from the slot table")
+-- The registry is an explicit list; adding a card driver is one extern plus
+-- one entry, and every compatible socket is offered it with no machine edit.
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "card registry")
+
+-- --- The config-cycle contract, before a single instruction runs. ------------
+-- Bandit 1's own header at device 11 (kPCIBridgeSelfDevice): one-hot
+-- IDSEL $00000800, vendor $106B device $0001 -> LE dword $0001106B.
+machine.memory.poke.l(0xF2800000, 0x00080000)
+assert(machine.memory.peek.l(0xF2800000) == 0x00080000, "the address port must read back its latch")
+assert(machine.memory.peek.l(0xF2C00000) == 0x6B100100, "Bandit self-header IDs")
+-- Class $060000 (host bridge), revision 3 -> LE dword $06000003.
+machine.memory.poke.l(0xF2800000, 0x08080000)
+assert(machine.memory.peek.l(0xF2C00000) == 0x03000006, "Bandit self-header class/revision")
+-- $50 mode-select is a latch; the coherency handshake is read/OR $40/write,
+-- which preserves bit 24 -- the ENDIAN bit (1 = big-endian lanes at
+-- power-on, 0 = the bridge reverses its lanes for a little-endian client).
+-- The port is little-endian, so config byte 0 is the dword's MSB: $40 in
+-- byte 0 is coherency, $01 in byte 3 is the endian bit left set.
+machine.memory.poke.l(0xF2800000, 0x50080000)
+machine.memory.poke.l(0xF2C00000, 0x40000001)
+assert(machine.memory.peek.l(0xF2C00000) == 0x40000001, "mode-select $50 must latch")
+
+-- Every unpopulated IDSEL reads all-ones and swallows writes — this is the
+-- ENTIRE empty-slot model, and the reason a probe never hangs.
+machine.memory.poke.l(0xF2800000, 0x00200000) -- device 13 (socket A1)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "empty socket A1 must read all-ones")
+machine.memory.poke.l(0xF2C00000, 0x12345678) -- writes vanish
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "a write to an empty socket must vanish")
+machine.memory.poke.l(0xF2800000, 0x00400000) -- device 14 (socket B1)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "empty socket B1 must read all-ones")
+machine.memory.poke.l(0xF2800000, 0x00800000) -- device 15 (socket C1)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "empty socket C1 must read all-ones")
+-- Devices 0-10 do not exist on a primary bus.
+machine.memory.poke.l(0xF2800000, 0x00010000) -- device 8
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "device 8 must not exist")
+-- An idle (zero) latch selects nothing — NOT device 0.
+machine.memory.poke.l(0xF2800000, 0x00000000)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "an idle address latch must select nothing")
+-- A type-1 cycle addresses a subordinate bus; none exist.
+machine.memory.poke.l(0xF2800000, 0x01080000)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "type-1 cycles must read all-ones")
+-- A multi-hot latch is an illegal cycle.
+machine.memory.poke.l(0xF2800000, 0x00280000)
+assert(machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF, "a multi-hot IDSEL must select nothing")
+machine.memory.poke.l(0xF2800000, 0x00000000)
+
+-- Control answers on the Chaos bus at device 11.  Its ids are Chaos's — the
+-- documented conflation (see control.c) — and Chaos's config
+-- space is readable only at $00-$0F/$14/$18, the two exceptions being
+-- exactly Control's BARs.
+machine.memory.poke.l(0xF0800000, 0x00080000)
+assert(machine.memory.peek.l(0xF0C00000) == 0x6B100300, "Control/Chaos header IDs")
+machine.memory.poke.l(0xF0800000, 0x10080000) -- $10 — outside the readable set
+assert(machine.memory.peek.l(0xF0C00000) == 0xFFFFFFFF, "Chaos config space is read-restricted")
+-- The universal BAR sizing probe: write all-ones, read back the size mask.
+-- BAR $18 is the 64 MB VRAM aperture, BAR $14 the 4 KB register block —
+-- the ROM's own reg-builder literals.
+machine.memory.poke.l(0xF0800000, 0x18080000)
+machine.memory.poke.l(0xF0C00000, 0xFFFFFFFF)
+assert(machine.memory.peek.l(0xF0C00000) == 0x000000FC, "BAR $18 must size as 64 MB")
+machine.memory.poke.l(0xF0800000, 0x14080000)
+machine.memory.poke.l(0xF0C00000, 0xFFFFFFFF)
+assert(machine.memory.peek.l(0xF0C00000) == 0x00F0FFFF, "BAR $14 must size as 4 KB")
+machine.memory.poke.l(0xF0800000, 0x00000000)
+
+-- (Empty PCI memory space still faults recoverably — the BART contract —
+-- but a shell peek is an INSPECTION access and deliberately never
+-- perturbs the guest, so the fault path is pinned in the pci unit suite
+-- and exercised for real by Open Firmware's own probe below.)
+
+-- --- Each Bandit forwards a PCI I/O window at its own base. ------------------
+-- The bridge's own `ranges` property, dumped from a real 9500 under Open
+-- Firmware (Apple TN1062), is the specification:
+--
+--   01000000 00000000 00000000  F2000000  00000000 00800000   I/O,  8 MB
+--   02000000 00000000 F3000000  F3000000  00000000 01000000   mem, 16 MB
+--
+-- so the 8 MB at the BRIDGE BASE is I/O and the next 16 MB is pass-through
+-- memory (which is how Grand Central is reached — see the BoxID read
+-- above at $F301A000, which must keep working).  Nothing decodes PCI I/O
+-- on a machine with no seated card, so the window exists but claims
+-- nothing; the per-device decode is pinned in the pci unit suite, and the
+-- Mach64 GX row exercises it for real.
+assert(machine.memory.peek.l(0xF301A000) == 0x00E10000, "the $F3 window is pass-through MEMORY, not I/O")
+
+-- --- BoxID slot-presence pins follow live population, not the board. ---------
+-- Bits 0-5 are the sockets' power/present pins; every socket is empty, so
+-- they read 0 while the board's own straps ($E100, bit 8 the factory-test
+-- strap that idles high — #115) stand.
+assert(machine.memory.peek.l(0xF301A000) == 0x00E10000, "BoxID presence pins must be clear with empty sockets")
+
+-- --- The endian bit reverses the byte lanes, config ports included. -----------
+-- Clearing mode-select bit 24 (what OF does for a little-endian client with
+-- `... cdata xb@ 0fe and cdata xb!`, whose munged BYTE access lands on
+-- config byte 3) makes Bandit 1 reverse its eight byte lanes for everything
+-- it drives -- so the same BoxID longword, read straight above as
+-- $00E10000, now comes back byte-reversed.  The bridge's OWN config ports
+-- reverse too (bandit.c, port_offset): the firmware's `set-caddr` stores a
+-- natural one-hot address with `xl!`, which is the byte-flipping variant
+-- only in big-endian mode, so in little-endian mode the flip has to come
+-- from the bridge.  Seen from this big-endian script, a reversed 32-bit
+-- access therefore reads and writes the little-endian config dword AS-IS:
+-- mode-select is now $00000040 (coherency on, endian bit clear), and
+-- restoring the endian bit means writing $01000040, not $40000001.
+machine.memory.poke.l(0xF2800000, 0x50080000)
+machine.memory.poke.l(0xF2C00000, 0x40000000) -- straight write: byte 3 = $00, endian bit CLEARED
+assert(machine.memory.peek.l(0xF2C00000) == 0x00000040, "in reversed mode the data port hands back the LE config dword as-is")
+assert(machine.memory.peek.l(0xF301A000) ~= 0x00E10000, "clearing the endian bit reverses the island's lanes")
+assert(machine.memory.peek.l(0xF301A000) == 0x0000E100, "the island's longword comes back byte-reversed")
+machine.memory.poke.l(0xF2C00000, 0x01000040) -- reversed write: LE dword $01000040 = coherency + endian bit
+assert(machine.memory.peek.l(0xF301A000) == 0x00E10000, "restoring the endian bit restores the straight view")
+assert(machine.memory.peek.l(0xF2C00000) == 0x40000001, "and the data port is straight again ($01000040 seen big-endian)")
+
+-- --- Open Firmware's own probe-slots assigns Control's BARs. -----------------
+-- 200M instructions: NanoKernel init, then OF's probe-pci walk (Bandit 1 ->
+-- Chaos -> Bandit 2), make-properties and assign-addresses.
+scheduler.run(200000000)
+assert(machine.pci.slot[4].card.config.bar[2].base == 0x90000000, "OF must assign the VRAM BAR at $90000000")
+assert(machine.pci.slot[4].card.config.bar[2].size == 0x4000000, "VRAM BAR size")
+assert(machine.pci.slot[4].card.config.bar[2].mapped, "the VRAM BAR must decode once assigned")
+assert(machine.pci.slot[4].card.config.bar[1].base == 0x94000000, "OF must assign the register BAR at $94000000")
+assert(machine.pci.slot[4].card.config.bar[1].size == 0x1000, "register BAR size")
+-- The gray desktop the ladder pins lives in the BAR-assigned aperture, so
+-- the decode really is coming from the assigned base.
+assert(machine.pci.slot[4].card.config.command == 0x0002, "Control decodes memory space unconditionally")
+
+-- --- The 9500 declares six sockets across two Bandits. -----------------------
+-- Same three IDSELs on each bus; Apple's own external-interrupt table puts
+-- Bandit 2's slots on Grand Central 27/28/29.  Slot A1 emptied of the
+-- factory Mach64, so Control stands in.
+machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, slots = "1=none"}
+-- Slot labels come from each bridge's own `slot-names` property, dumped
+-- live in TN1062: Bandit 1 publishes "A1" "B1" "C1", Bandit 2 publishes
+-- "D2" "E2" "F2" (an earlier guess of D1/E1/F1 was wrong).
+assert(machine.pci.slot[4].firmware_name == "D2", "9500 slot 4 label")
+assert(machine.pci.slot[5].firmware_name == "E2", "9500 slot 5 label")
+assert(machine.pci.slot[6].firmware_name == "F2", "9500 slot 6 label")
+assert(machine.pci.slot[4].bus == 1, "9500 slot 4 is on Bandit 2")
+assert(machine.pci.slot[4].device == 13, "9500 slot 4 IDSEL")
+assert(machine.pci.slot[4].irq == 27, "9500 slot 4 interrupt line")
+assert(machine.pci.slot[6].irq == 29, "9500 slot 6 interrupt line")
+assert(machine.pci.slot[7].firmware_name == "VCI", "9500 builtin slot label")
+assert(machine.pci.slot[7].card.name == "Control", "9500 Control (the documented no-onboard-video deviation)")
+-- Bandit 2's config ports answer, and its sockets probe as empty.
+machine.memory.poke.l(0xF4800000, 0x00080000)
+assert(machine.memory.peek.l(0xF4C00000) == 0x6B100100, "Bandit 2 self-header IDs")
+machine.memory.poke.l(0xF4800000, 0x00200000)
+assert(machine.memory.peek.l(0xF4C00000) == 0xFFFFFFFF, "9500 socket D2 must read all-ones")
+machine.memory.poke.l(0xF4800000, 0x00000000)
+
+-- --- Who owns $90000000 follows what actually seated. ------------------------
+-- A real 9500 has no Chaos and Bandit 2 forwards 256 MB of PCI memory there
+-- (TN1062).  This model still carries Chaos, because it is the stand-in host
+-- for the onboard video the real machine does not have — and that stand-in
+-- is exactly what is seated here, so Chaos keeps the range and Bandit 2
+-- advertises none.  $48 is the bridge's address-select: upper halfword =
+-- coarse 256 MB windows at n<<28, lower = fine 16 MB windows at $F0000000 |
+-- n<<24.  Read little-endian through the config data port, so Bandit 2's
+-- $F4/$F5-only decode ($00000030) reads back byte-swapped as $30000000.
+machine.memory.poke.l(0xF4800000, 0x48080000)
+assert(machine.memory.peek.l(0xF4C00000) == 0x30000000, "Bandit 2 advertises no memory window while Chaos is populated")
+machine.memory.poke.l(0xF4800000, 0x00000000)
+-- That Chaos's window is the one really decoding is already pinned above:
+-- on the boot that ran OF's probe, Control's VRAM BAR was assigned at
+-- $90000000 and the ladder's gray desktop is drawn through it.
+
+-- --- Naming the machine's own builtin changes nothing. ------------------------
+-- tnt_control is a soldered-down kind (BUILTIN attach), so it can never be
+-- seated in a socket: compatibility is computed, not enumerated.  pci_card=
+-- naming it is "this machine with its Control", and the socket (emptied of
+-- its factory Mach64 here) stays empty.
+machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "tnt_control", slots = "1=none"}
+assert(not gs.ok(function() return machine.pci.slot[1].card.name end), "a builtin kind must not be seated in a socket")
+-- An unknown id is rejected before the running machine is touched.
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "nonesuch"} end), "unknown pci_card id must be rejected")
+-- So is a real card that fits no socket of this model: the Network Server's
+-- fixed Cirrus 54M30 is not a card any TNT Mac can seat.
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", rom = vars.ROM, pci_card = "cirrus_54m30"} end), "a card that fits no socket must be rejected")
+assert(machine.id == "pm9500", "machine survives the rejected boot")
+
+-- --- Each seated card names its kind. -----------------------------------------
+-- Control is the slot table's own builtin.
+assert(machine.pci.slot[7].card.id == "tnt_control", "slot 7 seats Control")
+
+-- --- A "3d" card does NOT retire the 9500's builtin-fallback video. ----------
+-- The Voodoo2 is a pass-through 3D accelerator: its PCI class code says
+-- "display controller" but it must never be the machine's only video, so
+-- its card_class is "3d" — and the BUILTIN_FALLBACK test is by class.
+-- With one seated, the Control stand-in must remain, or a 9500 with only
+-- a Voodoo2 would boot with no screen at all (docs/internals/core/peripherals/pci.md).
+machine.boot{model = "pm9500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2"}
+assert(machine.pci.slot[1].card.name == "3dfx Voodoo2", "the ROM-less card seats with no PROM")
+assert(machine.pci.slot[7].card.name == "Control", "a 3d-class card must NOT retire the display fallback")
+
+-- --- The SWIM3 is on the board's /RESET net. --------------------------------
+-- It is TNT's floppy CONTROLLER (Grand Central +$15000, 16 registers on $10
+-- centres), and it was the one controller in the tree that survived a machine
+-- reset. cfg->floppy has always been reset by the shared chain; the chip in
+-- front of it was not.
+--
+-- The PDM suite asserts the same thing, and deliberately not instead of this
+-- one: the two families call swim3_reset from their own bus_reset, so a
+-- missing call on either side has to be caught on that side. $24 is
+-- GCR + IBMDrive, and NOT $80, which is the self-clearing SoftReset bit and
+-- would make the chip reset itself and prove nothing.
+machine.memory.poke.b(0xF3015050, 0x24)
+assert(machine.memory.peek.b(0xF3015050) == 0x24, "tnt: SWIM3 Setup did not take the poke")
+machine.reset()
+scheduler.run(200000)
+assert(machine.memory.peek.b(0xF3015050) == 0, "tnt: SWIM3 Setup survived a machine reset")
+
+quit()

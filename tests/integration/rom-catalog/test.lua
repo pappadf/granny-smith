@@ -1,0 +1,6 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- See run.sh — this test uses a custom runner (TEST_RUNNER := run.sh) because
+-- the catalog check must enumerate tests/data/roms, which the object-model
+-- shell cannot do.  The Makefile requires a test.script to exist, so this file
+-- is intentionally a no-op placeholder.
+quit()

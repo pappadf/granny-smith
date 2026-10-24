@@ -88,6 +88,7 @@ include src/core/storage/gsdisk/gsdisk.mk
 # LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
 
 include src/core/network/laserwriter.mk
+include src/core/lua/gs_lua.mk
 
 # -- Sources and the shared include roster (CORE_INCLUDES) --
 
@@ -104,7 +105,9 @@ INCLUDES := -Isrc/platform \
             -I$(VROM68K_OUT) \
             -I$(PDGEN_OUT) \
             -I$(GSDISK_OUT) \
-            -I$(LASERWRITER_OUT)
+            -I$(LASERWRITER_OUT) \
+            -I$(GS_LUA_OUT) \
+            $(LUA_INCLUDES)
 
 # -- Sources --
 # CORE_SRC and PEELER_SRC come from src/sources.mk (included above).
@@ -118,7 +121,7 @@ PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_ring.c,$(CORE_SRC))
 
 # All sources
-SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
+SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC) $(LUA_SRC)
 
 # Object and dependency files (mirror source tree under BUILD_DIR)
 OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRC))
@@ -130,7 +133,7 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(LUA_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 ifeq ($(TARGET),node)
 # ALLOW_TABLE_GROWTH: the PowerPC translation tier installs its functions
@@ -192,6 +195,9 @@ $(BUILD_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
 
 # laserwriter_job.c embeds the generated prelude header.
 $(BUILD_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# The embedded Lua standard library (bin2c of gs_lua_lib.lua).
+$(BUILD_DIR)/$(CORE_DIR)/lua/gs_lua.o: $(GS_LUA_LIB_HEADER)
 
 # The flags stamp: creating it (any flag change) outdates every object.
 $(FLAGS_STAMP):
