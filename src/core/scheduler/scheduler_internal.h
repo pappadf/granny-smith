@@ -115,6 +115,11 @@ struct scheduler {
     double vbl_acc_error; // accumulated VBL timing error (seconds)
     double host_secs_per_vbl; // smoothed host seconds per VBL
     double host_secs_per_loop; // smoothed host seconds per main loop iteration
+    // Turbo's achieved speed: emulated seconds per host second, smoothed
+    // (NAN until the first tick measures it; host_timing_reset).  The speed
+    // figure for a mode whose CPU multiplier is 1 but whose clock outruns
+    // real time (scheduler_effective_speed_x256).
+    double turbo_ratio;
 
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];

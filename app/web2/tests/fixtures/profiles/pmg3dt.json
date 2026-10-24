@@ -291,7 +291,7 @@
           "label": "Hard disk"
         }
       ],
-      "startup": false,
+      "startup": true,
       "blank_disks": [
         {
           "label": "20 MB (HD20SC)",
@@ -370,7 +370,7 @@
           "label": "Hard disk"
         }
       ],
-      "startup": false,
+      "startup": true,
       "blank_disks": [
         {
           "label": "20 MB (HD20SC)",

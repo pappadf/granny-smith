@@ -17,6 +17,14 @@ def bench_boot() {
     # two CPIs cost the same per instruction).
     scheduler.cpi = 2
     machine.rtc.time = "2026-10-01T12:00:00"
+    # Open Firmware's factory boot, as the checkpoint was placed with: a new
+    # G3 is seeded with Apple's Mac OS X patch (nvramrc, `0 bootr`), whose
+    # boot reaches other code at the same budget.  On an older binary these
+    # are the values the store holds already.
+    machine.nvram.setenv "use-nvramrc?" "false"
+    machine.nvram.setenv "load-base" "4000"
+    machine.nvram.setenv "nvramrc" ""
+    machine.nvram.setenv "boot-command" "boot"
     machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
     # The cable in, as the checkpoint was placed with: with no cable (the
     # BMAC's default since it reports one only on request) the boot naps

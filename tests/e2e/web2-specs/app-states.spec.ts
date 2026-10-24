@@ -248,11 +248,12 @@ for (const skin of SKINS) {
       }).toPass({ timeout: 15_000 });
       // In Real mode the speed governor slows the CPU when the host falls
       // behind, and a loaded CI runner does during the boot: the status bar
-      // then carries a speed readout (0.88x) that moves everything after it.
-      // Floor the governor at 1x -- the setting a budget-pinned run uses --
-      // so the shot has the same status bar whatever the runner's load.
+      // then reads 0.88x instead of 1x.  Floor the governor at 1x -- the
+      // setting a budget-pinned run uses -- so the readout is the same
+      // whatever the runner's load; it leaves with the pause (a paused
+      // machine runs at no speed), so the shot's status bar has no readout.
       await gsEvalInPage(page, "scheduler.min_speed", [1]);
-      await expect(page.locator(".gs-statusbar .sb-speed")).toHaveCount(0);
+      await expect(page.locator(".gs-statusbar .sb-speed .label")).toHaveText("1×");
       await gsEvalInPage(page, "scheduler.stop");
       await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
         "Paused",
@@ -260,6 +261,7 @@ for (const skin of SKINS) {
           timeout: 15_000,
         },
       );
+      await expect(page.locator(".gs-statusbar .sb-speed")).toHaveCount(0);
       await page.locator('button.ptab[data-tab="debug"]').click();
       for (const title of ["Registers", "Breakpoints"]) {
         const toggle = page

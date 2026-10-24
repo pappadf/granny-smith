@@ -28,6 +28,8 @@
 #define APM_OFF_NAME        0x10 // char[32]
 #define APM_OFF_TYPE        0x30 // char[32]
 #define APM_OFF_STATUS      0x58 // uint32
+#define APM_OFF_BOOT_SIZE   0x60 // uint32 boot code bytes
+#define APM_OFF_PROCESSOR   0x78 // char[16]
 
 #define APM_SIG_PM 0x504D
 
@@ -169,6 +171,9 @@ apm_table_t *image_apm_parse_buffer(const uint8_t *buf, size_t buf_size, const c
         p->status = RD_BE32(block + APM_OFF_STATUS);
         copy_apm_str(p->name, block + APM_OFF_NAME);
         copy_apm_str(p->type, block + APM_OFF_TYPE);
+        p->boot_size = RD_BE32(block + APM_OFF_BOOT_SIZE);
+        memcpy(p->processor, block + APM_OFF_PROCESSOR, 16);
+        p->processor[16] = '\0';
         p->fs_kind = image_apm_classify_type(p->type);
     }
 

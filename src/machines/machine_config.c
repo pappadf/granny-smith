@@ -1114,6 +1114,8 @@ static value_t doc_value(const hw_profile_t *p, const doc_t *d) {
         value_map_builder_t *s = val_map_new();
         val_map_put(s, "bus", val_str(d->startup.bus));
         val_map_put(s, "unit", val_int(d->startup.unit));
+        if (d->startup.partition > 0)
+            val_map_put(s, "partition", val_int(d->startup.partition));
         val_map_put(b, "startup", val_map_finish(s));
     }
     vlist_t cards = {0};
@@ -1450,7 +1452,7 @@ static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
     }
     if (v->kind != VK_MAP)
         return bad("startup: expected {bus, unit} or null");
-    static const char *const keys[] = {"bus", "unit", NULL};
+    static const char *const keys[] = {"bus", "unit", "partition", NULL};
     value_t err = check_keys(v, "startup", keys);
     if (val_is_error(&err))
         return err;
@@ -1458,6 +1460,10 @@ static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
     int64_t unit = 0;
     if (!bus || !map_int(v, "unit", &unit))
         return bad("startup: expected {bus, unit} or null");
+    // The partition: a partition map entry's number (1-based), when given.
+    int64_t partition = 0;
+    if (value_map_get(v, "partition") && (!map_int(v, "partition", &partition) || partition < 1 || partition > 255))
+        return bad("startup: partition must be a partition number, 1 to 255");
     for (int i = 0; i < d->n_storage; i++) {
         if (strcmp(d->storage[i].bus, bus) != 0 || d->storage[i].unit != unit)
             continue;
@@ -1468,7 +1474,8 @@ static value_t read_startup(const hw_profile_t *p, const value_t *v, doc_t *d) {
             return bad("startup: %s on \"%s\" \xe2\x80\x94 this machine's startup record cannot name that bus", pos,
                        b->label);
         }
-        d->startup = (machine_startup_t){.none = false, .unit = (int)unit, .type = d->storage[i].type};
+        d->startup = (machine_startup_t){
+            .none = false, .unit = (int)unit, .type = d->storage[i].type, .partition = (int)partition};
         copy_str(d->startup.bus, sizeof d->startup.bus, bus);
         return val_none();
     }

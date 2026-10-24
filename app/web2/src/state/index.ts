@@ -5,7 +5,7 @@ export {
   markSchedulerChosen,
   isSchedulerChosen,
   defaultSchedulerMode,
-  setAcceleratedSpeed,
+  setCpuSpeed,
   setDriveActivity,
   type MachineStatus,
   type DriveActivity,

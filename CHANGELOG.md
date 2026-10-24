@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Rage 128 WebGPU takeover** — the ATI Rage 128 GL's 3D engine can draw on the browser's GPU: the card's Rendering option (`raster=webgpu`, or the `rage128_webgpu` kind), offered where the page has a WebGPU device. Triangles, textures, the combine stages, fog, Z and blending run on the GPU; its colour and Z buffers stay there, read back by rows when anything else touches their VRAM, and a scanned-out GPU buffer is presented straight from the GPU. Points, lines, stencil, ROP3s and the like stay on the software rasteriser.
 
+## [v0.10.1] — 2026-10-24
+
+### Fixed
+- **The speed factor shows in every mode** — 1x (or the governor's reduced factor) in Real, the multiplier in Faster, the measured emulated-to-real ratio in Max; the MIPS figure beside it is documented as the host's rate while the processor is awake.
+
 ## [v0.10.0] — 2026-10-22
 
 ### Added
@@ -32,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scheduler: the governor and pacing settings are their own modules; web2 on Vite 8.
 
 ### Fixed
+- **Mac OS X starts from New Machine on the G3** — every new beige G3 carries Apple's Mac OS X NVRAM patch, and **Start up from** lists a disk's volumes by name, the chosen ATA volume becoming Open Firmware's `boot-device` (`startup=bus:unit:partition` in a link); before, a Mac OS X disk showed the flashing ? unless its configuration carried the patch.
 - **SCSI: 53C96 data-out byte loss** — every WRITE came up short, hanging System 7.1 on the Quadra 700/900/950.
 - **PowerPC `sraw` carry**; CI runs the predecoded CPU suites.
 - **Storage and checkpoints** — Save State restore writes only changed blocks (a second restore of a large machine no longer runs out of browser storage); named checkpoint copies listed beside the autosaves; shut down discards the autosave; 768 MB machines checkpoint again; the PM 7500/8500/9500 get a CD-ROM drive.

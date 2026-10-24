@@ -30,6 +30,7 @@
 #include "image_part.h"
 #include "image_udif.h"
 #include "image_vfs.h"
+#include "image_wrap.h"
 #include "object.h"
 #include "platform_hooks.h"
 #include "root.h"
@@ -47,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -671,6 +673,50 @@ static DEF_METHOD(files_method_probe) {
         out_printf("contents: %s\n", contents->doc);
     image_close(img);
     return val_bool(true);
+}
+
+// `files.partitions(path)` — the Mac OS volumes a hard disk image offers as
+// startup partitions, numbered as a machine sees the disk once it is
+// attached: a driverless disk or bare volume behind the GSDisk map and
+// driver (image_wrap), so its volume is partition 3 whatever the file's own
+// map says.  The number is what an Open Firmware path names (`@0:3`).
+static DEF_METHOD(files_method_partitions) {
+    const char *path = argv[0].s;
+    image_t *img = image_open_readonly(path);
+    if (!img)
+        return val_err("files.partitions: cannot open image '%s'", path);
+    // The same presentation attach gives the disk (system.c media_open).
+    if (image_wrap_volume(img) < 0) {
+        image_close(img);
+        return val_err("files.partitions: cannot wrap '%s'", path);
+    }
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    uint64_t size = disk_size(img);
+    apm_table_t *table = image_apm_parse(img, NULL);
+    for (uint32_t i = 0; table && i < table->n_partitions; i++) {
+        const apm_partition_t *p = &table->partitions[i];
+        if (p->fs_kind != APM_FS_HFS)
+            continue;
+        const char *fs = partition_volume_kind(img, size, p);
+        if (!fs)
+            continue; // an Apple_HFS entry with no volume in it
+        hfs_volume_t *vol = hfs_open(img, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
+        const char *vname = vol ? hfs_volume_name(vol) : NULL;
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "partition", val_uint(4, p->index));
+        val_map_put(b, "name", val_str(vname && vname[0] ? vname : p->name));
+        val_map_put(b, "filesystem", val_str(fs));
+        // Boot code for a PowerPC in the partition's boot fields: the
+        // XCOFF BootX Mac OS X installs on an Old World Mac.
+        val_map_put(b, "powerpc_booter", val_bool(p->boot_size > 0 && strcasecmp(p->processor, "powerpc") == 0));
+        if (vol)
+            hfs_close(vol);
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    image_apm_free(table);
+    image_close(img);
+    return val_list(items, len);
 }
 
 // `files.path_exists(path)` — true if the path resolves in the shell VFS.
@@ -1724,6 +1770,15 @@ static const member_t files_members[] = {
      .examples = EXAMPLES("files.partmap \"/opfs/images/hd/system.img\""),
      .doc = "Print the Apple Partition Map of an image",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_partmap}},
+    {.kind = MK_METHOD,
+     .name = "partitions",
+     .examples = EXAMPLES("files.partitions \"/opfs/images/hd/system.img\""),
+     .doc = "The Mac OS volumes of a hard disk image, numbered as an attached disk's partitions",
+     .method = {.result_doc = "a list of {partition, name, filesystem, powerpc_booter} maps",
+                .args = files_path_arg,
+                .nargs = 1,
+                .result = VK_LIST,
+                .fn = files_method_partitions}},
     {.kind = MK_METHOD,
      .name = "image_error",
      .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
