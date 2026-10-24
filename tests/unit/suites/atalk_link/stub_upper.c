@@ -211,6 +211,9 @@ void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 adsp_host_t *atalk_adsp_init(void) {
     return (adsp_host_t *)(void *)&g_link_dummy;
 }
+void afp_remote_install_objects(struct object *p) {
+    (void)p;
+}
 void atalk_adsp_install_objects(struct object *p) {
     (void)p;
 }

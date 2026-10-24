@@ -13,6 +13,7 @@
 #include "afp_desktop.h"
 #include "afp_fork.h"
 #include "afp_meta.h"
+#include "afp_remote.h"
 #include "afp_server.h"
 #include "afp_wire.h"
 #include "appledouble.h"
@@ -94,6 +95,14 @@ bool session_set_has(const afp_session_set_t *set, uint16_t session) {
 #define AFP_ERR_TALLY_BASE 5000
 
 afp_server_t *g_afp;
+afp_server_t *g_afp_servers[AFP_MAX_SERVERS];
+
+afp_server_t *afp_use_server(afp_server_t *srv) {
+    afp_server_t *prev = g_afp;
+    if (srv)
+        g_afp = srv;
+    return prev;
+}
 
 // Record one command outcome for the stats subtree.
 void afp_count_result(uint8_t opcode, uint32_t result) {
@@ -168,6 +177,19 @@ vol_t *afp_session_vol(const afp_ctx_t *ctx, uint16_t vol_id) {
     return (v && ctx && session_set_has(&v->open_by, ctx->session_id)) ? v : NULL;
 }
 
+vol_t *afp_vol_by_id_any(uint16_t id, afp_server_t **out_srv) {
+    for (int s = 0; s < AFP_MAX_SERVERS; s++) {
+        afp_server_t *srv = g_afp_servers[s];
+        for (int i = 0; srv && i < AFP_MAX_VOLUMES; i++)
+            if (srv->vols[i].in_use && srv->vols[i].vol_id == id) {
+                if (out_srv)
+                    *out_srv = srv;
+                return &srv->vols[i];
+            }
+    }
+    return NULL;
+}
+
 vol_t *find_vol_by_name(const char *name) {
     int slot = find_vol_slot_by_name(name);
     return slot < 0 ? NULL : &g_afp->vols[slot];
@@ -193,9 +215,17 @@ int atalk_afp_volume_max(void) {
     return AFP_MAX_VOLUMES;
 }
 
+// Volume IDs are unique across every server: forks and enumeration snapshots
+// are keyed by them alone.
 static bool vol_id_in_use(uint32_t id, const void *ctx) {
     (void)ctx;
-    return find_vol_by_id((uint16_t)id) != NULL;
+    for (int s = 0; s < AFP_MAX_SERVERS; s++) {
+        const afp_server_t *srv = g_afp_servers[s];
+        for (int i = 0; srv && i < AFP_MAX_VOLUMES; i++)
+            if (srv->vols[i].in_use && srv->vols[i].vol_id == id)
+                return true;
+    }
+    return false;
 }
 
 // Publish `path` as volume `name`, under the next free volume id.
@@ -239,7 +269,9 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
     char resolved[PATH_MAX];
     snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
     uint32_t id = 0;
-    if (!atalk_id_alloc(&g_afp->next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
+    // One cursor for every server's volumes (the first server's), so a later
+    // server does not hand out an ID another one used recently.
+    if (!atalk_id_alloc(&g_afp_servers[0]->next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
         memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
         return vol_fail(err, err_len, "no volume id is free");
     }
@@ -260,6 +292,8 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
 // Release a volume's live state without touching the table entry itself.
 static void vol_teardown(vol_t *v) {
     afp_fork_close_volume(v->vol_id);
+    afp_remote_vol_free(v->remote);
+    v->remote = NULL;
     enum_snapshots_drop(ENUM_ANY, v->vol_id);
     if (v->catalog)
         afp_catalog_close(v->catalog);
@@ -370,7 +404,7 @@ static int afp_nbp_publish(const char *object) {
     atalk_nbp_service_desc_t desc = {.object = object,
                                      .type = AFP_ENTITY_TYPE,
                                      .zone = "*",
-                                     .socket = ATALK_HOST_AFP_SOCKET,
+                                     .socket = g_afp->socket,
                                      .node = ATALK_HOST_NODE,
                                      .net = 0};
     return atalk_nbp_publish(&g_afp->nbp_entry, &desc);
@@ -410,10 +444,12 @@ int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
     } else {
         // Tell every live client the server is going away, then drop their
         // state: NBP lookups stop resolving and OpenSess is refused.
-        atalk_asp_broadcast_attention(ATALK_ATTN_SHUTDOWN);
+        asp_service_broadcast_attention(g_afp->asp_service, ATALK_ATTN_SHUTDOWN);
         afp_nbp_withdraw();
-        afp_fork_close_all();
-        atalk_asp_close_all_sessions();
+        for (int i = 0; i < AFP_MAX_VOLUMES; i++) // this server's forks only
+            if (g_afp->vols[i].in_use)
+                afp_fork_close_volume(g_afp->vols[i].vol_id);
+        asp_service_close_sessions(g_afp->asp_service);
         for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
             g_afp->vols[i].open_by.n = 0;
             g_afp->vols[i].dt_open_by.n = 0;
@@ -431,34 +467,40 @@ int atalk_afp_set_message(const char *message, char *err, size_t err_len) {
     snprintf(g_afp->message, sizeof(g_afp->message), "%s", message ? message : "");
     // Nudge every logged-in client to fetch it (AFP_21_22 Table 1-7, "0010").
     if (g_afp->message[0])
-        atalk_asp_broadcast_attention(ATALK_ATTN_SERVER_MSG);
+        asp_service_broadcast_attention(g_afp->asp_service, ATALK_ATTN_SERVER_MSG);
     return 0;
 }
 
 // The ASP client: what a session's commands, status request and close mean.
+// `ctx` is the server the session is with; it is g_afp for the call.
 static uint32_t afp_asp_command(void *ctx, uint16_t session_ref, uint8_t opcode, const uint8_t *in, int in_len,
                                 uint8_t *out, int out_max, int *out_len) {
-    (void)ctx;
-    return afp_handle_command(session_ref, opcode, in, in_len, out, out_max, out_len);
+    afp_server_t *prev = afp_use_server(ctx);
+    uint32_t r = afp_handle_command(session_ref, opcode, in, in_len, out, out_max, out_len);
+    afp_use_server(prev);
+    return r;
 }
 static void afp_asp_close(void *ctx, uint16_t session_ref) {
-    (void)ctx;
+    afp_server_t *prev = afp_use_server(ctx);
     afp_session_closed(session_ref);
+    afp_use_server(prev);
 }
 static int afp_asp_status(void *ctx, uint8_t **out, size_t *out_len) {
-    (void)ctx;
-    return atalk_build_status_block(g_afp->object, AFP_MACHINE_TYPE, out, out_len);
+    const afp_server_t *srv = ctx ? ctx : g_afp;
+    return atalk_build_status_block(srv->object, AFP_MACHINE_TYPE, out, out_len);
 }
 static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
-    (void)ctx;
+    (void)ctx; // forks are keyed by session, which is unique across servers
     return afp_session_open_forks(session_ref);
 }
 // A disabled server takes no new sessions: the workstation hears ServerBusy.
 // (The comment in atalk_afp_set_enabled always said so; nothing did it until
 // ASP gained a client.)
 static bool afp_asp_open(void *ctx, uint16_t session_ref) {
-    (void)ctx;
-    return afp_session_opened(session_ref);
+    afp_server_t *prev = afp_use_server(ctx);
+    bool ok = afp_session_opened(session_ref);
+    afp_use_server(prev);
+    return ok;
 }
 static const char *afp_asp_version(void *ctx, uint16_t session_ref) {
     (void)ctx;
@@ -483,11 +525,110 @@ afp_server_t *atalk_server_init(void) {
     srv->next_vol_id = 1;
     snprintf(srv->object, sizeof(srv->object), "%s", AFP_ENTITY_OBJECT);
     srv->enabled = true;
+    srv->socket = ATALK_HOST_AFP_SOCKET;
+    srv->asp_service = 0;
     g_afp = srv;
-    asp_set_client(&k_afp_asp_client, NULL);
+    g_afp_servers[0] = srv;
+    asp_set_client(&k_afp_asp_client, srv);
     if (afp_nbp_publish(srv->object) != 0)
         LOG(1, "AFP: failed to register NBP advertisement");
     return srv;
+}
+
+// ============================================================================
+// Further servers
+// ============================================================================
+
+// The ASP sockets of servers 1..3: statically assigned, free of the stack's
+// others (6 PAP, 8 and 54 AFP, 9 the ImageWriter).
+#define AFP_EXTRA_SOCKET_BASE 10
+
+int atalk_afp_server_max(void) {
+    return AFP_MAX_SERVERS;
+}
+
+int atalk_afp_server_find(const char *name) {
+    for (int i = 0; name && i < AFP_MAX_SERVERS; i++)
+        if (g_afp_servers[i] && strcmp(g_afp_servers[i]->object, name) == 0)
+            return i;
+    return -1;
+}
+
+const char *atalk_afp_server_name(int index) {
+    return (index >= 0 && index < AFP_MAX_SERVERS && g_afp_servers[index]) ? g_afp_servers[index]->object : NULL;
+}
+
+unsigned atalk_afp_server_socket(int index) {
+    return (index >= 0 && index < AFP_MAX_SERVERS && g_afp_servers[index]) ? g_afp_servers[index]->socket : 0;
+}
+
+afp_server_t *afp_server_at(int index) {
+    return (index >= 0 && index < AFP_MAX_SERVERS) ? g_afp_servers[index] : NULL;
+}
+
+// Another file server on the network: its own Chooser entry (NBP name, type
+// AFPServer) on its own ASP socket, with no volumes yet.
+int atalk_afp_server_add(const char *name, char *err, size_t err_len) {
+    if (err && err_len)
+        err[0] = '\0';
+    if (atalk_nbp_name_check("server name", name, err, err_len) != 0)
+        return -1;
+    if (atalk_afp_server_find(name) >= 0)
+        return vol_fail(err, err_len, "a server named '%s' already exists", name);
+    int slot = -1;
+    for (int i = 1; i < AFP_MAX_SERVERS && slot < 0; i++)
+        if (!g_afp_servers[i])
+            slot = i;
+    if (slot < 0)
+        return vol_fail(err, err_len, "server table full (max %d)", AFP_MAX_SERVERS);
+    afp_server_t *srv = calloc(1, sizeof(*srv));
+    if (!srv)
+        return vol_fail(err, err_len, "out of memory");
+    snprintf(srv->object, sizeof(srv->object), "%s", name);
+    srv->socket = (uint8_t)(AFP_EXTRA_SOCKET_BASE + slot - 1);
+    srv->enabled = true;
+    srv->asp_service = asp_add_service(srv->socket, &k_afp_asp_client, srv);
+    if (srv->asp_service < 0) {
+        free(srv);
+        return vol_fail(err, err_len, "ASP socket %u is not free", (unsigned)(AFP_EXTRA_SOCKET_BASE + slot - 1));
+    }
+    g_afp_servers[slot] = srv;
+    afp_server_t *prev = afp_use_server(srv);
+    int rc = afp_nbp_publish(srv->object);
+    afp_use_server(prev);
+    if (rc != 0) {
+        asp_remove_service(srv->asp_service);
+        g_afp_servers[slot] = NULL;
+        free(srv);
+        return vol_fail(err, err_len, "the name '%s' is already taken on the network", name);
+    }
+    LOG(1, "AFP: server '%s' added on socket %u", srv->object, (unsigned)srv->socket);
+    return slot;
+}
+
+// Withdraw a server added with atalk_afp_server_add: its sessions close, its
+// volumes go, and the Chooser stops listing it.
+int atalk_afp_server_remove(const char *name, char *err, size_t err_len) {
+    if (err && err_len)
+        err[0] = '\0';
+    int slot = atalk_afp_server_find(name);
+    if (slot < 0)
+        return vol_fail(err, err_len, "no such server '%s'", name ? name : "");
+    if (slot == 0)
+        return vol_fail(err, err_len, "the first server cannot be removed (disable it instead)");
+    afp_server_t *srv = g_afp_servers[slot];
+    afp_server_t *prev = afp_use_server(srv);
+    asp_service_broadcast_attention(srv->asp_service, ATALK_ATTN_SHUTDOWN);
+    asp_remove_service(srv->asp_service); // closes the sessions
+    afp_nbp_withdraw();
+    for (int i = 0; i < AFP_MAX_VOLUMES; i++)
+        if (srv->vols[i].in_use)
+            vol_teardown(&srv->vols[i]);
+    afp_use_server(prev == srv ? g_afp_servers[0] : prev);
+    g_afp_servers[slot] = NULL;
+    free(srv);
+    LOG(1, "AFP: server '%s' removed", name);
+    return 0;
 }
 
 // ============================================================================

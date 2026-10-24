@@ -64,6 +64,7 @@ LOG_USE_CATEGORY_NAME("asp");
 #define ASP_WRITE_QUANTUM (8 * ATP_MAX_ATP_PAYLOAD) // 4624 bytes max per WriteContinue
 
 typedef struct asp_session asp_session_t;
+typedef struct asp_service asp_service_t;
 
 // An SPWrite waiting for its data.  Allocated when the Write arrives, freed
 // when its WriteContinue completes.
@@ -88,15 +89,31 @@ struct asp_session {
     uint8_t client_node; // LLAP node of the workstation
     uint64_t last_activity_ns; // guest time of the last packet from this client
     asp_write_t *write; // an SPWrite waiting for its WriteContinue
+    asp_service_t *service; // the server the session was opened with
 };
 
 #define MAX_ASP_SESS ATALK_ASP_MAX_SESSIONS
+
+// Deferred commands (ASP_RESULT_DEFERRED) the link holds at once
+#define ASP_MAX_DEFERRED 8
+
+// A command its client could not answer yet, kept to be run again: the
+// request as it came (its data copied out of the receive buffer), and the
+// session it belongs to.
+typedef struct {
+    bool in_use;
+    uint16_t sess_ref;
+    ddp_header_t ddp;
+    atp_packet_t atp;
+    uint8_t data[ATP_MAX_ATP_PAYLOAD];
+} asp_deferred_t;
 
 struct asp_link {
     asp_session_t sessions[MAX_ASP_SESS];
     uint32_t next_sess_ref; // atalk_id_alloc cursors
     uint32_t next_sess_id;
     atalk_timer_t sweep_timer; // idle-session expiry, armed while any session is open
+    asp_deferred_t deferred[ASP_MAX_DEFERRED];
     // A command's reply, at most a full eight-packet response
     uint8_t reply_buf[ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD];
 };
@@ -108,29 +125,44 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
 static void asp_arm_session_sweep(void);
 static void asp_sweep_cb(void *source, uint64_t data);
 
-// === The client ===============================================================
+// === The clients ==============================================================
 
-// ASP's part of the network: the server whose sessions it carries.
-struct asp_server {
+// One server on ASP: the socket workstations open sessions on, and the client
+// whose commands they carry.  Service 0 is the AFP sockets' (8, and 54 too).
+struct asp_service {
+    bool in_use;
+    uint8_t socket;
     const asp_client_t *client;
     void *client_ctx;
+};
+
+// ASP's part of the network: the servers whose sessions it carries.
+struct asp_server {
+    asp_service_t services[ASP_MAX_SERVICES];
 };
 
 // The network's, set by asp_init.
 static asp_server_t *g_asp_server;
 
+// Commands are being run (a deferred replay asked for meanwhile waits for
+// the outermost to be answered).
+static int g_asp_running;
+static bool g_asp_retry_wanted;
+
 void asp_set_client(const asp_client_t *client, void *ctx) {
-    g_asp_server->client = client;
-    g_asp_server->client_ctx = client ? ctx : NULL;
+    g_asp_server->services[0].client = client;
+    g_asp_server->services[0].client_ctx = client ? ctx : NULL;
 }
 
-static uint32_t asp_client_command(uint16_t session_ref, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
-                                   int out_max, int *out_len) {
+static uint32_t asp_client_command(asp_service_t *svc, uint16_t session_ref, uint8_t opcode, const uint8_t *in,
+                                   int in_len, uint8_t *out, int out_max, int *out_len) {
     *out_len = 0;
-    if (!g_asp_server->client || !g_asp_server->client->on_command)
+    if (!svc->client || !svc->client->on_command)
         return AFPERR_CallNotSupported; // nothing serves commands
-    return g_asp_server->client->on_command(g_asp_server->client_ctx, session_ref, opcode, in, in_len, out, out_max,
-                                            out_len);
+    g_asp_running++;
+    uint32_t r = svc->client->on_command(svc->client_ctx, session_ref, opcode, in, in_len, out, out_max, out_len);
+    g_asp_running--;
+    return r;
 }
 
 // === Sessions ===================================================================
@@ -190,8 +222,12 @@ static void asp_session_release(asp_session_t *s) {
         w->owner = NULL;
         atp_request_cancel(w->request); // completes it; asp_wc_on_complete frees it
     }
-    if (g_asp_server->client && g_asp_server->client->on_close)
-        g_asp_server->client->on_close(g_asp_server->client_ctx, ref);
+    for (int i = 0; i < ASP_MAX_DEFERRED; i++) // its deferred commands are nobody's now
+        if (g_asp->deferred[i].in_use && g_asp->deferred[i].sess_ref == ref)
+            g_asp->deferred[i].in_use = false;
+    asp_service_t *svc = s->service;
+    if (svc && svc->client && svc->client->on_close)
+        svc->client->on_close(svc->client_ctx, ref);
 }
 
 // Session numbering travels in the connection's checkpoint block.
@@ -225,13 +261,14 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
     out->session_ref = s->sess_ref;
     out->client_node = s->client_node;
     out->socket = s->wss;
-    const char *ver = (g_asp_server->client && g_asp_server->client->session_version)
-                          ? g_asp_server->client->session_version(g_asp_server->client_ctx, s->sess_ref)
+    const asp_service_t *svc = s->service;
+    out->server_socket = svc ? svc->socket : 0;
+    const char *ver = (svc && svc->client && svc->client->session_version)
+                          ? svc->client->session_version(svc->client_ctx, s->sess_ref)
                           : NULL;
     snprintf(out->afp_version, sizeof(out->afp_version), "%s", ver ? ver : "");
-    out->open_forks = (g_asp_server->client && g_asp_server->client->open_forks)
-                          ? g_asp_server->client->open_forks(g_asp_server->client_ctx, s->sess_ref)
-                          : 0;
+    out->open_forks =
+        (svc && svc->client && svc->client->open_forks) ? svc->client->open_forks(svc->client_ctx, s->sess_ref) : 0;
     uint64_t now = atalk_now_ns();
     out->idle_ns = (now > s->last_activity_ns) ? (now - s->last_activity_ns) : 0;
     return true;
@@ -246,7 +283,7 @@ int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
         return -1;
     atp_request_params_t params = {
         .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
-        .src_socket = ATALK_HOST_AFP_SOCKET,
+        .src_socket = s->service ? s->service->socket : ATALK_HOST_AFP_SOCKET,
         .bitmap = 0x01, // one response packet is enough for an attention
         .mode = ATP_TRANSACTION_ALO,
         .trel_timer_hint = 0,
@@ -273,6 +310,22 @@ void atalk_asp_close_all_sessions(void) {
         return;
     for (int i = 0; i < MAX_ASP_SESS; i++)
         asp_session_release(&g_asp->sessions[i]);
+}
+
+void asp_service_broadcast_attention(int service, uint16_t code) {
+    if (!g_asp || service < 0 || service >= ASP_MAX_SERVICES)
+        return;
+    for (int i = 0; i < MAX_ASP_SESS; i++)
+        if (g_asp->sessions[i].in_use && g_asp->sessions[i].service == &g_asp_server->services[service])
+            atalk_asp_send_attention(g_asp->sessions[i].sess_ref, code);
+}
+
+void asp_service_close_sessions(int service) {
+    if (!g_asp || service < 0 || service >= ASP_MAX_SERVICES)
+        return;
+    for (int i = 0; i < MAX_ASP_SESS; i++)
+        if (g_asp->sessions[i].service == &g_asp_server->services[service])
+            asp_session_release(&g_asp->sessions[i]);
 }
 
 // Close every session that has gone quiet past the ASP timeout, returning
@@ -413,15 +466,21 @@ static void asp_wc_on_complete(atp_request_handle_t *handle, atp_request_result_
         } else {
             memcpy(combined, w->afp_params, (size_t)w->afp_params_len);
             memcpy(combined + w->afp_params_len, w->write_buf, (size_t)w->write_len);
-            afp_result = asp_client_command(s->sess_ref, w->afp_opcode, combined, (int)combined_len, afp_out,
-                                            (int)sizeof(afp_out), &afp_len);
+            afp_result = asp_client_command(s->service, s->sess_ref, w->afp_opcode, combined, (int)combined_len,
+                                            afp_out, (int)sizeof(afp_out), &afp_len);
             free(combined);
+            // A write is not replayed (its data is gone): one the client cannot
+            // finish now fails.
+            if (afp_result == ASP_RESULT_DEFERRED)
+                afp_result = AFPERR_MiscErr;
         }
     }
     LOG(6, "ASP Write complete: opcode=0x%02X result=0x%08X replyLen=%d dataLen=%d", w->afp_opcode, afp_result, afp_len,
         w->write_len);
     asp_reply_result(&w->orig_ddp, &w->orig_atp, afp_result, afp_out, afp_len);
     free(w);
+    if (g_asp_retry_wanted && !g_asp_running)
+        asp_retry_deferred();
 }
 
 static const atp_request_callbacks_t g_asp_wc_callbacks = {
@@ -472,7 +531,7 @@ static void asp_write(asp_session_t *s, const ddp_header_t *ddp, const atp_packe
     WR_BE16(wc_data, ASP_WRITE_QUANTUM);
     atp_request_params_t wc_params = {
         .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
-        .src_socket = ATALK_HOST_AFP_SOCKET,
+        .src_socket = s->service->socket,
         .bitmap = 0xFF, // request up to 8 response packets
         .mode = ATP_TRANSACTION_XO,
         .trel_timer_hint = 0,
@@ -499,13 +558,12 @@ static void asp_write(asp_session_t *s, const ddp_header_t *ddp, const atp_packe
 // SPGetStatus: the service status block, whatever the request carried.  It
 // used to hand a GetStatus that carried data to the AFP dispatcher as a
 // command from session 0 -- a second, session-free command channel.
-static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static void asp_get_status(asp_service_t *svc, const ddp_header_t *ddp, const atp_packet_t *atp) {
     LOG(3, "ASP GetStatus: request from node=%u socket=%u", ddp->llap.src, ddp->src_socket);
     uint8_t *block = NULL;
     size_t block_len = 0;
-    int rc = (g_asp_server->client && g_asp_server->client->get_status)
-                 ? g_asp_server->client->get_status(g_asp_server->client_ctx, &block, &block_len)
-                 : -1;
+    int rc =
+        (svc->client && svc->client->get_status) ? svc->client->get_status(svc->client_ctx, &block, &block_len) : -1;
     static const uint8_t zero[4] = {0, 0, 0, 0};
     // A block longer than one packet goes out in as many as the request has
     // room for (asp_reply logs a block cut short); it used to be clamped to
@@ -523,7 +581,7 @@ static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
 // a version other than 1.0, ServerBusy when the table is full or the client
 // will not take the session (the AFP server is disabled).  A full table used
 // to answer "1", no ASP code at all.
-static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static void asp_open_session(asp_service_t *svc, const ddp_header_t *ddp, const atp_packet_t *atp) {
     uint8_t wss = atp->user[1];
     uint16_t version = RD_BE16(&atp->user[2]);
     uint16_t err = 0;
@@ -539,8 +597,7 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
             !atalk_id_alloc(&g_asp->next_sess_id, 1, 255, sess_id_in_use, NULL, &id)) {
             err = ASP_ERR_SERVER_BUSY;
             s = NULL;
-        } else if (g_asp_server->client && g_asp_server->client->on_open &&
-                   !g_asp_server->client->on_open(g_asp_server->client_ctx, (uint16_t)ref)) {
+        } else if (svc->client && svc->client->on_open && !svc->client->on_open(svc->client_ctx, (uint16_t)ref)) {
             err = ASP_ERR_SERVER_BUSY;
             s = NULL;
         }
@@ -554,8 +611,9 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
         s->wss = wss;
         s->client_node = ddp->llap.src;
         s->last_activity_ns = atalk_now_ns();
+        s->service = svc;
         asp_arm_session_sweep();
-        user[0] = ATALK_HOST_AFP_SOCKET;
+        user[0] = svc->socket; // the session's server socket (SSS)
         user[1] = s->sess_id;
         LOG(3, "ASP OpenSess: id=0x%02X ref=0x%04X node=%u wss=%u", s->sess_id, s->sess_ref, s->client_node, wss);
     } else {
@@ -566,17 +624,110 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
     atp_responder_send_simple(ddp, atp, user, NULL, 0, false);
 }
 
+// Keep a command its client deferred, to be run again by asp_retry_deferred.
+// False when the table is full.
+static bool asp_defer(asp_session_t *s, const ddp_header_t *ddp, const atp_packet_t *atp) {
+    for (int i = 0; i < ASP_MAX_DEFERRED; i++) {
+        asp_deferred_t *d = &g_asp->deferred[i];
+        if (d->in_use)
+            continue;
+        d->in_use = true;
+        d->sess_ref = s->sess_ref;
+        d->ddp = *ddp;
+        d->atp = *atp;
+        int len = atp->data_len > (int)sizeof(d->data) ? (int)sizeof(d->data) : atp->data_len;
+        if (atp->data && len > 0)
+            memcpy(d->data, atp->data, (size_t)len); // the ATP data points into the receive buffer
+        d->atp.data = d->data;
+        d->atp.data_len = len > 0 ? len : 0;
+        return true;
+    }
+    return false;
+}
+
+// True when `atp` from `ddp` is a retransmission of a command already
+// deferred: the workstation retries while it waits, and the answer goes to
+// the original when it is ready.
+static bool asp_is_deferred(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    for (int i = 0; i < ASP_MAX_DEFERRED; i++) {
+        const asp_deferred_t *d = &g_asp->deferred[i];
+        if (d->in_use && d->atp.tid == atp->tid && d->ddp.llap.src == ddp->llap.src &&
+            d->ddp.src_socket == ddp->src_socket)
+            return true;
+    }
+    return false;
+}
+
+// Run one command and answer it -- or keep it, if its client defers it.  A
+// replay (the request is already kept) that defers again sends nothing and
+// returns false; true once the command is answered.
+static bool asp_run_command(asp_session_t *s, const ddp_header_t *ddp, const atp_packet_t *atp, bool replay) {
+    const uint8_t *cmd = atp->data;
+    int cmd_len = atp->data_len;
+    uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
+    int max_packets = asp_bitmap_packets(atp->bitmap);
+    // The reply is built in the link's buffer, not a 4.6 KB stack array:
+    // commands run one at a time, to completion, on the worker thread.
+    uint8_t *afp_out = g_asp->reply_buf;
+    int afp_len = 0;
+    uint32_t result =
+        asp_client_command(s->service, s->sess_ref, opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
+                           (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, max_packets * ATP_MAX_ATP_PAYLOAD, &afp_len);
+    LOG(6, "ASP Command result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, result, afp_len);
+    if (result == ASP_RESULT_DEFERRED) {
+        if (replay)
+            return false; // still waiting; the caller keeps the entry
+        if (asp_defer(s, ddp, atp)) {
+            LOG(3, "ASP Command deferred: session=0x%02X opcode=0x%02X", s->sess_id, opcode);
+            return false;
+        }
+        LOG(1, "ASP: no room to defer command 0x%02X", opcode);
+        result = AFPERR_MiscErr;
+        afp_len = 0;
+    }
+    asp_reply_result(ddp, atp, result, afp_out, afp_len);
+    return true;
+}
+
+void asp_retry_deferred(void) {
+    if (!g_asp)
+        return;
+    if (g_asp_running) {
+        g_asp_retry_wanted = true; // run once the command in progress is answered
+        return;
+    }
+    do {
+        g_asp_retry_wanted = false;
+        for (int i = 0; i < ASP_MAX_DEFERRED; i++) {
+            asp_deferred_t *d = &g_asp->deferred[i];
+            if (!d->in_use)
+                continue;
+            asp_session_t *s = asp_by_ref(d->sess_ref);
+            if (!s) {
+                d->in_use = false;
+                continue;
+            }
+            // Run from a copy: the command may close the session, which
+            // clears the entry.
+            asp_deferred_t copy = *d;
+            copy.atp.data = copy.data;
+            if (asp_run_command(s, &copy.ddp, &copy.atp, true))
+                d->in_use = false;
+        }
+    } while (g_asp_retry_wanted); // more data arrived during the replay
+}
+
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
-    (void)ctx;
-    if (!ddp || !atp)
+    asp_service_t *svc = (asp_service_t *)ctx;
+    if (!ddp || !atp || !svc || !svc->in_use)
         return;
     uint8_t func = atp->user[0];
     if (func == ASP_GET_STAT) {
-        asp_get_status(ddp, atp);
+        asp_get_status(svc, ddp, atp);
         return;
     }
     if (func == ASP_OPEN_SESS) {
-        asp_open_session(ddp, atp);
+        asp_open_session(svc, ddp, atp);
         return;
     }
 
@@ -617,21 +768,15 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         atp_responder_send_simple(ddp, atp, zero, NULL, 0, false);
         return;
     case ASP_COMMAND: {
-        const uint8_t *cmd = atp->data;
-        int cmd_len = atp->data_len;
-        uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
+        if (s->service != svc)
+            return; // a session is addressed on its own server's socket
         LOG(6, "ASP Command: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", s->sess_id,
-            (unsigned)RD_BE16(&atp->user[2]), opcode, cmd_len);
-        int max_packets = asp_bitmap_packets(atp->bitmap);
-        // The reply is built in the link's buffer, not a 4.6 KB stack array:
-        // commands run one at a time, to completion, on the worker thread.
-        uint8_t *afp_out = g_asp->reply_buf;
-        int afp_len = 0;
-        uint32_t result =
-            asp_client_command(s->sess_ref, opcode, (cmd_len > 0) ? (cmd + 1) : NULL, (cmd_len > 0) ? (cmd_len - 1) : 0,
-                               afp_out, max_packets * ATP_MAX_ATP_PAYLOAD, &afp_len);
-        LOG(6, "ASP Command result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, result, afp_len);
-        asp_reply_result(ddp, atp, result, afp_out, afp_len);
+            (unsigned)RD_BE16(&atp->user[2]), atp->data_len > 0 ? atp->data[0] : 0, atp->data_len);
+        if (asp_is_deferred(ddp, atp))
+            return; // a retransmission of one still waiting for its data
+        asp_run_command(s, ddp, atp, false);
+        if (g_asp_retry_wanted)
+            asp_retry_deferred();
         return;
     }
     case ASP_WRITE:
@@ -652,17 +797,47 @@ static void asp_reset(asp_link_t *link) {
     for (int i = 0; i < MAX_ASP_SESS; i++)
         free(link->sessions[i].write);
     memset(link->sessions, 0, sizeof(link->sessions));
+    memset(link->deferred, 0, sizeof(link->deferred));
 }
+
+static const atp_socket_handler_t k_asp_handler = {.handle_request = asp_in};
 
 asp_server_t *asp_init(void) {
     asp_server_t *server = calloc(1, sizeof(*server));
     if (!server)
         return NULL;
     g_asp_server = server;
-    static const atp_socket_handler_t handler = {.handle_request = asp_in};
-    atp_register_socket_handler(ATALK_HOST_AFP_SOCKET, &handler, NULL);
-    atp_register_socket_handler(ATALK_HOST_AFP_COMPAT_SOCKET, &handler, NULL);
+    asp_service_t *svc = &server->services[0];
+    svc->in_use = true;
+    svc->socket = ATALK_HOST_AFP_SOCKET;
+    atp_register_socket_handler(ATALK_HOST_AFP_SOCKET, &k_asp_handler, svc);
+    atp_register_socket_handler(ATALK_HOST_AFP_COMPAT_SOCKET, &k_asp_handler, svc);
     return server;
+}
+
+int asp_add_service(uint8_t socket, const asp_client_t *client, void *ctx) {
+    for (int i = 1; i < ASP_MAX_SERVICES; i++) {
+        asp_service_t *svc = &g_asp_server->services[i];
+        if (svc->in_use)
+            continue;
+        if (atp_socket_handler_in_use(socket) || atp_register_socket_handler(socket, &k_asp_handler, svc) != 0)
+            return -1; // the socket is someone else's
+        svc->in_use = true;
+        svc->socket = socket;
+        svc->client = client;
+        svc->client_ctx = ctx;
+        return i;
+    }
+    return -1;
+}
+
+void asp_remove_service(int service) {
+    if (service <= 0 || service >= ASP_MAX_SERVICES || !g_asp_server->services[service].in_use)
+        return;
+    asp_service_close_sessions(service);
+    asp_service_t *svc = &g_asp_server->services[service];
+    atp_unregister_socket_handler(svc->socket);
+    memset(svc, 0, sizeof(*svc));
 }
 
 asp_link_t *asp_link_new(void) {

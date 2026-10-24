@@ -52,6 +52,7 @@ function onGpuOverlay(visible: number): void {
 import { onPrinterAttach } from '@/printer/platen';
 import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
+import { onRemoteRequest } from './remoteAfp';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { audioTargetLatencyFromQuery } from '@/audio/latency';
@@ -872,6 +873,10 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'notify:download_chunk':
       onDownloadChunk(d);
+      break;
+    case 'notify:afp_remote_request':
+      // A remote AFP volume needs a listing or a file (bus/remoteAfp.ts).
+      onRemoteRequest(d);
       break;
     // Annotation records in a job's stream, at the positions they describe:
     // the console turns the text around them into value / error entries.

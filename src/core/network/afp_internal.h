@@ -100,6 +100,11 @@ typedef struct {
     // session in the set: it is that session's handle, not a global name.
     afp_session_set_t open_by;
     afp_session_set_t dt_open_by;
+    // A read-only volume refuses every change (VolLocked) and says so in its
+    // attributes; a remote one is a cache of a remote tree, filled in as the
+    // client walks it (afp_remote.c).  NULL for a host folder.
+    bool read_only;
+    struct afp_remote_vol *remote;
 } vol_t;
 
 // What every handler knows about the session it is answering for: its
@@ -130,6 +135,8 @@ typedef struct {
 // network owns it (atalk_network_t), and the AFP modules reach it through
 // g_afp.  No machine's lifecycle touches it.
 struct afp_server {
+    uint8_t socket; // its ASP server socket, which NBP advertises
+    int asp_service; // its ASP service (0: the AFP sockets 8 and 54)
     vol_t vols[AFP_MAX_VOLUMES];
     uint32_t next_vol_id; // atalk_id_alloc cursor
     char object[ATALK_NBP_TEXT_CAP]; // the NBP object name (appletalk.afp.name), UTF-8
@@ -142,6 +149,17 @@ struct afp_server {
 };
 extern afp_server_t *g_afp;
 
+// The network can carry several file servers, each its own Chooser entry
+// with its own volumes ("Shared Folders" is the first, made with the
+// network).  g_afp is the one a command, a session callback or an
+// object-model call is about: the ASP callbacks select their server for the
+// call and restore the previous one after.  Volume IDs are unique across
+// every server, so the fork table, keyed by volume ID, needs no server.
+#define AFP_MAX_SERVERS 4
+extern afp_server_t *g_afp_servers[AFP_MAX_SERVERS];
+// Select `srv` as g_afp; returns the one it replaces.
+afp_server_t *afp_use_server(afp_server_t *srv);
+
 void session_set_add(afp_session_set_t *set, uint16_t session);
 void session_set_remove(afp_session_set_t *set, uint16_t session);
 bool session_set_has(const afp_session_set_t *set, uint16_t session);
@@ -151,6 +169,32 @@ vol_t *find_vol_by_name(const char *name);
 vol_t *find_vol_by_id(uint16_t id);
 void afp_count_result(uint8_t opcode, uint32_t result);
 uint64_t afp_ok_count(uint8_t opcode);
+
+// The server at `index` (0..AFP_MAX_SERVERS-1), or NULL.
+afp_server_t *afp_server_at(int index);
+// The volume with ID `id` on any server, and its server.
+vol_t *afp_vol_by_id_any(uint16_t id, afp_server_t **out_srv);
+
+// --- Remote volumes (afp_remote.c; afp_remote.h has the model) -----------------
+
+// Each returns true when the volume has what the command needs -- always, on a
+// volume that is not remote -- and false when it is on its way or failed: the
+// command then stops, and the dispatcher defers it or fails it.  `rel` is
+// volume-relative, as afp_walk_path builds it.
+//   need_dir: the folder at `rel` is listed (or, a container, unpacked);
+//   need_file: the file at `rel` has its data.
+bool afp_remote_need_dir(vol_t *vol, const char *rel);
+bool afp_remote_need_file(vol_t *vol, const char *rel);
+// True for a remote folder (or container) not yet listed (or unpacked).
+bool afp_remote_dir_unlisted(vol_t *vol, const char *rel);
+// A placeholder's stat: the listed size and date in place of the empty file's.
+void afp_remote_stat_fix(vol_t *vol, const char *rel, struct stat *st);
+// A new remote volume's state, for `uri`.
+struct afp_remote_vol *afp_remote_vol_new(const char *uri);
+
+// Move every entry of directory `from` into the existing directory `to`
+// (appletalk_server.c), entry by entry where a directory will not rename.
+int afp_move_entries(const char *from, const char *to);
 
 // --- Paths and parameter blocks (afp_params.c) ---------------------------------
 
