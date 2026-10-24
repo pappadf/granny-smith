@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Lua is the script language** — Lua 5.4 is embedded (`third-party/lua/`, MIT) and the object tree is bound to it (`src/core/lua/`, `docs/internals/core/lua/lua.md`): a `.lua` file given to `script=`, `include` or `shell.script_run` runs on it, `shell.lua(text)` runs source text, and the integration tests and their libraries are Lua (`tests/integration/lib/mac.lua`; `scripts/script-to-lua.py` converted the corpus). The tree's root children are globals; `machine.boot{model = "plus", rom = vars.ROM}` passes named arguments as a trailing table; tree errors are Lua errors. The shell's own script language still runs the terminal's lines, the debugger's conditions and its own tests.
 
+## [v0.10.1] — 2026-10-24
+
+### Fixed
+- **The speed factor shows in every mode** — 1x (or the governor's reduced factor) in Real, the multiplier in Faster, the measured emulated-to-real ratio in Max; the MIPS figure beside it is documented as the host's rate while the processor is awake.
+
 ## [v0.10.0] — 2026-10-22
 
 ### Added
@@ -32,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scheduler: the governor and pacing settings are their own modules; web2 on Vite 8.
 
 ### Fixed
+- **Mac OS X starts from New Machine on the G3** — every new beige G3 carries Apple's Mac OS X NVRAM patch, and **Start up from** lists a disk's volumes by name, the chosen ATA volume becoming Open Firmware's `boot-device` (`startup=bus:unit:partition` in a link); before, a Mac OS X disk showed the flashing ? unless its configuration carried the patch.
 - **SCSI: 53C96 data-out byte loss** — every WRITE came up short, hanging System 7.1 on the Quadra 700/900/950.
 - **PowerPC `sraw` carry**; CI runs the predecoded CPU suites.
 - **Storage and checkpoints** — Save State restore writes only changed blocks (a second restore of a large machine no longer runs out of browser storage); named checkpoint copies listed beside the autosaves; shut down discards the autosave; 768 MB machines checkpoint again; the PM 7500/8500/9500 get a CD-ROM drive.

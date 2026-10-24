@@ -163,9 +163,9 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   expect(accel.cyclesPerSec).toBeLessThan(live.cyclesPerSec * 1.3);
 
   // --- Status-bar readout ----------------------------------------------------
-  // The core pushes the governed multiplier (onSchedulerSpeed); the status bar
-  // shows it only in Accelerated mode. It must now read the climbed speed
-  // (> 1x — matching the throughput rise above).
+  // The core pushes the governed multiplier (onSchedulerSpeed); the status
+  // bar shows it in every mode.  It must now read the climbed speed (> 1x,
+  // matching the throughput rise above).
   const speed = page.locator('.gs-statusbar .sb-speed .label');
   await expect(speed).toBeVisible({ timeout: 10_000 });
   const shown = parseFloat((await speed.innerText()).replace('×', ''));
@@ -176,6 +176,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('paced');
-  // Leaving Accelerated hides the readout.
-  await expect(speed).toBeHidden({ timeout: 10_000 });
+  // Back in Real the readout stays, and settles at the original's speed once
+  // the governor has climbed back from its reset.
+  await expect(speed).toHaveText('1×', { timeout: 10_000 });
 });

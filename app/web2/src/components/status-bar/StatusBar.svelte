@@ -32,28 +32,31 @@
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
 
-  // CPU speed readout: the multiplier the core applies. Shown in Faster mode
-  // always, and in any mode whenever it is not 1x — the governor slows the
-  // CPU below 1x in Real mode too when this computer cannot keep up. The
-  // governor's ladder gives eighths below 1x (0.25 … 0.875) and 1.5/2/3/4/6/8x
-  // above — one decimal above 1x, two below (0.38x, not 0.4x), dropping
-  // trailing zeros.
-  // Only for a machine that can run: a stopped one has no speed.
-  const showSpeed = $derived(
-    (machine.status === 'running' || machine.status === 'paused') &&
-      (machine.scheduler === 'accel' || machine.acceleratedSpeed !== 1),
-  );
+  // Speed readout: how fast the machine runs against the original, as the
+  // core reports it (docs/internals/core/scheduler/scheduler.md §10.6).
+  // Shown while the machine runs, 1× included, so the MIPS figure beside it
+  // always has its reference; like that figure, not for a paused or stopped
+  // machine, which runs at no speed.  In Real and Faster it is the CPU
+  // multiplier: the governor's ladder gives eighths below 1× (0.25 … 0.875)
+  // and 1.5/2/3/4/6/8× above — one decimal above 1×, two below (0.38×, not
+  // 0.4×), dropping trailing zeros.  In Max it is the measured ratio of
+  // emulated to real time, a tenth below 10× and whole numbers above.
+  const showSpeed = $derived(machine.status === 'running' && machine.cpuSpeed > 0);
   const speedLabel = $derived(
-    Number.isInteger(machine.acceleratedSpeed)
-      ? `${machine.acceleratedSpeed}×`
-      : machine.acceleratedSpeed < 1
-        ? `${machine.acceleratedSpeed.toFixed(2).replace(/0$/, '')}×`
-        : `${machine.acceleratedSpeed.toFixed(1)}×`,
+    Number.isInteger(machine.cpuSpeed)
+      ? `${machine.cpuSpeed}×`
+      : machine.cpuSpeed < 1
+        ? `${machine.cpuSpeed.toFixed(2).replace(/0$/, '')}×`
+        : `${machine.cpuSpeed.toFixed(1)}×`,
   );
   const speedTitle = $derived(
-    machine.acceleratedSpeed < 1
-      ? `CPU slowed to ${speedLabel} the original Mac's speed because this computer cannot keep up; the clock, sound and animation stay real-time`
-      : `CPU running at ${speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time`,
+    machine.scheduler === 'turbo'
+      ? `Running at ${speedLabel} the original Mac's speed (Max mode): everything, the clock and sound included, runs that much faster`
+      : machine.cpuSpeed < 1
+        ? `CPU slowed to ${speedLabel} the original Mac's speed because this computer cannot keep up; the clock, sound and animation stay real-time`
+        : machine.cpuSpeed === 1
+          ? `CPU running at the original Mac's speed; the clock, sound and animation are real-time`
+          : `CPU running at ${speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time`,
   );
 
   // Background-checkpoint heartbeat — same flash idiom as the drive
@@ -212,11 +215,11 @@
       {#if machine.status === 'running' && machine.mips > 0}
         <div
           class="gs-statusbar__item sb-item sb-mips"
-          title="Emulated CPU throughput: {machine.mips.toFixed(
+          title="This computer emulates {machine.mips.toFixed(
             1,
-          )} million instructions per second while the CPU is awake, time it sleeps not counted ({machine.ticksPerSecond.toFixed(
+          )} million instructions per second while the processor is awake (time it sleeps waiting for an interrupt is not counted). The speed factor beside it says how that compares with the original Mac: in Real mode the processor is held to the original's rate, so this is how fast it could go. {machine.ticksPerSecond.toFixed(
             0,
-          )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
+          )} ticks/s; tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
             1,
           )} ms worst; bridge request {machine.pollMaxMs.toFixed(1)} ms worst"
         >

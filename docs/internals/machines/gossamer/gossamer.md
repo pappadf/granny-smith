@@ -142,6 +142,20 @@ store. `machine.nvram` also has `getenv` / `setenv` and `startup_disk`
 because Mac OS 9 re-applies the depth from its Display Preferences file
 shortly after boot.
 
+The seeding step (`gossamer_seed`, a new machine only) writes the
+configuration into that store: the sysparam and the XPRAM startup device
+for a SCSI startup disk, then, on the Rev C ROM, Apple's Mac OS X patch
+(`use-nvramrc? true`, `load-base 600000`, the Gossamer `nvramrc`,
+`boot-command 0 bootr`; g3.md §2.8), and for a startup device on an ATA
+bus with a `partition` the `boot-device` that names it
+(`/pci@80000000/mac-io@10/ide@20000/@0:3`).  A G3 that has run Mac OS X
+carries the same store.  With `boot-device /AAPL,ROM` (no ATA partition,
+or a SCSI startup disk) the patch's `bootr` hands straight to the ROM's
+Mac OS boot, so Mac OS 8 and 9 start as from a factory store; a partition
+Open Firmware cannot boot falls back to that boot too.  The document's
+own `nvram` variables are applied last and win.  The Rev A ROM gets no
+patch: its offsets are the Rev C firmware's.
+
 ## 4. Testing
 
 - `gossamer-rom-ladder` — both ROMs from reset to the Start Manager: the
@@ -187,7 +201,9 @@ shortly after boot.
   AppleShare login and volume list; what the ESCC register at `+$A0` does
   is not known, and writes to it are dropped.
 - Shut Down from the Finder ends in a system error.
-- **Open Firmware cannot read a SCSI CD-ROM over MESH.**  Its MESH
+- **Open Firmware cannot read a SCSI disk or CD-ROM over MESH** (a hard
+  disk named in `boot-device` hangs the same way, so Mac OS X starts
+  from ATA only).  Its MESH
   package (`do-cmd`) programs a transfer only while the bus still shows
   COMMAND after the command sequence's CMDDONE, and its `wait-done` waits
   for CMDDONE alone; the model's target is already in DATA IN by then, so

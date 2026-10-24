@@ -113,6 +113,11 @@ typedef struct machine_startup {
     char bus[MACHINE_STORAGE_BUS_MAX]; // "" with !none: nothing to seed
     int unit;
     unsigned type;
+    // The partition to start up from, as the disk's partition map numbers
+    // it once attached (files.partitions); 0 names none -- the disk.  Only
+    // a family whose firmware boots a partition (the G3's Open Firmware
+    // boot-device) reads it.
+    int partition;
 } machine_startup_t;
 
 // Room for a document's Open Firmware variables, packed: twice the 2 KB

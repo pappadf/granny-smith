@@ -11,7 +11,7 @@
 import {
   machine,
   setSchedulerMode,
-  setAcceleratedSpeed,
+  setCpuSpeed,
   setCheckpointSaved,
   noteCheckpointFailed,
   setDriveActivity,
@@ -779,7 +779,7 @@ function routeCoreEvent(ev: CoreEvent): void {
       handleRunStateChange(false);
       break;
     case 'state:speed':
-      setAcceleratedSpeed(num(d.x256) / 256);
+      setCpuSpeed(num(d.x256) / 256);
       break;
     case 'state:screen':
       handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));

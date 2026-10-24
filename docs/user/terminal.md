@@ -76,6 +76,7 @@ tree; right-click a row there and **Copy path** to get the name to type.
 | `files.download <path>` | Download a file to your computer |
 | `files.probe <image>` | Say what kind of disk image a file is |
 | `files.partmap <image>` | Print a disk's partition map |
+| `files.partitions <image>` | A hard disk's Mac OS volumes as the machine numbers its partitions once attached (behind the GSDisk map when the disk has no driver): number, name, filesystem, and whether it holds Mac OS X's PowerPC booter |
 | `files.convert <in> <out>` | Write a compact `.dmg`; add `format=raw` for a plain image |
 | `files.archive.extract <archive> [dir]` | Unpack a `.sit`, `.cpt`, `.zip`, … |
 | `files.hd_create <path> <size>` | Make a blank hard disk (`80mb`, `HD230SC`, `100m`) |

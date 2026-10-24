@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the New Machine dialog's Storage and Monitor sections build the
-// machine they show.  (The Expansion Cards section has its own spec,
+// web2 e2e: the New Machine dialog's Storage, Start up from and Monitor
+// sections build the machine they show.  (The Expansion Cards section has its own spec,
 // display-card-config.)  Each test edits a section through the UI, starts
 // the machine, and reads back what the core built through the object model.
 
 import { test, expect, type Page } from '../helpers/test';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { gotoWeb2 } from '../helpers/web2-fs';
+import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
 import { gsEvalInPage } from '../helpers/web2-eval';
 
 const ROMS = path.resolve(__dirname, '../../data/roms');
+const OSX_DISK = path.resolve(
+  __dirname,
+  '../../data/systems/mac_os_x_10_0_3_2gb_g3_minimal_aqua.dmg',
+);
 
 async function uploadRom(page: Page, file: string): Promise<void> {
   const [chooser] = await Promise.all([
@@ -116,4 +121,43 @@ test('Monitor: the connected card gets the monitor and startup mode; built-in vi
   // The startup mode is the slot's PRAM record: 8 bpp.
   const savedMode = await gsEvalInPage(page, 'machine.rtc.pram.peek', [0x46 + (n - 9) * 8 + 2]);
   expect(Number(savedMode)).toBe(0x83);
+});
+
+// The G3's Open Firmware boots a partition, so "Start up from" offers a
+// disk's volumes by name; the Mac OS X disk's (behind the GSDisk map, its
+// partition 3) is chosen by itself, and the new machine's NVRAM carries
+// Apple's Mac OS X patch and that partition as boot-device.
+test('Start up from: a G3 disk by volume name, written to Open Firmware', async ({ page }) => {
+  test.skip(!fs.existsSync(OSX_DISK), 'needs the Mac OS X 10.0.3 disk from gs-test-data');
+  test.setTimeout(300_000);
+  // Staged, then a reload: the worker's mount does not see main-thread
+  // OPFS writes made after it came up.
+  await gotoWeb2(page);
+  await stageOpfsFileStreaming(page, '/opfs/images/hd/osx.dmg', OSX_DISK);
+  await gotoWeb2(page);
+  await uploadRom(page, 'pmg3dt-pmg3mt-78f57389.rom');
+  await openNewMachine(page, 'pmg3dt');
+
+  // The default SCSI hard disk out, a hard disk on the primary ATA bus in.
+  await page
+    .locator('.device-row[data-position="scsi:0"]')
+    .getByRole('button', { name: /^Remove/ })
+    .click({ timeout: 30_000 });
+  await page.getByTestId('cfg-add-device-ata0').click();
+  await page.locator('#cfg-add-type-ata0').selectOption('hd');
+  await page.locator('#cfg-add-unit-ata0').selectOption('0');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.locator('#cfg-media-ata0-0').selectOption('osx.dmg');
+
+  const startup = page.locator('#cfg-startup');
+  await expect(startup).toHaveValue('ata0:0:3', { timeout: 30_000 });
+  await expect(startup.locator('option:checked')).toHaveText(/Macintosh HD$/);
+
+  await start(page);
+
+  expect(await gsEvalInPage(page, 'machine.nvram.getenv', ['boot-device'])).toBe(
+    '/pci@80000000/mac-io@10/ide@20000/@0:3',
+  );
+  expect(await gsEvalInPage(page, 'machine.nvram.getenv', ['boot-command'])).toBe('0 bootr');
+  expect(await gsEvalInPage(page, 'machine.nvram.getenv', ['use-nvramrc?'])).toBe('true');
 });

@@ -3,14 +3,15 @@
 --
 -- The disk is gs-test-data `systems/mac_os_x_10_0_3_2gb_g3_minimal.dmg`: a
 -- 2 GB HFS+ volume with no Apple driver partition, so the emulator wraps it
--- with the GSDisk driver and the volume is partition 3 (`ide@20000/@0:3`,
--- the configuration's boot-device).  It is attached writable over a delta,
+-- with the GSDisk driver and the volume is partition 3: the configuration's
+-- startup partition, which the G3's seeding makes boot-device
+-- (`ide@20000/@0:3`) beside Apple's Mac OS X patch.  It is attached writable over a delta,
 -- so the checked-in image is never written.
 --
 -- MEDIA-GATED on that disk: the row skips when the fetched test data
 -- predates it (tests/data-version pins an earlier gs-test-data commit).
 --
--- The chain: Open Firmware runs Apple's nvramrc patch and `0 bootr`, loads
+-- The chain: Open Firmware runs Apple's seeded nvramrc patch and `0 bootr`, loads
 -- BootX from the HFS+ startup file, BootX loads mach_kernel and the kexts
 -- from /System/Library/Extensions (10.0 has no Extensions.mkext); the
 -- kernel finds the root on HeathrowATA, the Rage Pro's ROM ndrv senses the
@@ -31,6 +32,11 @@ if mac.have_media(hd) then
     machine.attach_media("ata0", 0, "hd", hd)
     assert(machine.ata.devices == "hd - - -", "the disk is not ATA bus 0's master")
     assert(machine.pci.slot[4].card.monitor.id == "17in_multi", "the configuration's 17\" monitor is not strapped")
+    -- No nvram block in the configuration: the seeding wrote the patch and
+    -- the startup partition's boot-device.
+    local boot_device = machine.nvram.getenv("boot-device")
+    assert(boot_device == "/pci@80000000/mac-io@10/ide@20000/@0:3", "boot-device is " .. gs.str(boot_device))
+    assert(machine.nvram.getenv("boot-command") == "0 bootr", "the Mac OS X patch's boot-command is not seeded")
 
     -- Open Firmware, BootX, the kernel and its kexts, SystemStarter,
     -- loginwindow and the Finder: one 20 G run, then polls every 500 M up to

@@ -33,6 +33,12 @@ if $MODE == "boot" {
     # checkpoint carries it into MODE=run)
     scheduler.cpi = 2
     machine.rtc.time = "2026-10-01T12:00:00"
+    # Open Firmware's factory boot, as the stretches were placed with: a new
+    # G3 is seeded with Apple's Mac OS X patch (nvramrc, `0 bootr`)
+    machine.nvram.setenv "use-nvramrc?" "false"
+    machine.nvram.setenv "load-base" "4000"
+    machine.nvram.setenv "nvramrc" ""
+    machine.nvram.setenv "boot-command" "boot"
     machine.scsi.attach_hd "${$TEST_DATA}/systems/mac_os_9_2_1_516mb_g3.img" 0
     checkpoint.save "${$CKPT}"
     echo "@@SCEN {\"phase\":\"boot\",\"instr\":${machine.cpu.instr_count}}"
