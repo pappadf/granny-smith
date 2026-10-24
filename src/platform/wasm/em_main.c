@@ -420,6 +420,12 @@ void checkpoint_busy_heartbeat(void) {
     mailbox_heartbeat(&g_mailbox);
 }
 
+// A GPU wait on the emulator thread (platform_hooks.h,
+// platform_v2gpu_keepalive): the core is busy, not dead.
+void platform_v2gpu_keepalive(void) {
+    mailbox_heartbeat(&g_mailbox);
+}
+
 int shell_poll(void) {
     int n = mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)

@@ -114,6 +114,8 @@ NOTES = {
   "824gc-v1.0a16-4740028d.vrom":     "8•24 GC vROM 1.00a16 alpha (codename “Dolphin”).",
   "mach64-gx-104-437584e0.prom":     "Apple Accelerated PCI Graphics Card (ATI Mach64 GX, “Spinnaker”) — the display card the Power Macintosh 9500 shipped with. ROM 113-32900-104, the shipping revision: real Apple part numbers in its ATY,Rom#/Mem#/Card# properties, and byte-identical to the separately archived -004 dump. Catalog default.",
   "mach64-gx-101-8c68216e.prom":     "Same card, ROM 113-32900-101 — an earlier programming whose part-number strings are all “000-00000-000”. Kept as a distinct dump; not the default.",
+  "rage128-xclaimvr128-108-d0c84d42.prom": "ATI Xclaim VR 128 (Rage 128 GL, PCI $5245), retail Mac card — ROM 113-57406-108, card 109-57400-00 (the Rage Orion's board family), FCode 1.69, node `ATY,Rage128v`, with the `.Display_Rage128` ndrv. Catalog default.",
+  "rage128-nexus128-103-35b433aa.prom":   "ATI Nexus 128 (Rage 128 GL, PCI $5245, 32 MB), retail Mac card — ROM 113-57502-103, card 109-57500-00, node `ATY,Rage128n`. Not the default.",
 }
 
 # Old -> new alias table, kept permanently for grep-ability.
@@ -183,17 +185,19 @@ for base, js in sorted(vro):
 out.append("")
 out.append("## PCI expansion ROMs (`*.prom`)")
 out.append("")
-out.append("| File | Size | CRC-32 | Card id | PCI ids | Notes |")
+# A PROM's identity is "vvvv-dddd-cccc" (PCIR ids + FCode checksum); the
+# filename's 8-digit suffix is the whole chip's CRC-32, a label only.
+out.append("| File | Size | Id | Card id | PCI ids | Notes |")
 out.append("|---|---|---|---|---|---|")
 for base, js in sorted(pro):
-    crc   = field(js, "crc") or ""
+    pid   = field(js, "id") or ""
     size  = human_kb(field(js, "size") or "0")
     card  = field(js, "card_id") or ""
     ven   = field(js, "vendor_id") or ""
     dev   = field(js, "device_id") or ""
     ids   = f"`{int(ven):04X}:{int(dev):04X}`" if ven and dev else ""
     note  = NOTES.get(base, "")
-    out.append(f"| `{base}` | {size} | `{crc}` | `{card}` | {ids} | {note} |")
+    out.append(f"| `{base}` | {size} | `{pid}` | `{card}` | {ids} | {note} |")
 out.append("")
 out.append("## Legacy name aliases (for grep-ability)")
 out.append("")

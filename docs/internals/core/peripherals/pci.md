@@ -70,6 +70,12 @@ Details worth knowing:
 - `ops->cfg_read` / `ops->cfg_write` intercept first and return `true` to
   claim a register — that is where Bandit's `$48`/`$50` and Grand
   Central's all-ones presence live.
+- `cap_ptr` is the capabilities pointer `$34` reads back (read-only, low
+  two bits zero); the block it points at lives beyond the header and is
+  the device's own, answered through `ops->cfg_read`. A device that
+  declares one also sets `PCI_STATUS_CAP_LIST` in `status_reset`, as the
+  silicon does. The ATI Rage 128 is the first card with one: its FCode
+  reads the pointer before anything else, so it must exist and terminate.
 
 ## Region backing and the overlay question
 
@@ -237,6 +243,32 @@ drives the flag (`machines/tnt/bandit.c`), and clearing it is how the
 2.26NT firmware brings the bridge into agreement with a little-endian
 Windows NT client.
 
+## Bus mastering
+
+`pci_dma_read` / `pci_dma_write` move bytes between a seated device and
+host memory with the device as bus master. Three rules:
+
+- **Gated on `BUS_MASTER_EN`.** A device whose command register has
+  `PCI_CMD_MASTER` clear moves nothing: both calls return 0 and a refused
+  read leaves the buffer all-ones (a master abort floats high), with a
+  log line naming the device — a driver that forgets the bit otherwise
+  hangs with no diagnostic. A transfer that works with the bit clear would
+  be a fidelity bug.
+- **No IOMMU, no CPU MMU.** A PCI address is a guest-physical address on
+  these machines (the DBDMA rule). RAM moves through the backing store
+  directly; anything else — a device register, unmapped space, a range
+  straddling the end of RAM — takes the bus's slow path byte by byte.
+- **The bridge's lane reversal applies** (above): while it is on, PCI byte
+  `n` of the transfer is host byte `n ^ 7`.
+
+The calls are synchronous. *Pacing* is the card's business, not the bus's:
+a command processor that must show progress rather than completion
+schedules its own fetches. The Rage 128's CCE is the first card on the API: it
+fetches its ring and indirect buffer and writes its read pointer back
+through it, completing each fetch inside the guest's `WPTR` write. The 53C8xx SCRIPTS engine predates the API
+and still masters through its own copy of the same path
+(`cards/scripts53c8xx.c`), which does not consult `BUS_MASTER_EN`.
+
 ## Slot kinds
 
 `PCI_SLOT_SOCKET` is a user-populatable connector; `PCI_SLOT_BUILTIN` is a
@@ -273,11 +305,17 @@ Memory Space Enable clear for the disk-loaded driver to set. A card that
 must never be the machine's display declares `card_class = "3d"` so the
 9500's `PCI_SLOT_BUILTIN_FALLBACK` Control is not retired by it.
 
+The **generic bus-master path** (`pci_dma_read`/`pci_dma_write`, above),
+the **capabilities pointer** and the first **64 MB prefetchable BAR** are
+in the core, pinned by the unit suite (`tests/unit/suites/pci`). The ATI
+Rage 128 GL (`cards/rage128.c`,
+`docs/internals/core/peripherals/pci/cards/rage128.md`) is the first card
+to use all three (its CCE masters the bus), and the first with a BAR its FCode leaves out of `reg`
+yet needs assigned: it probes through its I/O BAR.
+
 Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI
 bridges (type-1 cycles keep returning all-ones — no subordinate buses
-exist on these machines); a generic bus-master API in the core (the 53C8xx
-SCRIPTS engine masters into the host's physical space directly, the DBDMA
-rule — MMU not in the path — rather than through the bus).
+exist on these machines).
 
 ## Card options
 

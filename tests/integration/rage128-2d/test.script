@@ -1,0 +1,279 @@
+# The Rage 128 GL's 2D engine, exercised register by register.
+#
+# The card sits in socket A1 of a Power Macintosh 9500 that never runs an
+# instruction: this script is the driver.  The Bandit config ports and the
+# card's registers are little-endian and machine.memory.peek/poke are
+# big-endian bus views, so every register value goes through swap32().
+# VRAM is read back through linear aperture 0, which (CONFIG_CNTL 0) does
+# not swap: a pixel's bytes appear in VRAM order, low byte first.
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="rage128"
+
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+# Socket A1 is IDSEL 13 on Bandit 1.
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+let APER = 0x84000000
+let REGS = 0x88000000
+cfg_wr(0x10, $APER)
+cfg_wr(0x18, $REGS)
+cfg_wr(0x04, 0x0006)              # memory space + bus master
+assert machine.pci.slot[1].card.config.bar[2].mapped "the register aperture decodes"
+
+def wr(off, v) {
+    machine.memory.poke.l($REGS + $off, swap32($v))
+}
+def rd(off) {
+    return swap32(machine.memory.peek.l($REGS + $off))
+}
+# A 32-bit pixel of the scratch surface, as the engine stored it.
+def px32(x, y) {
+    return swap32(machine.memory.peek.l($APER + $SURF + $y * $STRIDE + $x * 4))
+}
+def put32(x, y, v) {
+    machine.memory.poke.l($APER + $SURF + $y * $STRIDE + $x * 4, swap32($v))
+}
+
+# The scratch surface: 8 MB into VRAM, 512 pixels wide (DEFAULT_PITCH is in
+# units of 8 pixels), 32 bpp.
+let SURF = 0x800000
+let STRIDE = 2048
+wr(0x16E0, $SURF)                 # DEFAULT_OFFSET
+wr(0x16E4, 64)                    # DEFAULT_PITCH: 64 x 8 = 512 pixels
+wr(0x16E8, 0x1FFF1FFF)            # DEFAULT_SC_BOTTOM_RIGHT
+
+# DP_GUI_MASTER_CNTL fields (RRG §7.5).
+let GMC_DST_32BPP = 0x00000600
+let GMC_DST_8BPP = 0x00000200
+let GMC_BRUSH_SOLID = 0x000000D0
+let GMC_BRUSH_8X8_MONO_FG_BG = 0x00000000
+let GMC_BRUSH_NONE = 0x000000F0
+let GMC_SRC_MONO_FG_BG = 0x00000000
+let GMC_SRC_MONO_FG_LA = 0x00001000
+let GMC_SRC_COLOR = 0x00003000
+let GMC_SRC_MEMORY = 0x02000000
+let GMC_SRC_HOST = 0x03000000
+let GMC_CLR_CMP_DIS = 0x10000000
+let GMC_WR_MSK_DIS = 0x40000000
+let ROP_P = 0x00F00000            # PATCOPY
+let ROP_S = 0x00CC0000            # SRCCOPY
+let ROP_DSX = 0x00660000          # D xor S
+let ROP_DPX = 0x005A0000          # D xor P
+
+# Clear the scratch area with a solid fill so every check starts from 0.
+def fill32(x, y, w, h, c) {
+    wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+    wr(0x147C, $c)                # DP_BRUSH_FRGD_CLR
+    wr(0x1438, ($y << 16) | $x)   # DST_Y_X
+    wr(0x143C, ($h << 16) | $w)   # DST_HEIGHT_WIDTH: go
+}
+
+# --- idle: the engine always reports empty and inactive ---------------------
+assert (rd(0x1740) & 0x80000000) == 0 "GUI_STAT: GUI_ACTIVE clear"
+assert (rd(0x1740) & 0xFFF) >= 64 "GUI_STAT: the command FIFO reads empty"
+
+# --- 1. A solid rectangle (SDK §4.3.1) ----------------------------------------
+fill32(0, 0, 64, 32, 0)
+fill32(20, 10, 8, 4, 0x00112233)
+assert px32(20, 10) == 0x00112233 "fill: top-left pixel"
+assert px32(27, 13) == 0x00112233 "fill: bottom-right pixel"
+assert px32(28, 10) == 0 "fill: one past the right edge is untouched"
+assert px32(20, 14) == 0 "fill: one past the bottom edge is untouched"
+assert px32(19, 10) == 0 "fill: one before the left edge is untouched"
+# DST_WIDTH_HEIGHT is the same initiator with the halves swapped.
+wr(0x1438, (20 << 16) | 0)
+wr(0x1598, (3 << 16) | 2)         # width 3, height 2
+assert px32(2, 21) == 0x00112233 "DST_WIDTH_HEIGHT: width 3, height 2"
+assert px32(3, 20) == 0 "DST_WIDTH_HEIGHT: width 3"
+assert px32(2, 22) == 0 "DST_WIDTH_HEIGHT: height 2"
+
+# --- 2. BitBlt, and an overlapping one (SDK §4.3.1 "BitBlt") -----------------
+fill32(0, 0, 64, 32, 0)
+put32(0, 0, 0x11)
+put32(1, 0, 0x22)
+put32(2, 0, 0x33)
+put32(3, 0, 0x44)
+put32(0, 1, 0x55)
+put32(3, 1, 0x66)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_COLOR | $ROP_S | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x1434, (0 << 16) | 0)         # SRC_Y_X
+wr(0x1438, (5 << 16) | 10)        # DST_Y_X
+wr(0x143C, (2 << 16) | 4)         # 4 x 2: go
+assert px32(10, 5) == 0x11 "blit: (0,0) -> (10,5)"
+assert px32(13, 5) == 0x44 "blit: (3,0) -> (13,5)"
+assert px32(10, 6) == 0x55 "blit: second line"
+assert px32(13, 6) == 0x66 "blit: second line, last pixel"
+assert px32(14, 5) == 0 "blit: nothing past the width"
+# Overlapping, to the right by 2: the driver walks right to left from the
+# rightmost pixel (DP_CNTL X_DIR = 0) so the source is read before it is
+# overwritten.
+wr(0x16C0, 0x2)                   # DP_CNTL: right to left, top to bottom
+wr(0x1434, (0 << 16) | 3)         # SRC_Y_X: the rightmost source pixel
+wr(0x1438, (0 << 16) | 5)         # DST_Y_X: the rightmost destination pixel
+wr(0x143C, (1 << 16) | 4)
+assert px32(2, 0) == 0x11 "overlapping blit: pixel 0 lands at 2"
+assert px32(3, 0) == 0x22 "overlapping blit: pixel 1 lands at 3"
+assert px32(4, 0) == 0x33 "overlapping blit: pixel 2 lands at 4, read before it was overwritten"
+assert px32(5, 0) == 0x44 "overlapping blit: pixel 3 lands at 5"
+assert px32(1, 0) == 0x22 "the vacated head is not cleared by a move"
+
+# --- 3. Transparent BitBlt (SDK §4.3.1 "Transparent BitBlt") -----------------
+fill32(0, 0, 64, 32, 0x00ABCDEF)
+put32(0, 20, 0x00FF00FF)          # the key colour
+put32(1, 20, 0x00000001)
+put32(2, 20, 0x00FF00FF)
+put32(3, 20, 0x00000003)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_COLOR | $ROP_S | $GMC_SRC_MEMORY | $GMC_WR_MSK_DIS)
+wr(0x15C4, 0x00FF00FF)            # CLR_CMP_CLR_SRC: the key
+wr(0x15C0, 0x01000005)            # CLR_CMP_CNTL: compare the source, draw where it differs
+wr(0x1434, (20 << 16) | 0)
+wr(0x1438, (25 << 16) | 0)
+wr(0x143C, (1 << 16) | 4)
+assert px32(0, 25) == 0x00ABCDEF "transparent blit: the key colour does not draw"
+assert px32(1, 25) == 0x00000001 "transparent blit: other colours do"
+assert px32(2, 25) == 0x00ABCDEF "transparent blit: the key again"
+assert px32(3, 25) == 0x00000003 "transparent blit: last pixel drawn"
+# A DP_GUI_MASTER_CNTL with GMC_CLR_CMP_CNTL_DIS turns the comparison off.
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_COLOR | $ROP_S | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+assert (rd(0x15C0) & 0x707) == 0 "GMC_CLR_CMP_CNTL_DIS clears both compare functions"
+
+# --- 4. Monochrome expansion from host data ----------------------------------
+fill32(0, 0, 64, 32, 0)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_MONO_FG_BG | $ROP_S | $GMC_SRC_HOST | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x15D8, 0x00FFFFFF)            # DP_SRC_FRGD_CLR
+wr(0x15DC, 0x00000080)            # DP_SRC_BKGD_CLR
+wr(0x1438, (2 << 16) | 4)
+wr(0x143C, (1 << 16) | 16)        # 16 x 1: waits for host data
+assert px32(4, 2) == 0 "a host-data operation draws nothing until its data arrives"
+# Byte 0 first, most significant bit leftmost: $F0 then $0F.
+wr(0x17C0, 0x00000FF0)            # HOST_DATA0
+assert px32(4, 2) == 0x00FFFFFF "mono: bit 7 of byte 0 is the leftmost pixel (foreground)"
+assert px32(7, 2) == 0x00FFFFFF "mono: pixel 3 foreground"
+assert px32(8, 2) == 0x00000080 "mono: pixel 4 background"
+assert px32(12, 2) == 0x00000080 "mono: byte 1's high nibble is background"
+assert px32(16, 2) == 0x00FFFFFF "mono: byte 1's low nibble is foreground"
+assert px32(19, 2) == 0x00FFFFFF "mono: the last pixel"
+assert px32(20, 2) == 0 "mono: the rectangle ends at 16 pixels"
+# Foreground / leave-alone: zero bits do not write.
+fill32(0, 4, 32, 1, 0x00121212)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_MONO_FG_LA | $ROP_S | $GMC_SRC_HOST | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x15D8, 0x00FF0000)
+wr(0x1438, (4 << 16) | 0)
+wr(0x143C, (1 << 16) | 8)
+wr(0x17E0, 0x000000A5)            # HOST_DATA_LAST: 1010 0101
+assert px32(0, 4) == 0x00FF0000 "leave-alone: a one bit draws the foreground"
+assert px32(1, 4) == 0x00121212 "leave-alone: a zero bit leaves the pixel"
+assert px32(5, 4) == 0x00FF0000 "leave-alone: bit 2"
+assert px32(6, 4) == 0x00121212 "leave-alone: bit 1 is zero"
+assert px32(7, 4) == 0x00FF0000 "leave-alone: bit 0"
+
+# --- 5. Colour host data, and HOST_BIG_ENDIAN_EN -----------------------------
+fill32(0, 6, 8, 1, 0)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_NONE | $GMC_SRC_COLOR | $ROP_S | $GMC_SRC_HOST | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x1438, (6 << 16) | 0)
+wr(0x143C, (1 << 16) | 2)
+wr(0x17C0, 0x00102030)
+wr(0x17C4, 0x00405060)
+assert px32(0, 6) == 0x00102030 "colour host data: one pixel a dword at 32 bpp"
+assert px32(1, 6) == 0x00405060 "colour host data: the second pixel"
+wr(0x16C4, rd(0x16C4) | 0x20000000) # DP_DATATYPE: HOST_BIG_ENDIAN_EN
+wr(0x1438, (7 << 16) | 0)
+wr(0x143C, (1 << 16) | 1)
+wr(0x17C0, 0x30201000)
+assert px32(0, 7) == 0x00102030 "HOST_BIG_ENDIAN_EN reverses the bytes of a 32 bpp pixel"
+
+# --- 6. An 8 x 8 mono brush, and the ROP3 ------------------------------------
+fill32(0, 0, 64, 32, 0)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_8X8_MONO_FG_BG | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x147C, 0x000000FF)            # DP_BRUSH_FRGD_CLR
+wr(0x1478, 0x0000FF00)            # DP_BRUSH_BKGD_CLR
+wr(0x1480, 0x55AA55AA)            # BRUSH_DATA0: rows 0-3 (row 0 = byte 0 = $AA)
+wr(0x1484, 0x55AA55AA)            # BRUSH_DATA1: rows 4-7
+wr(0x1438, (0 << 16) | 0)
+wr(0x143C, (8 << 16) | 16)
+assert px32(0, 0) == 0x000000FF "brush: row 0 is $AA, pixel 0 is foreground"
+assert px32(1, 0) == 0x0000FF00 "brush: pixel 1 background"
+assert px32(0, 1) == 0x0000FF00 "brush: row 1 is $55, pixel 0 background"
+assert px32(8, 0) == 0x000000FF "brush: the pattern repeats every 8 pixels"
+# D xor P over the same area flips each pixel against the pattern.
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_8X8_MONO_FG_BG | $GMC_SRC_COLOR | $ROP_DPX | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x1438, (0 << 16) | 0)
+wr(0x143C, (8 << 16) | 16)
+assert px32(0, 0) == 0 "ROP3 $5A: D xor P cancels the pattern"
+assert px32(1, 0) == 0 "ROP3 $5A everywhere"
+
+# --- 7. The write mask and the scissors --------------------------------------
+fill32(0, 0, 64, 32, 0x00445566)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS)
+wr(0x16CC, 0x00FF0000)            # DP_WRITE_MSK: red only
+wr(0x147C, 0x00AABBCC)
+wr(0x1438, (0 << 16) | 0)
+wr(0x143C, (1 << 16) | 1)
+assert px32(0, 0) == 0x00AA5566 "the write mask lets only the red byte through"
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS | 0x8)
+wr(0x16EC, (2 << 16) | 3)         # SC_TOP_LEFT: x 3, y 2
+wr(0x16F0, (4 << 16) | 6)         # SC_BOTTOM_RIGHT: x 6, y 4 (inclusive)
+wr(0x147C, 0x00000077)
+wr(0x1438, (0 << 16) | 0)
+wr(0x143C, (8 << 16) | 10)
+assert px32(3, 2) == 0x00000077 "scissor: the top-left corner is inside"
+assert px32(6, 4) == 0x00000077 "scissor: the bottom-right corner is inside"
+assert px32(2, 2) == 0x00445566 "scissor: left of SC_LEFT is clipped"
+assert px32(7, 4) == 0x00445566 "scissor: right of SC_RIGHT is clipped"
+assert px32(3, 5) == 0x00445566 "scissor: below SC_BOTTOM is clipped"
+# A GMC write without GMC_DST_CLIPPING re-opens the scissors to the default.
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+assert rd(0x1644) == 0x1FFF "SC_RIGHT re-defaulted from DEFAULT_SC_BOTTOM_RIGHT"
+assert rd(0x1640) == 0 "SC_LEFT re-defaulted to 0"
+
+# --- 8. A Bresenham line (SDK §4.3.2) -----------------------------------------
+fill32(0, 0, 64, 32, 0)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x147C, 0x00F0F0F0)
+# From (0,0) to (8,4): x-major, dx 8, dy 4.  err = 2dy - dx, inc = 2dy,
+# dec = 2(dy - dx), as two's complement in 20 bits.
+wr(0x16C0, 0x23)                  # DP_CNTL: left to right, top to bottom, x-major, last pel
+wr(0x1438, (0 << 16) | 0)
+wr(0x1628, 0)                     # DST_BRES_ERR = 2*4 - 8
+wr(0x162C, 8)                     # DST_BRES_INC
+wr(0x1630, 0xFFFF8)               # DST_BRES_DEC = -8
+wr(0x1634, 8)                     # DST_BRES_LNTH: go
+assert px32(0, 0) == 0x00F0F0F0 "line: the first pixel"
+assert px32(8, 4) == 0x00F0F0F0 "line: the last pixel (DST_LAST_PEL)"
+assert px32(4, 2) == 0x00F0F0F0 "line: the midpoint"
+# The tie at x = 1 (ideal y 0.5): with BRES_SIGN clear a zero error term
+# counts as non-negative, so the minor axis steps.
+assert px32(1, 1) == 0x00F0F0F0 "line: a zero error term takes the minor step (BRES_SIGN clear)"
+assert px32(1, 0) == 0 "line: ...so (1,0) is not on it"
+assert px32(9, 4) == 0 "line: nothing past the end"
+# The same line with BRES_SIGN set: zero counts as negative, the tie goes
+# the other way.
+fill32(0, 0, 64, 32, 0)
+wr(0x146C, $GMC_DST_32BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x147C, 0x00F0F0F0)            # (fill32 left the brush colour at 0)
+wr(0x16C0, 0x123)                 # ...and BRES_SIGN
+wr(0x1438, (0 << 16) | 0)
+wr(0x1628, 0)
+wr(0x162C, 8)
+wr(0x1630, 0xFFFF8)
+wr(0x1634, 8)
+assert px32(1, 0) == 0x00F0F0F0 "line: BRES_SIGN makes the tie step the major axis only"
+assert px32(8, 4) == 0x00F0F0F0 "line: and still ends at (8,4)"
+
+# --- 9. 8 bpp: the same engine at another depth ------------------------------
+wr(0x16E4, 64)                    # 512 pixels -> 512 bytes a line at 8 bpp
+wr(0x146C, $GMC_DST_8BPP | $GMC_BRUSH_SOLID | $GMC_SRC_COLOR | $ROP_P | $GMC_SRC_MEMORY | $GMC_CLR_CMP_DIS | $GMC_WR_MSK_DIS)
+wr(0x147C, 0x0000005A)
+wr(0x1438, (1 << 16) | 3)
+wr(0x143C, (1 << 16) | 2)
+assert machine.memory.peek.b($APER + $SURF + 512 + 3) == 0x5A "8 bpp fill: first byte"
+assert machine.memory.peek.b($APER + $SURF + 512 + 4) == 0x5A "8 bpp fill: second byte"
+assert machine.memory.peek.b($APER + $SURF + 512 + 5) != 0x5A "8 bpp fill: two pixels only"
+
+echo "rage128-2d: fills, blits, transparency, mono and colour host data, brushes, ROP3, mask, scissors and lines hold"
+quit

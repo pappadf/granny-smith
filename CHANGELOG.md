@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Rage 128 WebGPU takeover** — the ATI Rage 128 GL's 3D engine can draw on the browser's GPU: the card's Rendering option (`raster=webgpu`, or the `rage128_webgpu` kind), offered where the page has a WebGPU device. Triangles, textures, the combine stages, fog, Z and blending run on the GPU; its colour and Z buffers stay there, read back by rows when anything else touches their VRAM, and a scanned-out GPU buffer is presented straight from the GPU. Points, lines, stencil, ROP3s and the like stay on the software rasteriser.
+
 ## [v0.10.1] — 2026-10-24
 
 ### Fixed

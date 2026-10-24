@@ -58,6 +58,7 @@ typedef struct {
     uint32_t class_code; // 24-bit class / subclass / prog-if
     uint32_t fcode_offset; // where the FCode program starts
     const char *card_id; // pci card-kind id the blob provides (static)
+    const char *refused; // PROM_ID_REFUSED: what the ROM is instead (static)
 } prom_id_t;
 
 // Why a candidate was rejected.  Kept as a result code rather than a bool
@@ -70,6 +71,7 @@ typedef enum prom_id_result {
     PROM_ID_NOT_OPEN_FIRMWARE, // a real expansion ROM, but code type != 1
     PROM_ID_UNKNOWN, // structurally valid; its identity is not in the catalog
     PROM_ID_DAMAGED, // a catalogued identity whose FCode checksum does not verify
+    PROM_ID_REFUSED, // a known Mac ROM for a card no kind models: *out->refused says which
     PROM_ID_KNOWN, // recognised and intact: *out filled from the catalog row
 } prom_id_result_t;
 

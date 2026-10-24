@@ -63,8 +63,11 @@ dump is caught rather than silently booted.
 
 NuBus **declaration ROMs** (`*.vrom`) live beside them — the 8•24 (JMFB),
 8•24 GC, 24AC and the SE/30 built-in video — along with PCI **expansion
-ROMs** (`*.prom`, the mach64 GX). Cards can also run on the
+ROMs** (`*.prom`, the mach64 GX and the Rage 128 GL). Cards can also run on the
 runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
+`roms/refused/` holds expansion ROMs the core must recognise and *refuse*
+(the Rage 128 Pro ROMs, a PC VGA BIOS) — kept out of the flat directory
+whose every file `rom-catalog` requires recognised.
 
 ### Prepared hard-disk images (`tests/data/systems/`)
 
