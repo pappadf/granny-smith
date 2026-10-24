@@ -302,6 +302,9 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
         return AFPERR_ObjectNotFound;
     if (!S_ISDIR(dir_st.st_mode))
         return AFPERR_ObjectTypeErr;
+    // A remote folder is listed (a container unpacked) before it is enumerated.
+    if (!afp_remote_need_dir(vol, target_rel))
+        return AFPERR_MiscErr; // deferred, or failed: the dispatcher says which
     const afp_cat_entry_t *dir_entry = afp_entry_for(vol, target_rel);
     uint32_t dir_cnid = dir_entry ? dir_entry->cnid : AFP_CNID_ROOT;
 

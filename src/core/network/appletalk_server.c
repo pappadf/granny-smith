@@ -20,6 +20,7 @@
 #include "afp_desktop.h"
 #include "afp_fork.h"
 #include "afp_meta.h"
+#include "afp_remote.h"
 #include "afp_server.h"
 #include "afp_wire.h"
 #include "appledouble.h"
@@ -752,6 +753,12 @@ static uint32_t afp_cmd_open_fork(afp_req_t *r) {
         return AFPERR_ObjectNotFound;
     if (S_ISDIR(st.st_mode))
         return AFPERR_ObjectTypeErr;
+    // A remote file's data -- and, from a source that has them, its forks --
+    // arrive before either fork opens; the command waits for them.
+    if (!afp_remote_need_file(vol, target_rel))
+        return AFPERR_MiscErr; // deferred, or failed: the dispatcher says which
+    if (!afp_stat_path(vol, target_rel, &st))
+        return AFPERR_ObjectNotFound;
     char full[PATH_MAX];
     if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
@@ -1008,7 +1015,7 @@ static bool afp_sidecar_remove(const char *full) {
 // and moving its entries the same way.  Sidecars are ordinary files and go
 // with their entries.  0 on success, -1 with errno set when an entry would
 // not move (what moved before it stays moved).
-static int afp_move_entries(const char *from, const char *to) {
+int afp_move_entries(const char *from, const char *to) {
     DIR *dir = opendir(from);
     if (!dir)
         return -1;
@@ -2513,6 +2520,46 @@ static const afp_command_handler_t k_afp_command_handlers[] = {
     {AFP_AddIcon,         "FPAddIcon",         afp_cmd_add_icon,           AFP_GATE_LOGIN  },
 };
 
+// A change to a read-only volume is refused before its handler runs: the
+// calls that write name their volume at offset 1 (FPCopyFile its destination
+// at 7), and FPOpenFork may not open for writing.  Returns the refusal, or
+// NoErr.
+static uint32_t afp_read_only_gate(const afp_ctx_t *ctx, uint8_t opcode, const uint8_t *in, int in_len) {
+    int vol_at = -1;
+    switch (opcode) {
+    case AFP_CreateDir:
+    case AFP_CreateFile:
+    case AFP_Delete:
+    case AFP_MoveAndRename:
+    case AFP_Rename:
+    case AFP_SetDirParms:
+    case AFP_SetFileParms:
+    case AFP_SetFileDirParms:
+    case AFP_SetVolParms:
+    case AFP_DeleteID:
+    case AFP_ExchangeFiles:
+        vol_at = 1;
+        break;
+    case AFP_CopyFile:
+        vol_at = 7;
+        break;
+    case AFP_OpenFork:
+        // Flag, Volume ID (1), Directory ID (3), Bitmap (7), AccessMode (9)
+        if (in_len >= 11 && (RD_BE16(in + 9) & 0x0002)) {
+            vol_t *v = afp_session_vol(ctx, RD_BE16(in + 1));
+            if (v && v->read_only)
+                return AFPERR_AccessDenied;
+        }
+        return AFPERR_NoErr;
+    default:
+        return AFPERR_NoErr;
+    }
+    if (in_len < vol_at + 2)
+        return AFPERR_NoErr; // the handler refuses a short request
+    vol_t *v = afp_session_vol(ctx, RD_BE16(in + vol_at));
+    return (v && v->read_only) ? AFPERR_VolLocked : AFPERR_NoErr;
+}
+
 static const afp_command_handler_t *afp_find_handler(uint8_t opcode) {
     for (size_t i = 0; i < ARRAY_LEN(k_afp_command_handlers); i++)
         if (k_afp_command_handlers[i].opcode == opcode)
@@ -2578,9 +2625,26 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
         return refused;
     }
     afp_ctx_t ctx = {.session_id = session_id};
+    refused = afp_read_only_gate(&ctx, opcode, in, in_len);
+    if (refused != AFPERR_NoErr) {
+        LOG(3, "AFP %s refused: read-only volume", handler->name);
+        afp_count_result(opcode, refused);
+        return refused;
+    }
     afp_req_t req = {.ctx = &ctx, .in = in, .in_len = in_len, .out = out, .out_max = out_max};
     LOG(10, "AFP >> %s (0x%02X) in_len=%d session=0x%04X", handler->name, opcode, in_len, session_id);
+    afp_remote_command_begin();
     uint32_t result = handler->handler(&req);
+    // A remote volume did not have what the command needed: it runs again
+    // when that arrives (ASP holds it), or fails if it could not be had.
+    if (afp_remote_command_deferred()) {
+        LOG(3, "AFP << %s deferred: waiting for remote data", handler->name);
+        return ASP_RESULT_DEFERRED;
+    }
+    if (afp_remote_command_failed()) {
+        result = AFPERR_MiscErr;
+        req.out_len = 0;
+    }
     afp_count_result(opcode, result);
     if (out_len)
         *out_len = req.out_len;
@@ -2598,11 +2662,14 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
 static void afp_session_release(uint16_t session_id) {
     afp_fork_close_session(session_id);
     enum_snapshots_drop(session_id, ENUM_ANY);
-    for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-        if (!g_afp->vols[i].in_use)
-            continue;
-        session_set_remove(&g_afp->vols[i].open_by, session_id);
-        session_set_remove(&g_afp->vols[i].dt_open_by, session_id);
+    for (int s = 0; s < AFP_MAX_SERVERS; s++) {
+        afp_server_t *srv = afp_server_at(s);
+        for (int i = 0; srv && i < AFP_MAX_VOLUMES; i++) {
+            if (!srv->vols[i].in_use)
+                continue;
+            session_set_remove(&srv->vols[i].open_by, session_id);
+            session_set_remove(&srv->vols[i].dt_open_by, session_id);
+        }
     }
 }
 
@@ -2649,9 +2716,12 @@ void afp_plug(afp_link_t *link) {
                 afp_session_closed(g_afp_link->sessions[i].ref);
         afp_fork_close_all();
         enum_snapshots_drop(ENUM_ANY, ENUM_ANY);
-        for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-            g_afp->vols[i].open_by.n = 0;
-            g_afp->vols[i].dt_open_by.n = 0;
+        for (int s = 0; s < AFP_MAX_SERVERS; s++) {
+            afp_server_t *srv = afp_server_at(s);
+            for (int i = 0; srv && i < AFP_MAX_VOLUMES; i++) {
+                srv->vols[i].open_by.n = 0;
+                srv->vols[i].dt_open_by.n = 0;
+            }
         }
     }
     g_afp_link = link;
