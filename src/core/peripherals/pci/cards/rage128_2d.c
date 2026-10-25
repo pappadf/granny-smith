@@ -276,6 +276,7 @@ static void op_gather(rage128_t *r, op_t *op) {
     // DST_PITCH and SRC_PITCH are in units of 8 pixels (RRG §7.1, §7.2).
     op->dst_base = REG(r, G_DST_OFFSET) & 0x3FFFFF0u;
     op->dst_stride = (REG(r, G_DST_PITCH) & 0x3FFu) * 8u * op->bpp;
+    r->diag.dst2d = op->dst_base;
     op->src_type = DT_SRC(dt);
     op->src_base = REG(r, G_SRC_OFFSET) & 0x3FFFFF0u;
     op->src_stride = (REG(r, G_SRC_PITCH) & 0x3FFu) * 8u * (op->src_type == SRC_COLOR ? op->bpp : 1u);

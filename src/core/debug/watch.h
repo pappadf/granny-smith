@@ -11,6 +11,7 @@
 #ifndef WATCH_H
 #define WATCH_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Polls at host wall-clock time `now_ms` (any rate; the work is done at
@@ -19,6 +20,15 @@ void watch_poll(double now_ms);
 
 // Prints the status line now (the `log.status` method).
 void watch_report_now(void);
+
+// A device's own status line: writes it to buf (size bytes, NUL-terminated);
+// an empty string adds nothing.  Printed after the machine's line.
+typedef void (*watch_reporter_fn)(void *ctx, char *buf, size_t size);
+
+// Adds a reporter (at most WATCH_MAX_REPORTERS); removes every one for ctx.
+#define WATCH_MAX_REPORTERS 8
+void watch_add_reporter(watch_reporter_fn fn, void *ctx);
+void watch_remove_reporter(void *ctx);
 
 // Seconds between two status lines; 0 turns the line off (the detectors
 // stay on).  The `log.status_every` attribute.

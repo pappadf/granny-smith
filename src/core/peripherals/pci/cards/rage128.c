@@ -66,6 +66,7 @@
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
+#include "watch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1088,6 +1089,7 @@ static void r128_offset_write(rage128_t *r) {
     uint32_t v = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
     bool running = (r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_EN) != 0;
     if (!running || (r->reg[R_CRTC_OFFSET_CNTL / 4] & CRTC_OFFSET_FLIP_CNTL)) {
+        r->diag.flips += v != r->crtc_offset_live;
         r->crtc_offset_live = v;
         r->flip_pending = false;
         r128_update(r);
@@ -1104,6 +1106,7 @@ static void r128_flip_latch(rage128_t *r) {
         return;
     r->crtc_offset_live = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
     r->flip_pending = false;
+    r->diag.flips++;
     LOG(4, "Rage 128: flip to $%06X", r->crtc_offset_live);
     r128_update(r);
 }
@@ -1281,11 +1284,35 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r128_update(r);
 }
 
+// The card's status line (watch.h): what the engines drew since the last
+// line, and where -- the displayed buffer next to the 3D and 2D targets, so
+// a picture drawn somewhere the CRTC is not showing is visible as such
+static void r128_watch_report(void *ctx, char *buf, size_t size) {
+    rage128_t *r = ctx;
+    uint32_t pitch_px = (r->reg[R_CRTC_PITCH / 4] & 0x3FFu) * 8u;
+    int k =
+        snprintf(buf, size,
+                 "Rage 128 (raster %s): +%llu 3D prims, +%llu blits, +%llu CCE packets, %llu flips; scanout $%06X "
+                 "(%u px pitch%s), 3D colour $%06X depth $%06X, 2D dst $%06X",
+                 r->gpu ? "webgpu" : "sw", (unsigned long long)(r->prims3d - r->diag.prims3d),
+                 (unsigned long long)(r->blits - r->diag.blits), (unsigned long long)(r->cce.packets - r->diag.packets),
+                 (unsigned long long)r->diag.flips, r->crtc_offset_live, pitch_px, r->scan_blanked ? ", BLANKED" : "",
+                 r->diag.dst3d, r->diag.z3d, r->diag.dst2d);
+    if (r->gpu && k > 0 && (size_t)k < size) {
+        char stats[400];
+        snprintf(buf + k, size - (size_t)k, "; gpu %s", r128_gpu_stats(r->gpu, stats, sizeof stats));
+    }
+    r->diag.prims3d = r->prims3d;
+    r->diag.blits = r->blits;
+    r->diag.packets = r->cce.packets;
+}
+
 static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     rage128_t *r = (rage128_t *)dev->priv;
     if (!r)
         return;
+    watch_remove_reporter(r);
     r128_gpu_destroy(r->gpu);
     r->gpu = NULL;
     free(r->vram);
@@ -1771,6 +1798,7 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
 
     LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser", slot_index,
         r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
+    watch_add_reporter(r128_watch_report, r);
     return dev;
 }
 

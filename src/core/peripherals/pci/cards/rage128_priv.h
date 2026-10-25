@@ -360,6 +360,13 @@ typedef struct rage128 {
     uint8_t fog_index;
     uint8_t told3d; // once-only 3D logs (rage128_raster.c)
 
+    // Where drawing lands, for the machine watch's status line (watch.h)
+    struct {
+        uint32_t dst3d, z3d, dst2d; // the last 3D colour / depth buffer and 2D destination (VRAM offsets)
+        uint64_t flips; // CRTC_OFFSET changes that took effect
+        uint64_t prims3d, blits, packets; // the counters at the last report
+    } diag;
+
     // The WebGPU takeover (rage128_gpu.c), NULL under the software
     // rasteriser.  While engaged, [gpu_lo, gpu_hi) bounds the VRAM the
     // GPU holds surfaces over and gpu_page_gen counts writes per 4 KB

@@ -62,6 +62,27 @@ typedef struct {
 static watch_t g_watch;
 static uint32_t g_interval_s = 60; // log.status_every
 
+// The devices' reporters (watch_add_reporter)
+static struct {
+    watch_reporter_fn fn;
+    void *ctx;
+} g_reporters[WATCH_MAX_REPORTERS];
+
+void watch_add_reporter(watch_reporter_fn fn, void *ctx) {
+    for (int i = 0; i < WATCH_MAX_REPORTERS; i++)
+        if (!g_reporters[i].fn) {
+            g_reporters[i].fn = fn;
+            g_reporters[i].ctx = ctx;
+            return;
+        }
+}
+
+void watch_remove_reporter(void *ctx) {
+    for (int i = 0; i < WATCH_MAX_REPORTERS; i++)
+        if (g_reporters[i].ctx == ctx)
+            g_reporters[i].fn = NULL, g_reporters[i].ctx = NULL;
+}
+
 uint32_t watch_get_interval(void) {
     return g_interval_s;
 }
@@ -172,6 +193,16 @@ static void report(config_t *m, double now_ms) {
                d[2 * DRIVE_KIND_HD + 1], d[2 * DRIVE_KIND_CD], d[2 * DRIVE_KIND_CD + 1], d[2 * DRIVE_KIND_FD],
                d[2 * DRIVE_KIND_FD + 1], (unsigned)mac_read32(MAC_TICKS), app, (int)(int16_t)mac_read16(MAC_DS_ERRCODE),
                screen, platform_checkpoint_auto_get() ? "on" : "off", alerts, alerts - g_watch.rep_alerts);
+
+    // Each device's own line
+    for (int i = 0; i < WATCH_MAX_REPORTERS; i++) {
+        if (!g_reporters[i].fn)
+            continue;
+        char line[512] = "";
+        g_reporters[i].fn(g_reporters[i].ctx, line, sizeof line);
+        if (line[0])
+            log_status("%s", line);
+    }
 
     g_watch.last_report_ms = now_ms;
     g_watch.rep_instr = instr;

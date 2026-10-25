@@ -52,13 +52,13 @@
 #include <math.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("video");
-
 static void tell_once(rage128_t *r, uint8_t bit, const char *what) {
     if (r->told3d & bit)
         return;
     r->told3d |= bit;
-    LOG(1, "Rage 128 3D: %s", what);
+    // Shown on the console whatever the level: a dropped primitive can be
+    // the whole picture missing
+    log_status("Rage 128 3D: %s", what);
 }
 
 // ============================================================
@@ -216,6 +216,7 @@ static bool gather(rage128_t *r, st_t *s) {
     }
     s->dst_base = REG(r, R_DST_OFFSET) & 0x3FFFFF0u;
     s->dst_stride = (REG(r, R_DST_PITCH) & 0x3FFu) * 8u * s->dst_bpp;
+    r->diag.dst3d = s->dst_base;
     if (s->dst_base & 0x2000000u) {
         tell_once(r, TOLD_AGP_DST, "a colour buffer in AGP space is not drawn");
         return false;
@@ -250,6 +251,7 @@ static bool gather(rage128_t *r, st_t *s) {
         break;
     }
     s->z_base = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
+    r->diag.z3d = s->z_base;
     s->z_stride = (REG(r, R_Z_PITCH_C) & 0x3FFu) * 8u * s->z_bytes;
     s->fog_color = REG(r, R_FOG_COLOR_C);
     s->constant = REG(r, R_CONSTANT_COLOR_C);
