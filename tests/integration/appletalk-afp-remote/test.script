@@ -1,8 +1,8 @@
 # AppleTalk AFP remote server — a second file server with a remote volume.
 #
 # Boots System 6, adds a file server beside "Shared Folders"
-# (appletalk.remote.add_server, the call the page makes for archive.org and
-# Mac Hut) and gives it a read-only volume whose content is a host folder
+# (appletalk.remote.add_server, the call the page makes for archive.org) and
+# gives it a read-only volume whose content is a host folder
 # served through the dir:// provider.  That provider is the core's own, but
 # the path is the page's: the volume starts as an empty cache, every folder
 # is listed the first time the guest enters it, a file's data is fetched when

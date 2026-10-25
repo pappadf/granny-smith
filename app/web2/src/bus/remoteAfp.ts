@@ -1,9 +1,9 @@
-// The page's file servers on the emulated AppleTalk network: "Internet
-// Archive" and "Mac Hut", each its own Chooser entry beside the Shared
-// Folders server, their volumes remote trees the core caches in OPFS
+// The page's file server on the emulated AppleTalk network: "Internet
+// Archive", its own Chooser entry beside the Shared Folders server, its
+// volumes remote trees the core caches in OPFS
 // (src/core/network/afp_remote.h).  The core asks for a folder's listing or
 // a file's data when the guest needs it, with an `afp_remote_request` event;
-// a provider here fetches it, writes it to the request's `dest`, and answers
+// the provider here fetches it, writes it to the request's `dest`, and answers
 // with appletalk.remote.complete.  What a URI names, and how each answer is
 // built, is lib/remoteAfp.ts.
 
@@ -18,11 +18,9 @@ import {
   iaUri,
   iaZipViewUrl,
   itemListing,
-  parseAutoindex,
   parseIaUri,
   parseZipView,
   toListing,
-  webFetchUrl,
   zipListing,
   type IaDoc,
   type IaFile,
@@ -61,22 +59,12 @@ export const INTERNET_ARCHIVE: ServerSpec = {
   ],
 };
 
-const MAC_HUT_URL = 'https://machut.net/files/';
-
-export const MAC_HUT: ServerSpec = {
-  name: 'Mac Hut',
-  volumes: [{ name: 'Mac Hut Files', uri: `web:${MAC_HUT_URL}` }],
-};
-
 // The user's settings, in localStorage under SETTINGS_KEY (JSON):
-//   { "disabled": true }              no remote servers
-//   { "proxy": "https://p/?u={url}" } Mac Hut through a CORS proxy (machut.net
-//                                     sends no CORS headers)
+//   { "disabled": true }   no remote server
 export const SETTINGS_KEY = 'gs-remote-afp';
 
 interface Settings {
   disabled?: boolean;
-  proxy?: string;
 }
 
 function readSettings(): Settings {
@@ -89,7 +77,6 @@ function readSettings(): Settings {
   }
 }
 
-let settings: Settings = {};
 let unpackLimit = 64 << 20;
 const inFlight = new Set<number>();
 
@@ -115,31 +102,15 @@ async function addServer(spec: ServerSpec): Promise<void> {
   }
 }
 
-// Whether the page can read machut.net (directly, or through the proxy).
-async function canReachMacHut(): Promise<boolean> {
-  const url = webFetchUrl(`web:${MAC_HUT_URL}`, settings.proxy);
-  if (!url) return false;
-  try {
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
-    return res.ok;
-  } catch {
-    return false; // no CORS headers, or offline
-  }
-}
-
-// Put the servers on the network, and answer whatever the core already asked
+// Put the server on the network, and answer whatever the core already asked
 // (a request made before this page was listening).  Once, after the module is
 // ready.
 export async function installRemoteAfp(): Promise<void> {
-  settings = readSettings();
-  if (settings.disabled) return;
+  if (readSettings().disabled) return;
   setRemoteRequestHandler(onRemoteRequest);
   const limit = await gsEval('appletalk.remote.unpack_limit');
   if (typeof limit === 'number' && limit >= 0) unpackLimit = limit;
   await addServer(INTERNET_ARCHIVE);
-  // Mac Hut is published only when its files can be fetched: a server whose
-  // every folder fails would only confuse.
-  if (await canReachMacHut()) await addServer(MAC_HUT);
   const pending = await gsEval('appletalk.remote.requests');
   if (Array.isArray(pending))
     for (const r of pending)
@@ -202,11 +173,6 @@ function once<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promis
 const MAX_ITEMS = 10000;
 
 async function list(uri: string): Promise<RemoteEntry[]> {
-  if (uri.startsWith('web:')) {
-    const url = webFetchUrl(uri, settings.proxy);
-    if (!url) throw new Error(`not a web URI: ${uri}`);
-    return parseAutoindex(await (await getOk(url)).text(), uri.slice(4));
-  }
   const u = parseIaUri(uri);
   if (!u) throw new Error(`not a URI this page serves: ${uri}`);
   switch (u.kind) {
@@ -239,7 +205,7 @@ async function list(uri: string): Promise<RemoteEntry[]> {
 }
 
 async function fetchTo(uri: string, dest: string): Promise<boolean> {
-  const url = uri.startsWith('web:') ? webFetchUrl(uri, settings.proxy) : iaFetchUrlOf(uri);
+  const url = iaFetchUrlOf(uri);
   if (!url) throw new Error(`not a file URI: ${uri}`);
   const res = await getOk(url);
   return streamToOpfs(dest, res.body ?? new Uint8Array(await res.arrayBuffer()));

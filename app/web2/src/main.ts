@@ -192,7 +192,7 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
 
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
-    // The Internet Archive and Mac Hut file servers, beside Shared Folders;
+    // The Internet Archive file server, beside Shared Folders;
     // not awaited: a slow network must not hold up the page.
     void installRemoteAfp();
     if (urlMode) await applySchedulerMode(urlMode);

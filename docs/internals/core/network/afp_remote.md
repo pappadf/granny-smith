@@ -1,7 +1,7 @@
 # Remote AFP volumes
 
-How the AFP server publishes a remote tree -- an archive.org collection, a
-web server's file index, a host directory -- as a read-only volume that is
+How the AFP server publishes a remote tree -- an archive.org collection or a
+host directory -- as a read-only volume that is
 filled in as the guest walks it, and how further file servers share the
 network with the first.  Sources: `src/core/network/afp_remote.c` (the
 volumes), `afp_remote_object.c` (`appletalk.remote`), the server table in
@@ -155,7 +155,7 @@ listing or the file.  `appletalk.remote.requests` lists the pending ones,
 for a page that missed an event.
 
 On the web the page answers them (`app/web2/src/bus/remoteAfp.ts`).  At
-startup it adds two servers:
+startup it adds one server:
 
 | server | volume | URI |
 |---|---|---|
@@ -163,13 +163,9 @@ startup it adds two servers:
 | | Shareware Games | `ia:collection/MacintoshSharewareGames` |
 | | HyperCard Stacks | `ia:collection/hypercardstacks` |
 | | Macintosh Garden | `ia:collection/Macintosh_Garden_Collection` |
-| Mac Hut | Mac Hut Files | `web:https://machut.net/files/` |
 
-Their caches are `/opfs/afp-remote/<server>/<volume>`.  Mac Hut is added
-only when the page can read machut.net, which sends no CORS headers; a CORS
-proxy can be set in localStorage, key `gs-remote-afp`, as
-`{"proxy": "https://proxy.example/?url={url}"}` (or a prefix the URL is
-appended to).  `{"disabled": true}` there adds neither server.
+Their caches are `/opfs/afp-remote/<server>/<volume>`.  `{"disabled": true}`
+in localStorage, key `gs-remote-afp`, leaves the server out.
 
 The page's URIs (`lib/remoteAfp.ts`), every component URI-encoded:
 
@@ -180,7 +176,6 @@ The page's URIs (`lib/remoteAfp.ts`), every component URI-encoded:
 | `ia:file/<item>/<path>` | | `/cors/<item>/<path>` |
 | `ia:zip/<item>/<zip>[/<folder>]` | the zip's members, from archive.org's listing of it (`/download/<item>/<zip>/`), without `__MACOSX` | |
 | `ia:member/<item>/<zip>/<member>` | | `/download/<item>/<zip>/<member>` |
-| `web:<url>` | an nginx autoindex page's entries | the URL, through the proxy if set |
 
 A member fetched from a zip comes without the resource fork macOS keeps for
 it in `__MACOSX`; StuffIt archives, disk images and the other containers

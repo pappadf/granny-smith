@@ -143,8 +143,7 @@ echo "remote: issued=\${appletalk.remote.issued} failed=\${appletalk.remote.fail
 test('a remote volume of archive.org is listed, fetched and unpacked for the guest', async ({ page }) => {
   test.setTimeout(12 * 60 * 1000);
   const asked: string[] = [];
-  // archive.org from the test data; anything else of archive.org, and Mac
-  // Hut's probe, fails (so only Internet Archive is published).
+  // archive.org from the test data; anything else of archive.org fails.
   await page.route('https://archive.org/**', (route: Route) => {
     const url = new URL(route.request().url());
     asked.push(url.pathname);
@@ -157,7 +156,6 @@ test('a remote volume of archive.org is listed, fetched and unpacked for the gue
     }
     return route.fulfill({ status: 404, headers: CORS, body: 'not found' });
   });
-  await page.route('https://machut.net/**', (route: Route) => route.abort());
 
   await gotoWeb2(page);
   // The page published the server and its volumes at startup.

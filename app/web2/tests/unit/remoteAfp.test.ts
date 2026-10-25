@@ -6,12 +6,10 @@ import {
   iaFetchUrl,
   iaUri,
   itemListing,
-  parseAutoindex,
   parseIaUri,
   parseZipView,
   toListing,
   uniqueNames,
-  webFetchUrl,
   zipListing,
   type IaUri,
 } from '@/lib/remoteAfp';
@@ -209,39 +207,5 @@ describe('zip views', () => {
       ['f', 'GL Tron.sit', 'ia:member/I/z.zip/g%2FGL%20Tron.sit'],
       ['f', 'M&M.sit', 'ia:member/I/z.zip/g%2FM%26M.sit'],
     ]);
-  });
-});
-
-describe('web indexes', () => {
-  const base = 'https://machut.net/files/';
-  const html =
-    '<html><head><title>Index of /files/</title></head><body><h1>Index of /files/</h1><hr><pre><a href="../">../</a>\n' +
-    '<a href="antivirus/">antivirus/</a>                                         17-Jun-2024 22:27                   -\n' +
-    '<a href="Disinfectant.tar.gz">Disinfectant.tar.gz</a>                                17-Jun-2024 22:29              220630\n' +
-    '<a href="A%20B%26C.sit">A B&amp;C.sit</a>                       25-May-2025 21:57               13475\n' +
-    '<a href="https://elsewhere.example/x.sit">x.sit</a>                       25-May-2025 21:57               1\n' +
-    '</pre><hr></body></html>';
-
-  it('list folders and files, in the folder only', () => {
-    const out = parseAutoindex(html, base);
-    expect(out.map((e) => [e.kind, e.name, e.size, e.uri])).toEqual([
-      ['d', 'antivirus', 0, 'web:https://machut.net/files/antivirus/'],
-      ['f', 'Disinfectant.tar.gz', 220630, 'web:https://machut.net/files/Disinfectant.tar.gz'],
-      ['f', 'A B&C.sit', 13475, 'web:https://machut.net/files/A%20B%26C.sit'],
-    ]);
-    expect(out[1].mtime).toBe(Date.UTC(2024, 5, 17, 22, 29) / 1000);
-  });
-
-  it('are fetched directly or through a proxy', () => {
-    const uri = 'web:https://machut.net/files/a.sit';
-    expect(webFetchUrl(uri)).toBe('https://machut.net/files/a.sit');
-    expect(webFetchUrl(uri, 'https://proxy.example/')).toBe(
-      'https://proxy.example/https://machut.net/files/a.sit',
-    );
-    expect(webFetchUrl(uri, 'https://proxy.example/?u={url}')).toBe(
-      'https://proxy.example/?u=https%3A%2F%2Fmachut.net%2Ffiles%2Fa.sit',
-    );
-    expect(webFetchUrl('web:file:///etc/passwd')).toBeNull();
-    expect(webFetchUrl('ia:item/x')).toBeNull();
   });
 });

@@ -1,6 +1,5 @@
 // The page's side of remote AFP volumes (src/core/network/afp_remote.h): what
-// the providers in bus/remoteAfp.ts turn archive.org's and a web server's
-// answers into.  Pure functions, no fetching.
+// the provider in bus/remoteAfp.ts turns archive.org's answers into.  Pure functions, no fetching.
 //
 // The core asks for a URI and passes the URIs in a listing back unread, so
 // the URI scheme is the page's own:
@@ -10,8 +9,6 @@
 //   ia:file/<item>/<path>                   one of an item's files
 //   ia:zip/<item>/<zip path>[/<folder>]     the members of a zip in an item
 //   ia:member/<item>/<zip path>/<member>    one of those members
-//   web:<url>                               a web server's file index (nginx
-//                                           autoindex) or one of its files
 //
 // Every `ia:` component is URI-encoded, so none holds a '/', a tab or a
 // newline (the listing's separators).
@@ -431,74 +428,4 @@ export function zipListing(
       uri: iaUri({ kind: 'member', item, zip, member: f.path }),
     });
   return out;
-}
-
-// --- Web file indexes ------------------------------------------------------------------
-
-const MONTHS: Record<string, number> = {
-  Jan: 0,
-  Feb: 1,
-  Mar: 2,
-  Apr: 3,
-  May: 4,
-  Jun: 5,
-  Jul: 6,
-  Aug: 7,
-  Sep: 8,
-  Oct: 9,
-  Nov: 10,
-  Dec: 11,
-};
-
-// An nginx autoindex page at `base`: each line a link, a date and a size
-// ("-" for a folder).  Links that leave the folder (parents, other hosts,
-// queries) are not entries.
-export function parseAutoindex(html: string, base: string): RemoteEntry[] {
-  const out: RemoteEntry[] = [];
-  const line =
-    /<a href="([^"]+)">[^<]*<\/a>\s+(\d{2})-([A-Z][a-z]{2})-(\d{4}) (\d{2}):(\d{2})\s+(\d+|-)/g;
-  const root = new URL(base);
-  for (let m: RegExpExecArray | null; (m = line.exec(html));) {
-    const href = decodeEntities(m[1]);
-    if (href.startsWith('?') || href.startsWith('../') || href === '/') continue;
-    let url: URL;
-    try {
-      url = new URL(href, root);
-    } catch {
-      continue;
-    }
-    if (
-      url.origin !== root.origin ||
-      !url.pathname.startsWith(root.pathname) ||
-      url.pathname === root.pathname
-    )
-      continue;
-    const dir = url.pathname.endsWith('/');
-    let name: string;
-    try {
-      name = decodeURIComponent(url.pathname.slice(root.pathname.length).replace(/\/$/, ''));
-    } catch {
-      continue;
-    }
-    if (!name || name.includes('/')) continue;
-    const t = Date.UTC(+m[4], MONTHS[m[3]] ?? 0, +m[2], +m[5], +m[6]);
-    out.push({
-      kind: dir ? 'd' : 'f',
-      name,
-      size: dir || m[7] === '-' ? 0 : num(m[7]),
-      mtime: Math.floor(t / 1000),
-      uri: `web:${url.href}`,
-    });
-  }
-  return out;
-}
-
-// The URL a request for a web: URI fetches, through `proxy` when one is set:
-// a template with {url} (replaced by the URL, encoded), or a prefix.
-export function webFetchUrl(uri: string, proxy?: string): string | null {
-  if (!uri.startsWith('web:')) return null;
-  const url = uri.slice(4);
-  if (!/^https?:\/\//.test(url)) return null;
-  if (!proxy) return url;
-  return proxy.includes('{url}') ? proxy.replace('{url}', encodeURIComponent(url)) : proxy + url;
 }

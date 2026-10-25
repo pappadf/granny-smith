@@ -3,11 +3,10 @@
 
 // afp_remote.h
 // Remote volumes: an AFP volume that is a cache of a remote tree -- an
-// archive.org collection, a web server's file index, a host directory --
-// filled in as the guest walks it.  The volume is an ordinary host folder
-// (the cache) served read-only; what is not there yet is asked for when a
-// command needs it, and the command waits (ASP_RESULT_DEFERRED) until it
-// has arrived:
+// archive.org collection, a host directory -- filled in as the guest walks
+// it.  The volume is an ordinary host folder (the cache) served read-only;
+// what is not there yet is asked for when a command needs it, and the
+// command waits (ASP_RESULT_DEFERRED) until it has arrived:
 //
 //   - a folder is listed the first time it is entered or enumerated: the
 //     listing's folders become empty folders, its files empty placeholders
@@ -26,8 +25,8 @@
 // tests and for a host-side mirror); every other scheme is a request to the
 // platform: the event {"event":"afp_remote_request","id","op","uri","dest"},
 // op "list" or "fetch", answered with afp_remote_complete once `dest` holds
-// the listing or the file.  The page's providers (app/web2/src/bus/remoteAfp.ts)
-// answer archive.org and HTTP index URIs.
+// the listing or the file.  The page's provider (app/web2/src/bus/remoteAfp.ts)
+// answers archive.org URIs.
 //
 // A listing is a text file, one entry per line, tab-separated:
 //   kind  name  size  mtime  type  creator  uri
