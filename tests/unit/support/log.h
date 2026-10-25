@@ -125,6 +125,16 @@ static inline void log_noop_with_(const log_category_t *cat, int level, const ch
         if (0)                                                                                                         \
             log_noop_((level), fmt, ##__VA_ARGS__);                                                                    \
     } while (0)
+/* Alerts and status lines: compiled, never emitted (the suites drive the
+   failure paths on purpose) */
+#define LOG_ALERT(fmt, ...)                                                                                            \
+    do {                                                                                                               \
+        if (0)                                                                                                         \
+            log_noop_(0, fmt, ##__VA_ARGS__);                                                                          \
+    } while (0)
+static inline unsigned long log_alert_total(void) {
+    return 0;
+}
 
 #ifdef __cplusplus
 }

@@ -177,7 +177,7 @@ static void recompute_bounds(r128_gpu_t *g);
 static void mark_lost(r128_gpu_t *g, const char *why) {
     if (!g->warned_lost) {
         g->warned_lost = true;
-        LOG(0, "Rage 128 webgpu: %s — the software rasteriser draws from here on (VRAM may be stale)", why);
+        LOG_ALERT("Rage 128 webgpu: %s — the software rasteriser draws from here on (VRAM may be stale)", why);
     }
     g->lost = true;
     g->n_lost++;
@@ -1369,7 +1369,7 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
     g->ctrl[R128GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     if (!platform_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
-        LOG(0, "Rage 128 raster=webgpu: the host refused to attach a GPU worker — the software rasteriser draws");
+        LOG_ALERT("Rage 128 raster=webgpu: the host refused to attach a GPU worker — the software rasteriser draws");
         free(g->tex);
         free(g->page_gen);
         free(g->region);
@@ -1379,7 +1379,8 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
     double t0 = now_ms();
     while (gload(g, R128GPU_C_STATUS) != R128GPU_STATUS_ATTACHED) {
         if (now_ms() - t0 >= (double)R128GPU_ATTACH_MS) {
-            LOG(0, "Rage 128 raster=webgpu: the GPU worker did not attach within %u ms — the software rasteriser draws",
+            LOG_ALERT(
+                "Rage 128 raster=webgpu: the GPU worker did not attach within %u ms — the software rasteriser draws",
                 R128GPU_ATTACH_MS);
             platform_v2gpu_detach((void *)g->ctrl);
             free(g->tex);

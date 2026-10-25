@@ -1033,7 +1033,8 @@ static void r128_update(rage128_t *r) {
         // 4 bpp, packed 24 bpp, or reserved: not depths a Mac driver sets.
         if (!r->depth_warned) {
             r->depth_warned = true;
-            LOG(0, "Rage 128: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode", pix);
+            LOG_ALERT("Rage 128: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
+                      pix);
         }
         return;
     }

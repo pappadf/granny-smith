@@ -137,6 +137,40 @@ level-1 warning, not a level-0 one. The only way to silence a level-0 site is
 the compile-time `LOG_COMPILE_MIN_LEVEL`.
 
 
+### Alerts and the status line
+
+Some conditions are worse than "unrecoverable for this subsystem": they are
+the reason a machine gets stuck, and the person staring at a black screen
+needs to see them without knowing which category to turn up. Those sites use
+`LOG_ALERT(fmt, ...)` instead of `LOG(0, ...)`:
+
+- an image or delta read that fails (`source.c` host reads, `storage.c`
+  block reads, a compressed chunk that cannot be read or decoded in
+  `image_chunkmap.c`), a delta or journal write that fails or is refused;
+- a MEDIUM ERROR returned to the guest by the SCSI layer;
+- a background checkpoint that fails to serialise or to be written;
+- the renderer or the Rage 128's WebGPU path failing (the black-screen causes).
+
+An alert is not gated by any level and cannot be turned off. `log_alert`
+prints a banner on the console (the browser's Terminal through the stdout
+sink; stderr natively, and from a thread other than the emulator's) and one
+`[alert] 0 ...` line in the Logs view, with the site's file:line, the PC and
+the instruction count. `LOG_ALERT` keeps a per-site count and emits only the
+first `LOG_ALERT_BURST` and then every `LOG_ALERT_EVERY`-th, so a failing disk
+in a retry loop cannot flood the console. `log.alerts` counts them.
+
+The machine watch (`watch.c`, polled from the browser's main loop) adds
+`log_status` lines: once every `log.status_every` seconds (60 by default; 0
+turns it off) it prints run state, PC, MIPS and the JIT's share, disk
+reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`,
+the screen's geometry and whether it is one flat colour, `checkpoint.auto`
+and the alert count. `log.status()` prints the line now. Its detectors raise
+alerts on a Mac OS system error (DSErrCode changes), `Ticks` frozen for 15 s
+while the CPU runs (armed only once Ticks has been seen moving), and a
+running machine whose CPU retires nothing for 15 s; a poll more than 3 s late
+says the emulator thread was blocked that long. The headless build does not
+poll the watch, so script output is unchanged there.
+
 ## Internal design (log.c)
 
 - Registry

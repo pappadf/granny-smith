@@ -62,6 +62,7 @@
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
+#include "watch.h"
 
 // ============================================================================
 // Forward Declarations
@@ -551,6 +552,8 @@ void em_main_tick(void) {
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
     mailbox_heartbeat(&g_mailbox);
+    // The machine watch: the periodic status line and the stuck detectors
+    watch_poll(emscripten_get_now());
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
