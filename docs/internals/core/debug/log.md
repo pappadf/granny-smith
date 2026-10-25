@@ -165,7 +165,7 @@ turns it off) it prints run state, PC, MIPS and the JIT's share, disk
 reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`,
 the screen's geometry and whether it is one flat colour, `checkpoint.auto`
 and the alert count. `log.status()` prints the line now. Its detectors raise
-alerts on a Mac OS system error (DSErrCode changes), `Ticks` frozen for 15 s
+alerts on a Mac OS system error (DSErrCode changes to a positive ID), `Ticks` frozen for 15 s
 while the CPU runs (armed only once Ticks has been seen moving), and a
 running machine whose CPU retires nothing for 15 s; a poll more than 3 s late
 says the emulator thread was blocked that long. The headless build does not

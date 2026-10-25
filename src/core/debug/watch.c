@@ -205,9 +205,10 @@ static void detect(config_t *m, double now_ms) {
     char pc[48];
 
     // A Mac OS system error (the bomb box, or a debugger break with one):
-    // DSErrCode changes to the error's ID
+    // DSErrCode changes to the error's ID.  Those are positive; the start-up
+    // code leaves negative status values there in passing (-14134, -1).
     uint16_t ds = mac_read16(MAC_DS_ERRCODE);
-    if (ds != g_watch.ds_err && ds != 0 && g_watch.ticks_alive) {
+    if (ds != g_watch.ds_err && (int16_t)ds > 0 && g_watch.ticks_alive) {
         format_pc(m, pc, sizeof pc);
         LOG_ALERT("Mac OS system error %d (DSErrCode changed from %d): the guest crashed (%s)", (int)(int16_t)ds,
                   (int)(int16_t)g_watch.ds_err, pc);
