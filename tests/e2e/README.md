@@ -27,6 +27,7 @@ tests/e2e/
 ├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
+│   ├── afp-remote.spec.ts               # An archive.org volume of "Internet Archive" mounted, fetched and unpacked on System 6
 │   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
 │   ├── app-states.spec.ts               # The workbench in fixed states, screenshotted in every skin
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session

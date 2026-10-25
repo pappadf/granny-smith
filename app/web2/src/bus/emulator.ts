@@ -873,6 +873,10 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'notify:download_chunk':
       onDownloadChunk(d);
       break;
+    case 'notify:afp_remote_request':
+      // A remote AFP volume needs a listing or a file (bus/remoteAfp.ts).
+      remoteRequestHandler?.(d);
+      break;
     // Annotation records in a job's stream, at the positions they describe:
     // the console turns the text around them into value / error entries.
     case 'log:value_begin':
@@ -894,6 +898,15 @@ function routeCoreEvent(ev: CoreEvent): void {
     default:
       break;
   }
+}
+
+// Who answers the core's remote AFP requests: bus/remoteAfp.ts, once it has
+// put its servers on the network (it then also answers the requests made
+// before).  Set from there rather than imported here, so this module does
+// not pull the upload path in.
+let remoteRequestHandler: ((d: Record<string, unknown>) => void) | null = null;
+export function setRemoteRequestHandler(fn: ((d: Record<string, unknown>) => void) | null): void {
+  remoteRequestHandler = fn;
 }
 
 // The job id of a job-stream record, when it carries one.

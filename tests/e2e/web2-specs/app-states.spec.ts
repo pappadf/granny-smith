@@ -112,6 +112,7 @@ async function shot(
   page: Page,
   name: string,
   extra: Locator[] = [],
+  hidden = "",
 ): Promise<void> {
   // The skin's fonts and overrides load after the first paint.
   await page.waitForSelector("html[data-skin-ready]", { state: "attached" });
@@ -130,7 +131,7 @@ async function shot(
     mask: [...masks(page), ...extra],
     // The emulated screen is out of scope (and its picture varies): hide it
     // instead of masking it, since a mask covers whatever lies on top.
-    style: "#screen, #screen3d, #screen3d-r128 { visibility: hidden !important; }",
+    style: `#screen, #screen3d, #screen3d-r128${hidden ? `, ${hidden}` : ""} { visibility: hidden !important; }`,
   });
 }
 
@@ -276,12 +277,18 @@ for (const skin of SKINS) {
       // Where the machine stopped varies: mask the values, keep the chrome.
       // The listing's rows are masked whole: its mnemonic column is as wide
       // as the longest mnemonic shown, so a mask per column would move with
-      // the listing.
-      await shot(page, `debug-paused-${skin}.png`, [
-        page.locator(".disasm-pane .banner, .disasm-pane .row"),
-        page.locator("input.reg-value"),
-        page.locator(".sb-drive"),
-      ]);
+      // the listing.  The CPU engine chip comes with the core's first perf
+      // push, which may or may not have arrived: hidden either way.
+      await shot(
+        page,
+        `debug-paused-${skin}.png`,
+        [
+          page.locator(".disasm-pane .banner, .disasm-pane .row"),
+          page.locator("input.reg-value"),
+          page.locator(".sb-drive"),
+        ],
+        ".sb-engine",
+      );
     });
   });
 }

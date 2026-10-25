@@ -123,6 +123,18 @@ unsigned atalk_afp_volume_sessions_using(int slot);
 unsigned atalk_afp_volume_catalog_generation(int slot);
 unsigned atalk_afp_volume_cnid_count(int slot);
 
+// === Further AFP servers (object model: `appletalk.remote`) =================
+//
+// The network's first file server is "Shared Folders" (`appletalk.afp`).  More
+// can be added, each its own Chooser entry on its own ASP socket with its own
+// volumes; server 0 is always the first.  Indices are 0..atalk_afp_server_max()-1.
+int atalk_afp_server_add(const char *name, char *err, size_t err_len); // index, or -1
+int atalk_afp_server_remove(const char *name, char *err, size_t err_len);
+int atalk_afp_server_find(const char *name); // index, or -1
+int atalk_afp_server_max(void);
+const char *atalk_afp_server_name(int index); // NULL for an empty index
+unsigned atalk_afp_server_socket(int index);
+
 // === AFP server identity (object model: `appletalk.afp`) ====================
 
 const char *atalk_afp_get_name(void);
@@ -166,6 +178,7 @@ typedef struct {
     unsigned session_ref;
     unsigned client_node;
     unsigned socket;
+    unsigned server_socket; // the server's socket: which file server the session is with
     char afp_version[24];
     unsigned open_forks;
     uint64_t idle_ns; // since the last packet from this client

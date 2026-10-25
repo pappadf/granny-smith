@@ -21,6 +21,7 @@ import {
   applySchedulerMode,
 } from '@/bus/emulator';
 import { claimScratch } from '@/bus/scratch';
+import { installRemoteAfp } from '@/bus/remoteAfp';
 import { checkStoragePersistence } from '@/bus/storageHealth';
 import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
@@ -191,6 +192,9 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
 
     // This tab's scratch area, before anything writes to it.
     await claimScratch();
+    // The Internet Archive file server, beside Shared Folders;
+    // not awaited: a slow network must not hold up the page.
+    void installRemoteAfp();
     if (urlMode) await applySchedulerMode(urlMode);
 
     // The machine the URL names wins over the one this browser saved: the
