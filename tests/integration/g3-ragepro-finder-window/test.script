@@ -1,0 +1,89 @@
+# A Finder window on the beige G3's built-in ATI Rage Pro, Mac OS 9.2.1.
+#
+# The disk is installed and never booted, so the first boot runs the Setup
+# Assistant, which the row quits.  The startup disk's window then opens, is
+# shrunk until its icons overflow, scrolled down and right by its arrows,
+# and grown again.  What the row pins, each as a golden:
+#   * opened: the window's content is colour host data, which ATI's driver
+#     writes into HOST_DATA a cache line at a time -- dcbz, stmw, dcbst.  The
+#     dcbz's zeros reached the card as data, and every icon and label came
+#     out 16 pixels to the right with a black bar at the window's left edge;
+#   * scrolled: the scroll is a screen-to-screen blit started through
+#     DST_X_Y / DST_WIDTH_HEIGHT; without them nothing moved and only the
+#     newly exposed strips were drawn, over the old content;
+#   * grown: the larger window redrawn from the scrolled position.
+#
+# The mouse is the ADB mouse in its default (delta) mode, stepped to its
+# target: under 9.2.1 the "global" warp of lib/mac.script's click() is
+# not reliable.
+
+include "../lib/mac.script"
+
+let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
+
+def fw_goto(x, y) {
+    let k = 0
+    while $k < 8 {
+        machine.adb.mouse.move $x $y
+        scheduler.run 120000000
+        let k = $k + 1
+    }
+}
+def fw_click(x, y) {
+    fw_goto($x, $y)
+    machine.adb.mouse.click true
+    scheduler.run 100000000
+    machine.adb.mouse.click false
+    scheduler.run 600000000
+}
+def fw_drag(x0, y0, x1, y1) {
+    fw_goto($x0, $y0)
+    machine.adb.mouse.click true
+    scheduler.run 300000000
+    fw_goto($x1, $y1)
+    machine.adb.mouse.click false
+    scheduler.run 2000000000
+}
+def fw_cmdkey(k) {
+    machine.adb.keyboard.down "Command"
+    scheduler.run 60000000
+    machine.adb.keyboard.down $k
+    scheduler.run 60000000
+    machine.adb.keyboard.up $k
+    machine.adb.keyboard.up "Command"
+    scheduler.run 2000000000
+}
+def fw_check(name) {
+    try(machine.screen.save("${$RESULTS_DIR}/${$name}.png"), none)
+    check_ex("goldens/${$name}.png", 0, 440, 20, 640)
+}
+
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+machine.rtc.time = "2026-10-01T12:00:00"
+machine.scsi.attach_hd "${$hd}" 0
+scheduler.run 24000000000
+assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+assert machine.screen.depth == 16 "thousands of colours"
+
+# Quit the Setup Assistant (first boot) and confirm; the startup disk is
+# the Finder's selection then, and File > Open opens its window.
+fw_cmdkey("q")
+scheduler.run 2000000000
+fw_click(461, 173)
+scheduler.run 4000000000
+fw_cmdkey("o")
+scheduler.run 4000000000
+fw_check("opened")
+
+# Shrink it by the size box, then two clicks on each scroll arrow.
+fw_drag(410, 259, 230, 150)
+fw_click(230, 141)
+fw_click(230, 141)
+fw_click(215, 157)
+fw_click(215, 157)
+fw_check("scrolled")
+
+fw_drag(232, 160, 470, 330)
+fw_check("grown")
+echo "g3-ragepro-finder-window: the Finder window draws, scrolls and resizes on the Rage Pro"
+quit

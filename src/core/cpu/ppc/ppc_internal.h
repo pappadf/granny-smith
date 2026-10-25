@@ -173,6 +173,10 @@ struct ppc {
     // event instead of running the idle loop, as the 68K core does for
     // STOP.  Any exception entry clears it.
     uint32_t dozing;
+    // The data-cache lines dcbz allocated over device pages (memory.h,
+    // mem_lines_t; g_mem_lines points here while any is held).  In the
+    // struct so a checkpoint carries them.
+    mem_lines_t dlines;
     int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750 (the model discriminator)
 
     // --- time derivation (exact-rational RTC/TB/DEC) ---
