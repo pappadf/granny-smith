@@ -12,6 +12,7 @@
 // out can be staged exactly.
 
 #include "appletalk.h"
+#include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "link_harness.h"
 #include "stub_upper.h"
@@ -869,6 +870,59 @@ TEST(get_status_runs_no_command) {
     link_delete();
 }
 
+#define ASP_TICKLE 5
+
+// The server tickles each open session every 30 s: a workstation that hears
+// nothing from its server for two minutes closes the session.  A session
+// the guest stops tickling is still closed after two minutes.
+TEST(the_server_tickles_each_session) {
+    link_boot();
+    g_asp_closes = 0;
+    uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(sid != 0);
+    wire_clear();
+    guest_advance_to(link_now_ns() + 100e9);
+    int tickles = wire_count_atp(GUEST_NODE, ATP_TREQ, ASP_TICKLE);
+    ASSERT_TRUE(tickles >= 2 && tickles <= 4);
+    ASSERT_EQ_INT(1, live_sessions());
+    guest_advance_to(link_now_ns() + 40e9);
+    ASSERT_EQ_INT(0, live_sessions());
+    ASSERT_EQ_INT(1, g_asp_closes);
+    link_delete();
+}
+
+// A session whose command waits for its data (a remote volume's folder or
+// file on its way) is not idle, however long the wait.  System 6's AppleShare
+// retries the command a while and then waits in silence, with a tickle now
+// and then at most, and the session used to expire under the waiting command
+// after two minutes.  The server tickles it meanwhile, and answers when the
+// data is in.
+TEST(a_session_waiting_on_a_deferred_command_stays_open) {
+    link_boot();
+    g_asp_closes = 0;
+    uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(sid != 0);
+    g_afp_calls = 0;
+    g_afp_defer = true;
+    uint8_t cmd[] = {0x08};
+    asp_request(GUEST_NODE, ASP_COMMAND, sid, 0x1002, cmd, sizeof cmd);
+    ASSERT_EQ_INT(1, g_afp_calls);
+    wire_clear();
+    guest_advance_to(link_now_ns() + 300e9); // five minutes
+    ASSERT_EQ_INT(1, live_sessions());
+    ASSERT_TRUE(wire_count_atp(GUEST_NODE, ATP_TREQ, ASP_TICKLE) >= 8);
+    ASSERT_TRUE(last_tresp(GUEST_NODE, NULL) == NULL);
+    g_afp_defer = false;
+    asp_retry_deferred();
+    guest_advance_to(link_now_ns() + 5e6);
+    ASSERT_EQ_INT(2, g_afp_calls);
+    const uint8_t *r = last_tresp(GUEST_NODE, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(0, (int)tresp_result(r));
+    ASSERT_EQ_INT(0, g_asp_closes);
+    link_delete();
+}
+
 // Each session has its own pending write: with one for the whole server, a
 // second session's Write while the first waited got no reply.
 TEST(two_sessions_write_at_once) {
@@ -989,6 +1043,8 @@ int main(void) {
     RUN(session_ids_stay_unique_across_many_opens);
     RUN(commands_reach_only_their_own_session);
     RUN(get_status_runs_no_command);
+    RUN(the_server_tickles_each_session);
+    RUN(a_session_waiting_on_a_deferred_command_stays_open);
     RUN(two_sessions_write_at_once);
     RUN(a_restored_connection_is_a_restarted_server);
     printf("[PASS] All atalk_link tests passed\n");

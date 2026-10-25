@@ -99,11 +99,11 @@ static const char *ditl_kind_name(uint8_t kind) {
         return "control";
     case 8:
         return "static_text";
-    case 9:
-        return "edit_text";
     case 16:
-        return "icon";
+        return "edit_text";
     case 32:
+        return "icon";
+    case 64:
         return "pict";
     default:
         return "unknown";
@@ -131,12 +131,16 @@ int re_decode_ditl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         off += 13;
         uint8_t plen = (off < len) ? bytes[off] : 0;
         char text[256] = {0};
-        if (plen > 0 && off + 1 + plen <= len)
+        // Control, icon and picture items carry a 2-byte resource ID, not text.
+        uint8_t kind = type_byte & 0x7F;
+        bool has_res_id = (kind == 7 || kind == 32 || kind == 64) && plen == 2 && off + 3 <= len;
+        int16_t res_id = has_res_id ? (int16_t)((bytes[off + 1] << 8) | bytes[off + 2]) : 0;
+        if (has_res_id)
+            snprintf(text, sizeof(text), "id %d", res_id);
+        else if (plen > 0 && off + 1 + plen <= len)
             re_pstring_to_utf8(bytes, len, off, text, sizeof(text));
-        size_t data_take = 1 + plen;
-        if (data_take & 1)
-            data_take++; // pad to even
-        off += data_take;
+        // The length byte, then the data padded to an even length.
+        off += 1 + (size_t)plen + (plen & 1);
 
         if (!first)
             fputc(',', json_fp);
@@ -145,9 +149,13 @@ int re_decode_ditl(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
         fprintf(json_fp, "{\"index\":%d,\"kind\":\"%s\",\"enabled\":%s,\"bounds\":", i + 1, ditl_kind_name(type_byte),
                 enabled ? "true" : "false");
         write_rect(json_fp, rect_p);
-        fprintf(json_fp, ",\"text\":");
-        re_json_write_string(json_fp, text);
-        fprintf(json_fp, "}");
+        if (has_res_id) {
+            fprintf(json_fp, ",\"res_id\":%d}", res_id);
+        } else {
+            fprintf(json_fp, ",\"text\":");
+            re_json_write_string(json_fp, text);
+            fprintf(json_fp, "}");
+        }
         if (txt_fp)
             fprintf(txt_fp, "  %2d: %-12s %s\n", i + 1, ditl_kind_name(type_byte), text);
     }
