@@ -135,6 +135,11 @@ static inline void log_noop_with_(const log_category_t *cat, int level, const ch
 static inline unsigned long log_alert_total(void) {
     return 0;
 }
+#define log_status(fmt, ...)                                                                                           \
+    do {                                                                                                               \
+        if (0)                                                                                                         \
+            log_noop_(0, fmt, ##__VA_ARGS__);                                                                          \
+    } while (0)
 
 #ifdef __cplusplus
 }

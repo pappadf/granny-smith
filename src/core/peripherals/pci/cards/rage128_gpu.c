@@ -256,6 +256,23 @@ static bool wait_ack(r128_gpu_t *g, uint32_t seq) {
             double dt = now_ms() - t0;
             if (dt > 250.0)
                 LOG(1, "Rage 128 webgpu: the GPU worker took %.0f ms to acknowledge (seq %u)", dt, seq);
+            // A wait of a second or more holds the whole emulator: say so on
+            // the console (at most every 10 s, with what was folded)
+            if (dt >= 1000.0) {
+                static double s_last_ms, s_folded_ms;
+                static unsigned s_folded;
+                double now = now_ms();
+                s_folded++;
+                s_folded_ms += dt;
+                if (now - s_last_ms >= 10000.0) {
+                    log_status("Rage 128 webgpu: the emulator waited %.1f s for the GPU worker (%u such waits, %.1f s, "
+                               "since the last report)",
+                               dt / 1000.0, s_folded, s_folded_ms / 1000.0);
+                    s_last_ms = now;
+                    s_folded = 0;
+                    s_folded_ms = 0;
+                }
+            }
             return true;
         }
         if (worker_lost(g))
