@@ -376,11 +376,17 @@ word-aligned (what the 604 and 750 require; a doubleword need not be
 8-aligned, and one crossing a page leaves) -- `lfs` widens exactly
 (bitwise for inf/NaN, `ppc_f32_to_f64`), `stfs` is the bit selection and
 leaves when it would denormalize, `stfd` is two words through the store
-helper; the arithmetic and moves with Rc clear and `fcmpu`/`fcmpo` call
-an imported helper (`ppc_jit_fp`) that runs the interpreter's own
-routines, so results and FPSCR are the predecoded loop's, and declines
-(leave at the instruction) when FP is unavailable or an FP exception is
-enabled; a compare returns its CR field for the translation's CR local.
+helper; `fadd`/`fsub`/`fmul` and the madd family, single and double, inline:
+`ppc_softfp.c`'s host fast path step for step (round to nearest, the
+operands, product and result inside its exponent envelope, a product of
+two short significands, which is exact so no fma is needed -- wasm has
+none) with FPSCR[XE] clear, so only FR, FI, XX (FX on its rise) and FPRF
+change; any check that fails, and every other arithmetic or move with
+Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
+that runs the interpreter's own routines, so results and FPSCR are the
+predecoded loop's either way; it declines (leave at the instruction)
+when FP is unavailable or an FP exception is enabled, and a compare
+returns its CR field for the translation's CR local.
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
 segment registers, the FP record forms and FPSCR moves stay in C, as
 does `dcbz`.  The kernel runs translated only
@@ -406,9 +412,13 @@ predecoded loop, leaving translated code at `lfs` (618 K exits in 10 s),
 `fcmpo` (1.29 M).  With the floating point above translated, in a Q3DM0
 browser checkpoint (WebGPU takeover, draws not rasterised so the
 software GPU is not the limit) the share went from 49 % to 97 % and the
-throughput from 38 to 77 MIPS, twice the frames.  What leaves most now
-is `dcbz` (167 K exits a second), and the floating-point routines are a
-third of the emulator thread (`ppc_sf_arith` 16 %, the helper call 8 %).  The way
+throughput from 38 to 77 MIPS, twice the frames.  Inlining the fast path
+then took the C kernel from 16 % of the emulator thread to 6 % and the
+helper call from 8 % to 3 %: 81 to 92 MIPS (alternated pairs, 79-83
+against 87-98), 2.4 times the first throughput.  The checkpoint compare
+(Node, from an in-game checkpoint, 3 G instructions, eager translation)
+finds the guest state identical to the predecoded loop's.  What leaves
+translated code most now is `dcbz` (167 K exits a second).  The way
 to find what to translate next is `jit.trace = 3`, the untranslated exits
 summed by opcode: `mcrxr` led on the PM6100 desktop (331 K exits per
 150 M instructions), and translating it took the row from 68 to 79 MIPS.
