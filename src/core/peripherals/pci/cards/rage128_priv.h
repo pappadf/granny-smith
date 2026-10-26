@@ -366,6 +366,7 @@ typedef struct rage128 {
         uint64_t flips; // CRTC_OFFSET changes that took effect
         uint64_t prims3d, blits, packets; // the counters at the last report
         double ms3d, ms2d, ms_scan; // host time drawing in 3D, 2D and preparing scanout since the last report
+        uint32_t timed_batches; // 3D batches seen; every 16th is timed (ms3d)
         double since_ms; // when the last report was
     } diag;
 
