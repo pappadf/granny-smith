@@ -387,8 +387,11 @@ worker attaches, the card keeps the software rasteriser and
   ($8000 and $F5A000, 640 × 480 ARGB1555, swapped by immediate
   `CRTC_OFFSET` writes) and a 16-bit Z buffer at $EC0000 cleared by one 2D
   fill a frame, textures in VRAM through host-data blits, no CPU access to
-  VRAM in a frame. Neither the present nor Quake III on this path has been
-  seen in a browser yet (§6).
+  VRAM in a frame. Quake III runs on this path in Chromium; measured on
+  SwiftShader (the present drawn into a plain texture, §6), in-game every
+  frame is presented with no readback, where before the cursor
+  compositing every frame was read back (8 bands a frame). The cursor
+  compositing itself awaits a real GPU.
 - **Threading.** Unlike the Voodoo2's, this translator runs on the
   emulator thread, synchronously (the card has no command queue to put a
   thread behind): a fence blocks it on the GPU worker. Waits keep the
