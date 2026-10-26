@@ -984,6 +984,40 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     }
 }
 
+bool r128_cursor_overlay(rage128_t *r, r128_cursor_overlay_t *c) {
+    if (!(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN))
+        return false;
+    uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
+    if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
+        return false;
+    r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
+    memcpy(c->mask, r->vram + src, sizeof(c->mask));
+    uint32_t posn = r->reg[R_CUR_HORZ_VERT_POSN / 4], off = r->reg[R_CUR_HORZ_VERT_OFF / 4];
+    c->ox = CUR_OFF_H(off);
+    c->oy = CUR_OFF_V(off);
+    // Where map (0, 0) lands: the visible part's top-left, less the offset.
+    c->x = (int32_t)CUR_POSN_H(posn) - (int32_t)c->ox;
+    c->y = (int32_t)CUR_POSN_V(posn) - (int32_t)c->oy;
+    uint32_t bpp = r128_bytes_per_pixel(CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]));
+    c->clr[0] = r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp);
+    c->clr[1] = r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp);
+    // Shown only if some on-screen pixel is not transparent (AND 1, XOR 0):
+    // a game that hides the pointer leaves the cursor on with an empty map.
+    for (uint32_t row = c->oy; row < CUR_SIZE; row++) {
+        if (c->y + (int32_t)row >= (int32_t)r->display.height)
+            break;
+        const uint8_t *line = c->mask + row * CUR_LINE_BYTES;
+        for (uint32_t col = c->ox; col < CUR_SIZE; col++) {
+            if (c->x + (int32_t)col >= (int32_t)r->display.width)
+                break;
+            uint32_t bit = 7u - (col & 7u);
+            if (!((line[col >> 3] >> bit) & 1u) || ((line[8 + (col >> 3)] >> bit) & 1u))
+                return true;
+        }
+    }
+    return false;
+}
+
 // Point the descriptor at what the CRTC is producing this frame: VRAM
 // straight through (8 bpp, no cursor), or `compose` — the frame byte-swapped
 // to big-endian pixels for the direct-colour depths, with the hardware
@@ -1097,7 +1131,10 @@ static void r128_update(rage128_t *r) {
     r->scan_blanked = r->display.bits == r->blank;
     r->scan_base = base;
     r->scan_swap = bpp > 1;
-    r128_present(r);
+    // A frame the WebGPU takeover presents at the vertical blank is not read
+    // back and composed here (a screenshot does that, r128_sync_pixels).
+    if (!r128_gpu_presents_scanout(r->gpu))
+        r128_present(r);
     if (format == PIXEL_8BPP) {
         if (r->display.dac_lut) {
             r->display.dac_lut = NULL;

@@ -404,6 +404,23 @@ static inline void r128_vram_access(rage128_t *r, uint32_t at, uint32_t len, boo
         r128_gpu_fence(r->gpu, at, len, write);
 }
 
+// === The hardware cursor (rage128.c) =======================================
+
+// The hardware cursor as the CRTC overlays it this frame, for a presenter
+// that composites it itself (the WebGPU takeover's present pass).  `mask`
+// is the 64-line AND/XOR map from VRAM (16 bytes a line); the map's (0, 0)
+// lands on screen at (x, y), and only lines from oy and columns from ox
+// show.  The colours are pixel codes in the scanout's format.
+typedef struct r128_cursor_overlay {
+    int32_t x, y;
+    uint32_t ox, oy;
+    uint32_t clr[2];
+    uint8_t mask[64 * 16];
+} r128_cursor_overlay_t;
+
+// Fills `c`; false when the cursor is off or no pixel of it can show.
+bool r128_cursor_overlay(rage128_t *r, r128_cursor_overlay_t *c);
+
 // === The register file (rage128.c) =========================================
 
 // A full-dword register write with all its side effects — what the CCE's

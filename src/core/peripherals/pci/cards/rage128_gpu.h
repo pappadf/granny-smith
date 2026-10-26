@@ -65,6 +65,11 @@ void r128_gpu_fence(r128_gpu_t *g, uint32_t at, uint32_t len, bool write);
 // (VRAM's copy of it may be stale — display_t.sync_pixels reads it back).
 bool r128_gpu_vblank(r128_gpu_t *g);
 
+// True when the next vertical blank presents the scanout from the GPU (it
+// is one of the GPU's colour surfaces): the CRTC path then neither reads
+// it back nor composes it.
+bool r128_gpu_presents_scanout(const r128_gpu_t *g);
+
 // Make every GPU-newer row current in VRAM (checkpoint save, screenshot).
 void r128_gpu_sync_all(r128_gpu_t *g);
 // Leave GPU mode: read back unless `discard` (reset, checkpoint restore).

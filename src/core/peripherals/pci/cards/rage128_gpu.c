@@ -1228,6 +1228,27 @@ bool r128_gpu_fill(r128_gpu_t *g, uint32_t base, uint32_t stride, uint32_t bpp, 
 // Vertical blank
 // ============================================================
 
+// The colour surface the CRTC scans out, when it is one: what a vertical
+// blank presents.
+static surf_t *scan_surface(r128_gpu_t *g) {
+    const rage128_t *r = g->r;
+    const display_t *d = &r->display;
+    uint32_t type = scan_dst_type(r);
+    if (!type)
+        return NULL;
+    for (int i = 0; i < R128GPU_MAX_SURF; i++) {
+        surf_t *s = &g->surf[i];
+        if (s->id && !s->depth && s->base == r->scan_base && s->stride == d->stride && s->fmt == type &&
+            s->h >= d->height && s->w >= d->width)
+            return s;
+    }
+    return NULL;
+}
+
+bool r128_gpu_presents_scanout(const r128_gpu_t *g) {
+    return g && g->engaged && !g->lost && scan_surface((r128_gpu_t *)g);
+}
+
 bool r128_gpu_vblank(r128_gpu_t *g) {
     if (!g || g->lost)
         return false;
@@ -1254,20 +1275,12 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
         r128_gpu_disengage(g, false);
         return false;
     }
-    // Present when the scanout IS a colour surface (and no hardware
-    // cursor needs compositing).
+    // Present when the scanout IS a colour surface; the present pass
+    // composites the hardware cursor.
     rage128_t *r = g->r;
     const display_t *d = &r->display;
     uint32_t type = scan_dst_type(r);
-    surf_t *hit = NULL;
-    if (type && !(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN)) {
-        for (int i = 0; i < R128GPU_MAX_SURF && !hit; i++) {
-            surf_t *s = &g->surf[i];
-            if (s->id && !s->depth && s->base == r->scan_base && s->stride == d->stride && s->fmt == type &&
-                s->h >= d->height && s->w >= d->width)
-                hit = s;
-        }
-    }
+    surf_t *hit = scan_surface(g);
     if (!hit) {
         if (g->presenting) {
             g->presenting = false;
@@ -1308,8 +1321,31 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
                         type == 4   ? 5u
                         : type == 3 ? 5u
                                     : 8u};
-    uint32_t words[6] = {hit->id, d->width, d->height, bits[0], bits[1], bits[2]};
-    emit(g, R128GPU_R_PRESENT, words, 6);
+    r128_cursor_overlay_t cur;
+    bool cur_on = r128_cursor_overlay(r, &cur);
+    if (g->lost)
+        return false;
+    uint32_t words[R128GPU_PRESENT_WORDS] = {hit->id,
+                                             d->width,
+                                             d->height,
+                                             bits[0],
+                                             bits[1],
+                                             bits[2],
+                                             cur_on ? 1u : 0u,
+                                             cur_on ? (uint32_t)cur.x : 0u,
+                                             cur_on ? (uint32_t)cur.y : 0u,
+                                             cur_on ? cur.ox : 0u,
+                                             cur_on ? cur.oy : 0u,
+                                             cur_on ? cur.clr[0] : 0u,
+                                             cur_on ? cur.clr[1] : 0u,
+                                             0u};
+    close_draw(g);
+    uint32_t at = reserve(g, R128GPU_R_PRESENT, 8u + sizeof(words) + (cur_on ? sizeof(cur.mask) : 0u));
+    if (at == UINT32_MAX)
+        return false;
+    memcpy(payload(g, at), words, sizeof(words));
+    if (cur_on)
+        memcpy(payload(g, at) + sizeof(words), cur.mask, sizeof(cur.mask));
     publish(g);
     g->n_presents++;
     return true;
