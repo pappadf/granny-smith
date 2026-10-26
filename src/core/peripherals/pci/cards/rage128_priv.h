@@ -405,6 +405,12 @@ static inline void r128_vram_access(rage128_t *r, uint32_t at, uint32_t len, boo
         r128_gpu_fence(r->gpu, at, len, write);
 }
 
+// The hardware cursor as the CRTC overlays it, for a scanout composed
+// elsewhere (the WebGPU present): false when it is off, else its 64 x 64
+// map in screen order from (*x, *y), each entry 0 (transparent), 1 (the
+// frame's pixel inverted) or 2 | (a pixel in the frame's format) << 8.
+bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y);
+
 // === The register file (rage128.c) =========================================
 
 // A full-dword register write with all its side effects — what the CCE's

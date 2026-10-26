@@ -5,7 +5,7 @@
 // step: PROTOCOL_VERSION is checked at attach.  The control block's layout
 // is the Voodoo2's (voodoo2Protocol.ts), word for word.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAGIC = 0x52313247; // 'R12G'
 
 // Control-block word indices (Uint32 view at the control base).
@@ -25,6 +25,7 @@ export const C_STAT_DRAWS = 12;
 export const C_STAT_FLUSHES = 13;
 export const C_STAT_PIPELINES = 14;
 export const C_STAT_READBACKS = 15;
+export const C_PRESENTS_DONE = 16;
 
 export const STATUS_DETACHED = 0;
 export const STATUS_ATTACHED = 1;
@@ -46,6 +47,7 @@ export const R_READBACK = 11; // {seq, id, y0, y1}
 export const R_MODE = 12; // {engaged, w, h}
 export const R_FENCE = 13; // {seq}
 export const R_SHUTDOWN = 14; // {seq}
+export const R_CURSOR = 15; // {on, x, y, has_map} [+ 64 x 64 u32 map]
 
 export const ROLE_COLOR = 0;
 export const ROLE_DEPTH = 1;
