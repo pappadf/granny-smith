@@ -455,28 +455,54 @@ fn shade(in: VOut) -> Shaded {
 // channel is the code the surface stores at the scanout's width, which
 // indexes the table at code << (8 − bits), as the card's DAC does.
 export const PRESENT_WGSL = /* wgsl */ `
-struct P { bits: vec4<u32>, };
+struct P { bits: vec4<u32>, cursor: vec4<u32>, };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var lut: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> p: P;
+@group(0) @binding(3) var cur: texture_2d<u32>;
 
 @vertex fn vs_present(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   var q = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
   return vec4<f32>(q[i], 0.0, 1.0);
 }
 
-fn index(v: f32, bits: u32) -> i32 {
+// A channel's code in the frame's own pixel format.
+fn code(v: f32, bits: u32) -> u32 {
   let m = (1u << bits) - 1u;
-  let code = (u32(v * 255.0 + 0.5) * m + 127u) / 255u;
-  return i32(code << (8u - bits));
+  return (u32(v * 255.0 + 0.5) * m + 127u) / 255u;
+}
+
+fn shade(c: u32, bits: u32, row: i32) -> f32 {
+  return textureLoad(lut, vec2<i32>(i32(c << (8u - bits)), row), 0).r;
 }
 
 @fragment fn fs_present(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   let c = textureLoad(src, vec2<i32>(pos.xy), 0);
-  let r = textureLoad(lut, vec2<i32>(index(c.r, p.bits.x), 0), 0).r;
-  let g = textureLoad(lut, vec2<i32>(index(c.g, p.bits.y), 1), 0).r;
-  let b = textureLoad(lut, vec2<i32>(index(c.b, p.bits.z), 2), 0).r;
-  return vec4<f32>(r, g, b, 1.0);
+  let mr = (1u << p.bits.x) - 1u;
+  let mg = (1u << p.bits.y) - 1u;
+  let mb = (1u << p.bits.z) - 1u;
+  var r = code(c.r, p.bits.x);
+  var g = code(c.g, p.bits.y);
+  var b = code(c.b, p.bits.z);
+  // The hardware cursor, an overlay on the frame's pixels as the CRTC
+  // composes it (rage128.c, r128_draw_cursor).
+  if (p.cursor.x != 0u) {
+    let at = vec2<i32>(pos.xy) - vec2<i32>(bitcast<i32>(p.cursor.y), bitcast<i32>(p.cursor.z));
+    if (all(at >= vec2<i32>(0)) && all(at < vec2<i32>(64))) {
+      let t = textureLoad(cur, at, 0).r;
+      if ((t & 3u) == 1u) {
+        r = mr - r;
+        g = mg - g;
+        b = mb - b;
+      } else if ((t & 3u) == 2u) {
+        let px = t >> 8u;
+        b = px & mb;
+        g = (px >> p.bits.z) & mg;
+        r = (px >> (p.bits.z + p.bits.y)) & mr;
+      }
+    }
+  }
+  return vec4<f32>(shade(r, p.bits.x, 0), shade(g, p.bits.y, 1), shade(b, p.bits.z, 2), 1.0);
 }
 `;
 

@@ -984,6 +984,39 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     }
 }
 
+bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y) {
+    if (!(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN))
+        return false;
+    uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
+    if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
+        return false;
+    r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
+    uint32_t bpp = r128_bytes_per_pixel(CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]));
+    uint32_t posn = r->reg[R_CUR_HORZ_VERT_POSN / 4], off = r->reg[R_CUR_HORZ_VERT_OFF / 4];
+    uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
+    uint32_t clr[2] = {r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp),
+                       r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp)};
+    *x = (int32_t)CUR_POSN_H(posn) - (int32_t)ox;
+    *y = (int32_t)CUR_POSN_V(posn) - (int32_t)oy;
+    for (uint32_t row = 0; row < CUR_SIZE; row++) {
+        const uint8_t *line = r->vram + src + row * CUR_LINE_BYTES;
+        for (uint32_t col = 0; col < CUR_SIZE; col++) {
+            uint32_t bit = 7u - (col & 7u);
+            uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
+            uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
+            uint32_t t;
+            if (row < oy || col < ox || (and_bit && !xor_bit))
+                t = 0; // transparent
+            else if (and_bit)
+                t = 1; // inverted
+            else
+                t = 2u | (clr[xor_bit] << 8);
+            img[row * CUR_SIZE + col] = t;
+        }
+    }
+    return true;
+}
+
 // Point the descriptor at what the CRTC is producing this frame: VRAM
 // straight through (8 bpp, no cursor), or `compose` — the frame byte-swapped
 // to big-endian pixels for the direct-colour depths, with the hardware
@@ -1097,7 +1130,11 @@ static void r128_update(rage128_t *r) {
     r->scan_blanked = r->display.bits == r->blank;
     r->scan_base = base;
     r->scan_swap = bpp > 1;
-    r128_present(r);
+    // Under the WebGPU takeover the next vblank presents a GPU surface
+    // itself; composing here would read the whole new frame back from the
+    // GPU at every double-buffer flip.
+    if (!r->display.presented_externally)
+        r128_present(r);
     if (format == PIXEL_8BPP) {
         if (r->display.dac_lut) {
             r->display.dac_lut = NULL;

@@ -59,6 +59,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define R128GPU_STORM_FRAMES  3 // ...in this many consecutive ones: a storm
 #define R128GPU_COOLDOWN_VBLS 300 // no re-engagement this long after a storm
 #define R128GPU_ATTACH_MS     10000 // the worker starts lazily: a device is created first
+#define R128GPU_FRAMES_AHEAD  2 // presents queued on the GPU before a vblank waits for one
 // How long a wait for the worker may last before the device counts as
 // lost.  Generous: a software adapter compiles a pipeline on its first use
 // and can take seconds; the waits keep the page's stall watch fed
@@ -142,6 +143,12 @@ struct r128_gpu {
     // The display table last sent.
     uint8_t lut[3][256];
     bool lut_sent;
+    // The hardware cursor last sent: its map, and whether and where it shows.
+    uint32_t cur_img[64 * 64];
+    uint32_t cur_scratch[64 * 64];
+    uint32_t cur_words[3];
+    bool cur_sent;
+    uint32_t present_seq; // PRESENT records sent (the worker's PRESENTS_DONE counts them)
     // Rules.
     uint32_t idle_vbls, bands_frame, storm_frames, cooldown;
     // Statistics.
@@ -580,6 +587,7 @@ static void engage(r128_gpu_t *g) {
     r->gpu_page_gen = g->page_gen;
     g->engaged = true;
     g->presenting = false;
+    g->cur_sent = false;
     g->idle_vbls = g->bands_frame = g->storm_frames = 0;
     g->n_engage++;
     LOG(1, "Rage 128 webgpu: engaged");
@@ -1228,6 +1236,52 @@ bool r128_gpu_fill(r128_gpu_t *g, uint32_t base, uint32_t stride, uint32_t bpp, 
 // Vertical blank
 // ============================================================
 
+// Frame pacing: nothing else waits on the GPU while it presents every
+// frame, so without a bound the emulator would queue frames faster than a
+// slow GPU draws them, and the next readback would wait for the whole
+// backlog.  Wait until at most R128GPU_FRAMES_AHEAD presents are pending.
+static bool pace(r128_gpu_t *g) {
+    double t0 = now_ms();
+    for (;;) {
+        uint32_t done = gload(g, R128GPU_C_PRESENTS_DONE);
+        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD)
+            return true;
+        if (worker_lost(g))
+            return false;
+        publish(g);
+        platform_v2gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
+        platform_v2gpu_keepalive();
+        if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
+            mark_lost(g, "the GPU worker stopped completing frames");
+            return false;
+        }
+    }
+}
+
+// Send the hardware cursor when it changed: its position and visibility
+// in a CURSOR record, its map after them only when the map changed.
+static bool send_cursor(r128_gpu_t *g) {
+    int32_t x = 0, y = 0;
+    bool on = r128_cursor_image(g->r, g->cur_scratch, &x, &y);
+    bool img = on && (!g->cur_sent || memcmp(g->cur_scratch, g->cur_img, sizeof(g->cur_img)));
+    uint32_t words[3] = {on ? 1u : 0u, (uint32_t)x, (uint32_t)y};
+    if (g->cur_sent && !img && !memcmp(words, g->cur_words, sizeof(words)))
+        return true;
+    close_draw(g);
+    uint32_t at = reserve(g, R128GPU_R_CURSOR, 8u + 16u + (img ? (uint32_t)sizeof(g->cur_img) : 0u));
+    if (at == UINT32_MAX)
+        return false;
+    uint32_t hdr[4] = {words[0], words[1], words[2], img ? 1u : 0u};
+    memcpy(payload(g, at), hdr, sizeof(hdr));
+    if (img) {
+        memcpy(g->cur_img, g->cur_scratch, sizeof(g->cur_img));
+        memcpy(payload(g, at) + sizeof(hdr), g->cur_img, sizeof(g->cur_img));
+    }
+    memcpy(g->cur_words, words, sizeof(words));
+    g->cur_sent = true;
+    return true;
+}
+
 bool r128_gpu_vblank(r128_gpu_t *g) {
     if (!g || g->lost)
         return false;
@@ -1254,13 +1308,13 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
         r128_gpu_disengage(g, false);
         return false;
     }
-    // Present when the scanout IS a colour surface (and no hardware
-    // cursor needs compositing).
+    // Present when the scanout IS a colour surface; the worker composites
+    // the hardware cursor over it.
     rage128_t *r = g->r;
     const display_t *d = &r->display;
     uint32_t type = scan_dst_type(r);
     surf_t *hit = NULL;
-    if (type && !(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN)) {
+    if (type) {
         for (int i = 0; i < R128GPU_MAX_SURF && !hit; i++) {
             surf_t *s = &g->surf[i];
             if (s->id && !s->depth && s->base == r->scan_base && s->stride == d->stride && s->fmt == type &&
@@ -1299,6 +1353,8 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
         g->presenting = true;
         emit_mode(g, true);
     }
+    if (!send_cursor(g))
+        return false;
     uint32_t bits[3] = {type == 4   ? 5u
                         : type == 3 ? 5u
                                     : 8u,
@@ -1308,8 +1364,12 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
                         type == 4   ? 5u
                         : type == 3 ? 5u
                                     : 8u};
+    if (!pace(g))
+        return false;
     uint32_t words[6] = {hit->id, d->width, d->height, bits[0], bits[1], bits[2]};
-    emit(g, R128GPU_R_PRESENT, words, 6);
+    if (!emit(g, R128GPU_R_PRESENT, words, 6))
+        return false;
+    g->present_seq++;
     publish(g);
     g->n_presents++;
     return true;
