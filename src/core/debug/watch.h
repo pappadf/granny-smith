@@ -40,4 +40,10 @@ void watch_remove_reporter(void *ctx);
 uint32_t watch_get_interval(void);
 void watch_set_interval(uint32_t seconds);
 
+// Seconds between two perf lines (0: off, the default): the run loop's,
+// the scheduler's, the translation tier's and the devices' figures over
+// the interval, for performance debugging.  The `log.perf_every` attribute.
+uint32_t watch_get_perf_interval(void);
+void watch_set_perf_interval(uint32_t seconds);
+
 #endif // WATCH_H

@@ -34,6 +34,7 @@
 
 #include "rage128_gpu.h"
 
+#include "breadcrumb.h"
 #include "display.h"
 #include "log.h"
 #include "platform_hooks.h"
@@ -156,6 +157,9 @@ struct r128_gpu {
     uint64_t n_readback_bands, n_readback_rows, n_upload_rows;
     uint64_t n_tex_create, n_tex_upload_bytes, n_tex_evict;
     uint64_t n_fallback[FB_COUNT];
+    // Waits on the worker (the perf line): how many, and host ms spent
+    uint64_t n_wait_ring, n_wait_ack, n_wait_pace;
+    double ms_wait_ring, ms_wait_ack, ms_wait_pace, ms_wait_max;
 };
 
 // ============================================================
@@ -220,23 +224,40 @@ static void publish(r128_gpu_t *g) {
 
 // Reserve a record (header included) that does not wrap, waiting for
 // room; UINT32_MAX when the worker is gone.
+// A wait on the worker ends: count it (the perf line, the breadcrumbs)
+static void wait_done(r128_gpu_t *g, crumb_phase_t outer, double t0, uint64_t *n, double *ms) {
+    double dt = now_ms() - t0;
+    (*n)++;
+    *ms += dt;
+    if (dt > g->ms_wait_max)
+        g->ms_wait_max = dt;
+    crumb_gpu_wait(dt);
+    crumb_leave(outer);
+}
+
 static uint32_t reserve(r128_gpu_t *g, uint32_t kind, uint32_t len) {
+    uint32_t at = mbx_reserve(&g->ring, kind, len);
+    if (at != UINT32_MAX)
+        return at;
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_RING);
     for (;;) {
         uint32_t tail = gload(g, R128GPU_C_TAIL);
-        uint32_t at = mbx_reserve(&g->ring, kind, len);
+        at = mbx_reserve(&g->ring, kind, len);
         if (at != UINT32_MAX)
-            return at;
+            break;
         if (worker_lost(g))
-            return UINT32_MAX;
+            break;
         publish(g);
         platform_v2gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
         platform_v2gpu_keepalive();
         if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped consuming the op ring");
-            return UINT32_MAX;
+            break;
         }
     }
+    wait_done(g, outer, t0, &g->n_wait_ring, &g->ms_wait_ring);
+    return at;
 }
 
 static inline uint8_t *payload(r128_gpu_t *g, uint32_t at) {
@@ -254,9 +275,16 @@ static bool emit(r128_gpu_t *g, uint32_t kind, const uint32_t *words, uint32_t n
     return true;
 }
 
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0);
 static bool wait_ack(r128_gpu_t *g, uint32_t seq) {
     publish(g);
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_ACK);
+    bool ok = wait_ack_inner(g, seq, t0);
+    wait_done(g, outer, t0, &g->n_wait_ack, &g->ms_wait_ack);
+    return ok;
+}
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
     for (;;) {
         uint32_t ack = gload(g, R128GPU_C_ACK);
         if ((int32_t)(ack - seq) >= 0) {
@@ -1241,21 +1269,29 @@ bool r128_gpu_fill(r128_gpu_t *g, uint32_t base, uint32_t stride, uint32_t bpp, 
 // slow GPU draws them, and the next readback would wait for the whole
 // backlog.  Wait until at most R128GPU_FRAMES_AHEAD presents are pending.
 static bool pace(r128_gpu_t *g) {
+    if ((uint32_t)(g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE)) < R128GPU_FRAMES_AHEAD)
+        return true;
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_PACE);
+    bool ok = false;
     for (;;) {
         uint32_t done = gload(g, R128GPU_C_PRESENTS_DONE);
-        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD)
-            return true;
+        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD) {
+            ok = true;
+            break;
+        }
         if (worker_lost(g))
-            return false;
+            break;
         publish(g);
         platform_v2gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
         platform_v2gpu_keepalive();
         if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped completing frames");
-            return false;
+            break;
         }
     }
+    wait_done(g, outer, t0, &g->n_wait_pace, &g->ms_wait_pace);
+    return ok;
 }
 
 // Send the hardware cursor when it changed: its position and visibility
@@ -1404,9 +1440,31 @@ const char *r128_gpu_stats(r128_gpu_t *g, char *buf, size_t n) {
     for (int i = 0; i < FB_COUNT && k > 0 && (size_t)k < n; i++)
         k += snprintf(buf + k, n - (size_t)k, " fallback_%s=%llu", k_fb_names[i], (unsigned long long)g->n_fallback[i]);
     if (g->ctrl && k > 0 && (size_t)k < n)
-        snprintf(buf + k, n - (size_t)k, " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
-                 gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
-                 gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+        k += snprintf(buf + k, n - (size_t)k,
+                      " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
+                      gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
+                      gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+    if (k > 0 && (size_t)k < n)
+        r128_gpu_wait_stats(g, buf + k, n - (size_t)k);
+    return buf;
+}
+
+// The waits on the worker and where the rings stand: the part of the
+// statistics the perf line prints every interval
+const char *r128_gpu_wait_stats(r128_gpu_t *g, char *buf, size_t n) {
+    if (!g) {
+        if (n)
+            buf[0] = 0;
+        return buf;
+    }
+    uint32_t backlog = g->ctrl ? gload(g, R128GPU_C_HEAD) - gload(g, R128GPU_C_TAIL) : 0;
+    uint32_t pending = g->ctrl ? g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE) : 0;
+    snprintf(buf, n,
+             " waits ring %llu/%.0fms ack %llu/%.0fms pace %llu/%.0fms (longest %.0fms); ring backlog %u B, "
+             "presents pending %u, status %u, lost %d",
+             (unsigned long long)g->n_wait_ring, g->ms_wait_ring, (unsigned long long)g->n_wait_ack, g->ms_wait_ack,
+             (unsigned long long)g->n_wait_pace, g->ms_wait_pace, g->ms_wait_max, backlog, pending,
+             g->ctrl ? gload(g, R128GPU_C_STATUS) : 0, g->lost);
     return buf;
 }
 

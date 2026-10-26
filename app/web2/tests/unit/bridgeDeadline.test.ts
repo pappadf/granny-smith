@@ -19,7 +19,7 @@ describe('the deadline and the heartbeat', () => {
     stop();
   });
 
-  it('a heartbeat that stands still for 3 visible seconds with requests pending is a dead worker', () => {
+  it('a heartbeat that stands still for 3 visible seconds with requests pending is a stall', () => {
     vi.useFakeTimers();
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     let heartbeat = 10;
@@ -44,6 +44,37 @@ describe('the deadline and the heartbeat', () => {
     expect(stalls).toEqual([]);
     vi.advanceTimersByTime(1_000);
     expect(stalls).toEqual(['emulator not responding: no heartbeat for 3 s with requests pending']);
+    stop();
+  });
+
+  it('a stall is not the end: the watch goes on, and reports the heartbeat coming back', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    let heartbeat = 1;
+    let inFlight = 1;
+    const stalls: string[] = [];
+    const resumes: number[] = [];
+    const stop = watchHeartbeat(
+      () => ({ heartbeat, inFlight }),
+      (r) => stalls.push(r),
+      (ms) => resumes.push(ms),
+    );
+    vi.advanceTimersByTime(4_000);
+    expect(stalls).toHaveLength(1);
+    // Still stalled, the requests timed out: one stall, not one a second.
+    inFlight = 0;
+    vi.advanceTimersByTime(10_000);
+    expect(stalls).toHaveLength(1);
+    expect(resumes).toEqual([]);
+    // The core comes back: the stall ends, with how long it lasted.
+    heartbeat++;
+    vi.advanceTimersByTime(1_000);
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]).toBeGreaterThanOrEqual(13_000);
+    // ...and a second stall is a new one.
+    inFlight = 1;
+    vi.advanceTimersByTime(4_000);
+    expect(stalls).toHaveLength(2);
     stop();
   });
 
