@@ -5,6 +5,7 @@
 // Host-file, view and memory byte sources, and path opening.  See source.h.
 
 #include "source.h"
+#include "log.h"
 
 #include "appledouble.h"
 #include "resource_fork.h"
@@ -52,8 +53,12 @@ static int64_t host_read(source_t *s, uint64_t off, void *buf, size_t len) {
         ssize_t n = pread(h->fd, buf, len, (off_t)off);
         if (n >= 0)
             return (int64_t)n;
-        if (errno != EINTR)
-            return -errno;
+        if (errno != EINTR) {
+            int e = errno;
+            LOG_ALERT("host file read failed: %s at offset %" PRIu64 " (%zu bytes): %s (errno %d)", h->key, off, len,
+                      strerror(e), e);
+            return -e;
+        }
     }
 }
 

@@ -80,6 +80,7 @@ typedef struct log_context_hooks {
     unsigned long long (*instr_count)(void); // the `@count` timestamp decoration
     void (*format_pc)(char *buf, size_t size); // the PC decoration ("PC=...")
     void (*observe_line)(const char *line); // sees every emitted line (debug trace)
+    bool (*on_owner_thread)(void); // the sinks may be called from here (log_alert; NULL: always)
 } log_context_hooks_t;
 void log_set_context_hooks(const log_context_hooks_t *hooks); // NULL removes them
 
@@ -177,6 +178,50 @@ static inline int log_would_log(const log_category_t *cat, int level) {
     } while (0)
 
 #define LOG(level, fmt, ...) LOG_WITH(log_local_category(), (level), (fmt), ##__VA_ARGS__)
+
+// Alerts ----------------------------------------------------------------------
+// A potentially fatal condition (an image that cannot be read, a write that
+// was lost, a checkpoint that failed): shown as a banner on the console
+// (the Terminal in the browser, stderr natively) and as an `[alert] 0` line
+// in the Logs view, whatever any category's level.  Not gated, not
+// configurable: these are the lines that say why a machine got stuck.
+//
+// `site` is "file:line" (LOG_ALERT fills it in) and `count` how many times
+// that site has fired so far (1 on the first).
+void log_alert(const char *site, unsigned count, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+
+// Number of alerts raised since start (the status line reports it)
+unsigned long log_alert_total(void);
+
+// A status line (the periodic report, watch.h): one plain line on the
+// console and a `[status] 0` line in the Logs view, ungated like an alert
+// but without the banner.
+void log_status(const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
+
+// The alert site's text: "file:line"
+#define LOG_ALERT_STR2(x) #x
+#define LOG_ALERT_STR(x)  LOG_ALERT_STR2(x)
+
+// Raises an alert, at most the first LOG_ALERT_BURST times per call site and
+// then every LOG_ALERT_EVERY-th time, so a failing disk read in a retry loop
+// cannot flood the console (the count says how many were folded).
+#define LOG_ALERT_BURST 8
+#define LOG_ALERT_EVERY 1000
+#define LOG_ALERT(fmt, ...)                                                                                            \
+    do {                                                                                                               \
+        static unsigned lg_alert_n_;                                                                                   \
+        unsigned lg_n_ = ++lg_alert_n_;                                                                                \
+        if (lg_n_ <= LOG_ALERT_BURST || lg_n_ % LOG_ALERT_EVERY == 0)                                                  \
+            log_alert(__FILE__ ":" LOG_ALERT_STR(__LINE__), lg_n_, (fmt), ##__VA_ARGS__);                              \
+    } while (0)
 
 #ifdef __cplusplus
 }

@@ -30,6 +30,7 @@
 // Development Guide* (SDK-G04000 Rev 0.01, 1999), chapter 4.
 
 #include "log.h"
+#include "platform_clock.h"
 #include "rage128_gpu.h"
 #include "rage128_priv.h"
 
@@ -274,10 +275,11 @@ static void op_gather(rage128_t *r, op_t *op) {
     op->bpp = dt_bytes(DT_DST(dt));
     op->mask = op->bpp >= 4 ? 0xFFFFFFFFu : ((1u << (8u * op->bpp)) - 1u);
     // DST_PITCH and SRC_PITCH are in units of 8 pixels (RRG §7.1, §7.2).
-    op->dst_base = REG(r, G_DST_OFFSET) & 0x3FFFFF0u;
+    op->dst_base = r128_vram_wrap(r, REG(r, G_DST_OFFSET) & 0x3FFFFF0u);
     op->dst_stride = (REG(r, G_DST_PITCH) & 0x3FFu) * 8u * op->bpp;
+    r->diag.dst2d = REG(r, G_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it
     op->src_type = DT_SRC(dt);
-    op->src_base = REG(r, G_SRC_OFFSET) & 0x3FFFFF0u;
+    op->src_base = r128_vram_wrap(r, REG(r, G_SRC_OFFSET) & 0x3FFFFF0u);
     op->src_stride = (REG(r, G_SRC_PITCH) & 0x3FFu) * 8u * (op->src_type == SRC_COLOR ? op->bpp : 1u);
     if (op->src_type != SRC_COLOR)
         op->src_stride /= 8u; // a mono line: one bit per pixel
@@ -494,7 +496,17 @@ static bool gpu_fill(rage128_t *r, const op_t *op, int32_t dx0, int32_t dy0, int
 }
 
 // Run a rectangle: DST_X/Y, DST_WIDTH/HEIGHT, the data path as loaded.
+static void run_rect_body(rage128_t *r);
+
+// The host time a rectangle takes counts towards the status line (a
+// host-data one's is mostly in host_feed, which is not timed)
 static void run_rect(rage128_t *r) {
+    double t0 = host_time_ms();
+    run_rect_body(r);
+    r->diag.ms2d += host_time_ms() - t0;
+}
+
+static void run_rect_body(rage128_t *r) {
     op_t op;
     op_gather(r, &op);
     int32_t w = (int32_t)(REG(r, G_DST_WIDTH) & 0x1FFFu);
@@ -618,7 +630,15 @@ static void host_feed(rage128_t *r, uint32_t v) {
 // minor axis whenever the error term is non-negative (zero counts as
 // negative with BRES_SIGN), adding DST_BRES_DEC on a minor step and
 // DST_BRES_INC otherwise.  The pixel source is the brush.
+static void run_line_body(rage128_t *r, uint32_t len);
+
 static void run_line(rage128_t *r, uint32_t len) {
+    double t0 = host_time_ms();
+    run_line_body(r, len);
+    r->diag.ms2d += host_time_ms() - t0;
+}
+
+static void run_line_body(rage128_t *r, uint32_t len) {
     op_t op;
     op_gather(r, &op);
     if (!op.bpp)

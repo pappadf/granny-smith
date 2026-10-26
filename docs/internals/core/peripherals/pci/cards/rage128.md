@@ -28,7 +28,7 @@ model answers registers and nothing else.
 | **ROM** | the Xclaim VR 128's `113-57406-108` (FCode 1.69, node `ATY,Rage128v`; catalogue default) or the Nexus 128's `113-57502-103` (`ATY,Rage128n`); identities in [`expansion-rom.md`](../../../../../reference/hardware/pci/expansion-rom.md) |
 | **BARs** | BAR0 64 MB prefetchable memory, BAR1 256 B I/O, BAR2 16 KB memory, ROM 128 KB |
 | **Memory** | 16 MB (Rage Orion, Xclaim VR 128); `memory=32m` for the Nexus 128 |
-| **Monitor** | `monitor=vga` (default: a VGA monitor answering DDC), `vga_noddc`, `13in_rgb`, `21in_rgb` |
+| **Monitor** | `monitor=vga` (default: a VGA monitor answering DDC), `vga_noddc`, `13in_rgb`, `21in_rgb`; not an advertised option: a configuration document picks it as `displays.<slot>.monitor` (catalogue `vga`, `13in_rgb`, `21in_rgb`), and `vga_noddc` is reached through `monitor=` alone |
 | **Rendering** | `raster=sw` (default, exact) or `raster=webgpu` (the host GPU, in a browser that has one); `gpu=auto` (default) or `gpu=always`, unadvertised |
 
 ## 1. Responsibilities & design
@@ -370,13 +370,23 @@ worker attaches, the card keeps the software rasteriser and
   restore (discarding the GPU's pixels: VRAM is the restored truth), or on
   device loss (logged; the walker draws from there on). A checkpoint save
   reads everything back first.
-- **Presentation.** At vblank, when the scanout is a colour surface (and
-  no hardware cursor needs compositing), the worker presents it onto an
+- **Presentation.** At vblank, when the scanout is a colour surface, the
+  worker presents it onto an
   overlay canvas (`#screen3d-r128`) through the display table — the DAC's
   direct-colour table composed with the monitor's response, indexed by
   the channel code at the scanout's width, as the renderer does — and
   `display_t.presented_externally` tells the WebGL renderer to skip its
-  upload. A screenshot reads the frame back (`sync_pixels`). The design
+  upload. The hardware cursor is composited in the same pass: a CURSOR
+  record carries its position, and its 64 × 64 map (each entry
+  transparent, inverting, or a pixel in the frame's format) whenever the
+  map changes. Without that, a visible cursor (Quake III's CD key and
+  menu screens) would leave the scanout to the CPU, which reads the whole
+  frame back from the GPU every vblank. For the same reason a
+  double-buffer flip does not compose the new front buffer while the GPU
+  presents. Presents are paced: the worker counts each one whose GPU work
+  has completed (`PRESENTS_DONE`), and a vblank waits while two are still
+  pending, so a slow GPU cannot build a backlog that the next readback
+  would have to wait out. A screenshot reads the frame back (`sync_pixels`). The design
   follows what Quake III does, measured natively: two colour buffers
   ($8000 and $F5A000, 640 × 480 ARGB1555, swapped by immediate
   `CRTC_OFFSET` writes) and a 16-bit Z buffer at $EC0000 cleared by one 2D

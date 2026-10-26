@@ -360,6 +360,15 @@ typedef struct rage128 {
     uint8_t fog_index;
     uint8_t told3d; // once-only 3D logs (rage128_raster.c)
 
+    // Where drawing lands, for the machine watch's status line (watch.h)
+    struct {
+        uint32_t dst3d, z3d, dst2d; // the last 3D colour / depth buffer and 2D destination (VRAM offsets)
+        uint64_t flips; // CRTC_OFFSET changes that took effect
+        uint64_t prims3d, blits, packets; // the counters at the last report
+        double ms3d, ms2d, ms_scan; // host time drawing in 3D, 2D and preparing scanout since the last report
+        double since_ms; // when the last report was
+    } diag;
+
     // The WebGPU takeover (rage128_gpu.c), NULL under the software
     // rasteriser.  While engaged, [gpu_lo, gpu_hi) bounds the VRAM the
     // GPU holds surfaces over and gpu_page_gen counts writes per 4 KB
@@ -369,6 +378,15 @@ typedef struct rage128 {
     uint32_t *gpu_page_gen;
     uint32_t gpu_gen;
 } rage128_t;
+
+// The VRAM byte an engine or CRTC address reaches.  The memory chips answer
+// to the low address bits only, so an address past the memory fitted wraps
+// onto it: a driver that sets CONFIG_MEMSIZE to 32 MB on a 16 MB board (the
+// Mac OS driver can) places its buffers above 16 MB, and on the board they
+// land 16 MB lower.  vram_size is a power of two (16 or 32 MB).
+static inline uint32_t r128_vram_wrap(const rage128_t *r, uint32_t a) {
+    return a & (r->vram_size - 1u);
+}
 
 // Every VRAM access that is not the GPU's own goes through here: the CPU
 // through the apertures and MM_DATA, the 2D engine, the CCE's fetches,
@@ -385,6 +403,12 @@ static inline void r128_vram_access(rage128_t *r, uint32_t at, uint32_t len, boo
     if (at < r->gpu_hi && at + len > r->gpu_lo)
         r128_gpu_fence(r->gpu, at, len, write);
 }
+
+// The hardware cursor as the CRTC overlays it, for a scanout composed
+// elsewhere (the WebGPU present): false when it is off, else its 64 x 64
+// map in screen order from (*x, *y), each entry 0 (transparent), 1 (the
+// frame's pixel inverted) or 2 | (a pixel in the frame's format) << 8.
+bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y);
 
 // === The register file (rage128.c) =========================================
 

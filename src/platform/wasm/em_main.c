@@ -62,6 +62,7 @@
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
+#include "watch.h"
 
 // ============================================================================
 // Forward Declarations
@@ -532,10 +533,14 @@ void em_main_tick(void) {
         // checkpoint.load) is a request served on this thread.
         double run_t0 = emscripten_get_now();
         scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
-        run_ms += emscripten_get_now() - run_t0;
+        double run_dt = emscripten_get_now() - run_t0;
+        run_ms += run_dt;
+        watch_note_phase("run", run_dt);
 
         // Update video if framebuffer changed
+        double video_t0 = emscripten_get_now();
         em_video_update();
+        watch_note_phase("video", emscripten_get_now() - video_t0);
     }
 
     // Poll for pending shell commands every tick.  This must run regardless
@@ -551,6 +556,8 @@ void em_main_tick(void) {
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
     mailbox_heartbeat(&g_mailbox);
+    // The machine watch: the periodic status line and the stuck detectors
+    watch_poll(emscripten_get_now());
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
@@ -560,6 +567,7 @@ void em_main_tick(void) {
     if (!(sched && scheduler_is_running(sched)))
         served += mailbox_idle_wait();
     tick_poll_ms_current = emscripten_get_now() - poll_t0;
+    watch_note_phase("requests", tick_poll_ms_current);
     if (served) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))

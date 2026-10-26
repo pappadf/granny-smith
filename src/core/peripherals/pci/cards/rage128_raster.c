@@ -46,19 +46,20 @@
 // usage decides, and the choice is a comment.
 
 #include "log.h"
+#include "platform_clock.h"
 #include "rage128_gpu.h"
 #include "rage128_raster_priv.h"
 
 #include <math.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("video");
-
 static void tell_once(rage128_t *r, uint8_t bit, const char *what) {
     if (r->told3d & bit)
         return;
     r->told3d |= bit;
-    LOG(1, "Rage 128 3D: %s", what);
+    // Shown on the console whatever the level: a dropped primitive can be
+    // the whole picture missing
+    log_status("Rage 128 3D: %s", what);
 }
 
 // ============================================================
@@ -192,6 +193,8 @@ static void tex_gather(rage128_t *r, tex_unit_t *u, bool on, uint32_t cntl_reg, 
     bool mip = !(u->cntl & TX_MIP_DIS) && TX_MIN_FN(u->cntl) >= MIN_NEAREST_MIP;
     for (uint32_t i = 0; i < 11; i++) {
         u->off[i] = REG(r, off_reg + 4u * i);
+        if (!(u->off[i] & 0x2000000u)) // VRAM, not AGP: wraps onto the memory fitted
+            u->off[i] = (u->off[i] & ~0x1FFFFFFu) | r128_vram_wrap(r, u->off[i] & 0x1FFFFFFu);
         if ((u->off[i] & 0xC0000000u) && i <= top && (mip || i == top))
             tell_once(r, TOLD_TILED, "a tiled texture, surface or Z buffer is addressed linearly");
     }
@@ -214,8 +217,9 @@ static bool gather(rage128_t *r, st_t *s) {
         tell_once(r, TOLD_FORMAT, "a colour buffer format the 3D engine does not write — primitive dropped");
         return false;
     }
-    s->dst_base = REG(r, R_DST_OFFSET) & 0x3FFFFF0u;
+    s->dst_base = r128_vram_wrap(r, REG(r, R_DST_OFFSET) & 0x3FFFFF0u);
     s->dst_stride = (REG(r, R_DST_PITCH) & 0x3FFu) * 8u * s->dst_bpp;
+    r->diag.dst3d = REG(r, R_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it, before wrapping
     if (s->dst_base & 0x2000000u) {
         tell_once(r, TOLD_AGP_DST, "a colour buffer in AGP space is not drawn");
         return false;
@@ -249,7 +253,8 @@ static bool gather(rage128_t *r, st_t *s) {
         s->z_bytes = 4, s->z_max = 0xFFFFFFFFu;
         break;
     }
-    s->z_base = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
+    s->z_base = r128_vram_wrap(r, REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u);
+    r->diag.z3d = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
     s->z_stride = (REG(r, R_Z_PITCH_C) & 0x3FFu) * 8u * s->z_bytes;
     s->fog_color = REG(r, R_FOG_COLOR_C);
     s->constant = REG(r, R_CONSTANT_COLOR_C);
@@ -271,6 +276,21 @@ static bool gather(rage128_t *r, st_t *s) {
     if (s->t[1].on) {
         s->t[1].sec_st = (s->t[1].cntl & TX_SEC_SEL_ST) != 0;
         s->t[1].sec_w = (s->t[1].cntl & TX_SEC_SEL_W) != 0;
+    }
+    // What shade() and sample() will read of a fragment, so make_frag
+    // interpolates only that.
+    bool fog_table = (s->tex_cntl & TC_FOG_EN) && (s->misc & MISC_FOG_TABLE);
+    s->need_z = (s->tex_cntl & (TC_Z_EN | TC_STENCIL_EN)) || fog_table;
+    s->need_spec = (s->tex_cntl & TC_SPECULAR) != 0;
+    s->need_fog = (s->tex_cntl & TC_FOG_EN) && !fog_table;
+    for (int u = 0; u < 2; u++) {
+        // sample() reads the LOD to pick a map, and to choose between the
+        // magnification and minification filters when they differ.
+        const tex_unit_t *t = &s->t[u];
+        uint32_t minf = TX_MIN_FN(t->cntl), magf = TX_MAG_FN(t->cntl);
+        bool mip = !(t->cntl & TX_MIP_DIS) && minf >= MIN_NEAREST_MIP;
+        bool min_linear = minf == MIN_LINEAR || minf == MIN_LINEAR_MIP || minf == MIN_TRILINEAR;
+        s->need_lod[u] = t->on && ((mip && t->lsize != t->lmin) || ((magf & 1u) != 0) != min_linear);
     }
     return true;
 }
@@ -330,15 +350,20 @@ static uint32_t texel_bits(uint32_t fmt) {
     return r128_3d_texel_bits(fmt);
 }
 
-static uint32_t mem_read(st_t *s, uint32_t addr, uint32_t bytes) {
+static inline __attribute__((always_inline)) uint32_t mem_read(st_t *s, uint32_t addr, uint32_t bytes) {
     rage128_t *r = s->r;
     if (!(addr & 0x2000000u)) {
         if (addr + bytes > r->vram_size)
             return 0;
         r128_vram_access(r, addr, bytes, false);
+        const uint8_t *p = r->vram + addr;
+        if (bytes == 2)
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+        if (bytes == 1)
+            return p[0];
         uint32_t v = 0;
         for (uint32_t i = 0; i < bytes; i++)
-            v |= (uint32_t)r->vram[addr + i] << (8u * i);
+            v |= (uint32_t)p[i] << (8u * i);
         return v;
     }
     // A texture in AGP space: through the GART, a dword at a time.
@@ -348,9 +373,12 @@ static uint32_t mem_read(st_t *s, uint32_t addr, uint32_t bytes) {
     return (w >> (8u * (addr & 3u))) & (bytes >= 4 ? 0xFFFFFFFFu : ((1u << (8u * bytes)) - 1u));
 }
 
+static inline __attribute__((always_inline)) uint32_t texel_argb(rage128_t *r, uint32_t fmt, uint32_t v, bool aen);
+
 // One texel of `u` at level `lev` (0 = the largest map), as ARGB8888, and
 // its raw value for the colour key.
-static uint32_t texel(st_t *s, const tex_unit_t *u, uint32_t lev, uint32_t tx, uint32_t ty, uint32_t *raw) {
+static inline __attribute__((always_inline)) uint32_t texel(st_t *s, const tex_unit_t *u, uint32_t lev, uint32_t tx,
+                                                            uint32_t ty, uint32_t *raw) {
     uint32_t lw = u->lpitch > lev ? u->lpitch - lev : 0;
     uint32_t bits = texel_bits(u->fmt);
     // PRIM_TEX_0 holds the smallest map: register n is the map whose
@@ -367,13 +395,18 @@ static uint32_t texel(st_t *s, const tex_unit_t *u, uint32_t lev, uint32_t tx, u
     if (bits == 4)
         v = (v >> ((bit & 4u) ? 4 : 0)) & 0xFu;
     *raw = v;
-    return r128_3d_texel_argb(s->r, u->fmt, v, (s->scale & S3_TEX_MAP_AEN) != 0);
+    return texel_argb(s->r, u->fmt, v, (s->scale & S3_TEX_MAP_AEN) != 0);
 }
 
 // A raw texel of datatype `fmt` as ARGB8888 — what texel() returns, shared
 // with the WebGPU takeover's texture uploads (rage128_gpu.c).  `aen`:
 // SCALE_3D_CNTL's TEX_MAP_AEN, without which textures carry no alpha.
 uint32_t r128_3d_texel_argb(rage128_t *r, uint32_t fmt, uint32_t v, bool aen) {
+    return texel_argb(r, fmt, v, aen);
+}
+
+// r128_3d_texel_argb, inlined into the per-texel path
+static inline __attribute__((always_inline)) uint32_t texel_argb(rage128_t *r, uint32_t fmt, uint32_t v, bool aen) {
     uint32_t a = 0xFFu, rr, g, b;
     switch (fmt) {
     case 3: // ARGB1555
@@ -415,13 +448,14 @@ uint32_t r128_3d_texel_argb(rage128_t *r, uint32_t fmt, uint32_t v, bool aen) {
 
 // A coordinate in texels through the clamp mode: the texel index, or -1
 // for the border colour.
-static int32_t wrap(int32_t i, uint32_t size, uint32_t mode) {
+// `size` is a power of two (a map's side), so the modulo is a mask.
+static inline int32_t wrap(int32_t i, uint32_t size, uint32_t mode) {
     int32_t n = (int32_t)size;
     switch (mode) {
     case WRAP_REPEAT:
-        return ((i % n) + n) % n;
+        return i & (n - 1);
     case WRAP_MIRROR: {
-        int32_t p = ((i % (2 * n)) + 2 * n) % (2 * n);
+        int32_t p = i & (2 * n - 1);
         return p < n ? p : 2 * n - 1 - p;
     }
     case WRAP_CLAMP:
@@ -431,7 +465,8 @@ static int32_t wrap(int32_t i, uint32_t size, uint32_t mode) {
     }
 }
 
-static uint32_t fetch(st_t *s, const tex_unit_t *u, uint32_t lev, int32_t x, int32_t y, uint32_t *raw) {
+static inline __attribute__((always_inline)) uint32_t fetch(st_t *s, const tex_unit_t *u, uint32_t lev, int32_t x,
+                                                            int32_t y, uint32_t *raw) {
     uint32_t w = 1u << (u->lpitch > lev ? u->lpitch - lev : 0);
     uint32_t h = 1u << (u->lheight > lev ? u->lheight - lev : 0);
     int32_t tx = wrap(x, w, TX_CLAMP_S(u->cntl)), ty = wrap(y, h, TX_CLAMP_T(u->cntl));
@@ -442,13 +477,13 @@ static uint32_t fetch(st_t *s, const tex_unit_t *u, uint32_t lev, int32_t x, int
     return texel(s, u, lev, (uint32_t)tx, (uint32_t)ty, raw);
 }
 
-static uint32_t lerp_argb(uint32_t a, uint32_t b, uint32_t f) { // f in 0..256
-    uint32_t out = 0;
-    for (int k = 0; k < 32; k += 8) {
-        uint32_t x = (a >> k) & 0xFFu, y = (b >> k) & 0xFFu;
-        out |= ((x * (256u - f) + y * f + 128u) >> 8) << k;
-    }
-    return out;
+// Per channel (x·(256 - f) + y·f + 128) >> 8, two channels a multiply: a
+// lane's sum is at most 255·256 + 128, so it never carries into the next.
+static inline uint32_t lerp_argb(uint32_t a, uint32_t b, uint32_t f) { // f in 0..256
+    uint32_t g = 256u - f;
+    uint32_t rb = ((a & 0x00FF00FFu) * g + (b & 0x00FF00FFu) * f + 0x00800080u) >> 8;
+    uint32_t ag = ((a >> 8) & 0x00FF00FFu) * g + ((b >> 8) & 0x00FF00FFu) * f + 0x00800080u;
+    return (rb & 0x00FF00FFu) | (ag & 0xFF00FF00u);
 }
 
 // One map, nearest or bilinear, at (s, t) in [0,1] units of the map.
@@ -504,8 +539,9 @@ static uint32_t sample(st_t *s, const tex_unit_t *u, double sc, double tc, doubl
 // ============================================================
 
 // The colour/alpha combine function (SDK chapter 6, the combine table).
-static int32_t comb(uint32_t fn, int32_t a, int32_t b, int32_t pass, int32_t a_interp, int32_t a_tex, int32_t a_const,
-                    int32_t a_prev, int32_t c_const) {
+static inline __attribute__((always_inline)) int32_t comb(uint32_t fn, int32_t a, int32_t b, int32_t pass,
+                                                          int32_t a_interp, int32_t a_tex, int32_t a_const,
+                                                          int32_t a_prev, int32_t c_const) {
     switch (fn) {
     case 0:
         return pass;
@@ -545,7 +581,8 @@ static int32_t comb(uint32_t fn, int32_t a, int32_t b, int32_t pass, int32_t a_i
 // One texture unit's stage.  `tex` is its filtered texel, `prev` the
 // previous stage (the interpolated colour for the primary unit), `diff`
 // the interpolated diffuse colour.
-static col_t stage(const st_t *s, const tex_unit_t *u, bool secondary, col_t tex, col_t prev, col_t diff) {
+static inline __attribute__((always_inline)) col_t stage(const st_t *s, const tex_unit_t *u, bool secondary, col_t tex,
+                                                         col_t prev, col_t diff) {
     col_t cc = unpack_argb(s->constant), out;
     uint32_t w = u->comb;
     uint32_t fn = w & 0xFu, cf = (w >> 4) & 0xFu, inf = (w >> 10) & 0xFu;
@@ -733,7 +770,7 @@ static bool scissored(const st_t *s, int32_t x, int32_t y) {
     return any_add && !in_add;
 }
 
-static bool cmp_op(uint32_t op, uint64_t a, uint64_t b) {
+static inline __attribute__((always_inline)) bool cmp_op(uint32_t op, uint64_t a, uint64_t b) {
     switch (op) {
     case 0:
         return false;
@@ -771,7 +808,8 @@ static uint32_t sten_op(uint32_t op, uint32_t v, uint32_t ref) {
     }
 }
 
-static int32_t blend_factor(uint32_t f, int k, col_t src, col_t dst, bool for_src, bool *force_dst, uint32_t *dst_f) {
+static inline __attribute__((always_inline)) int32_t blend_factor(uint32_t f, int k, col_t src, col_t dst, bool for_src,
+                                                                  bool *force_dst, uint32_t *dst_f) {
     switch (f) {
     case 0:
         return 0;
@@ -996,21 +1034,24 @@ typedef struct plane {
     double a0, ax, ay; // a(x, y) = a0 + ax·x + ay·y
 } plane_t;
 
+// Interpolates what the pixel reads (st_t's need_*); the rest stays 0.
 static void make_frag(const st_t *s, const plane_t *p, double px, double py, frag_t *f) {
     double av[A_COUNT];
-    for (int i = 0; i < A_COUNT; i++)
-        av[i] = p[i].a0 + p[i].ax * px + p[i].ay * py;
-    f->z = av[A_Z];
+#define MF_EVAL(i) (av[i] = p[i].a0 + p[i].ax * px + p[i].ay * py)
+    f->z = s->need_z ? MF_EVAL(A_Z) : 0.0;
     for (int k = 0; k < 4; k++)
-        f->c[k] = av[A_R + k];
+        f->c[k] = MF_EVAL(A_R + k);
     for (int k = 0; k < 3; k++)
-        f->spec[k] = av[A_SR + k];
-    f->fog = av[A_FOG];
+        f->spec[k] = s->need_spec ? MF_EVAL(A_SR + k) : 0.0;
+    f->fog = s->need_fog ? MF_EVAL(A_FOG) : 0.0;
     for (int u = 0; u < 2; u++) {
         const tex_unit_t *t = &s->t[u];
         f->s[u] = f->t[u] = f->lod[u] = 0.0;
         if (!t->on)
             continue;
+        MF_EVAL(A_S0 + 3 * u);
+        MF_EVAL(A_T0 + 3 * u);
+        MF_EVAL(A_W0 + 3 * u);
         int is = A_S0 + 3 * u, it = A_T0 + 3 * u, iw = A_W0 + 3 * u;
         double w = av[iw];
         if (w == 0.0)
@@ -1018,6 +1059,8 @@ static void make_frag(const st_t *s, const plane_t *p, double px, double py, fra
         double sc = av[is] / w, tc = av[it] / w;
         f->s[u] = sc;
         f->t[u] = tc;
+        if (!s->need_lod[u])
+            continue; // sample() does not read it
         // The texel step: the pixel's neighbours to the right and below,
         // in texels of the largest map.
         double w1 = av[iw] + p[iw].ax, w2 = av[iw] + p[iw].ay;
@@ -1032,6 +1075,7 @@ static void make_frag(const st_t *s, const plane_t *p, double px, double py, fra
         double lod = rho > 0.0 ? log2(rho) : -64.0;
         f->lod[u] = lod - (double)TC_LOD_BIAS(s->tex_cntl) / 128.0;
     }
+#undef MF_EVAL
 }
 
 // ============================================================
@@ -1189,6 +1233,7 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     st_t s;
     if (!n || !gather(r, &s))
         return;
+    double t0 = host_time_ms(); // the batch's host time, for the status line
     // Under the WebGPU takeover the GPU draws the batch's triangles when it
     // can express them; otherwise the walker below draws everything, its
     // VRAM accesses fenced (r128_vram_access).
@@ -1235,4 +1280,5 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     }
     if (s.gpu)
         r128_gpu_batch_end(r->gpu, &s);
+    r->diag.ms3d += host_time_ms() - t0;
 }

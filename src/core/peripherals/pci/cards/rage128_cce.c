@@ -241,7 +241,8 @@ static void tell_once(rage128_t *r, uint32_t op, const char *what) {
     if (r->cce.told[op >> 3] & bit)
         return;
     r->cce.told[op >> 3] |= bit;
-    LOG(1, "Rage 128 CCE: type-3 opcode $%02X (%s) is not executed — skipped", op, what);
+    // On the console whatever the level (as the 3D engine's)
+    log_status("Rage 128 CCE: type-3 opcode $%02X (%s) is not executed — skipped", op, what);
 }
 
 // Bytes per pixel of a DST_TYPE, for the colour-brush sizes (SDK appendix F, the pixel-size table).

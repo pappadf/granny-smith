@@ -58,6 +58,7 @@
 #include "memory.h"
 #include "object.h"
 #include "pci.h"
+#include "platform_clock.h"
 #include "platform_hooks.h"
 #include "prom.h"
 #include "rage128_gpu.h"
@@ -66,6 +67,7 @@
 #include "system.h"
 #include "system_internal.h"
 #include "value.h"
+#include "watch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -388,6 +390,19 @@ static void r128_build_edid(rage128_t *r) {
 // ============================================================
 
 // Reads that are not simply the stored value.
+// The VRAM byte a CPU address reaches through the memory controller, or -1
+// for none.  The controller decodes CONFIG_MEMSIZE bytes (never less than
+// is fitted); where that claims more than is fitted, the excess aliases
+// the installed memory (r128_vram_wrap).
+static int64_t vram_map(const rage128_t *r, uint32_t a) {
+    uint32_t decoded = r->reg[R_CONFIG_MEMSIZE / 4];
+    if (decoded < r->vram_size)
+        decoded = r->vram_size;
+    if (a >= decoded)
+        return -1;
+    return r128_vram_wrap(r, a);
+}
+
 static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
     off &= (R128_REG_APER_SIZE - 1u) & ~3u;
     if (!peek)
@@ -399,9 +414,10 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
         uint32_t idx = r->reg[R_MM_INDEX / 4];
         if (idx & MM_APER) {
             // Linear aperture 0 through the index pair: VRAM, no swap.
-            uint32_t a = idx & MM_ADDR_MASK;
-            if (a + 4u > r->vram_size)
+            int64_t m = vram_map(r, idx & MM_ADDR_MASK);
+            if (m < 0 || (uint64_t)m + 4u > r->vram_size)
                 return 0xFFFFFFFFu;
+            uint32_t a = (uint32_t)m;
             r128_vram_access(r, a, 4, false);
             return (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
                    ((uint32_t)r->vram[a + 3] << 24);
@@ -486,10 +502,13 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         uint32_t idx = r->reg[R_MM_INDEX / 4];
         uint32_t a = idx & MM_ADDR_MASK;
         if (idx & MM_APER) {
-            if (a < r->vram_size)
-                r128_vram_access(r, a, r->vram_size - a < 4u ? r->vram_size - a : 4u, true);
+            int64_t m = vram_map(r, a);
+            if (m < 0)
+                return;
+            a = (uint32_t)m; // dword-aligned, so all four bytes are in VRAM
+            r128_vram_access(r, a, 4, true);
             for (uint32_t i = 0; i < 4; i++)
-                if ((mask >> (8u * i)) & 0xFFu && a + i < r->vram_size)
+                if ((mask >> (8u * i)) & 0xFFu)
                     r->vram[a + i] = (uint8_t)(value >> (8u * i));
             return;
         }
@@ -564,6 +583,15 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         // registers (the drivers' reset dance, SDK §5.2).
         if ((merged & SOFT_RESET_GUI) && !(*p & SOFT_RESET_GUI))
             r128_cce_soft_reset(r);
+        *p = merged;
+        return;
+    case R_CONFIG_MEMSIZE:
+        // Firmware or a driver may claim more memory than is fitted; above it
+        // addresses wrap (r128_vram_wrap), which the console should say.
+        if (merged > r->vram_size && *p <= r->vram_size)
+            log_status("Rage 128: memory size set to %u MB on a %u MB card -- addresses above %u MB "
+                       "wrap onto the memory fitted",
+                       merged >> 20, r->vram_size >> 20, r->vram_size >> 20);
         *p = merged;
         return;
     case R_CONFIG_APER_0_BASE:
@@ -723,9 +751,7 @@ static int64_t aper_map(const rage128_t *r, uint32_t off) {
         a ^= 1u;
     else if (endian == ENDIAN_32BPP)
         a ^= 3u;
-    if (a >= r->vram_size)
-        return -1;
-    return a;
+    return vram_map(r, a);
 }
 
 static uint8_t aper_rd8(void *ctx, uint32_t off, bool peek) {
@@ -925,7 +951,7 @@ static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp
 
 // Overlay the cursor on `compose`, which holds the frame in display order.
 static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
-    uint32_t src = r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u;
+    uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
         return;
     r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
@@ -958,12 +984,54 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     }
 }
 
+bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y) {
+    if (!(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN))
+        return false;
+    uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
+    if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
+        return false;
+    r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
+    uint32_t bpp = r128_bytes_per_pixel(CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]));
+    uint32_t posn = r->reg[R_CUR_HORZ_VERT_POSN / 4], off = r->reg[R_CUR_HORZ_VERT_OFF / 4];
+    uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
+    uint32_t clr[2] = {r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp),
+                       r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp)};
+    *x = (int32_t)CUR_POSN_H(posn) - (int32_t)ox;
+    *y = (int32_t)CUR_POSN_V(posn) - (int32_t)oy;
+    for (uint32_t row = 0; row < CUR_SIZE; row++) {
+        const uint8_t *line = r->vram + src + row * CUR_LINE_BYTES;
+        for (uint32_t col = 0; col < CUR_SIZE; col++) {
+            uint32_t bit = 7u - (col & 7u);
+            uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
+            uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
+            uint32_t t;
+            if (row < oy || col < ox || (and_bit && !xor_bit))
+                t = 0; // transparent
+            else if (and_bit)
+                t = 1; // inverted
+            else
+                t = 2u | (clr[xor_bit] << 8);
+            img[row * CUR_SIZE + col] = t;
+        }
+    }
+    return true;
+}
+
 // Point the descriptor at what the CRTC is producing this frame: VRAM
 // straight through (8 bpp, no cursor), or `compose` — the frame byte-swapped
 // to big-endian pixels for the direct-colour depths, with the hardware
 // cursor composited on top.  The cursor is a CRTC overlay, so it never
 // touches VRAM.
+static void r128_present_body(rage128_t *r);
+
+// Prepares the scanout, its host time counted for the status line
 static void r128_present(rage128_t *r) {
+    double t0 = host_time_ms();
+    r128_present_body(r);
+    r->diag.ms_scan += host_time_ms() - t0;
+}
+
+static void r128_present_body(rage128_t *r) {
     if (r->scan_blanked) {
         r->display.bits = r->blank;
         return;
@@ -1033,7 +1101,8 @@ static void r128_update(rage128_t *r) {
         // 4 bpp, packed 24 bpp, or reserved: not depths a Mac driver sets.
         if (!r->depth_warned) {
             r->depth_warned = true;
-            LOG(0, "Rage 128: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode", pix);
+            LOG_ALERT("Rage 128: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
+                      pix);
         }
         return;
     }
@@ -1041,7 +1110,7 @@ static void r128_update(rage128_t *r) {
     uint32_t width = (((r->reg[R_CRTC_H_TOTAL_DISP / 4] >> 16) & 0xFFu) + 1u) * 8u;
     uint32_t height = ((r->reg[R_CRTC_V_TOTAL_DISP / 4] >> 16) & 0x7FFu) + 1u;
     uint32_t stride = (r->reg[R_CRTC_PITCH / 4] & 0x3FFu) * 8u * bpp;
-    uint32_t base = r->crtc_offset_live;
+    uint32_t base = r128_vram_wrap(r, r->crtc_offset_live);
     if (width > 2048u || height > 1536u) {
         LOG(2, "Rage 128: implausible CRTC geometry %ux%u — blanking", width, height);
         width = 640;
@@ -1061,7 +1130,11 @@ static void r128_update(rage128_t *r) {
     r->scan_blanked = r->display.bits == r->blank;
     r->scan_base = base;
     r->scan_swap = bpp > 1;
-    r128_present(r);
+    // Under the WebGPU takeover the next vblank presents a GPU surface
+    // itself; composing here would read the whole new frame back from the
+    // GPU at every double-buffer flip.
+    if (!r->display.presented_externally)
+        r128_present(r);
     if (format == PIXEL_8BPP) {
         if (r->display.dac_lut) {
             r->display.dac_lut = NULL;
@@ -1087,6 +1160,7 @@ static void r128_offset_write(rage128_t *r) {
     uint32_t v = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
     bool running = (r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_EN) != 0;
     if (!running || (r->reg[R_CRTC_OFFSET_CNTL / 4] & CRTC_OFFSET_FLIP_CNTL)) {
+        r->diag.flips += v != r->crtc_offset_live;
         r->crtc_offset_live = v;
         r->flip_pending = false;
         r128_update(r);
@@ -1103,6 +1177,7 @@ static void r128_flip_latch(rage128_t *r) {
         return;
     r->crtc_offset_live = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
     r->flip_pending = false;
+    r->diag.flips++;
     LOG(4, "Rage 128: flip to $%06X", r->crtc_offset_live);
     r128_update(r);
 }
@@ -1280,11 +1355,43 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r128_update(r);
 }
 
+// The card's status line (watch.h): what the engines drew since the last
+// line, and where -- the displayed buffer next to the 3D and 2D targets, so
+// a picture drawn somewhere the CRTC is not showing is visible as such
+static void r128_watch_report(void *ctx, char *buf, size_t size) {
+    rage128_t *r = ctx;
+    uint32_t pitch_px = (r->reg[R_CRTC_PITCH / 4] & 0x3FFu) * 8u;
+    int k =
+        snprintf(buf, size,
+                 "Rage 128 (raster %s): +%llu 3D prims, +%llu blits, +%llu CCE packets, %llu flips; scanout $%06X "
+                 "(%u px pitch%s), 3D colour $%06X depth $%06X, 2D dst $%06X",
+                 r->gpu ? "webgpu" : "sw", (unsigned long long)(r->prims3d - r->diag.prims3d),
+                 (unsigned long long)(r->blits - r->diag.blits), (unsigned long long)(r->cce.packets - r->diag.packets),
+                 (unsigned long long)r->diag.flips, r->crtc_offset_live, pitch_px, r->scan_blanked ? ", BLANKED" : "",
+                 r->diag.dst3d, r->diag.z3d, r->diag.dst2d);
+    // Host time the card's work took on the emulator thread, against the
+    // wall time since the last line: what the CPU did not get
+    double now = host_time_ms(), wall = now - r->diag.since_ms;
+    if (r->diag.since_ms > 0 && wall > 0 && k > 0 && (size_t)k < size)
+        k += snprintf(buf + k, size - (size_t)k, "; host time 3D %.0f%%, 2D %.0f%%, scanout %.0f%%",
+                      100.0 * r->diag.ms3d / wall, 100.0 * r->diag.ms2d / wall, 100.0 * r->diag.ms_scan / wall);
+    r->diag.since_ms = now;
+    r->diag.ms3d = r->diag.ms2d = r->diag.ms_scan = 0;
+    if (r->gpu && k > 0 && (size_t)k < size) {
+        char stats[400];
+        snprintf(buf + k, size - (size_t)k, "; gpu %s", r128_gpu_stats(r->gpu, stats, sizeof stats));
+    }
+    r->diag.prims3d = r->prims3d;
+    r->diag.blits = r->blits;
+    r->diag.packets = r->cce.packets;
+}
+
 static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     rage128_t *r = (rage128_t *)dev->priv;
     if (!r)
         return;
+    watch_remove_reporter(r);
     r128_gpu_destroy(r->gpu);
     r->gpu = NULL;
     free(r->vram);
@@ -1391,10 +1498,6 @@ static const pci_device_ops_t r128_ops = {
 
 static const char *const r128_memory_values[] = {"16m", "32m", NULL};
 static const char *const r128_memory_labels[] = {"16 MB (Rage Orion, Xclaim VR 128)", "32 MB (Nexus 128)", NULL};
-static const char *const r128_monitor_values[] = {"vga", "vga_noddc", "13in_rgb", "21in_rgb", NULL};
-static const char *const r128_monitor_labels[] = {"VGA monitor (DDC)", "VGA monitor (no DDC)",
-                                                  "13\" AppleColor RGB (Apple sense)",
-                                                  "21\" Macintosh color display (Apple sense)", NULL};
 // The rasteriser: the emulator's own (exact, the default) or the host
 // GPU's, where the host has one (the WebGPU takeover, rage128_gpu.c).
 static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
@@ -1404,17 +1507,17 @@ static bool r128_raster_offered(const char *value) {
     return strcmp(value, "webgpu") != 0 || platform_v2gpu_available();
 }
 
+// The monitor is not among the options: the configuration's display row
+// picks it (displays.<slot>.monitor, which the build hands the card as its
+// monitor= option), so the dialog shows one Monitor choice.  monitor= stays
+// accepted below, which is how "vga_noddc" -- a VGA monitor without DDC --
+// is still reached.
 static const pci_card_option_t r128_options[] = {
     {.key = "memory",
      .label = "Video memory",
      .values = r128_memory_values,
      .labels = r128_memory_labels,
      .default_value = "16m"},
-    {.key = "monitor",
-     .label = "Monitor",
-     .values = r128_monitor_values,
-     .labels = r128_monitor_labels,
-     .default_value = "vga"},
     {.key = "raster",
      .label = "Rendering",
      .values = r128_raster_values,
@@ -1774,6 +1877,7 @@ static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t
 
     LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser", slot_index,
         r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
+    watch_add_reporter(r128_watch_report, r);
     return dev;
 }
 
