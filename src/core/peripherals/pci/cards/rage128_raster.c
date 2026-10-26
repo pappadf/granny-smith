@@ -46,6 +46,7 @@
 // usage decides, and the choice is a comment.
 
 #include "log.h"
+#include "platform_clock.h"
 #include "rage128_gpu.h"
 #include "rage128_raster_priv.h"
 
@@ -1193,6 +1194,7 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     st_t s;
     if (!n || !gather(r, &s))
         return;
+    double t0 = host_time_ms(); // the batch's host time, for the status line
     // Under the WebGPU takeover the GPU draws the batch's triangles when it
     // can express them; otherwise the walker below draws everything, its
     // VRAM accesses fenced (r128_vram_access).
@@ -1239,4 +1241,5 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     }
     if (s.gpu)
         r128_gpu_batch_end(r->gpu, &s);
+    r->diag.ms3d += host_time_ms() - t0;
 }

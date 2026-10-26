@@ -58,6 +58,7 @@
 #include "memory.h"
 #include "object.h"
 #include "pci.h"
+#include "platform_clock.h"
 #include "platform_hooks.h"
 #include "prom.h"
 #include "rage128_gpu.h"
@@ -988,7 +989,16 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
 // to big-endian pixels for the direct-colour depths, with the hardware
 // cursor composited on top.  The cursor is a CRTC overlay, so it never
 // touches VRAM.
+static void r128_present_body(rage128_t *r);
+
+// Prepares the scanout, its host time counted for the status line
 static void r128_present(rage128_t *r) {
+    double t0 = host_time_ms();
+    r128_present_body(r);
+    r->diag.ms_scan += host_time_ms() - t0;
+}
+
+static void r128_present_body(rage128_t *r) {
     if (r->scan_blanked) {
         r->display.bits = r->blank;
         return;
@@ -1322,6 +1332,14 @@ static void r128_watch_report(void *ctx, char *buf, size_t size) {
                  (unsigned long long)(r->blits - r->diag.blits), (unsigned long long)(r->cce.packets - r->diag.packets),
                  (unsigned long long)r->diag.flips, r->crtc_offset_live, pitch_px, r->scan_blanked ? ", BLANKED" : "",
                  r->diag.dst3d, r->diag.z3d, r->diag.dst2d);
+    // Host time the card's work took on the emulator thread, against the
+    // wall time since the last line: what the CPU did not get
+    double now = host_time_ms(), wall = now - r->diag.since_ms;
+    if (r->diag.since_ms > 0 && wall > 0 && k > 0 && (size_t)k < size)
+        k += snprintf(buf + k, size - (size_t)k, "; host time 3D %.0f%%, 2D %.0f%%, scanout %.0f%%",
+                      100.0 * r->diag.ms3d / wall, 100.0 * r->diag.ms2d / wall, 100.0 * r->diag.ms_scan / wall);
+    r->diag.since_ms = now;
+    r->diag.ms3d = r->diag.ms2d = r->diag.ms_scan = 0;
     if (r->gpu && k > 0 && (size_t)k < size) {
         char stats[400];
         snprintf(buf + k, size - (size_t)k, "; gpu %s", r128_gpu_stats(r->gpu, stats, sizeof stats));

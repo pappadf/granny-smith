@@ -18,6 +18,11 @@
 // most once a second, the status line every watch_get_interval seconds).
 void watch_poll(double now_ms);
 
+// The platform's loop reports how long each part of a tick took (`what`
+// a static string: "run", "video", "requests"); the longest since the last
+// poll is named when a poll comes late (the "blocked" note).
+void watch_note_phase(const char *what, double ms);
+
 // Prints the status line now (the `log.status` method).
 void watch_report_now(void);
 

@@ -28,9 +28,10 @@
 #include <string.h>
 
 // Mac OS low-memory globals the watch samples (mac_globals_data.c)
-#define MAC_TICKS      0x016Au // Ticks: 60 Hz count the VBL task advances
-#define MAC_CUR_AP     0x0910u // CurApName: the current application, Str31
-#define MAC_DS_ERRCODE 0x0AF0u // DSErrCode: the last system error ID
+#define MAC_TICKS       0x016Au // Ticks: 60 Hz count the VBL task advances
+#define MAC_CUR_AP      0x0910u // CurApName: the current application, Str31
+#define MAC_DS_ERRCODE  0x0AF0u // DSErrCode: the last system error ID
+#define MAC_DS_GREETING 40 // dsGreeting: the start-up "Welcome to Macintosh", not an error
 
 // The detectors' thresholds, in wall-clock seconds
 #define WATCH_TICKS_FROZEN_S 15 // Ticks still this long while the CPU runs: the OS is hung
@@ -229,6 +230,19 @@ static void prime(config_t *m, double now_ms) {
     g_watch.ds_err = mac_read16(MAC_DS_ERRCODE);
 }
 
+// The longest part of a tick since the last poll (watch_note_phase)
+static struct {
+    const char *what;
+    double ms;
+} g_phase;
+
+void watch_note_phase(const char *what, double ms) {
+    if (ms > g_phase.ms) {
+        g_phase.what = what;
+        g_phase.ms = ms;
+    }
+}
+
 // The detectors: a system error, Ticks frozen, the CPU not advancing
 static void detect(config_t *m, double now_ms) {
     scheduler_t *sched = m->scheduler;
@@ -237,9 +251,11 @@ static void detect(config_t *m, double now_ms) {
 
     // A Mac OS system error (the bomb box, or a debugger break with one):
     // DSErrCode changes to the error's ID.  Those are positive; the start-up
-    // code leaves negative status values there in passing (-14134, -1).
+    // code leaves negative status values there in passing (-14134, -1), and
+    // the "Welcome to Macintosh" box goes through SysError as ID 40
+    // (dsGreeting) on every boot.
     uint16_t ds = mac_read16(MAC_DS_ERRCODE);
-    if (ds != g_watch.ds_err && (int16_t)ds > 0 && g_watch.ticks_alive) {
+    if (ds != g_watch.ds_err && (int16_t)ds > 0 && ds != MAC_DS_GREETING && g_watch.ticks_alive) {
         format_pc(m, pc, sizeof pc);
         LOG_ALERT("Mac OS system error %d (DSErrCode changed from %d): the guest crashed (%s)", (int)(int16_t)ds,
                   (int)(int16_t)g_watch.ds_err, pc);
@@ -297,8 +313,15 @@ void watch_poll(double now_ms) {
     g_watch.last_poll_ms = now_ms;
     // The thread that polls is the emulator's: a late poll means it was
     // busy elsewhere that long (the page's 3 s heartbeat watch fires on this)
-    if (gap >= WATCH_GAP_S * 1000.0)
-        log_status("the emulator thread was blocked for %.1f s", gap / 1000.0);
+    if (gap >= WATCH_GAP_S * 1000.0) {
+        if (g_phase.what)
+            log_status("the emulator thread was blocked for %.1f s (longest: %s %.0f ms)", gap / 1000.0, g_phase.what,
+                       g_phase.ms);
+        else
+            log_status("the emulator thread was blocked for %.1f s", gap / 1000.0);
+    }
+    g_phase.what = NULL;
+    g_phase.ms = 0;
     if (!m)
         return;
     detect(m, now_ms);

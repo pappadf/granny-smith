@@ -365,6 +365,8 @@ typedef struct rage128 {
         uint32_t dst3d, z3d, dst2d; // the last 3D colour / depth buffer and 2D destination (VRAM offsets)
         uint64_t flips; // CRTC_OFFSET changes that took effect
         uint64_t prims3d, blits, packets; // the counters at the last report
+        double ms3d, ms2d, ms_scan; // host time drawing in 3D, 2D and preparing scanout since the last report
+        double since_ms; // when the last report was
     } diag;
 
     // The WebGPU takeover (rage128_gpu.c), NULL under the software
