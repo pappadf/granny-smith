@@ -42,6 +42,7 @@
 
 #include "ppc_internal.h"
 #include "ppc_pd_ids.h"
+#include "ppc_softfp.h"
 
 #include "memory.h"
 #include "object.h"
@@ -155,9 +156,86 @@ enum {
     JX_STBX,
     JX_STBUX,
     JX_ADDX,
+    // Floating point (not the 601's: T=1 segments and its alignment rules
+    // stay with the predecoded loop).  The loads and stores: a = frT/frS
+    // (the number), b = rA offset (JX_RA0: rA = 0), c = the displacement
+    // (D-form) or rB offset (X-form).
+    JX_LFS,
+    JX_LFSU,
+    JX_LFD,
+    JX_LFDU,
+    JX_STFS,
+    JX_STFSU,
+    JX_STFD,
+    JX_LFSX,
+    JX_LFSUX,
+    JX_LFDX,
+    JX_LFDUX,
+    JX_STFSX,
+    JX_STFSUX,
+    JX_STFDX,
+    JX_LWBRX, // a = rT offset, b = rA offset (JX_RA0), c = rB offset
+    JX_STWBRX, // a = rS offset, b and c as lwbrx
+    JX_FP, // FP arithmetic and moves, Rc clear, through ppc_jit_fp: c = the word
+    JX_FCMP, // fcmpu / fcmpo through ppc_jit_fp: a = crfD, c = the word
     JX_END
 };
 _Static_assert(JX_END < 65536, "translator id space overflow");
+
+// An FP arithmetic or move word (op 59/63, Rc clear) ppc_jit_fp runs: the
+// forms the decoder executes (ppc_decode.h), reserved fields as it checks
+// them; the compares, FPSCR moves and record forms stay with the
+// predecoded loop (they write CR or read FPSCR).
+static bool jit_fp_form(uint32_t iw) {
+    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u, xo10 = (iw >> 1) & 0x3FFu;
+    uint32_t ra = (iw >> 16) & 31u, rb = (iw >> 11) & 31u, rc = (iw >> 6) & 31u;
+    if (op == 63) {
+        switch (xo10) {
+        case 72: // fmr fneg fabs fnabs frsp fctiw fctiwz
+        case 40:
+        case 264:
+        case 136:
+        case 12:
+        case 14:
+        case 15:
+            return true;
+        case 0: // fcmpu fcmpo mffs mtfsf mtfsfi mtfsb0 mtfsb1 mcrfs
+        case 32:
+        case 583:
+        case 711:
+        case 134:
+        case 70:
+        case 38:
+        case 64:
+            return false;
+        default:
+            break;
+        }
+    }
+    switch (xo5) {
+    case 18: // fdiv fsub fadd: FRC reserved
+    case 20:
+    case 21:
+        return rc == 0;
+    case 25: // fmul: FRB reserved
+        return rb == 0;
+    case 28: // fmsub fmadd fnmsub fnmadd
+    case 29:
+    case 30:
+    case 31:
+        return true;
+    case 23: // fsel (604)
+        return op == 63;
+    case 24: // fres (604)
+        return op == 59 && ra == 0 && rc == 0;
+    case 26: // frsqrte (604)
+        return op == 63 && ra == 0 && rc == 0;
+    default:
+        return false;
+    }
+}
+
+static bool jit_unit_is601(void); // the unit being translated runs on a 601 (U)
 
 // The predecoded classifier, plus the translator's own shapes
 static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e) {
@@ -280,6 +358,21 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
         *e = (pd_entry_t){.a = PPD_GOFF(ra), .b = PPD_GOFF(rt), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
         return JX_ARITH;
     }
+    if (!jit_unit_is601() && op >= 48 && op <= 54) { // lfs lfsu lfd lfdu stfs stfsu stfd
+        static const uint16_t fdform[7] = {JX_LFS, JX_LFSU, JX_LFD, JX_LFDU, JX_STFS, JX_STFSU, JX_STFD};
+        if ((op & 1u) && op != 54 && ra == 0)
+            return id; // an update form with rA = 0 (invalid): left to the predecoded loop
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
+        return fdform[op - 48];
+    }
+    if (!jit_unit_is601() && op == 63 && (xo == 0 || xo == 32)) { // fcmpu / fcmpo
+        *e = (pd_entry_t){.a = (uint8_t)(rt >> 2), .c = iw};
+        return JX_FCMP;
+    }
+    if (!jit_unit_is601() && (op == 59 || op == 63) && !(iw & 1u) && jit_fp_form(iw)) {
+        *e = (pd_entry_t){.c = iw};
+        return JX_FP;
+    }
     if (op == 46 || op == 47) { // lmw / stmw
         *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
         return op == 46 ? JX_LMW : JX_STMW;
@@ -331,8 +424,44 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
     case 247:
         x = JX_STBUX, upd = true;
         break;
+    case 534:
+        x = JX_LWBRX;
+        break;
+    case 662:
+        x = JX_STWBRX;
+        break;
     default:
-        return id;
+        if (jit_unit_is601())
+            return id;
+        switch (xo) {
+        case 535:
+            x = JX_LFSX;
+            break;
+        case 567:
+            x = JX_LFSUX, upd = true;
+            break;
+        case 599:
+            x = JX_LFDX;
+            break;
+        case 631:
+            x = JX_LFDUX, upd = true;
+            break;
+        case 663:
+            x = JX_STFSX;
+            break;
+        case 695:
+            x = JX_STFSUX, upd = true;
+            break;
+        case 727:
+            x = JX_STFDX;
+            break;
+        default:
+            return id;
+        }
+        if (upd && ra == 0)
+            return id;
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
+        return x;
     }
     if (upd && ra == 0)
         return id; // the 601's r0-inhibited update: left to the predecoded loop
@@ -387,10 +516,13 @@ enum {
     W_DIV_S = 0x6D, W_DIV_U = 0x6E, W_ROTL = 0x77, W_ROTR = 0x78, W_I64_ADD = 0x7C, W_I64_MUL = 0x7E,
     W_I64_SHR_U = 0x88, W_WRAP = 0xA7, W_EXTEND_S = 0xAC, W_EXTEND_U = 0xAD,
     W_EXT8_S = 0xC0, W_EXT16_S = 0xC1,
+    W_I64_LOAD = 0x29, W_I64_STORE = 0x37, W_I64_CONST = 0x42, W_I64_AND = 0x83, W_I64_OR = 0x84,
+    W_I64_SHL = 0x86, W_I64_EQZ = 0x50, W_F64_PROMOTE = 0xBB, W_I64_REINTERPRET = 0xBD, W_F32_REINTERPRET = 0xBE,
 };
 // clang-format on
 #define BT_VOID 0x40
 #define BT_I32  0x7F
+#define BT_I64  0x7E
 
 static void op(uint8_t o) {
     put(o);
@@ -398,6 +530,19 @@ static void op(uint8_t o) {
 static void iconst(uint32_t v) {
     put(W_CONST);
     sleb((int32_t)v);
+}
+static void i64const(uint64_t v) {
+    put(W_I64_CONST);
+    int64_t x = (int64_t)v;
+    for (;;) { // signed LEB128, 64-bit
+        uint8_t b = x & 0x7F;
+        x >>= 7;
+        if ((x == 0 && !(b & 0x40)) || (x == -1 && (b & 0x40))) {
+            put(b);
+            return;
+        }
+        put(b | 0x80);
+    }
 }
 static void lget(uint32_t l) {
     put(W_LGET);
@@ -473,6 +618,7 @@ enum {
     L_EA,
     L_COUNT
 };
+#define L_D0    L_COUNT // the one i64 local (an FPR image), declared after the i32 group
 #define NPARAMS 4
 #define GPR(r)  (L_GPR + (r))
 
@@ -515,6 +661,10 @@ static struct {
     // and chunks, the chunk size, and the field offsets the lookup reads
     uint32_t rdirect, roff_slot, roff_chunk, chunk_size, chunk_fn, chunk_maps, slot_owner, slot_hadj;
 } U;
+
+static bool jit_unit_is601(void) {
+    return U.is601;
+}
 
 // Translation state of the block being emitted
 static uint32_t g_nblocks, g_cur_block, g_depth;
@@ -982,8 +1132,8 @@ static void emit_access_test(uint32_t size, bool store) {
     }
 }
 
-// The store helpers every module defines after its function (index 2,
-// after the two imported helpers): the fast path of a store, called from
+// The store helpers every module defines after its function (index 3,
+// after the three imported helpers): the fast path of a store, called from
 // each store instead of repeated at it, with the slow path a store from
 // user code needs -- ppc_jit_code_store, a store into a code page -- out of
 // line.  Inline, that path was most of a store's code, and the engine
@@ -995,7 +1145,7 @@ static void emit_access_test(uint32_t size, bool store) {
 // reads a local of the function.
 //   (ea, value, table, address mask) -> status
 enum { JH_ST8, JH_ST16, JH_ST32, JH_N };
-#define JH_FN(h) (3u + (h))
+#define JH_FN(h) (4u + (h))
 static uint32_t jh_store(uint32_t size) {
     return size == 4 ? JH_ST32 : size == 2 ? JH_ST16 : JH_ST8;
 }
@@ -1221,6 +1371,217 @@ static void emit_store(uint32_t size, bool helper, int upd_reg) {
     g_depth--;
 }
 
+// === Floating point (JX_LFS .. JX_FP) ===
+
+// Leave at the instruction (the predecoded loop's) when the i32 on the
+// stack is nonzero
+static void emit_deopt_if(void) {
+    op(W_IF);
+    put(BT_VOID);
+    g_depth++;
+    emit_deopt();
+    op(W_END);
+    g_depth--;
+}
+
+// An FP load or store runs here only with MSR[FP] set and MSR[LE] clear:
+// FP unavailable is the predecoded loop's to raise, and a little-endian
+// access takes its gate
+static void emit_fp_gate(void) {
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_LE);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    emit_deopt_if();
+}
+
+// ... and word-aligned at L_EA: the 604 and 750 take an alignment
+// exception otherwise (ppc_scalar_gate, iw_requires_word_align_604); a
+// doubleword need not be 8-aligned, and one crossing a page leaves
+// through the access test
+static void emit_align_gate(void) {
+    lget(L_EA);
+    iconst(3);
+    op(W_AND);
+    emit_deopt_if();
+}
+
+// i64 on the stack -> frT
+static void emit_fpr_set_from(uint32_t frt, uint32_t local) {
+    lget(L_P);
+    lget(local);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * frt);
+}
+
+// lfs/lfsu/lfsx/lfsux: EA on the stack; frT <- the single there, widened
+// exactly (ppc_f32_to_f64: bitwise for inf/NaN, so a signalling NaN stays
+// one); upd_reg: the update form's rA (-1: none)
+static void emit_lfs(uint32_t frt, int upd_reg) {
+    lset(L_EA);
+    emit_align_gate();
+    lget(L_EA);
+    emit_load(4, false);
+    lset(L_T3);
+    if (upd_reg >= 0) {
+        lget(L_EA);
+        lset(GPR(upd_reg));
+    }
+    lget(L_T3);
+    iconst(0x7F800000u);
+    op(W_AND);
+    iconst(0x7F800000u);
+    op(W_EQ);
+    op(W_IF);
+    put(BT_I64);
+    g_depth++;
+    lget(L_T3); // sign << 63 | 0x7FF << 52 | fraction << 29
+    iconst(0x80000000u);
+    op(W_AND);
+    op(W_EXTEND_U);
+    i64const(32);
+    op(W_I64_SHL);
+    lget(L_T3);
+    iconst(0x007FFFFFu);
+    op(W_AND);
+    op(W_EXTEND_U);
+    i64const(29);
+    op(W_I64_SHL);
+    op(W_I64_OR);
+    i64const(0x7FF0000000000000ull);
+    op(W_I64_OR);
+    op(W_ELSE);
+    lget(L_T3); // exact for every finite single, denormals included
+    op(W_F32_REINTERPRET);
+    op(W_F64_PROMOTE);
+    op(W_I64_REINTERPRET);
+    op(W_END);
+    g_depth--;
+    lset(L_D0);
+    emit_fpr_set_from(frt, L_D0);
+}
+
+// lfd/lfdu/lfdx/lfdux: EA on the stack; frT <- the doubleword there
+static void emit_lfd(uint32_t frt, int upd_reg) {
+    lset(L_EA);
+    emit_align_gate();
+    emit_access_test(8, false);
+    op(W_IF);
+    put(BT_I64);
+    g_depth++;
+    emit_deopt(); // stack-polymorphic after the branch: the i64 is satisfied
+    op(W_ELSE);
+    lget(L_T1);
+    lget(L_T0);
+    op(W_ADD);
+    lset(L_T3);
+    lget(L_T3);
+    mem(W_LOAD, 2, 0);
+    emit_bswap32();
+    op(W_EXTEND_U);
+    i64const(32);
+    op(W_I64_SHL);
+    lget(L_T3);
+    mem(W_LOAD, 2, 4);
+    emit_bswap32();
+    op(W_EXTEND_U);
+    op(W_I64_OR);
+    op(W_END);
+    g_depth--;
+    lset(L_D0);
+    if (upd_reg >= 0) {
+        lget(L_EA);
+        lset(GPR(upd_reg));
+    }
+    emit_fpr_set_from(frt, L_D0);
+}
+
+// The word stfs stores for frS into L_T3 (ppc_f64_to_f32_store's
+// undenormalized case: a bit selection); a value it would denormalize
+// leaves for the predecoded loop
+static void emit_stfs_value(uint32_t frs) {
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * frs);
+    lset(L_D0);
+    lget(L_D0); // exponent > 896 ...
+    i64const(52);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x7FFu);
+    op(W_AND);
+    iconst(896);
+    op(W_GT_U);
+    lget(L_D0); // ... or +-0
+    i64const(1);
+    op(W_I64_SHL);
+    op(W_I64_EQZ);
+    op(W_OR);
+    op(W_EQZ);
+    emit_deopt_if();
+    lget(L_D0); // WORD[0-1] <- frS[0-1]; WORD[2-31] <- frS[5-34]
+    i64const(32);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0xC0000000u);
+    op(W_AND);
+    lget(L_D0);
+    i64const(29);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x3FFFFFFFu);
+    op(W_AND);
+    op(W_OR);
+    lset(L_T3);
+}
+
+// stfd/stfdx: EA on the stack, frS's image in L_D0: two word stores
+// through the store helper.  A miss of either leaves at the instruction
+// (the predecoded loop stores it again whole, the same bytes); a store
+// into translated code leaves after it once both halves are done.
+static void emit_stfd(void) {
+    lset(L_EA);
+    emit_align_gate();
+    lget(L_EA);
+    lget(L_D0);
+    i64const(32);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    lget(L_WTAB);
+    lget(L_AMASK);
+    op(W_CALL);
+    uleb(JH_FN(JH_ST32));
+    ltee(L_T3); // 0 stored, 1 not stored, 2 stored into translated code
+    iconst(1);
+    op(W_EQ);
+    emit_deopt_if();
+    lget(L_EA);
+    iconst(4);
+    op(W_ADD);
+    lget(L_D0);
+    op(W_WRAP);
+    lget(L_WTAB);
+    lget(L_AMASK);
+    op(W_CALL);
+    uleb(JH_FN(JH_ST32));
+    ltee(L_T2);
+    iconst(1);
+    op(W_EQ);
+    emit_deopt_if();
+    lget(L_T2);
+    lget(L_T3);
+    op(W_OR); // 2: leave after the instruction, through the deopt tail
+    op(W_IF);
+    put(BT_VOID);
+    g_depth++;
+    iconst(((g_cur_addr - g_block_addr) >> 2) + 1u);
+    lset(L_IDX);
+    op(W_BR);
+    uleb(g_depth - g_deopt_depth);
+    op(W_END);
+    g_depth--;
+}
+
 // CR field `crf` = (L_T0 < L_T1 ? 8 : L_T0 > L_T1 ? 4 : 2) | XER[SO]
 static void emit_cmp(uint32_t crf, bool is_unsigned) {
     uint32_t sh = 28 - 4 * crf;
@@ -1396,6 +1757,12 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
         return (~0u << e->a) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_ADDX)
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
+    if (id == JX_FP || id == JX_FCMP)
+        return 0;
+    if (id >= JX_LFS && id <= JX_STFD) // D-form: rA only (a is an FPR)
+        return e->b == JX_RA0 ? 0u : 1u << (e->b >> 2);
+    if (id >= JX_LFSX && id <= JX_STFDX) // X-form: rA and rB
+        return (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= JX_LWZX && id < JX_END)
         return (1u << (e->a >> 2)) | (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= PPD_LWZ && id <= PPD_STHU && e->b == JX_RA0)
@@ -1418,6 +1785,27 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
     case JX_MCRXR:
     case JX_MTSPR:
         return 0;
+    case JX_FP:
+    case JX_FCMP:
+    case JX_LFS:
+    case JX_LFD:
+    case JX_STFS:
+    case JX_STFD:
+    case JX_LFSX:
+    case JX_LFDX:
+    case JX_STFSX:
+    case JX_STFDX:
+    case JX_STWBRX:
+        return 0;
+    case JX_LFSU:
+    case JX_LFDU:
+    case JX_STFSU:
+    case JX_LFSUX:
+    case JX_LFDUX:
+    case JX_STFSUX:
+        return 1u << (e->b >> 2); // the updated rA
+    case JX_LWBRX:
+        return 1u << (e->a >> 2);
     case JX_MTMSR:
     case JX_STWCX:
         return 0;
@@ -2489,6 +2877,129 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         }
         return;
     }
+    case JX_LFS:
+    case JX_LFSU:
+    case JX_LFD:
+    case JX_LFDU:
+    case JX_LFSX:
+    case JX_LFSUX:
+    case JX_LFDX:
+    case JX_LFDUX: {
+        bool x = id >= JX_LFSX, upd = id == JX_LFSU || id == JX_LFDU || id == JX_LFSUX || id == JX_LFDUX;
+        bool dbl = id == JX_LFD || id == JX_LFDU || id == JX_LFDX || id == JX_LFDUX;
+        emit_fp_gate();
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (x)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        if (dbl)
+            emit_lfd(a, upd ? (int)(b >> 2) : -1);
+        else
+            emit_lfs(a, upd ? (int)(b >> 2) : -1);
+        return;
+    }
+    case JX_STFS:
+    case JX_STFSU:
+    case JX_STFSX:
+    case JX_STFSUX: {
+        bool x = id >= JX_LFSX, upd = id == JX_STFSU || id == JX_STFSUX;
+        emit_fp_gate();
+        emit_stfs_value(a);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (x)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        lset(L_EA);
+        emit_align_gate();
+        lget(L_EA);
+        emit_store(4, true, upd ? (int)(b >> 2) : -1);
+        if (upd) {
+            lget(L_EA);
+            lset(RD(b));
+        }
+        return;
+    }
+    case JX_STFD:
+    case JX_STFDX:
+        emit_fp_gate();
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * a);
+        lset(L_D0);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (id == JX_STFDX)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        emit_stfd();
+        return;
+    case JX_LWBRX: // the word, little-endian
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        emit_load(4, false);
+        emit_bswap32();
+        lset(RD(a));
+        return;
+    case JX_STWBRX:
+        lget(RD(a));
+        emit_bswap32();
+        lset(L_T3);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        emit_store(4, true, -1);
+        return;
+    case JX_FP: // ppc_jit_fp: 1 when it did nothing (leave at the instruction)
+        iconst(c);
+        iconst(0);
+        iconst(0);
+        op(W_CALL);
+        uleb(2);
+        emit_deopt_if();
+        return;
+    case JX_FCMP: { // ppc_jit_fp, compare mode: 1 (leave) or 0x10 | the CR field
+        uint32_t sh = 28 - 4 * a;
+        iconst(c);
+        iconst(1);
+        iconst(0);
+        op(W_CALL);
+        uleb(2);
+        ltee(L_T3);
+        iconst(1);
+        op(W_EQ);
+        emit_deopt_if();
+        lget(L_CR);
+        iconst(~(0xFu << sh));
+        op(W_AND);
+        lget(L_T3);
+        iconst(0xFu);
+        op(W_AND);
+        iconst(sh);
+        op(W_SHL);
+        op(W_OR);
+        lset(L_CR);
+        return;
+    }
     default:
         break;
     }
@@ -2604,16 +3115,20 @@ static uint32_t translate(void) {
     put(BT_I32);
     close_sized(s);
     // Imports: the code-store helper (function 0); the time-base helper
-    // (function 1); the memory (shared in the pthreads build); the
-    // emulator's function table (chaining)
+    // (function 1); the FP helper (function 2); the memory (shared in the
+    // pthreads build); the emulator's function table (chaining)
     s = open_section(2);
-    uleb(4);
+    uleb(5);
     put_name("e");
     put_name("s");
     put(0x00);
     uleb(1);
     put_name("e");
     put_name("b");
+    put(0x00);
+    uleb(1);
+    put_name("e");
+    put_name("f");
     put(0x00);
     uleb(1);
     put_name("e");
@@ -2644,16 +3159,18 @@ static uint32_t translate(void) {
     uleb(1);
     put_name("f");
     put(0x00);
-    uleb(2); // after the two imported helpers
+    uleb(3); // after the three imported helpers
     close_sized(s);
     s = open_section(10);
     uleb(1 + JH_N);
     uint32_t body = g_len;
     for (int i = 0; i < 5; i++)
         put(0);
-    uleb(1);
+    uleb(2);
     uleb(L_COUNT - NPARAMS);
     put(BT_I32);
+    uleb(1); // L_D0
+    put(BT_I64);
 
     // Prologue: the registers the region names, CR/XER/LR/CTR, the memory
     // system's tables, the fold allowance
@@ -2770,7 +3287,8 @@ static uint32_t translate(void) {
             }
             uint16_t id = g_ids[x];
             access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
-                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX;
+                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX ||
+                      (id >= JX_LFS && id <= JX_FCMP);
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))
@@ -2865,7 +3383,7 @@ static uint32_t translate(void) {
 EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), {
     var table = wasmExports['__indirect_function_table'];
     var mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], t: table } });
     var idx = slot;
     table.set(idx, inst.exports.f);
     return idx;
@@ -2889,7 +3407,7 @@ EM_JS(uint32_t, jit_install_async, (uint32_t token, uint32_t slot), {
         return 0;
     mods.delete(token);
     var table = wasmExports['__indirect_function_table'];
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], t: table } });
     table.set(slot, inst.exports.f);
     return slot;
 });
@@ -3968,6 +4486,94 @@ int32_t ppc_jit_tb(uint32_t budget, uint32_t upper, uint32_t unused) {
     *g_bus_error_instr_ptr = budget;
     uint64_t tb = ppc_tb_now(g_wa_p);
     return (int32_t)(upper ? (uint32_t)(tb >> 32) : (uint32_t)tb);
+}
+
+// FP arithmetic and moves from translated code (JX_FP): what the decoder
+// runs for the word, or 1 -- nothing done, leave at it -- when FP is
+// unavailable or an FP exception is enabled (the predecoded loop raises
+// what is due).  The form was checked at translation (jit_fp_form), and Rc
+// is clear, so CR, which the translation holds in a local, is untouched.
+// `mode` 1 is a compare (JX_FCMP): ppc_fcmp, its CR field returned as
+// 0x10 | field for the translation to merge into its CR.
+EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused);
+int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused) {
+    (void)unused;
+    ppc_t *p = g_wa_p;
+    if ((p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) != PPC_MSR_FP)
+        return 1;
+    if (mode == 1) {
+        uint32_t cr = p->cr, sh = 28u - 4u * PPC_CRFD(iw);
+        ppc_fcmp(p, iw, ((iw >> 1) & 0x3FFu) == 32);
+        uint32_t field = (p->cr >> sh) & 0xFu;
+        p->cr = cr; // the translation's CR local is the live one
+        return (int32_t)(0x10u | field);
+    }
+    bool single = (iw >> 26) == 59;
+    if (!single) {
+        uint64_t *t = &p->fpr[PPC_RT(iw)], b = p->fpr[PPC_RB(iw)];
+        switch ((iw >> 1) & 0x3FFu) {
+        case 72: // fmr
+            *t = b;
+            return 0;
+        case 40: // fneg
+            *t = b ^ 0x8000000000000000ull;
+            return 0;
+        case 264: // fabs
+            *t = b & 0x7FFFFFFFFFFFFFFFull;
+            return 0;
+        case 136: // fnabs
+            *t = b | 0x8000000000000000ull;
+            return 0;
+        case 12:
+            ppc_do_frsp(p, iw);
+            return 0;
+        case 14:
+            ppc_do_fctiw(p, iw, false);
+            return 0;
+        case 15:
+            ppc_do_fctiw(p, iw, true);
+            return 0;
+        default:
+            break;
+        }
+    }
+    switch ((iw >> 1) & 31u) {
+    case 18:
+        ppc_fp_arith(p, iw, PPC_SF_DIV, single);
+        return 0;
+    case 20:
+        ppc_fp_arith(p, iw, PPC_SF_SUB, single);
+        return 0;
+    case 21:
+        ppc_fp_arith(p, iw, PPC_SF_ADD, single);
+        return 0;
+    case 25:
+        ppc_fp_arith(p, iw, PPC_SF_MUL, single);
+        return 0;
+    case 28:
+        ppc_fp_arith(p, iw, PPC_SF_MSUB, single);
+        return 0;
+    case 29:
+        ppc_fp_arith(p, iw, PPC_SF_MADD, single);
+        return 0;
+    case 30:
+        ppc_fp_arith(p, iw, PPC_SF_NMSUB, single);
+        return 0;
+    case 31:
+        ppc_fp_arith(p, iw, PPC_SF_NMADD, single);
+        return 0;
+    case 23:
+        ppc_do_fsel(p, iw);
+        return 0;
+    case 24:
+        ppc_do_fres(p, iw);
+        return 0;
+    case 26:
+        ppc_do_frsqrte(p, iw);
+        return 0;
+    default:
+        return 1;
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);
