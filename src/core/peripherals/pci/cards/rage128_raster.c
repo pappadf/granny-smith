@@ -1233,7 +1233,11 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     st_t s;
     if (!n || !gather(r, &s))
         return;
-    double t0 = host_time_ms(); // the batch's host time, for the status line
+    // The batch's host time, for the status line: every 16th batch, scaled.
+    // A host clock read is a JS call on the wasm build, dearer than many a
+    // small batch (Quake III draws some 30,000 a second).
+    bool timed = (++r->diag.timed_batches & 15u) == 0;
+    double t0 = timed ? host_time_ms() : 0;
     // Under the WebGPU takeover the GPU draws the batch's triangles when it
     // can express them; otherwise the walker below draws everything, its
     // VRAM accesses fenced (r128_vram_access).
@@ -1280,5 +1284,6 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     }
     if (s.gpu)
         r128_gpu_batch_end(r->gpu, &s);
-    r->diag.ms3d += host_time_ms() - t0;
+    if (timed)
+        r->diag.ms3d += 16.0 * (host_time_ms() - t0);
 }

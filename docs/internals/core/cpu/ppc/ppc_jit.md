@@ -368,9 +368,28 @@ instruction and reads `ppc_tb_now`; `lwarx`/`stwcx.` on the word-aligned fast pa
 reservation flag and `reserve_addr`, the EA, as C keeps them; unaligned
 or missing accesses leave); the non-OE `divw`/`divwu` (zero for a zero
 divisor and for `0x80000000 / -1`, as C), `mulhw`/`mulhwu`, `eqv` and
-`sraw` (CA as `ppc_do_sraw`).  Mode changes (`rfi`, `sc`, traps), DEC
-(its reads depend on time) and the segment registers stay in C, as do
-floating point and `dcbz`.  The kernel runs translated only
+`sraw` (CA as `ppc_do_sraw`); `lwbrx`/`stwbrx`.  On the 604 and 750
+(not the 601: its T=1 segments and boundary rules stay in C), floating
+point: `lfs`/`lfsu`/`lfd`/`lfdu`/`stfs`/`stfsu`/`stfd` and their X forms
+inline on the fast path with MSR[FP] set, MSR[LE] clear and the EA
+word-aligned (what the 604 and 750 require; a doubleword need not be
+8-aligned, and one crossing a page leaves) -- `lfs` widens exactly
+(bitwise for inf/NaN, `ppc_f32_to_f64`), `stfs` is the bit selection and
+leaves when it would denormalize, `stfd` is two words through the store
+helper; `fadd`/`fsub`/`fmul` and the madd family, single and double, inline:
+`ppc_softfp.c`'s host fast path step for step (round to nearest, the
+operands, product and result inside its exponent envelope, a product of
+two short significands, which is exact so no fma is needed -- wasm has
+none) with FPSCR[XE] clear, so only FR, FI, XX (FX on its rise) and FPRF
+change; any check that fails, and every other arithmetic or move with
+Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
+that runs the interpreter's own routines, so results and FPSCR are the
+predecoded loop's either way; it declines (leave at the instruction)
+when FP is unavailable or an FP exception is enabled, and a compare
+returns its CR field for the translation's CR local.
+Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
+segment registers, the FP record forms and FPSCR moves stay in C, as
+does `dcbz`.  The kernel runs translated only
 with `jit.supervisor` set, the default.  When it was introduced the
 kernel was a net loss translated: on the Mac OS X 10.1 boot to the
 Finder (Node, 6.1 G instructions) 89 % of instructions ran translated,
@@ -382,11 +401,24 @@ Finder (Node, 6.1 G instructions) takes 66-67 s with it, 77-79 s
 user-only and 86-92 s with the JIT off.  What still leaves translated code most, per Mac OS X warm round (JIT
 with supervisor code): `lfd` 264 K, `mfspr` (DEC, HID0) 241 K, `stfd`
 120 K, `lfs` 104 K, `dcbz` 93 K, `rfi` 90 K, `mtsr` 59 K.  Translating
-`lfd`/`lfdu`/`stfd`/`stfdu` on the 604 and 750 was tried and reverted:
+`lfd`/`lfdu`/`stfd`/`stfdu` alone was tried for Mac OS X and reverted:
 with a doubleword-alignment guard one hot access deopted 190 K times a
 round (Darwin aligns doubles in structures to 4); with the word alignment
 the 604 and 750 actually require, there was no measurable gain (share
-87.5-91 % against 89.2-89.6 %, 2950-3351 ms against 3013-3256).  The way
+87.5-91 % against 89.2-89.6 %, 2950-3351 ms against 3013-3256).  Quake
+III on the G3 is the other extreme: half its instructions ran in the
+predecoded loop, leaving translated code at `lfs` (618 K exits in 10 s),
+`lfd` (489 K), `stwbrx` (291 K), `stfd` and `lfsx`, and behind them
+`fcmpo` (1.29 M).  With the floating point above translated, in a Q3DM0
+browser checkpoint (WebGPU takeover, draws not rasterised so the
+software GPU is not the limit) the share went from 49 % to 97 % and the
+throughput from 38 to 77 MIPS, twice the frames.  Inlining the fast path
+then took the C kernel from 16 % of the emulator thread to 6 % and the
+helper call from 8 % to 3 %: 81 to 92 MIPS (alternated pairs, 79-83
+against 87-98), 2.4 times the first throughput.  The checkpoint compare
+(Node, from an in-game checkpoint, 3 G instructions, eager translation)
+finds the guest state identical to the predecoded loop's.  What leaves
+translated code most now is `dcbz` (167 K exits a second).  The way
 to find what to translate next is `jit.trace = 3`, the untranslated exits
 summed by opcode: `mcrxr` led on the PM6100 desktop (331 K exits per
 150 M instructions), and translating it took the row from 68 to 79 MIPS.
