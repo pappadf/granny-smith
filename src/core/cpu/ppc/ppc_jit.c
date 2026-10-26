@@ -518,11 +518,15 @@ enum {
     W_EXT8_S = 0xC0, W_EXT16_S = 0xC1,
     W_I64_LOAD = 0x29, W_I64_STORE = 0x37, W_I64_CONST = 0x42, W_I64_AND = 0x83, W_I64_OR = 0x84,
     W_I64_SHL = 0x86, W_I64_EQZ = 0x50, W_F64_PROMOTE = 0xBB, W_I64_REINTERPRET = 0xBD, W_F32_REINTERPRET = 0xBE,
+    W_I64_EQ = 0x51, W_I64_XOR = 0x85, W_F64_CONST = 0x44, W_F64_NE = 0x62, W_F64_LT = 0x63, W_F64_GT = 0x64,
+    W_F64_ABS = 0x99, W_F64_NEG = 0x9A, W_F64_ADD = 0xA0, W_F64_SUB = 0xA1, W_F64_MUL = 0xA2, W_F32_DEMOTE = 0xB6,
+    W_F64_REINTERPRET = 0xBF,
 };
 // clang-format on
 #define BT_VOID 0x40
 #define BT_I32  0x7F
 #define BT_I64  0x7E
+#define BT_F64  0x7C
 
 static void op(uint8_t o) {
     put(o);
@@ -618,7 +622,9 @@ enum {
     L_EA,
     L_COUNT
 };
-#define L_D0    L_COUNT // the one i64 local (an FPR image), declared after the i32 group
+// After the i32 group: i64 locals (FPR images), then f64 ones (the inline
+// FP arithmetic's values)
+enum { L_D0 = L_COUNT, L_D1, L_D2, L_D3, L_F0, L_F1, L_F2, L_F3, L_F4, L_F5, L_ALL };
 #define NPARAMS 4
 #define GPR(r)  (L_GPR + (r))
 
@@ -1579,6 +1585,301 @@ static void emit_stfd(void) {
     op(W_BR);
     uleb(g_depth - g_deopt_depth);
     op(W_END);
+    g_depth--;
+}
+
+// === Inline FP arithmetic (JX_FP's common cases) ===
+//
+// fadd/fsub/fmul and the madd family, single and double, inline: the host
+// fast path of ppc_softfp.c (sf_fast_arith) step for step -- round to
+// nearest, operands, product and result inside its exponent envelope, a
+// product of two short significands only (exact, so neither the result
+// nor its error needs an fma) -- with XE clear, so the FPSCR changes in
+// FR, FI, XX (and FX on its rise) and FPRF alone.  Any check that fails
+// takes the helper (ppc_jit_fp), which runs the C kernel: the result and
+// FPSCR are the same either way.
+
+static uint32_t g_fp_slow; // the depth of the inline path's $slow block
+
+// The `fp` slot of a fast-path FP kind (sf_op), or -1 (the helper only)
+static int fp_inline_op(uint32_t iw) {
+    switch ((iw >> 1) & 31u) {
+    case 21:
+        return PPC_SF_ADD;
+    case 20:
+        return PPC_SF_SUB;
+    case 25:
+        return PPC_SF_MUL;
+    case 29:
+        return PPC_SF_MADD;
+    case 28:
+        return PPC_SF_MSUB;
+    case 31:
+        return PPC_SF_NMADD;
+    case 30:
+        return PPC_SF_NMSUB;
+    default:
+        return -1;
+    }
+}
+
+static void br_slow_if(void) {
+    op(W_BR_IF);
+    uleb(g_depth - g_fp_slow);
+}
+
+static void f64const(double d) {
+    uint64_t u;
+    memcpy(&u, &d, 8);
+    put(W_F64_CONST);
+    for (int i = 0; i < 8; i++)
+        put((uint8_t)(u >> (8 * i)));
+}
+
+// Leave for the helper unless the i64 local's biased exponent is inside
+// the fast path's envelope (sf_fast_ok: [123, 2023], so no zero, denormal,
+// inf or NaN)
+static void emit_envelope(uint32_t local) {
+    lget(local);
+    i64const(52);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x7FFu);
+    op(W_AND);
+    iconst(123);
+    op(W_SUB);
+    iconst(2023 - 123);
+    op(W_GT_U);
+    br_slow_if();
+}
+
+// FPR `n`'s image into the i64 local, checked against the envelope
+static void emit_fpr_operand(uint32_t n, uint32_t local) {
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * n);
+    lset(local);
+    emit_envelope(local);
+}
+
+// TwoSum (sf_two_sum): L_F3 = x + y, L_F4 = the exact error
+static void emit_two_sum(uint32_t x, uint32_t y) {
+    lget(x);
+    lget(y);
+    op(W_F64_ADD);
+    lset(L_F3); // s
+    lget(L_F3);
+    lget(x);
+    op(W_F64_SUB);
+    lset(L_F5); // bb = s - x
+    lget(x);
+    lget(L_F3);
+    lget(L_F5);
+    op(W_F64_SUB);
+    op(W_F64_SUB); // x - (s - bb)
+    lget(y);
+    lget(L_F5);
+    op(W_F64_SUB); // y - bb
+    op(W_F64_ADD);
+    lset(L_F4);
+}
+
+static void emit_fp_inline(uint32_t iw, int fop) {
+    bool single = (iw >> 26) == 59;
+    uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw), rb = PPC_RB(iw), rc = PPC_FRC(iw);
+    bool has_b = fop != PPC_SF_MUL, has_c = fop != PPC_SF_ADD && fop != PPC_SF_SUB;
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    // MSR[FP] set and FE0/FE1 clear; round to nearest and XE clear
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    br_slow_if();
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+    ltee(L_T3);
+    iconst(PPC_FPSCR_RN | PPC_FPSCR_XE);
+    op(W_AND);
+    br_slow_if();
+    emit_fpr_operand(ra, L_D0);
+    if (has_b)
+        emit_fpr_operand(rb, L_D1);
+    if (has_c) {
+        emit_fpr_operand(rc, L_D2);
+        lget(L_D0); // short significands only (sf_short_product)
+        lget(L_D2);
+        op(W_I64_OR);
+        i64const(0x7FFFFFFull);
+        op(W_I64_AND);
+        op(W_I64_EQZ);
+        op(W_EQZ);
+        br_slow_if();
+    }
+    lget(L_D0);
+    op(W_F64_REINTERPRET);
+    lset(L_F0);
+    if (has_b) {
+        lget(L_D1);
+        op(W_F64_REINTERPRET);
+        if (fop == PPC_SF_SUB || fop == PPC_SF_MSUB || fop == PPC_SF_NMSUB)
+            op(W_F64_NEG);
+        lset(L_F1);
+    }
+    if (has_c) {
+        lget(L_D2);
+        op(W_F64_REINTERPRET);
+        lset(L_F2);
+    }
+    // r (L_F3) and its error (L_F4)
+    if (fop == PPC_SF_ADD || fop == PPC_SF_SUB) {
+        emit_two_sum(L_F0, L_F1);
+    } else if (fop == PPC_SF_MUL) {
+        lget(L_F0);
+        lget(L_F2);
+        op(W_F64_MUL);
+        lset(L_F3);
+        f64const(0.0);
+        lset(L_F4);
+    } else {
+        lget(L_F0); // the exact product, inside the envelope
+        lget(L_F2);
+        op(W_F64_MUL);
+        lset(L_F0);
+        lget(L_F0);
+        op(W_I64_REINTERPRET);
+        lset(L_D3);
+        emit_envelope(L_D3);
+        emit_two_sum(L_F0, L_F1);
+    }
+    lget(L_F3);
+    op(W_I64_REINTERPRET);
+    lset(L_D3);
+    emit_envelope(L_D3);
+    // inexact -> L_T0, up (|rounded| > |exact|) -> L_T1
+    if (single) {
+        lget(L_F4); // a single-precision tie with the exact value off it: double rounding
+        f64const(0.0);
+        op(W_F64_NE);
+        lget(L_D3);
+        i64const(0x1FFFFFFFull);
+        op(W_I64_AND);
+        i64const(0x10000000ull);
+        op(W_I64_EQ);
+        op(W_AND);
+        br_slow_if();
+        lget(L_F3);
+        op(W_F32_DEMOTE);
+        op(W_F64_PROMOTE);
+        lset(L_F5); // ds
+        lget(L_F5); // tiny (or near it) or overflowed
+        op(W_I64_REINTERPRET);
+        i64const(52);
+        op(W_I64_SHR_U);
+        op(W_WRAP);
+        iconst(0x7FFu);
+        op(W_AND);
+        iconst(1023u - 125u);
+        op(W_SUB);
+        iconst(252);
+        op(W_GT_U);
+        br_slow_if();
+        lget(L_F5);
+        lget(L_F3);
+        op(W_F64_NE);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        iconst(1);
+        lset(L_T0);
+        lget(L_F5);
+        op(W_F64_ABS);
+        lget(L_F3);
+        op(W_F64_ABS);
+        op(W_F64_GT);
+        lset(L_T1);
+        op(W_ELSE);
+    }
+    lget(L_F4);
+    f64const(0.0);
+    op(W_F64_NE);
+    ltee(L_T0);
+    lget(L_F4);
+    f64const(0.0);
+    op(W_F64_LT);
+    lget(L_F3);
+    f64const(0.0);
+    op(W_F64_LT);
+    op(W_NE);
+    op(W_AND);
+    lset(L_T1);
+    if (single) {
+        op(W_END);
+        g_depth--;
+        lget(L_F5);
+        op(W_I64_REINTERPRET);
+        lset(L_D3);
+    }
+    if (fop == PPC_SF_NMADD || fop == PPC_SF_NMSUB) {
+        lget(L_D3);
+        i64const(0x8000000000000000ull);
+        op(W_I64_XOR);
+        lset(L_D3);
+    }
+    lget(L_P);
+    lget(L_D3);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * rt);
+    // FPSCR (in L_T3): FR, FI, FPRF; XX, and FX when XX rises
+    lget(L_P);
+    lget(L_T3);
+    iconst(~(PPC_FPSCR_FR | PPC_FPSCR_FI | PPC_FPSCR_FPRF));
+    op(W_AND);
+    iconst(PPC_FPSCR_FI | PPC_FPSCR_XX);
+    iconst(0);
+    lget(L_T0);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FR);
+    iconst(0);
+    lget(L_T1);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FX); // FX: XX was clear before
+    iconst(0);
+    lget(L_T0);
+    lget(L_T3);
+    iconst(PPC_FPSCR_XX);
+    op(W_AND);
+    op(W_EQZ);
+    op(W_AND);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(0x08000u); // FPRF: -normal / +normal
+    iconst(0x04000u);
+    lget(L_D3);
+    i64const(63);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    op(W_SELECT);
+    op(W_OR);
+    mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
     g_depth--;
 }
 
@@ -2970,6 +3271,10 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         emit_store(4, true, -1);
         return;
     case JX_FP: // ppc_jit_fp: 1 when it did nothing (leave at the instruction)
+        if (fp_inline_op(c) >= 0) {
+            emit_fp_inline(c, fp_inline_op(c));
+            return;
+        }
         iconst(c);
         iconst(0);
         iconst(0);
@@ -3166,11 +3471,13 @@ static uint32_t translate(void) {
     uint32_t body = g_len;
     for (int i = 0; i < 5; i++)
         put(0);
-    uleb(2);
+    uleb(3);
     uleb(L_COUNT - NPARAMS);
     put(BT_I32);
-    uleb(1); // L_D0
+    uleb(L_F0 - L_D0);
     put(BT_I64);
+    uleb(L_ALL - L_F0);
+    put(BT_F64);
 
     // Prologue: the registers the region names, CR/XER/LR/CTR, the memory
     // system's tables, the fold allowance
