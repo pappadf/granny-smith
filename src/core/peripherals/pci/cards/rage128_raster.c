@@ -192,6 +192,8 @@ static void tex_gather(rage128_t *r, tex_unit_t *u, bool on, uint32_t cntl_reg, 
     bool mip = !(u->cntl & TX_MIP_DIS) && TX_MIN_FN(u->cntl) >= MIN_NEAREST_MIP;
     for (uint32_t i = 0; i < 11; i++) {
         u->off[i] = REG(r, off_reg + 4u * i);
+        if (!(u->off[i] & 0x2000000u)) // VRAM, not AGP: wraps onto the memory fitted
+            u->off[i] = (u->off[i] & ~0x1FFFFFFu) | r128_vram_wrap(r, u->off[i] & 0x1FFFFFFu);
         if ((u->off[i] & 0xC0000000u) && i <= top && (mip || i == top))
             tell_once(r, TOLD_TILED, "a tiled texture, surface or Z buffer is addressed linearly");
     }
@@ -214,9 +216,9 @@ static bool gather(rage128_t *r, st_t *s) {
         tell_once(r, TOLD_FORMAT, "a colour buffer format the 3D engine does not write — primitive dropped");
         return false;
     }
-    s->dst_base = REG(r, R_DST_OFFSET) & 0x3FFFFF0u;
+    s->dst_base = r128_vram_wrap(r, REG(r, R_DST_OFFSET) & 0x3FFFFF0u);
     s->dst_stride = (REG(r, R_DST_PITCH) & 0x3FFu) * 8u * s->dst_bpp;
-    r->diag.dst3d = s->dst_base;
+    r->diag.dst3d = REG(r, R_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it, before wrapping
     if (s->dst_base & 0x2000000u) {
         tell_once(r, TOLD_AGP_DST, "a colour buffer in AGP space is not drawn");
         return false;
@@ -250,8 +252,8 @@ static bool gather(rage128_t *r, st_t *s) {
         s->z_bytes = 4, s->z_max = 0xFFFFFFFFu;
         break;
     }
-    s->z_base = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
-    r->diag.z3d = s->z_base;
+    s->z_base = r128_vram_wrap(r, REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u);
+    r->diag.z3d = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
     s->z_stride = (REG(r, R_Z_PITCH_C) & 0x3FFu) * 8u * s->z_bytes;
     s->fog_color = REG(r, R_FOG_COLOR_C);
     s->constant = REG(r, R_CONSTANT_COLOR_C);

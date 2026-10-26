@@ -274,11 +274,11 @@ static void op_gather(rage128_t *r, op_t *op) {
     op->bpp = dt_bytes(DT_DST(dt));
     op->mask = op->bpp >= 4 ? 0xFFFFFFFFu : ((1u << (8u * op->bpp)) - 1u);
     // DST_PITCH and SRC_PITCH are in units of 8 pixels (RRG §7.1, §7.2).
-    op->dst_base = REG(r, G_DST_OFFSET) & 0x3FFFFF0u;
+    op->dst_base = r128_vram_wrap(r, REG(r, G_DST_OFFSET) & 0x3FFFFF0u);
     op->dst_stride = (REG(r, G_DST_PITCH) & 0x3FFu) * 8u * op->bpp;
-    r->diag.dst2d = op->dst_base;
+    r->diag.dst2d = REG(r, G_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it
     op->src_type = DT_SRC(dt);
-    op->src_base = REG(r, G_SRC_OFFSET) & 0x3FFFFF0u;
+    op->src_base = r128_vram_wrap(r, REG(r, G_SRC_OFFSET) & 0x3FFFFF0u);
     op->src_stride = (REG(r, G_SRC_PITCH) & 0x3FFu) * 8u * (op->src_type == SRC_COLOR ? op->bpp : 1u);
     if (op->src_type != SRC_COLOR)
         op->src_stride /= 8u; // a mono line: one bit per pixel

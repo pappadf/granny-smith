@@ -377,6 +377,15 @@ typedef struct rage128 {
     uint32_t gpu_gen;
 } rage128_t;
 
+// The VRAM byte an engine or CRTC address reaches.  The memory chips answer
+// to the low address bits only, so an address past the memory fitted wraps
+// onto it: a driver that sets CONFIG_MEMSIZE to 32 MB on a 16 MB board (the
+// Mac OS driver can) places its buffers above 16 MB, and on the board they
+// land 16 MB lower.  vram_size is a power of two (16 or 32 MB).
+static inline uint32_t r128_vram_wrap(const rage128_t *r, uint32_t a) {
+    return a & (r->vram_size - 1u);
+}
+
 // Every VRAM access that is not the GPU's own goes through here: the CPU
 // through the apertures and MM_DATA, the 2D engine, the CCE's fetches,
 // the scanout and the software rasteriser.  Under the software

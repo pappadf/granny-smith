@@ -389,6 +389,19 @@ static void r128_build_edid(rage128_t *r) {
 // ============================================================
 
 // Reads that are not simply the stored value.
+// The VRAM byte a CPU address reaches through the memory controller, or -1
+// for none.  The controller decodes CONFIG_MEMSIZE bytes (never less than
+// is fitted); where that claims more than is fitted, the excess aliases
+// the installed memory (r128_vram_wrap).
+static int64_t vram_map(const rage128_t *r, uint32_t a) {
+    uint32_t decoded = r->reg[R_CONFIG_MEMSIZE / 4];
+    if (decoded < r->vram_size)
+        decoded = r->vram_size;
+    if (a >= decoded)
+        return -1;
+    return r128_vram_wrap(r, a);
+}
+
 static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
     off &= (R128_REG_APER_SIZE - 1u) & ~3u;
     if (!peek)
@@ -400,9 +413,10 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
         uint32_t idx = r->reg[R_MM_INDEX / 4];
         if (idx & MM_APER) {
             // Linear aperture 0 through the index pair: VRAM, no swap.
-            uint32_t a = idx & MM_ADDR_MASK;
-            if (a + 4u > r->vram_size)
+            int64_t m = vram_map(r, idx & MM_ADDR_MASK);
+            if (m < 0 || (uint64_t)m + 4u > r->vram_size)
                 return 0xFFFFFFFFu;
+            uint32_t a = (uint32_t)m;
             r128_vram_access(r, a, 4, false);
             return (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
                    ((uint32_t)r->vram[a + 3] << 24);
@@ -487,10 +501,13 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         uint32_t idx = r->reg[R_MM_INDEX / 4];
         uint32_t a = idx & MM_ADDR_MASK;
         if (idx & MM_APER) {
-            if (a < r->vram_size)
-                r128_vram_access(r, a, r->vram_size - a < 4u ? r->vram_size - a : 4u, true);
+            int64_t m = vram_map(r, a);
+            if (m < 0)
+                return;
+            a = (uint32_t)m; // dword-aligned, so all four bytes are in VRAM
+            r128_vram_access(r, a, 4, true);
             for (uint32_t i = 0; i < 4; i++)
-                if ((mask >> (8u * i)) & 0xFFu && a + i < r->vram_size)
+                if ((mask >> (8u * i)) & 0xFFu)
                     r->vram[a + i] = (uint8_t)(value >> (8u * i));
             return;
         }
@@ -565,6 +582,15 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         // registers (the drivers' reset dance, SDK §5.2).
         if ((merged & SOFT_RESET_GUI) && !(*p & SOFT_RESET_GUI))
             r128_cce_soft_reset(r);
+        *p = merged;
+        return;
+    case R_CONFIG_MEMSIZE:
+        // Firmware or a driver may claim more memory than is fitted; above it
+        // addresses wrap (r128_vram_wrap), which the console should say.
+        if (merged > r->vram_size && *p <= r->vram_size)
+            log_status("Rage 128: memory size set to %u MB on a %u MB card -- addresses above %u MB "
+                       "wrap onto the memory fitted",
+                       merged >> 20, r->vram_size >> 20, r->vram_size >> 20);
         *p = merged;
         return;
     case R_CONFIG_APER_0_BASE:
@@ -724,9 +750,7 @@ static int64_t aper_map(const rage128_t *r, uint32_t off) {
         a ^= 1u;
     else if (endian == ENDIAN_32BPP)
         a ^= 3u;
-    if (a >= r->vram_size)
-        return -1;
-    return a;
+    return vram_map(r, a);
 }
 
 static uint8_t aper_rd8(void *ctx, uint32_t off, bool peek) {
@@ -926,7 +950,7 @@ static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp
 
 // Overlay the cursor on `compose`, which holds the frame in display order.
 static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
-    uint32_t src = r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u;
+    uint32_t src = r128_vram_wrap(r, r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
         return;
     r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
@@ -1043,7 +1067,7 @@ static void r128_update(rage128_t *r) {
     uint32_t width = (((r->reg[R_CRTC_H_TOTAL_DISP / 4] >> 16) & 0xFFu) + 1u) * 8u;
     uint32_t height = ((r->reg[R_CRTC_V_TOTAL_DISP / 4] >> 16) & 0x7FFu) + 1u;
     uint32_t stride = (r->reg[R_CRTC_PITCH / 4] & 0x3FFu) * 8u * bpp;
-    uint32_t base = r->crtc_offset_live;
+    uint32_t base = r128_vram_wrap(r, r->crtc_offset_live);
     if (width > 2048u || height > 1536u) {
         LOG(2, "Rage 128: implausible CRTC geometry %ux%u — blanking", width, height);
         width = 640;
