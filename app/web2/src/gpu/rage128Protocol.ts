@@ -5,7 +5,7 @@
 // step: PROTOCOL_VERSION is checked at attach.  The control block's layout
 // is the Voodoo2's (voodoo2Protocol.ts), word for word.
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 1;
 export const MAGIC = 0x52313247; // 'R12G'
 
 // Control-block word indices (Uint32 view at the control base).
@@ -40,18 +40,12 @@ export const R_TEX_UPLOAD = 5; // {id, y, w, h} + u32 texels
 export const R_TEX_FREE = 6; // {id}
 export const R_DRAW = 7; // header + uniform + vertices
 export const R_FILL = 8; // {color_id, depth_id, x0, y0, x1, y1, value}
-export const R_PRESENT = 9; // PRESENT_WORDS words [+ cursor map]
+export const R_PRESENT = 9; // {id, w, h, rbits, gbits, bbits}
 export const R_LUT = 10; // + 768 bytes
 export const R_READBACK = 11; // {seq, id, y0, y1}
 export const R_MODE = 12; // {engaged, w, h}
 export const R_FENCE = 13; // {seq}
 export const R_SHUTDOWN = 14; // {seq}
-
-// PRESENT: {id, w, h, rbits, gbits, bbits, cur_on, cur_x, cur_y, cur_ox,
-// cur_oy, clr0, clr1, 0}, then the cursor's 1024-byte AND/XOR map when
-// cur_on (rage128_gpu_protocol.h).
-export const PRESENT_WORDS = 14;
-export const CURSOR_MAP_BYTES = 1024;
 
 export const ROLE_COLOR = 0;
 export const ROLE_DEPTH = 1;

@@ -370,19 +370,13 @@ worker attaches, the card keeps the software rasteriser and
   restore (discarding the GPU's pixels: VRAM is the restored truth), or on
   device loss (logged; the walker draws from there on). A checkpoint save
   reads everything back first.
-- **Presentation.** At vblank, when the scanout is a colour surface, the
-  worker presents it onto an overlay canvas (`#screen3d-r128`) through the
-  display table — the DAC's direct-colour table composed with the
-  monitor's response, indexed by the channel code at the scanout's width,
-  as the renderer does — and `display_t.presented_externally` tells the
-  WebGL renderer to skip its upload. The present pass composites the
-  hardware cursor (`r128_cursor_overlay`: its AND/XOR map, placement and
-  colours travel in the PRESENT record), so an enabled cursor does not
-  force the frame back to VRAM; Quake III leaves the cursor enabled with an
-  empty map, and the overlay presents nothing for it. Nor does a flip: the
-  CRTC path skips reading back and composing a scanout the GPU is about to
-  present (`r128_gpu_presents_scanout`). A screenshot reads the frame back
-  (`sync_pixels`). The design
+- **Presentation.** At vblank, when the scanout is a colour surface (and
+  no hardware cursor needs compositing), the worker presents it onto an
+  overlay canvas (`#screen3d-r128`) through the display table — the DAC's
+  direct-colour table composed with the monitor's response, indexed by
+  the channel code at the scanout's width, as the renderer does — and
+  `display_t.presented_externally` tells the WebGL renderer to skip its
+  upload. A screenshot reads the frame back (`sync_pixels`). The design
   follows what Quake III does, measured natively: two colour buffers
   ($8000 and $F5A000, 640 × 480 ARGB1555, swapped by immediate
   `CRTC_OFFSET` writes) and a 16-bit Z buffer at $EC0000 cleared by one 2D

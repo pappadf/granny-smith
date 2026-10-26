@@ -44,8 +44,6 @@ import {
   R_DRAW,
   R_FILL,
   R_PRESENT,
-  PRESENT_WORDS,
-  CURSOR_MAP_BYTES,
   R_LUT,
   R_READBACK,
   R_MODE,
@@ -320,7 +318,7 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
     primitive: { topology: 'triangle-list' },
   });
   presentUniform = d.createBuffer({
-    size: PRESENT_UNIFORM_WORDS * 4,
+    size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   const restoreModule = d.createShaderModule({
@@ -768,26 +766,7 @@ function onMode(engaged: number, w: number, h: number): void {
   overlayH = h;
 }
 
-// The present pass's uniform: the channel widths and the cursor flag, the
-// cursor's placement and colours, then its 64-line map (PRESENT_WGSL's P).
-const PRESENT_UNIFORM_WORDS = 12 + CURSOR_MAP_BYTES / 4;
-const presentWords = new Uint32Array(PRESENT_UNIFORM_WORDS);
-
-// PRESENT at word `rec`: {id, w, h, rbits, gbits, bbits, cur_on, cur_x,
-// cur_y, cur_ox, cur_oy, clr0, clr1, 0} [+ the cursor map].
-function onPresent(rec: number): void {
-  const id = u32![rec],
-    w = u32![rec + 1],
-    h = u32![rec + 2];
-  const curOn = u32![rec + 6];
-  presentWords.set([u32![rec + 3], u32![rec + 4], u32![rec + 5], curOn], 0);
-  presentWords.set([u32![rec + 7], u32![rec + 8], u32![rec + 9], u32![rec + 10]], 4);
-  presentWords.set([u32![rec + 11], u32![rec + 12], 0, 0], 8);
-  if (curOn)
-    presentWords.set(
-      u32!.subarray(rec + PRESENT_WORDS, rec + PRESENT_WORDS + CURSOR_MAP_BYTES / 4),
-      12,
-    );
+function onPresent(id: number, w: number, h: number, rb: number, gb: number, bb: number): void {
   const s = surfaces.get(id);
   if (!s?.color || !canvas || !context) return;
   endPass();
@@ -795,7 +774,7 @@ function onPresent(rec: number): void {
     canvas.width = w;
     canvas.height = h;
   }
-  device!.queue.writeBuffer(presentUniform!, 0, presentWords);
+  device!.queue.writeBuffer(presentUniform!, 0, new Uint32Array([rb, gb, bb, 0]));
   const enc = ensureEncoder();
   const p = enc.beginRenderPass({
     colorAttachments: [
@@ -971,7 +950,7 @@ async function drain(head: number): Promise<boolean> {
         );
         break;
       case R_PRESENT:
-        onPresent(p);
+        onPresent(u32![p], u32![p + 1], u32![p + 2], u32![p + 3], u32![p + 4], u32![p + 5]);
         break;
       case R_LUT:
         onLut(at + 8);

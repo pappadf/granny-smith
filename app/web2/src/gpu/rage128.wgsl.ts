@@ -455,12 +455,7 @@ fn shade(in: VOut) -> Shaded {
 // channel is the code the surface stores at the scanout's width, which
 // indexes the table at code << (8 − bits), as the card's DAC does.
 export const PRESENT_WGSL = /* wgsl */ `
-struct P {
-  bits: vec4<u32>, // r, g, b widths; w: the cursor shows
-  cur: vec4<i32>, // where cursor-map (0, 0) lands; ox, oy: its first shown column and line
-  clr: vec4<u32>, // the cursor's two colours, pixel codes (blue lowest)
-  map: array<vec4<u32>, 64>, // the cursor's lines: 8 AND bytes, then 8 XOR bytes
-};
+struct P { bits: vec4<u32>, };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var lut: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> p: P;
@@ -470,53 +465,18 @@ struct P {
   return vec4<f32>(q[i], 0.0, 1.0);
 }
 
-// The code a channel stores at this width.
-fn code(v: f32, bits: u32) -> u32 {
+fn index(v: f32, bits: u32) -> i32 {
   let m = (1u << bits) - 1u;
-  return (u32(v * 255.0 + 0.5) * m + 127u) / 255u;
-}
-
-// The display table at a code, as the DAC indexes it (code << (8 - bits)).
-fn shown(c: u32, bits: u32, ch: i32) -> f32 {
-  return textureLoad(lut, vec2<i32>(i32(c << (8u - bits)), ch), 0).r;
-}
-
-// Byte k (0..15) of cursor line row.
-fn map_byte(row: i32, k: u32) -> u32 {
-  return (p.map[row][k >> 2u] >> ((k & 3u) * 8u)) & 0xFFu;
+  let code = (u32(v * 255.0 + 0.5) * m + 127u) / 255u;
+  return i32(code << (8u - bits));
 }
 
 @fragment fn fs_present(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   let c = textureLoad(src, vec2<i32>(pos.xy), 0);
-  var rc = code(c.r, p.bits.x);
-  var gc = code(c.g, p.bits.y);
-  var bc = code(c.b, p.bits.z);
-  // The hardware cursor, composited as the CRTC overlays it
-  // (rage128.c r128_draw_cursor): AND/XOR 00 colour 0, 01 colour 1,
-  // 10 transparent, 11 the complement of the pixel beneath.
-  if (p.bits.w != 0u) {
-    let col = i32(pos.x) - p.cur.x;
-    let row = i32(pos.y) - p.cur.y;
-    if (col >= p.cur.z && col < 64 && row >= p.cur.w && row < 64) {
-      let bit = 7u - (u32(col) & 7u);
-      let a = (map_byte(row, u32(col) >> 3u) >> bit) & 1u;
-      let x = (map_byte(row, 8u + (u32(col) >> 3u)) >> bit) & 1u;
-      let rm = (1u << p.bits.x) - 1u;
-      let gm = (1u << p.bits.y) - 1u;
-      let bm = (1u << p.bits.z) - 1u;
-      if (a == 1u && x == 1u) {
-        rc = rm - rc;
-        gc = gm - gc;
-        bc = bm - bc;
-      } else if (a == 0u) {
-        let v = select(p.clr.x, p.clr.y, x == 1u);
-        bc = v & bm;
-        gc = (v >> p.bits.z) & gm;
-        rc = (v >> (p.bits.z + p.bits.y)) & rm;
-      }
-    }
-  }
-  return vec4<f32>(shown(rc, p.bits.x, 0), shown(gc, p.bits.y, 1), shown(bc, p.bits.z, 2), 1.0);
+  let r = textureLoad(lut, vec2<i32>(index(c.r, p.bits.x), 0), 0).r;
+  let g = textureLoad(lut, vec2<i32>(index(c.g, p.bits.y), 1), 0).r;
+  let b = textureLoad(lut, vec2<i32>(index(c.b, p.bits.z), 2), 0).r;
+  return vec4<f32>(r, g, b, 1.0);
 }
 `;
 

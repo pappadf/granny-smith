@@ -22,7 +22,7 @@
 #ifndef RAGE128_GPU_PROTOCOL_H
 #define RAGE128_GPU_PROTOCOL_H
 
-#define R128GPU_PROTOCOL_VERSION 2u
+#define R128GPU_PROTOCOL_VERSION 1u
 #define R128GPU_MAGIC            0x52313247u // 'R12G'
 
 // Control-block word indices (the Voodoo2's layout, word for word).
@@ -63,21 +63,12 @@
 #define R128GPU_R_TEX_FREE     6u // {id}
 #define R128GPU_R_DRAW         7u // r128gpu_draw_hdr_t + uniform block + vertices
 #define R128GPU_R_FILL         8u // {color_id, depth_id, x0, y0, x1, y1, value}: a solid rectangle
-#define R128GPU_R_PRESENT      9u // R128GPU_PRESENT_WORDS words [+ cursor map]: show through the LUT
+#define R128GPU_R_PRESENT      9u // {id, w, h, rbits, gbits, bbits}: show through the LUT
 #define R128GPU_R_LUT          10u // + 768 bytes: the composed 3 x 256 display table
 #define R128GPU_R_READBACK     11u // {seq, id, y0, y1}: packed rows -> readback area; ACK
 #define R128GPU_R_MODE         12u // {engaged, w, h}: overlay visibility for the page
 #define R128GPU_R_FENCE        13u // {seq}: ACK once everything before it was submitted
 #define R128GPU_R_SHUTDOWN     14u // {seq}: free everything, STATUS <- DETACHED, ACK
-
-// The PRESENT record: {id, w, h, rbits, gbits, bbits, cur_on, cur_x,
-// cur_y, cur_ox, cur_oy, clr0, clr1, 0}, then, when cur_on, the hardware
-// cursor's 64 x 16-byte AND/XOR map (1024 bytes).  Map (0, 0) lands on
-// the surface at (cur_x, cur_y) (i32); lines before cur_oy and columns
-// before cur_ox do not show.  clr0/clr1 are pixel codes in the scanout's
-// format (channels packed blue-lowest at the record's bit widths).
-#define R128GPU_PRESENT_WORDS    14
-#define R128GPU_CURSOR_MAP_BYTES 1024
 
 #define R128GPU_ROLE_COLOR 0u
 #define R128GPU_ROLE_DEPTH 1u
