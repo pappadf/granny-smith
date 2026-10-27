@@ -16,6 +16,7 @@
 #include "gs_assert.h"
 #include "image_internal.h"
 #include "image_iso9660.h"
+#include "image_moof.h"
 #include "image_scratch.h"
 #include "image_udif.h"
 #include "image_wrap.h"
@@ -336,9 +337,21 @@ static image_t *image_open_source(const char *name, source_t *data, source_t *rs
     t_open_error[0] = '\0';
     format_unwrap(data, rsrc, &u);
     // A UDIF, NDIF or QCOW2 image that would not open is no disk: read raw
-    // it is its container, which no guest should see.  (DiskCopy 4.2 and
+    // it is its container, which no guest should see.  Nor is a MOOF that
+    // does not decode -- its magic is unambiguous.  (DiskCopy 4.2 and
     // peeler's wrappers detect from content that a raw disk can also carry,
     // so their failure leaves the bytes as they are.)
+    if (u.failed_format && strcmp(u.failed_format, "moof") == 0) {
+        snprintf(t_open_error, sizeof t_open_error, "a MOOF image that cannot be decoded (%s)",
+                 u.failed_rc == -ENOTSUP ? "only 400K and 800K GCR disks are read; this is a 1.44 MB MFM or Twiggy disk"
+                 : u.failed_rc == -EINVAL ? "it holds no readable Macintosh GCR sector"
+                                          : strerror(-u.failed_rc));
+        out_printf("image: '%s' is %s\n", name, t_open_error);
+        int frc = u.failed_rc;
+        format_unwrapped_free(&u);
+        errno = frc == -ENOTSUP ? ENOTSUP : EINVAL;
+        return NULL;
+    }
     if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0 ||
                             strcmp(u.failed_format, "qcow2") == 0)) {
         bool qcow2 = strcmp(u.failed_format, "qcow2") == 0;
@@ -760,7 +773,7 @@ static FILE *create_exclusive(const char *path) {
 }
 
 // The format an export writes, picked from the destination's name.
-typedef enum { EXPORT_RAW, EXPORT_UDIF, EXPORT_DC42 } export_format_t;
+typedef enum { EXPORT_RAW, EXPORT_UDIF, EXPORT_DC42, EXPORT_MOOF } export_format_t;
 
 struct image_export {
     storage_export_view_t *view;
@@ -768,8 +781,8 @@ struct image_export {
     char *name; // the image's own name, recorded in a UDIF export
     uint32_t block_size;
     export_format_t format;
-    // DiskCopy 4.2 only: the tags as they were at begin (the view's moment),
-    // and the header's label.
+    // DiskCopy 4.2 and MOOF: the tags as they were at begin (the view's
+    // moment), and the header's label (DiskCopy) and format byte.
     uint8_t *tags; // tag_count * tag_bytes, or NULL for an untagged disk
     uint32_t tag_bytes;
     uint32_t tag_count;
@@ -878,7 +891,16 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
     else if (path_has_ext(dest_path, ".dc42") || path_has_ext(dest_path, ".diskcopy") ||
              (path_has_ext(dest_path, ".image") && image_is_floppy(image->type)))
         e->format = EXPORT_DC42;
-    if (e->format == EXPORT_DC42 && !export_prepare_dc42(e, image, err, err_cap)) {
+    else if (path_has_ext(dest_path, ".moof")) {
+        e->format = EXPORT_MOOF;
+        if (image->type != image_fd_ss && image->type != image_fd_ds) {
+            if (err)
+                snprintf(err, err_cap, "MOOF holds 400K and 800K GCR floppies only");
+            image_export_end(e);
+            return NULL;
+        }
+    }
+    if ((e->format == EXPORT_DC42 || e->format == EXPORT_MOOF) && !export_prepare_dc42(e, image, err, err_cap)) {
         image_export_end(e);
         return NULL;
     }
@@ -973,6 +995,43 @@ static int image_export_run_dc42(image_export_t *e, FILE *f) {
     return 0;
 }
 
+// The data section collects here, for a MOOF export to encode whole.
+typedef struct {
+    uint8_t *buf;
+    size_t len, cap;
+} mem_stream_t;
+
+static int mem_write_cb(void *ctx, const void *data, size_t size) {
+    mem_stream_t *m = (mem_stream_t *)ctx;
+    if (m->len + size > m->cap)
+        return -1; // more than a GCR floppy holds
+    memcpy(m->buf + m->len, data, size);
+    m->len += size;
+    return 0;
+}
+
+// A MOOF file (image_moof.h): the disk's sectors and tags laid down as GCR
+// bitstreams.  The view's status passes through as in the DiskCopy export.
+static int image_export_run_moof(image_export_t *e, FILE *f) {
+    mem_stream_t m = {.cap = 1600u * STORAGE_BLOCK_SIZE};
+    m.buf = (uint8_t *)malloc(m.cap);
+    if (!m.buf)
+        return -ENOMEM;
+    int rc = storage_export_view_write(e->view, &m, mem_write_cb);
+    uint32_t sectors = (uint32_t)(m.len / STORAGE_BLOCK_SIZE);
+    // The tags, when the image has one per sector (else zeros).
+    const uint8_t *tags = e->tags && e->tag_bytes == MOOF_TAG_BYTES && e->tag_count >= sectors ? e->tags : NULL;
+    uint8_t *file = NULL;
+    size_t len = 0;
+    if (rc == STATUS_OK)
+        rc = moof_encode(m.buf, sectors, tags, e->format_byte, &file, &len);
+    free(m.buf);
+    if (rc == 0 && fwrite(file, 1, len, f) != len)
+        rc = -EIO;
+    free(file);
+    return rc;
+}
+
 int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     if (!e || !e->view)
         return -EINVAL;
@@ -989,8 +1048,9 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
         return -rc;
     }
     char *iobuf = stream_set_large_buffer(f);
-    int rc =
-        e->format == EXPORT_DC42 ? image_export_run_dc42(e, f) : storage_export_view_write(e->view, f, file_write_cb);
+    int rc = e->format == EXPORT_DC42   ? image_export_run_dc42(e, f)
+             : e->format == EXPORT_MOOF ? image_export_run_moof(e, f)
+                                        : storage_export_view_write(e->view, f, file_write_cb);
     bool closed = fclose(f) == 0;
     free(iobuf);
     if (rc != STATUS_OK || !closed) {

@@ -179,7 +179,7 @@ export async function identifyCardRom(
 }
 
 // Why a disk image that did not validate cannot be read, when it is a UDIF,
-// NDIF or QCOW2 image the core cannot read ("is a QCOW2 image that cannot
+// NDIF, QCOW2 or MOOF image the core cannot read ("is a QCOW2 image that cannot
 // be read in place (it uses ...)"), else undefined: the upload said only
 // "is not a valid Hard Disk image", the reason was in the terminal.
 async function containerRefusal(path: string, gsEval: GsEval): Promise<string | undefined> {
@@ -314,8 +314,11 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         size === FD_720 + DC42_HEADER ||
         size === FD_HD ||
         size === FD_HD + DC42_HEADER;
-      if (!recognised) return { valid: false };
-      return { valid: true };
+      if (recognised) return { valid: true };
+      // A wrapper the size does not give away (an Applesauce MOOF, a
+      // floppy inside a .dmg): ask the image layer what it opens as.
+      if ((await gsEval('files.identify_floppy', [path])) === true) return { valid: true };
+      return { valid: false, reject: await containerRefusal(path, gsEval) };
     },
   },
 
