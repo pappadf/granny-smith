@@ -34,8 +34,12 @@ without the Apple GPU, so Chromium there falls back to SwiftShader.
 git clone https://github.com/pappadf/granny-smith && cd granny-smith
 git checkout <the branch with this spec>
 scripts/fetch-test-data.sh          # tests/data at tests/data-version; extracts the .7z files
+make ui2                            # the wasm core and the web bundle: several minutes the first time
 cd tests/e2e && npm ci && npx playwright install chromium
 ```
+
+Build `make ui2` first: the spec's web server runs it too, but gives up
+after 240 s, which a first build of the wasm core can exceed.
 
 Check the four inputs exist (the spec skips, naming the missing one,
 otherwise):
@@ -55,9 +59,8 @@ From `tests/e2e`:
 GS_Q3_GPU=1 npx playwright test -c playwright.web2.config.ts --project=serial perf-quake3-gpu
 ```
 
-The first run builds the wasm core and the web bundle (`make ui2`, several
-minutes); later runs reuse them.  Close other heavy applications: this
-times the machine.
+The web server re-runs `make ui2` (a no-op when it is current) and serves
+`app/web2/dist`.  Close other heavy applications: this times the machine.
 
 | Variable | Default | Meaning |
 |---|---|---|
