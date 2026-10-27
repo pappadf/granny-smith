@@ -233,19 +233,29 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   await call("machine.rtc.time", ["2026-10-01T12:00:00"]);
   await call("machine.scsi.attach_hd", [OPFS_HD, 0]);
   await call("machine.scsi.attach_cdrom", [OPFS_CD, 3]);
-  // A backing-store read failure shows as a SCSI MEDIUM ERROR to the guest
-  // ("a disk error occurred"); these name it on the terminal
-  await call("log.set", ["scsi", 1]);
+  // A backing-store failure shows as a SCSI MEDIUM ERROR to the guest ("a
+  // disk error occurred"); the image log names it on the terminal
   await call("log.set", ["image", 1]);
 
   // The guest's own pace for the boot and Quake's start: turbo
   await call("scheduler.mode", ["turbo"]);
   await call("scheduler.run", []);
   const instr = async () => num(await ev("scheduler.instr_count"));
-  // Wait until the guest has retired n more instructions
+  // Wait until the guest has retired n more instructions.  An alert (a
+  // disk write that failed, a hung guest...) is printed on the terminal,
+  // which keeps only its last lines: save it as soon as the count rises.
+  let alerts = 0;
   const waitInstr = async (n: number) => {
     const until = (await instr()) + n;
-    while ((await instr()) < until) await page.waitForTimeout(100);
+    while ((await instr()) < until) {
+      await page.waitForTimeout(100);
+      const a = num(await ev("log.alerts"));
+      if (a > alerts) {
+        alerts = a;
+        log(`alert ${a} (terminal-alert${a}.txt)`);
+        await saveTerminal(`terminal-alert${a}`);
+      }
+    }
   };
   const press = async (k: string | number) => {
     await call("machine.adb.keyboard.press", [k]);
