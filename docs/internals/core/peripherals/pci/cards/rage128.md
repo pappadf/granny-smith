@@ -488,6 +488,13 @@ loudly.
   end, found in Quake's console in guest RAM.  Prints the run's host
   wall-clock and CPU time, guest time, instructions, frames (page flips,
   `regs.flips`) and frame rate; asserts the demo loads no missing file.
+- `tests/integration/g3-rage128-quake3-demo-jit` (tier `extended`) — the
+  same script (`CPU_ENGINE=jit`) under the wasm build run by Node, with the
+  predecoded loop and the PowerPC JIT on, supervisor code included: the
+  CPU side of the browser's "JIT + kernel" (the 3D is still the software
+  rasteriser's).  Next to the native row's timing, the interpreter and the
+  JIT on one host.  Both rows end with the status lines over the demo: the
+  card's names its host time in 3D, 2D and scanout.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for

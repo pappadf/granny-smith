@@ -30,6 +30,11 @@ let cd = "../../data/apps/quake3_1_30_demo_four_cd.iso"
 
 # Console cells: colour 7 (white) for the echo and the engine's lines,
 # colour 3 (yellow) for warnings
+# The row's name and CPU engine (run.sh of g3-rage128-quake3-demo-jit
+# sets both)
+let ROW = try($ROW_NAME, "g3-rage128-quake3-demo")
+let ENGINE = try($CPU_ENGINE, "default")
+
 let PAT_ECHO = "07 5d 07 5c 07 64 07 65 07 6d 07 6f 07 20 07 66 07 6f 07 75 07 72"
 let PAT_FRAGLIMIT = "07 20 07 68 07 69 07 74 07 20 07 74 07 68 07 65 07 20 07 66 07 72 07 61 07 67 07 6c 07 69 07 6d 07 69 07 74"
 # The main menu's copyright line: top, left, bottom, right
@@ -60,6 +65,16 @@ def milli(x) {
 def q3_run() {
     let doc = "{\"cards\":[{\"slot\":\"pci_1\",\"card\":\"rage128\",\"options\":{\"memory\":\"32m\"}}],\"displays\":{\"pci_1\":{\"monitor\":\"13in_rgb\"}}}"
     machine.boot model="pmg3dt" ram=262144 rom="${$ROM}" config="${$doc}"
+    # ENGINE=jit (g3-rage128-quake3-demo-jit, the wasm build under Node):
+    # the browser's "JIT + kernel" -- the predecoded loop, and hot code,
+    # supervisor code too, translated to WebAssembly
+    if $ENGINE == "jit" {
+        predecode.enabled = 1
+        jit.supervisor = 1
+        jit.enabled = 1
+        assert jit.enabled == 1 "this build has no translation tier (ENGINE=jit needs the wasm build)"
+    }
+    echo "${$ROW}: engine ${$ENGINE}, predecode ${predecode.enabled}, jit ${jit.enabled}"
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd "${$hd}" 0
     machine.scsi.attach_cdrom "${$cd}" 3
@@ -103,13 +118,18 @@ def q3_run() {
     let u0 = scheduler.host_user_ns
     let f0 = machine.pci.slot[1].card.regs.flips
     let p0 = machine.pci.slot[1].card.regs.prims3d
+    let j0 = jit.instructions
+    # The status lines over exactly the demo: the card's says where its
+    # host time went (3D, 2D, scanout)
+    log.status_every = 0
+    log.status
     machine.adb.keyboard.press "return"
     scheduler.run 20000000
     let echo = debug.find.bytes($PAT_ECHO, 0, 0x10000000)
     assert len($echo) == 1 "the console's echo of the command (found ${len($echo)} times)"
     let lo = $echo[0] - 0x10000
     let hi = $echo[0] + 0x10000
-    echo "g3-rage128-quake3-demo: the console is around ${$echo[0]:08x}"
+    echo "${$ROW}: the console is around ${$echo[0]:08x}"
 
     # Until the demo's last event (coarse), then until the main menu is back
     # (fine): the disconnect at the demo's end
@@ -132,20 +152,23 @@ def q3_run() {
     let ums = (scheduler.host_user_ns - $u0) / 1000000
     let frames = machine.pci.slot[1].card.regs.flips - $f0
     let prims = machine.pci.slot[1].card.regs.prims3d - $p0
+    let dj = jit.instructions - $j0
+    log.status
     try(machine.screen.save("${$RESULTS_DIR}/end.png"), none)
-    echo "g3-rage128-quake3-demo: demo four, from Return to its end (within 2 M instructions):"
-    echo "g3-rage128-quake3-demo:   host wall-clock ${milli($wms)} s, host CPU ${milli($ums)} s"
-    echo "g3-rage128-quake3-demo:   guest ${milli($gms)} s (${scheduler.cycles - $c0} cycles at ${$hz} Hz)"
-    echo "g3-rage128-quake3-demo:   ${$di} instructions: ${$di / 1000 / $gms} MIPS guest, ${$di / 1000 / $wms} MIPS host"
-    echo "g3-rage128-quake3-demo:   speed ${milli($gms * 1000 / $wms)}x real time"
-    echo "g3-rage128-quake3-demo:   ${$frames} frames (page flips): ${milli($frames * 1000000 / $gms)} fps guest, ${milli($frames * 1000000 / $wms)} fps host"
-    echo "g3-rage128-quake3-demo:   ${$prims} 3D primitives, raster ${machine.pci.slot[1].card.regs.raster}"
+    echo "${$ROW}: demo four, from Return to its end (within 2 M instructions):"
+    echo "${$ROW}:   host wall-clock ${milli($wms)} s, host CPU ${milli($ums)} s"
+    echo "${$ROW}:   guest ${milli($gms)} s (${scheduler.cycles - $c0} cycles at ${$hz} Hz)"
+    echo "${$ROW}:   ${$di} instructions: ${$di / 1000 / $gms} MIPS guest, ${$di / 1000 / $wms} MIPS host"
+    echo "${$ROW}:   speed ${milli($gms * 1000 / $wms)}x real time"
+    echo "${$ROW}:   ${$frames} frames (page flips): ${milli($frames * 1000000 / $gms)} fps guest, ${milli($frames * 1000000 / $wms)} fps host"
+    echo "${$ROW}:   ${$prims} 3D primitives, raster ${machine.pci.slot[1].card.regs.raster}"
+    echo "${$ROW}:   engine ${$ENGINE}: ${$dj * 100 / $di}% of the instructions ran translated"
 
     let missing = len(debug.find.bytes($PAT_MISSING, $lo, $hi))
     assert $missing == 0 "${$missing} files the demo loads are not on the CD (could not find)"
     assert $frames > 500 "Quake drew ${$frames} frames"
     assert $prims > 100000 "the 3D engine drew ${$prims} primitives"
-    echo "g3-rage128-quake3-demo: Quake III plays demo four to its end"
+    echo "${$ROW}: Quake III plays demo four to its end"
 }
 
 # Both disc images are private test data.  Without them the row skips, by
