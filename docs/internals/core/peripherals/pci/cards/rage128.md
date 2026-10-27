@@ -416,8 +416,8 @@ bit 0 is the live blank, bit 1 the since-last-cleared latch.
 `machine.pci.slot[N].card` carries `framebuffer` (the shared display node,
 nominated as `machine.screen.source`), `monitor` (`id`, `ddc`,
 `apple_sense`) and, under the advanced category, `regs` (`vram_size`,
-`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`, `raster`
-(`sw` or `webgpu`), `gpu_engaged`, `gpu_presenting`, `gpu_stats` (the
+`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`,
+`flips` (page flips), `raster` (`sw` or `webgpu`), `gpu_engaged`, `gpu_presenting`, `gpu_stats` (the
 takeover's counters, fallbacks by reason, and the worker's), `read(offset)`
 without side effects, `pll(index)`).
 
@@ -481,6 +481,13 @@ loudly.
   perspective, ATI's pre-multiplied S/T), `mipmap` (six mip levels, each
   its own colour, receding in perspective) and `fog` (lit teapots in
   exponential fog, Z buffered), each a golden.
+- `tests/integration/g3-rage128-quake3-demo` (tier `extended`) — the same
+  G3 with 256 MB, the stripped 9.2.1 disk and the Quake III 1.30 CD cut to
+  its demo (gs-test-data `apps/quake3_1_30_demo_four_cd.iso`): Quake runs
+  from the CD and plays `demo four` (q3dm6, eight players, 63 s) to its
+  end, found in Quake's console in guest RAM.  Prints the run's host
+  wall-clock and CPU time, guest time, instructions, frames (page flips,
+  `regs.flips`) and frame rate; asserts the demo loads no missing file.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for

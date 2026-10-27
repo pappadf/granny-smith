@@ -1626,6 +1626,10 @@ static DEF_GETTER(regs_attr_prims3d) {
     rage128_t *c = node_card(self);
     return val_uint(8, c ? c->prims3d : 0);
 }
+static DEF_GETTER(regs_attr_flips) {
+    rage128_t *c = node_card(self);
+    return val_uint(8, c ? c->diag.flips : 0);
+}
 static DEF_GETTER(regs_attr_cce_packets) {
     rage128_t *c = node_card(self);
     return val_uint(8, c ? c->cce.packets : 0);
@@ -1681,6 +1685,10 @@ static const member_t regs_members[] = {
      .name = "prims3d",
      .doc = "3D primitives the engine has rasterised since reset",
      .attr = {.type = VK_UINT, .get = regs_attr_prims3d}                                     },
+    {.kind = MK_ATTR,
+     .name = "flips",
+     .doc = "Page flips: CRTC_OFFSET changes that took effect (a double-buffered game's frames)",
+     .attr = {.type = VK_UINT, .get = regs_attr_flips}                                       },
     {.kind = MK_ATTR,
      .name = "raster",
      .doc = "The 3D rasteriser in use: sw (exact) or webgpu (the host GPU; pci_option \"raster=...\")",
