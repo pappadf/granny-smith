@@ -67,6 +67,7 @@ The web server re-runs `make ui2` (a no-op when it is current) and serves
 | `GS_Q3_GPU` | — | `1` to run at all |
 | `GS_Q3_MODES` | `paced,turbo` | One demo run per entry, in order: `paced` (real time; the guest's clock follows the wall clock), `fast` / `accelerated` (real-time clock, faster CPU), `turbo` (as fast as possible) |
 | `GS_Q3_ENGINE` | `jit` | `jit` (the browser's "JIT + kernel"), `predecoded`, `interpreter` |
+| `GS_Q3_RASTER` | `webgpu` | The Rage 128's 3D: `webgpu` (the host GPU), or `sw` (its software rasteriser in the browser: the comparison row) |
 | `GS_Q3_TIMEDEMO` | — | `1`: also `timedemo 1` before each run; Quake then draws every frame as fast as it can and prints its own `frames, seconds, fps` (reported as `quake_timedemo`) |
 | `GS_Q3_POLL_MS` | `100` | How often the end is polled (the end's resolution) |
 | `GS_Q3_HEADED` | — | `1`: a visible browser window (if headless gets no GPU) |
@@ -154,6 +155,8 @@ Suggested set, three times each, reporting the median:
 2. `GS_Q3_MODES=turbo` — throughput: `speed_x`, `mips_host`, `fps_host`.
 3. `GS_Q3_MODES=turbo GS_Q3_ENGINE=predecoded` — the JIT's share of it.
 4. `GS_Q3_MODES=turbo GS_Q3_TIMEDEMO=1` — Quake's own benchmark number.
+5. `GS_Q3_MODES=turbo GS_Q3_RASTER=sw` — the same in the browser without
+   the GPU: what the WebGPU takeover buys.
 
 Compare with the headless rows on the same Mac
 (`make integration-test-g3-rage128-quake3-demo` and `-jit` from the repo

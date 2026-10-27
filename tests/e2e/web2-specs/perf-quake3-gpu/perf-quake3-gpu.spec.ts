@@ -42,6 +42,9 @@ const MODES = (process.env.GS_Q3_MODES ?? "paced,turbo")
   .filter(Boolean);
 const ENGINE = process.env.GS_Q3_ENGINE ?? "jit"; // jit | predecoded | interpreter
 const POLL_MS = Number(process.env.GS_Q3_POLL_MS ?? 100);
+// The Rage 128's 3D: webgpu (the host GPU) or sw (its software rasteriser,
+// the comparison row; also the flow check on a machine without a GPU)
+const RASTER = process.env.GS_Q3_RASTER ?? "webgpu";
 const TIMEDEMO = process.env.GS_Q3_TIMEDEMO === "1";
 const TIMEOUT_MIN = Number(process.env.GS_Q3_TIMEOUT_MIN ?? 90);
 const LABEL = process.env.GS_Q3_LABEL ?? "unlabeled";
@@ -175,7 +178,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     !adapter ||
     /swiftshader|google/i.test(`${adapter.vendor} ${adapter.description}`);
   test.skip(
-    software && !ALLOW_SOFTWARE_GPU,
+    RASTER === "webgpu" && software && !ALLOW_SOFTWARE_GPU,
     `no hardware WebGPU adapter (${JSON.stringify(adapter)}): this times SwiftShader, not a GPU`,
   );
 
@@ -201,7 +204,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       {
         slot: "pci_1",
         card: "rage128",
-        options: { memory: "32m", raster: "webgpu" },
+        options: { memory: "32m", raster: RASTER },
       },
     ],
     displays: { pci_1: { monitor: "13in_rgb" } },
@@ -216,9 +219,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   await ev("checkpoint.auto", [false]);
   const raster = await ev("machine.pci.slot[1].card.regs.raster");
   log(`raster=${JSON.stringify(raster)}`);
-  expect(raster, "the Rage 128 draws on the GPU (raster webgpu)").toBe(
-    "webgpu",
-  );
+  expect(raster, `the Rage 128 draws with raster ${RASTER}`).toBe(RASTER);
   if (ENGINE === "interpreter") {
     await call("predecode.enabled", [0]);
   } else {
@@ -463,6 +464,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       run,
       mode,
       engine: ENGINE,
+      raster: RASTER,
       timedemo: TIMEDEMO,
       adapter,
       host_wall_s: +hostS.toFixed(3),
