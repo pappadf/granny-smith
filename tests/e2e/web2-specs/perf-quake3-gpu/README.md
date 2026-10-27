@@ -98,7 +98,12 @@ adapter", run again with `GS_Q3_HEADED=1`, then with
    `Quake3`, the application `Quake3`.  The CD key screen needs no key:
    Tab to ACCEPT, hold Return (Quake reads the mouse as deltas, so clicks
    cannot be aimed); the held Return carries on into Single Player, so
-   Escape back to the main menu.
+   Escape back to the main menu.  Before each keyboard step a Shift wakes
+   the display: in turbo the guest's clock runs ahead of its instructions
+   (Ticks advance with host time times the speed), so Energy Saver can
+   blank the display between steps, and the key that wakes it is lost.
+   The spec checks that Quake3 is the front application (`CurApName`),
+   opening it once more if not, before it waits for the CD key screen.
 4. Per run: the pacing mode; Quake's console (`~`, ADB key `0x32`);
    `set nextdemo "echo gsdemoend<n>"`; `demo four` typed.
 5. **Start:** the scheduler is paused, every counter read, Return queued,
@@ -162,7 +167,7 @@ through timing; the host-side ones are the measurement.
 
 - `perf-quake3-gpu.json` — every run's numbers;
 - `console-run<n>-<mode>.txt` — Quake's console text around the run;
-- `1-desktop.png`, `2-cdkey.png`, `3-menu.png`, `4-end-run<n>-<mode>.png`;
+- `1-desktop.png`, `2-cdkey.png` (and `2-finder-retry.png` if the first open missed), `3-menu.png`, `4-end-run<n>-<mode>.png`;
 - `browser-console.log` — the page's console (the GPU worker's messages).
 
 Report the `Q3GPU` lines, the JSON, the adapter line, the Mac model and
@@ -174,6 +179,9 @@ macOS version, and the branch and commit.
 - **Stuck before Quake** (`2-cdkey.png` shows the Finder): the Finder
   steps type names; look at `1-desktop.png` for the `Q3A` CD icon.  A
   slow host may need longer waits (the `open(...)` calls).
+- **"Quake3 is the front application" fails**: `2-finder-retry.png` shows
+  the Finder; a blank screen there is display sleep (see *How it works*,
+  step 3).
 - **"the console echoes `demo four`" fails**: the console key or typing
   did not reach Quake; look at the end screenshot.
 - **The demo never reaches its end** (time limit): `console-run<n>-*.txt`

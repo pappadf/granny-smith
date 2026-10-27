@@ -249,7 +249,26 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     await call("machine.adb.keyboard.up", ["Command"]);
     await waitInstr(2e9);
   };
+  const peekBytes = async (addr: number, len: number): Promise<Buffer> => {
+    const r = await ev("machine.memory.peek.bytes", [addr, len]);
+    if (typeof r === "string") return Buffer.from(r.replace(/^0x/, ""), "hex");
+    if (Array.isArray(r)) return Buffer.from(r.map(num));
+    throw new Error(`peek.bytes answered ${JSON.stringify(r)}`);
+  };
+  // The front application: CurApName, a Str31 low-memory global
+  const curApp = async (): Promise<string> => {
+    const b = await peekBytes(0x910, 32);
+    return b.subarray(1, 1 + Math.min(b[0], 31)).toString("latin1");
+  };
+  // In turbo the guest's clock runs ahead of its instructions, so Energy
+  // Saver can put the display to sleep between steps, and the key that
+  // wakes it is lost.  Shift first: it wakes the display and types nothing.
+  const wake = async () => {
+    await press("shift");
+    await waitInstr(300e6);
+  };
   const open = async (name: string, run: number) => {
+    await wake();
     await call("machine.adb.keyboard.type", [name]);
     await waitInstr(1.5e9);
     await cmdKey("o");
@@ -264,8 +283,18 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   await shot("1-desktop");
   await open("Q3A", 6e9);
   await open("Quake3", 6e9);
-  await open("Quake3", 32e9);
+  await open("Quake3", 4e9);
+  if ((await curApp()) !== "Quake3") {
+    log(
+      `front app ${JSON.stringify(await curApp())}, not Quake3: opening again`,
+    );
+    await shot("2-finder-retry");
+    await open("Quake3", 4e9);
+  }
+  expect(await curApp(), "Quake3 is the front application").toBe("Quake3");
+  await waitInstr(28e9);
   await shot("2-cdkey");
+  await wake();
   await press("tab");
   await waitInstr(600e6);
   await call("machine.adb.keyboard.down", ["return"]);
@@ -291,12 +320,6 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   ): Promise<number[]> => {
     const r = await ev("debug.find.bytes", [pattern, lo, hi]);
     return Array.isArray(r) ? r.map(num) : [];
-  };
-  const peekBytes = async (addr: number, len: number): Promise<Buffer> => {
-    const r = await ev("machine.memory.peek.bytes", [addr, len]);
-    if (typeof r === "string") return Buffer.from(r.replace(/^0x/, ""), "hex");
-    if (Array.isArray(r)) return Buffer.from(r.map(num));
-    throw new Error(`peek.bytes answered ${JSON.stringify(r)}`);
   };
   // The console ring around the echo, as text lines
   const consoleText = async (lo: number, hi: number): Promise<string[]> => {
@@ -342,6 +365,7 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     const marker = `gsdemoend${run}`;
     const patEnd = cells(7, marker);
     await call("scheduler.mode", [mode === "fast" ? "accelerated" : mode]);
+    await wake();
     await call("machine.adb.keyboard.down", [0x32]);
     await waitInstr(60e6);
     await call("machine.adb.keyboard.up", [0x32]);
