@@ -124,6 +124,24 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   const call = (p: string, a?: unknown[] | Record<string, unknown>) =>
     gsCallInPage(page, p, a);
 
+  // The page's 3 s heartbeat watch marks a stalled emulator dead and takes
+  // the page down ("The emulator stopped"); a measurement should ride a
+  // stall out and report it.  Lift it to 600 s in the served bundle
+  // (GS_Q3_KEEP_WATCHDOG=1 keeps it).
+  if (process.env.GS_Q3_KEEP_WATCHDOG !== "1") {
+    let patched = false;
+    await page.route(/assets\/index-[^/]*\.js$/, async (route) => {
+      const r = await route.fetch();
+      const text = await r.text();
+      const body = text.replace(
+        /(\w)>=3&&\((\w)\(`emulator not responding/,
+        "$1>=600&&($2(`emulator not responding",
+      );
+      patched = body !== text;
+      await route.fulfill({ response: r, body });
+    });
+    page.once("load", () => log(`heartbeat watch lifted to 600 s: ${patched}`));
+  }
   await gotoWeb2(page);
 
   // The adapter: a real GPU, or skip

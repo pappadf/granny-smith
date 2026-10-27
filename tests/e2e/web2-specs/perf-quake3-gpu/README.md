@@ -74,6 +74,7 @@ The web server re-runs `make ui2` (a no-op when it is current) and serves
 | `GS_Q3_LABEL` | `unlabeled` | A label carried into the results (machine, commit, setting) |
 | `GS_Q3_TIMEOUT_MIN` | `90` | The test's time limit |
 | `GS_Q3_ALLOW_SOFTWARE_GPU` | — | `1`: run on SwiftShader anyway (checks the flow, not the GPU) |
+| `GS_Q3_KEEP_WATCHDOG` | — | `1`: keep the page's 3 s heartbeat watch (by default the spec lifts it to 600 s, so a stall is ridden out, not fatal) |
 
 **First, confirm the GPU.**  The first `Q3GPU` line names the adapter:
 
@@ -178,7 +179,15 @@ macOS version, and the branch and commit.
 - **The demo never reaches its end** (time limit): `console-run<n>-*.txt`
   says how far it got; `browser-console.log` names WebGPU errors (a lost
   device makes the card fall back to its software rasteriser).
-- **"The emulator stopped" in the page**: the emulator thread did not
-  answer for 3 s; `browser-console.log` has the reason.
+- **Stalls**: the page's heartbeat watch declares the emulator dead after
+  3 s without an answer ("The emulator stopped"), which ends a run.  The
+  spec lifts it to 600 s in the served bundle (its log says
+  `heartbeat watch lifted to 600 s: true`; `false` means the bundle no
+  longer matches the pattern, and a stall will end the run).  A stall
+  still costs host time: if a run's `host_wall_s` is far off the others,
+  that is a finding -- re-run with `GS_Q3_KEEP_WATCHDOG=1` to see it
+  happen.  The branch `claude/blissful-albattani-supjyo-q3diag` makes
+  stalls non-fatal in the app and adds per-second `perf:` lines
+  (`log.perf_every`); merging it in gives far more to look at.
 - **`missing_files` > 0**: the CD is not the one at `tests/data-version`;
   re-run `scripts/fetch-test-data.sh`.
