@@ -14,8 +14,9 @@
 # point it ends.  Quake's console text is a ring of 16-bit cells (colour
 # byte, character) in guest RAM, found by the command's own echo; the run
 # goes on in slices until the console holds " hit the fraglimit" (the
-# demo's last event) and then, in finer slices, until the `Hunk_Clear`
-# Quake prints as it disconnects at the demo's end.  Printed: host
+# demo's last event) and then, in finer slices, until the main menu is back
+# on the screen (its copyright line, checksummed before the demo): Quake
+# disconnects at the demo's end and draws the menu at once.  Printed: host
 # wall-clock and CPU time, guest time (cycles over the clock), instructions,
 # the frames Quake drew (the card's page flips) and the frame rate in guest
 # and in host time, the 3D primitives.  Asserted: the demo ends, every
@@ -31,7 +32,8 @@ let cd = "../../data/apps/quake3_1_30_demo_four_cd.iso"
 # colour 3 (yellow) for warnings
 let PAT_ECHO = "07 5d 07 5c 07 64 07 65 07 6d 07 6f 07 20 07 66 07 6f 07 75 07 72"
 let PAT_FRAGLIMIT = "07 20 07 68 07 69 07 74 07 20 07 74 07 68 07 65 07 20 07 66 07 72 07 61 07 67 07 6c 07 69 07 6d 07 69 07 74"
-let PAT_HUNK = "07 48 07 75 07 6e 07 6b 07 5f 07 43 07 6c 07 65 07 61 07 72 07 3a 07 20 07 72 07 65 07 73 07 65 07 74 07 20 07 74 07 68 07 65 07 20 07 68 07 75 07 6e 07 6b"
+# The main menu's copyright line: top, left, bottom, right
+let MENU_LINE = [448, 0, 472, 640]
 let PAT_MISSING = "03 63 03 6f 03 75 03 6c 03 64 03 20 03 6e 03 6f 03 74 03 20 03 66 03 69 03 6e 03 64"
 
 def q3_cmdkey(k) {
@@ -76,7 +78,15 @@ def q3_run() {
     scheduler.run 200000000
     machine.adb.keyboard.up "return"
     scheduler.run 4000000000
+    # The held Return goes on into Single Player: back to the main menu
+    machine.adb.keyboard.press "escape"
+    scheduler.run 2000000000
     try(machine.screen.save("${$RESULTS_DIR}/menu.png"), none)
+    # The menu's copyright line (the banner above it turns, the selected
+    # item pulses): the demo has ended when it is back
+    let menu_sum = machine.screen.checksum($MENU_LINE[0], $MENU_LINE[1], $MENU_LINE[2], $MENU_LINE[3])
+    scheduler.run 500000000
+    assert machine.screen.checksum($MENU_LINE[0], $MENU_LINE[1], $MENU_LINE[2], $MENU_LINE[3]) == $menu_sum "the main menu's copyright line is steady"
 
     # The console, and the command
     machine.adb.keyboard.down 0x32
@@ -100,9 +110,9 @@ def q3_run() {
     let lo = $echo[0] - 0x10000
     let hi = $echo[0] + 0x10000
     echo "g3-rage128-quake3-demo: the console is around ${$echo[0]:08x}"
-    let hunk0 = len(debug.find.bytes($PAT_HUNK, $lo, $hi))
 
-    # Until the demo's last event (coarse), then until the disconnect (fine)
+    # Until the demo's last event (coarse), then until the main menu is back
+    # (fine): the disconnect at the demo's end
     let ceiling = 60000000000
     let spent = 20000000
     while $spent < $ceiling && len(debug.find.bytes($PAT_FRAGLIMIT, $lo, $hi)) == 0 {
@@ -110,12 +120,11 @@ def q3_run() {
         let spent = $spent + 100000000
     }
     assert $spent < $ceiling "the demo never reached its fraglimit"
-    let hunk1 = len(debug.find.bytes($PAT_HUNK, $lo, $hi))
-    while $spent < $ceiling && len(debug.find.bytes($PAT_HUNK, $lo, $hi)) == $hunk1 {
+    while $spent < $ceiling && machine.screen.checksum($MENU_LINE[0], $MENU_LINE[1], $MENU_LINE[2], $MENU_LINE[3]) != $menu_sum {
         scheduler.run 2000000
         let spent = $spent + 2000000
     }
-    assert $spent < $ceiling "Quake never disconnected after the demo"
+    assert $spent < $ceiling "Quake never went back to its main menu after the demo"
 
     let di = scheduler.instr_count - $i0
     let gms = (scheduler.cycles - $c0) * 1000 / $hz
@@ -131,7 +140,6 @@ def q3_run() {
     echo "g3-rage128-quake3-demo:   speed ${milli($gms * 1000 / $wms)}x real time"
     echo "g3-rage128-quake3-demo:   ${$frames} frames (page flips): ${milli($frames * 1000000 / $gms)} fps guest, ${milli($frames * 1000000 / $wms)} fps host"
     echo "g3-rage128-quake3-demo:   ${$prims} 3D primitives, raster ${machine.pci.slot[1].card.regs.raster}"
-    echo "g3-rage128-quake3-demo:   Hunk_Clear lines ${$hunk0} at the start, ${$hunk1} at the fraglimit"
 
     let missing = len(debug.find.bytes($PAT_MISSING, $lo, $hi))
     assert $missing == 0 "${$missing} files the demo loads are not on the CD (could not find)"
