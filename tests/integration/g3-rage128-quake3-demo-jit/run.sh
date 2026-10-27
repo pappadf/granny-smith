@@ -11,6 +11,10 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 NODE_BIN="$ROOT/build/headless-node/gs-headless"
+# Node has no job thread or I/O worker for it: run both inline, by flag
+# (left to its own fallback, scheduler.run in an inline script retires
+# nothing)
+NODE_FLAGS="--jobs=inline --io=sync"
 
 if command -v emcc >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     echo "building the wasm headless program (make -f Makefile.headless TARGET=node)"
@@ -22,8 +26,8 @@ elif [ ! -x "$NODE_BIN" ] || ! command -v node >/dev/null 2>&1; then
 fi
 
 cd "$SCRIPT_DIR/../g3-rage128-quake3-demo" || exit 1
-# shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
-GS_STORAGE_CACHE="$STORAGE_CACHE" "$NODE_BIN" \
+# shellcheck disable=SC2086 — NODE_FLAGS, TEST_VAR_ARGS are intentionally word-split
+GS_STORAGE_CACHE="$STORAGE_CACHE" "$NODE_BIN" $NODE_FLAGS \
     rom="$ROM_PATH" model=pmg3dt ram=262144 \
     script=test.script \
     --var WORK_DIR="$WORK_DIR" \
