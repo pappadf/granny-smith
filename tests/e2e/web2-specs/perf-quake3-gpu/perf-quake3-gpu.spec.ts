@@ -117,8 +117,13 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   fs.mkdirSync(OUT, { recursive: true });
 
   const log = (line: string) => console.log(`Q3GPU ${line}`);
-  const browserLog: string[] = [];
-  page.on("console", (m) => browserLog.push(`${m.type()}: ${m.text()}`));
+  // The page's console (the emulator's output, the GPU worker's messages),
+  // written as it comes, so a failed run keeps it
+  const browserLog = path.join(OUT, "browser-console.log");
+  fs.writeFileSync(browserLog, "");
+  page.on("console", (m) =>
+    fs.appendFileSync(browserLog, `${m.type()}: ${m.text()}\n`),
+  );
   const ev = (p: string, a?: unknown[] | Record<string, unknown>) =>
     gsEvalInPage(page, p, a);
   const call = (p: string, a?: unknown[] | Record<string, unknown>) =>
@@ -289,6 +294,9 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       `front app ${JSON.stringify(await curApp())}, not Quake3: opening again`,
     );
     await shot("2-finder-retry");
+    // An alert ("could not be opened ...") takes the keys: dismiss it
+    await press("return");
+    await waitInstr(1e9);
     await open("Quake3", 4e9);
   }
   expect(await curApp(), "Quake3 is the front application").toBe("Quake3");
@@ -491,10 +499,6 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   fs.writeFileSync(
     path.join(OUT, "perf-quake3-gpu.json"),
     JSON.stringify(results, null, 2) + "\n",
-  );
-  fs.writeFileSync(
-    path.join(OUT, "browser-console.log"),
-    browserLog.join("\n") + "\n",
   );
   log(`wrote ${path.join(OUT, "perf-quake3-gpu.json")}`);
 });
