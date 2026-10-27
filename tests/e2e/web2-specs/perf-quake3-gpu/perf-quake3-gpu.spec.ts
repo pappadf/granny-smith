@@ -232,6 +232,10 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   await call("machine.rtc.time", ["2026-10-01T12:00:00"]);
   await call("machine.scsi.attach_hd", [OPFS_HD, 0]);
   await call("machine.scsi.attach_cdrom", [OPFS_CD, 3]);
+  // A backing-store read failure shows as a SCSI MEDIUM ERROR to the guest
+  // ("a disk error occurred"); these name it on the terminal
+  await call("log.set", ["scsi", 1]);
+  await call("log.set", ["image", 1]);
 
   // The guest's own pace for the boot and Quake's start: turbo
   await call("scheduler.mode", ["turbo"]);
@@ -279,6 +283,16 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     await cmdKey("o");
     await waitInstr(run);
   };
+  // The web app's terminal text (the emulator's own output)
+  const saveTerminal = async (name: string) =>
+    fs.writeFileSync(
+      path.join(OUT, `${name}.txt`),
+      await page
+        .locator(".console-output")
+        .first()
+        .innerText()
+        .catch((e: Error) => `(no terminal: ${e.message})`),
+    );
   const shot = (name: string) =>
     page.screenshot({ path: path.join(OUT, `${name}.png`) });
 
@@ -294,11 +308,13 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       `front app ${JSON.stringify(await curApp())}, not Quake3: opening again`,
     );
     await shot("2-finder-retry");
+    await saveTerminal("terminal-finder-retry");
     // An alert ("could not be opened ...") takes the keys: dismiss it
     await press("return");
     await waitInstr(1e9);
     await open("Quake3", 4e9);
   }
+  if ((await curApp()) !== "Quake3") await saveTerminal("terminal-no-quake3");
   expect(await curApp(), "Quake3 is the front application").toBe("Quake3");
   await waitInstr(28e9);
   await shot("2-cdkey");
