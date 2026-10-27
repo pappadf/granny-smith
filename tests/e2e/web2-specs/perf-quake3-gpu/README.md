@@ -171,7 +171,11 @@ through timing; the host-side ones are the measurement.
 - `perf-quake3-gpu.json` — every run's numbers;
 - `console-run<n>-<mode>.txt` — Quake's console text around the run;
 - `1-desktop.png`, `2-cdkey.png` (and `2-finder-retry.png` if the first open missed), `3-menu.png`, `4-end-run<n>-<mode>.png`;
-- `browser-console.log` — the page's console (the GPU worker's messages).
+- `browser-console.log` — the page's console (the GPU worker's messages),
+  written as it comes;
+- `terminal-alert<n>.txt` — the web app's terminal (the emulator's output)
+  each time its alert count rose; `terminal-*.txt` when Quake3 would not
+  open.
 
 Report the `Q3GPU` lines, the JSON, the adapter line, the Mac model and
 macOS version, and the branch and commit.
@@ -200,5 +204,20 @@ macOS version, and the branch and commit.
   happen.  The branch `claude/blissful-albattani-supjyo-q3diag` makes
   stalls non-fatal in the app and adds per-second `perf:` lines
   (`log.perf_every`); merging it in gives far more to look at.
+- **"could not be opened, because a disk error occurred", or a Mac OS
+  system error after Quake starts**: look at `terminal-alert<n>.txt` (the
+  spec saves the terminal at every new alert).  Seen in a Linux container
+  (SwiftShader, a slow host): `host file read failed:
+  /opfs/upload/q3/quake3_1_30_demo_four_cd.iso ... I/O error (errno 29)` --
+  `pread()` on the browser build's OPFS file failing, intermittently (one
+  run in three got through), which the card turns into a SCSI MEDIUM ERROR,
+  and once a hard-disk write the storage took only part of (`SCSI WRITE:
+  storage took 512 of 1536 bytes`; the same write succeeds natively).  It
+  is a bug in the browser build's OPFS storage, not in this spec: report
+  the terminal files.  A first-try failure to open Quake3 is retried once.
+- **The page shows "The browser took the emulator's graphics away"**: the
+  browser's GPU process died (seen with SwiftShader in a container:
+  `device lost: ... A valid external Instance reference no longer
+  exists`).  On the Mac, report it with `browser-console.log`.
 - **`missing_files` > 0**: the CD is not the one at `tests/data-version`;
   re-run `scripts/fetch-test-data.sh`.
