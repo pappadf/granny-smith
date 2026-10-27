@@ -79,7 +79,10 @@ def q3_run() {
     machine.scsi.attach_hd "${$hd}" 0
     machine.scsi.attach_cdrom "${$cd}" 3
     scheduler.run 30000000000
-    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+    # A system error is a positive DSErrCode; start-up leaves negative
+    # status values there in passing (as the machine watch reads it)
+    let ds = debug.mac.globals.read("DSErrCode")
+    assert $ds == 0 || $ds >= 0x8000 "system error ${$ds:04x} during startup"
 
     # The CD (the desktop's "Q3A"), its Quake3 folder, the Quake3 application
     q3_open("Q3A", 6000000000)
