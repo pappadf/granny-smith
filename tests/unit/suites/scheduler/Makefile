@@ -8,7 +8,7 @@
 TEST_NAME    := scheduler
 TEST_SRCS    := test.c
 TEST_HARNESS := none
-STUBS        := assert
+STUBS        := assert breadcrumb
 EXTRA_SRCS   := ../../../../src/core/scheduler/scheduler.c \
                 ../../../../src/core/scheduler/governor.c \
                 ../../../../src/core/scheduler/pacing.c \
