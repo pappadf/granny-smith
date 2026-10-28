@@ -397,7 +397,16 @@ returns its CR field for the translation's CR local.  A compare with
 ordered operands (no NaN) runs inline instead, as `ppc_fcmp`'s ordered
 path does: c from the comparison (-0 == +0) into the CR field and
 FPSCR[FPCC], nothing else changing (FPCC is no exception bit, so the
-summary bits stay derived); a NaN operand takes the helper.
+summary bits stay derived); a NaN operand takes the helper.  The moves
+(`fmr`, `fneg`, `fabs`, `fnabs`) and `fsel` (frA >= 0, -0 included, a NaN
+frA picking frB), which change no FPSCR bit, run inline once MSR[FP] is
+set; `fctiwz` of a finite value whose truncation fits 32 bits runs inline
+with FP exceptions off and FPSCR[XE] clear (`ppc_sf_fctiw`'s in-range
+path: FR and FI cleared, FI and XX -- FX on its rise -- when inexact,
+FPRF unchanged); the rest of `fctiwz` (VXCVI, the saturations) takes the
+helper.  On Quake III's demo these took the helper's calls from 427 M to
+303 M; what is left is mostly the single-precision arithmetic outside
+the fast path's envelope (zero operands among them).
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
 segment registers, the FP record forms and FPSCR moves stay in C.
 `dcbz` (not the 601's) calls an imported helper (`ppc_jit_dcbz`) with its
@@ -662,7 +671,7 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |

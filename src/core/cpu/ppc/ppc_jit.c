@@ -526,7 +526,7 @@ enum {
     W_EXT8_S = 0xC0, W_EXT16_S = 0xC1,
     W_I64_LOAD = 0x29, W_I64_STORE = 0x37, W_I64_CONST = 0x42, W_I64_AND = 0x83, W_I64_OR = 0x84,
     W_I64_SHL = 0x86, W_I64_EQZ = 0x50, W_F64_PROMOTE = 0xBB, W_I64_REINTERPRET = 0xBD, W_F32_REINTERPRET = 0xBE,
-    W_I64_EQ = 0x51, W_I64_XOR = 0x85, W_F64_CONST = 0x44, W_F64_NE = 0x62, W_F64_LT = 0x63, W_F64_GT = 0x64,
+    W_I64_EQ = 0x51, W_I64_XOR = 0x85, W_F64_CONST = 0x44, W_F64_NE = 0x62, W_F64_LT = 0x63, W_F64_GT = 0x64, W_F64_GE = 0x66, W_F64_TRUNC = 0x9D, W_I32_TRUNC_F64_S = 0xAA,
     W_F64_ABS = 0x99, W_F64_NEG = 0x9A, W_F64_ADD = 0xA0, W_F64_SUB = 0xA1, W_F64_MUL = 0xA2, W_F32_DEMOTE = 0xB6,
     W_F64_REINTERPRET = 0xBF,
 };
@@ -1889,6 +1889,165 @@ static void emit_fp_inline(uint32_t iw, int fop) {
     emit_deopt_if();
     op(W_END); // $done
     g_depth--;
+}
+
+// The FP moves (fmr fneg fabs fnabs) and fsel, Rc clear: bit operations and
+// a select, no FPSCR effect, so inline once MSR[FP] is set (without it the
+// helper declines -- leave -- and the predecoded loop raises FP
+// unavailable; an enabled FP exception changes nothing for them).  fsel:
+// frA >= 0 (so -0 too) ? frC : frB, a NaN frA giving frB.  Returns false
+// for any other word.  (On Quake III's demo these were 16 % of the helper's
+// calls, every one of them a call for a few bit operations.)
+static bool emit_fp_move_inline(uint32_t iw) {
+    uint32_t xo10 = (iw >> 1) & 0x3FFu;
+    bool sel = ((iw >> 1) & 31u) == 23;
+    if ((iw >> 26) != 63 || (!sel && xo10 != 72 && xo10 != 40 && xo10 != 264 && xo10 != 136))
+        return false;
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP);
+    op(W_AND);
+    op(W_EQZ);
+    br_slow_if();
+    lget(L_P); // the store's address
+    if (sel) {
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_FRC(iw));
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RA(iw));
+        op(W_F64_REINTERPRET);
+        f64const(0.0);
+        op(W_F64_GE);
+        op(W_SELECT);
+    } else {
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+        if (xo10 == 40) { // fneg
+            i64const(0x8000000000000000ull);
+            op(W_I64_XOR);
+        } else if (xo10 == 264) { // fabs
+            i64const(0x7FFFFFFFFFFFFFFFull);
+            op(W_I64_AND);
+        } else if (xo10 == 136) { // fnabs
+            i64const(0x8000000000000000ull);
+            op(W_I64_OR);
+        }
+    }
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * PPC_RT(iw));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
+    g_depth--;
+    return true;
+}
+
+// fctiwz (Rc clear) of a finite frB whose truncation fits 32 bits, with FP
+// available, its exceptions off and FPSCR[XE] clear: ppc_sf_fctiw's
+// in-range path at round-toward-zero -- frD = 0xFFF80000 || the integer;
+// FR and FI cleared, then FI and XX (FX on its rise) when the value was
+// inexact (never FR: truncation does not increment); FPRF unchanged, and
+// XE clear keeps FEX as derived.  NaN, infinities, out-of-range values
+// and the guards' misses take the helper (VXCVI, the saturations).
+// Returns false for any other word.  (15 % of the helper's calls on Quake
+// III's demo: its float-to-int casts.)
+static bool emit_fctiwz_inline(uint32_t iw) {
+    if ((iw >> 26) != 63 || ((iw >> 1) & 0x3FFu) != 15)
+        return false;
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    br_slow_if();
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+    ltee(L_T3);
+    iconst(PPC_FPSCR_XE);
+    op(W_AND);
+    br_slow_if();
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+    op(W_F64_REINTERPRET);
+    lset(L_F0);
+    lget(L_F0); // -2^31 - 1 < x < 2^31 (a NaN fails both)
+    f64const(-2147483649.0);
+    op(W_F64_GT);
+    lget(L_F0);
+    f64const(2147483648.0);
+    op(W_F64_LT);
+    op(W_AND);
+    op(W_EQZ);
+    br_slow_if();
+    lget(L_F0); // inexact -> L_T0
+    op(W_F64_TRUNC);
+    lget(L_F0);
+    op(W_F64_NE);
+    lset(L_T0);
+    lget(L_P);
+    lget(L_F0);
+    op(W_I32_TRUNC_F64_S);
+    op(W_EXTEND_U);
+    i64const(0xFFF8000000000000ull);
+    op(W_I64_OR);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * PPC_RT(iw));
+    lget(L_P);
+    lget(L_T3);
+    iconst(~(PPC_FPSCR_FR | PPC_FPSCR_FI));
+    op(W_AND);
+    iconst(PPC_FPSCR_FI | PPC_FPSCR_XX);
+    iconst(0);
+    lget(L_T0);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FX); // FX: XX was clear before
+    iconst(0);
+    lget(L_T0);
+    lget(L_T3);
+    iconst(PPC_FPSCR_XX);
+    op(W_AND);
+    op(W_EQZ);
+    op(W_AND);
+    op(W_SELECT);
+    op(W_OR);
+    mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
+    g_depth--;
+    return true;
 }
 
 // CR field `crf` = (L_T0 < L_T1 ? 8 : L_T0 > L_T1 ? 4 : 2) | XER[SO]
@@ -3299,6 +3458,8 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
             emit_fp_inline(c, fp_inline_op(c));
             return;
         }
+        if (emit_fp_move_inline(c) || emit_fctiwz_inline(c))
+            return;
         iconst(c);
         iconst(0);
         iconst(0);
@@ -4960,9 +5121,43 @@ int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2) {
 // `mode` 1 is a compare (JX_FCMP): ppc_fcmp, its CR field returned as
 // 0x10 | field for the translation to merge into its CR.
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused);
+// jit.trace = 14: the FP helper's calls by opcode (op << 10 | the extended
+// opcode; the five-bit one for A-forms), printed at jit.trace = 15 -- what
+// the inline FP paths leave to it
+static struct {
+    uint32_t key, n;
+} g_fph[256];
+static void fph_note(uint32_t iw) {
+    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u; // A-forms: op 59, and op 63 with xo5 >= 18
+    uint32_t key = op << 10 | (op == 59 || xo5 >= 18 ? xo5 : (iw >> 1) & 0x3FFu);
+    for (uint32_t h = (key * 2654435761u) >> 24, j = 0; j < 256; j++, h = (h + 1) & 255u)
+        if (!g_fph[h].n || g_fph[h].key == key) {
+            g_fph[h].key = key;
+            g_fph[h].n++;
+            return;
+        }
+}
+static int fph_cmp(const void *a, const void *b) {
+    uint32_t x = ((const uint32_t *)a)[1], y = ((const uint32_t *)b)[1];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void fph_dump(void) {
+    qsort(g_fph, 256, sizeof g_fph[0], fph_cmp);
+    uint64_t tot = 0;
+    for (uint32_t j = 0; j < 256; j++)
+        tot += g_fph[j].n;
+    printf("jit fp helper: %llu calls\n", (unsigned long long)tot);
+    for (uint32_t j = 0; j < 20 && g_fph[j].n; j++)
+        printf("  op %2u xo %4u: %10u (%4.1f%%)\n", g_fph[j].key >> 10, g_fph[j].key & 0x3FFu, g_fph[j].n,
+               100.0 * g_fph[j].n / (double)(tot ? tot : 1));
+    memset(g_fph, 0, sizeof g_fph);
+}
+
 int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused) {
     (void)unused;
     ppc_t *p = g_wa_p;
+    if (g_trace == 14)
+        fph_note(iw);
     if ((p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) != PPC_MSR_FP)
         return 1;
     if (mode == 1) {
@@ -5564,6 +5759,10 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         }
         if (in.u == 12) {
             wa_dump();
+            return val_none();
+        }
+        if (in.u == 15) {
+            fph_dump();
             return val_none();
         }
         if (in.u == 13) {
