@@ -115,7 +115,8 @@ objects and a descriptor list in RAM — once plain and once as the CSG differen
 pixel the card writes back. The other rows run Apple's unmodified driver and plug-in on a pm8500 with
 Mac OS 7.6 and QuickDraw 3D 1.6 from `system_7_6_170mb_24ac_qd3d.img`: the driver's bring-up (position
 register, object-cache free list), RaveEngineInfo listing "Apple PCI Hardware", Gerbils! rendering through
-the card, TextureEyes' textured square, and Gerbils at thousands of colours (the 16-bpp path). Goldens are
+the card, TextureEyes' textured square, the QuickDraw 3D Viewer drawing the Teapot model, and Gerbils at
+thousands of colours (the 16-bpp path). Goldens are
 regenerated with `TEST_VARS="REGEN=1"`.
 
 Beyond the test, the image's Sneak3view draws the same scenes through the card and the software engine side
