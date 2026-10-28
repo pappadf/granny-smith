@@ -196,6 +196,7 @@
     "tnt-pci-mach64": 12,
     "tnt-pci-slots": 5,
     "tnt-pci-voodoo2": 9,
+    "tnt-qd3d": 0,
     "tnt-rom-ladder": 9,
     "tnt-voodoo2-glide": 355,
     "tnt-voodoo2-glide-sw": 285,
