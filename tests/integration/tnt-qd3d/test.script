@@ -35,6 +35,9 @@
 #                    system error, and the title scene matches its golden.
 #   qd3d-texture     TextureEyes with its QD3D Logo texture: a static,
 #                    trilinearly filtered textured quad, golden-matched.
+#   qd3d-viewer      the Teapot 3DMF model opened in SimpleText: QuickDraw 3D's
+#                    Viewer draws ~4500 triangles in one static frame,
+#                    golden-matched.
 #   qd3d-thousands   Gerbils at thousands of colours: the card's 16-bpp
 #                    (x1555) output path, and Control's 16-bpp DAC lookup.
 #
@@ -341,6 +344,23 @@ def row_qd3d_texture() {
     check_ex("goldens/qd3d-texture.png", 0, 500, 20, 640)
 }
 
+# ---- qd3d-viewer ------------------------------------------------------------
+# QD3D Lab:Test Apps:3DMF Models:Teapot opens in SimpleText, whose QuickDraw
+# 3D Viewer renders the model once and then holds still.
+def row_qd3d_viewer() {
+    to_lab()
+    double_click(39, 147)
+    wait_stable(400000000)
+    double_click(39, 95)
+    wait_stable(400000000)
+    double_click(39, 147)
+    scheduler.run 900000000
+    assert current_app_is("SimpleText") "SimpleText is not the current application"
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in the Viewer"
+    assert machine.pci.slot[1].card.renderer.objects > 4000 "the card's last frame held ${machine.pci.slot[1].card.renderer.objects} objects, not the teapot"
+    check_ex("goldens/qd3d-viewer.png", 0, 500, 20, 640)
+}
+
 # ---- qd3d-thousands ---------------------------------------------------------
 # Switch the display to thousands of colours from the Control Strip's
 # monitor-depth module, then run Gerbils: the plug-in sets DMACONTROL's
@@ -387,6 +407,9 @@ if !have_media($hd) {
     }
     if row_on("qd3d-texture") {
         row_end("qd3d-texture", try(row_qd3d_texture(), "FAILED"))
+    }
+    if row_on("qd3d-viewer") {
+        row_end("qd3d-viewer", try(row_qd3d_viewer(), "FAILED"))
     }
     if row_on("qd3d-thousands") {
         row_end("qd3d-thousands", try(row_qd3d_thousands(), "FAILED"))
