@@ -3306,8 +3306,69 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         uleb(2);
         emit_deopt_if();
         return;
-    case JX_FCMP: { // ppc_jit_fp, compare mode: 1 (leave) or 0x10 | the CR field
+    case JX_FCMP: { // inline when ordered, else ppc_jit_fp's compare mode: 1 (leave) or 0x10 | the CR field
         uint32_t sh = 28 - 4 * a;
+        // ppc_fcmp's ordered path, with FP available and its exceptions
+        // off (where the helper runs at all): c from the comparison (-0 ==
+        // +0), FPSCR[FPCC] = c, CR field = c; nothing else changes (FPCC is
+        // no exception bit, so the summary bits stay as derived).  A NaN
+        // operand takes the helper (VXSNAN / VXVC).
+        op(W_BLOCK); // $done
+        put(BT_VOID);
+        g_depth++;
+        op(W_BLOCK); // $slow
+        put(BT_VOID);
+        g_depth++;
+        g_fp_slow = g_depth;
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+        op(W_AND);
+        iconst(PPC_MSR_FP);
+        op(W_NE);
+        br_slow_if();
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RA(c));
+        op(W_F64_REINTERPRET);
+        lset(L_F0);
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(c));
+        op(W_F64_REINTERPRET);
+        lset(L_F1);
+        lget(L_F0); // a NaN is unequal to itself
+        lget(L_F0);
+        op(W_F64_NE);
+        lget(L_F1);
+        lget(L_F1);
+        op(W_F64_NE);
+        op(W_OR);
+        br_slow_if();
+        iconst(8); // a < b ? 8 : a > b ? 4 : 2
+        iconst(4);
+        iconst(2);
+        lget(L_F0);
+        lget(L_F1);
+        op(W_F64_GT);
+        op(W_SELECT);
+        lget(L_F0);
+        lget(L_F1);
+        op(W_F64_LT);
+        op(W_SELECT);
+        lset(L_T3);
+        lget(L_P);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+        iconst(~PPC_FPSCR_FPCC);
+        op(W_AND);
+        lget(L_T3);
+        iconst(12);
+        op(W_SHL);
+        op(W_OR);
+        mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+        op(W_BR); // to $done, with the CR merge below it
+        uleb(1);
+        op(W_END); // $slow: the helper
+        g_depth--;
         iconst(c);
         iconst(1);
         iconst(0);
@@ -3317,6 +3378,8 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         iconst(1);
         op(W_EQ);
         emit_deopt_if();
+        op(W_END); // $done: the field in L_T3 either way
+        g_depth--;
         lget(L_CR);
         iconst(~(0xFu << sh));
         op(W_AND);

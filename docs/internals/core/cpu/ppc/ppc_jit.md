@@ -393,7 +393,11 @@ Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
 that runs the interpreter's own routines, so results and FPSCR are the
 predecoded loop's either way; it declines (leave at the instruction)
 when FP is unavailable or an FP exception is enabled, and a compare
-returns its CR field for the translation's CR local.
+returns its CR field for the translation's CR local.  A compare with
+ordered operands (no NaN) runs inline instead, as `ppc_fcmp`'s ordered
+path does: c from the comparison (-0 == +0) into the CR field and
+FPSCR[FPCC], nothing else changing (FPCC is no exception bit, so the
+summary bits stay derived); a NaN operand takes the helper.
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
 segment registers, the FP record forms and FPSCR moves stay in C.
 `dcbz` (not the 601's) calls an imported helper (`ppc_jit_dcbz`) with its
