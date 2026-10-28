@@ -5033,6 +5033,42 @@ static struct {
 } g_wa_pend[64];
 static uint32_t g_wa_npend;
 static uint64_t g_wa_hooks, g_wa_hook_bytes, g_wa_len[4];
+// Hook calls per code page (region, page): whether the tier has a member
+// there, and how many came from translated code (ppc_jit_code_store)
+#define WA_PAGES 1024u
+static struct {
+    const uint8_t *page;
+    int region;
+    uint32_t pg, n, from_jit;
+    bool member;
+} g_wa_pg[WA_PAGES];
+static void wa_page_note(int r, uint32_t pg, const uint8_t *page) {
+    uint32_t h = (uint32_t)(((uintptr_t)page >> MEM_PAGE_SHIFT) * 2654435761u) >> 22;
+    for (uint32_t j = 0; j < WA_PAGES; j++, h = (h + 1) & (WA_PAGES - 1)) {
+        if (g_wa_pg[h].page && g_wa_pg[h].page != page)
+            continue;
+        if (!g_wa_pg[h].page) {
+            g_wa_pg[h].page = page, g_wa_pg[h].region = r, g_wa_pg[h].pg = pg;
+            for (jit_slot_t *s = g_by_host[host_hash(page)]; s; s = s->next_host)
+                g_wa_pg[h].member |= s->host == page;
+        }
+        g_wa_pg[h].n++;
+        g_wa_pg[h].from_jit += g_wa_src == 1;
+        return;
+    }
+}
+static int wa_page_cmp(const void *a, const void *b) {
+    uint32_t x = ((const typeof(g_wa_pg[0]) *)a)->n, y = ((const typeof(g_wa_pg[0]) *)b)->n;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void wa_page_dump(void) {
+    qsort(g_wa_pg, WA_PAGES, sizeof g_wa_pg[0], wa_page_cmp);
+    printf("hook calls by code page (region:offset, the RAM region's offset is the physical address):\n");
+    for (uint32_t j = 0; j < 30 && g_wa_pg[j].n; j++)
+        printf("  %d:%08x %10u calls, %10u from translated code, %s\n", g_wa_pg[j].region,
+               g_wa_pg[j].pg << MEM_PAGE_SHIFT, g_wa_pg[j].n, g_wa_pg[j].from_jit,
+               g_wa_pg[j].member ? "a member page" : "not translated");
+}
 // Invalidating writes per million guest instructions since jit.trace = 11
 #define WA_TL 4096u
 static uint64_t g_wa_t0 = UINT64_MAX;
@@ -5164,6 +5200,7 @@ static void wa_dump(void) {
     printf("jit writes: %llu hook calls, %llu bytes; lengths 1-4: %llu, 8-31: %llu, 32: %llu, >32: %llu\n",
            (unsigned long long)g_wa_hooks, (unsigned long long)g_wa_hook_bytes, (unsigned long long)g_wa_len[0],
            (unsigned long long)g_wa_len[1], (unsigned long long)g_wa_len[2], (unsigned long long)g_wa_len[3]);
+    wa_page_dump();
     for (int t = 0; t < 2; t++) {
         wa_ent_t *tab = t ? g_wa_pcs : g_wa_words;
         qsort(tab, WA_SIZE, sizeof *tab, wa_cmp);
@@ -5260,6 +5297,8 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     if (r < 0)
         return;
     const uint8_t *page = g_mem_code_regions[r].base + ((uintptr_t)pg << MEM_PAGE_SHIFT);
+    if (g_trace == 11)
+        wa_page_note(r, pg, page);
     for (jit_slot_t *s = g_by_host[host_hash(page)]; s; s = s->next_host) {
         if (s->host != page)
             continue;
