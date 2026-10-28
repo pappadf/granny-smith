@@ -165,7 +165,8 @@ an access that misses the fast path sets the instruction's index and
 branches there, and one tail per block gives the slots back and leaves.
 
 One module per function, importing the emulator's memory (shared in the
-pthreads build), its function table, `ppc_jit_code_store` and `ppc_jit_tb`; the export
+pthreads build), its function table, `ppc_jit_code_store`, `ppc_jit_tb`, `ppc_jit_fp`
+and `ppc_jit_dcbz`; the export
 goes into the table (a freed slot, or a new one: `-sALLOW_TABLE_GROWTH`,
 64 at a time; without the reuse the table grew on every recompile and
 smc-burst ran at 101 MIPS instead of 569), and its index is the function
@@ -304,6 +305,12 @@ decoded again).  A word the guest keeps rewriting — stored into
 `JIT_UNSTABLE_WRITES` (4) times between two translations of its region;
 the 68K emulator toggles some of its own branches — is not translated from
 then on: the walk continues after it, and the predecoded loop runs it.
+Such a word, and a never-decoded one, is never `reached`, so the walk
+marks it `walked` and expands it once: before that, every branch into a
+run of them walked the whole run again, quadratic in the run's length (a
+Quake III region took 227 M pushes for 9 K instructions, 0.5-9.7 s per
+compile on the emulator thread, and the translation budget then deferred
+everything after it).
 Then it assigns words to chunks (§2.1); new words that continue a run of
 a chunk join that chunk.  A word of another chunk, or one not reached,
 ends a block (the translator's leader value 2): a block covers only words
@@ -388,8 +395,16 @@ predecoded loop's either way; it declines (leave at the instruction)
 when FP is unavailable or an FP exception is enabled, and a compare
 returns its CR field for the translation's CR local.
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
-segment registers, the FP record forms and FPSCR moves stay in C, as
-does `dcbz`.  The kernel runs translated only
+segment registers, the FP record forms and FPSCR moves stay in C.
+`dcbz` (not the 601's) calls an imported helper (`ppc_jit_dcbz`) with its
+EA: it zeroes the block through the live write entry when
+`ppc_dcbz_host` (ppc_mmu.c) finds the block plain memory — the data
+cache on, no T=1 segment, W and I clear, not a device's block, the page
+in the active write table, decided with a side-effect-free walk — and
+otherwise declines, leaving the instruction to the predecoded loop (the
+alignment exception, the no-op, the held line, the fill).  A page with
+translated code has no RAM write entry, so it never zeroes a translation.
+Untranslated, it was 29 % of all exits on the Quake III demo.  The kernel runs translated only
 with `jit.supervisor` set, the default.  When it was introduced the
 kernel was a net loss translated: on the Mac OS X 10.1 boot to the
 Finder (Node, 6.1 G instructions) 89 % of instructions ran translated,

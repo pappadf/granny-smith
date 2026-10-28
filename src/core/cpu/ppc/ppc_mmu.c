@@ -947,9 +947,14 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
-        // A device page served from the TLB gets its table entry,
-        // so the next access to it skips this walk entirely.
-        if (dt && (te->pa_page >> MEM_PAGE_SHIFT) < g_page_count && g_page_table[te->pa_page >> MEM_PAGE_SHIFT].dev) {
+        // A page served from the TLB gets its table entry when it can take
+        // one -- a device's descriptor, or RAM whose entry a flush took away
+        // (the TLB keeps a RAM page only when a walk could not fill it for a
+        // store: a code page, a store owing C) -- so the next access to it
+        // skips this walk entirely.  Without the RAM case every load from
+        // such a page stayed slow for as long as its TLB entry lived: a
+        // deopt per load in translated code (Quake III's driver data).
+        if (dt && (te->pa_page >> MEM_PAGE_SHIFT) < g_page_count) {
             if (user) {
                 user_soa_fill(ea, te->pa_page, te->w_ok);
                 if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
@@ -1146,6 +1151,37 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     }
     *addr = out.pa;
     return 0;
+}
+
+// dcbz from the translation tier (ppc_jit_dcbz): the block's host address
+// when ppc_dxlate_dcbz would zero it through a live write entry -- the
+// data cache on, no T=1 segment, W and I clear, not a device's block, and
+// the active write table covering the page -- else NULL with nothing
+// changed (the walk runs without side effects), and the instruction is
+// left to the predecoded loop: the exception, the no-op, the held line or
+// the fill.  `ea` is the block's (32-byte aligned).  604 family only.
+uint8_t *ppc_dcbz_host(ppc_t *p, uint32_t ea) {
+    if (!(p->hid0 & 0x00004000u) || (p->hid0 & 0x00001000u)) // DCE clear or DCL set
+        return NULL;
+    if (p->sr_t_mask & (1u << (ea >> 28)))
+        return NULL;
+    uint32_t masked = ea & g_address_mask;
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
+    if (!MEM_ENTRY_IS_RAM(base))
+        return NULL;
+    bool dt = (p->msr & PPC_MSR_DT) != 0;
+    if (!dt) {
+        if (dcbz_device(ea))
+            return NULL;
+    } else {
+        if (g_active_read == g_supervisor_read) // no logical maps: ppc_dxlate_dcbz rewrites the address
+            return NULL;
+        xl_out_t out;
+        if (xlate(p, ea, (p->msr & PPC_MSR_PR) != 0, true, false, true, true, &out, NULL) != XL_OK ||
+            (out.wimg & 0x6u) || dcbz_device(out.pa))
+            return NULL;
+    }
+    return MEM_ENTRY_HOST(base, masked);
 }
 
 // ============================================================

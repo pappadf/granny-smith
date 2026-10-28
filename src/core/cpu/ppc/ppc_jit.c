@@ -179,6 +179,7 @@ enum {
     JX_STWBRX, // a = rS offset, b and c as lwbrx
     JX_FP, // FP arithmetic and moves, Rc clear, through ppc_jit_fp: c = the word
     JX_FCMP, // fcmpu / fcmpo through ppc_jit_fp: a = crfD, c = the word
+    JX_DCBZ, // dcbz through ppc_jit_dcbz: b = rA offset (JX_RA0: rA = 0), c = rB offset
     JX_END
 };
 _Static_assert(JX_END < 65536, "translator id space overflow");
@@ -380,6 +381,12 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
     }
     if (op != 31 || (iw & 1u))
         return id;
+    if (xo == 1014 && !jit_unit_is601()) { // dcbz (a reserved rT is the decoder's illegal form)
+        if (rt)
+            return id;
+        *e = (pd_entry_t){.b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
+        return JX_DCBZ;
+    }
     uint16_t x;
     bool upd = false;
     switch (xo) {
@@ -1152,7 +1159,7 @@ static void emit_access_test(uint32_t size, bool store) {
 // reads a local of the function.
 //   (ea, value, table, address mask) -> status
 enum { JH_ST8, JH_ST16, JH_ST32, JH_N };
-#define JH_FN(h) (4u + (h))
+#define JH_FN(h) (5u + (h)) // after the four imports and the translation
 static uint32_t jh_store(uint32_t size) {
     return size == 4 ? JH_ST32 : size == 2 ? JH_ST16 : JH_ST8;
 }
@@ -2061,6 +2068,8 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
     if (id == JX_FP || id == JX_FCMP)
         return 0;
+    if (id == JX_DCBZ) // rA and rB
+        return (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= JX_LFS && id <= JX_STFD) // D-form: rA only (a is an FPR)
         return e->b == JX_RA0 ? 0u : 1u << (e->b >> 2);
     if (id >= JX_LFSX && id <= JX_STFDX) // X-form: rA and rB
@@ -2098,6 +2107,7 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
     case JX_STFSX:
     case JX_STFDX:
     case JX_STWBRX:
+    case JX_DCBZ:
         return 0;
     case JX_LFSU:
     case JX_LFDU:
@@ -3271,6 +3281,19 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         op(W_ADD);
         emit_store(4, true, -1);
         return;
+    case JX_DCBZ: // ppc_jit_dcbz(ea): 1 when it did nothing (leave at the instruction)
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        iconst(0);
+        iconst(0);
+        op(W_CALL);
+        uleb(3);
+        emit_deopt_if();
+        return;
     case JX_FP: // ppc_jit_fp: 1 when it did nothing (leave at the instruction)
         if (fp_inline_op(c) >= 0) {
             emit_fp_inline(c, fp_inline_op(c));
@@ -3421,10 +3444,11 @@ static uint32_t translate(void) {
     put(BT_I32);
     close_sized(s);
     // Imports: the code-store helper (function 0); the time-base helper
-    // (function 1); the FP helper (function 2); the memory (shared in the
-    // pthreads build); the emulator's function table (chaining)
+    // (function 1); the FP helper (function 2); the dcbz helper (function
+    // 3); the memory (shared in the pthreads build); the emulator's
+    // function table (chaining)
     s = open_section(2);
-    uleb(5);
+    uleb(6);
     put_name("e");
     put_name("s");
     put(0x00);
@@ -3435,6 +3459,10 @@ static uint32_t translate(void) {
     uleb(1);
     put_name("e");
     put_name("f");
+    put(0x00);
+    uleb(1);
+    put_name("e");
+    put_name("z");
     put(0x00);
     uleb(1);
     put_name("e");
@@ -3465,7 +3493,7 @@ static uint32_t translate(void) {
     uleb(1);
     put_name("f");
     put(0x00);
-    uleb(3); // after the three imported helpers
+    uleb(4); // after the four imported helpers
     close_sized(s);
     s = open_section(10);
     uleb(1 + JH_N);
@@ -3596,7 +3624,7 @@ static uint32_t translate(void) {
             uint16_t id = g_ids[x];
             access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
                       id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX ||
-                      (id >= JX_LFS && id <= JX_FCMP);
+                      (id >= JX_LFS && id <= JX_FCMP) || id == JX_DCBZ;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))
@@ -3691,7 +3719,7 @@ static uint32_t translate(void) {
 EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), {
     var table = wasmExports['__indirect_function_table'];
     var mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], z: wasmExports['ppc_jit_dcbz'], t: table } });
     var idx = slot;
     table.set(idx, inst.exports.f);
     return idx;
@@ -3715,7 +3743,7 @@ EM_JS(uint32_t, jit_install_async, (uint32_t token, uint32_t slot), {
         return 0;
     mods.delete(token);
     var table = wasmExports['__indirect_function_table'];
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], z: wasmExports['ppc_jit_dcbz'], t: table } });
     table.set(slot, inst.exports.f);
     return slot;
 });
@@ -4003,14 +4031,19 @@ static uint32_t install_fn(uint32_t token, uint32_t msr) {
             release_fn(base + t);
     }
     uint32_t slot = g_free_slots[--g_nfree];
+    double t0 = emscripten_get_now();
     uint32_t fn = token ? jit_install_async(token, slot) : jit_instantiate(g_buf, g_len, slot);
     if (!fn) {
         g_free_slots[g_nfree++] = slot;
         return 0;
     }
+    double t1 = emscripten_get_now();
     static ppc_t scratch;
     scratch.msr = msr;
     ((jit_fn_t)(uintptr_t)fn)(&scratch, 0, 0, 0);
+    if (g_trace == 7)
+        printf("jit: install split ms: instantiate %.1f first call %.1f (%s)\n", t1 - t0, emscripten_get_now() - t1,
+               token ? "async" : "sync");
     return fn;
 }
 
@@ -4061,6 +4094,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     static uint32_t slot_page[JIT_REGION_PAGES]; // unit index -> region page
     static uint8_t leader[JIT_REGION_PAGES][JIT_PAGE_INSNS];
     static uint8_t reached[JIT_REGION_PAGES][JIT_PAGE_INSNS];
+    // A word the walk stopped at without reaching it (rewritten, or never
+    // decoded): expanded once, or every branch into a run of them would walk
+    // the whole run again (quadratic: 227 M pushes, seconds, on Quake III)
+    static uint8_t walked[JIT_REGION_PAGES][JIT_PAGE_INSNS];
     static uint8_t cleader[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's leaders
     static uint16_t ccov[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's coverage
     static uint32_t stack[2 * JIT_REGION_PAGES * JIT_PAGE_INSNS];
@@ -4122,6 +4159,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
         memset(leader[n], 0, JIT_PAGE_INSNS);
         memset(reached[n], 0, JIT_PAGE_INSNS);
+        memset(walked[n], 0, JIT_PAGE_INSNS);
         // What the predecoded tier has run on the page: a word it never
         // decoded never executed (the pool decodes at dispatch), and code
         // that never ran is not worth a translation.  (A peek at the pool's
@@ -4137,6 +4175,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     // Reachability from the entry points over the direct control flow:
     // every entry point, branch target and fall-through leads a block
     uint32_t sp = 0;
+    uint64_t dbg_pushes = 0, dbg_steps = 0; // jit.trace = 7
 #define PUSH(addr_)                                                                                                    \
     do {                                                                                                               \
         uint32_t a_ = (addr_), o_ = a_ - lbase;                                                                        \
@@ -4144,8 +4183,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             sp < sizeof stack / sizeof stack[0]) {                                                                     \
             uint32_t s_ = (uint32_t)U.slot[o_ >> MEM_PAGE_SHIFT], i_ = (o_ & MEM_PAGE_MASK) >> 2;                      \
             leader[s_][i_] = 1;                                                                                        \
-            if (!reached[s_][i_])                                                                                      \
-                stack[sp++] = s_ * JIT_PAGE_INSNS + i_;                                                                \
+            if (!reached[s_][i_] && !walked[s_][i_])                                                                   \
+                stack[sp++] = s_ * JIT_PAGE_INSNS + i_, dbg_pushes++;                                                  \
         }                                                                                                              \
     } while (0)
     for (uint32_t u = 0; u < n; u++) {
@@ -4163,13 +4202,19 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             // (nor is a word the guest keeps rewriting -- the 68K emulator
             // toggles some of its own branches -- or every rewrite would
             // retranslate its chunk: the predecoded loop runs it)
-            if (reached[u][i] || (ran[u] && ran[u][i].id == PD_UNDECODED && s->owner[i] == NONE8))
+            if (reached[u][i] || walked[u][i])
                 break;
+            if (ran[u] && ran[u][i].id == PD_UNDECODED && s->owner[i] == NONE8) {
+                walked[u][i] = 1;
+                break;
+            }
             if (s->unstable[i]) {
+                walked[u][i] = 1;
                 PUSH(s->lpage + 4 * i + 4); // (code: it runs; the predecoded loop comes back after it)
                 break;
             }
             reached[u][i] = 1;
+            dbg_steps++;
             uint32_t w = s->words[i], a = s->lpage + 4 * i;
             pd_entry_t e;
             uint16_t id = s->ids[i];
@@ -4192,6 +4237,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
     }
 #undef PUSH
+    if (g_trace == 7)
+        printf("jit: reach %.1f ms, %llu pushes, %llu steps, n=%u\n", emscripten_get_now() - tp,
+               (unsigned long long)dbg_pushes, (unsigned long long)dbg_steps, n);
     g_prof[1] += emscripten_get_now() - tp, tp = emscripten_get_now();
     // Chunks: a reached word keeps its chunk from one translation to the
     // next, so code that did not change keeps its function; code reached
@@ -4823,6 +4871,22 @@ int32_t ppc_jit_tb(uint32_t budget, uint32_t upper, uint32_t unused) {
     *g_bus_error_instr_ptr = budget;
     uint64_t tb = ppc_tb_now(g_wa_p);
     return (int32_t)(upper ? (uint32_t)(tb >> 32) : (uint32_t)tb);
+}
+
+// dcbz from translated code (JX_DCBZ), `ea` unmasked: the block zeroed when
+// it is plain memory behind a live write entry (ppc_dcbz_host), else 1 --
+// nothing done, leave at it: the predecoded loop raises the alignment
+// exception or the DSI, makes it a no-op, holds a device's line or fills
+// the entry.  A page with translated code has no RAM write entry, so the
+// zeroing never reaches a translation.
+EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2);
+int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2) {
+    (void)unused1, (void)unused2;
+    uint8_t *host = ppc_dcbz_host(g_wa_p, ea & ~31u);
+    if (!host)
+        return 1;
+    memset(host, 0, 32);
+    return 0;
 }
 
 // FP arithmetic and moves from translated code (JX_FP): what the decoder

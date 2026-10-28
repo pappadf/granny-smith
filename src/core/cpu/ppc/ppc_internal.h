@@ -401,6 +401,9 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store);
 // dcbz's translated form: W/I alignment rule, T=1 no-op case.
 // Returns 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
 int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr);
+// The same decision for the translation tier, without side effects: the
+// block's host address when it is plain zeroing, else NULL (ppc_mmu.c).
+uint8_t *ppc_dcbz_host(ppc_t *p, uint32_t ea);
 
 // Rebuild sr_t_mask from sr[] (reset, checkpoint restore, shell pokes).
 void ppc_recompute_sr_t_mask(ppc_t *p);
