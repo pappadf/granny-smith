@@ -62,6 +62,7 @@
 //     both TLBs (604UM §5.4.3.2; the 64-iteration flush idiom).
 
 #include "ppc_internal.h"
+#include "ppc_jit.h" // g_ppc_jit_on: TLB-hit fills for RAM only with the tier on
 
 #include "log.h"
 
@@ -947,19 +948,21 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
-        // A page served from the TLB gets its table entry when it can take
-        // one -- a device's descriptor, or RAM whose read entry a flush took
-        // away (the TLB keeps a RAM page only when a walk could not fill it
-        // for a store: a code page, a store owing C) -- so the next access to
-        // it skips this walk entirely.  Without the RAM case every load from
-        // such a page stayed slow for as long as its TLB entry lived: a
-        // deopt per load in translated code (Quake III's driver data).  Not
-        // a store into a code page: its write entry is refused, so the fill
-        // would be redone, in vain, on every such store (the 68K emulator's
-        // variables beside its code: +4.8 % host instructions on the
-        // pm8500-finder bench row).
+        // A device page served from the TLB gets its table entry, so the next
+        // access to it skips this walk entirely.  So does RAM whose entry a
+        // flush took away (the TLB keeps a RAM page only when a walk could not
+        // fill it for a store: a code page, a store owing C), but only with
+        // the translation tier on: there a miss is a deopt -- leave, the
+        // predecoded loop's step, a lookup, enter again -- and every load from
+        // such a page missed for as long as its TLB entry lived (Quake III's
+        // driver data: 75 % of the exits).  In the predecoded loop a miss
+        // costs little more than a hit, and refilling pages the guest keeps
+        // evicting cost the pm8500-finder bench row 5 % more host
+        // instructions.  Not a store into a code page: its write entry is
+        // refused, so the fill would be redone, in vain, on every such store.
         uint32_t tppage = te->pa_page >> MEM_PAGE_SHIFT;
-        if (dt && tppage < g_page_count && (g_page_table[tppage].dev || !store || g_page_table[tppage].writable)) {
+        if (dt && tppage < g_page_count &&
+            (g_page_table[tppage].dev || (g_ppc_jit_on && (!store || g_page_table[tppage].writable)))) {
             if (user) {
                 user_soa_fill(ea, te->pa_page, te->w_ok);
                 if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
