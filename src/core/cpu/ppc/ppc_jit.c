@@ -5127,9 +5127,30 @@ EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unu
 static struct {
     uint32_t key, n;
 } g_fph[256];
+// An arithmetic word's operands, why the inline path left it: 1 a zero
+// operand, 2 another special one (denormal, infinity, NaN), 0 neither (the
+// exponent envelope's edges, a double-rounding tie, a long product)
+static uint32_t fph_reason(const ppc_t *p, uint32_t iw) {
+    uint32_t xo5 = (iw >> 1) & 31u, r = 0;
+    uint32_t regs[3] = {PPC_RA(iw), PPC_RB(iw), PPC_FRC(iw)};
+    bool use[3] = {true, xo5 != 25, xo5 == 25 || xo5 >= 28};
+    for (int i = 0; i < 3; i++) {
+        if (!use[i])
+            continue;
+        uint64_t x = p->fpr[regs[i]];
+        uint32_t e = (uint32_t)(x >> 52) & 0x7FFu;
+        if ((x & 0x7FFFFFFFFFFFFFFFull) == 0)
+            r = 1;
+        else if ((e == 0 || e == 0x7FFu) && r == 0)
+            r = 2;
+    }
+    return r;
+}
 static void fph_note(uint32_t iw) {
     uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u; // A-forms: op 59, and op 63 with xo5 >= 18
     uint32_t key = op << 10 | (op == 59 || xo5 >= 18 ? xo5 : (iw >> 1) & 0x3FFu);
+    if (fp_inline_op(iw) >= 0)
+        key |= (1u + fph_reason(g_wa_p, iw)) << 16; // 1 other, 2 zero, 3 special
     for (uint32_t h = (key * 2654435761u) >> 24, j = 0; j < 256; j++, h = (h + 1) & 255u)
         if (!g_fph[h].n || g_fph[h].key == key) {
             g_fph[h].key = key;
@@ -5148,7 +5169,8 @@ static void fph_dump(void) {
         tot += g_fph[j].n;
     printf("jit fp helper: %llu calls\n", (unsigned long long)tot);
     for (uint32_t j = 0; j < 20 && g_fph[j].n; j++)
-        printf("  op %2u xo %4u: %10u (%4.1f%%)\n", g_fph[j].key >> 10, g_fph[j].key & 0x3FFu, g_fph[j].n,
+        printf("  op %2u xo %4u %-8s: %10u (%4.1f%%)\n", (g_fph[j].key >> 10) & 63u, g_fph[j].key & 0x3FFu,
+               (const char *[]){"", "other", "zero", "special"}[g_fph[j].key >> 16], g_fph[j].n,
                100.0 * g_fph[j].n / (double)(tot ? tot : 1));
     memset(g_fph, 0, sizeof g_fph);
 }
