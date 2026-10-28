@@ -5,11 +5,14 @@
 1. [Overview](#1-overview) — what the card is, the board and its silicon, the White Magic lineage, host machines,
    the evidence base and its limits
 2. [Register file](#2-register-file) — what is documented and what is not; the object-data token interface; the
-   on-chip pixel state; the texture memory interface and its map; control state; clocks
+   on-chip pixel state; the texture memory interface and its map; control state; clocks; the PCI identity, the
+   host-visible registers, the packet port, the renderer registers, control programs, object records and
+   pixel-output descriptors
 3. [Behaviour](#3-behaviour) — host/card division of labor, the frame pipeline, hidden-surface removal and
-   multi-pass overflow, transparency, CSG, the texture path, scanout, multiple cards, interrupts, heat
+   multi-pass overflow, transparency, CSG, the texture path, scanout, multiple cards, interrupts, heat, the
+   frame protocol
 4. [Programming model](#4-programming-model) — QuickDraw 3D and the integration point, the driver extensions,
-   driver-side software work, texture management, observed run-time behaviour and performance
+   driver-side software work, texture management, observed run-time behaviour and performance, the RAVE engine
 5. [Quirks & errata](#5-quirks--errata)
 6. [Open questions](#6-open-questions)
 
@@ -146,10 +149,12 @@ context comes from Apple's own developer material [16] and contemporary develope
 
 The limits are unusual for a card page in this tree, and they shape the whole page:
 
-- **No public expansion-ROM dump exists, and the card's PCI vendor/device IDs are not publicly documented.**
-  Every fact about the card's host-visible register surface — the BAR set, the DMA descriptor formats, the
-  interrupt registers, the FCode startup — is therefore missing here and lives in
-  [§6](#6-open-questions) instead of §2.
+- **No register documentation was ever published.** The card's host-visible interface — PCI identity, the
+  BAR, the packet port, the renderer registers, the control-program and object-record formats, the
+  pixel-output descriptors and the interrupt protocol — is reconstructed instead from the PowerPC code of
+  Apple's own driver and plug-in, whose debug builds keep their function names [18] (§2.8–§2.14, §3.11,
+  §4.7). That establishes exactly what the driver writes and expects; what the card does with a value the
+  driver never checks remains *inferred*.
 - **The silicon itself is documented only at the architecture level.** The papers and patents give the data
   path, the algorithms and the internal state formats in genuine detail (§2.2–§2.6), but they are descriptions
   of the *design*, published as papers and patent text — a claim-by-claim confirmation against the shipped
@@ -162,26 +167,27 @@ The limits are unusual for a card page in this tree, and they shape the whole pa
   [§6](#6-open-questions).
 
 The re-implementation bar for this card is therefore stated honestly: the *rendering architecture* below is
-documented to the register-and-token grade; the *host interface* is not documented at all, and a working
-emulation of the card would additionally have to model the QuickDraw 3D integration layer that is its only
-driver surface (§4.1).
+documented to the register-and-token grade from the designers' papers and patents, and the *host interface*
+to the grade of the shipped driver's code (§2.8–§2.14) — enough to run Apple's unmodified driver and
+plug-in, with the pixel-exact rules the software cannot observe listed in [§6](#6-open-questions).
 
 ## 2. Register file
 
 ### 2.1 What is documented and what is not
 
-The card has no public register reference. There is no datasheet for the rasterizer ASIC, no expansion-ROM
-image in the public record, and no published PCI identity: the vendor/device ID pair that
-[pci.md](../pci.md) §2.5 makes the first fact of any PCI device is, for this card, unknown (§2.2 of that page
-describes the standard header; the card's own values for it are not established). The register-grade material
+The card has no public register reference: there is no datasheet for the rasterizer ASIC and no
+expansion ROM on the card. Its PCI identity and host-visible interface are read from the driver's code
+instead (§2.8–§2.14). The register-grade material
 that *does* exist is the object-data interface the rendering pipeline consumes (§2.2), the on-chip pixel state
 (§2.3), and the texture memory interface and its address organization (§2.4–§2.5), each documented by the
 designers in patent text [8] [9] and, for the texture memory, independently confirmed on the shipped hardware
 by pin-level measurement [15]. The control state the driver loads before a frame (§2.6) completes the set.
 
-Two register files deliberately do **not** appear here: the host-visible I/O surface (BARs, DMA control,
-interrupt enable/status) and the companion chip's programming interface. Neither is in the public evidence;
-see [§6](#6-open-questions).
+§2.2–§2.7 describe the design as its papers and patents present it; §2.8–§2.14 describe the interface the
+shipped driver programs, which is what software actually sees. The two do not map one to one — the patent's
+token stream is internal to the ASIC, while the driver writes packets, control programs and object records —
+and the companion chip's own programming interface, if it has one beyond the three registers of §2.9, is
+not in the evidence ([§6](#6-open-questions)).
 
 ### 2.2 The object-data interface: token formats
 
@@ -382,6 +388,237 @@ embodiment exposes (a STALL input and an EMPTY output per input port, with a 16-
 32-bit port and four selectable input streams by SRCID [8]) are the closest documented analogue.
 
 
+### 2.8 PCI identity and configuration space
+
+The host interface below is reconstructed from the card's own driver software: the PowerPC code of
+"Apple QD3D HW Driver" (the native driver, `.GothamDriver`) and "Apple QD3D HW Plug-In", whose debug builds
+keep their function names in the compilers' traceback tables [18]. Every value in §2.8–§2.14 is read from
+that code (*observed in the driver*); where the code shows what the driver writes but not what the card does
+with it, the text says *inferred*.
+
+| Item | Value |
+|---|---|
+| Vendor / device ID | `0x106B` (Apple) / `0x0009`; the driver's `TheDriverDescription` matches the Name Registry device name `pci106b,9` |
+| Class code | not checked by the driver |
+| Revision ID | read per card; **2** grants 0x40000 texels of texture memory and 16-bpp destinations, any other value 0x10000 texels and 32 bpp only (§2.10) |
+| BARs | exactly one 32-bit memory BAR: the driver insists that `assigned-addresses` holds one 20-byte entry with the memory-space bit set, and uses its `phys.lo` directly as the register base; the size field is never read |
+| Expansion ROM | none required: the driver ships as an extension and matches by name |
+| Command | the driver writes `0x16` — memory space, bus master, memory write and invalidate |
+| `0x0C` | the driver writes `0x0000FF08` — latency timer 0xFF, cache line 8 words |
+| `0x40` (vendor) | written 0, then `0xF0 \| (enabled − 1) << 2 \| index` — the card's position among up to four enabled cards (§3.8) |
+| Interrupt | one line, INTA; the handler is installed through the Name Registry `driver-ist` property |
+
+The meaning of the `0xF0` bits of register `0x40` is not established ([§6](#6-open-questions)).
+
+### 2.9 Host-visible registers
+
+The BAR exposes three 32-bit locations. Every access the driver makes is a 32-bit `lwz`/`stw` of a
+big-endian word, followed by `eieio`; there are no byte-reversed accesses anywhere in the driver or the
+plug-in [18].
+
+| Offset | Name | Access | Function |
+|---|---|---|---|
+| `0x00` | Port | write | packet stream into the renderer's internal address space (§2.10) |
+| `0x40` | DMA control | read/write | the pixel-output channel's control and status |
+| `0x4C` | DMA command pointer | write | host-physical address of the pixel-output descriptor list (§2.14) |
+
+The driver reads only `0x40`, and never touches `0x44`, `0x48` or `0x50`–`0x58`, the offsets where an Apple
+DBDMA channel keeps its status, high pointer and select registers. Despite the DBDMA-like offsets, `0x40`
+does not follow DBDMA semantics: it is read back directly, and writes carry no write-enable mask half.
+
+DMA control bits:
+
+| Bit | Mask | Meaning |
+|---|---|---|
+| 15 | `0x8000` | run (set in every start value) |
+| 14 | `0x4000` | interrupt enable — must read 0 before a start, is ORed in to start a frame, and is expected set by the interrupt handler |
+| 13 | `0x2000` | interrupt acknowledge: the handler reads the register and writes the value back with this bit set |
+| 12 | `0x1000` | reset: the driver writes `0x1000`, waits 20 µs, writes 0, waits 10 µs |
+| 11, 10 | `0x0C00` | 16-bpp output, set together when the destination has two bytes per pixel |
+| 9–0 | — | never written |
+
+The reset is performed before every frame. It does not clear the object cache: the driver re-initialises the
+cache only when its mode changes, so the cache contents survive the per-frame reset (*inferred*).
+
+### 2.10 The packet port and the internal address space
+
+Words written to the port are packets whose first word carries an opcode in bits 31–29; the remaining bits
+are a **byte address** in the renderer's internal space [18]:
+
+| Opcode | Header | Following words | Meaning |
+|---|---|---|---|
+| 1 | `0x2000_0000 \| address` | one data word (none for the strobe registers `0x28`/`0x2C`) | write one word |
+| 2 | `0x4000_0000 \| address` | `count − 1`, then `count` data words | block write to consecutive words |
+| 3 | `0x6…` | — | a renderable object; appears only in control programs (§2.13) |
+
+The same encoding is what the renderer parses out of a control program (§2.12), so the port is a host-side
+entry into one command decoder (*inferred*).
+
+| Internal address | Contents |
+|---|---|
+| `0x000000`–`0x0000FF` | renderer registers (§2.11) |
+| `0x400000`–`0x41FFFF` | object cache, 128 KB |
+| `0x800000`– | texture memory, addressed in 4-byte units: one 32-bit `0xAARRGGBB` port word per texel |
+
+At open, after a timeout, and when the cache mode changes, the driver resets the card, zeroes
+`0x400000`–`0x401FFF` with four 512-word opcode-1 sequences, and builds a free list of **1706 nodes of
+72 bytes** across the rest of the cache (`0x2000`, `0x2048`, … `0x1FF88`, the first word of each the address
+of the next, the last 0), then writes register `0x34 = 0x2000`. In "cache overflow" mode it writes
+`0x34 = 0` instead and builds no list. 1706 is also the object count the plug-in budgets per frame (§3.2).
+
+Texture upload is opcode-2 block writes of one row each: an `n × n` level is sent row by row **bottom row
+first**, to `levelBase + slot · n² · 4 + row · n · 4`, and the data is broadcast to every enabled card. The
+driver reports the texture capacity as 0x40000 texels when the lowest revision among the enabled cards is 2,
+else 0x10000; 0x40000 texels × 16 bits is the 512 KB store, so the card packs each 32-bit port word to a
+16-bit texel (*inferred*).
+
+### 2.11 Renderer registers
+
+Written through opcode-1 packets, by the driver directly or by the plug-in through the driver; none is ever
+read back [18].
+
+| Address | Name | Value |
+|---|---|---|
+| `0x00` | Mode | `(index << 8) \| flags`; index 0–3 in bits 9–8. Flags: `0x0008` destination is 16 bpp; `0x0400` the destination's base address has bit 1 set (a halfword-aligned 16-bpp destination); `0x0800` perspective depth — the record depth fields hold 1/w and texture coordinates u/w, v/w; `0x1000` always set |
+| `0x04`–`0x07` | Y | control programs only: `(Ynext << 16) \| Ycur` for the card whose index equals the address's low two bits (§2.12) |
+| `0x08` | Background | ARGB8888, packed from the RAVE background colour each frame |
+| `0x0C` | Texture configuration | `(n256 << 8) \| ((page of the first 128-map − n256) & 0xFF)`, 0 when no maps are loaded; with the plug-in's allocation the low byte equals `16 − n128 − n256` |
+| `0x20` | Go | host-physical address of the frame's control program; the last write of a frame start |
+| `0x24` | CSG equation | the 32-entry CSG truth table (§3.5), unchanged from the RAVE state |
+| `0x28` | Scanline start | strobe, no data |
+| `0x2C` | Scanline end | strobe, no data |
+| `0x30` | Width − 1 | output pixels per scanline, minus one |
+| `0x34` | Free-list head | `0x2000`, or 0 in cache-overflow mode |
+| `0x48`–`0x68` | Level base 0–8 | internal address of mip level *L* (256² down to 1²) of all resident maps |
+| `0x80`–`0xBC` | Slot class 0–15 | per slot: 3 for a 256² map (nine levels), 2 for a 128² map (eight levels) |
+
+Texture memory is laid out **by mip level, not by map**: level 0 holds the 256² maps' top levels, and each
+lower level array holds one page per resident map, 256² maps first. With `n256` and `n128` maps resident:
+
+```
+base[0] = 0x800000
+base[1] = base[0] + n256 · 256² · 4
+base[L+1] = base[L] + s² · (n256 + n128) · 4      for s = 128 >> (L−1), L = 1..7
+```
+
+A 256² map occupies pages 0, 1, … upward and its slot equals its page; 128² maps occupy pages 15, 14, …
+downward, their slot is `page − (register 0x0C & 0xFF)`, and a 128² map's own level 0 is global level 1. A
+texel of level *L* of the map in slot *k* is at `base[L'] + (k · s² + row · s + column) · 4` with row 0 the
+image's bottom row (§2.10) and `L'` the global level.
+
+### 2.12 The control program: control blocks and the Y registers
+
+A frame is one singly linked list in host memory that interleaves **control blocks** and **object records**
+(§2.13); the card fetches it by bus mastering from the address written to register `0x20` [18]. Every record
+starts with `N` link words, `N` being the number of enabled cards; card *k* follows the word at offset
+`4k`, and the plug-in writes the same address into all `N`. A link of 0 ends the list (*inferred*). The
+record's first word after the links tells the two kinds apart: an object header has opcode 3 in bits 31–29;
+a control block does not.
+
+A control block is seven command words after the links: opcode-1 register writes (with their data word,
+except for the strobes), and zero words in unused slots. The plug-in builds one skeleton program per draw
+context, for `S = height + N` scanlines:
+
+| Block | Contents |
+|---|---|
+| initial | `Y = (Y(k) << 16) \| 0xFFFF` for each card *k* (next = its first scanline, current = none), and `0x30 = width − 1` |
+| A, per scanline group *i* | `Y` for each card, then **scanline start** |
+| B, per scanline group *i* | five zero words, **scanline end**, one zero word |
+
+Y values are 13.3 fixed point at the pixel centre, `(line << 3) | 4`, with `0xFFFF` for "none". For card
+*k* of *N* in group *i*, `current = N·i + k` and `next = N·(i+1) + k`, each replaced by `0xFFFF` when not
+below `S`. The program therefore runs one scanline past the bottom of the drawable for each card, with
+`next = 0xFFFF`. Objects are linked in after block B of the group before the one in which they first cover a
+pixel centre, so the card meets every object just before the scanline where it becomes active; within one
+group they appear in reverse submission order (the plug-in pushes them at the head). With one card the
+skeleton for 640×480 holds 963 control blocks.
+
+### 2.13 Object records
+
+Every object record is `N` link words, a header word and a payload, all big-endian [18]. The header:
+
+| Bits | Mask | Meaning |
+|---|---|---|
+| 31–29 | `0xE000_0000` | 3: renderable object |
+| 27 | `0x0800_0000` | set on every object the plug-in emits; meaning unknown |
+| 26 | `0x0400_0000` | back-facing (the RAVE triangle flag) |
+| 25 | `0x0200_0000` | textured triangle |
+| 24 | `0x0100_0000` | CSG operand; the operand number 0–4 is in bits 2–0 |
+| 23 | `0x0080_0000` | bitmap tile |
+| 21 | `0x0020_0000` | opaque: all three vertex alphas are 255 and the object is not a CSG operand |
+| 7–4 | `0x0000_00F0` | texture page (textured triangles) |
+
+Payload offsets below count from the header word.
+
+**Gouraud triangle** (bits 25 and 23 clear; 52 payload bytes after the header used):
+
+| Offset | Format | Content |
+|---|---|---|
+| `+4`, `+8`, `+12` | `x << 16 \| y`, 13.3 unsigned each | vertices 0, 1, 2: `floor(coordinate · 8)` |
+| `+16`, `+20`, `+24` | IEEE single | depth of each vertex: 1/w with mode flag `0x0800`, else z |
+| `+28`, `+32`, `+36` | A, R, G, B bytes | vertex colours, `floor(c · 255.9)` |
+
+**Textured triangle** (bit 25):
+
+| Offset | Format | Content |
+|---|---|---|
+| `+4`–`+24` | as above | vertices and depths |
+| `+28 + 4i` | byte, nibble pair, 16 bits | vertex *i*: alpha `floor(a · 255.9)`; `(v_low4 << 4) \| u_low4`; the top 16 bits of an IEEE single holding the vertex's mip-level footprint (0 when the map is not mipmapped) |
+| `+40 + 4i` | 16 bits, 16 bits | the top 16 bits of the IEEE singles **v** and **u**; with the nibbles above, 20-bit floats (sign, 8-bit exponent, 11-bit mantissa) |
+| `+52 + 4i` | bytes 2 and 3 | diffuse intensity `kd = floor((kd_r + kd_g + kd_b) · 42.65)`, a 1.7 fixed-point value (128 ≈ 1.0), and specular `ks = floor((ks_r + ks_g + ks_b) · 85.3)`, 0.8 fixed point |
+
+Vertex RGB is not sent for textured triangles: shading is one grey diffuse and one grey specular intensity
+per vertex. u and v are in normalised map units; with mode flag `0x0800` they are u/w and v/w and the card
+divides per pixel, otherwise the plug-in has divided them. The footprint is
+`max(|∂(u/w)/∂x · q − ∂q/∂x · u/w|, …)` over x, y and both coordinates — the texel-space derivative scaled
+by q², which the card must divide by q² per pixel to pick a mip level (*inferred*). In the affine case one
+value, `max(|∂u/∂x|, |∂u/∂y|, |∂v/∂x|, |∂v/∂y|)`, is repeated in all three vertices.
+
+**Bitmap tile** (bit 23): one 32 × 12-pixel, one-bit tile of a RAVE bitmap.
+
+| Offset | Format | Content |
+|---|---|---|
+| `+4` | IEEE single | depth |
+| `+8` | `x << 16 \| y`, 13.3 | tile left and top, whole pixels |
+| `+12`, `+16` | ARGB8888 | the drawing colour, twice |
+| `+20 + 4r` | 32 bits | row *r* (0–11), bit 31 the leftmost pixel |
+
+The plug-in moves a partly off-screen tile fully on-screen and zeroes the rows that fall outside, so the card
+always receives whole tiles inside the drawable. Points arrive as one small Gouraud triangle and lines as two
+(a one-pixel-wide quad).
+
+Coverage follows the plug-in's bucketing: a triangle covers the scanlines whose centres lie in
+`(yMin, yMax]` in 13.3 units — `first = (yMin + 4) >> 3`, `last = (yMax − 4) >> 3` — and covers none when
+`last < first`. The horizontal sampling rule is not visible in the software ([§6](#6-open-questions)).
+
+### 2.14 Pixel-output descriptors
+
+The pixel-output channel consumes a list of 16-byte **big-endian** descriptors from the address in DMA
+command pointer (`0x4C`) [18]:
+
+| Word | Bits | Content |
+|---|---|---|
+| 0 | 31–28 | 0 |
+| 0 | 27–24 | command: 0 write, 1 skip, 8 stop |
+| 0 | 23–16 | 0 |
+| 0 | 15–0 | byte count |
+| 1 | — | host-physical destination address (write only; set but ignored on skip) |
+| 2, 3 | — | 0 |
+
+The descriptors carry no source address: the source is the renderer's pixel stream, scanline after scanline,
+each `width` pixels wide (register `0x30`) in the destination format — `xRGB` 32-bit words, or 16-bit
+pixels when DMA control bits `0x0C00` and mode flag `0x0008` are set. A write descriptor copies `count`
+bytes of the stream to its address, a skip discards `count` bytes, stop ends the list. The plug-in's own
+CPU model of the channel, which it uses to copy a back buffer to the screen, advances the source by `count`
+on both write and skip and wraps to the next source row after `width · bytes per pixel` bytes.
+
+The plug-in builds one list per card, covering scanlines `k, k + N, …`. Within each scanline it emits one
+write per run of pixels inside the window's visible region and one skip per run outside it, or per run past
+the destination's width; a card with one scanline fewer than the others gets one padding skip line; every
+list ends with a stop. Destinations are either the screen's framebuffer (single-buffered contexts, clipped
+by the visible region) or a physically contiguous back buffer in host memory (double-buffered contexts,
+unclipped), which the plug-in then copies to the screen with its CPU model of the same list.
+
 ## 3. Behaviour
 
 ### 3.1 Division of labor between host and card
@@ -525,7 +762,9 @@ own (§1.1). The compositing output runs at 20 million pixels/second [5]; the sc
 family is clocked synchronous to the receiving framebuffer (§2.7) and its DMA is programmed through the
 Scanline DMA tokens with an 11-bit start and length and a 40-to-32-bit rounding mode (§2.2) [8]: the card
 composites in 40-bit pixels (10 bits per component, §2.2) and scans out 32-bit framebuffer pixels, rounding
-on the way out.
+on the way out. The shipped driver also programs 16-bit output for thousands-of-colours destinations (DMA
+control `0x0C00`, mode flag `0x0008`, §2.9, §2.11), on revision-2 cards only [18]; the pixel-output
+descriptor list that steers the stream is §2.14.
 
 At the system level the write traffic is real PCI traffic, and it is bursty in small units: the observed
 scanout moves **16-pixel tokens, one token at a time**, to the framebuffer over PCI [15] (*observed*; the
@@ -546,18 +785,20 @@ generation is written for exactly that feeding arrangement [10]. In the 1997 suc
 structure is explicit — one I/O-interface ASIC driving up to four rasterizer ASICs whose outputs merge in a
 framebuffer interface [7].
 
-How two *cards* (not chipsets) divide a frame — alternate scanlines, alternating segments, or a partition
-split — is **not established** by any document, and the observation that a second card yields about 80%,
-not 100% [15], constrains but does not determine the answer ([§6](#6-open-questions)).
+The driver settles how two *cards* divide a frame: by **interleaved scanlines** [18]. Every card receives
+the same control program; each is told its position through configuration register `0x40` and the index
+in mode register bits 9–8, latches only its own Y register writes (§2.12), and owns its own descriptor list
+covering scanlines `k, k + N, …` (§2.14). Up to four cards are enabled. The ~80% scaling observed with two
+cards [15] is therefore not a partition imbalance; the per-object setup every card repeats and the shared
+PCI bus are the candidates.
 
 ### 3.9 Interrupts
 
-No interrupt register map is public. The design intent on record is minimal: the rendering pipeline is to
-"interrupt the processor only when it has finished processing a frame", leaving the CPU free to work on the
-next frame's geometry [7]. Within the pipeline family the closest documented sequencing is token-level: the
-Wait for Scanline DMA Completion token back-pressures buffer swaps against scanout completion, and the Swap
-Buffers token swaps them [8]. What the shipped card raises on the PCI interrupt line, and how
-"Apple QD3D HW Driver" services it, is unestablished ([§6](#6-open-questions)).
+The design intent on record is minimal: the rendering pipeline is to "interrupt the processor only when it
+has finished processing a frame", leaving the CPU free to work on the next frame's geometry [7]. The
+shipped card does exactly that: one interrupt per card per frame, at the end of its pixel-output list,
+gated by DMA control bit 14 and acknowledged by writing bit 13 (§2.9, §3.11) [18]. There is no other
+interrupt source and no status register beyond DMA control.
 
 ### 3.10 Clocking, power and heat
 
@@ -576,6 +817,33 @@ hot in a more crowded 7500, and the overclocking path names heat before SRAM spe
 figure for the card itself is published.
 
 
+### 3.11 The frame protocol
+
+From the plug-in's frame end to the interrupt, the driver drives every card the same way [18]:
+
+1. **Lock**: DMA control `0x1000`, 20 µs, `0`, 10 µs — before every frame.
+2. If the context or cache mode changed: re-initialise the object cache (§2.10).
+3. If the resident texture set changed: upload every map, then write the level bases (`0x48`–`0x68`) and
+   slot classes (`0x80`–`0xBC`).
+4. Background (`0x08`), CSG equation (`0x24`), texture configuration (`0x0C`).
+5. Per card: mode (`0x00`) with the card's index, DMA command pointer, a read of DMA control checking that
+   bit 14 is clear, then DMA control `= 0x8000 [| 0x0C00] | 0x4000`.
+6. 100 µs, then the driver marks every card as running and writes the control program's physical address
+   to register `0x20` of each card.
+
+The card then walks the program, renders each of its scanlines and streams them through the descriptor list;
+at the list's stop it interrupts. The handler reads DMA control, writes it back with `0x2000`, warns if bit
+14 is clear, and clears the card's running flag; when no enabled card is still running it reports the frame
+done to the plug-in with the measured render time. A completion that arrived before step 6 had marked the
+card running would be lost, so the interrupt must not be raised synchronously with the register `0x20`
+write (*inferred*).
+
+A watchdog started with each frame fires after `max(3 s, 10 × the longest render so far)`; it resets the
+cards, re-initialises the object cache and reports a timeout, and the plug-in then drops the frame.
+
+The plug-in keeps two control programs and two object heaps and alternates between them, so it builds frame
+*n* + 1 while the card renders frame *n*; it waits for frame *n* to finish before starting *n* + 1.
+
 ## 4. Programming model
 
 ### 4.1 QuickDraw 3D and where the card hooks in
@@ -587,10 +855,12 @@ access to graphics accelerators — no changes to your code are needed to take a
 interface, which selects between the software renderer and hardware acceleration without application
 involvement [15] [17].
 
-The card integrates at that level — inside the QuickDraw 3D renderer stack — and **not** through QuickDraw
-3D RAVE, the rasterization-level interface that Apple added afterwards for third-party 3D chip vendors [15].
-RAVE is the interface of every later Mac 3D accelerator ([rage-128.md](rage-128.md) §1, [voodoo1.md](voodoo1.md) §1);
-this card predates that split and never speaks it. The consequences observed across the card's whole
+The card integrates at that level — inside the QuickDraw 3D renderer stack. With QuickDraw 3D 1.0.3 the
+plug-in sat behind a separate "QuickDraw 3D Accelerator" library; from 1.5 the plug-in is formally a RAVE
+engine, but one that disables itself as soon as it has registered, so only QuickDraw 3D's interactive
+renderer, which enables it explicitly, ever draws through it (§4.7) [18]. RAVE is the interface of every
+later Mac 3D accelerator ([rage-128.md](rage-128.md) §1, [voodoo1.md](voodoo1.md) §1); RAVE titles enumerate
+engines the ordinary way and never find this one. The consequences observed across the card's whole
 application record [15]:
 
 - Only applications built on the high-level QuickDraw 3D APIs can reach the card; a RAVE game does not see
@@ -668,9 +938,9 @@ SDK sample prints. The card's descriptor, probed on live hardware [15]:
 | OptionalFeatures | DeepZ, Texture, TextureHQ, Blend, BlendAlpha, ZSorted, NoClear |
 
 against a same-machine RAVE card's descriptor (a Formac/S3 ViRGE reporting VendorID 1716347235, EngineID 2,
-FastFeatures Line/Gouraud/Texture/TextureHQ) — different fields, different interface, and the
-"Apple PCI Hardware" engine never appears as a RAVE device [15]. The reported VendorID 0 and EngineID −1 are
-placeholder-ish values whose meaning is not documented ([§6](#6-open-questions)).
+FastFeatures Line/Gouraud/Texture/TextureHQ) [15]. The descriptor is the plug-in's RAVE gestalt (§4.7): the
+plug-in registers "Apple PCI Hardware" with the RAVE manager and answers vendor 0 and engine ID −1, the
+`kQAEngine_AppleHW` value [18]; the probe also omits CSG, which the plug-in does report.
 
 Application behaviour, from the card's compatibility record on Power Macintosh 7500/8500-class machines
 under Mac OS 8.6 and QuickDraw 3D 1.6 [15]:
@@ -714,6 +984,25 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
 [rage-128.md](rage-128.md) §1 *and* [voodoo1.md](voodoo1.md) §1). On a Power Macintosh 9500 with a
 375 MHz G3 upgrade, Gerbils! runs at 40–50 fps on one card and 70–85 fps on two [15] (§1.4).
 
+### 4.7 The RAVE engine in QuickDraw 3D 1.5 and later
+
+From QuickDraw 3D 1.5 the plug-in is a **RAVE engine**: it registers itself with the RAVE manager as
+"Apple PCI Hardware" (vendor 0, engine ID −1, revision 1), and RAVE's own engine-information sample lists
+it ahead of the software engine [18] [19]. The plug-in then **disables the engine it has just registered**,
+so the engine is invisible to a RAVE application that enumerates engines in the ordinary way; QuickDraw 3D's
+interactive renderer enables it explicitly with `QAEngineEnable`. That, not a missing interface, is why the
+RAVE titles of §4.5 never reach the card. The 1.0.3 release used a different arrangement: a separate
+"QuickDraw 3D Accelerator" shared library between QuickDraw 3D and the plug-in [18].
+
+The engine's gestalt answers: optional features `0xCB7` (deep Z, texture, high-quality texture, blend,
+alpha blend, Z-sorted, no-clear, CSG — not texture colour, not antialiasing), fast features `0x5E`
+(Gouraud, texture, high-quality texture, blend, Z-sorted), and texture memory as **free texels**, not bytes:
+`capacity − n128 · 0x5555 − n256 · 0x15555`. Of the RAVE state tags the plug-in honours only the background
+colour, perspective Z, the texture, the CSG tag and the CSG equation; Z function, width, antialiasing, blend
+mode, texture filter and texture operation are stored and ignored, and tags above 15 are not supported.
+Bitmaps are converted to one bit per pixel with QuickDraw's dithering copy and drawn as tiles (§2.13) in the
+single vertex colour.
+
 ## 5. Quirks & errata
 
 1. **Sixteen-pixel-wide bands on depth-tie overlap.** Where two surfaces' depths cannot be resolved
@@ -739,8 +1028,8 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
    compositing (§3.6), so alpha-in-texture has nothing to composite against [15].
 8. **Colour-depth gate.** Acceleration happens only with the display at thousands or millions of colours
    [1] — an 8-bit framebuffer silently falls back to software rendering.
-9. **RAVE blindness.** The card never appears as a RAVE engine; RAVE-only applications cannot use it
-   (§4.1, §4.5) [15].
+9. **RAVE blindness.** The plug-in registers its RAVE engine and immediately disables it, so RAVE-only
+   applications never select the card; only QuickDraw 3D enables it (§4.1, §4.7) [15] [18].
 10. **Runs hot.** Stock cards run hot enough to need airflow in a full enclosure, and the heat limits
     overclocking before the SRAM does (§3.10) [15].
 11. **First-come order at equal depth.** Equal-depth layers render in arrival order
@@ -754,13 +1043,12 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
 
 ## 6. Open questions
 
-1. **PCI identity.** The card's vendor ID, device ID, class code, revision and BAR set are not publicly
-   documented, and no expansion-ROM image exists in the public record — the first table of any PCI card page
-   ([pci.md](../pci.md) §2.5) cannot be written for this card. Whether the card even carries an expansion
-   ROM with FCode, or is driven purely by the Mac OS extension, is unknown.
-2. **The host-visible register surface.** BAR contents, DMA descriptor formats, the command mailbox, and the
-   interrupt enable/status registers are all absent from the evidence; "Apple QD3D HW Driver" is the only
-   known program for them and has not been analyzed in the public record.
+1. **PCI identity details.** The class code and the BAR size are invisible to the driver (§2.8); a
+   configuration-space dump of a real card would settle both, and whether any expansion ROM is fitted.
+2. **What the driver does not exercise.** The read-back bits of DMA control while a frame runs; whether the
+   channel writes status back into descriptor words 2–3; the descriptor bits the plug-in always clears;
+   the `0xF0` bits of configuration register `0x40`; mode flags `0x1000` and `0x0400` beyond their
+   conditions (§2.9–§2.11, §2.14).
 3. **The companion chip.** The second, TI-manufactured ASIC's identity and division of labor — PCI bridge,
    command processor, or both — is not established; the architecture papers name the *functions* (bus
    attachment, object fetch) but no document maps them to the physical part.
@@ -770,9 +1058,8 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
 5. **Depth format.** 24-bit stored Z (1994 design) versus 32-bit Z endpoints (patent tokens) versus 25-bit
    floating point (1997 successor): the shipped card's working depth format and its tie behaviour are
    unconfirmed (§2.3, quirk 1).
-6. **The multi-card partition mechanism.** How two cards divide a frame — alternating scanlines, alternating
-   16-pixel segments, or a region split — is not documented; only the ~80% scaling and the PCI-bus ceiling
-   of small DMA transfers are observed (§3.8).
+6. **The multi-card bottleneck.** The partition is scanline interleave (§3.8); what limits two cards to
+   ~80% of a doubling — repeated per-object setup or bus contention — is not measured.
 7. **The 343S1167 marking.** The final-silicon part number is community-reported from a teardown and not
    confirmed photographically; neither ASIC carries a public Apple part number, and the 0.5 µm process node
    rests on the specification table's "state-of-the-art O.5µ technology" alone [3].
@@ -786,9 +1073,11 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
     against the production board's twelve, and the production run itself reports both "3 or 12" — where the
     limit lives (silicon revision, driver version, or available RAM) is unknown [15].
 
-11. **The engine descriptor's odd values.** VendorID 0 and EngineID −1 in the QuickDraw 3D 1.6 probe are
-    undocumented placeholders; what the plug-in actually reports through, and how the descriptor fields map
-    to QuickDraw 3D's engine records, is unestablished (§4.5).
+11. **Pixel-exact rules.** The horizontal edge rule (the vertical one is fixed by the plug-in's bucketing,
+    §2.13), colour interpolation and rounding, the texture modulation formula behind the 1.7/0.8 kd/ks
+    encodings, the 16-bit texel packing, how the card weighs a non-opaque layer's colour (as RAVE's default
+    premultiplied blend, or by its alpha), and which equal-depth layer wins — none is visible in the driver
+    (§2.13, quirk 11).
 12. **CSG exposure.** Which QuickDraw 3D calls compile to the F_csg truth table, how expressions beyond
     five operands are decomposed or rejected, and whether any shipping application ever exercised the
     evaluator on this card, are all unrecorded (§3.5).
@@ -800,6 +1089,10 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
 15. **The unshipped successor.** Whether the 1997 design (16×32 tiles, texel caches, 100 MHz) was intended
     as a Gotham replacement product, and how far silicon travelled before the project was cancelled, is
     documented only by its paper and patents [7] [14].
+16. **Object-record details.** Header bit 27, always set; how the card determines a record's length (most
+    likely from bits 25 and 23); whether it reads the unwritten tail of a Gouraud record; whether it
+    rewrites link words while rendering (the plug-in resets every object's links after a partial flush,
+    which would only matter if it did); and what the card does in cache-overflow mode (§2.10, §2.13).
 
 ## References
 
@@ -884,3 +1177,13 @@ generation 3Dfx Voodoo Graphics board, against which a single card is 2–4× sl
     documented for developers: the plug-in rendering architecture, transparent accelerator access
     ("no changes to your code are needed"), the interactive software renderer's performance envelope, and
     the rule that CSG support exists "only when a QuickDraw 3D-compatible accelerator is present".
+18. Apple Computer, Inc., *Apple QD3D HW Driver* (native driver `.GothamDriver`) and *Apple QD3D HW
+    Plug-In* — the 1.5.4 debug builds in the QuickDraw 3D 1.5.4 SDK, the 1.6 debug builds in the
+    QuickDraw 3D RAVE 1.6 DDK, and the 1.0.3 retail builds on the card's CD; PowerPC disassembly, with
+    function names from the builds' traceback tables (`DriverInitializeCmd`, `GrPCIDoIt_StartRender`,
+    `GmInterruptServiceRoutine`, `ZGrControlProgram_Build`, `ZGrDrawTriGouraud`, `ZGrDrawTriTexture`,
+    `ZGrDrawBitmap`, `ZgrDBDMAProgram_BuildScript`, `ZGrDBDMA_Engine`, `ZGrTextureLoad`,
+    `ZGiTexture_InitMapPageBase`, `ZGrEngineGestalt` and others).
+19. Apple Computer, Inc., *RaveEngineInfo* and *Sneak3View* — sample programs of the QuickDraw 3D 1.6 SDK
+    and the QuickDraw 3D RAVE 1.6 DDK: an engine lister that prints every registered RAVE engine's gestalt
+    answers, and a test harness that draws the same scenes through two engines side by side.

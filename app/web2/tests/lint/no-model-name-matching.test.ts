@@ -118,6 +118,7 @@ const CARD_IDS = [
   'voodoo2',
   'voodoo2_webgpu',
   'rage128',
+  'qd3d',
 ];
 const BUS_AND_SLOT = ['nubus', 'pci', 'scsi\\d*', 'ata\\d*', 'profile', 'floppy', 'builtin'];
 const ID = `(?:${[...MODEL_IDS, ...CARD_IDS, ...BUS_AND_SLOT].join('|')})`;

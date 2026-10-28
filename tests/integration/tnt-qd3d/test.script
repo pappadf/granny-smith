@@ -1,7 +1,6 @@
-# QuickDraw 3D Accelerator Card test rig — WORK IN PROGRESS.
+# QuickDraw 3D Accelerator Card (pci_card "qd3d") on a Power Macintosh 8500.
 #
-# The rig for bringing up the Apple QuickDraw 3D Accelerator Card (PCI
-# 106b:0009): a Power Macintosh 8500 (604, 64 MB) booting Mac OS 7.6 from
+# The rig: a pm8500 (604, 64 MB) booting Mac OS 7.6 from
 # system_7_6_170mb_24ac_qd3d.img, which adds to the plain 7.6 image:
 #
 #   System Folder:Extensions   QuickDraw 3D 1.6 (release): QuickDraw™ 3D,
@@ -17,30 +16,24 @@
 #                              Test Apps (3DMF Models, Gerbils! 1.0.2+ and
 #                              1.0.3, HAVOC Preview, TextureEyes).
 #
-# There is no card model yet, so this test skips by default.  Run it with
-#   make -C tests/integration test-tnt-qd3d TEST_VARS="QD3D_WIP=1"
+# Row map:
 #
-# Row map (QD3D_WIP=1):
+#   qd3d-boot        the card seated in slot A1: the image boots to the
+#                    Finder, and Apple's driver has found the card, set its
+#                    position register and built the object-cache free list.
+#   qd3d-rave-info   RaveEngineInfo lists the card's engine, "Apple PCI
+#                    Hardware", first, with 0x40000 texels of texture memory
+#                    (the revision-2 figure).
+#   qd3d-gerbils     Gerbils! 1.0.3 (Apple's acceptance test for the card)
+#                    renders through the card: frames keep completing, no
+#                    system error, and the title scene matches its golden.
+#   qd3d-texture     TextureEyes with its QD3D Logo texture: a static,
+#                    trilinearly filtered textured quad, golden-matched.
+#   qd3d-thousands   Gerbils at thousands of colours: the card's 16-bpp
+#                    (x1555) output path, and Control's 16-bpp DAC lookup.
 #
-#   qd3d-boot        the image boots to the Finder with every QD3D
-#                    extension loaded: BootDrive set, no system error.
-#   qd3d-gerbils     Gerbils! 1.0.3 (Apple's recommended card test) starts
-#                    and renders its title scene through QuickDraw 3D on
-#                    the software renderer.
-#   qd3d-rave-info   RaveEngineInfo lists the RAVE engines (today only the
-#                    software engine) in its RaveEngineInfo.out window.
-#   qd3d-card        MILESTONE: the machine seats the card (pci_card id
-#                    "qd3d" in catalog.pci_cards).  Red until the device
-#                    model exists.
-#
-# To do once the card model exists: boot with pci_card="qd3d", assert the
-# HW Driver matched (Name Registry node with the driver), that
-# RaveEngineInfo lists "Apple PCI Hardware", and match Gerbils frames
-# rendered by the card against the software renderer's.
-#
-# Screenshots of each row land in RESULTS_DIR (qd3d-*.png).  The QD3D 1.5.4
-# debug libraries crash Gerbils and RaveEngineInfo ("unimplemented trap"):
-# keep the 1.6 release set installed.
+# The rows share one boot: qd3d-boot checkpoints the open QD3D Lab window.
+# Run on its own with make -C tests/integration test-tnt-qd3d.
 
 include "../lib/mac.script"
 
@@ -52,23 +45,34 @@ def current_app_is(name) {
     return contains("${machine.memory.read_cstring(0x911, len($name))}", $name)
 }
 
-# Boot the rig (with PCI card `card` in the first socket, "" for none) and
-# wait for the Finder: the startup volume mounted and no system error.
-def qd3d_boot(card) {
-    machine.boot model="pm8500" ram=65536 rom="${$ROM}" pci_card="${$card}"
+# Back to the open QD3D Lab window (the qd3d-boot row's checkpoint).
+def to_lab() {
+    assert files.path_exists("${$lab}") "no QD3D Lab checkpoint: run the qd3d-boot row first"
+    machine.scsi.attach_hd "${$hd}" 0
+    checkpoint.load "${$lab}"
+}
+
+# The card must keep completing frames: no stuck interrupt, no watchdog.
+def frames_flow(what) {
+    let f0 = machine.pci.slot[1].card.renderer.frames
+    scheduler.run 100000000
+    assert machine.pci.slot[1].card.renderer.frames > $f0 "${$what}: the card stopped completing frames (${machine.pci.slot[1].card.renderer.frames})"
+}
+
+# ---- qd3d-boot --------------------------------------------------------------
+# Boot with the card in slot A1, dismiss the first-boot Energy Saver dialog,
+# open Macintosh HD (Cmd-O on the selected volume) and QD3D Lab.
+def row_qd3d_boot() {
+    machine.boot model="pm8500" ram=65536 rom="${$ROM}" pci_card="qd3d"
     machine.rtc.time = "2026-04-26T21:30:36"
     machine.scsi.attach_hd "${$hd}" 0
     wait_desktop(4000000000)
     assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not set (mount failed)"
     assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
-}
-
-# ---- qd3d-boot --------------------------------------------------------------
-# Boot, dismiss the first-boot Energy Saver dialog, open Macintosh HD
-# (Cmd-O on the selected volume) and QD3D Lab, then checkpoint there for
-# the app rows.
-def row_qd3d_boot() {
-    qd3d_boot("")
+    # The driver found the card: one card, index 0 ($F0 | 0 << 2 | 0), and
+    # the object cache's free list starts at $2000.
+    assert machine.pci.slot[1].card.renderer.position == 0xF0 "the driver never set the card's position register (${machine.pci.slot[1].card.renderer.position:x})"
+    assert machine.pci.slot[1].card.renderer.read(0x34) == 0x2000 "the driver never built the object-cache free list"
     machine.screen.save "${$RESULTS_DIR}/qd3d-boot.png"
     machine.adb.keyboard.press "Return"
     scheduler.run 60000000
@@ -78,20 +82,36 @@ def row_qd3d_boot() {
     wait_stable(400000000)
     double_click(358, 95)
     wait_stable(400000000)
-    machine.screen.save "${$RESULTS_DIR}/qd3d-lab.png"
     checkpoint.save "${$lab}"
 }
 
-# Back to the open QD3D Lab window (the qd3d-boot row's checkpoint).
-def to_lab() {
-    assert files.path_exists("${$lab}") "no QD3D Lab checkpoint: run the qd3d-boot row first"
-    machine.scsi.attach_hd "${$hd}" 0
-    checkpoint.load "${$lab}"
+# ---- qd3d-rave-info ---------------------------------------------------------
+# QD3D Lab:RAVE Tools:RaveEngineInfo writes its report to a
+# "RaveEngineInfo.out" window; drag its scroll thumb to the top, where the
+# engine list and the first engine's gestalt answers are.
+def row_qd3d_rave_info() {
+    to_lab()
+    double_click(231, 95)
+    wait_stable(400000000)
+    double_click(167, 95)
+    scheduler.run 300000000
+    assert current_app_is("RaveEngineInfo") "RaveEngineInfo is not the current application"
+    machine.adb.mouse.move 564 310 "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    run_ticks(10)
+    machine.adb.mouse.move 564 92 "global"
+    run_ticks(20)
+    machine.adb.mouse.click false
+    run_ticks(30)
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in RaveEngineInfo"
+    check_ex("goldens/qd3d-rave-info.png", 0, 500, 20, 640)
 }
 
 # ---- qd3d-gerbils -----------------------------------------------------------
-# QD3D Lab:Test Apps:Gerbils! 1.0.3:Gerbils!.  The title scene (a textured
-# rotating cube on a star field) is up well within 600M instructions.
+# QD3D Lab:Test Apps:Gerbils! 1.0.3:Gerbils!.  Its title scene (a textured
+# cube turning over a star field) is drawn by the card straight into
+# Control's VRAM through the output DMA.
 def row_qd3d_gerbils() {
     to_lab()
     double_click(39, 147)
@@ -100,28 +120,62 @@ def row_qd3d_gerbils() {
     wait_stable(400000000)
     double_click(39, 92)
     scheduler.run 600000000
-    machine.screen.save "${$RESULTS_DIR}/qd3d-gerbils.png"
     assert current_app_is("Gerbils!") "Gerbils! is not the current application"
     assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in Gerbils!"
+    assert machine.pci.slot[1].card.renderer.frames > 100 "Gerbils! did not render through the card (${machine.pci.slot[1].card.renderer.frames} frames)"
+    assert machine.pci.slot[1].card.renderer.objects > 100 "the card's last frame held ${machine.pci.slot[1].card.renderer.objects} objects, not the title scene"
+    check_ex("goldens/qd3d-gerbils.png", 0, 500, 20, 640)
+    frames_flow("Gerbils!")
 }
 
-# ---- qd3d-rave-info ---------------------------------------------------------
-# QD3D Lab:RAVE Tools:RaveEngineInfo writes its report to a
-# "RaveEngineInfo.out" window.
-def row_qd3d_rave_info() {
+# ---- qd3d-texture -----------------------------------------------------------
+# QD3D Lab:Test Apps:TextureEyes:TextureEyes, then Texture > Picture (Cmd-P)
+# applies the QD3D Logo to its square.  The scene is static, so the golden
+# pins the card's texture path: upload, page and level addressing, the
+# trilinear filter and the 5-bit-per-channel texel store.
+def row_qd3d_texture() {
     to_lab()
-    double_click(231, 95)
+    double_click(39, 147)
     wait_stable(400000000)
-    double_click(167, 95)
-    scheduler.run 300000000
-    machine.screen.save "${$RESULTS_DIR}/qd3d-rave-info.png"
-    assert current_app_is("RaveEngineInfo") "RaveEngineInfo is not the current application"
-    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in RaveEngineInfo"
+    double_click(167, 147)
+    wait_stable(400000000)
+    double_click(39, 92)
+    scheduler.run 600000000
+    assert current_app_is("TextureEyes") "TextureEyes is not the current application"
+    machine.adb.keyboard.down "Command"
+    machine.adb.keyboard.press "p"
+    machine.adb.keyboard.up "Command"
+    scheduler.run 600000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} in TextureEyes"
+    assert machine.pci.slot[1].card.renderer.read(0x80) != 0 "no texture map was loaded into the card"
+    check_ex("goldens/qd3d-texture.png", 0, 500, 20, 640)
 }
 
-# ---- qd3d-card (milestone) --------------------------------------------------
-def row_qd3d_card() {
-    assert contains("${catalog.pci_cards}", "qd3d") "no QuickDraw 3D Accelerator card model (pci_card \"qd3d\") yet"
+# ---- qd3d-thousands ---------------------------------------------------------
+# Switch the display to thousands of colours from the Control Strip's
+# monitor-depth module, then run Gerbils: the plug-in sets DMACONTROL's
+# 16-bpp bits and the card streams x1555 pixels.
+def row_qd3d_thousands() {
+    to_lab()
+    machine.adb.mouse.move 100 467 "global"
+    wait_cursor(20)
+    machine.adb.mouse.click true
+    run_ticks(30)
+    machine.adb.mouse.move 150 359 "global"
+    run_ticks(20)
+    machine.adb.mouse.click false
+    scheduler.run 400000000
+    assert machine.screen.depth == 16 "thousands of colours is 16 bpp (${machine.screen.depth})"
+    double_click(39, 147)
+    wait_stable(400000000)
+    double_click(295, 95)
+    wait_stable(400000000)
+    double_click(39, 92)
+    scheduler.run 600000000
+    assert current_app_is("Gerbils!") "Gerbils! is not the current application"
+    assert (machine.pci.slot[1].card.renderer.dma_control & 0x0C00) == 0x0C00 "the card is not producing 16-bpp output (DMACONTROL ${machine.pci.slot[1].card.renderer.dma_control:04x})"
+    check_ex("goldens/qd3d-thousands.png", 0, 500, 20, 640)
+    frames_flow("Gerbils! at thousands")
 }
 
 # ---- row dispatch -----------------------------------------------------------
@@ -129,23 +183,22 @@ def row_qd3d_card() {
 if !have_media($hd) {
     skip_test("tnt-qd3d (system_7_6_170mb_24ac_qd3d.img not fetched)")
 } else {
-    if try($QD3D_WIP, "0") != "1" {
-        skip_test("tnt-qd3d (work in progress: no QuickDraw 3D Accelerator card model yet; run with TEST_VARS=QD3D_WIP=1)")
-    } else {
-        if row_on("qd3d-boot") {
-            row_end("qd3d-boot", try(row_qd3d_boot(), "FAILED"))
-        }
-        if row_on("qd3d-gerbils") {
-            row_end("qd3d-gerbils", try(row_qd3d_gerbils(), "FAILED"))
-        }
-        if row_on("qd3d-rave-info") {
-            row_end("qd3d-rave-info", try(row_qd3d_rave_info(), "FAILED"))
-        }
-        if row_on("qd3d-card") {
-            row_end_milestone("qd3d-card", try(row_qd3d_card(), "FAILED"))
-        }
-        suite_done()
+    if row_on("qd3d-boot") {
+        row_end("qd3d-boot", try(row_qd3d_boot(), "FAILED"))
     }
+    if row_on("qd3d-rave-info") {
+        row_end("qd3d-rave-info", try(row_qd3d_rave_info(), "FAILED"))
+    }
+    if row_on("qd3d-gerbils") {
+        row_end("qd3d-gerbils", try(row_qd3d_gerbils(), "FAILED"))
+    }
+    if row_on("qd3d-texture") {
+        row_end("qd3d-texture", try(row_qd3d_texture(), "FAILED"))
+    }
+    if row_on("qd3d-thousands") {
+        row_end("qd3d-thousands", try(row_qd3d_thousands(), "FAILED"))
+    }
+    suite_done()
 }
 
 quit
