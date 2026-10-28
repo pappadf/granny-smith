@@ -551,12 +551,25 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     const marker = `gsdemoend${run}`;
     const patEnd = cells(7, marker);
     await call("scheduler.mode", [mode === "fast" ? "accelerated" : mode]);
-    await wake();
-    await call("machine.adb.keyboard.down", [0x32]);
-    await waitInstr(60e6);
-    await call("machine.adb.keyboard.up", [0x32]);
-    await waitInstr(1.5e9);
-    await consoleLine(`set nextdemo "echo ${marker}"`);
+    // The console, and the end marker typed into it: checked by its echo,
+    // since the menus can swallow the keys (the Return held past the CD key
+    // screen sometimes carries two menus deep, not one): Escape and again
+    const setLine = `set nextdemo "echo ${marker}"`;
+    const patSet = cells(7, `]\\${setLine}`);
+    for (let attempt = 1; ; attempt++) {
+      await wake();
+      await call("machine.adb.keyboard.down", [0x32]);
+      await waitInstr(60e6);
+      await call("machine.adb.keyboard.up", [0x32]);
+      await waitInstr(1.5e9);
+      await consoleLine(setLine);
+      if ((await find(patSet)).length) break;
+      log(`the console did not echo the set line (attempt ${attempt})`);
+      await shot(`console-miss-run${run}-${attempt}`);
+      expect(attempt, "the console takes the commands").toBeLessThan(3);
+      await press("escape");
+      await waitInstr(2e9);
+    }
     if (TIMEDEMO) await consoleLine("timedemo 1");
     await call("machine.adb.keyboard.type", ["demo four"]);
     await waitInstr(500e6);
