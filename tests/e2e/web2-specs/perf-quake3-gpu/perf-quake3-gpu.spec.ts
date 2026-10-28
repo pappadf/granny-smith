@@ -550,29 +550,31 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     run++;
     const marker = `gsdemoend${run}`;
     const patEnd = cells(7, marker);
-    await call("scheduler.mode", [mode === "fast" ? "accelerated" : mode]);
-    // The console, and the end marker typed into it: checked by its echo,
-    // since the menus can swallow the keys (the Return held past the CD key
-    // screen sometimes carries two menus deep, not one): Escape and again
+    // The console, the end marker and the command, typed in turbo: a key
+    // held for a count of instructions is a fixed guest time only at the
+    // authentic CPI.  After a switch to paced or fast the governor starts
+    // at its floor (0.25x), so the 60 M-instruction console key lasted about
+    // 0.9 s of guest time, past Mac OS's key-repeat delay: the repeat
+    // toggled the console shut again, and the typed line's Return chose
+    // menu items (Single Player, Choose Level).
+    await call("scheduler.mode", ["turbo"]);
     const setLine = `set nextdemo "echo ${marker}"`;
-    const patSet = cells(7, `]\\${setLine}`);
-    for (let attempt = 1; ; attempt++) {
-      await wake();
-      await call("machine.adb.keyboard.down", [0x32]);
-      await waitInstr(60e6);
-      await call("machine.adb.keyboard.up", [0x32]);
-      await waitInstr(1.5e9);
-      await consoleLine(setLine);
-      if ((await find(patSet)).length) break;
-      log(`the console did not echo the set line (attempt ${attempt})`);
-      await shot(`console-miss-run${run}-${attempt}`);
-      expect(attempt, "the console takes the commands").toBeLessThan(3);
-      await press("escape");
-      await waitInstr(2e9);
-    }
+    await wake();
+    await call("machine.adb.keyboard.down", [0x32]);
+    await waitInstr(60e6);
+    await call("machine.adb.keyboard.up", [0x32]);
+    await waitInstr(1.5e9);
+    await consoleLine(setLine);
+    const setEchoed = (await find(cells(7, `]\\${setLine}`))).length > 0;
+    if (!setEchoed) await shot(`console-miss-run${run}`);
+    expect(setEchoed, "the console took the set line").toBe(true);
     if (TIMEDEMO) await consoleLine("timedemo 1");
     await call("machine.adb.keyboard.type", ["demo four"]);
     await waitInstr(500e6);
+    // The run's pacing, and a moment for its governor to climb off its
+    // floor before the start
+    await call("scheduler.mode", [mode === "fast" ? "accelerated" : mode]);
+    await page.waitForTimeout(3000);
 
     // The start: paused, the counters, Return queued, resumed
     const echoesBefore = new Set(await find(PAT_ECHO));
