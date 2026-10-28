@@ -33,6 +33,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFileStreaming } from "../../helpers/web2-fs";
 import { gsCallInPage, gsEvalInPage } from "../../helpers/web2-eval";
+import { WorkerProfiler, summarize } from "./profile";
 
 const ENABLED = process.env.GS_Q3_GPU === "1";
 const ALLOW_SOFTWARE_GPU = process.env.GS_Q3_ALLOW_SOFTWARE_GPU === "1";
@@ -48,6 +49,31 @@ const RASTER = process.env.GS_Q3_RASTER ?? "webgpu";
 const TIMEDEMO = process.env.GS_Q3_TIMEDEMO === "1";
 const TIMEOUT_MIN = Number(process.env.GS_Q3_TIMEOUT_MIN ?? 90);
 const LABEL = process.env.GS_Q3_LABEL ?? "unlabeled";
+// A sweep of the governor's floor during each run (a measurement aid):
+// e.g. GS_Q3_SWEEP=0.25,0.5,0.75,1, GS_Q3_SWEEP_S seconds at each
+const SWEEP = (process.env.GS_Q3_SWEEP ?? "")
+  .split(",")
+  .filter(Boolean)
+  .map(Number);
+const SWEEP_S = Number(process.env.GS_Q3_SWEEP_S ?? 8);
+// GS_Q3_PROFILE=N: CPU profiles of the page's workers for N seconds of each
+// run, GS_Q3_PROFILE_AT seconds in (function names need a module linked
+// with EXTRA_LDFLAGS=--profiling-funcs)
+const PROFILE_S = Number(process.env.GS_Q3_PROFILE ?? 0);
+const PROFILE_AT = Number(process.env.GS_Q3_PROFILE_AT ?? 25);
+const CDP_PORT = 9333;
+// GS_Q3_SET: core settings applied before the timed runs, an experiment's
+// knobs (e.g. "jit.budget=100,jit.threshold=100000")
+const SETTINGS = (process.env.GS_Q3_SET ?? "")
+  .split(",")
+  .filter(Boolean)
+  .map((s) => s.split("=") as [string, string]);
+// GS_Q3_AFTER: calls logged after each run, "path:arg;path:arg" (e.g.
+// "machine.cpu.mmu.translate:0x00afe2c0"), a probe of what the run left
+const AFTER = (process.env.GS_Q3_AFTER ?? "")
+  .split(";")
+  .filter(Boolean)
+  .map((s) => s.split(":") as [string, string]);
 
 const DATA = path.resolve(__dirname, "../../../data");
 const ROM = path.join(DATA, "roms", "pmg3dt-pmg3mt-78f57389.rom");
@@ -79,7 +105,13 @@ const PAT_MISSING = cells(3, "could not find");
 // Real GPU only (unless overridden): no SwiftShader flags here, unlike the
 // suite's default launch options.
 test.use({
-  launchOptions: { args: ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist"] },
+  launchOptions: {
+    args: [
+      "--enable-unsafe-webgpu",
+      "--ignore-gpu-blocklist",
+      ...(PROFILE_S ? [`--remote-debugging-port=${CDP_PORT}`] : []),
+    ],
+  },
   headless: process.env.GS_Q3_HEADED !== "1",
   ...(process.env.GS_Q3_CHANNEL ? { channel: process.env.GS_Q3_CHANNEL } : {}),
 });
@@ -101,6 +133,8 @@ type Sample = {
 const num = (v: unknown): number => {
   if (typeof v === "number") return v;
   if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  // A hex-flagged unsigned (an address from debug.find.*) is a JSON string
+  if (typeof v === "string" && /^0x[0-9a-f]+$/i.test(v)) return Number(v);
   if (v && typeof v === "object" && "value" in (v as object))
     return num((v as { value: unknown }).value);
   return NaN;
@@ -151,6 +185,23 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     page.once("load", () => log(`heartbeat watch lifted to 600 s: ${patched}`));
   }
   await gotoWeb2(page);
+  // The core's perf lines (log.perf_every, on during each timed run), from
+  // the console's print lines: the terminal keeps only the last few
+  let perfFile = "";
+  const printLog = path.join(OUT, "print.log"); // every console line
+  fs.writeFileSync(printLog, "");
+  await page.exposeFunction("__q3PrintLine", (line: string) => {
+    fs.appendFileSync(printLog, line + "\n");
+    if (perfFile && line.includes("perf:"))
+      fs.appendFileSync(perfFile, line + "\n");
+  });
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __gsUiForTests?: { tapPrint(fn: (l: string) => void): void };
+      __q3PrintLine(l: string): void;
+    };
+    w.__gsUiForTests?.tapPrint((l) => w.__q3PrintLine(l));
+  });
 
   // The adapter: a real GPU, or skip
   const adapter = await page.evaluate(async () => {
@@ -217,6 +268,11 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   });
   await ev("scheduler.stop");
   await ev("checkpoint.auto", [false]);
+  // No background checkpoint (the periodic save, the tab-hidden save) in
+  // the timed runs
+  const autoCheckpoint = await ev("checkpoint.auto");
+  log(`checkpoint.auto=${JSON.stringify(autoCheckpoint)}`);
+  expect(autoCheckpoint, "background checkpointing is off").toBe(false);
   const raster = await ev("machine.pci.slot[1].card.regs.raster");
   log(`raster=${JSON.stringify(raster)}`);
   expect(raster, `the Rage 128 draws with raster ${RASTER}`).toBe(RASTER);
@@ -267,7 +323,6 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     await waitInstr(60e6);
     await call("machine.adb.keyboard.up", [k]);
     await call("machine.adb.keyboard.up", ["Command"]);
-    await waitInstr(2e9);
   };
   const peekBytes = async (addr: number, len: number): Promise<Buffer> => {
     const r = await ev("machine.memory.peek.bytes", [addr, len]);
@@ -287,13 +342,6 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     await press("shift");
     await waitInstr(300e6);
   };
-  const open = async (name: string, run: number) => {
-    await wake();
-    await call("machine.adb.keyboard.type", [name]);
-    await waitInstr(1.5e9);
-    await cmdKey("o");
-    await waitInstr(run);
-  };
   // The web app's terminal text (the emulator's own output)
   const saveTerminal = async (name: string) =>
     fs.writeFileSync(
@@ -307,27 +355,125 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
   const shot = (name: string) =>
     page.screenshot({ path: path.join(OUT, `${name}.png`) });
 
+  // The front window's title: WindowList (a low-memory global) points at
+  // the front WindowRecord, whose titleHandle (offset 134) is a handle to a
+  // Str255
+  const frontWindow = async (): Promise<string> => {
+    const u32 = async (a: number) => (await peekBytes(a, 4)).readUInt32BE(0);
+    const w = await u32(0x9d6);
+    if (!w) return "";
+    const h = await u32(w + 134);
+    if (!h) return "";
+    const p = await u32(h);
+    if (!p) return "";
+    const b = await peekBytes(p, 64);
+    return b.subarray(1, 1 + Math.min(b[0], 63)).toString("latin1");
+  };
+  const flips = async () =>
+    num(await ev("machine.pci.slot[1].card.regs.flips"));
+  // Run until `cond` holds, polling while the scheduler runs, for at most
+  // maxS host seconds: a progress line every 15 s, and on a timeout a
+  // screenshot and the terminal before the failure, so a stuck step costs
+  // its limit and no more
+  const waitUntil = async (
+    what: string,
+    cond: () => Promise<boolean>,
+    maxS: number,
+  ) => {
+    const t0 = Date.now();
+    const i0 = await instr();
+    let next = t0 + 15_000;
+    for (;;) {
+      if (await cond()) {
+        log(
+          `${what}: after ${((Date.now() - t0) / 1000).toFixed(1)} s, ${((await instr()) - i0) / 1e9} G instructions`,
+        );
+        return;
+      }
+      const a = num(await ev("log.alerts"));
+      if (a > alerts) {
+        alerts = a;
+        log(`alert ${a} (terminal-alert${a}.txt)`);
+        await saveTerminal(`terminal-alert${a}`);
+      }
+      const now = Date.now();
+      if (now - t0 > maxS * 1000) {
+        const tag = what.replace(/\W+/g, "-");
+        await shot(`timeout-${tag}`);
+        await saveTerminal(`terminal-timeout-${tag}`);
+        throw new Error(
+          `${what}: not within ${maxS} s (front app ${JSON.stringify(await curApp())}, window ${JSON.stringify(await frontWindow())}, flips ${await flips()})`,
+        );
+      }
+      if (now >= next) {
+        next += 15_000;
+        const di = (await instr()) - i0;
+        log(
+          `  waiting for ${what}: ${Math.round((now - t0) / 1000)} s, ${(di / 1e9).toFixed(1)} G instructions (${Math.round(di / (now - t0) / 1e3)} MIPS), app ${JSON.stringify(await curApp())}, window ${JSON.stringify(await frontWindow())}, flips ${await flips()}`,
+        );
+      }
+      await page.waitForTimeout(250);
+    }
+  };
+  // Select a Finder item by name and open it, until `done` holds; once
+  // more if it did not take (a key lost to a waking display, an alert)
+  const openUntil = async (
+    name: string,
+    what: string,
+    done: () => Promise<boolean>,
+    maxS: number,
+  ) => {
+    const attempt = async () => {
+      await wake();
+      await call("machine.adb.keyboard.type", [name]);
+      await waitInstr(500e6);
+      await cmdKey("o");
+      await waitUntil(what, done, maxS);
+    };
+    try {
+      await attempt();
+    } catch (e) {
+      log(`${(e as Error).message}: opening ${name} again`);
+      await press("return"); // an alert takes the keys: dismiss it
+      await waitInstr(1e9);
+      await attempt();
+    }
+    // The new window's contents drawn before the next name is typed
+    await waitInstr(500e6);
+  };
+
   const tBoot = Date.now();
-  await waitInstr(30e9);
+  await waitUntil("the Finder", async () => (await curApp()) === "Finder", 300);
+  // The desktop's icons (the CD's among them) once the Finder is up
+  await waitInstr(3e9);
   log(`desktop after ${Math.round((Date.now() - tBoot) / 1000)} s`);
   await shot("1-desktop");
-  await open("Q3A", 6e9);
-  await open("Quake3", 6e9);
-  await open("Quake3", 4e9);
-  if ((await curApp()) !== "Quake3") {
-    log(
-      `front app ${JSON.stringify(await curApp())}, not Quake3: opening again`,
-    );
-    await shot("2-finder-retry");
-    await saveTerminal("terminal-finder-retry");
-    // An alert ("could not be opened ...") takes the keys: dismiss it
-    await press("return");
-    await waitInstr(1e9);
-    await open("Quake3", 4e9);
-  }
-  if ((await curApp()) !== "Quake3") await saveTerminal("terminal-no-quake3");
-  expect(await curApp(), "Quake3 is the front application").toBe("Quake3");
-  await waitInstr(28e9);
+  await openUntil(
+    "Q3A",
+    "the CD's window",
+    async () => (await frontWindow()) === "Q3A",
+    60,
+  );
+  await openUntil(
+    "Quake3",
+    "the Quake3 folder's window",
+    async () => (await frontWindow()) === "Quake3",
+    60,
+  );
+  const flips0 = await flips();
+  await openUntil(
+    "Quake3",
+    "Quake3 in front",
+    async () => (await curApp()) === "Quake3",
+    90,
+  );
+  // Quake draws its CD key screen through the card: its page flips start
+  await waitUntil(
+    "Quake drawing",
+    async () => (await flips()) - flips0 >= 10,
+    180,
+  );
+  await waitInstr(2e9);
   await shot("2-cdkey");
   await wake();
   await press("tab");
@@ -393,6 +539,11 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     };
   };
 
+  for (const [k, v] of SETTINGS) {
+    await ev(k, [/^-?[\d.]+$/.test(v) ? Number(v) : v]);
+    log(`set ${k}=${JSON.stringify(await ev(k))}`);
+  }
+  const cpi = num(await ev("scheduler.cpi"));
   const results: Record<string, unknown>[] = [];
   let run = 0;
   for (const mode of MODES) {
@@ -414,14 +565,20 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     const echoesBefore = new Set(await find(PAT_ECHO));
     const fragBefore = new Set(await find(PAT_FRAGLIMIT));
     await call("scheduler.stop");
+    perfFile = path.join(OUT, `perf-run${run}-${mode}.log`);
+    fs.writeFileSync(perfFile, "");
+    await call("log.perf_every", [1]);
     const s0 = await sample();
     await press("return");
     await call("scheduler.run", []);
 
     // The console: the new echo of the command
+    // (a search of all RAM: once a second, so the search does not take the
+    // emulator thread's time from the run it measures; a slowed guest can
+    // take many seconds to echo)
     let echo = -1;
-    for (let i = 0; i < 100 && echo < 0; i++) {
-      await page.waitForTimeout(100);
+    for (let i = 0; i < 60 && echo < 0; i++) {
+      await page.waitForTimeout(1000);
       echo = (await find(PAT_ECHO)).find((a) => !echoesBefore.has(a)) ?? -1;
     }
     expect(echo, "the console echoes `demo four`").toBeGreaterThan(0);
@@ -438,8 +595,43 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     };
     const deadline = Date.now() + TIMEOUT_MIN * 60_000;
     let fragAt = 0;
+    // GS_Q3_SWEEP: the governor's floor stepped through these speeds,
+    // SWEEP_S seconds each, so the perf lines show a frame-unit's cost at
+    // each (the governor does not climb off a floor its projection says
+    // is full)
+    const tSweep = Date.now();
+    let sweepAt = -1;
+    let profiling: Promise<void> | null = null;
     while (Date.now() < deadline) {
       await page.waitForTimeout(POLL_MS);
+      if (PROFILE_S && !profiling && Date.now() - tSweep >= PROFILE_AT * 1000) {
+        log(`profiling the workers for ${PROFILE_S} s`);
+        profiling = (async () => {
+          const prof = await WorkerProfiler.connect(CDP_PORT, new URL(page.url()).host);
+          await new Promise((r) => setTimeout(r, 500)); // the auto-attaches land
+          const profiles = await prof.profile(PROFILE_S * 1000);
+          prof.close();
+          let k = 0;
+          for (const [name, p] of profiles) {
+            k++;
+            const { lines, busyMs } = summarize(p);
+            const base = path.join(OUT, `profile-run${run}-${mode}-w${k}`);
+            fs.writeFileSync(`${base}.cpuprofile`, JSON.stringify(p));
+            fs.writeFileSync(`${base}.txt`, [name, ...lines].join("\n") + "\n");
+            log(`profile w${k} busy ${busyMs.toFixed(0)} ms: ${name}`);
+          }
+        })().catch((e) => log(`profiling failed: ${(e as Error).message}`));
+      }
+      if (SWEEP.length) {
+        const k = Math.floor((Date.now() - tSweep) / (SWEEP_S * 1000));
+        if (k !== sweepAt && k <= SWEEP.length) {
+          sweepAt = k;
+          const floor = k < SWEEP.length ? SWEEP[k] : 0.25;
+          await ev("scheduler.min_speed", [floor]);
+          log(`sweep: min_speed ${floor}`);
+          if (perfFile) fs.appendFileSync(perfFile, `sweep: min_speed ${floor}\n`);
+        }
+      }
       if (
         !fragAt &&
         (await find(PAT_FRAGLIMIT, lo, hi)).some((a) => !fragBefore.has(a))
@@ -448,7 +640,17 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       if (fragAt && (await ended())) break;
     }
     await call("scheduler.stop");
+    if (profiling) await profiling;
     const s1 = await sample();
+    await call("log.perf_every", [0]);
+    perfFile = "";
+    for (const [k, a] of AFTER)
+      log(`after: ${k}(${a}) = ${JSON.stringify(await ev(k, a ? [Number(a)] : [])).slice(0, 400)}`);
+    // jit.trace=2 collected the exit histogram over the run: print it
+    if (SETTINGS.some(([k, v]) => k === "jit.trace" && v === "2")) {
+      await ev("jit.trace", [3]);
+      await ev("jit.trace", [2]);
+    }
     expect(fragAt, "the demo reached its fraglimit").toBeGreaterThan(0);
     expect(await ended(), "Quake ran nextdemo at the demo's end").toBe(true);
 
@@ -483,6 +685,10 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
       guest_s: +guestS.toFixed(3),
       guest_ticks_s: +((s1.ticks - s0.ticks) / 60).toFixed(3),
       speed_x: +(guestS / hostS).toFixed(3),
+      // The guest CPU against the original's: instructions at the
+      // authentic CPI over the cycles that passed (the governor's average
+      // multiplier in paced and accelerated, 1 in turbo)
+      cpu_x: +((di * cpi) / (s1.cycles - s0.cycles)).toFixed(3),
       instructions: di,
       mips_guest: +(di / guestS / 1e6).toFixed(1),
       mips_host: +(di / hostS / 1e6).toFixed(1),
@@ -519,9 +725,11 @@ test("Quake III demo four on the host GPU, timed", async ({ page }) => {
     );
     expect(missing, "every file the demo loads is on the CD").toBe(0);
     expect(frames, "Quake drew frames").toBeGreaterThan(500);
-    // Back to the main menu for the next run
-    await call("scheduler.run", []);
-    await waitInstr(2e9);
+    // Back to the main menu for the next run, if there is one
+    if (run < MODES.length) {
+      await call("scheduler.run", []);
+      await waitInstr(2e9);
+    }
   }
 
   fs.writeFileSync(

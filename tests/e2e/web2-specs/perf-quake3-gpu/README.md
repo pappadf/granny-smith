@@ -75,6 +75,10 @@ The web server re-runs `make ui2` (a no-op when it is current) and serves
 | `GS_Q3_LABEL` | `unlabeled` | A label carried into the results (machine, commit, setting) |
 | `GS_Q3_TIMEOUT_MIN` | `90` | The test's time limit |
 | `GS_Q3_ALLOW_SOFTWARE_GPU` | — | `1`: run on SwiftShader anyway (checks the flow, not the GPU) |
+| `GS_Q3_SET` | — | Core settings applied before the timed runs, `path=value,...` (e.g. `jit.budget=100`; `jit.trace=2` also prints the JIT's exit histogram after each run) |
+| `GS_Q3_AFTER` | — | Calls logged after each run, `path:arg;...` (e.g. `machine.cpu.mmu.translate:0x00afe2c0`) |
+| `GS_Q3_SWEEP`, `GS_Q3_SWEEP_S` | —, `8` | The governor's floor (`scheduler.min_speed`) stepped through these speeds during each run, this many seconds each: a frame-unit's cost at each speed, in the perf log |
+| `GS_Q3_PROFILE`, `GS_Q3_PROFILE_AT` | —, `25` | CPU profiles of the page's workers for this many seconds of each run, starting this many seconds in (over the browser's remote-debugging port; link with `EXTRA_LDFLAGS=--profiling-funcs` for names) |
 | `GS_Q3_KEEP_WATCHDOG` | — | `1`: keep the page's 3 s heartbeat watch (by default the spec lifts it to 600 s, so a stall is ridden out, not fatal) |
 
 **First, confirm the GPU.**  The first `Q3GPU` line names the adapter:
@@ -85,7 +89,9 @@ Q3GPU adapter {"vendor":"apple","architecture":"metal-3",...}
 
 `apple` is the real GPU.  If the test skips with "no hardware WebGPU
 adapter", run again with `GS_Q3_HEADED=1`, then with
-`GS_Q3_CHANNEL=chrome`.
+`GS_Q3_CHANNEL=chrome`.  On an M1 under macOS 26 Playwright's bundled
+headless shell got SwiftShader every time, and the installed Google
+Chrome (`GS_Q3_CHANNEL=chrome`), headless, the Apple GPU: start there.
 
 ## How it works
 
@@ -93,8 +99,13 @@ adapter", run again with `GS_Q3_HEADED=1`, then with
    and stages the disk and the CD into OPFS.
 2. Boots the G3 (256 MB, the Rage 128 with `raster=webgpu`, 13" monitor on
    the card), turns on the chosen CPU engine, attaches the disk (SCSI 0)
-   and the CD (SCSI 3), and runs in turbo.  Waits are counted in guest
-   instructions, not seconds.
+   and the CD (SCSI 3), and runs in turbo.  Each step waits for what it
+   is for -- the Finder in front (`CurApName`), the CD's and the folder's
+   window in front (the front window's title, through `WindowList`),
+   Quake3 in front, the card's page flips starting -- with a limit in
+   host seconds, a progress line every 15 s, and a screenshot and the
+   terminal on a timeout; the short settles between keys are counted in
+   guest instructions.
 3. In the Finder, by typing names and Command-O: the CD `Q3A`, its folder
    `Quake3`, the application `Quake3`.  The CD key screen needs no key:
    Tab to ACCEPT, hold Return (Quake reads the mouse as deltas, so clicks
@@ -137,7 +148,8 @@ entry to `test-results/perf-quake3-gpu/perf-quake3-gpu.json`:
 | `node_wall_s` | The same, by the test's own clock (a cross-check) |
 | `guest_s` | Emulated time: guest CPU cycles over the clock (267.28 MHz) |
 | `guest_ticks_s` | Emulated time by Mac OS's 60 Hz Ticks (a cross-check) |
-| `speed_x` | `guest_s / host_wall_s`: 1.0 = real time |
+| `speed_x` | `guest_s / host_wall_s`: 1.0 = real time (paced and accelerated hold it there by design: read `cpu_x`) |
+| `cpu_x` | The guest CPU against the original: instructions at the authentic CPI over the cycles that passed -- the governor's average multiplier in paced and accelerated (`fast`), 1 in turbo |
 | `instructions`, `mips_guest`, `mips_host` | PowerPC instructions retired; per guest second (≈ 267 for this G3) and per host second |
 | `jit_pct` | Share of instructions that ran translated |
 | `frames`, `fps_guest`, `fps_host` | Frames Quake drew (the card's page flips) per guest second (what the game "sees") and per host second (what you see) |
@@ -169,6 +181,12 @@ through timing; the host-side ones are the measurement.
 `tests/e2e/test-results/perf-quake3-gpu/`:
 
 - `perf-quake3-gpu.json` — every run's numbers;
+- `perf-run<n>-<mode>.log` — the core's perf lines (`log.perf_every = 1`)
+  over the run: speed and governor rung, the host loop's phases, the
+  JIT's counters, GPU waits;
+- `print.log` — every line the core printed (the terminal keeps only the
+  last few);
+- `profile-run<n>-<mode>-w<k>.{cpuprofile,txt}` — with `GS_Q3_PROFILE`;
 - `console-run<n>-<mode>.txt` — Quake's console text around the run;
 - `1-desktop.png`, `2-cdkey.png` (and `2-finder-retry.png` if the first open missed), `3-menu.png`, `4-end-run<n>-<mode>.png`;
 - `browser-console.log` — the page's console (the GPU worker's messages),
