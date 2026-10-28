@@ -73,7 +73,7 @@ whose every file `rom-catalog` requires recognised.
 
 These are the workhorses: full installs that boot on any supported
 machine, so a test can pick its host freely. Naming grammar:
-`system_<ver>_<size>_<trait>[_<trait>…].img`.
+`system_<ver>_<size>_<trait>[_<trait>…].img` (`.dmg` when stored as a UDIF).
 
 | File | Contents |
 |---|---|
@@ -82,7 +82,7 @@ machine, so a test can pick its host freely. Naming grammar:
 | `system_7_1_20mb_24ac_cd_32bit_gc.img` | as above plus 8•24 GC support |
 | `system_7_5_0_77mb_mode32_24ac.img` | System 7.5.0, 77 MB, MODE32 + 24AC drivers |
 | `system_7_6_170mb_24ac.img` | Mac OS 7.6, 170 MB HD160SC, minimum system + 24AC drivers |
-| `system_7_6_170mb_24ac_qd3d.img` | as above plus QuickDraw 3D 1.6 and the QuickDraw 3D Accelerator Card's driver and RAVE plug-in; a `QD3D Lab` folder holds alternate QD3D builds, MacsBug, RAVE tools and test apps (`tnt-qd3d`) |
+| `system_7_6_170mb_24ac_qd3d.dmg` | a UDIF (`files.convert`), opened as-is: as above plus QuickDraw 3D 1.6 and the QuickDraw 3D Accelerator Card's driver and RAVE plug-in; a `QD3D Lab` folder holds alternate QD3D builds, MacsBug, RAVE tools and test apps (`tnt-qd3d`) |
 | `system_7_1_77mb_av.img` | System 7.1 + System Enabler 088, 77 MB, full AV install (A•ROSE, PlainTalk, QuickTime) on built-in CIVIC video |
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,

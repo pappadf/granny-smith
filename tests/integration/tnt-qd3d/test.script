@@ -1,7 +1,7 @@
 # QuickDraw 3D Accelerator Card (pci_card "qd3d") on a Power Macintosh 8500.
 #
 # The rig: a pm8500 (604, 64 MB) booting Mac OS 7.6 from
-# system_7_6_170mb_24ac_qd3d.img, which adds to the plain 7.6 image:
+# system_7_6_170mb_24ac_qd3d.dmg, which adds to the plain 7.6 image:
 #
 #   System Folder:Extensions   QuickDraw 3D 1.6 (release): QuickDraw™ 3D,
 #                              RAVE, IR, Viewer, QD3DCustomElements, and the
@@ -47,7 +47,7 @@
 
 include "../lib/mac.script"
 
-let hd = "../../data/systems/system_7_6_170mb_24ac_qd3d.img"
+let hd = "../../data/systems/system_7_6_170mb_24ac_qd3d.dmg"
 let lab = "${$RESULTS_DIR}/qd3d-lab.gscp"
 
 # Low-memory CurApName ($910, a Pascal string) holds `name`.
@@ -394,7 +394,7 @@ if row_on("qd3d-device") {
     row_end("qd3d-device", try(row_qd3d_device(), "FAILED"))
 }
 if !have_media($hd) {
-    echo "skip: the image rows (system_7_6_170mb_24ac_qd3d.img not fetched)"
+    echo "skip: the image rows (system_7_6_170mb_24ac_qd3d.dmg not fetched)"
 } else {
     if row_on("qd3d-boot") {
         row_end("qd3d-boot", try(row_qd3d_boot(), "FAILED"))
