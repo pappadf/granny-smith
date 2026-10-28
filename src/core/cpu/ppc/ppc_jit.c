@@ -44,6 +44,7 @@
 #include "ppc_pd_ids.h"
 #include "ppc_softfp.h"
 
+#include "breadcrumb.h"
 #include "memory.h"
 #include "object.h"
 #include "predecode.h"
@@ -3847,8 +3848,29 @@ static void skip_word(uint32_t pc, uint32_t msr) {
 // Counters (the `jit` node)
 static struct {
     uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns, lookups, deferred;
+    uint64_t async_issued, async_landed, async_dropped; // jit.async compiles
     double compile_ms;
 } g_st;
+
+void ppc_jit_perf(ppc_jit_perf_t *out) {
+    *out = (ppc_jit_perf_t){.on = g_ppc_jit_on,
+                            .async = g_async != 0,
+                            .budget_pct = g_budget_pct,
+                            .compiles = g_st.compiles,
+                            .functions = g_st.functions,
+                            .bytes = g_st.bytes,
+                            .calls = g_st.calls,
+                            .deopts = g_st.deopts,
+                            .block_invals = g_st.block_invals,
+                            .regions = g_st.regions,
+                            .insns = g_st.insns,
+                            .lookups = g_st.lookups,
+                            .deferred = g_st.deferred,
+                            .async_issued = g_st.async_issued,
+                            .async_landed = g_st.async_landed,
+                            .async_dropped = g_st.async_dropped,
+                            .compile_ms = g_st.compile_ms};
+}
 
 void ppc_jit_status(ppc_jit_status_t *out) {
     *out = (ppc_jit_status_t){.on = g_ppc_jit_on,
@@ -4005,21 +4027,27 @@ static void pending_add(uint32_t token, jit_region_t *R, uint32_t ci, uint32_t m
 EMSCRIPTEN_KEEPALIVE void ppc_jit_ready(uint32_t token);
 void ppc_jit_ready(uint32_t token) {
     uint32_t i = token % JIT_PENDING;
+    crumb_set(CRUMB_JIT_PENDING, (uint32_t)(g_st.async_issued - g_st.async_landed - g_st.async_dropped - 1));
     if (g_pending[i].token != token) {
+        g_st.async_dropped++;
         jit_drop_async(token);
         return;
     }
     g_pending[i].token = 0;
     jit_chunk_t *ch = &g_pending[i].R->chunk[g_pending[i].ci];
     if (ch->pending != token) {
+        g_st.async_dropped++;
         jit_drop_async(token);
         return;
     }
+    crumb_phase_t outer = crumb_enter(CRUMB_JIT_INSTALL);
     double t0 = emscripten_get_now();
     ch->pending = 0;
     ch->fn = install_fn(token, g_pending[i].msr);
     g_st.compile_ms += emscripten_get_now() - t0;
+    g_st.async_landed++;
     memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip); // its entries are open now
+    crumb_leave(outer);
 }
 
 static double g_t_start; // when translation began (the governor's clock)
@@ -4401,6 +4429,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         if (g_async) {
             ch->pending = ++g_token ? g_token : ++g_token;
             pending_add(ch->pending, R, ci, p->msr);
+            g_st.async_issued++;
+            crumb_set(CRUMB_JIT_PENDING, (uint32_t)(g_st.async_issued - g_st.async_landed - g_st.async_dropped));
             jit_compile_async(g_buf, g_len, ch->pending);
         } else {
             ch->fn = install_fn(0, p->msr);
@@ -5224,6 +5254,9 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
 void ppc_jit_reset(void) {}
 void ppc_jit_status(ppc_jit_status_t *out) {
     *out = (ppc_jit_status_t){0};
+}
+void ppc_jit_perf(ppc_jit_perf_t *out) {
+    *out = (ppc_jit_perf_t){0};
 }
 
 #endif // __EMSCRIPTEN__

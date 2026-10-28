@@ -120,11 +120,24 @@ export interface RequestOptions {
   onProgress?: ProgressListener;
 }
 
+// What a request was, for the diagnostics: an eval's path, else its kind
+const utf8d = new TextDecoder();
+function requestLabel(kind: number, texts: Uint8Array[]): string {
+  if (kind === REQ_EVAL && texts[0]) return utf8d.decode(texts[0]) || '(root)';
+  if (kind === REQ_SCRIPT) return 'script';
+  if (kind === REQ_CANCEL) return 'cancel';
+  if (kind === REQ_MODE_STOP) return 'mode-stop';
+  if (kind === REQ_ACK_BUF) return 'ack-buffer';
+  return `kind ${kind}`;
+}
+
 interface Pending {
   resolve(r: MailboxResult): void;
   fail(why: MailboxFailure): void;
   timer: ReturnType<typeof setTimeout> | null;
   progress?: ProgressListener;
+  path: string; // what was asked (the diagnostics list it)
+  t0: number; // performance.now() when it was posted
 }
 
 // The core's heap, fresh each time: under ALLOW_MEMORY_GROWTH the buffer a
@@ -228,6 +241,31 @@ export class Mailbox {
 
   inFlight(): number {
     return this.pending.size;
+  }
+
+  // The requests in flight, oldest first (the diagnostics dump)
+  inFlightList(): Array<{ id: number; path: string; ageMs: number }> {
+    const now = performance.now();
+    return [...this.pending.entries()]
+      .map(([id, p]) => ({ id, path: p.path, ageMs: now - p.t0 }))
+      .sort((a, b) => b.ageMs - a.ageMs);
+  }
+
+  // Raw control words, for the diagnostics dump: where the rings stand
+  ringWords(): {
+    reqHead: number;
+    reqTail: number;
+    evtHead: number;
+    evtTail: number;
+    readerAt: number;
+  } {
+    return {
+      reqHead: Atomics.load(this.ctrl, C_REQ_HEAD) >>> 0,
+      reqTail: Atomics.load(this.ctrl, C_REQ_TAIL) >>> 0,
+      evtHead: Atomics.load(this.ctrl, C_EVT_HEAD) >>> 0,
+      evtTail: Atomics.load(this.ctrl, C_EVT_TAIL) >>> 0,
+      readerAt: this.rd >>> 0,
+    };
   }
 
   // Called once when the mailbox is marked LOST (by the core, or here on a
@@ -350,6 +388,8 @@ export class Mailbox {
         fail: (why) => reject(why),
         timer: null,
         progress,
+        path: requestLabel(kind, texts),
+        t0: performance.now(),
       };
       if (deadlineMs > 0) {
         p.timer = setTimeout(() => {

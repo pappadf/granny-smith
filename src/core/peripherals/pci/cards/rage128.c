@@ -1378,7 +1378,7 @@ static void r128_watch_report(void *ctx, char *buf, size_t size) {
     r->diag.since_ms = now;
     r->diag.ms3d = r->diag.ms2d = r->diag.ms_scan = 0;
     if (r->gpu && k > 0 && (size_t)k < size) {
-        char stats[400];
+        char stats[1024];
         snprintf(buf + k, size - (size_t)k, "; gpu %s", r128_gpu_stats(r->gpu, stats, sizeof stats));
     }
     r->diag.prims3d = r->prims3d;
