@@ -170,6 +170,7 @@ typedef struct pd_stats {
     uint64_t decodes; // entries decoded
     uint64_t invalidations; // invalidate calls that reset at least one entry
     uint64_t demotions; // blocks released for thrashing
+    uint64_t data_releases; // PowerPC blocks released at a store: stores, and nothing retired, in the window
     uint64_t elided; // entries retargeted to a no-flags twin
     uint64_t realiases; // blocks re-decoded because the same host page ran at another guest address
     uint64_t generic_steps; // instructions run through the generic tier (uncached, demoted, PD_GENERIC)

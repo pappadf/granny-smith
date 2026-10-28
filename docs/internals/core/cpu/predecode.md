@@ -1196,6 +1196,18 @@ this (`pd_held` in the 68K loop, `held_lo` in the PowerPC loop) and stay
 generic until the PC leaves the page, instead of asking the pool on every
 instruction.
 
+**A PowerPC page nothing runs from.**  A page that takes more than
+`thrash_limit` stores in the window and retired no instruction in it is
+released at the store itself (`data_releases`), when the executor is not
+running from it: no hold, and the next execution there decodes it afresh.
+It is data beside a stale decode — memory that once held code, reused for
+data — and such a page never reaches the lookup that acts on `thrashed`,
+so before this its mark sent every store through the coherence hooks for
+good: on Quake III's demo, 487 M stores, nearly all into a dozen such
+pages, from translated code.  The DR cache does not qualify while it runs
+(its pages retire instructions); a page released mid-burst costs a
+re-decode the burst's invalidations would have forced anyway.
+
 Defaults: `thrash_limit = 32`, `thrash_window = 4096` lookups,
 `thrash_ratio = 64`, `thrash_ratio_ppc = 0`, `demote_hold = 65536` lookups.
 `predecode_set_thrash_ratio(0)` sets both ratios to 0, which disables the
@@ -1283,7 +1295,7 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 | `predecode.demote_hold` | RW | base hold, in pool lookups, of a demoted page (65536; doubles per repeat demotion) |
 | `predecode.blocks` | RO | blocks currently holding a page |
 | `predecode.lookups` / `allocs` / `evictions` | RO | pool activity |
-| `predecode.decodes` / `invalidations` / `demotions` / `elided` / `realiases` | RO | §3.2, §3.12, §3.13, §3.8, §3.14 |
+| `predecode.decodes` / `invalidations` / `demotions` / `data_releases` / `elided` / `realiases` | RO | §3.2, §3.12, §3.13, §3.13, §3.8, §3.14 |
 | `predecode.suppressed_writes` | RO | stores that reached a marked page (`g_mem_code_write_count`) |
 | `predecode.generic_steps` | RO | instructions run through the generic step, split into `generic_cross` and `generic_declined`; the remainder are steps on pages with no block |
 | `predecode.relookup_nomap` / `relookup_nopool` | RO | page transitions that found no fast-path read entry / that the pool declined (split into `lookup_noregion`, `lookup_held`) |
