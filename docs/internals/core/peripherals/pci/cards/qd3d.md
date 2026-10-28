@@ -7,7 +7,7 @@ The Apple QuickDraw 3D Accelerator Card is a PCI bus-master rendering co-process
 reads a frame's geometry out of host memory, renders it a scanline at a time and writes the pixels back over
 PCI into the screen's VRAM or a host back buffer. The hardware — its PCI identity, registers, packet and
 record formats, descriptor lists and frame protocol — is documented in
-[`quickdraw3d.md`](../../../../../reference/hardware/pci/cards/quickdraw3d.md) (§2.8–§2.14, §3.11, §4.7); this
+[`quickdraw3d.md`](../../../../../reference/hardware/pci/cards/quickdraw3d.md) (§2 the interface, §3 the behaviour, §4.3–§4.6 the driver and plug-in); this
 page covers how the emulator models it. The card id is `qd3d`: `machine.boot ... pci_card="qd3d"` seats it in
 the first PCI socket of any machine with one.
 
