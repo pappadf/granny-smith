@@ -86,6 +86,7 @@
     /* Video */                                                                                                        \
     X("video", 0, "Display models, framebuffers and scanout")                                                          \
     X("voodoo2", 0, "3dfx Voodoo2 accelerator")                                                                        \
+    X("qd3d", 0, "QuickDraw 3D Accelerator Card")                                                                      \
     X("vdc", 0, "AV video display controller")                                                                         \
     X("lcd", 0, "PowerBook/ANS LCD panel")                                                                             \
     /* Buses and chipsets */                                                                                           \

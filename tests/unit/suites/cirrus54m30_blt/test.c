@@ -63,6 +63,8 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
 const pci_card_kind_t rage128_kind = {.id = "rage128", .display_name = "ATI Rage 128 GL", .attach = PCI_ATTACH_PCI};
 const pci_card_kind_t rage128_webgpu_kind = {
     .id = "rage128_webgpu", .display_name = "ATI Rage 128 GL (WebGPU)", .attach = PCI_ATTACH_PCI};
+const pci_card_kind_t qd3d_kind = {
+    .id = "qd3d", .display_name = "Apple QuickDraw 3D Accelerator Card", .attach = PCI_ATTACH_PCI};
 
 // pci.c's bus-master DMA helpers reach guest memory; the cirrus card never
 // masters the bus, so these are never called.

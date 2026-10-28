@@ -98,6 +98,11 @@ const pci_card_kind_t rage128_webgpu_kind = {.id = "rage128_webgpu",
                                              .attach = PCI_ATTACH_PCI,
                                              .requires_prom = true,
                                              .card_class = "display"};
+// The QuickDraw 3D Accelerator: a ROM-less co-processor.
+const pci_card_kind_t qd3d_kind = {.id = "qd3d",
+                                   .display_name = "Apple QuickDraw 3D Accelerator Card",
+                                   .attach = PCI_ATTACH_PCI,
+                                   .card_class = "other"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;

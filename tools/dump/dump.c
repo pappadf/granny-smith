@@ -7,7 +7,9 @@
 // files via plain stdio) and produces a self-contained dump directory:
 // raw data fork, every resource under resources/<TYPE>/<id>, per-segment
 // disassembly with symbol annotation, per-type decoded JSON/text, a
-// manifest.json, and a top-level README.md.
+// manifest.json, and a top-level README.md.  PowerPC code fragments (PEF
+// containers in the data fork, located by the 'cfrg' resource) are
+// dispatched into pef_dump.c and land under pef/.
 //
 // Resource-fork parsing uses the C API in src/core/storage/resource_fork.h
 // (rfork_parse + rfork_lookup); compressed resources are auto-inflated
@@ -22,6 +24,8 @@
 #include "code_segment.h"
 #include "coff.h"
 #include "coff_dump.h"
+#include "pef.h"
+#include "pef_dump.h"
 #include "resource_fork.h"
 #include "storage_util.h"
 #include "symbols.h"
@@ -131,10 +135,19 @@ bool dump_identify(const uint8_t *data_bytes, size_t data_len, const uint8_t *rs
         size_t n_res = 0;
         for (size_t t = 0; t < n_types; t++)
             n_res += rfork_num_resources(rf, rfork_type_at(rf, t));
-        printf("mac-forked-file: data_fork=%zu rsrc_fork=%zu types=%zu resources=%zu\n", data_len, rsrc_len, n_types,
-               n_res);
+        printf("mac-forked-file: data_fork=%zu rsrc_fork=%zu types=%zu resources=%zu%s\n", data_len, rsrc_len, n_types,
+               n_res, pef_is_pef(data_bytes, data_len) ? " pef=yes" : "");
         rfork_free(rf);
         return true;
+    }
+    if (pef_is_pef(data_bytes, data_len)) {
+        pef_t pef;
+        if (pef_parse(data_bytes, data_len, &pef, NULL) == 0) {
+            printf("pef-fragment: data_fork=%zu arch=%.4s sections=%u imports=%zu exports=%zu\n", data_len,
+                   (const char *)data_bytes + 8, pef.section_count, pef.n_imports, pef.n_exports);
+            pef_free(&pef);
+            return true;
+        }
     }
     if (data_bytes && data_len > 0) {
         printf("data-only: data_fork=%zu\n", data_len);
@@ -239,10 +252,86 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
 // Both live below this function for readability.
 static int dump_decoded(struct rfork *rf, const char *dst_dir);
 static int dump_manifest(struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len, size_t rsrc_len,
-                         const uint8_t *finder_info, size_t finder_info_len);
+                         const uint8_t *finder_info, size_t finder_info_len, int pef_fragments);
 static void dump_readme(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
-                        int disasm_written, int decoded_written);
+                        int disasm_written, int decoded_written, int pef_fragments);
+
+// Name of the output directory for PEF fragment `i` of `n`: "pef" when the
+// file holds one fragment, "pef-<i>" otherwise.
+static void pef_dir_name(int i, int n, char *out, size_t cap) {
+    if (n == 1)
+        snprintf(out, cap, "pef");
+    else
+        snprintf(out, cap, "pef-%d", i);
+}
+
+// Dump every PEF fragment in the data fork.  The 'cfrg' resource (when
+// present) says where each fragment lives; without one, a data fork that
+// starts with the PEF tags is treated as a single fragment.  Returns the
+// number of fragments dumped (and their code sections disassembled in
+// *code_sections), or -1 on a write/parse failure.
+static int dump_pef_fragments(rfork_t *rf, const uint8_t *data, size_t data_len, const char *src_label,
+                              const char *dst_dir, uint32_t flags, int *code_sections) {
+    pef_cfrg_member_t members[16];
+    int n = 0;
+    *code_sections = 0;
+    static const uint8_t cfrg_cc[4] = {'c', 'f', 'r', 'g'};
+    const uint8_t *cfrg = NULL;
+    size_t cfrg_len = 0;
+    if (rf && rfork_lookup(rf, cfrg_cc, 0, &cfrg, &cfrg_len, NULL, NULL) == 0) {
+        pef_cfrg_member_t all[16];
+        int m = pef_parse_cfrg(cfrg, cfrg_len, all, 16);
+        if (m < 0)
+            fprintf(stderr, "dump: warning: malformed 'cfrg' 0 resource; probing the data fork instead\n");
+        // Keep members whose code lives in the data fork (kDataForkCFragLocator)
+        for (int i = 0; i < m; i++)
+            if (all[i].where == 1)
+                members[n++] = all[i];
+    }
+    if (n == 0 && pef_is_pef(data, data_len)) {
+        memset(&members[0], 0, sizeof(members[0]));
+        n = 1; // offset 0, length 0 = the whole fork
+    }
+    // Drop members that do not point at a PEF container, so the pef-<i>
+    // directory names match the fragments actually dumped.
+    int valid = 0;
+    for (int i = 0; i < n; i++) {
+        size_t off = members[i].offset;
+        size_t len = members[i].length ? members[i].length : (off <= data_len ? data_len - off : 0);
+        if (off > data_len || len > data_len - off || !pef_is_pef(data + off, len)) {
+            fprintf(stderr, "dump: warning: fragment %d (offset %zu, length %zu) is not a PEF container\n", i, off,
+                    len);
+            continue;
+        }
+        members[valid] = members[i];
+        members[valid].length = (uint32_t)len; // resolve "to the end of the fork"
+        valid++;
+    }
+    n = valid;
+    int dumped = 0;
+    for (int i = 0; i < n; i++) {
+        size_t off = members[i].offset;
+        size_t len = members[i].length;
+        char sub[32], dir[PATH_MAX], label[PATH_MAX];
+        pef_dir_name(i, n, sub, sizeof(sub));
+        snprintf(dir, sizeof(dir), "%s/%s", dst_dir, sub);
+        if (members[i].name[0])
+            snprintf(label, sizeof(label), "%s [fragment %s]", src_label, members[i].name);
+        else
+            snprintf(label, sizeof(label), "%s", src_label);
+        if (mkdir_p(dir) != 0) {
+            fprintf(stderr, "dump: cannot create '%s': %s\n", dir, strerror(errno));
+            return -1;
+        }
+        int rc = re_pef_dump(data + off, len, label, dir, !(flags & DUMP_NO_DISASM));
+        if (rc < 0)
+            return -1;
+        *code_sections += rc;
+        dumped++;
+    }
+    return dumped;
+}
 
 int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_bytes, size_t rsrc_len,
              const uint8_t *finf_bytes, size_t finf_len, const char *src_label, const char *dst_dir, uint32_t flags) {
@@ -303,6 +392,8 @@ int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_byt
     int total_resources = 0;
     int disasm_written = 0;
     int decoded_written = 0;
+    int pef_fragments = 0;
+    int pef_code = 0;
     if (rsrc_bytes && rsrc_len > 0) {
         const char *errmsg = NULL;
         rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
@@ -315,21 +406,30 @@ int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_byt
             disasm_written = dump_disasm(rf, dst_dir);
         if (total_resources >= 0 && !(flags & DUMP_NO_DECODE))
             decoded_written = dump_decoded(rf, dst_dir);
+        if (total_resources >= 0)
+            pef_fragments = dump_pef_fragments(rf, data_bytes, data_len, src_label, dst_dir, flags, &pef_code);
         // Always write the manifest — it consolidates every layer we did
         // actually run.  README.md mirrors the same data in human-readable
         // form so a reader landing in the directory cold has a clear
         // table of contents.
-        dump_manifest(rf, src_label, dst_dir, data_len, rsrc_len, finf_bytes, finf_len);
+        dump_manifest(rf, src_label, dst_dir, data_len, rsrc_len, finf_bytes, finf_len, pef_fragments);
         dump_readme(rf, src_label, dst_dir, data_len, rsrc_len, finf_bytes, finf_len, total_resources, disasm_written,
-                    decoded_written);
+                    decoded_written, pef_fragments);
         rfork_free(rf);
+    } else if (pef_is_pef(data_bytes, data_len)) {
+        // A bare data fork holding a PEF container (no resource fork given)
+        pef_fragments = dump_pef_fragments(NULL, data_bytes, data_len, src_label, dst_dir, flags, &pef_code);
     }
 
-    if (total_resources < 0 || disasm_written < 0 || decoded_written < 0)
+    if (total_resources < 0 || disasm_written < 0 || decoded_written < 0 || pef_fragments < 0)
         return -EIO;
 
-    printf("dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded)\n", src_label, dst_dir, total_resources,
+    printf("dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded", src_label, dst_dir, total_resources,
            total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s", decoded_written);
+    if (pef_fragments > 0)
+        printf(", %d PEF fragment%s with %d code section%s", pef_fragments, pef_fragments == 1 ? "" : "s", pef_code,
+               pef_code == 1 ? "" : "s");
+    printf(")\n");
     if (g_compressed_unhandled)
         printf("dump: %u resource%s left compressed (unsupported dcmp) — their bytes and any\n"
                "      disassembly of them are the raw compressed payload, not content\n",
@@ -824,7 +924,7 @@ static int dump_decoded(rfork_t *rf, const char *dst_dir) {
 // carry the relative paths of their bin / info / disasm / decoded files
 // so downstream tooling can navigate without re-walking the dir tree.
 static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir, size_t data_len, size_t rsrc_len,
-                         const uint8_t *finder_info, size_t finder_info_len) {
+                         const uint8_t *finder_info, size_t finder_info_len, int pef_fragments) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/manifest.json", dst_dir);
     FILE *fp = fopen(path, "wb");
@@ -844,6 +944,17 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
                 finder_info[6], finder_info[7], finder_info[8], finder_info[9]);
     }
     fprintf(fp, "\n  },\n");
+
+    // PEF fragments dumped from the data fork, by manifest path.
+    if (pef_fragments > 0) {
+        fprintf(fp, "  \"pef_fragments\": [");
+        for (int i = 0; i < pef_fragments; i++) {
+            char sub[32];
+            pef_dir_name(i, pef_fragments, sub, sizeof(sub));
+            fprintf(fp, "%s\"%s/manifest.json\"", i ? ", " : "", sub);
+        }
+        fprintf(fp, "],\n");
+    }
 
     // Resource summary by type.
     fprintf(fp, "  \"resource_fork\": {\n    \"attrs\": %u,\n    \"types\": [\n", rfork_attrs(rf));
@@ -983,7 +1094,7 @@ static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir
 
 static void dump_readme(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
-                        int disasm_written, int decoded_written) {
+                        int disasm_written, int decoded_written, int pef_fragments) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/README.md", dst_dir);
     FILE *fp = fopen(path, "wb");
@@ -1030,7 +1141,8 @@ static void dump_readme(const struct rfork *rf, const char *src_label, const cha
     fprintf(fp, "| Resource types | %zu |\n", n_types);
     fprintf(fp, "| Resources extracted | %d |\n", total_resources);
     fprintf(fp, "| CODE segments disassembled | %d |\n", disasm_written);
-    fprintf(fp, "| Resources decoded | %d |\n\n", decoded_written);
+    fprintf(fp, "| Resources decoded | %d |\n", decoded_written);
+    fprintf(fp, "| PEF fragments (PowerPC code) | %d |\n\n", pef_fragments);
 
     // Directory layout table.  This mirrors the on-disk shape but with
     // intent annotations so the reader knows where to look for what.
@@ -1056,6 +1168,11 @@ static void dump_readme(const struct rfork *rf, const char *src_label, const cha
         fprintf(fp, "  low-memory global labels (`; global Ticks`), and recovered\n");
         fprintf(fp, "  MacsBug / boundary labels (`MainEventLoop:` / `sub_01AE:`). |\n");
         fprintf(fp, "| `symbols.txt` | Consolidated symbol table: `<code_id> <addr> <source> <name>`. |\n");
+    }
+    if (pef_fragments > 0) {
+        fprintf(fp, "| `pef/` (`pef-N/` when several) | The data fork's PEF code fragment: sections,\n");
+        fprintf(fp, "  imports, exports, symbolic relocations and annotated PowerPC disassembly.\n");
+        fprintf(fp, "  See its own README.md. |\n");
     }
     if (decoded_written > 0) {
         fprintf(fp, "| `decoded/<TYPE>/<id>.json` | Per-type decoded form (vers, MENU, DLOG,\n");
@@ -1088,6 +1205,8 @@ static void dump_readme(const struct rfork *rf, const char *src_label, const cha
     // Practical entry points.
     fprintf(fp, "## Where to start\n\n");
     fprintf(fp, "- `manifest.json` — start here for tooling.\n");
+    if (pef_fragments > 0)
+        fprintf(fp, "- `pef/summary.txt` — the PowerPC fragment's imports, exports and entry points.\n");
     if (decoded_written > 0)
         fprintf(fp, "- `decoded/vers/1.txt` — human-readable version string (when present).\n");
     if (disasm_written > 0) {
@@ -1163,9 +1282,15 @@ static void print_usage(const char *progname) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [--data <data-file>] --rsrc <rsrc-file> [--finf <finf-file>] [<dst-dir>]\n"
-            "      Full dump of a classic-Mac forked file.  --rsrc is required; --data\n"
+            "      Full dump of a classic-Mac forked file.  --data\n"
             "      and --finf are optional (data fork and 32-byte Finder info sidecar).\n"
             "      <dst-dir> defaults to './dump-out'.\n"
+            "\n"
+            "      A data fork holding a PEF container (PowerPC code; located by the\n"
+            "      'cfrg' resource when present) is dumped and disassembled under pef/.\n"
+            "\n"
+            "  %s --data <pef-file> [<dst-dir>]\n"
+            "      Full dump of a bare PEF container (a data fork with no resource fork).\n"
             "\n"
             "  %s --coff <coff-file> [<dst-dir>]\n"
             "      Full dump of an A/UX COFF binary.  COFF magic (0x0150) is also\n"
@@ -1185,11 +1310,11 @@ static void print_usage(const char *progname) {
             "\n"
             "Behaviour flags (full-dump mode only):\n"
             "  --no-decode, -D    Skip per-type decoders + decoded/ output\n"
-            "  --no-disasm, -S    Skip CODE disassembly + symbols.txt\n"
+            "  --no-disasm, -S    Skip CODE and PEF disassembly + symbols.txt\n"
             "  --force,     -f    Overwrite an existing non-empty <dst-dir>\n"
             "\n"
             "  -h, --help         Show this help and exit\n",
-            progname, progname, progname, progname, progname, progname);
+            progname, progname, progname, progname, progname, progname, progname);
 }
 
 typedef enum {
@@ -1380,8 +1505,8 @@ int main(int argc, char *argv[]) {
             rc = 1;
         break;
     case MODE_DUMP:
-        if (!coff_buf && !rsrc_buf && !coff_is_coff(data_buf, data_len)) {
-            fprintf(stderr, "dump: nothing to dump — pass --rsrc, --coff, or a COFF file via --data\n");
+        if (!coff_buf && !rsrc_buf && !coff_is_coff(data_buf, data_len) && !pef_is_pef(data_buf, data_len)) {
+            fprintf(stderr, "dump: nothing to dump — pass --rsrc, --coff, or a COFF or PEF file via --data\n");
             print_usage(argv[0]);
             rc = 2;
             break;
