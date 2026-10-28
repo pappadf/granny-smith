@@ -18,7 +18,9 @@ NODE_FLAGS="--jobs=inline --io=sync"
 
 if command -v emcc >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     echo "building the wasm headless program (make -f Makefile.headless TARGET=node)"
-    make -C "$ROOT" -f Makefile.headless TARGET=node -j"$(nproc)" > "$TEST_RESULTS_DIR/build.log" 2>&1 ||
+    # PLATEN=0: the runner's PLATEN=1 (the native printer bridge) reaches this
+    # make through MAKEFLAGS, and its archive is native code wasm-ld cannot link
+    make -C "$ROOT" -f Makefile.headless TARGET=node PLATEN=0 -j"$(nproc)" > "$TEST_RESULTS_DIR/build.log" 2>&1 ||
         { echo "the wasm build failed:"; tail -20 "$TEST_RESULTS_DIR/build.log"; exit 1; }
 elif [ ! -x "$NODE_BIN" ] || ! command -v node >/dev/null 2>&1; then
     echo "skip: no wasm headless program and no emcc/node to build one"
