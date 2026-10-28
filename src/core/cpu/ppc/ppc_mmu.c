@@ -64,6 +64,15 @@
 #include "ppc_internal.h"
 #include "ppc_jit.h" // g_ppc_jit_on: TLB-hit fills for RAM only with the tier on
 
+// Whether a TLB hit refills RAM's table entry (ppc_dxlate_slow): only where
+// a miss is a deopt, with the translation tier on -- wasm builds; native
+// builds have no tier and do not link it (the unit suites)
+#ifdef __EMSCRIPTEN__
+#define TLB_HIT_FILLS_RAM() g_ppc_jit_on
+#else
+#define TLB_HIT_FILLS_RAM() false
+#endif
+
 #include "log.h"
 
 LOG_USE_CATEGORY_NAME("ppcmmu");
@@ -962,7 +971,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
         // refused, so the fill would be redone, in vain, on every such store.
         uint32_t tppage = te->pa_page >> MEM_PAGE_SHIFT;
         if (dt && tppage < g_page_count &&
-            (g_page_table[tppage].dev || (g_ppc_jit_on && (!store || g_page_table[tppage].writable)))) {
+            (g_page_table[tppage].dev || (TLB_HIT_FILLS_RAM() && (!store || g_page_table[tppage].writable)))) {
             if (user) {
                 user_soa_fill(ea, te->pa_page, te->w_ok);
                 if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
