@@ -484,7 +484,7 @@ read back [18].
 | `0x08` | Background | ARGB8888, packed from the RAVE background colour each frame |
 | `0x0C` | Texture configuration | `(n256 << 8) \| ((page of the first 128-map − n256) & 0xFF)`, 0 when no maps are loaded; with the plug-in's allocation the low byte equals `16 − n128 − n256` |
 | `0x20` | Go | host-physical address of the frame's control program; the last write of a frame start |
-| `0x24` | CSG equation | the 32-entry CSG truth table (§3.5), unchanged from the RAVE state |
+| `0x24` | CSG equation | the 32-entry CSG truth table (§3.5), unchanged from the RAVE state: bit *s* is the result for inside-state *s*, in which operand *n* is bit *n* — QuickDraw 3D's own constants, A ∩ B = `0x88888888` and A − B = `0x22222222`, fix the order [20] |
 | `0x28` | Scanline start | strobe, no data |
 | `0x2C` | Scanline end | strobe, no data |
 | `0x30` | Width − 1 | output pixels per scanline, minus one |
@@ -1187,3 +1187,7 @@ single vertex colour.
 19. Apple Computer, Inc., *RaveEngineInfo* and *Sneak3View* — sample programs of the QuickDraw 3D 1.6 SDK
     and the QuickDraw 3D RAVE 1.6 DDK: an engine lister that prints every registered RAVE engine's gestalt
     answers, and a test harness that draws the same scenes through two engines side by side.
+20. Apple Computer, Inc., *QuickDraw 3D* SDK interfaces, `QD3DRenderer.h` (QuickDraw 3D 1.1 and later) — the
+    `TQ3CSGEquation` constants (`kQ3CSGEquationAandB = 0x88888888`, `kQ3CSGEquationAandnotB = 0x22222222`,
+    `kQ3CSGEquationnotAandB = 0x44444444`) and `Q3InteractiveRenderer_SetCSGEquation`, whose value the
+    plug-in hands to register `0x24` unchanged.

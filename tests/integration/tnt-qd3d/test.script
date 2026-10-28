@@ -18,6 +18,12 @@
 #
 # Row map:
 #
+#   qd3d-device      no disk: the card's PCI header, then two hand-built
+#                    frames poked through its BAR -- a control program, two
+#                    box-like objects and a descriptor list in RAM -- once
+#                    plain (nearest surface wins) and once as the CSG
+#                    difference A - B; the pixels the card DMAs back are
+#                    checked one by one.
 #   qd3d-boot        the card seated in slot A1: the image boots to the
 #                    Finder, and Apple's driver has found the card, set its
 #                    position register and built the object-cache free list.
@@ -32,7 +38,8 @@
 #   qd3d-thousands   Gerbils at thousands of colours: the card's 16-bpp
 #                    (x1555) output path, and Control's 16-bpp DAC lookup.
 #
-# The rows share one boot: qd3d-boot checkpoints the open QD3D Lab window.
+# The image rows share one boot: qd3d-boot checkpoints the open QD3D Lab
+# window.
 # Run on its own with make -C tests/integration test-tnt-qd3d.
 
 include "../lib/mac.script"
@@ -57,6 +64,189 @@ def frames_flow(what) {
     let f0 = machine.pci.slot[1].card.renderer.frames
     scheduler.run 100000000
     assert machine.pci.slot[1].card.renderer.frames > $f0 "${$what}: the card stopped completing frames (${machine.pci.slot[1].card.renderer.frames})"
+}
+
+# ---- qd3d-device -----------------------------------------------------------
+# Config-port note (the tnt-pci-voodoo2 idiom): Bandit's address/data ports
+# are little-endian and machine.memory.peek/poke are raw big-endian bus
+# views, so literals go through swap32.  Socket A1 is device 13.  The card's
+# own BAR is big-endian: its words go out as they are.
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+def cfg_rd(reg) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    let v = swap32(machine.memory.peek.l(0xF2C00000))
+    machine.memory.poke.l(0xF2800000, 0)
+    return $v
+}
+def put(a, v) {
+    machine.memory.poke.l($a, $v)
+}
+
+# The hand-built frame, 16 x 4 pixels, one card: the control program at
+# $100000 (one 32-byte record per control block), the objects from $110000
+# (64 bytes each), the descriptor list at $200000 and the output at $300000.
+let prog = 0x100000
+let objs = 0x110000
+let out = 0x300000
+
+# One control block: link, then seven command words.
+def put_cb(a, next, c0, c1, c2, c3, c4, c5, c6) {
+    put($a, $next)
+    put($a + 4, $c0)
+    put($a + 8, $c1)
+    put($a + 12, $c2)
+    put($a + 16, $c3)
+    put($a + 20, $c4)
+    put($a + 24, $c5)
+    put($a + 28, $c6)
+}
+
+# One flat rectangle x0..x1 (pixels) over all four rows, as two Gouraud
+# triangles at `a` and `a`+64: header, three 13.3 vertices, three depths,
+# three colours.  The second links to `next`.
+def put_tri(a, next, hdr, p0, p1, p2, z, colour) {
+    put($a, $next)
+    put($a + 4, $hdr)
+    put($a + 8, $p0)
+    put($a + 12, $p1)
+    put($a + 16, $p2)
+    put($a + 20, $z)
+    put($a + 24, $z)
+    put($a + 28, $z)
+    put($a + 32, $colour)
+    put($a + 36, $colour)
+    put($a + 40, $colour)
+}
+def put_rect(a, next, hdr, x0, x1, z, colour) {
+    put_tri($a, $a + 64, $hdr, ($x0 * 8) << 16, ($x1 * 8) << 16, (($x1 * 8) << 16) | 32, $z, $colour)
+    put_tri($a + 64, $next, $hdr, ($x0 * 8) << 16, (($x1 * 8) << 16) | 32, (($x0 * 8) << 16) | 32, $z, $colour)
+}
+
+# The frame: box A spans x 0-12 (front face z 0.2 red, back face z 0.6
+# yellow), box B spans x 6-16 (front z 0.1 green, back z 0.3 blue).  `ha`
+# and `hb` are the two boxes' header bases (front faces; the back faces add
+# the back-facing bit).  All objects start on scanline 0, so they follow
+# the initial block.  The program then runs S = 4 + 1 scanlines.
+def build_frame(ha, hb) {
+    put_cb($prog, $objs, 0x20000004, 0x0004FFFF, 0x20000030, 15, 0, 0, 0)
+    put_rect($objs, $objs + 128, $ha, 0, 12, 0x3E4CCCCD, 0xFFFF0000)
+    put_rect($objs + 128, $objs + 256, $ha | 0x04000000, 0, 12, 0x3F19999A, 0xFFFFFF00)
+    put_rect($objs + 256, $objs + 384, $hb, 6, 16, 0x3DCCCCCD, 0xFF00FF00)
+    put_rect($objs + 384, $prog + 32, $hb | 0x04000000, 6, 16, 0x3E99999A, 0xFF0000FF)
+    let i = 0
+    while $i < 5 {
+        let a = $prog + 32 + $i * 64
+        let cur = ($i * 8) | 4
+        let nxt = 0xFFFF
+        if $i < 4 {
+            $nxt = (($i + 1) * 8) | 4
+        }
+        let link = 0
+        if $i < 4 {
+            $link = $a + 64
+        }
+        put_cb($a, $a + 32, 0x20000004, ($nxt << 16) | $cur, 0x20000028, 0, 0, 0, 0)
+        put_cb($a + 32, $link, 0, 0, 0, 0, 0, 0x2000002C, 0)
+        $i = $i + 1
+    }
+    # one WRITE of 64 bytes per scanline, then STOP; the output pre-filled
+    let y = 0
+    while $y < 4 {
+        put(0x200000 + $y * 16, 0x00000040)
+        put(0x200000 + $y * 16 + 4, $out + $y * 64)
+        put(0x200000 + $y * 16 + 8, 0)
+        put(0x200000 + $y * 16 + 12, 0)
+        let x = 0
+        while $x < 16 {
+            put($out + $y * 64 + $x * 4, 0xEEEEEEEE)
+            $x = $x + 1
+        }
+        $y = $y + 1
+    }
+    put(0x200040, 0x08000000)
+}
+
+# A renderer register through the packet port (opcode 1).
+def port_reg(bar, reg, value) {
+    put($bar, 0x20000000 | $reg)
+    put($bar, $value)
+}
+
+# Start the frame and check every output pixel against `want(x)` for
+# x 0-5, 6-11 and 12-15.
+def run_frame(bar, csg, w0, w1, w2) {
+    put($bar + 0x40, 0x1000)
+    put($bar + 0x40, 0)
+    port_reg($bar, 0x08, 0xFF404040)
+    port_reg($bar, 0x24, $csg)
+    port_reg($bar, 0x00, 0x1000)
+    put($bar + 0x4C, 0x200000)
+    put($bar + 0x40, 0xC000)
+    let f0 = machine.pci.slot[1].card.renderer.frames
+    port_reg($bar, 0x20, $prog)
+    assert machine.pci.slot[1].card.renderer.frames == $f0 + 1 "the frame did not run"
+    assert machine.pci.slot[1].card.renderer.lines == 5 "the program has 5 scanlines (4 + the drain line), not ${machine.pci.slot[1].card.renderer.lines}"
+    assert machine.pci.slot[1].card.renderer.objects == 8 "8 triangles, not ${machine.pci.slot[1].card.renderer.objects}"
+    let y = 0
+    while $y < 4 {
+        let x = 0
+        while $x < 16 {
+            let want = $w0
+            if $x >= 6 {
+                $want = $w1
+            }
+            if $x >= 12 {
+                $want = $w2
+            }
+            let got = machine.memory.peek.l($out + $y * 64 + $x * 4)
+            assert $got == $want "pixel (${$x},${$y}) is ${$got:08x}, not ${$want:08x}"
+            $x = $x + 1
+        }
+        $y = $y + 1
+    }
+}
+
+def row_qd3d_device() {
+    machine.boot model="pm8500" ram=65536 rom="${$ROM}" pci_card="qd3d"
+    # Let the ROM bring up the memory controller first: before it has, the
+    # bus master's view of RAM is not the CPU's.
+    scheduler.run 50000000
+    assert machine.pci.slot[1].card.name == "QuickDraw 3D Accelerator" "the card is seated in A1"
+    # The header Apple's driver matches: pci106b,9, revision 2, one 4 KB
+    # memory BAR, INTA, no expansion ROM.
+    assert cfg_rd(0x00) == 0x0009106B "vendor $106B / device $0009 -- the node name pci106b,9"
+    assert (cfg_rd(0x08) & 0xFF) == 0x02 "revision 2: the 0x40000-texel, 16-bpp-capable ASIC"
+    assert (cfg_rd(0x3C) & 0x0000FF00) == 0x00000100 "interrupt pin 1 = INTA"
+    cfg_wr(0x10, 0xFFFFFFFF)
+    assert cfg_rd(0x10) == 0xFFFFF000 "BAR0: 4 KB, memory, not prefetchable"
+    cfg_wr(0x14, 0xFFFFFFFF)
+    assert cfg_rd(0x14) == 0 "no BAR1"
+    cfg_wr(0x30, 0xFFFFFFFF)
+    assert cfg_rd(0x30) == 0 "no expansion ROM"
+    # Memory space and bus mastering on, the way the driver sets them.
+    cfg_wr(0x10, 0x81000000)
+    cfg_wr(0x04, 0x0016)
+    assert (cfg_rd(0x04) & 0x16) == 0x16 "memory space, bus master, memory write and invalidate latch"
+    let bar = machine.pci.slot[1].card.config.bar[0].base
+    # Plain: the nearest surface wins -- A's red front, then B's green
+    # front, which is nearer than A's wherever the two overlap.
+    build_frame(0x68200000, 0x68200000)
+    run_frame($bar, 0, 0x00FF0000, 0x0000FF00, 0x0000FF00)
+    # CSG A - B (kQ3CSGEquationAandnotB, 0x22222222): A is operand 0, B
+    # operand 1.  Where only A is, its front face shows; where B carves A,
+    # the surface is B's back face, where the ray leaves B still inside A;
+    # where only B is, nothing of the result is there: background.
+    build_frame(0x69000000, 0x69000001)
+    run_frame($bar, 0x22222222, 0x00FF0000, 0x000000FF, 0x00404040)
+    # The interrupt follows the frame, not inside the register write.
+    assert !machine.pci.slot[1].card.renderer.irq "the interrupt is not raised synchronously with the go write"
 }
 
 # ---- qd3d-boot --------------------------------------------------------------
@@ -180,8 +370,11 @@ def row_qd3d_thousands() {
 
 # ---- row dispatch -----------------------------------------------------------
 
+if row_on("qd3d-device") {
+    row_end("qd3d-device", try(row_qd3d_device(), "FAILED"))
+}
 if !have_media($hd) {
-    skip_test("tnt-qd3d (system_7_6_170mb_24ac_qd3d.img not fetched)")
+    echo "skip: the image rows (system_7_6_170mb_24ac_qd3d.img not fetched)"
 } else {
     if row_on("qd3d-boot") {
         row_end("qd3d-boot", try(row_qd3d_boot(), "FAILED"))
@@ -198,7 +391,7 @@ if !have_media($hd) {
     if row_on("qd3d-thousands") {
         row_end("qd3d-thousands", try(row_qd3d_thousands(), "FAILED"))
     }
-    suite_done()
 }
+suite_done()
 
 quit

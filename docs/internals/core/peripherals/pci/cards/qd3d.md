@@ -36,6 +36,11 @@ What the card renders is decided per scanline from the objects active on it:
   at most eight layers are kept per pixel. The layers are then composited front to back as premultiplied
   colour — RAVE's default blend, the only one the card offers (the plug-in ignores the Blend tag) — over the
   background register.
+- **CSG**: walking the sorted layers front to back from outside every operand, a CSG operand's front face
+  sets its bit in a 5-bit inside state and its back face clears it; the state indexes the truth table in
+  register `0x24` (bit *s* is the answer for state *s*, operand *n* being state bit *n*), and an operand's
+  surface is kept only where the answer changes. CSG surfaces are never opaque (the plug-in does not mark
+  them), so they never hide the layers behind them.
 
 The finished scanline goes out as 32-bit `xRGB` or, with the 16-bpp bits set, 16-bit `x1555` words,
 big-endian, through the descriptor list.
@@ -63,7 +68,8 @@ The flow is `bar_write32` → `port_write` (the packet parser) → `internal_wri
 
 - **Program walk.** From register `0x20`, each record's link is the word at `4 · index`, its first word
   after the `N` links (`N` from configuration register `0x40` once the driver has set it, else 1) decides
-  between an object (opcode 3) and a control block. A link of 0, or four million records, ends the walk.
+  between an object (opcode 3) and a control block. A link of 0, or four million records, ends the walk;
+  65 536 zero-length descriptors in a row stop the output channel.
 - **Control blocks.** `Y` writes to `0x04`–`0x07` are latched only when the address's low bits equal this
   card's index; `0x30` sets the width; **scanline start** renders the latched current line, if any;
   **scanline end** does nothing; any other register write lands in the register file.
@@ -103,7 +109,10 @@ the scheduler's queue; the interrupt line is re-derived from the restored state.
 
 ## 6. Testing
 
-`tests/integration/tnt-qd3d` (extended tier) runs Apple's unmodified driver and plug-in on a pm8500 with
+`tests/integration/tnt-qd3d` (extended tier) starts with a device-level row that needs no disk: it checks
+the PCI header, then pokes two hand-built 16 × 4 frames through the BAR — a control program, two box-like
+objects and a descriptor list in RAM — once plain and once as the CSG difference A − B, and checks every
+pixel the card writes back. The other rows run Apple's unmodified driver and plug-in on a pm8500 with
 Mac OS 7.6 and QuickDraw 3D 1.6 from `system_7_6_170mb_24ac_qd3d.img`: the driver's bring-up (position
 register, object-cache free list), RaveEngineInfo listing "Apple PCI Hardware", Gerbils! rendering through
 the card, TextureEyes' textured square, and Gerbils at thousands of colours (the 16-bpp path). Goldens are
@@ -115,7 +124,6 @@ bring-up.
 
 ## 7. Known debts
 
-- **CSG** is not evaluated: CSG operands render as ordinary geometry. Register `0x24` is stored.
 - **Equal-depth order** follows the walk order, not a rule of the card's.
 - **Overflow mode** (register `0x34 = 0`) changes nothing; the model never runs out of object storage.
 - **Multiple cards** are modelled per card (each renders its own scanlines from its index), but no test seats

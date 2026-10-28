@@ -148,6 +148,9 @@ LOG_USE_CATEGORY_NAME("qd3d");
 #define QD3D_LAYERS 8
 // Widest output scanline: 13.3 coordinates cap the card at 8K pixels.
 #define QD3D_MAX_WIDTH 8192u
+// More zero-length output descriptors in a row than this is a list the
+// channel has run off the end of.
+#define QD3D_MAX_EMPTY_DESCS 65536u
 // A program longer than this is a runaway walk through garbage.
 #define QD3D_MAX_RECORDS 4000000u
 
@@ -179,7 +182,15 @@ typedef struct qd3d_obj {
 typedef struct qd3d_frag {
     float depth;
     float r, g, b, a; // 0..1, colour premultiplied by alpha
+    uint8_t flags; // FRAG_*
 } qd3d_frag_t;
+
+// Fragment flags: an opaque layer hides everything behind it; a CSG
+// operand's surface enters (front face) or leaves (back face) operand ID.
+#define FRAG_OPAQUE    0x80u
+#define FRAG_CSG       0x40u
+#define FRAG_BACKFACE  0x20u
+#define FRAG_CSG_ID(f) ((f) & 7u)
 
 // The pixel-output DMA channel's progress through its descriptor list.
 typedef struct qd3d_dma {
@@ -273,7 +284,14 @@ static void dma_begin(qd3d_t *q) {
 // Load the next descriptor; false once the list has stopped.
 static bool dma_load(qd3d_t *q) {
     qd3d_dma_t *d = &q->dma;
-    while (!d->stopped && !d->loaded) {
+    for (uint32_t empty = 0; !d->stopped && !d->loaded; empty++) {
+        // Zero-length descriptors move nothing; a long run of them is a
+        // list the channel has run off the end of.
+        if (empty >= QD3D_MAX_EMPTY_DESCS) {
+            LOG(1, "%u empty output descriptors in a row at $%08X: channel stopped", empty, d->next);
+            d->stopped = 1;
+            break;
+        }
         uint8_t desc[16];
         pci_dma_read(q->dev, d->next, desc, sizeof(desc));
         d->next += 16;
@@ -536,9 +554,9 @@ static void frag_add(qd3d_t *q, bool persp, uint32_t x, const qd3d_frag_t *f) {
     qd3d_frag_t *list = &q->frags[x * QD3D_LAYERS];
     uint32_t n = q->nfrags[x];
     for (uint32_t i = 0; i < n; i++)
-        if (list[i].a >= 1.0f && !nearer(persp, f->depth, list[i].depth))
+        if ((list[i].flags & FRAG_OPAQUE) && !nearer(persp, f->depth, list[i].depth))
             return;
-    if (f->a >= 1.0f) {
+    if (f->flags & FRAG_OPAQUE) {
         uint32_t k = 0;
         for (uint32_t i = 0; i < n; i++)
             if (nearer(persp, list[i].depth, f->depth))
@@ -557,6 +575,16 @@ static void frag_add(qd3d_t *q, bool persp, uint32_t x, const qd3d_frag_t *f) {
             list[far] = *f;
     }
     q->nfrags[x] = (uint8_t)n;
+}
+
+// A fragment's flags from its object's header.  The plug-in marks an
+// object opaque only when all its vertex alphas are 255 and it is no CSG
+// operand, so CSG surfaces never hide what is behind them.
+static uint8_t frag_flags(uint32_t header) {
+    uint8_t f = (header & HDR_OPAQUE) ? FRAG_OPAQUE : 0u;
+    if (header & HDR_CSG)
+        f |= (uint8_t)(FRAG_CSG | (header & 7u) | ((header & HDR_BACKFACING) ? FRAG_BACKFACE : 0u));
+    return f;
 }
 
 // Rasterise one triangle on scanline `y`: the pixels whose centres lie from
@@ -600,6 +628,7 @@ static void draw_tri(qd3d_t *q, const qd3d_obj_t *o, int y, uint32_t width, bool
         for (int k = 0; k < A_NATTR; k++)
             at[k] = o->a0[k] + o->dx[k] * cx + o->dy[k] * cy;
         qd3d_frag_t f;
+        f.flags = frag_flags(o->header);
         f.depth = at[A_DEPTH];
         f.a = at[A_ALPHA] < 0.0f ? 0.0f : (at[A_ALPHA] > 1.0f ? 1.0f : at[A_ALPHA]);
         if (o->kind == OBJ_TEXTURED) {
@@ -631,6 +660,9 @@ static void draw_tri(qd3d_t *q, const qd3d_obj_t *o, int y, uint32_t width, bool
 static void draw_bitmap(qd3d_t *q, const qd3d_obj_t *o, int y, uint32_t width, bool persp) {
     uint32_t bits = o->mask[y - o->by];
     qd3d_frag_t f;
+    // A tile is never marked opaque, but a fully opaque colour hides what
+    // is behind it all the same.
+    f.flags = (uint8_t)(frag_flags(o->header) | ((o->colour >> 24) == 0xFFu ? FRAG_OPAQUE : 0u));
     f.depth = o->a0[A_DEPTH];
     f.a = (float)(o->colour >> 24) / 255.0f;
     f.r = (float)((o->colour >> 16) & 0xFFu) / 255.0f;
@@ -676,6 +708,7 @@ static void render_scanline(qd3d_t *q, int y, uint32_t width) {
     q->n_active = k;
     // Composite each pixel front to back over the background.
     uint32_t bg = q->reg[REG_BACKGROUND >> 2];
+    uint32_t csg = q->reg[REG_CSG >> 2];
     float bgr = (float)((bg >> 16) & 0xFFu) / 255.0f, bgg = (float)((bg >> 8) & 0xFFu) / 255.0f,
           bgb = (float)(bg & 0xFFu) / 255.0f;
     uint8_t *out = q->line;
@@ -694,9 +727,20 @@ static void render_scanline(qd3d_t *q, int y, uint32_t width) {
         }
         // Colours are premultiplied, RAVE's default blend (the card ignores
         // the Blend tag): each layer adds its colour and lets 1 - alpha of
-        // what is behind it through.
+        // what is behind it through.  CSG: walking front to back from
+        // outside every operand, a front face enters its operand and a
+        // back face leaves it; the 5-bit inside state indexes the truth
+        // table, and an operand's surface is part of the result only where
+        // the table's answer changes.
         float r = 0, g = 0, b = 0, t = 1.0f;
+        uint32_t state = 0;
         for (uint32_t i = 0; i < n && t > 0.0f; i++) {
+            if (list[i].flags & FRAG_CSG) {
+                uint32_t before = (csg >> state) & 1u, bit = 1u << FRAG_CSG_ID(list[i].flags);
+                state = (list[i].flags & FRAG_BACKFACE) ? (state & ~bit) : (state | bit);
+                if (((csg >> state) & 1u) == before)
+                    continue;
+            }
             r += t * list[i].r;
             g += t * list[i].g;
             b += t * list[i].b;
