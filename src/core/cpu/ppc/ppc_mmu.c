@@ -948,13 +948,18 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
         // A page served from the TLB gets its table entry when it can take
-        // one -- a device's descriptor, or RAM whose entry a flush took away
-        // (the TLB keeps a RAM page only when a walk could not fill it for a
-        // store: a code page, a store owing C) -- so the next access to it
-        // skips this walk entirely.  Without the RAM case every load from
+        // one -- a device's descriptor, or RAM whose read entry a flush took
+        // away (the TLB keeps a RAM page only when a walk could not fill it
+        // for a store: a code page, a store owing C) -- so the next access to
+        // it skips this walk entirely.  Without the RAM case every load from
         // such a page stayed slow for as long as its TLB entry lived: a
-        // deopt per load in translated code (Quake III's driver data).
-        if (dt && (te->pa_page >> MEM_PAGE_SHIFT) < g_page_count) {
+        // deopt per load in translated code (Quake III's driver data).  Not
+        // a store into a code page: its write entry is refused, so the fill
+        // would be redone, in vain, on every such store (the 68K emulator's
+        // variables beside its code: +4.8 % host instructions on the
+        // pm8500-finder bench row).
+        uint32_t tppage = te->pa_page >> MEM_PAGE_SHIFT;
+        if (dt && tppage < g_page_count && (g_page_table[tppage].dev || !store || g_page_table[tppage].writable)) {
             if (user) {
                 user_soa_fill(ea, te->pa_page, te->w_ok);
                 if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
