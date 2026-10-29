@@ -689,7 +689,8 @@ const storage_device_decl_t gossamer_default_storage[] = {
 // are the card's (mach64gx.c): the 13" (Apple's 14" RGB sense), the 15", 17"
 // and 20" multiple-scan displays and the 21".  The sense code decides the
 // modes the ATI driver offers: Mac OS X 10.0 runs the 17" at 640 x 480
-// through 1024 x 768.
+// through 1024 x 768.  Or nothing at all ("none"): the FCode then reports
+// nothing attached and Mac OS puts its desktop on a PCI display card.
 bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor); // mach64gx.c
 bool mach64_ragepro_monitor_sense(const char *id, uint8_t *out_sense);
 

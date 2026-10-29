@@ -42,7 +42,7 @@ function cfg_rd(reg) -- global: used by an included file
 end
 
 -- --- The kind is registered and seatable with no machine edit. --------------
-assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]", "the card must be registered")
+assert(gs.str(catalog.pci_cards) == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro, rage128, rage128_webgpu]", "the card must be registered")
 
 -- The 8 MB board: the row's pinned values were captured on it.
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2", pci_option = "memory=8m"}
@@ -240,7 +240,8 @@ assert(#v2.options[1].values == 1 and v2.options[1].values[1].label == "Software
 -- the tree lists the exact card alone: the WebGPU kind is its Rendering
 -- value, never a card of its own.
 assert(catalog.profile("pm7500").cards[2].id == "voodoo2", "the exact card is offered")
-assert(#catalog.profile("pm7500").cards == 2, "...and the WebGPU variant is not a second card")
+assert(catalog.profile("pm7500").cards[3].id == "rage128", "the other offered card is the Rage 128")
+assert(#catalog.profile("pm7500").cards == 3, "...and the WebGPU variant is not a card of its own")
 -- Named anyway, it comes up: the same card, whose rasteriser falls back
 -- to the thread backend at creation — honestly — and draws exactly.
 machine.boot{model = "pm7500", ram = 32768, rom = vars.ROM, pci_card = "voodoo2_webgpu"}

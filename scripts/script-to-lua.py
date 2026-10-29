@@ -1154,6 +1154,24 @@ class Converter:
                 for n in calls_in(sub):
                     if n in pos and pos[n] > st["line"]:
                         self.forward.add(n)
+        # top-level lets a def body reads but the file declares only after the
+        # def: the old language resolved them at the call (dynamic scope); in
+        # Lua the def would read a global, so they are declared up front.
+        let_line = {}
+        for st in stmts:
+            if st["kind"] == "let" and st["name"] not in let_line:
+                let_line[st["name"]] = st["line"]
+        self.forward_lets = set()
+        for st in stmts:
+            if st["kind"] != "def":
+                continue
+            own = set(st.get("params") or [])
+            for sub in walk_stmts(st["body"]):
+                if sub["kind"] in ("let", "for"):
+                    own.add(sub.get("name") or sub.get("var"))
+            for e in iter_all_exprs(st["body"]):
+                if e[0] == "var" and e[1] in let_line and let_line[e[1]] > st["line"] and e[1] not in own:
+                    self.forward_lets.add(e[1])
         # does the file use the mac library?
         if not self.mac_direct:
             used = calls_in(stmts)
@@ -1172,6 +1190,7 @@ class Converter:
         # own top-level names an included module references: globals
         self.shared = (self.included_refs & (self.def_names | self.top_lets)) - self.mac_defs
         self.forward -= self.shared
+        self.forward_lets -= self.shared
 
     def analyze_include(self, st):
         e = st["expr"]
@@ -1631,6 +1650,10 @@ class Converter:
         if self.forward:
             self.cur_line = 1
             self.emit("local %s %s" % (", ".join(sorted(self.forward)), self.port("forward-declared: called before their definition in file order")))
+        if self.forward_lets:
+            self.cur_line = 1
+            self.emit("local %s -- declared up front: read by functions defined before them" % ", ".join(sorted(self.forward_lets)))
+            scope.names |= self.forward_lets
         self.emit_block(stmts, scope, top=True)
         return "\n".join(self.out) + "\n"
 
@@ -1740,6 +1763,23 @@ class Converter:
         if st.get("vars_preset"):
             self.emit(self.with_comment("vars.%s = %s" % (st["name"], t), st), ind)
             return
+        if scope.parent is None and st["name"] in getattr(self, "forward_lets", ()):
+            self.emit(self.with_comment("%s = %s" % (self.lua_name(st["name"]), t), st), ind)
+            return
+        # The old language has no block scope: a `let` inside an if/while/for
+        # body that names a binding an enclosing block of the same function
+        # already holds rebinds that binding.  In Lua a new `local` would
+        # shadow it and leave the outer one unchanged (`let k = $k + 1` in a
+        # loop would never advance k), so it is an assignment.
+        if st["name"] not in scope.names:
+            s_ = scope.parent if not scope.is_function else None
+            while s_ is not None:
+                if st["name"] in s_.names:
+                    self.emit(self.with_comment("%s = %s" % (self.lua_name(st["name"]), t), st), ind)
+                    return
+                if s_.is_function:
+                    break
+                s_ = s_.parent
         scope.names.add(st["name"])
         name = self.lua_name(st["name"])
         if name != st["name"]:

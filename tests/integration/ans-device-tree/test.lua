@@ -1,4 +1,5 @@
 -- Converted from test.script by scripts/script-to-lua.py
+local bus_clock_lcd -- declared up front: read by functions defined before them
 -- The Apple Network Server's Open Firmware device tree, matched against
 -- Apple's published Listing 6-1.
 --

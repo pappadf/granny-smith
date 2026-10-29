@@ -79,19 +79,38 @@ prom.identify → { "recognised": false,
 ```
 
 A structurally valid Open Firmware ROM that simply is not catalogued reports
-its vendor/device ids and CRC, so a future catalog row (or the user) can
-identify it.
+its vendor/device ids and its identity, so a future catalog row (or the user)
+can identify it.
 
 ## The catalog
 
-One row per known dump: CRC-32, chip size, the **pci card-kind id** the blob
-provides, and a `preferred` bit picking the default where a card has several
-dumps. Adding a card ROM is one row.
+One row per known programming: the identity (vendor, device, FCode checksum),
+the **pci card-kind id** the blob provides, and a `preferred` bit picking the
+default where a card has several dumps. Adding a card ROM is one row.
 
 ```c
-{0x437584E0u, 0x8000, "mach64_gx", true },   // 113-32900-104 (and -004)
-{0x8C68216Eu, 0x8000, "mach64_gx", false},   // 113-32900-101
+{0x1002, 0x4758, 0xC6E8, "mach64_gx", true },  // 113-32900-104 (and -004)
+{0x1002, 0x4758, 0xD71A, "mach64_gx", false},  // 113-32900-101
+{0x1002, 0x5245, 0xBBB8, "rage128",   true },  // Xclaim VR 128, 113-57406-108
+{0x1002, 0x5245, 0x7935, "rage128",   false},  // Nexus 128, 113-57502-103
 ```
+
+### Recognised and refused
+
+A second, smaller table names genuine Macintosh Open Firmware ROMs for a card
+close enough to a modelled one to be mistaken for it, but whose silicon no
+card kind emulates. Such a ROM is **not** recognised, is never offered and is
+never loaded — and its `reason` says what it is rather than "no catalog row
+claims it", because seating it on the wrong model would boot far enough to
+mislead:
+
+| Identity | What it is |
+|---|---|
+| `1002-5046-8b43` | ATI Rage 128 Pro AGP ROM, 113-63001-110 (FCode 1.70) |
+| `1002-5046-4f8a` | ATI Rage 128 Pro AGP ROM, 113-72701-136 |
+
+Only an intact program is named: a refused ROM whose checksum fails is just
+an unknown one.
 
 ## Pick order
 
@@ -170,7 +189,10 @@ boots.
 Fixtures live in `gs-test-data`'s flat `roms/` directory, e.g.
 `mach64-gx-104-437584e0.prom`. The names are labels only: what a file is
 comes from `prom.identify`, and the `rom-catalog` integration row checks
-that every file there is recognised.
+that every file there is recognised. ROMs kept *because* they must be
+refused (the two Rage 128 Pro ROMs, the PC Rage 128 GL VGA BIOS) live in
+`roms/refused/`, outside that walk; the `rage128-prom` row checks each is
+refused with its own reason.
 
 ## Object surface
 
@@ -179,7 +201,7 @@ that every file there is recognised.
 | Member | Meaning |
 |---|---|
 | `offer(path)` | register a candidate; `true` iff recognised |
-| `identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}` |
+| `identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, id?, intact?, size, reason?}` |
 
 ## See also
 

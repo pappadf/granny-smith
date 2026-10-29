@@ -916,7 +916,7 @@ static void report_render_failure(void) {
         return; // rendering fine
     }
     s_render_failure_reported = true;
-    LOG(0, "renderer: %s -- %s", status, detail);
+    LOG_ALERT("renderer: %s -- %s", status, detail);
     // Both strings are literals without quotes or backslashes: valid JSON as is.
     event_emitf(GS_EVENT_STATE, "{\"event\":\"renderer\",\"status\":\"%s\",\"detail\":\"%s\"}", status, detail);
 }
@@ -926,8 +926,8 @@ static void log_refused_formats(void) {
     for (int f = 0; refused; f++, refused >>= 1)
         if (refused & 1u) {
             s_refused_logged |= 1u << f;
-            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
-                f < NUM_FORMATS ? display_format_name((pixel_format_t)f) : "an unknown format");
+            LOG_ALERT("renderer: no shader program for %s -- frames in this format are refused",
+                      f < NUM_FORMATS ? display_format_name((pixel_format_t)f) : "an unknown format");
         }
 }
 
@@ -946,7 +946,7 @@ void em_video_init(void) {
     started = true;
     s_slot.pixels = calloc(1, MAX_FB_BYTES);
     if (!s_slot.pixels) {
-        LOG(0, "renderer: cannot allocate the %u-byte frame slot - cannot run", (unsigned)MAX_FB_BYTES);
+        LOG_ALERT("renderer: cannot allocate the %u-byte frame slot - cannot run", (unsigned)MAX_FB_BYTES);
         return;
     }
     pthread_attr_t attr;
@@ -956,7 +956,7 @@ void em_video_init(void) {
     int rc = pthread_create(&thread, &attr, render_thread_main, NULL);
     pthread_attr_destroy(&attr);
     if (rc != 0)
-        LOG(0, "renderer: the render thread could not be started (%d) - nothing will be drawn", rc);
+        LOG_ALERT("renderer: the render thread could not be started (%d) - nothing will be drawn", rc);
     else
         pthread_detach(thread);
 }
@@ -975,8 +975,8 @@ void em_video_update(void) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte frame buffer; screen frozen", d->width,
-                d->height, d->stride, (unsigned)MAX_FB_BYTES);
+            LOG_ALERT("renderer: mode %ux%u stride %u exceeds the %u-byte frame buffer; screen frozen", d->width,
+                      d->height, d->stride, (unsigned)MAX_FB_BYTES);
         }
         return;
     }

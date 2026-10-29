@@ -1,0 +1,4 @@
+-- Placeholder: this row runs through run.sh (config.mk TEST_RUNNER), which
+-- runs ../g3-rage128-quake3-demo/test.lua under the wasm build with
+-- CPU_ENGINE=jit.  The runner requires a test script to exist; nothing runs it.
+quit()

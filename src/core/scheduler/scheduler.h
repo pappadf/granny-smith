@@ -341,6 +341,23 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
 // on change as the speed event.  Divide by 256.0 for the display value.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
 
+// The run loop's figures for the perf line (log.perf_every): what the host
+// ticks gave the guest since the last call, and the estimates the next
+// tick's budget comes from.  The interval counters restart at each call.
+typedef struct {
+    const char *mode; // "paced", "turbo", "accelerated"
+    uint64_t ticks; // host ticks that ran frame-units
+    uint64_t vbls; // frame-units run
+    uint32_t vbls_max; // most frame-units one tick was given
+    uint64_t behind; // paced ticks that ended still owing frame-units
+    double run_ms, run_ms_max; // host time running them (total, longest tick)
+    double host_ms_per_vbl, host_ms_per_loop; // smoothed estimates
+    double speed; // the effective speed multiple
+    double turbo_ratio; // turbo: emulated over host seconds (NAN before a tick)
+    int governor_rung; // the pacing governor's rung
+} scheduler_perf_t;
+void scheduler_perf_take(struct scheduler *s, scheduler_perf_t *out);
+
 // Emit the speed event for the current effective speed, whether or not it
 // changed.  The swap step calls it: the speed a machine settled on while it
 // was built was not announced (event_hold).

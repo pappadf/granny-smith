@@ -150,6 +150,15 @@ multiscan("multiscan_15", 0x03)
 multiscan("multiscan_17", 0x0B)
 multiscan("multiscan_20", 0x23)
 
+-- --- G13: an unplugged port senses nothing attached --------------------------
+-- A configuration document that plugs no monitor into the built-in port (the
+-- monitor on a PCI display card instead) straps the Rage Pro's "none" row --
+-- every sense pin floating high, which its FCode reads as no cable -- not the
+-- 14" every other code falls back to; else Mac OS keeps the built-in video as
+-- its main screen, menu bar and all, on a monitor nobody sees.
+machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM, config = "{\"displays\":{\"builtin\":{\"monitor\":\"none\"}}}"}
+assert(machine.pci.slot[4].card.monitor.id == "none", F"G13: the unplugged built-in port straps ${machine.pci.slot[4].card.monitor.id}")
+
 -- ============================================================================
 -- Rev A — Open Firmware 2.0f1, the same board program: G1-G7
 -- ============================================================================

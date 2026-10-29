@@ -580,6 +580,13 @@ static inline int sf_fast_ok(uint64_t x) {
     return ((uint32_t)(x >> 52) & 0x7FFu) - SF_FAST_ELO <= SF_FAST_EHI - SF_FAST_ELO;
 }
 
+// Both significands fit in 26 bits (the low 27 fraction bits clear), so
+// their product fits a double's 53: single-precision operands, which is
+// what lfs loads and the single-precision arithmetic leaves.
+static inline int sf_short_product(uint64_t a, uint64_t c) {
+    return ((a | c) & 0x7FFFFFFull) == 0;
+}
+
 // Sign of an exact error term: -1, 0, +1.
 static inline int sf_sign_of(double e) {
     return (e > 0) - (e < 0);
@@ -634,7 +641,9 @@ static inline __attribute__((always_inline)) int sf_fast_arith(ppc_sf_op_t op, u
             return 0;
         double dc = sf_f64(c);
         r = da * dc;
-        es = sf_sign_of(__builtin_fma(da, dc, -r));
+        // Two short significands multiply exactly (sf_short_product); the
+        // error needs an fma only otherwise (a library call on wasm).
+        es = sf_short_product(a, c) ? 0 : sf_sign_of(__builtin_fma(da, dc, -r));
         break;
     }
     case PPC_SF_DIV: {
@@ -653,6 +662,16 @@ static inline __attribute__((always_inline)) int sf_fast_arith(ppc_sf_op_t op, u
         double db = sf_f64((op == PPC_SF_MSUB || op == PPC_SF_NMSUB) ? b ^ 0x8000000000000000ull : b);
         if (!sf_fast_ok(sf_u64(da * dc)))
             return 0;
+        if (sf_short_product(a, c)) {
+            // a*c is exact, so one rounded add is the fused result and
+            // TwoSum gives its error.
+            double t;
+            r = sf_two_sum(da * dc, db, &t);
+            if (!sf_fast_ok(sf_u64(r)))
+                return 0;
+            es = sf_sign_of(t);
+            break;
+        }
         r = __builtin_fma(da, dc, db);
         if (!sf_fast_ok(sf_u64(r)))
             return 0;

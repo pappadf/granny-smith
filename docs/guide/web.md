@@ -327,6 +327,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}`; a printed document adds `kind: "document", printer, job, pages, title` |
+| `notify:afp_remote_request` | a remote AFP volume, when a command needs a folder's listing or a file's data (docs/internals/core/network/afp_remote.md §3); `bus/remoteAfp.ts` answers with `appletalk.remote.complete` | `{id, op, uri, dest}`, `op` `list` or `fetch` |
 | `log:log` | the log sink, every line | `{line}` |
 | `log:print` | the log's stdout sink, every line of a category with `stdout` on (in place of stdout, whose one-`postMessage`-per-line road could bury the page) | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |

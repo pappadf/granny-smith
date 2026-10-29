@@ -8,7 +8,7 @@ machine.boot{model = "plus", ram = 4096, rom = vars.ROM}
 local n = 0
 while (machine.memory.peek.b(0xEFFBFE) & 0x02) == 0 and n < 200 do
     scheduler.run(20000)
-    local n = n + 1
+    n = n + 1
 end
 assert((machine.memory.peek.b(0xEFFBFE) & 0x02) ~= 0, "the Plus never raised CA1 (VBL) in IFR")
 local ora = machine.memory.peek.b(0xEFE3FE)

@@ -196,7 +196,7 @@ local function tower_sizes(m, rom)
         local n = 0
         while debug.mac.globals.read("MemTop") ~= kb * 1024 and n < 12 do
             scheduler.run(50000000)
-            local n = n + 1
+            n = n + 1
         end
         assert(machine.ram == kb, F"tower-256m: ${m} machine.ram != ${kb}")
         assert(debug.mac.globals.read("MemTop") == kb * 1024, F"tower-256m: ${m} RAM sizing incomplete at ${kb} KB (MemTop=${debug.mac.globals.read(\"MemTop\"):08x}, want ${kb * 1024:08x}, PC=${machine.cpu.pc:08x})")

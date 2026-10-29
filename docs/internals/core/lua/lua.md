@@ -167,16 +167,24 @@ as a zero-argument command (`machine.videoin.pattern`) is a call; the old
 `!call(...)` is `gs.truthy`; a `"\x00"` in a needle was a real NUL the old
 `val_str` cut the string at, so the needle meant its prefix (the device-tree
 test's console prints the four characters `\x00`, which Lua spells `"\\x00"`);
-and a wait that samples the screen must sample after each run, never before
-the first, or a sample-exact row shifts by a quantum.
+a wait that samples the screen must sample after each run, never before
+the first, or a sample-exact row shifts by a quantum.  Two scoping rules
+follow from the old language having no block scope and resolving names at
+the call: a `let` inside a loop or `if` body that names a binding of the
+enclosing function rebinds it (`let k = $k + 1` advances the loop counter),
+so it is an assignment in Lua, never a new `local`; and a top-level binding
+that a function defined above it reads must be declared before that
+function, or the function reads a nil global.  The converter does both.
 
 Still on the shell language's interpreter: the terminal's lines and
 `shell.eval`, the breakpoint conditions and logpoint templates (`debug.c`),
 the tests of that language itself (`shell-v2`, `shell-class`,
 `shell-commands`, `shell-command-words`, `object-expr`, `object-metadata`,
 `object-model-reorg`, `object-logpoint`, `object-debug`, `daemon-statements`),
-and the two scripts the Playwright specs feed to the browser terminal
-(`tnt-pci-voodoo2/draw-webgpu.script`, `glide-init.script`).  The
+and the scripts the Playwright specs feed to the browser terminal
+(`tnt-pci-voodoo2/draw-webgpu.script`, `glide-init.script`,
+`rage128-3d/test.script`, each beside its Lua port, and the `tests/bench`
+scenarios).  The
 terminal's command form as a line-level front end to Lua, the coroutine
 driver that would retire the job thread, and the deletion of the old
 interpreter follow.

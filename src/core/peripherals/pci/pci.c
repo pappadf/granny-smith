@@ -123,11 +123,21 @@ extern const pci_card_kind_t sym53c825_ch0_kind;
 extern const pci_card_kind_t sym53c825_ch1_kind;
 extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
+extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
+extern const pci_card_kind_t rage128_webgpu_kind; // ...the same card, its 3D drawn by the host GPU
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,    &mach64_gx_kind,     &cirrus_54m30_kind,
-    &sym53c825_ch0_kind,  &sym53c825_ch1_kind, &voodoo2_kind,
-    &voodoo2_webgpu_kind, &ati_rage_pro_kind,  NULL,
+    &tnt_control_kind,
+    &mach64_gx_kind,
+    &cirrus_54m30_kind,
+    &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind,
+    &voodoo2_kind,
+    &voodoo2_webgpu_kind,
+    &ati_rage_pro_kind,
+    &rage128_kind,
+    &rage128_webgpu_kind,
+    NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -390,6 +400,26 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     d.iface->write_uint32(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap32(value) : value);
 }
 
+// A cache line (memory.h, write_line), `bytes` in the window's address
+// order.  One BAR decoding all of it, with a handler that takes lines, gets
+// it as a burst in PCI byte order (each 8-byte lane reversed when the bridge
+// reverses lanes); otherwise it goes as the eight word writes it was made of.
+static void window_write_line(void *ctx, uint32_t offset, const uint8_t *bytes) {
+    const pci_window_t *w = (const pci_window_t *)ctx;
+    pci_decode_t d0, d1;
+    if (window_locate(w, window_pci_addr(w, offset), &d0) && d0.iface->write_line &&
+        window_locate(w, window_pci_addr(w, offset + MEM_LINE_SIZE - 1), &d1) && d1.iface == d0.iface &&
+        d1.ctx == d0.ctx && d1.sub - d0.sub == MEM_LINE_SIZE - 1) {
+        uint8_t bus[MEM_LINE_SIZE];
+        for (uint32_t i = 0; i < MEM_LINE_SIZE; i++)
+            bus[i] = bytes[w->bus->lane_reverse ? i ^ 7u : i];
+        d0.iface->write_line(d0.ctx, d0.sub, bus);
+        return;
+    }
+    for (uint32_t o = 0; o < MEM_LINE_SIZE; o += 4)
+        window_write32(ctx, offset + o, LOAD_BE32(bytes + o));
+}
+
 // Resolve one window page for the fast tables (memory.h,
 // mem_dev_desc_t).  `out` NULL asks only whether `iface` is a PCI window.
 // A page resolves when a single BAR decodes all of it linearly; anything
@@ -443,6 +473,7 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.peek_uint8 = window_peek8;
     w->iface.peek_uint16 = window_peek16;
     w->iface.peek_uint32 = window_peek32;
+    w->iface.write_line = window_write_line;
     memory_map_add(bus->cfg->memory_map, map_base, size, w->what, &w->iface, w);
     memory_map_set_dev_resolver(bus->cfg->memory_map, window_resolve_page); // flushes resolved pages
 }
@@ -684,7 +715,7 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     // offers, which leaves the socket empty (and a stand-in, if the machine
     // has one, in its place).
     const pci_card_kind_t *k = s->default_card ? pci_card_find(s->default_card) : NULL;
-    if (k && k->requires_prom && !prom_card_resolvable(k->id, NULL))
+    if (k && k->requires_prom && !prom_card_resolvable(pci_card_rom_id(k), NULL))
         return NULL;
     return s->default_card;
 }
@@ -744,11 +775,12 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
                           "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
                           "instead)",
                           e->rom);
-        if (!k || strcmp(pid.card_id, k->id) != 0)
+        if (!k || strcmp(pid.card_id, pci_card_rom_id(k)) != 0)
             return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
                           k ? k->id : "(none)");
     }
-    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+    if (roms_final && named && k && k->requires_prom &&
+        !prom_card_resolvable(pci_card_rom_id(k), e->rom[0] ? e->rom : NULL))
         return refuse(why, why_len,
                       "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
                       e->slot);
@@ -1148,4 +1180,71 @@ void pci_deassert_irq(pci_device_t *dev) {
     if (!dev || !dev->bus || dev->slot_index <= 0 || dev->slot_index >= PCI_MAX_SLOTS)
         return;
     pci_route_slot_irq(dev->bus->cfg, dev->slot_index, /*active*/ false);
+}
+
+// === Bus mastering ==========================================================
+
+// May `dev` master the bus right now?  Seated, on a bus with a machine
+// behind it, and its driver has set BUS_MASTER_EN.
+static bool dma_permitted(const pci_device_t *dev, const char *dir, uint32_t phys, uint32_t len) {
+    if (!dev || !dev->bus || !dev->bus->cfg)
+        return false;
+    if (!(dev->cfg.command & PCI_CMD_MASTER)) {
+        // Logged rather than silent: a driver that forgets the bit hangs
+        // waiting on a transfer that never happens, and this line says why.
+        LOG(1, "%s: DMA %s of %u bytes at $%08X refused: BUS_MASTER_EN is clear",
+            dev->ops && dev->ops->name ? dev->ops->name(dev) : "device", dir, (unsigned)len, (unsigned)phys);
+        return false;
+    }
+    return true;
+}
+
+// Does [phys, phys+len) lie wholly inside the machine's RAM?
+static bool dma_in_ram(const config_t *cfg, uint32_t phys, uint32_t len) {
+    return cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys;
+}
+
+uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len) {
+    uint8_t *out = (uint8_t *)buf;
+    if (!dma_permitted(dev, "read", phys, len)) {
+        memset(out, 0xFF, len); // nothing drove the bus: all-ones
+        return 0;
+    }
+    config_t *cfg = dev->bus->cfg;
+    bool rev = dev->bus->lane_reverse;
+    if (dma_in_ram(cfg, phys, len)) {
+        const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
+        if (!rev)
+            memcpy(out, ram + phys, len);
+        else
+            // The XOR never leaves the aligned 8-byte group, so a block
+            // inside RAM stays inside RAM.
+            for (uint32_t i = 0; i < len; i++)
+                out[i] = ram[(phys + i) ^ 7u];
+        return len;
+    }
+    // Device space or a range straddling the end of RAM: the slow path.
+    for (uint32_t i = 0; i < len; i++)
+        out[i] = memory_read_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i));
+    return len;
+}
+
+uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32_t len) {
+    const uint8_t *in = (const uint8_t *)buf;
+    if (!dma_permitted(dev, "write", phys, len))
+        return 0;
+    config_t *cfg = dev->bus->cfg;
+    bool rev = dev->bus->lane_reverse;
+    if (dma_in_ram(cfg, phys, len)) {
+        uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
+        if (!rev)
+            memcpy(ram + phys, in, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                ram[(phys + i) ^ 7u] = in[i];
+        return len;
+    }
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), in[i]);
+    return len;
 }

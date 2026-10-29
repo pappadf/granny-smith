@@ -966,6 +966,8 @@ status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     checkpoint_publish_next(final_path);
     rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
     if (rc != STATUS_OK) {
+        LOG_ALERT("checkpoint (%s) failed: %s (status %d, %s)", reason ? reason : "background",
+                  quick_checkpoint_status_text(rc), rc, tmp_path);
         checkpoint_publish_next(NULL);
         unlink(tmp_path);
         if (verbose)
@@ -985,6 +987,7 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
         if (g_quick_verbose)
             out_printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
     } else {
+        LOG_ALERT("checkpoint write failed: %s (%s)", error ? error : "?", g_quick_final_path);
         out_printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
         // The write runs after the caller had its answer: say it, always.
         quick_checkpoint_failed_event(error ? error : "the file could not be written");

@@ -1833,14 +1833,11 @@ static void mach64_host_feed_colour(mach64_t *m, const mach64_op_t *op, uint32_t
     }
 }
 
-static void mach64_host_feed(mach64_t *m, uint32_t value) {
-    if (!m->host_op.active)
-        return;
-    mach64_op_t op;
-    mach64_op_gather(m, &op);
+// One dword into the operation in flight, `op` its gathered state.
+static void mach64_host_feed_op(mach64_t *m, const mach64_op_t *op, uint32_t value) {
     uint32_t host_w = (m->reg[DW_DP_PIX_WIDTH] >> 16) & 7u;
-    if (host_w && op.mono_sel != DP_MONO_HOST) {
-        mach64_host_feed_colour(m, &op, host_w, value);
+    if (host_w && op->mono_sel != DP_MONO_HOST) {
+        mach64_host_feed_colour(m, op, host_w, value);
         return;
     }
     bool lsb_first = (m->reg[DW_DP_PIX_WIDTH] & 0x80000000u) != 0;
@@ -1854,7 +1851,7 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
 
         uint32_t x = m->host_op.x0 + m->host_op.col;
         uint32_t y = m->host_op.y0 + m->host_op.row;
-        mach64_emit(m, &op, x, y, m->host_op.col, m->host_op.row, mono);
+        mach64_emit(m, op, x, y, m->host_op.col, m->host_op.row, mono);
 
         if (++m->host_op.col >= m->host_op.w) {
             m->host_op.col = 0;
@@ -1863,13 +1860,33 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->blits++;
                 m->display.fb_dirty = true;
                 LOG(3, "Mach64: op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
-                    m->host_op.h, m->host_op.x0, m->host_op.y0, op.dst.base, op.dst.pitch);
+                    m->host_op.h, m->host_op.x0, m->host_op.y0, op->dst.base, op->dst.pitch);
                 return;
             }
             if (byte_align)
                 bit = ((bit >> 3) + 1u) * 8u - 1u; // resume on a byte boundary
         }
     }
+}
+
+static void mach64_host_feed(mach64_t *m, uint32_t value) {
+    if (!m->host_op.active)
+        return;
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    mach64_host_feed_op(m, &op, value);
+}
+
+// Several dwords of host data at once -- a cache line's worth through
+// aux_write_line -- with the operation's state gathered once.  Host data
+// moves nothing that mach64_op_gather reads, so it is the same for each.
+static void mach64_host_feed_n(mach64_t *m, const uint32_t *values, uint32_t n) {
+    if (!m->host_op.active)
+        return;
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    for (uint32_t i = 0; i < n && m->host_op.active; i++)
+        mach64_host_feed_op(m, &op, values[i]);
 }
 
 // ============================================================
@@ -2189,6 +2206,16 @@ static void mach64_engine_line(mach64_t *m) {
 #define GUI_TRAJ_PAT_MONO_EN  0x01000000u // GUI_TRAJ_CNTL bit 24
 #define SRC_CNTL_PATT_ROT_EN  0x02u
 
+// The same family's DST_X_Y ($BA) and DST_WIDTH_HEIGHT ($BB, which starts
+// the operation): DST_Y_X and DST_HEIGHT_WIDTH with the halves the other way
+// round, by the field-order rule below.  ATI's Mac accelerator starts its
+// screen-to-screen blits -- a window's scroll -- through them; ignored, the
+// scroll copied nothing and only the newly exposed strip was redrawn.  The
+// field order is the trace's: $0044000D / $004100D1 for the 209 x 65 content
+// of a window at (13,68).
+#define DW_DST_X_Y          0xBA
+#define DW_DST_WIDTH_HEIGHT 0xBB
+
 // SET_DST_PITCH: 0 = USR_DST_PITCH, otherwise a pitch in pixels.
 static const uint16_t gp_set_dst_pitch[16] = {0,    320,  352,  384, 640, 800,  896, 512,
                                               1024, 1152, 1280, 400, 832, 1600, 448, 2048};
@@ -2243,6 +2270,21 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         if (!m->gp)
             return false;
         gp_set_gui_engine2(m, value);
+        return true;
+    case DW_DST_X_Y:
+        if (!m->gp)
+            return false;
+        m->reg[DW_DST_X] = value & 0xFFFFu;
+        m->reg[DW_DST_Y] = (value >> 16) & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_DST_WIDTH_HEIGHT: // and GO
+        if (!m->gp)
+            return false;
+        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+        m->reg[DW_DST_HEIGHT] = (value >> 16) & 0xFFFFu;
+        m->reg[dw] = value;
+        mach64_engine_run(m);
         return true;
     // FIELD ORDER.  In ATI's combined `A_B` register names the FIRST-named
     // field is the LOW halfword and the second is the HIGH halfword, so
@@ -2722,6 +2764,30 @@ static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     } else {
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
     }
+}
+
+// A cache line through BAR2 (memory.h, write_line): ATI's driver streams
+// host data as lines of block 0's HOST_DATA.  Such a line feeds the
+// operation in one go, as the eight register writes would; any other line is
+// its eight word writes.
+static void aux_write_line(void *ctx, uint32_t offset, const uint8_t *bytes) {
+    mach64_t *m = (mach64_t *)ctx;
+    uint32_t o = offset & RAGEPRO_BAR2_DECODE;
+    int dw0 = (int)((o & 0x3FFu) >> 2);
+    if (o >= 0x400u && dw0 >= DW_HOST_DATA0 && dw0 + 7 <= DW_HOST_DATA_LAST) {
+        uint32_t v[MEM_LINE_SIZE / 4];
+        for (uint32_t i = 0; i < MEM_LINE_SIZE / 4; i++) {
+            const uint8_t *b = bytes + 4u * i;
+            v[i] = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+            m->reg[dw0 + (int)i] = v[i];
+        }
+        mach64_host_feed_n(m, v, MEM_LINE_SIZE / 4);
+        return;
+    }
+    for (uint32_t i = 0; i < MEM_LINE_SIZE; i += 4)
+        aux_write32(ctx, offset + i,
+                    ((uint32_t)bytes[i] << 24) | ((uint32_t)bytes[i + 1] << 16) | ((uint32_t)bytes[i + 2] << 8) |
+                        bytes[i + 3]);
 }
 
 static uint8_t bio_rd8(void *ctx, uint32_t offset, bool peek) {
@@ -3904,7 +3970,12 @@ const pci_card_kind_t mach64_gx_kind = {
 // as the built-in slot's `sense`.  Any other value -- 7, MACHINE_SENSE_NONE,
 // which every G3 built before this list existed carries, its checkpoints
 // included -- straps the 14", the monitor the Rage Pro always had.
-static const char *const ragepro_monitors[] = {"13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"};
+// The sixth, "none", is the port with nothing plugged in -- every sense line
+// floats high, which the chip's FCode reads as "nothing attached" -- how a
+// G3 runs with its display on a PCI card instead; its index is
+// mach64_sense's "none" row.
+static const char *const ragepro_monitors[] = {"13in_rgb",     "multiscan_15", "multiscan_17",
+                                               "multiscan_20", "21in_rgb",     "none"};
 #define RAGEPRO_MONITORS (sizeof(ragepro_monitors) / sizeof(ragepro_monitors[0]))
 
 bool mach64_ragepro_monitor_at(size_t i, const char **id, const char **monitor) {
@@ -3977,6 +4048,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     m->aux_if.peek_uint8 = aux_peek8;
     m->aux_if.peek_uint16 = aux_peek16;
     m->aux_if.peek_uint32 = aux_peek32;
+    m->aux_if.write_line = aux_write_line;
     m->bio_if.read_uint8 = bio_read8;
     m->bio_if.read_uint16 = bio_read16;
     m->bio_if.read_uint32 = bio_read32;
