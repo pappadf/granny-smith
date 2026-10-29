@@ -1,0 +1,230 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: configuration-document boot.  machine.boot inherits
+-- NOTHING — the document is the whole specification.
+--
+-- Pins the boot-document contract end-to-end:
+--   * headless startup boots through the same path as scripts;
+--   * model and rom are required; every other omitted field resolves to the
+--     MODEL's own default, never to the previous machine's — including
+--     after a model change;
+--   * all validation runs BEFORE teardown: a rejected boot leaves the
+--     running machine untouched;
+--   * slots= configures each slot (card, mode, ROM, options); video_card=
+--     is sugar for the first socket's card, and the two may not disagree;
+--   * each card names the declaration ROM it actually resolved
+--     (machine.nubus.slot[N].card.declrom); vrom= (or a slot's rom=) pins a
+--     specific revision;
+--   * checkpoint.load builds the saved machine -- its slots and its monitor
+--     strap -- from the checkpoint's own parts.
+
+-- --- Startup boot (headless CLI = the same path). ---
+assert(machine.id == "iicx", "model from CLI")
+assert(machine.ram == 8192, "ram from CLI")
+assert(machine.rom.id == "97221136", "rom from CLI")
+
+-- --- Slot nodes describe what is installed: an empty socket has none. ---
+assert(machine.nubus.slot[9].number == 9, "populated socket $9 missing from object model")
+assert(not gs.ok(function() return machine.nubus.slot[10].number end), "an empty socket has no slot node")
+
+-- --- A log line written while a machine is built carries the running
+-- machine's PC and instruction count; it used to reach for the machine
+-- under construction and stop on the construction assert. ---
+log.set("system", {level = 1, ts = true, pc = true})
+log.set("nubus", {level = 1, ts = true, pc = true})
+assert(machine.boot{model = "iicx", rom = vars.ROM}, "a boot with decorated construction logs")
+log.set("system", {level = 0, ts = false, pc = false})
+log.set("nubus", {level = 0, ts = false, pc = false})
+
+-- --- The document is the whole specification: model and rom are required. ---
+assert(not gs.truthy(function() return machine.boot() end), "bare machine.boot must be rejected (model required)")
+assert(not gs.truthy(function() return machine.boot{model = "iicx"} end), "machine.boot without rom must be rejected")
+assert(not gs.truthy(function() return machine.boot{rom = vars.ROM} end), "machine.boot without model must be rejected")
+
+-- --- Validate-before-teardown: every rejection leaves the machine running. ---
+assert(not gs.truthy(function() return machine.boot{model = "bogus", rom = vars.ROM} end), "unknown model must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, ram = 999} end), "off-menu ram must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = "does/not/exist.rom"} end), "unreadable rom must be rejected")
+-- A real ROM the model does not run: another machine's, or a file that is no
+-- ROM at all.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = "../../data/roms/plus-v3-4d1f8172.rom"} end), "a Plus ROM on a IIcx must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "plus", rom = vars.ROM} end), "a IIcx ROM on a Plus must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = "../../data/roms/display-card-24ac-d8daab87.vrom"} end), "a vROM as the machine ROM must be rejected")
+assert(machine.id == "iicx", "a rejected ROM left the running machine alone")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, vrom = "../../data/roms/plus-v3-4d1f8172.rom"} end), "non-vROM vrom= must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_card = "nonesuch"} end), "unknown card id must be rejected")
+-- A real card that fits no slot of this model (the IIci's built-in RBV video
+-- on a IIcx) is rejected too: seated nowhere, it used to boot the default
+-- display and leave the row that named it testing something else.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_card = "builtin_rbv_video"} end), "a card that fits no slot must be rejected")
+-- A built-in slot takes its own card, never just any on-board video: another
+-- machine's would drive registers laid out for a different chip.
+assert(not gs.truthy(function() return machine.boot{model = "se30", rom = vars.ROM, video_card = "builtin_rbv_video"} end), "the IIci's on-board video must not fit the SE/30's built-in slot")
+assert(not gs.truthy(function() return machine.boot{model = "iici", rom = "../../data/roms/iici-368cadfe.rom", video_card = "builtin_se30_video"} end), "the SE/30's on-board video must not fit the IIci's built-in slot")
+-- 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
+-- passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
+-- tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_sense = 15} end), "out-of-range sense must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_mode = "nonesuch"} end), "unknown video mode must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, pci_card = "tnt_control"} end), "pci_card= on a model with no PCI slots must be rejected")
+-- vrom= / prom= give a slot's card its ROM; they never choose a card, so a file
+-- that fits nothing the machine seats is a mistake, not a no-op.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, vrom = "../../data/roms/display-card-24ac-d8daab87.vrom"} end), "a vrom= for a card no slot holds must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, prom = "../../data/roms/mach64-gx-104-437584e0.prom"} end), "prom= on a model with no PCI slots must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "pm9500", rom = "../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom", vrom = "../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"} end), "vrom= on a model with no NuBus slots must be rejected")
+-- slots= is checked slot by slot, before teardown too.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "8=824gc"} end), "a slot the model does not have must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9"} end), "an entry that is not SLOT=CARD must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=nonesuch"} end), "an unknown card in slots= must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc;9=mdc_8_24"} end), "a slot named twice must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,,mode=gc_640x480_8bpp"} end), "an empty field must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,"} end), "a trailing comma must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,mode=gc_640x480_8bpp,mode=gc_640x480_1bpp"} end), "mode= given twice must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=none,mode=gc_640x480_8bpp"} end), "an empty slot with settings must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,mode= "} end), "an empty value must be rejected")
+-- A leading zero is decimal, not octal: 011 is slot 11 ($B), not 9.
+assert(machine.boot{model = "iicx", rom = vars.ROM, slots = "011=824gc"}, "a zero-padded slot number")
+assert(machine.nubus.slot[11].card.id == "824gc", "011 must be slot 11, not octal 9")
+assert(machine.nubus.slot[9].card.id == "mdc_8_24", "011 must not touch slot 9")
+-- Blanks around the parts and an empty entry are nothing.
+assert(machine.boot{model = "iicx", rom = vars.ROM, slots = " 9 = 824gc , mode = gc_640x480_8bpp ;; "}, "blanks and an empty entry")
+assert(machine.nubus.slot[9].card.mode.depth == 8, "the blank-padded entry's mode")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,mode=rgb_640x480_8bpp"} end), "a mode of another card must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,custom=640x480x8"} end), "custom geometry on a card without it must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=mdc_8_24,custom=640x480x16"} end), "custom geometry the card cannot hold must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,vram=4m"} end), "a NuBus card takes no options")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=../../data/roms/plus-v3-4d1f8172.rom"} end), "a slot ROM that is no vROM must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=../../data/roms/mdc-8-24-revb-d1629664.vrom"} end), "a slot ROM for another card must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_card = "824gc", slots = "9=display_card_24ac"} end), "video_card= and slots= disagreeing about a slot must be rejected")
+-- rom=substitute: the emulator's substitute declaration ROM, never with a file,
+-- only for a card that has one, and only the monitors that ROM carries.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=substitute,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"} end), "a ROM file and the substitute together must be rejected")
+assert(not gs.truthy(function() return machine.boot{model = "iici", rom = "../../data/roms/iici-368cadfe.rom", slots = "11=builtin_rbv_video,rom=substitute"} end), "a card without a substitute ROM must refuse one")
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=substitute,mode=gc_832x624_8bpp"} end), "a mode the substitute ROM does not carry must be rejected")
+-- video_sense= overrides the connected device: a card's connector reads 0..7.
+assert(not gs.truthy(function() return machine.boot{model = "iicx", rom = vars.ROM, video_sense = 10} end), "an extended code on a card's connector must be rejected")
+assert(machine.id == "iicx", "machine survives every rejected boot")
+assert(machine.ram == 8192, "machine intact after rejected boots")
+
+-- --- Non-inheritance: omitted fields resolve to the MODEL's defaults. ---
+machine.boot{model = "iicx", ram = 16384, rom = vars.ROM, video_card = "824gc"}
+assert(machine.ram == 16384, "explicit ram")
+assert(machine.nubus.slot[9].card.id == "824gc", "explicit card")
+machine.boot{model = "iicx", rom = vars.ROM}
+assert(machine.ram == 8192, "omitted ram must be the model default, not the previous machine's 16384")
+assert(machine.nubus.slot[9].card.id == "mdc_8_24", "omitted card must resolve to the slot default")
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24", "omitted card must resolve to the slot default")
+assert(machine.rom.loaded == true, "boot must stage the ROM")
+
+-- --- slots=: the 24AC in socket $9. ---
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=display_card_24ac"}
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC", "per-slot entry not honoured")
+-- The next document says nothing about the slot: its default again.
+machine.boot{model = "iicx", rom = vars.ROM}
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24", "a slot entry must not outlive its document")
+-- none empties a socket, even one with a declared default.
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=none"}
+assert(not gs.ok(function() return machine.nubus.slot[9].card.name end), "slots=9=none must leave socket $9 empty")
+
+-- --- Sugar: video_card= applies to the machine's first socket. ---
+machine.boot{model = "iicx", rom = vars.ROM, video_card = "824gc"}
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "video_card= not applied to first socket")
+assert(machine.nubus.slot[9].card.declrom.crc ~= 0, "the card names the declaration ROM it resolved")
+
+-- --- Each socket names the card it seats, including the socket video_card=
+-- cannot name. ---
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=display_card_24ac;10=824gc"}
+assert(machine.nubus.slot[9].card.id == "display_card_24ac", "socket $9's card")
+assert(machine.nubus.slot[10].card.id == "824gc", "socket $A's card")
+-- ...and a slot the document says nothing about resolves its default.
+machine.boot{model = "iicx", rom = vars.ROM}
+assert(machine.nubus.slot[9].card.id == "mdc_8_24", "a default-populated socket")
+assert(not gs.ok(function() return machine.nubus.slot[10].card.id end), "an unconfigured socket stays empty")
+
+-- --- A slot's video mode: the 8-bpp seed reaches its card. ---
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,mode=gc_640x480_8bpp"}
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "mode test: card not seated")
+assert(machine.nubus.slot[9].card.mode.depth == 8, "the slot's video mode did not set 8 bpp")
+
+-- --- A checkpoint restores the machine it was built as: its RAM, and the card
+-- and declaration ROM in each slot (the board's and the bus's own parts). ---
+machine.boot{model = "iicx", ram = 16384, rom = vars.ROM, slots = "9=824gc,mode=gc_640x480_8bpp,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=display_card_24ac", config = "{\"storage\":[{\"bus\":\"scsi\",\"unit\":2,\"type\":\"hd\"}]}"}
+assert(gs.contains(F"${machine.storage}", "\"unit\":2"), "machine.storage lists the document's hard disk")
+assert(not gs.truthy(function() return gs.contains(F"${machine.storage}", "\"type\":\"cd\"") end), "machine.storage lists a CD drive the document left out")
+scheduler.run(100000)
+assert(checkpoint.save(F"${vars.WORK_DIR}/bootcfg.checkpoint"), "checkpoint save")
+machine.boot{model = "iicx", rom = vars.ROM, video_card = "display_card_24ac"}
+assert(machine.nubus.slot[9].card.id == "display_card_24ac", "pre-restore machine differs")
+assert(checkpoint.load(F"${vars.WORK_DIR}/bootcfg.checkpoint"), "checkpoint load")
+assert(machine.id == "iicx", "restored model")
+assert(machine.ram == 16384, "restored ram")
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC", "restored machine: slot $9's card")
+assert(machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8, "restored machine: slot $9's pinned declaration ROM")
+assert(machine.nubus.slot[10].card.name == "Macintosh Display Card 24AC", "restored machine: slot $A's card")
+assert(gs.contains(F"${machine.storage}", "\"unit\":2"), "restored machine: its storage devices")
+-- Under a non-inheriting boot a bare machine.boot after restore is an error.
+assert(not gs.truthy(function() return machine.boot() end), "bare machine.boot after restore must be rejected")
+
+-- --- vrom= pins a revision: the card runs the v1.0 ROM (crc $9E9857E8)
+-- instead of the catalog-preferred v1.1. ---
+machine.boot{model = "iicx", rom = vars.ROM, video_card = "824gc", vrom = "../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"}
+assert(machine.nubus.slot[9].card.declrom.path == "../../data/roms/824gc-v1.0-reva-9e9857e8.vrom", "vrom= v1.0 must be used over the preferred v1.1")
+assert(machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8, "vrom= v1.0's CRC")
+-- ...for that document only: the next boot without vrom= resolves the
+-- catalog-preferred v1.1 again (a boot never writes the catalog).
+machine.boot{model = "iicx", rom = vars.ROM, video_card = "824gc"}
+assert(machine.nubus.slot[9].card.declrom.crc == 0xd722b053, "the previous boot's vrom= must not outlive it")
+-- A slot's own rom= does the same for that slot alone: two GCs, two revisions.
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=824gc"}
+assert(machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8, "slot $9 runs its own rom=")
+assert(machine.nubus.slot[10].card.declrom.crc == 0xd722b053, "slot $A resolves the catalog's preferred revision")
+-- vrom= is the ROM of every slot whose card it provides.
+machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc;10=824gc", vrom = "../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"}
+assert(machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8, "vrom= reaches slot $9")
+assert(machine.nubus.slot[10].card.declrom.crc == 0x9e9857e8, "vrom= reaches slot $A")
+
+-- --- The built-in monitor strap (PDM) is a construction fact of the built-in
+-- video: checkpoint.load builds with the saved one.  monitor=none leaves the
+-- port unconnected, so the machine has no screen until a card provides one. ---
+local pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+machine.boot{model = "pm7100", rom = pdm_rom, monitor = "none"}
+assert(machine.screen.width == 0, "monitor=none: no built-in screen")
+assert(checkpoint.save(F"${vars.WORK_DIR}/monitor.checkpoint"), "checkpoint save (pm7100)")
+machine.boot{model = "pm7100", rom = pdm_rom}
+assert(machine.screen.width == 640, "default strap: the built-in 640x480")
+assert(checkpoint.load(F"${vars.WORK_DIR}/monitor.checkpoint"), "checkpoint load (pm7100)")
+assert(machine.screen.width == 0, "restored machine has no built-in screen")
+
+-- --- A model change carries nothing (the v0.8.0 staging regression). ---
+-- video_card / video_mode / video_sense / vrom name a card in a slot, so
+-- they describe the model they were captured on and no other.  Under the
+-- old inheritance rule they followed the user onto a machine that could not
+-- host them: booting an SE/30 (or IIcx) and then a 660AV in one session
+-- failed with "model 'q660av' has no NuBus slots for video_card 'se30'".
+-- The AV machines declare no NuBus slots at all, so they are the strict case.
+machine.boot{model = "iicx", rom = vars.ROM, video_card = "824gc"}
+assert(machine.nubus.slot[9].card.id == "824gc", "precondition: the machine has the card")
+assert(machine.boot{model = "q660av", rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"}, "a slotless model must boot cleanly after a carded one")
+assert(not gs.ok(function() return machine.nubus.slot[9].card.id end), "the old card must not reach the new machine")
+-- Coming back does not resurrect it either — the IIcx boots on its slot default.
+assert(machine.boot{model = "iicx", rom = vars.ROM}, "back to a carded model")
+assert(machine.nubus.slot[9].card.id == "mdc_8_24", "video_card must not survive any model change")
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24", "slot default after the round trip")
+
+-- --- One card, two ROMs: Apple's when offered, else the substitute. ---
+assert(machine.nubus.slot[9].card.substitute == false, "the offered 8•24 ROM must be the one the card runs")
+assert(machine.nubus.slot[9].card.monitor == "13in_rgb", "a card with no display entry takes its first monitor")
+assert(machine.nubus.slot[9].card.sense == 6, "the 13in RGB sense code")
+assert(machine.boot{model = "iicx", rom = vars.ROM, slots = "9=824gc,rom=substitute"}, "the substitute ROM on request")
+assert(machine.nubus.slot[9].card.id == "824gc", "the card is still the 8•24 GC")
+assert(machine.nubus.slot[9].card.substitute, "it runs its substitute ROM")
+assert(machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC (substitute ROM)", "the name says which ROM")
+assert(machine.nubus.slot[9].card.declrom.path == "builtin:824gc", "the generated ROM")
+assert(machine.boot{model = "iicx", rom = vars.ROM, slots = "9=mdc_8_24", video_sense = 2}, "a sense override on the connected card")
+assert(machine.nubus.slot[9].card.sense == 2, "video_sense= reaches the connected card's connector")
+assert(machine.boot{model = "se30", rom = vars.ROM}, "the SE/30's built-in video")
+assert(machine.nubus.slot[14].card.id == "builtin_se30_video", "the built-in slot seats its own card")
+assert(machine.nubus.slot[14].card.substitute == false, "with the SE/30 video ROM offered, Apple's")
+assert(machine.boot{model = "se30", rom = vars.ROM, slots = "14=builtin_se30_video,rom=substitute"}, "a built-in card's substitute ROM on request")
+assert(machine.nubus.slot[14].card.substitute, "the substitute ROM")
+
+quit()

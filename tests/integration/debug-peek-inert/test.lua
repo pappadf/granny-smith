@@ -1,0 +1,29 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Debugger reads are side-effect-free (#159).  See config.mk.
+
+-- --- VIA: reading ORA clears CA1 (the Plus's VBL flag); a peek must not. ----
+-- The Plus VIA: base $EFE1FE, register select on A9-A12; IFR is register 13,
+-- ORA (with handshake) register 1.
+machine.boot{model = "plus", ram = 4096, rom = vars.ROM}
+local n = 0
+while (machine.memory.peek.b(0xEFFBFE) & 0x02) == 0 and n < 200 do
+    scheduler.run(20000)
+    n = n + 1
+end
+assert((machine.memory.peek.b(0xEFFBFE) & 0x02) ~= 0, "the Plus never raised CA1 (VBL) in IFR")
+local ora = machine.memory.peek.b(0xEFE3FE)
+assert((machine.memory.peek.b(0xEFFBFE) & 0x02) ~= 0, "peeking ORA cleared CA1 in the IFR")
+assert(machine.memory.peek.b(0xEFE3FE) == ora, "ORA changed between two peeks")
+
+-- --- JMFB (8*24): the Stopwatch VBL status toggles on every read; a peek ----
+-- reports the edge the next read would see and leaves it there.  The card in
+-- slot $C: its register block is at $FC200000, Stopwatch +$100, status +$C2.
+machine.boot{model = "iici", ram = 8192, rom = "../../data/roms/iici-368cadfe.rom", config = "{\"cards\":[{\"slot\":\"nubus_c\",\"card\":\"mdc_8_24\"}]}"}
+scheduler.run(1000000)
+local sw = 0xFC2001C2
+local a = machine.memory.peek.w(sw)
+assert(machine.memory.peek.w(sw) == a, "JMFB VBL toggle flipped on the second peek")
+assert(machine.memory.peek.w(sw) == a, "JMFB VBL toggle flipped on the third peek")
+assert(machine.memory.peek.l(sw - 2) == a, "a long peek of the status register disagrees")
+
+quit()

@@ -1,6 +1,6 @@
 #!/bin/bash
 # g3-rage128-quake3-demo with the translation tier (see config.mk): its
-# test.script under the wasm build of the headless program, run by Node,
+# test.lua under the wasm build of the headless program, run by Node,
 # with CPU_ENGINE=jit.
 #
 # Environment from the runner: ROM_PATH, TEST_DATA, TEST_RESULTS_DIR,
@@ -31,7 +31,7 @@ cd "$SCRIPT_DIR/../g3-rage128-quake3-demo" || exit 1
 # shellcheck disable=SC2086 — NODE_FLAGS, TEST_VAR_ARGS are intentionally word-split
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$NODE_BIN" $NODE_FLAGS \
     rom="$ROM_PATH" model=pmg3dt ram=262144 \
-    script=test.script \
+    script=test.lua \
     --var WORK_DIR="$WORK_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     --var ROM="$ROM_PATH" \

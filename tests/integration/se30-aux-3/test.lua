@@ -1,0 +1,53 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- SE/30 A/UX 3.0.1 Boot (retail SE floppy + CD).
+--
+-- Boots the SE/30 from the retail A/UX 3.0.1 Installation Boot Disk (SE) with
+-- the retail Install CD attached, and reaches the A/UX Easy Install screen.
+-- Reaching that screen proves the kernel booted and mounted its root from the
+-- CD-ROM (the installer GUI runs from the CD).  The test then drives the
+-- installer: it clicks "Easy Install", confirms the overwrite dialog with
+-- "OK", and verifies the install begins.
+--
+-- The wall clock is pinned so the boot trajectory — and therefore every
+-- rendered screen — is reproducible.
+--
+-- Mouse positioning under A/UX uses "aux" mode (not "global"): A/UX is Unix,
+-- and VA $0828 in supervisor mode is A/UX kernel data.  "aux" writes MAE's
+-- MTemp through the user-mode address space instead.
+machine.rtc.time = "2026-04-26T21:30:36"
+
+-- Boot the floppy + CD to the A/UX Easy Install screen (~600M instructions).
+-- A/UX is interrupt-driven: the kernel sleeps for each CD read and is woken by
+-- the SCSI DRQ "data ready" interrupt the NCR 5380 model raises autonomously
+-- from the scheduler (scsi.c scsi_drq_service).  Run in chunks so the per-frame
+-- VBL heartbeat is injected across the boot.
+scheduler.run(300000000)
+scheduler.run(300000000)
+
+machine.screen.match("installer.png")
+
+-- Click "Easy Install" (button center ~(380, 80)) — opens a confirm dialog
+-- asking "...will be overwritten by the installation process. Do you wish to
+-- continue?" with Cancel / OK buttons.
+machine.adb.mouse.move(380, 80, "aux")
+machine.adb.mouse.click(true)
+scheduler.run(5000000)
+machine.adb.mouse.click(false)
+scheduler.run(25000000)
+
+machine.screen.match("confirm.png")
+
+-- Click "OK" (button center ~(337, 185)) — confirms and dismisses the dialog.
+-- The cursor is hidden by the dialog, but the click still hit-tests against
+-- MTemp (which --aux keeps pinned at our target), so the click lands on OK.
+machine.adb.mouse.move(337, 185, "aux")
+machine.adb.mouse.click(true)
+scheduler.run(1000000)
+machine.adb.mouse.click(false)
+scheduler.run(3000000)
+
+-- The confirm dialog has been dismissed; the installer shows a gray screen
+-- with a wait cursor while it begins scanning the CD.
+machine.screen.match("dialog-dismissed.png")
+
+quit()

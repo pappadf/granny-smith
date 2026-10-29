@@ -69,7 +69,7 @@ PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 # headless-only (Makefile.headless).
 CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_direct.c,$(CORE_SRC))
 
-SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
+SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC) $(LUA_SRC)
 
 # Object and dependency files (mirror source tree under OBJ_DIR)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
@@ -103,6 +103,7 @@ include src/core/storage/gsdisk/gsdisk.mk
 
 PLATEN ?= 1
 include src/core/network/laserwriter.mk
+include src/core/lua/gs_lua.mk
 
 # -- Build mode (release | debug | sanitize) --
 
@@ -131,7 +132,9 @@ INCLUDES := $(CORE_INCLUDES) \
             -I$(VROM68K_OUT) \
             -I$(PDGEN_OUT) \
             -I$(GSDISK_OUT) \
-            -I$(LASERWRITER_OUT)
+            -I$(LASERWRITER_OUT) \
+            -I$(GS_LUA_OUT) \
+            $(LUA_INCLUDES)
 
 # -- Compile flags (source -> object) --
 # -MMD -MP generates .d dependency files alongside each .o so that
@@ -153,7 +156,7 @@ endif
 CFLAGS := -MMD -MP $(MODE_CFLAGS) $(WARN_CFLAGS) \
           -pthread \
           -DGS_PLATEN_VERSION=\"$(PLATEN_VERSION)\" \
-          $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
+          $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(LUA_CFLAGS) $(EXTRA_CFLAGS)
 
 # With PLATEN=1 the main module compiles the printer bridge with its ring
 # transport (laserwriter_transport_ring.c) and links NO platen archive: the
@@ -293,6 +296,9 @@ $(OBJ_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
 
 # laserwriter_job.c embeds the generated prelude header.
 $(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# gs_lua.c embeds the generated Lua standard-library header.
+$(OBJ_DIR)/$(CORE_DIR)/lua/gs_lua.o: $(GS_LUA_LIB_HEADER)
 
 # The flags stamp: creating it (any flag change) outdates every object.
 $(FLAGS_STAMP):

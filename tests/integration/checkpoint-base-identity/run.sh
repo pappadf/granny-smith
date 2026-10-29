@@ -28,12 +28,12 @@ step() {
 
 cd "$TEST_RESULTS_DIR"
 echo "Step 1: save a quick checkpoint with a writable floppy"
-step step1.script
+step step1.lua
 echo "Step 2: restore it onto the same base"
-step step2.script
+step step2.lua
 echo "Step 3: replace the base, then restore"
 cp "$TEST_RESULTS_DIR/b.dsk" "$TEST_RESULTS_DIR/a.dsk"
-out=$(step step3.script 2>&1) || { echo "$out"; exit 1; }
+out=$(step step3.lua 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "$out" | grep -q "is not the image the checkpoint was saved with" || {
     echo "ERROR: the refusal did not name the replaced base"

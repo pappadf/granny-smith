@@ -302,21 +302,22 @@ method that returns nothing, or to an `{error}` object on any failure — so
 check success with `gsOk(r)` (or `=== true` for a boolean method), never
 `r !== null`; write an attribute as `gsEval('machine.cpu.d0', [v])`, never as
 a `"path = value"` string (docs/internals/core/object/object-model.md, "The result
-contract"). Inside the shell (v2 script language —
-see `docs/internals/core/shell/shell.md`), the same tree is reachable via:
+contract"). Scripts are Lua (`docs/internals/core/lua/lua.md`): the tree's root
+children are globals, and
 
-  machine.cpu.pc                 # bare path → read (& print at the REPL)
-  machine.cpu.d0 = 0x1234        # path = expr → typed write
-  machine.cpu.step 1000          # path arg → method call (argument mode)
-  machine.cpu.step(1000)         # call form, usable in any expression
-  let t0 = scheduler.host_user_ns  # typed binding; read back as $t0
-  echo "pc=${machine.cpu.pc:08x}"  # ${…} interpolation inside strings
+  machine.cpu.pc                        -- attribute read
+  machine.cpu.d0 = 0x1234               -- typed write
+  machine.cpu.step(1000)                -- method call
+  machine.boot{model = "plus", rom = vars.ROM}   -- named arguments: a trailing table
+  local t0 = scheduler.host_user_ns
+  echo(F"pc=${machine.cpu.pc:08x}")     -- F"…" templates; gs.try, gs.ok, gs.bytes
 
-The v2 language also has `if`/`elif`/`else`, `while`, `for … in`,
-`break`/`continue`, `def` functions (`shell.functions`), `assert EXPR
-["msg"]`, `alias NAME = PATH` reference bindings, and `try(EXPR,
-FALLBACK)`/`none` for expected-failure probes. Scripts print nothing
-implicitly (use `echo`); the first error aborts the script.
+A tree error is a Lua error (`pcall`, `gs.try`); the first uncaught one
+aborts the script. Integration tests are `test.lua` with
+`tests/integration/lib/mac.lua`; a `test.script` still runs on the shell's
+own script language (`docs/internals/core/shell/shell.md`) until ported
+(`scripts/script-to-lua.py`). The terminal's line form (`machine.cpu.step
+1000`, argument mode) is that language too.
 
 A terminal line is a script job (`REQ_SCRIPT` on the mailbox, run on the
 job thread; `gsEvalLine` in `bus/emulator.ts` is its only caller);

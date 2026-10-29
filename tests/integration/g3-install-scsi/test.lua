@@ -1,0 +1,51 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Mac OS 9.2.1 installed onto a blank SCSI disk on a beige G3, then booted.
+--
+-- I1  the CD (SCSI id 3) boots to the Finder with a blank 540 MB disk at
+--     SCSI id 0
+-- I2  Drive Setup initializes the disk, Mac OS Install copies 9.2.1 onto it
+--     and reports "The installation process has finished"
+-- I3  the installed disk, alone on the bus, boots to its desktop and the
+--     Mac OS Setup Assistant
+--
+-- Over MESH the install moves a few hundred megabytes through DBDMA channel
+-- 0 under Apple's SCSI driver; the HD boot then runs the installed system's
+-- own extensions — ATI's Rage Pro accelerator among them.
+--
+-- MEDIA-GATED: $GS_EXTRA_MEDIA_DIR/macos-9.2.1/macos921.iso.
+
+local mac = dofile("../lib/mac.lua")
+dofile("../lib/gossamer.lua")
+
+local cd = F"${vars.EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
+local hd = F"${vars.WORK_DIR}/g3-scsi-hd.img"
+local installed = F"${vars.WORK_DIR}/g3-scsi-installed.img"
+
+if mac.have_media(cd) then
+    -- --- I1 ---------------------------------------------------------------------
+    assert(files.hd_create(hd, "HD500SC"), "I1: create the blank disk")
+    machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd(hd, 0)
+    assert(machine.scsi.attach_cdrom(cd, 3), "I1: attach the CD")
+    scheduler.run(26000000000)
+    mac.check_ex("finder-cd.png", 0, 440, 20, 640)
+
+    -- --- I2 ---------------------------------------------------------------------
+    gos_install_921("install-finished.png")
+    mac.click(453, 288) -- Quit
+    mac.run_ticks(900)
+    machine.scsi.device[0].image.export(installed)
+
+    -- --- I3 ---------------------------------------------------------------------
+    machine.boot{model = "pmg3dt", ram = 65536, rom = vars.ROM}
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd(installed, 0)
+    scheduler.run(24000000000)
+    gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/hd-desktop.png") end, nil)
+    mac.check_ex("hd-desktop.png", 0, 440, 20, 640)
+else
+    mac.skip_test("g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)")
+end
+
+quit()

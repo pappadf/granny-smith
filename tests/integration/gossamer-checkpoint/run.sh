@@ -19,18 +19,18 @@ if [ -n "$FIXTURE" ] && [ -f "$FIXTURE" ]; then
 else
 
 echo "Step 1: boot the 9.2.1 disk 12 G instructions, save checkpoint"
-cat > "$TEST_TMPDIR/step1.script" << EOF
+cat > "$TEST_TMPDIR/step1.lua" << EOF
 machine.rtc.time = "2026-10-01T12:00:00"
-machine.scsi.attach_hd "$TEST_TMPDIR/hd.img" 0
-scheduler.run 12000000000
-assert checkpoint.save("$CHECKPOINT_FILE") "step1 checkpoint save failed"
-quit
+machine.scsi.attach_hd("$TEST_TMPDIR/hd.img", 0)
+scheduler.run(12000000000)
+assert(checkpoint.save("$CHECKPOINT_FILE"), "step1 checkpoint save failed")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
-    script="$TEST_TMPDIR/step1.script" \
+    script="$TEST_TMPDIR/step1.lua" \
     --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
@@ -42,26 +42,26 @@ fi
 
 echo ""
 echo "Step 2: restore in a fresh process, finish the boot, match the golden"
-cat > "$TEST_TMPDIR/step2.script" << EOF
-assert checkpoint.load("$CHECKPOINT_FILE") "step2 checkpoint load failed"
-# Up to 12 G more, sampled every 250 M: done at the first frame that is the
-# desktop golden (outside the menu clock).
-let spent = 0
-while \$spent < 12000000000 && !try(machine.screen.matches("hd-desktop.png", 0, 440, 20, 640), false) {
-    scheduler.run 250000000
-    \$spent = \$spent + 250000000
-}
-assert debug.mac.globals.read("BootDrive") == 0x8023 "restored boot: BootDrive is not the SCSI volume"
-assert debug.mac.globals.read("DSErrCode") == 0 "restored boot: a system error during startup"
-machine.screen.match hd-desktop.png 0 440 20 640
-echo "@@PERF {\\"row\\":\\"gossamer-checkpoint/restored-desktop\\",\\"instr\\":\${\$spent}}"
-quit
+cat > "$TEST_TMPDIR/step2.lua" << EOF
+assert(checkpoint.load("$CHECKPOINT_FILE"), "step2 checkpoint load failed")
+-- Up to 12 G more, sampled every 250 M: done at the first frame that is the
+-- desktop golden (outside the menu clock).
+local spent = 0
+while spent < 12000000000 and not gs.try(function() return machine.screen.matches("hd-desktop.png", 0, 440, 20, 640) end, false) do
+    scheduler.run(250000000)
+    spent = spent + 250000000
+end
+assert(debug.mac.globals.read("BootDrive") == 0x8023, "restored boot: BootDrive is not the SCSI volume")
+assert(debug.mac.globals.read("DSErrCode") == 0, "restored boot: a system error during startup")
+machine.screen.match("hd-desktop.png", 0, 440, 20, 640)
+echo(F"@@PERF {\\"row\\":\\"gossamer-checkpoint/restored-desktop\\",\\"instr\\":\${spent}}")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
-    script="$TEST_TMPDIR/step2.script" \
+    script="$TEST_TMPDIR/step2.lua" \
     --speed=turbo
 
 [ "$CHECKPOINT_FILE" = "${FIXTURE:-}" ] || rm -f "$CHECKPOINT_FILE"

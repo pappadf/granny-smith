@@ -18,9 +18,20 @@ PEELER_SRC := $(sort $(wildcard $(PEELER_DIR)/lib/*.c $(PEELER_DIR)/lib/formats/
 
 PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
 
+# The vendored Lua 5.4 interpreter (third-party/lua, MIT), the script
+# language behind src/core/lua/.  Located from CORE_DIR so the roster works
+# from the repository root (the two builds) and from a unit suite (absolute
+# CORE_DIR).
+LUA_DIR := $(if $(filter /%,$(CORE_DIR)),$(abspath $(CORE_DIR)/../../third-party/lua),third-party/lua)
+LUA_SRC := $(sort $(wildcard $(LUA_DIR)/*.c))
+LUA_INCLUDES := -I$(LUA_DIR)
+# Lua reads the clock and names temporary files the POSIX way (no tmpnam).
+LUA_CFLAGS := -DLUA_USE_POSIX
+
 # Core and machine header directories.  Order matters in one place: card.h
 # exists under both nubus/ and pci/, and nubus/ must come first.
 CORE_INCLUDES := -I$(CORE_DIR) \
+                 -I$(CORE_DIR)/lua \
                  -I$(CORE_DIR)/cpu \
                  -I$(CORE_DIR)/cpu/dsp3210 \
                  -I$(CORE_DIR)/cpu/ppc \
