@@ -40,7 +40,7 @@ assert(appletalk.nbp["Remote Test"].socket ~= appletalk.nbp["Shared Folders"].so
 assert(gs.try(function() return appletalk.remote.add_server("Remote Test") end, false) == false, "a duplicate server name was accepted")
 
 assert(appletalk.remote.add_volume("Remote Test", "Remote", F"dir://${vars.WORK_DIR}/source", F"${vars.WORK_DIR}/cache"), "volume not added")
-assert(appletalk.remote.volumes[0].uri == F"dir://${vars.WORK_DIR}/source", "volume not listed")
+assert(appletalk.remote.volumes[1].uri == F"dir://${vars.WORK_DIR}/source", "volume not listed")
 assert(appletalk.remote.issued == 0, "a request went out before the guest asked for anything")
 
 -- Apple menu → Chooser → AppleShare → "AppleShare requires AppleTalk" → OK:
