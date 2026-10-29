@@ -53,6 +53,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define R128GPU_MAX_SURF      8
 #define R128GPU_MAX_ROWS      2048
 #define R128GPU_MAX_TEX       1024
+#define R128GPU_TEX_HINTS     1024 // tex_resolve's hint table (a power of two)
 #define R128GPU_TEX_BYTES_CAP (96u << 20) // atlas bytes held on the GPU
 #define R128GPU_PAGE_SHIFT    12 // VRAM write tracking granularity (4 KB)
 #define R128GPU_IDLE_VBLS     120 // vblanks without 3D before disengaging
@@ -134,11 +135,19 @@ struct r128_gpu {
     uint32_t uni[R128GPU_U_WORDS];
     // The open DRAW record.
     bool draw_open;
+    // ...holds this batch's header and uniform: r128_gpu_tri checks only
+    // its room, not the 512-byte uniform, per triangle (r128_gpu_batch_begin
+    // clears it, and a closed record is never current)
+    bool draw_current;
     uint32_t draw_off;
     r128gpu_draw_hdr_t draw_hdr;
     uint32_t draw_uni[R128GPU_U_WORDS];
     // Textures.
     gtex_t *tex;
+    // The entry a texture key last resolved to, by the key's hash: checked
+    // in full, so a stale or colliding hint costs only the scan it saves
+    // (a batch resolved its textures by scanning up to 1024 entries)
+    uint16_t tex_hint[R128GPU_TEX_HINTS];
     uint64_t tex_bytes;
     uint64_t frame;
     // The display table last sent.
@@ -843,19 +852,34 @@ static uint32_t tex_resolve(r128_gpu_t *g, const tex_unit_t *u) {
     for (uint32_t i = 0; i <= top; i++)
         agp |= (offs[i] & 0x2000000u) != 0;
     gtex_t *e = NULL, *free_slot = NULL;
-    for (int i = 0; i < R128GPU_MAX_TEX; i++) {
-        gtex_t *t = &g->tex[i];
-        if (!t->id) {
-            if (!free_slot)
-                free_slot = t;
-            continue;
-        }
-        if (t->fmt == u->fmt && t->lpitch == u->lpitch && t->lheight == u->lheight && t->top == top &&
-            !memcmp(t->off, offs, sizeof(offs))) {
-            e = t;
-            break;
+#define TEX_KEY_MATCHES(t)                                                                                             \
+    ((t)->id && (t)->fmt == u->fmt && (t)->lpitch == u->lpitch && (t)->lheight == u->lheight && (t)->top == top &&     \
+     !memcmp((t)->off, offs, sizeof(offs)))
+    uint32_t h = 2166136261u; // FNV-1a over the key
+    uint32_t key[4] = {u->fmt, u->lpitch, u->lheight, top};
+    for (int i = 0; i < 4; i++)
+        h = (h ^ key[i]) * 16777619u;
+    for (int i = 0; i < 11; i++)
+        h = (h ^ offs[i]) * 16777619u;
+    uint16_t *hint = &g->tex_hint[(h ^ (h >> 16)) & (R128GPU_TEX_HINTS - 1)];
+    if (TEX_KEY_MATCHES(&g->tex[*hint]))
+        e = &g->tex[*hint];
+    else {
+        for (int i = 0; i < R128GPU_MAX_TEX; i++) {
+            gtex_t *t = &g->tex[i];
+            if (!t->id) {
+                if (!free_slot)
+                    free_slot = t;
+                continue;
+            }
+            if (TEX_KEY_MATCHES(t)) {
+                e = t;
+                *hint = (uint16_t)i;
+                break;
+            }
         }
     }
+#undef TEX_KEY_MATCHES
     if (e) {
         bool stale;
         if (e->agp) {
@@ -892,6 +916,7 @@ static uint32_t tex_resolve(r128_gpu_t *g, const tex_unit_t *u) {
             return 0;
     }
     e = free_slot;
+    *hint = (uint16_t)(e - g->tex);
     memset(e, 0, sizeof(*e));
     e->id = ++g->next_id;
     e->fmt = u->fmt;
@@ -1133,6 +1158,7 @@ bool r128_gpu_batch_begin(r128_gpu_t *g, st_t *s, uint32_t prim, const r128_vert
     g->hdr.pipe_key = key;
     g->hdr.sx0 = x0, g->hdr.sy0 = y0, g->hdr.sx1 = x1, g->hdr.sy1 = y1;
     build_uniform(g, s);
+    g->draw_current = false; // a new header and uniform: the open record is checked again
     g->n_batches++;
     return true;
 }
@@ -1179,8 +1205,11 @@ void r128_gpu_tri(r128_gpu_t *g, const st_t *s, const svtx_t *a, const svtx_t *b
     (void)s;
     if (g->batch_empty || g->lost)
         return;
-    if (!draw_matches(g) && !open_draw(g))
-        return;
+    if (!(g->draw_current && g->draw_open && g->draw_hdr.n_verts + 3u <= R128GPU_MAX_VERTS)) {
+        if (!draw_matches(g) && !open_draw(g))
+            return;
+        g->draw_current = true;
+    }
     float *o = (float *)(payload(g, g->draw_off) + sizeof(r128gpu_draw_hdr_t) + R128GPU_U_BYTES +
                          g->draw_hdr.n_verts * R128GPU_VERTEX_BYTES);
     const svtx_t *vv[3] = {a, b, c};

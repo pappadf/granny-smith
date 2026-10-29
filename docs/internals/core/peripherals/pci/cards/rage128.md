@@ -357,7 +357,12 @@ worker attaches, the card keeps the software rasteriser and
   each) before anyone sees it; a write marks its rows VRAM-newer, uploaded
   before the next GPU use, and bumps a per-4 KB page generation the
   texture cache checks (AGP-resident textures are content-hashed once a
-  frame instead). Not engaged, the test is one comparison.
+  frame instead). Not engaged, the test is one comparison.  A batch finds
+  its textures' cache entries through a hint table indexed by a hash of
+  the key (format, sizes, level offsets), checked in full against the
+  entry, before any scan of the 1024 entries; and its triangles append to
+  the open DRAW record after one check per batch that the record carries
+  the batch's header and 512-byte uniform, not one per triangle.
 - **The 2D engine's fills** of a surface — no source, no destination read,
   a solid brush or none, no colour compare, every bit written — are GPU
   fills, so a Z buffer cleared every frame (Quake III's) never comes back
