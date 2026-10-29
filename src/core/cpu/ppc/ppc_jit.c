@@ -4172,6 +4172,7 @@ static void skip_word(uint32_t pc, uint32_t msr) {
 // Counters (the `jit` node)
 static struct {
     uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns, lookups, deferred;
+    uint64_t rfi_skips; // entries not counted: the word an rfi returned to
     uint64_t async_issued, async_landed, async_dropped; // jit.async compiles
     double compile_ms;
 } g_st;
@@ -5071,9 +5072,21 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
                 (ppc_jit_cold_t){(pc & ~(uint32_t)MEM_PAGE_MASK) | 4u | (key & 3u), budget, R->heat[k], g_threshold};
             return false;
         }
-        if (member && s->extra[idx] < JIT_ENTRY_HOT && ++s->extra[idx] == JIT_ENTRY_HOT) {
-            // a new entry point (one entered rarely is not worth a translation)
-            R->want = true;
+        if (member && s->extra[idx] < JIT_ENTRY_HOT) {
+            // A new entry point (one entered rarely is not worth a
+            // translation) -- unless the loop got here by an rfi: an
+            // interrupt lands on any word of hot code, and counting its
+            // return made a leader of every word of the hottest routines
+            // within seconds (one-instruction blocks, for good).  The loop
+            // runs on from the return to the next leader instead.
+            if (pc == g_ppc_rfi_pc)
+                g_st.rfi_skips++;
+            else if (++s->extra[idx] == JIT_ENTRY_HOT) {
+                R->want = true;
+                if (g_trace == 6)
+                    printf("jit: leader %08x prev %08x id %u ipc %08x rfi %08x exit %u\n", pc, idx ? s->words[idx - 1] : 0,
+                           idx ? s->ids[idx - 1] : 0, p->instruction_pc, g_ppc_rfi_pc, g_ppc_jit_exit);
+            }
         }
         if (member && s->extra[idx] >= JIT_ENTRY_HOT && R->cool)
             skip_word(pc, msr); // counted: nothing more until the region is translated
@@ -5785,6 +5798,7 @@ enum {
     JA_INSNS,
     JA_LOOKUPS,
     JA_DEFERRED,
+    JA_RFI_SKIPS,
     JA_ASYNC,
     JA_BUDGET,
     JA_REGS
@@ -5836,6 +5850,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_st.lookups);
     case JA_DEFERRED:
         return val_uint(8, g_st.deferred);
+    case JA_RFI_SKIPS:
+        return val_uint(8, g_st.rfi_skips);
     case JA_ASYNC:
         return val_uint(4, g_async);
 #endif
@@ -5965,6 +5981,7 @@ static const member_t jit_members[] = {
     JIT_ATTR("instructions", JA_INSNS, "budget slots consumed inside translated code", NULL),
     JIT_ATTR("lookups", JA_LOOKUPS, "times the predecoded loop asked for a translation", NULL),
     JIT_ATTR("deferred", JA_DEFERRED, "translations the governor put off (jit.budget)", NULL),
+    JIT_ATTR("rfi_skips", JA_RFI_SKIPS, "entries not counted: the word an rfi returned to", NULL),
     JIT_ATTR("async", JA_ASYNC, "1 = compile off the core thread, install between ticks (default except under Node)",
              jit_attr_set),
     JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),

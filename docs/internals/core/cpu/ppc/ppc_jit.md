@@ -254,7 +254,14 @@ calls the chunk's function.  Otherwise it counts: a page becomes a member
 once the predecoded tier has run `jit.threshold` instructions in it (the
 budget spent between a declined lookup and the next one); a word that
 leads no block becomes an entry point after `JIT_ENTRY_HOT` (8) entries
-(one entered rarely is not worth a translation).  The region is retranslated
+(one entered rarely is not worth a translation) -- except the word the
+last `rfi` returned to (`g_ppc_rfi_pc`), which is not counted
+(`jit.rfi_skips`): an interrupt lands on any word of hot code, and
+counting its return made a leader of every word of the hottest routines
+within seconds of play, splitting them into one-instruction blocks for
+good (Quake III's vertex transform ran at 121 wasm operations per
+instruction that way).  The loop runs on from an interrupt's return to
+the next leader instead.  The region is retranslated
 when entry points were added, or invalidated blocks have been quiet for
 `jit.quiet` entries, and the region's cooldown has passed: `jit.cooldown`
 entries, doubling with every translation of the region up to
@@ -692,10 +699,11 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them; 17 checks every inline FP arithmetic word translated from then on against the C kernel, printing mismatches, 18 prints the totals |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated, and every word promoted to a leader with the word before it and how the loop arrived; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them; 17 checks every inline FP arithmetic word translated from then on against the C kernel, printing mismatches, 18 prints the totals |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
+| `rfi_skips` | entries not counted because the word is where the last `rfi` returned (§3.1) |
 | `reset()` | drop every translation |
 
 `ppc_jit_status()` reports on, supervisor, instructions run translated,

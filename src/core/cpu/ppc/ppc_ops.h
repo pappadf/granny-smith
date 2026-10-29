@@ -271,7 +271,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // implemented bits all live in the low half.
 #define OP_RFI                                                                                                         \
     OP(PRIV(); p->msr = ((p->msr & 0xFFFF0000u) | (p->srr1 & 0x0000FFFFu)) & ppc_msr_mask(p); ppc_update_active_maps(p); \
-       ppc_context_sync(p); p->pc = p->srr0 & ~3u)
+       ppc_context_sync(p); p->pc = p->srr0 & ~3u; g_ppc_rfi_pc = p->pc)
 // Context synchronize: no pipeline to flush, but it is the point at which
 // BAT writes become visible to instruction fetch (ppc_context_sync).
 #define OP_ISYNC      OP(ppc_context_sync(p))

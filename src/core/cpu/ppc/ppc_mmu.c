@@ -96,6 +96,7 @@ static xtlb_entry_t g_xtlb[XTLB_SIZE];
 // Fetch cache: a one-page window (checked inline in ppc_run.c via the
 // extern below) backed by a small direct-mapped TLB of page→host maps.
 ppc_fetch_window_t g_ppc_fetch; // the inline-checked window
+uint32_t g_ppc_rfi_pc = 1; // (odd: none yet)
 ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE]; // the fetch TLB (ppc_internal.h)
 
 // Pages filled into the logical SoA arrays -- the user ones and the
