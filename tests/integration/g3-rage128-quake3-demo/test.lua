@@ -141,11 +141,11 @@ local function q3_run()
     local _ = log.status
     machine.adb.keyboard.press("return")
     scheduler.run(20000000)
-    local echo = debug.find.bytes(PAT_ECHO, 0, 0x10000000)
-    assert(#echo == 1, F"the console's echo of the command (found ${#echo} times)")
-    local lo = echo[1] - 0x10000
-    local hi = echo[1] + 0x10000
-    echo(tostring(ROW) .. ": the console is around " .. ("%08x"):format(echo[1]))
+    local echo_ = debug.find.bytes(PAT_ECHO, 0, 0x10000000)
+    assert(#echo_ == 1, F"the console's echo of the command (found ${#echo_} times)")
+    local lo = echo_[1] - 0x10000
+    local hi = echo_[1] + 0x10000
+    echo(tostring(ROW) .. ": the console is around " .. ("%08x"):format(echo_[1]))
 
     -- Until the demo's last event (coarse), then until `gsdemoend` (fine)
     local ceiling = 60000000000

@@ -45,6 +45,17 @@ LUA_KEYWORDS = {
 }
 
 # Root children of the object tree (globals in Lua) and the root builtins.
+# Globals a script calls or reads by name; a binding of the same name is
+# renamed so it cannot shadow them (lua_name).
+SHADOWED_GLOBALS = {
+    "echo", "print", "quit", "assert", "error", "require", "dofile", "type",
+    "pairs", "ipairs", "next", "tostring", "tonumber", "select", "pcall",
+    "F", "gs", "vars", "mac", "string", "table", "math", "luadebug",
+    "machine", "scheduler", "debug", "files", "shell", "log", "checkpoint",
+    "catalog", "appletalk", "pacing", "predecode", "jit", "objects",
+    "attributes", "methods", "help", "time",
+}
+
 ROOTS = {
     "machine", "scheduler", "debug", "files", "shell", "log", "checkpoint",
     "catalog", "appletalk", "pacing", "predecode", "jit",
@@ -1246,7 +1257,10 @@ class Converter:
 
     # -- names -----------------------------------------------------------------
     def lua_name(self, name):
-        if name in LUA_KEYWORDS:
+        # A Lua keyword cannot be a name, and a binding named like a script
+        # global or a tree root would shadow it: the old language kept
+        # `$echo` (a binding) apart from `echo` (the command); Lua does not.
+        if name in LUA_KEYWORDS or name in SHADOWED_GLOBALS:
             return name + "_"
         return name
 
