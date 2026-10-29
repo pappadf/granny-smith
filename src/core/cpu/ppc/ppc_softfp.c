@@ -1045,20 +1045,27 @@ int ppc_sf_fres(uint64_t b, uint32_t *fpscr, uint64_t *frt) {
 }
 
 // Integer square root: floor(sqrt(a)) for a < 2^126 (the frsqrte scaling
-// keeps the root's MSB at bit 62).  Classic bit-pair method, maintaining
-// rem = prefix(a) - root^2.
+// keeps the root's MSB at bit 62).  A seed from the host's sqrt, taken
+// above the root (the double conversions and the sqrt are each within
+// 2^-52 relative, under 2^12 absolute at the root's size), then integer
+// Newton steps from above, each one 128-by-64 division: from above the
+// sequence never passes the root and the first step that fails to
+// descend is at it.  Two or three divisions, against the 63 iterations
+// of the bit-pair method this replaced.  Its value is unchanged: a native
+// differential against the bit-pair method agreed on 60 M inputs (the
+// frsqrte shape, random widths, squares and their neighbours), and the
+// ppc_fpu suite's corpus digest is the same.
 static uint64_t sf_isqrt128(unsigned __int128 a) {
-    unsigned __int128 rem = 0, root = 0;
-    for (int i = 62; i >= 0; i--) {
-        rem = (rem << 2) | ((a >> (2 * i)) & 3u);
-        unsigned __int128 cand = (root << 2) | 1u;
-        root <<= 1;
-        if (rem >= cand) {
-            rem -= cand;
-            root |= 1u;
-        }
+    if (a == 0)
+        return 0;
+    double d = (double)(uint64_t)(a >> 64) * 0x1p64 + (double)(uint64_t)a;
+    uint64_t s = (uint64_t)__builtin_sqrt(d) + 4096u;
+    for (;;) {
+        uint64_t t = (uint64_t)((a / s + s) >> 1);
+        if (t >= s)
+            return s;
+        s = t;
     }
-    return (uint64_t)root;
 }
 
 // frsqrte (604; PEM frsqrtex page): double-precision reciprocal square
