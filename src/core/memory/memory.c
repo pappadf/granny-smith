@@ -2113,6 +2113,12 @@ static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *ho
     }
 }
 
+void memory_zero_write_aliases(uintptr_t *arr, const uint8_t *host_page) {
+    zero_write_aliases(arr, 0, host_page);
+}
+
+void (*g_mem_code_marked_hook)(const uint8_t *host_page);
+
 void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
@@ -2131,22 +2137,26 @@ void memory_code_page_mark_owner(const uint8_t *host_page, uint8_t owner) {
         zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
         zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
         zero_write_aliases(g_mem_extra_write, 0, host_page);
-        return;
-    }
-    const uint32_t *slot = &g->alias[(size_t)page * MEM_ALIAS_SLOTS];
-    for (int i = 0; i < MEM_ALIAS_SLOTS; i++) {
-        uint32_t lpage = slot[i] & 0xFFFFFu;
-        if (!slot[i] || lpage >= g_page_count)
-            continue;
-        for (unsigned bit = MEM_WT_SUPER; bit <= MEM_WT_EXTRA; bit <<= 1) {
-            uintptr_t *arr = (slot[i] >> 20) & bit ? alias_table(bit) : NULL;
-            uintptr_t e = arr ? arr[lpage] : 0;
-            if (MEM_ENTRY_IS_RAM(e) && MEM_ENTRY_HOST(e, (uintptr_t)lpage << MEM_PAGE_SHIFT) == host_page) {
-                arr[lpage] = 0; // stores must take the slow path from now on
-                memory_write_refused_set(lpage, bit == MEM_WT_EXTRA ? 0 : bit);
+    } else {
+        const uint32_t *slot = &g->alias[(size_t)page * MEM_ALIAS_SLOTS];
+        for (int i = 0; i < MEM_ALIAS_SLOTS; i++) {
+            uint32_t lpage = slot[i] & 0xFFFFFu;
+            if (!slot[i] || lpage >= g_page_count)
+                continue;
+            for (unsigned bit = MEM_WT_SUPER; bit <= MEM_WT_EXTRA; bit <<= 1) {
+                uintptr_t *arr = (slot[i] >> 20) & bit ? alias_table(bit) : NULL;
+                uintptr_t e = arr ? arr[lpage] : 0;
+                if (MEM_ENTRY_IS_RAM(e) && MEM_ENTRY_HOST(e, (uintptr_t)lpage << MEM_PAGE_SHIFT) == host_page) {
+                    arr[lpage] = 0; // stores must take the slow path from now on
+                    memory_write_refused_set(lpage, bit == MEM_WT_EXTRA ? 0 : bit);
+                }
             }
         }
     }
+    // The records name entries of the installed tables only; a parked CPU's
+    // tables are not installed now
+    if (g_mem_code_marked_hook)
+        g_mem_code_marked_hook(host_page);
 }
 
 void memory_code_page_unmark_owner(const uint8_t *host_page, uint8_t owner) {

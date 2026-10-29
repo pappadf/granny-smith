@@ -456,6 +456,63 @@ CD. Track 2's 16-bit real-mode boot code is that side's loader, and track 1's
 `BeOS_Tools` volume is shared by both platforms — which is why the PowerPC installer mounts
 it by name (§4.4).
 
+### 5.6 The Launcher, observed end to end on a 9500
+
+On a Power Macintosh 9500 (604, 64 MB) running Mac OS 7.6 with an ATI Mach64-based PCI display
+card at 256 colours, `BeOS_Launcher` run from the disc's HFS side hands the machine over
+directly — no dialog of its own precedes the handover — and the BeOS bootstrap scans for a
+bootable BFS volume (*observed*, [8]): the bootstrap's strings name the scan order, SCSI disks,
+SCSI CD-ROMs, then IDE [7]. Mac OS 7.6 is therefore sufficient (§6 item 3 narrows to "below
+7.6 untested"). The display needs no driver of the release's own beyond the
+`ATI-GX` app_server add-on; the monitor-type question of §4.3 step 1 was **not asked** on
+this path.
+
+With the track-3 BFS volume presented read-only on a SCSI CD-ROM device, the system boots
+**from that volume** and, finding `/boot` read-only, runs `Bootscript.cd` in place of the
+ordinary `Bootscript` [9]: only `app_server` and `registrar` start, and the Installer runs
+directly (the license agreement first, then the window of §4.3 step 2). So the Launcher does
+run BeOS live off the disc's BFS track (§6 item 2), and the Installer *is* that live system.
+The Installer accepts an unpartitioned disk — it lists it by device path
+(`[SCSI bus:0 id:1 partition:1]`), initializes BFS across the whole device
+(`/dev/disk/scsi/0/1/0/raw`, block size 1024), copies, and on exit `Bootscript.cd` ejects the
+disc and restarts the machine into Mac OS (*observed*). Running the Launcher again then boots
+the installed volume to the Tracker and Deskbar desktop: the installed system still needs Mac
+OS and the Launcher on every start (§6 item 12, for the Launcher path).
+
+### 5.7 The kernel on the dual-processor 9500
+
+`kernel_mac` carries a "2 processor machine" start path for the PowerSurge board
+(`start_other_cpus`) beside the DayStar four-way paths [7]. Its protocol — the `ArbConfig`
+probe, the `$F2800000` start vector, the `IntReg` AND-to-signal / OR-to-acknowledge pair, the
+`WhoAmI` processor number, and the Ethernet-PROM read as the interrupt to processor 0 — is
+recorded at the register level in [pm9500mp.md](../machines/tnt/pm9500mp.md) §3.4, from the
+5.0.3 kernel itself [10]. On a 9500/180MP-class machine the system then runs both processors
+symmetrically: "About BeOS" reports "2 PowerPC 604's", and Pulse shows two processor meters
+(*observed*, [8]). Device interrupts stay on processor 0 — the only interrupt the second
+processor can receive is the card's doorbell.
+
+### 5.8 The kernel reads the time base with `mfspr`
+
+The kernel's time-base reader samples `mfspr` SPR 285, 284, 285 (the TBU/TBL *write*
+encodings) rather than `mftb` [10]. On the 603e family the two opcodes are one instruction —
+"The MPC603e ignores the extended opcode differences between `mftb` and `mfspr` by ignoring
+bit 25 of both instructions and treating them identically" [11] §2.3.5.1 — and the kernel
+relies on the 604 behaving the same way: the value read calibrates the kernel's time scale,
+and a processor that took the illegal-instruction exception instead would leave the scale at
+zero, so that every delay loop (`snooze`) waits forever at the boot splash.
+
+### 5.9 The Macintosh bootstrap and the interrupt controller
+
+Before the kernel loads, the bootstrap services devices by polling Grand Central's interrupt
+Events register itself, clearing what it handles with the Clear register [10]. On the
+PowerSurge platform type it treats a pending source 30 as an interprocessor interrupt and
+dispatches it to a handler table in which nothing is registered — a source-30 event latched at
+that stage is never cleared and starves every other source. The bootstrap also reads the
+station address from the Ethernet PROM (`$F3019000 + $10·n`, six bytes, bit-reversed) and
+compares it with Open Firmware's `local-mac-address`. The two facts together constrain the
+hardware: the primary's own PROM reads must not raise source 30
+([pm9500mp.md](../machines/tnt/pm9500mp.md) §3.5).
+
 ## 6. Open questions
 
 1. **The Launcher's internal protocol.** How `BeOS_Launcher` loads the kernel from its
@@ -554,3 +611,18 @@ it by name (§4.4).
    int %d, dma-regs %.8x dma-int %d", "swim3 - cannot allocate request for I/O", "IDE MAC:
    openfirmware device %s doesn't have a 'reg' property", "nvram - unknown property size"),
    and the BFS and DBDMA diagnostic message bodies.
+8. Observed runs of the release on Power Macintosh 9500 and 9500/180MP hardware
+   configurations (604 processors, 64 MB, ATI Mach64 PCI display card, MESH SCSI disks,
+   Mac OS 7.6): the Launcher handover, the read-only-volume Installer boot, the installation
+   onto an unpartitioned SCSI disk, the reboot and the installed system's desktop; on the
+   dual-processor configuration, the second processor's start and the "About BeOS" and Pulse
+   processor reports.
+9. `Bootscript` and `Bootscript.cd` — the system startup scripts in `beos/system/boot/` of the
+   track-3 BFS volume: the `isvolume -readonly /boot` test and the CD script's
+   app_server/registrar/Installer sequence, `shutdown -r` and `eject`.
+10. BeOS 5.0.3 `beos/system/kernel_mac` and the bootstrap in `BeOS_Launcher`'s `Boot` resource,
+    as disassembled: the multiprocessor start path and interrupt pair, the `mfspr`-based
+    time-base reader, the bootstrap's Grand Central interrupt poll and its station-address
+    comparison (register-level detail in pm9500mp.md [6]).
+11. Motorola, Inc., *MPC603e & EC603e RISC Microprocessors User's Manual* (MPC603EUM/AD) —
+    §2.3.5.1, `mftb` and `mfspr` treated identically.
