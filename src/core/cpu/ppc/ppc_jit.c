@@ -4808,7 +4808,7 @@ static uint32_t deopt_ea(ppc_t *p) {
     if (!s)
         return 0;
     uint32_t w = s->words[(p->pc & MEM_PAGE_MASK) >> 2], op = w >> 26, ra = (w >> 16) & 31u;
-    if (op >= 32 && op <= 45)
+    if (op >= 32 && op <= 55) // the D-forms: integer, lmw/stmw, FP
         return (ra ? p->gpr[ra] : 0) + (uint32_t)(int32_t)(int16_t)w;
     return 0;
 }
@@ -4871,8 +4871,11 @@ static void exit_hist_dump(ppc_t *p) {
                g_xh[j].deopt, why, w);
         if (g_xh[j].deopt) {
             uint32_t ea = g_xh[j].ea;
-            printf(" ea=%08x r=%lx w=%lx", ea, (unsigned long)g_active_read[(ea & g_address_mask) >> MEM_PAGE_SHIFT],
-                   (unsigned long)g_active_write[(ea & g_address_mask) >> MEM_PAGE_SHIFT]);
+            uintptr_t re = g_active_read[(ea & g_address_mask) >> MEM_PAGE_SHIFT];
+            printf(" ea=%08x r=%lx w=%lx%s", ea, (unsigned long)re,
+                   (unsigned long)g_active_write[(ea & g_address_mask) >> MEM_PAGE_SHIFT],
+                   MEM_ENTRY_IS_RAM(re) && memory_host_is_code(MEM_ENTRY_HOST(re, ea & g_address_mask)) ? " code page"
+                                                                                                        : "");
         }
         printf("\n");
     }
