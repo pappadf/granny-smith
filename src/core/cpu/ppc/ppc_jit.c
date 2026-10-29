@@ -516,7 +516,7 @@ static void sleb(int32_t v) {
 // clang-format off
 enum {
     W_BLOCK = 0x02, W_LOOP = 0x03, W_IF = 0x04, W_ELSE = 0x05, W_END = 0x0B, W_BR = 0x0C, W_BR_IF = 0x0D,
-    W_BR_TABLE = 0x0E, W_RETURN = 0x0F, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
+    W_BR_TABLE = 0x0E, W_RETURN = 0x0F, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_DROP = 0x1A, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
     W_LOAD = 0x28, W_LOAD8U = 0x2D, W_LOAD16S = 0x2E, W_LOAD16U = 0x2F, W_STORE = 0x36, W_STORE8 = 0x3A,
     W_STORE16 = 0x3B, W_CONST = 0x41, W_EQZ = 0x45, W_EQ = 0x46, W_NE = 0x47, W_LT_S = 0x48, W_LT_U = 0x49,
     W_GT_S = 0x4A, W_GT_U = 0x4B, W_LE_U = 0x4D, W_GE_U = 0x4F, W_CLZ = 0x67, W_ADD = 0x6A, W_SUB = 0x6B,
@@ -1603,9 +1603,13 @@ static void emit_stfd(void) {
 // nearest, operands, product and result inside its exponent envelope, a
 // product of two short significands only (exact, so neither the result
 // nor its error needs an fma) -- with XE clear, so the FPSCR changes in
-// FR, FI, XX (and FX on its rise) and FPRF alone.  Any check that fails
-// takes the helper (ppc_jit_fp), which runs the C kernel: the result and
-// FPSCR are the same either way.
+// FR, FI, XX (and FX on its rise) and FPRF alone.  Zeros too, which the C
+// fast path leaves to its slow one: a zero operand (the product of a zero
+// factor is an exact ±0, a sum with a zero term is the other term) and an
+// exact zero result (cancellation; FR and FI clear, FPRF ±zero), with
+// IEEE's signed-zero rules, which round to nearest shares with the kernel.
+// Any check that fails takes the helper (ppc_jit_fp), which runs the C
+// kernel: the result and FPSCR are the same either way.
 
 static uint32_t g_fp_slow; // the depth of the inline path's $slow block
 
@@ -1644,10 +1648,9 @@ static void f64const(double d) {
         put((uint8_t)(u >> (8 * i)));
 }
 
-// Leave for the helper unless the i64 local's biased exponent is inside
-// the fast path's envelope (sf_fast_ok: [123, 2023], so no zero, denormal,
-// inf or NaN)
-static void emit_envelope(uint32_t local) {
+// 1 when the i64 local's biased exponent is outside the fast path's
+// envelope (sf_fast_ok: [123, 2023], so a zero, denormal, inf or NaN)
+static void emit_outside(uint32_t local) {
     lget(local);
     i64const(52);
     op(W_I64_SHR_U);
@@ -1658,15 +1661,26 @@ static void emit_envelope(uint32_t local) {
     op(W_SUB);
     iconst(2023 - 123);
     op(W_GT_U);
-    br_slow_if();
+}
+// 1 when the i64 local is +0 or -0
+static void emit_is_zero(uint32_t local) {
+    lget(local);
+    i64const(1);
+    op(W_I64_SHL);
+    op(W_I64_EQZ);
 }
 
-// FPR `n`'s image into the i64 local, checked against the envelope
+// FPR `n`'s image into the i64 local: leave for the helper unless it is
+// inside the envelope or a zero
 static void emit_fpr_operand(uint32_t n, uint32_t local) {
     lget(L_P);
     mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * n);
     lset(local);
-    emit_envelope(local);
+    emit_outside(local);
+    emit_is_zero(local);
+    op(W_EQZ);
+    op(W_AND);
+    br_slow_if();
 }
 
 // TwoSum (sf_two_sum): L_F3 = x + y, L_F4 = the exact error
@@ -1691,10 +1705,22 @@ static void emit_two_sum(uint32_t x, uint32_t y) {
     lset(L_F4);
 }
 
+// jit.trace = 17: the helper's check of an inline word (ppc_jit_fp's mode 2, 3)
+static void emit_fp_check(uint32_t iw, uint32_t mode) {
+    iconst(iw);
+    iconst(mode);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    op(W_DROP);
+}
+
 static void emit_fp_inline(uint32_t iw, int fop) {
     bool single = (iw >> 26) == 59;
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw), rb = PPC_RB(iw), rc = PPC_FRC(iw);
     bool has_b = fop != PPC_SF_MUL, has_c = fop != PPC_SF_ADD && fop != PPC_SF_SUB;
+    if (g_trace == 17)
+        emit_fp_check(iw, 2);
     op(W_BLOCK); // $done
     put(BT_VOID);
     g_depth++;
@@ -1756,20 +1782,39 @@ static void emit_fp_inline(uint32_t iw, int fop) {
         f64const(0.0);
         lset(L_F4);
     } else {
-        lget(L_F0); // the exact product, inside the envelope
+        lget(L_F0); // the exact product: inside the envelope, or a zero factor's ±0
         lget(L_F2);
         op(W_F64_MUL);
         lset(L_F0);
         lget(L_F0);
         op(W_I64_REINTERPRET);
         lset(L_D3);
-        emit_envelope(L_D3);
+        emit_outside(L_D3);
+        emit_is_zero(L_D0);
+        emit_is_zero(L_D2);
+        op(W_OR);
+        op(W_EQZ);
+        op(W_AND);
+        br_slow_if();
         emit_two_sum(L_F0, L_F1);
     }
+    // The result inside the envelope, or an exact zero: a product with a
+    // zero factor, or a sum that cancelled (the sum of two doubles that
+    // rounds to zero is zero, its error too).  (A product of two factors
+    // inside the envelope can underflow to zero: that one leaves.)
     lget(L_F3);
     op(W_I64_REINTERPRET);
     lset(L_D3);
-    emit_envelope(L_D3);
+    emit_outside(L_D3);
+    if (fop == PPC_SF_MUL) {
+        emit_is_zero(L_D0);
+        emit_is_zero(L_D2);
+        op(W_OR);
+    } else
+        emit_is_zero(L_D3);
+    op(W_EQZ);
+    op(W_AND);
+    br_slow_if();
     // inexact -> L_T0, up (|rounded| > |exact|) -> L_T1
     if (single) {
         lget(L_F4); // a single-precision tie with the exact value off it: double rounding
@@ -1786,7 +1831,7 @@ static void emit_fp_inline(uint32_t iw, int fop) {
         op(W_F32_DEMOTE);
         op(W_F64_PROMOTE);
         lset(L_F5); // ds
-        lget(L_F5); // tiny (or near it) or overflowed
+        lget(L_F5); // tiny (or near it) or overflowed; a zero is exact
         op(W_I64_REINTERPRET);
         i64const(52);
         op(W_I64_SHR_U);
@@ -1797,6 +1842,9 @@ static void emit_fp_inline(uint32_t iw, int fop) {
         op(W_SUB);
         iconst(252);
         op(W_GT_U);
+        emit_is_zero(L_D3);
+        op(W_EQZ);
+        op(W_AND);
         br_slow_if();
         lget(L_F5);
         lget(L_F3);
@@ -1868,12 +1916,19 @@ static void emit_fp_inline(uint32_t iw, int fop) {
     op(W_AND);
     op(W_SELECT);
     op(W_OR);
-    iconst(0x08000u); // FPRF: -normal / +normal
-    iconst(0x04000u);
+    iconst(0x12000u); // FPRF: -zero / +zero, -normal / +normal
+    iconst(0x02000u);
     lget(L_D3);
     i64const(63);
     op(W_I64_SHR_U);
     op(W_WRAP);
+    ltee(L_T1);
+    op(W_SELECT);
+    iconst(0x08000u);
+    iconst(0x04000u);
+    lget(L_T1);
+    op(W_SELECT);
+    emit_is_zero(L_D3);
     op(W_SELECT);
     op(W_OR);
     mem(W_STORE, 2, offsetof(ppc_t, fpscr));
@@ -1889,6 +1944,8 @@ static void emit_fp_inline(uint32_t iw, int fop) {
     emit_deopt_if();
     op(W_END); // $done
     g_depth--;
+    if (g_trace == 17)
+        emit_fp_check(iw, 3);
 }
 
 // The FP moves (fmr fneg fabs fnabs) and fsel, Rc clear: bit operations and
@@ -3931,6 +3988,21 @@ static uint32_t translate(void) {
         emit_helper(h);
     g_jb[JB_PROLOGUE] += g_len - len_h;
     close_sized(s);
+    // The name section: the translation is named after its first block's
+    // address, so a CPU profile tells the translations apart
+    char fname[16];
+    snprintf(fname, sizeof fname, "ppc_%08x", U.pages[g_blocks[0].page].lpage + 4u * g_blocks[0].start);
+    s = open_section(0);
+    put_name("name");
+    put(1); // function names
+    uint32_t sub = g_len;
+    for (int i = 0; i < 5; i++)
+        put(0);
+    uleb(1);
+    uleb(4);
+    put_name(fname);
+    close_sized(sub);
+    close_sized(s);
     return nb;
 }
 
@@ -5178,9 +5250,53 @@ static void fph_dump(void) {
     memset(g_fph, 0, sizeof g_fph);
 }
 
+// jit.trace = 17 (set before the code is translated): every inline FP
+// arithmetic word checks itself against the C kernel -- mode 2 before it
+// runs (the kernel's result and FPSCR noted, the state restored), mode 3
+// after (compared); mismatches are printed, the totals with jit.trace = 18
+static struct {
+    bool valid;
+    uint32_t iw;
+    uint64_t in[3], t, fpscr0; // the operands, the kernel's result
+    uint32_t fpscr;
+    uint64_t checks, bad;
+} g_fpchk;
+static int32_t fp_check(ppc_t *p, uint32_t iw, uint32_t mode) {
+    uint32_t rt = PPC_RT(iw);
+    if (mode == 2) {
+        g_fpchk.valid = (p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) == PPC_MSR_FP;
+        if (!g_fpchk.valid)
+            return 0;
+        uint64_t t0 = p->fpr[rt];
+        uint32_t f0 = p->fpscr;
+        g_fpchk.iw = iw;
+        g_fpchk.in[0] = p->fpr[PPC_RA(iw)], g_fpchk.in[1] = p->fpr[PPC_RB(iw)], g_fpchk.in[2] = p->fpr[PPC_FRC(iw)];
+        g_fpchk.fpscr0 = f0;
+        ppc_jit_fp(iw, 0, 0);
+        g_fpchk.t = p->fpr[rt], g_fpchk.fpscr = p->fpscr;
+        p->fpr[rt] = t0, p->fpscr = f0;
+        return 0;
+    }
+    if (!g_fpchk.valid || g_fpchk.iw != iw)
+        return 0;
+    g_fpchk.valid = false;
+    g_fpchk.checks++;
+    if (p->fpr[rt] != g_fpchk.t || p->fpscr != g_fpchk.fpscr) {
+        if (g_fpchk.bad++ < 64)
+            printf("jit fp check: %08x a=%016llx b=%016llx c=%016llx fpscr=%08x: inline %016llx %08x, kernel "
+                   "%016llx %08x\n",
+                   iw, (unsigned long long)g_fpchk.in[0], (unsigned long long)g_fpchk.in[1],
+                   (unsigned long long)g_fpchk.in[2], (uint32_t)g_fpchk.fpscr0, (unsigned long long)p->fpr[rt],
+                   p->fpscr, (unsigned long long)g_fpchk.t, g_fpchk.fpscr);
+    }
+    return 0;
+}
+
 int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused) {
     (void)unused;
     ppc_t *p = g_wa_p;
+    if (mode >= 2)
+        return fp_check(p, iw, mode);
     if (g_trace == 14)
         fph_note(iw);
     if ((p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) != PPC_MSR_FP)
@@ -5788,6 +5904,11 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         }
         if (in.u == 15) {
             fph_dump();
+            return val_none();
+        }
+        if (in.u == 18) {
+            printf("jit fp check: %llu checked, %llu mismatches\n", (unsigned long long)g_fpchk.checks,
+                   (unsigned long long)g_fpchk.bad);
             return val_none();
         }
         if (in.u == 13) {

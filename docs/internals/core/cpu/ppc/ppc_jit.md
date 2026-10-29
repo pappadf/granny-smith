@@ -388,7 +388,13 @@ helper; `fadd`/`fsub`/`fmul` and the madd family, single and double, inline:
 operands, product and result inside its exponent envelope, a product of
 two short significands, which is exact so no fma is needed -- wasm has
 none) with FPSCR[XE] clear, so only FR, FI, XX (FX on its rise) and FPRF
-change; any check that fails, and every other arithmetic or move with
+change; zeros inline as well, which the C fast path leaves to its slow
+one: a zero operand (a zero factor's product is an exact ±0, a sum with a
+zero term is the other term, rounded as any result) and an exact zero
+result (cancellation, or a product with a zero factor: FR and FI clear,
+FPRF ±zero), with IEEE's signed-zero rules, which round to nearest shares
+with the kernel (a product of two nonzero factors that underflows to zero
+still leaves); any check that fails, and every other arithmetic or move with
 Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
 that runs the interpreter's own routines, so results and FPSCR are the
 predecoded loop's either way; it declines (leave at the instruction)
@@ -405,8 +411,16 @@ with FP exceptions off and FPSCR[XE] clear (`ppc_sf_fctiw`'s in-range
 path: FR and FI cleared, FI and XX -- FX on its rise -- when inexact,
 FPRF unchanged); the rest of `fctiwz` (VXCVI, the saturations) takes the
 helper.  On Quake III's demo these took the helper's calls from 427 M to
-303 M; what is left is mostly the single-precision arithmetic outside
-the fast path's envelope (zero operands among them).
+303 M, and the zeros from 315 M to 69 M (+2.4 % MIPS over the demo, +4 %
+in its second half; zero operands were two thirds of the calls, `fmadds`
+with one 39 %).  What is left: `fdivs` (40 %), double-precision
+arithmetic with long significands, whose product is not exact in a
+double (35 %), `frsp` (17 %) and `frsqrte` (5 %).  `jit.trace = 17`, set
+before the code is translated, checks every inline arithmetic word
+against the kernel (the helper computes the kernel's result and FPSCR
+before it, restoring the state, and compares them after); `jit.trace =
+18` prints the totals (695 M words checked over the demo, none
+different).
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
 segment registers, the FP record forms and FPSCR moves stay in C.
 `dcbz` (not the 601's) calls an imported helper (`ppc_jit_dcbz`) with its
@@ -552,6 +566,13 @@ its start; the region is retranslated once the writes have been quiet for
 
 ### 3.8 Where the time goes, and what was tried
 
+Each module carries a name section that names its function
+`ppc_<address>` after its first block, so a CPU profile tells the
+translations apart.  On Quake III's demo (20 s of the core thread in
+Chrome) translated code is spread thin: 476 functions, the hottest 4.8 %,
+the top 20 about 40 %; the FP helper and its kernel were 11 % before the
+inline zeros.
+
 On the Mac OS X scenario's warm round (Node `--cpu-prof` with a
 `--profiling-funcs` relink, JIT with supervisor code): `ppc_pd_run` 39 %,
 translated code 26 %, `ppc_jit_enter` 6 %, and `ppc_set_sr`,
@@ -671,7 +692,7 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them; 17 checks every inline FP arithmetic word translated from then on against the C kernel, printing mismatches, 18 prints the totals |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
