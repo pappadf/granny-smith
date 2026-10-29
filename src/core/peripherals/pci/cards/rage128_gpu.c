@@ -372,6 +372,13 @@ static inline void bit_clr(uint8_t *b, uint32_t y) {
 }
 
 static void mark_gpu_newer(surf_t *s, uint32_t y0, uint32_t y1) {
+    // Every row already newer on the GPU and none newer in VRAM: nothing
+    // to change.  That is the steady state of a scene being drawn (the
+    // CPU never touches the colour or depth buffer), and this runs for
+    // every batch over every row the batch spans -- about 50 K batches a
+    // second, tens to hundreds of rows each, on Quake III.
+    if (s->n_gpu == s->h && !s->n_cpu)
+        return;
     for (uint32_t y = y0; y < y1 && y < s->h; y++) {
         if (bit_get(s->cpu_newer, y))
             bit_clr(s->cpu_newer, y), s->n_cpu--;
