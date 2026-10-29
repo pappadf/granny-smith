@@ -491,6 +491,11 @@ static bool scsi_medium_readable(image_t *img, uint64_t off, size_t cnt, uint16_
 
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
+    // A medium error is the guest's "disk error": the backing image failed
+    // it (the storage layer's own alert says why), so say it loud too
+    if (sense_key == SENSE_MEDIUM_ERROR)
+        LOG_ALERT("SCSI ID %d: MEDIUM ERROR returned to the guest (command %02x, ASC %02x/%02x)", scsi->bus.target,
+                  scsi->cmd.opcode, asc, ascq);
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
     phase_status(scsi, STATUS_CHECK_CONDITION);
 }

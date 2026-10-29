@@ -7,6 +7,7 @@
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
   import DialogHost from './components/dialogs/DialogHost.svelte';
   import StorageWarning from './components/common/StorageWarning.svelte';
+  import EmulatorHealthBanner from './components/common/EmulatorHealthBanner.svelte';
   import { applyAppearance } from '@/state/appearance.svelte';
   import { layout, chromeHidden } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
@@ -39,6 +40,8 @@
 
 <!-- Above everything, also with the chrome hidden: /opfs is on memory. -->
 <StorageWarning />
+<!-- The emulator stalled or crashed: the page stays, the console with it. -->
+<EmulatorHealthBanner />
 <Workbench />
 {#if !chromeHidden()}
   <StatusBar />

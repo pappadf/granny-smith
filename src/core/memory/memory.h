@@ -67,6 +67,11 @@ struct lisa_mmu;
 // disassembly views) use peek_* and fall back to read_* where it is NULL, so
 // a device whose reads have any side effect MUST implement peek_* (#159).
 // A missing width composes from the narrower peek, as reads do.
+//
+// `write_line` (optional) takes a whole data-cache line, MEM_LINE_SIZE bytes
+// at a line-aligned `addr`, in the interface's address order: what a CPU's
+// castout puts on the bus as one burst.  Without it a line arrives as
+// write_uint32 calls in address order.
 typedef struct memory_interface {
     uint8_t (*read_uint8)(void *device, uint32_t addr);
     uint16_t (*read_uint16)(void *device, uint32_t addr);
@@ -77,6 +82,7 @@ typedef struct memory_interface {
     uint8_t (*peek_uint8)(void *device, uint32_t addr);
     uint16_t (*peek_uint16)(void *device, uint32_t addr);
     uint32_t (*peek_uint32)(void *device, uint32_t addr);
+    void (*write_line)(void *device, uint32_t addr, const uint8_t *bytes);
 } memory_interface_t;
 
 // A byte read through `m` on behalf of an I/O island that fronts the device:
@@ -455,6 +461,56 @@ static inline void memory_io_esync_penalty(void) {
 // machine sets it from its memory controller's single-read time; the 040 MMU
 // keeps those pages off the read fast path while it is non-zero.
 extern uint32_t g_uncached_read_cycles;
+
+// === Data-cache lines held over device pages ===
+// The CPUs here have no data cache: RAM is always current, and a device sees
+// each store as it is made.  The exception is a line the cache allocates
+// without reading it -- a PowerPC dcbz on a cacheable (W=0, I=0) mapping of a
+// device.  The hardware then holds the zeroed line in the cache, the guest's
+// stores fill it there, and the device sees the whole line at a dcbst or
+// dcbf, or when it is evicted.  ATI's Rage Pro driver streams host data this
+// way: one dcbz of a HOST_DATA line, then stmw and dcbst for every line of
+// the transfer (a dcbst leaves the line valid), so the card takes each as a
+// 32-byte burst.  Written straight through, the zeros would reach the card
+// as data.
+//
+// The CPU owns a small fully-associative set of such lines (its storage, so
+// a checkpoint carries it); g_mem_lines points at it while any is held.
+// Device accesses that fall in a held line are served from it, and a store
+// makes it dirty; a dirty line reaches its device as one write_line.  The
+// cache holds 1024 lines; MEM_LINES is what any fill pattern holds over
+// devices at once, and past it the least recently used line is evicted.
+#define MEM_LINE_SIZE 32u
+#define MEM_LINES     8u
+typedef struct mem_line {
+    uint32_t phys; // line-aligned physical address
+    uint32_t ea; // the effective address the CPU allocated it at (dcbst/dcbf/dcbi match it)
+    uint32_t held;
+    uint32_t dirty; // stored to since it last went out
+    uint32_t aged; // a sprint ended with the line idle (memory_lines_age)
+    uint32_t used; // the set's clock at its last use (LRU)
+    uint8_t bytes[MEM_LINE_SIZE]; // the line's contents, in address order
+} mem_line_t;
+typedef struct mem_lines {
+    uint32_t count; // lines held
+    uint32_t clock;
+    mem_line_t line[MEM_LINES];
+} mem_lines_t;
+extern mem_lines_t *g_mem_lines;
+// dcbz: hold the zeroed (dirty) line at `phys`, allocated at `ea`, in `set`.
+void memory_line_hold(mem_lines_t *set, uint32_t phys, uint32_t ea);
+// dcbst: write the line held at `ea` to its device if dirty; it stays held.
+void memory_line_clean(uint32_t ea);
+// dcbf: write it if dirty and release it.
+void memory_line_flush(uint32_t ea);
+// dcbi: release it without writing.
+void memory_line_drop(uint32_t ea);
+// Release every line, writing none (a reset).
+void memory_lines_drop_all(mem_lines_t *set);
+// A sprint ended: a line left idle through two sprint ends is flushed,
+// standing in for the eviction that eventually writes back a line the guest
+// never flushes.  A store into the line or a dcbst of it counts as use.
+void memory_lines_age(void);
 
 // Slow-path diagnostics (memory.slowpath_count / .slowpath_hist): accesses
 // taken through the slow path since process start, and a histogram of them by

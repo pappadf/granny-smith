@@ -34,6 +34,7 @@
 
 #include "rage128_gpu.h"
 
+#include "breadcrumb.h"
 #include "display.h"
 #include "log.h"
 #include "platform_hooks.h"
@@ -59,6 +60,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define R128GPU_STORM_FRAMES  3 // ...in this many consecutive ones: a storm
 #define R128GPU_COOLDOWN_VBLS 300 // no re-engagement this long after a storm
 #define R128GPU_ATTACH_MS     10000 // the worker starts lazily: a device is created first
+#define R128GPU_FRAMES_AHEAD  2 // presents queued on the GPU before a vblank waits for one
 // How long a wait for the worker may last before the device counts as
 // lost.  Generous: a software adapter compiles a pipeline on its first use
 // and can take seconds; the waits keep the page's stall watch fed
@@ -142,6 +144,12 @@ struct r128_gpu {
     // The display table last sent.
     uint8_t lut[3][256];
     bool lut_sent;
+    // The hardware cursor last sent: its map, and whether and where it shows.
+    uint32_t cur_img[64 * 64];
+    uint32_t cur_scratch[64 * 64];
+    uint32_t cur_words[3];
+    bool cur_sent;
+    uint32_t present_seq; // PRESENT records sent (the worker's PRESENTS_DONE counts them)
     // Rules.
     uint32_t idle_vbls, bands_frame, storm_frames, cooldown;
     // Statistics.
@@ -149,6 +157,9 @@ struct r128_gpu {
     uint64_t n_readback_bands, n_readback_rows, n_upload_rows;
     uint64_t n_tex_create, n_tex_upload_bytes, n_tex_evict;
     uint64_t n_fallback[FB_COUNT];
+    // Waits on the worker (the perf line): how many, and host ms spent
+    uint64_t n_wait_ring, n_wait_ack, n_wait_pace;
+    double ms_wait_ring, ms_wait_ack, ms_wait_pace, ms_wait_max;
 };
 
 // ============================================================
@@ -177,7 +188,7 @@ static void recompute_bounds(r128_gpu_t *g);
 static void mark_lost(r128_gpu_t *g, const char *why) {
     if (!g->warned_lost) {
         g->warned_lost = true;
-        LOG(0, "Rage 128 webgpu: %s — the software rasteriser draws from here on (VRAM may be stale)", why);
+        LOG_ALERT("Rage 128 webgpu: %s — the software rasteriser draws from here on (VRAM may be stale)", why);
     }
     g->lost = true;
     g->n_lost++;
@@ -213,23 +224,40 @@ static void publish(r128_gpu_t *g) {
 
 // Reserve a record (header included) that does not wrap, waiting for
 // room; UINT32_MAX when the worker is gone.
+// A wait on the worker ends: count it (the perf line, the breadcrumbs)
+static void wait_done(r128_gpu_t *g, crumb_phase_t outer, double t0, uint64_t *n, double *ms) {
+    double dt = now_ms() - t0;
+    (*n)++;
+    *ms += dt;
+    if (dt > g->ms_wait_max)
+        g->ms_wait_max = dt;
+    crumb_gpu_wait(dt);
+    crumb_leave(outer);
+}
+
 static uint32_t reserve(r128_gpu_t *g, uint32_t kind, uint32_t len) {
+    uint32_t at = mbx_reserve(&g->ring, kind, len);
+    if (at != UINT32_MAX)
+        return at;
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_RING);
     for (;;) {
         uint32_t tail = gload(g, R128GPU_C_TAIL);
-        uint32_t at = mbx_reserve(&g->ring, kind, len);
+        at = mbx_reserve(&g->ring, kind, len);
         if (at != UINT32_MAX)
-            return at;
+            break;
         if (worker_lost(g))
-            return UINT32_MAX;
+            break;
         publish(g);
         platform_v2gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
         platform_v2gpu_keepalive();
         if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped consuming the op ring");
-            return UINT32_MAX;
+            break;
         }
     }
+    wait_done(g, outer, t0, &g->n_wait_ring, &g->ms_wait_ring);
+    return at;
 }
 
 static inline uint8_t *payload(r128_gpu_t *g, uint32_t at) {
@@ -247,15 +275,39 @@ static bool emit(r128_gpu_t *g, uint32_t kind, const uint32_t *words, uint32_t n
     return true;
 }
 
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0);
 static bool wait_ack(r128_gpu_t *g, uint32_t seq) {
     publish(g);
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_ACK);
+    bool ok = wait_ack_inner(g, seq, t0);
+    wait_done(g, outer, t0, &g->n_wait_ack, &g->ms_wait_ack);
+    return ok;
+}
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
     for (;;) {
         uint32_t ack = gload(g, R128GPU_C_ACK);
         if ((int32_t)(ack - seq) >= 0) {
             double dt = now_ms() - t0;
             if (dt > 250.0)
                 LOG(1, "Rage 128 webgpu: the GPU worker took %.0f ms to acknowledge (seq %u)", dt, seq);
+            // A wait of a second or more holds the whole emulator: say so on
+            // the console (at most every 10 s, with what was folded)
+            if (dt >= 1000.0) {
+                static double s_last_ms, s_folded_ms;
+                static unsigned s_folded;
+                double now = now_ms();
+                s_folded++;
+                s_folded_ms += dt;
+                if (now - s_last_ms >= 10000.0) {
+                    log_status("Rage 128 webgpu: the emulator waited %.1f s for the GPU worker (%u such waits, %.1f s, "
+                               "since the last report)",
+                               dt / 1000.0, s_folded, s_folded_ms / 1000.0);
+                    s_last_ms = now;
+                    s_folded = 0;
+                    s_folded_ms = 0;
+                }
+            }
             return true;
         }
         if (worker_lost(g))
@@ -563,6 +615,7 @@ static void engage(r128_gpu_t *g) {
     r->gpu_page_gen = g->page_gen;
     g->engaged = true;
     g->presenting = false;
+    g->cur_sent = false;
     g->idle_vbls = g->bands_frame = g->storm_frames = 0;
     g->n_engage++;
     LOG(1, "Rage 128 webgpu: engaged");
@@ -1211,6 +1264,60 @@ bool r128_gpu_fill(r128_gpu_t *g, uint32_t base, uint32_t stride, uint32_t bpp, 
 // Vertical blank
 // ============================================================
 
+// Frame pacing: nothing else waits on the GPU while it presents every
+// frame, so without a bound the emulator would queue frames faster than a
+// slow GPU draws them, and the next readback would wait for the whole
+// backlog.  Wait until at most R128GPU_FRAMES_AHEAD presents are pending.
+static bool pace(r128_gpu_t *g) {
+    if ((uint32_t)(g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE)) < R128GPU_FRAMES_AHEAD)
+        return true;
+    double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_PACE);
+    bool ok = false;
+    for (;;) {
+        uint32_t done = gload(g, R128GPU_C_PRESENTS_DONE);
+        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD) {
+            ok = true;
+            break;
+        }
+        if (worker_lost(g))
+            break;
+        publish(g);
+        platform_v2gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
+        platform_v2gpu_keepalive();
+        if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
+            mark_lost(g, "the GPU worker stopped completing frames");
+            break;
+        }
+    }
+    wait_done(g, outer, t0, &g->n_wait_pace, &g->ms_wait_pace);
+    return ok;
+}
+
+// Send the hardware cursor when it changed: its position and visibility
+// in a CURSOR record, its map after them only when the map changed.
+static bool send_cursor(r128_gpu_t *g) {
+    int32_t x = 0, y = 0;
+    bool on = r128_cursor_image(g->r, g->cur_scratch, &x, &y);
+    bool img = on && (!g->cur_sent || memcmp(g->cur_scratch, g->cur_img, sizeof(g->cur_img)));
+    uint32_t words[3] = {on ? 1u : 0u, (uint32_t)x, (uint32_t)y};
+    if (g->cur_sent && !img && !memcmp(words, g->cur_words, sizeof(words)))
+        return true;
+    close_draw(g);
+    uint32_t at = reserve(g, R128GPU_R_CURSOR, 8u + 16u + (img ? (uint32_t)sizeof(g->cur_img) : 0u));
+    if (at == UINT32_MAX)
+        return false;
+    uint32_t hdr[4] = {words[0], words[1], words[2], img ? 1u : 0u};
+    memcpy(payload(g, at), hdr, sizeof(hdr));
+    if (img) {
+        memcpy(g->cur_img, g->cur_scratch, sizeof(g->cur_img));
+        memcpy(payload(g, at) + sizeof(hdr), g->cur_img, sizeof(g->cur_img));
+    }
+    memcpy(g->cur_words, words, sizeof(words));
+    g->cur_sent = true;
+    return true;
+}
+
 bool r128_gpu_vblank(r128_gpu_t *g) {
     if (!g || g->lost)
         return false;
@@ -1237,13 +1344,13 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
         r128_gpu_disengage(g, false);
         return false;
     }
-    // Present when the scanout IS a colour surface (and no hardware
-    // cursor needs compositing).
+    // Present when the scanout IS a colour surface; the worker composites
+    // the hardware cursor over it.
     rage128_t *r = g->r;
     const display_t *d = &r->display;
     uint32_t type = scan_dst_type(r);
     surf_t *hit = NULL;
-    if (type && !(r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN)) {
+    if (type) {
         for (int i = 0; i < R128GPU_MAX_SURF && !hit; i++) {
             surf_t *s = &g->surf[i];
             if (s->id && !s->depth && s->base == r->scan_base && s->stride == d->stride && s->fmt == type &&
@@ -1282,6 +1389,8 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
         g->presenting = true;
         emit_mode(g, true);
     }
+    if (!send_cursor(g))
+        return false;
     uint32_t bits[3] = {type == 4   ? 5u
                         : type == 3 ? 5u
                                     : 8u,
@@ -1291,8 +1400,12 @@ bool r128_gpu_vblank(r128_gpu_t *g) {
                         type == 4   ? 5u
                         : type == 3 ? 5u
                                     : 8u};
+    if (!pace(g))
+        return false;
     uint32_t words[6] = {hit->id, d->width, d->height, bits[0], bits[1], bits[2]};
-    emit(g, R128GPU_R_PRESENT, words, 6);
+    if (!emit(g, R128GPU_R_PRESENT, words, 6))
+        return false;
+    g->present_seq++;
     publish(g);
     g->n_presents++;
     return true;
@@ -1327,9 +1440,31 @@ const char *r128_gpu_stats(r128_gpu_t *g, char *buf, size_t n) {
     for (int i = 0; i < FB_COUNT && k > 0 && (size_t)k < n; i++)
         k += snprintf(buf + k, n - (size_t)k, " fallback_%s=%llu", k_fb_names[i], (unsigned long long)g->n_fallback[i]);
     if (g->ctrl && k > 0 && (size_t)k < n)
-        snprintf(buf + k, n - (size_t)k, " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
-                 gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
-                 gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+        k += snprintf(buf + k, n - (size_t)k,
+                      " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
+                      gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
+                      gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+    if (k > 0 && (size_t)k < n)
+        r128_gpu_wait_stats(g, buf + k, n - (size_t)k);
+    return buf;
+}
+
+// The waits on the worker and where the rings stand: the part of the
+// statistics the perf line prints every interval
+const char *r128_gpu_wait_stats(r128_gpu_t *g, char *buf, size_t n) {
+    if (!g) {
+        if (n)
+            buf[0] = 0;
+        return buf;
+    }
+    uint32_t backlog = g->ctrl ? gload(g, R128GPU_C_HEAD) - gload(g, R128GPU_C_TAIL) : 0;
+    uint32_t pending = g->ctrl ? g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE) : 0;
+    snprintf(buf, n,
+             " waits ring %llu/%.0fms ack %llu/%.0fms pace %llu/%.0fms (longest %.0fms); ring backlog %u B, "
+             "presents pending %u, status %u, lost %d",
+             (unsigned long long)g->n_wait_ring, g->ms_wait_ring, (unsigned long long)g->n_wait_ack, g->ms_wait_ack,
+             (unsigned long long)g->n_wait_pace, g->ms_wait_pace, g->ms_wait_max, backlog, pending,
+             g->ctrl ? gload(g, R128GPU_C_STATUS) : 0, g->lost);
     return buf;
 }
 
@@ -1369,7 +1504,7 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
     g->ctrl[R128GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     if (!platform_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
-        LOG(0, "Rage 128 raster=webgpu: the host refused to attach a GPU worker — the software rasteriser draws");
+        LOG_ALERT("Rage 128 raster=webgpu: the host refused to attach a GPU worker — the software rasteriser draws");
         free(g->tex);
         free(g->page_gen);
         free(g->region);
@@ -1379,7 +1514,8 @@ r128_gpu_t *r128_gpu_create(rage128_t *r, int engage_policy) {
     double t0 = now_ms();
     while (gload(g, R128GPU_C_STATUS) != R128GPU_STATUS_ATTACHED) {
         if (now_ms() - t0 >= (double)R128GPU_ATTACH_MS) {
-            LOG(0, "Rage 128 raster=webgpu: the GPU worker did not attach within %u ms — the software rasteriser draws",
+            LOG_ALERT(
+                "Rage 128 raster=webgpu: the GPU worker did not attach within %u ms — the software rasteriser draws",
                 R128GPU_ATTACH_MS);
             platform_v2gpu_detach((void *)g->ctrl);
             free(g->tex);

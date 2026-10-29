@@ -9,6 +9,7 @@
 
 #include "appletalk.h"
 
+#include "afp_remote.h"
 #include "appletalk_adsp.h"
 #include "appletalk_aevt.h"
 #include "appletalk_internal.h"
@@ -96,6 +97,9 @@ void atalk_install_objects(void) {
         }
     }
 
+    // The further file servers and their remote volumes (afp_remote_object.c)
+    afp_remote_install_objects(atalk);
+
     // Each program-linking layer owns its own subtree.
     atalk_adsp_install_objects(atalk);
     atalk_ppc_install_objects(atalk);
@@ -120,6 +124,7 @@ void atalk_install_objects(void) {
 //       volumes          add(name, path) -> the created volume, remove(name), count
 //       sessions         one entry per live ASP session, count
 //       stats            commands_served / bytes moved / errors
+//     remote             further servers and remote volumes (afp_remote_object.c)
 //     printer            enabled / name / capture / status / documents
 //       stats            jobs / aborts / bytes / captures / last_capture
 //     adsp               connections, stats        (appletalk_adsp.c)
@@ -424,6 +429,10 @@ static DEF_GETTER(atalk_session_attr_client_node) {
     atalk_session_info_t info;
     return val_uint(1, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.client_node : 0);
 }
+static DEF_GETTER(atalk_session_attr_server_socket) {
+    atalk_session_info_t info;
+    return val_uint(1, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.server_socket : 0);
+}
 static DEF_GETTER(atalk_session_attr_afp_version) {
     atalk_session_info_t info;
     return val_str(atalk_asp_session_info(atalk_slot_of(self), &info) ? info.afp_version : "");
@@ -441,23 +450,27 @@ static const member_t atalk_session_members[] = {
     {.kind = MK_ATTR,
      .name = "session_ref",
      .doc = "ASP session reference",
-     .attr = {.type = VK_UINT, .width = 2, .get = atalk_session_attr_ref}        },
+     .attr = {.type = VK_UINT, .width = 2, .get = atalk_session_attr_ref}          },
     {.kind = MK_ATTR,
      .name = "client_node",
      .doc = "LLAP node of the workstation",
-     .attr = {.type = VK_UINT, .width = 1, .get = atalk_session_attr_client_node}},
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_session_attr_client_node}  },
+    {.kind = MK_ATTR,
+     .name = "server_socket",
+     .doc = "Socket of the file server the session is with (appletalk.nbp shows whose)",
+     .attr = {.type = VK_UINT, .width = 1, .get = atalk_session_attr_server_socket}},
     {.kind = MK_ATTR,
      .name = "afp_version",
      .doc = "AFP version negotiated at login",
-     .attr = {.type = VK_STRING, .get = atalk_session_attr_afp_version}          },
+     .attr = {.type = VK_STRING, .get = atalk_session_attr_afp_version}            },
     {.kind = MK_ATTR,
      .name = "open_forks",
      .doc = "Forks this session holds open",
-     .attr = {.type = VK_UINT, .width = 4, .get = atalk_session_attr_open_forks} },
+     .attr = {.type = VK_UINT, .width = 4, .get = atalk_session_attr_open_forks}   },
     {.kind = MK_ATTR,
      .name = "idle_ns",
      .doc = "Emulated nanoseconds since the last packet from this client",
-     .attr = {.type = VK_UINT, .width = 8, .get = atalk_session_attr_idle_ns}    },
+     .attr = {.type = VK_UINT, .width = 8, .get = atalk_session_attr_idle_ns}      },
 };
 
 static const class_desc_t atalk_session_class = {

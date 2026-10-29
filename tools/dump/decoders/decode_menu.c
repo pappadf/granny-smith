@@ -90,7 +90,7 @@ int re_decode_mbar(const uint8_t *bytes, size_t len, FILE *json_fp, FILE *txt_fp
     uint16_t n = (uint16_t)((bytes[0] << 8) | bytes[1]);
     fprintf(json_fp, "{\"count\":%u,\"menus\":[", n);
     for (uint16_t i = 0; i < n; i++) {
-        if (2 + i * 2 + 2 > len)
+        if (2 + (size_t)i * 2 + 2 > len)
             break;
         int16_t mid = (int16_t)((bytes[2 + i * 2] << 8) | bytes[2 + i * 2 + 1]);
         if (i > 0)

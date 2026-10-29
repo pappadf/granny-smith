@@ -275,5 +275,22 @@ assert machine.memory.peek.b($APER + $SURF + 512 + 3) == 0x5A "8 bpp fill: first
 assert machine.memory.peek.b($APER + $SURF + 512 + 4) == 0x5A "8 bpp fill: second byte"
 assert machine.memory.peek.b($APER + $SURF + 512 + 5) != 0x5A "8 bpp fill: two pixels only"
 
+# --- 10. A memory size past what is fitted -----------------------------------
+# On a 16 MB board, CONFIG_MEMSIZE set to 32 MB (as some drivers and card
+# ROMs do) makes addresses above 16 MB wrap onto the memory fitted: the
+# engine's and the CPU's alike.
+assert machine.pci.slot[1].card.regs.vram_size == 16777216 "the card has 16 MB"
+wr(0x00F8, 0x02000000)            # CONFIG_MEMSIZE: 32 MB
+assert rd(0x00F8) == 0x02000000 "CONFIG_MEMSIZE reads back as written"
+wr(0x16E4, 64)
+wr(0x16E0, $SURF + 0x1000000)     # DEFAULT_OFFSET: 16 MB above the surface
+fill32(0, 2, 2, 1, 0x00C0FFEE)
+wr(0x16E0, $SURF)
+assert px32(0, 2) == 0x00C0FFEE "memsize past VRAM: the engine's write 16 MB up lands 16 MB lower"
+machine.memory.poke.l($APER + 0x1000000 + $SURF + 2 * $STRIDE + 4, swap32(0x00BEEF00))
+assert px32(1, 2) == 0x00BEEF00 "memsize past VRAM: so does the CPU's, through the aperture"
+assert swap32(machine.memory.peek.l($APER + 0x1000000 + $SURF + 2 * $STRIDE)) == 0x00C0FFEE "and its reads"
+wr(0x00F8, 0x01000000)
+
 echo "rage128-2d: fills, blits, transparency, mono and colour host data, brushes, ROP3, mask, scissors and lines hold"
 quit

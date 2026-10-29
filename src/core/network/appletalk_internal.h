@@ -215,6 +215,8 @@ typedef struct {
 
 int atp_register_socket_handler(uint8_t socket, const atp_socket_handler_t *handler, void *ctx);
 void atp_unregister_socket_handler(uint8_t socket);
+// True when a handler serves `socket`.
+bool atp_socket_handler_in_use(uint8_t socket);
 
 int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet_t *request_atp,
                                const atp_response_packet_desc_t *packets, size_t packet_count);

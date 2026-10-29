@@ -169,7 +169,11 @@ chosen LR.
   that free.  `tlbie` invalidates by congruence class (EA[13-19] mod 128,
   Figure 6-15) — exactly the granularity the kernel's FlushTLB loop
   assumes.  `dcbz` takes the alignment exception on W=1/I=1 mappings and
-  is a no-op in non-memory-forced T=1 segments.
+  is a no-op in non-memory-forced T=1 segments.  On a cacheable mapping of
+  a device page it holds the zeroed line instead of writing it, as the
+  cache does: the guest's stores fill it, and `dcbst`/`dcbf` (or an
+  eviction) send it to the device as one burst; `dcbi` drops it
+  ([memory.md](../memory/memory.md), "Cache lines held over devices").
 - **Caches**: the user and supervisor-translated SoA fills (tracked per
   256 MB segment, so invalidation is proportional to fills and a
   segment-register write drops only its own segment's -- Mac OS X switches

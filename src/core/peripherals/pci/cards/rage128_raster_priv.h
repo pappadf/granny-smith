@@ -181,6 +181,9 @@ typedef struct st {
     bool round_xy;
     tex_unit_t t[2];
     bool gpu; // the WebGPU takeover draws this batch's triangles (rage128_gpu.c)
+    // What a pixel reads of its fragment (make_frag skips the rest)
+    bool need_z, need_spec, need_fog;
+    bool need_lod[2]; // the unit's sample depends on the level of detail
 } st_t;
 
 // The attributes a primitive interpolates, as an array per vertex.
