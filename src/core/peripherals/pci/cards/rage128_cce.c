@@ -161,8 +161,8 @@ LOG_USE_CATEGORY_NAME("video");
 #define CARD_AGP_MASK 0x01FFFFFFu
 #define GART_PAGE     0x1000u
 
-// Fetches move at most this many dwords at a time (the stack is small on
-// the web build).
+// The ring and indirect-buffer fetches move at most this many dwords at a
+// time (the stack is small on the web build).
 #define FETCH_RUN 256u
 
 #define REG(r, off) ((r)->reg[(off) / 4u])
@@ -175,12 +175,24 @@ static bool bm_enabled(rage128_t *r) {
     return !(REG(r, R_BUS_CNTL) & BUS_MASTER_DIS);
 }
 
+// One GART translation remembered across the fetches of a packet: the
+// table cannot change while a packet executes (the CPU is not running).
+typedef struct gart_memo {
+    uint32_t page; // AGP page | 1, or 0 for none
+    uint32_t host; // its host page
+} gart_memo_t;
+
 // Translate an AGP-window offset to a host (PCI) address: through the GART
 // table, or linearly from AGP_BASE with the GART disabled.
-static bool agp_to_host(rage128_t *r, uint32_t agp, uint32_t *host) {
+static bool agp_to_host(rage128_t *r, uint32_t agp, uint32_t *host, gart_memo_t *memo) {
     uint32_t gart = REG(r, R_PCI_GART_PAGE);
     if (gart & PCI_GART_DIS) {
         *host = (REG(r, R_AGP_BASE) & 0xFFC00000u) + agp;
+        return true;
+    }
+    uint32_t key = (agp & ~(GART_PAGE - 1u)) | 1u;
+    if (memo && memo->page == key) {
+        *host = memo->host | (agp & (GART_PAGE - 1u));
         return true;
     }
     uint8_t e[4];
@@ -189,13 +201,13 @@ static bool agp_to_host(rage128_t *r, uint32_t agp, uint32_t *host) {
         return false;
     uint32_t page = (uint32_t)e[0] | ((uint32_t)e[1] << 8) | ((uint32_t)e[2] << 16) | ((uint32_t)e[3] << 24);
     *host = (page & 0xFFFFF000u) | (agp & (GART_PAGE - 1u));
+    if (memo)
+        memo->page = key, memo->host = page & 0xFFFFF000u;
     LOG(5, "Rage 128 CCE: GART: AGP $%07X -> host $%08X (entry %u)", agp, *host, agp / GART_PAGE);
     return true;
 }
 
-// Fetch `n` little-endian dwords at card address `addr`.  False when the
-// fetch cannot happen (bus mastering off, a frame-buffer address past VRAM).
-bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
+static bool card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n, gart_memo_t *memo) {
     while (n) {
         if (!(addr & CARD_AGP_BIT)) {
             // The frame buffer: the engine reads its own memory.
@@ -214,11 +226,10 @@ bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
         uint32_t chunk = (GART_PAGE - (agp & (GART_PAGE - 1u))) / 4u;
         if (chunk > n)
             chunk = n;
-        if (chunk > FETCH_RUN)
-            chunk = FETCH_RUN;
         uint32_t host;
-        uint8_t bytes[FETCH_RUN * 4u];
-        if (!agp_to_host(r, agp, &host) || !pci_dma_read(r->dev, host, bytes, chunk * 4u))
+        // The bytes land in `out` itself, each dword then assembled in place
+        uint8_t *bytes = (uint8_t *)out;
+        if (!agp_to_host(r, agp, &host, memo) || !pci_dma_read(r->dev, host, bytes, chunk * 4u))
             return false;
         for (uint32_t i = 0; i < chunk; i++)
             out[i] = (uint32_t)bytes[4 * i] | ((uint32_t)bytes[4 * i + 1] << 8) | ((uint32_t)bytes[4 * i + 2] << 16) |
@@ -226,6 +237,12 @@ bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
         out += chunk, n -= chunk, addr += chunk * 4u;
     }
     return true;
+}
+
+// Fetch `n` little-endian dwords at card address `addr`.  False when the
+// fetch cannot happen (bus mastering off, a frame-buffer address past VRAM).
+bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
+    return card_read(r, addr, out, n, NULL);
 }
 
 // ============================================================
@@ -411,6 +428,18 @@ static void segment(rage128_t *r, int32_t x0, int32_t y0, int32_t x1, int32_t y1
 #define WALK_RING    3u
 #define MAX_VERTICES 0x10000u
 
+// Grow a walker scratch buffer to hold `n` items of `size` bytes.
+static bool walk_grow(void **buf, uint32_t *cap, uint32_t n, size_t size) {
+    if (n <= *cap)
+        return true;
+    uint32_t want = n < 1024u ? 1024u : n;
+    void *p = realloc(*buf, (size_t)want * size);
+    if (!p)
+        return false;
+    *buf = p, *cap = want;
+    return true;
+}
+
 // The vertices of a 3D_RNDR_GEN_PRIM, inline in the packet.
 static void draw_inline(rage128_t *r, uint32_t fmt, uint32_t cntl, const uint32_t *d, uint32_t n) {
     uint32_t vs = r128_3d_vertex_dwords(fmt), count = VC_NUM(cntl);
@@ -422,20 +451,25 @@ static void draw_inline(rage128_t *r, uint32_t fmt, uint32_t cntl, const uint32_
     }
     if (!count)
         return;
-    r128_vertex_t *v = malloc(count * sizeof(*v));
-    if (!v)
+    if (!walk_grow((void **)&r->walk_v, &r->walk_v_cap, count, sizeof(r128_vertex_t)))
         return;
+    r128_vertex_t *v = r->walk_v;
     for (uint32_t i = 0; i < count; i++)
         r128_3d_vertex_decode(fmt, d + i * vs, &v[i]);
     LOG(4, "Rage 128 CCE: 3D prim %u, %u inline vertices of %u dwords", VC_PRIM(cntl), count, vs);
     r128_3d_draw(r, VC_PRIM(cntl), v, count);
-    free(v);
 }
 
 // The vertex walker: vertices from the vertex list at VLOFF in AGP space
 // ("with respect to the physical address of the AGP space", SDK appendix
 // F), in order (list walk) or by 16-bit indices, two to a dword, the first
-// in the low half (indexed walk).
+// in the low half (indexed walk).  The span of the list the walk names is
+// fetched at once when the walk covers most of it, each of its vertices
+// decoded once (the vertices between that the walk skips are read too: the
+// GART maps system memory, which a read does not change); a sparse walk
+// fetches vertex by vertex.  A fetch fails whole or not at all (bus
+// mastering, the bus's permission), so a failed span falls back to the
+// vertex-by-vertex walk, which logs it.
 static void draw_walked(rage128_t *r, uint32_t vloff, uint32_t vsize, uint32_t fmt, uint32_t cntl, const uint32_t *idx,
                         uint32_t nidx) {
     uint32_t vs = r128_3d_vertex_dwords(fmt), count = VC_NUM(cntl), walk = VC_WALK(cntl);
@@ -450,33 +484,59 @@ static void draw_walked(rage128_t *r, uint32_t vloff, uint32_t vsize, uint32_t f
         count = MAX_VERTICES;
     if (!count)
         return;
-    r128_vertex_t *v = malloc(count * sizeof(*v));
-    uint32_t *raw = malloc(vs * sizeof(uint32_t));
-    if (!v || !raw) {
-        free(v);
-        free(raw);
-        return;
-    }
-    uint32_t got = 0;
+#define WALK_K(i) (walk == WALK_INDEXED ? (idx[(i) / 2u] >> (((i) & 1u) ? 16 : 0)) & 0xFFFFu : (i))
+    uint32_t kmin = UINT32_MAX, kmax = 0;
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t k = i;
-        if (walk == WALK_INDEXED)
-            k = (idx[i / 2u] >> ((i & 1u) ? 16 : 0)) & 0xFFFFu;
-        if (k >= vsize && vsize) {
-            LOG(2, "Rage 128 CCE: vertex %u is past the list's %u", k, vsize);
+        uint32_t k = WALK_K(i);
+        if (k >= vsize && vsize)
             continue;
-        }
-        if (!r128_card_read(r, base + k * vs * 4u, raw, vs)) {
-            LOG(1, "Rage 128 CCE: vertex fetch at card address $%08X failed", base + k * vs * 4u);
-            break;
-        }
-        r128_3d_vertex_decode(fmt, raw, &v[got++]);
+        kmin = k < kmin ? k : kmin, kmax = k > kmax ? k : kmax;
     }
+    if (!walk_grow((void **)&r->walk_v, &r->walk_v_cap, count, sizeof(r128_vertex_t)) ||
+        !walk_grow((void **)&r->walk_raw, &r->walk_raw_cap, vs, sizeof(uint32_t)))
+        return;
+    r128_vertex_t *v = r->walk_v;
+    gart_memo_t memo = {0};
+    uint32_t got = 0;
+    uint32_t span = kmin <= kmax ? kmax - kmin + 1u : 0;
+    bool whole = span && span <= 2u * count + 64u &&
+                 walk_grow((void **)&r->walk_raw, &r->walk_raw_cap, span * vs, sizeof(uint32_t)) &&
+                 walk_grow((void **)&r->walk_dec, &r->walk_dec_cap, span, sizeof(r128_vertex_t)) &&
+                 walk_grow((void **)&r->walk_done, &r->walk_done_cap, span, 1) &&
+                 card_read(r, base + kmin * vs * 4u, r->walk_raw, span * vs, &memo);
+    if (whole) {
+        memset(r->walk_done, 0, span);
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t k = WALK_K(i);
+            if (k >= vsize && vsize) {
+                LOG(2, "Rage 128 CCE: vertex %u is past the list's %u", k, vsize);
+                continue;
+            }
+            uint32_t j = k - kmin;
+            if (!r->walk_done[j]) {
+                r128_3d_vertex_decode(fmt, r->walk_raw + j * vs, &r->walk_dec[j]);
+                r->walk_done[j] = 1;
+            }
+            v[got++] = r->walk_dec[j];
+        }
+    } else {
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t k = WALK_K(i);
+            if (k >= vsize && vsize) {
+                LOG(2, "Rage 128 CCE: vertex %u is past the list's %u", k, vsize);
+                continue;
+            }
+            if (!card_read(r, base + k * vs * 4u, r->walk_raw, vs, &memo)) {
+                LOG(1, "Rage 128 CCE: vertex fetch at card address $%08X failed", base + k * vs * 4u);
+                break;
+            }
+            r128_3d_vertex_decode(fmt, r->walk_raw, &v[got++]);
+        }
+    }
+#undef WALK_K
     LOG(4, "Rage 128 CCE: 3D prim %u, %u %s vertices of %u dwords at $%08X", VC_PRIM(cntl), got,
         walk == WALK_INDEXED ? "indexed" : "listed", vs, base);
     r128_3d_draw(r, VC_PRIM(cntl), v, got);
-    free(raw);
-    free(v);
 }
 
 static void exec_type3(rage128_t *r, uint32_t op, const uint32_t *b, uint32_t n) {

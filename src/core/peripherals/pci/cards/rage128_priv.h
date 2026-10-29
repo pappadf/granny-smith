@@ -329,6 +329,13 @@ typedef struct rage128 {
     uint8_t dac_view[3][256]; // the palette as the direct-colour DAC table (display_t.dac_lut)
     uint8_t *blank; // black stub while the raster is off (vram_size)
     uint8_t *compose; // big-endian copy for the direct-colour depths (vram_size)
+    // The vertex walker's scratch (rage128_cce.c), grown as a draw needs:
+    // its vertices in order, the span of its vertex list fetched at once,
+    // and that span decoded (a vertex once however many indices name it).
+    struct r128_vertex *walk_v, *walk_dec;
+    uint32_t *walk_raw;
+    uint8_t *walk_done;
+    uint32_t walk_v_cap, walk_dec_cap, walk_raw_cap, walk_done_cap;
     uint32_t scan_base;
     // CRTC_OFFSET as the display uses it: a write while the CRTC runs takes
     // effect at the next vertical blank (a page flip), and until then

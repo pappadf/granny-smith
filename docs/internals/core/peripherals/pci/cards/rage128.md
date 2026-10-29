@@ -228,7 +228,11 @@ later Radeon documentation numbers it BITBLT). The 3D packets hand vertices to t
 engine: `3D_RNDR_GEN_PRIM` carries them inline; `3D_RNDR_GEN_INDX_PRIM`
 names a vertex list in AGP space (`VLOFF`, an offset in the AGP window)
 that the vertex walker reads in order or by 16-bit indices, and
-`NEXT_VERTEX_BUNDLE` adds indices to the last one. `SMALL_TEXT`, the scaler
+`NEXT_VERTEX_BUNDLE` adds indices to the last one. A walk that names most
+of its span of the list (Quake III's index lists, each vertex named
+several times) fetches the span in one read, one GART lookup a page, and
+decodes each vertex once; a sparse one fetches vertex by vertex, still
+one lookup a page. Either way the fetch fails whole or not at all. `SMALL_TEXT`, the scaler
 packets and `LOAD_PALETTE` are skipped by their count, logged once each.
 
 Packets arrive three ways, chosen by `PM4_BUFFER_CNTL`'s mode: through

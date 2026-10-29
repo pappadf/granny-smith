@@ -1397,6 +1397,10 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     free(r->vram);
     free(r->blank);
     free(r->compose);
+    free(r->walk_v);
+    free(r->walk_dec);
+    free(r->walk_raw);
+    free(r->walk_done);
     free(r);
     dev->priv = NULL;
 }
