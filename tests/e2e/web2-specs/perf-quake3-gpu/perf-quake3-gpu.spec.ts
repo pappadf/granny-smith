@@ -62,6 +62,9 @@ const SWEEP_S = Number(process.env.GS_Q3_SWEEP_S ?? 8);
 const PROFILE_S = Number(process.env.GS_Q3_PROFILE ?? 0);
 const PROFILE_AT = Number(process.env.GS_Q3_PROFILE_AT ?? 25);
 const CDP_PORT = 9333;
+// GS_Q3_JS_FLAGS: V8 flags for the browser (an experiment's knobs, e.g.
+// "--no-liftoff" to compile every wasm function optimized at once)
+const JS_FLAGS = process.env.GS_Q3_JS_FLAGS ?? "";
 // GS_Q3_SET: core settings applied before the timed runs, an experiment's
 // knobs (e.g. "jit.budget=100,jit.threshold=100000")
 const SETTINGS = (process.env.GS_Q3_SET ?? "")
@@ -110,6 +113,7 @@ test.use({
       "--enable-unsafe-webgpu",
       "--ignore-gpu-blocklist",
       ...(PROFILE_S ? [`--remote-debugging-port=${CDP_PORT}`] : []),
+      ...(JS_FLAGS ? [`--js-flags=${JS_FLAGS}`] : []),
     ],
   },
   headless: process.env.GS_Q3_HEADED !== "1",

@@ -79,6 +79,7 @@ The web server re-runs `make ui2` (a no-op when it is current) and serves
 | `GS_Q3_AFTER` | — | Calls logged after each run, `path:arg;...` (e.g. `machine.cpu.mmu.translate:0x00afe2c0`) |
 | `GS_Q3_SWEEP`, `GS_Q3_SWEEP_S` | —, `8` | The governor's floor (`scheduler.min_speed`) stepped through these speeds during each run, this many seconds each: a frame-unit's cost at each speed, in the perf log |
 | `GS_Q3_PROFILE`, `GS_Q3_PROFILE_AT` | —, `25` | CPU profiles of the page's workers for this many seconds of each run, starting this many seconds in (over the browser's remote-debugging port; link with `EXTRA_LDFLAGS=--profiling-funcs` for names) |
+| `GS_Q3_JS_FLAGS` | — | V8 flags for the browser (`--js-flags`), e.g. `--no-liftoff` |
 | `GS_Q3_KEEP_WATCHDOG` | — | `1`: keep the page's 3 s heartbeat watch (by default the spec lifts it to 600 s, so a stall is ridden out, not fatal) |
 
 **First, confirm the GPU.**  The first `Q3GPU` line names the adapter:
