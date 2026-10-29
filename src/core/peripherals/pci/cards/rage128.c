@@ -1339,6 +1339,7 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r128_cce_reset(r);
     memset(r->fog_table, 0, sizeof(r->fog_table));
     r->fog_index = 0;
+    r->st_valid = false;
     r->crtc_offset_live = 0;
     r->flip_pending = false;
     r->prims3d = 0;
@@ -1401,6 +1402,7 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     free(r->walk_dec);
     free(r->walk_raw);
     free(r->walk_done);
+    free(r->st_cache);
     free(r);
     dev->priv = NULL;
 }
@@ -1469,6 +1471,7 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     memcpy(&r->host, c.host, sizeof(r->host));
     memcpy(r->fog_table, c.fog_table, sizeof(r->fog_table));
     r->fog_index = c.fog_index;
+    r->st_valid = false;
     r->crtc_offset_live = c.crtc_offset_live;
     r->flip_pending = c.flip_pending != 0;
     system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));

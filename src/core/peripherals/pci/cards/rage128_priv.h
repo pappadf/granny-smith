@@ -296,6 +296,9 @@ typedef struct r128_cce {
 #define R128_UCODE_KNOWN   1u // ATI's published Rage 128 microcode
 #define R128_UCODE_UNKNOWN 2u // 256 pairs that are not it
 
+// The registers one gather may read and still be remembered.
+#define R128_ST_READS 128u
+
 typedef struct rage128 {
     pci_device_t *dev;
     config_t *cfg;
@@ -336,6 +339,15 @@ typedef struct rage128 {
     uint32_t *walk_raw;
     uint8_t *walk_done;
     uint32_t walk_v_cap, walk_dec_cap, walk_raw_cap, walk_done_cap;
+    // The 3D state as last gathered (rage128_raster.c), reused by a batch
+    // whose gather would read the same: every register the gather read,
+    // with its value, and the fog table's generation then.
+    struct st *st_cache;
+    uint64_t st_gen; // bumped by each gather that builds anew (st_t.gen)
+    uint32_t st_nreads, st_fog_gen;
+    bool st_valid;
+    uint32_t st_read_off[R128_ST_READS], st_read_val[R128_ST_READS];
+    uint32_t fog_gen; // bumped by each write to the fog table
     uint32_t scan_base;
     // CRTC_OFFSET as the display uses it: a write while the CRTC runs takes
     // effect at the next vertical blank (a page flip), and until then

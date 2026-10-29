@@ -133,6 +133,17 @@ struct r128_gpu {
     bool write_color, write_depth;
     r128gpu_draw_hdr_t hdr;
     uint32_t uni[R128GPU_U_WORDS];
+    // What the uniform was built from (st_t.gen, the depth buffer's
+    // presence, the target's size): a batch with the same is not rebuilt.
+    // uni_ver counts the builds.
+    uint64_t uni_gen;
+    bool uni_depth;
+    uint32_t uni_w, uni_h, uni_ver;
+    // classify()'s answer for state cls_gen, triangles or not.
+    uint64_t cls_gen;
+    bool cls_tris;
+    int cls_why;
+    uint32_t cls_key;
     // The open DRAW record.
     bool draw_open;
     // ...holds this batch's header and uniform: r128_gpu_tri checks only
@@ -142,6 +153,7 @@ struct r128_gpu {
     uint32_t draw_off;
     r128gpu_draw_hdr_t draw_hdr;
     uint32_t draw_uni[R128GPU_U_WORDS];
+    uint32_t draw_uni_ver; // uni_ver when it opened: equal, the uniforms are
     // Textures.
     gtex_t *tex;
     // The entry a texture key last resolved to, by the key's hash: checked
@@ -1088,8 +1100,14 @@ bool r128_gpu_batch_begin(r128_gpu_t *g, st_t *s, uint32_t prim, const r128_vert
     // Any 3D keeps the takeover engaged, drawn here or by the walker: what
     // the walker's batches cost in readbacks is the storm rule's business.
     g->idle_vbls = 0;
-    uint32_t key = 0;
-    int why = classify(s, prim, &key);
+    // classify() reads the state and only whether the batch is triangles
+    bool tris = prim >= 4 && prim <= 7;
+    if (g->cls_gen != s->gen || g->cls_tris != tris) {
+        g->cls_why = classify(s, prim, &g->cls_key);
+        g->cls_gen = s->gen, g->cls_tris = tris;
+    }
+    uint32_t key = g->cls_key;
+    int why = g->cls_why;
     if (why != FB_COUNT) {
         g->n_fallback[why]++;
         return false;
@@ -1157,7 +1175,11 @@ bool r128_gpu_batch_begin(r128_gpu_t *g, st_t *s, uint32_t prim, const r128_vert
     g->hdr.tex_id[1] = tex_id[1];
     g->hdr.pipe_key = key;
     g->hdr.sx0 = x0, g->hdr.sy0 = y0, g->hdr.sx1 = x1, g->hdr.sy1 = y1;
-    build_uniform(g, s);
+    if (g->uni_gen != s->gen || g->uni_depth != (bd != NULL) || g->uni_w != bc->w || g->uni_h != bc->h) {
+        build_uniform(g, s);
+        g->uni_gen = s->gen, g->uni_depth = bd != NULL, g->uni_w = bc->w, g->uni_h = bc->h;
+        g->uni_ver++;
+    }
     g->draw_current = false; // a new header and uniform: the open record is checked again
     g->n_batches++;
     return true;
@@ -1176,6 +1198,7 @@ static bool open_draw(r128_gpu_t *g) {
     g->draw_hdr = g->hdr;
     g->draw_hdr.n_verts = 0;
     memcpy(g->draw_uni, g->uni, R128GPU_U_BYTES);
+    g->draw_uni_ver = g->uni_ver;
     memcpy(payload(g, at) + sizeof(r128gpu_draw_hdr_t), g->uni, R128GPU_U_BYTES);
     return true;
 }
@@ -1183,7 +1206,7 @@ static bool open_draw(r128_gpu_t *g) {
 static bool draw_matches(const r128_gpu_t *g) {
     return g->draw_open && g->draw_hdr.n_verts + 3u <= R128GPU_MAX_VERTS &&
            !memcmp(&g->draw_hdr, &g->hdr, offsetof(r128gpu_draw_hdr_t, n_verts)) &&
-           !memcmp(g->draw_uni, g->uni, R128GPU_U_BYTES);
+           (g->draw_uni_ver == g->uni_ver || !memcmp(g->draw_uni, g->uni, R128GPU_U_BYTES));
 }
 
 static void put_vertex(float *o, const svtx_t *v) {

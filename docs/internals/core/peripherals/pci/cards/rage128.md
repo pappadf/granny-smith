@@ -366,7 +366,15 @@ worker attaches, the card keeps the software rasteriser and
   the key (format, sizes, level offsets), checked in full against the
   entry, before any scan of the 1024 entries; and its triangles append to
   the open DRAW record after one check per batch that the record carries
-  the batch's header and 512-byte uniform, not one per triangle.
+  the batch's header and 512-byte uniform, not one per triangle. A
+  batch drawn with the state of the one before (most of Quake III's
+  45,000 a second) skips the state's rebuild: the walker remembers every
+  register its gather read, with the value, and reuses the gathered state
+  while each still holds it and the fog table is unwritten (a reset or
+  restore forgets it); each new gather has a generation, and the
+  takeover keeps its classification and uniform for the generation (the
+  uniform also for the target's size and depth buffer), so the open
+  record's uniform is compared only when it was rebuilt.
 - **The 2D engine's fills** of a surface — no source, no destination read,
   a solid brush or none, no colour compare, every bit written — are GPU
   fills, so a Z buffer cleared every frame (Quake III's) never comes back

@@ -164,6 +164,7 @@ typedef struct tex_unit {
 
 typedef struct st {
     rage128_t *r;
+    uint64_t gen; // the gather that built it (rage128_t.st_gen)
     // The colour buffer.
     uint32_t dst_base, dst_stride, dst_type, dst_bpp;
     int32_t sc_l, sc_t, sc_r, sc_b; // inclusive
