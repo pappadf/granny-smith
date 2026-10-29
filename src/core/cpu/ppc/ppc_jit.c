@@ -667,6 +667,7 @@ static struct {
     bool it, pr; // the fetch mode it runs under (MSR[IT], MSR[PR])
     const jt_ref_t *refs; // the region's refs (indirect branches)
     uint8_t *bvalid; // the region's per-block valid flags
+    bool guarded; // blocks test their valid flag: a chunk that was invalidated before (§3.7)
     bool is601; // mtxer keeps only the 601's implemented XER bits; no time base
     uint32_t msr_mask; // the MSR bits mtmsr writes (ppc_msr_mask)
     bool shared; // the module's memory is shared (pthreads build)
@@ -3876,13 +3877,16 @@ static uint32_t translate(void) {
         // Guard: still valid, the budget leaves a slot to spare, a fold
         // left for the branch; otherwise leave at the block's start
         g_block_mask = g_block_defs = 0; // (nothing loaded yet: nothing to store)
-        iconst(addr_of(&U.bvalid[b]));
-        mem(W_LOAD8U, 0, 0);
-        op(W_EQZ);
+        if (U.guarded) { // (a chunk never written stops as a whole instead: §3.7)
+            iconst(addr_of(&U.bvalid[b]));
+            mem(W_LOAD8U, 0, 0);
+            op(W_EQZ);
+        }
         lget(L_BUDGET);
         iconst(bl->n);
         op(W_LE_U);
-        op(W_OR);
+        if (U.guarded)
+            op(W_OR);
         if (bl->branch) {
             lget(L_FOLDS);
             op(W_EQZ);
@@ -4119,6 +4123,9 @@ typedef struct jit_slot {
 
 typedef struct jit_chunk {
     uint32_t fn; // the function (table index), 0 = none
+    uint32_t fn_dead; // the function while the chunk is dead (fn 0): revalidated or released later
+    bool guarded; // translated with per-block valid-flag tests: it was invalidated before
+    bool dead; // a code write hit it since its translation and its blocks carry no tests: not entered
     jt_ref_t refs[JIT_REGION_PAGES]; // read by the function: its maps of the member pages
     uint16_t *maps[JIT_REGION_PAGES]; // per member page: block per leader word (NONE16)
     uint8_t *bvalid; // per block, 1 = valid
@@ -4239,7 +4246,9 @@ static void region_drop_code(jit_region_t *R) {
     for (uint32_t c = 0; c < R->nchunks; c++) {
         jit_chunk_t *ch = &R->chunk[c];
         release_fn(ch->fn);
-        ch->fn = 0;
+        release_fn(ch->fn_dead);
+        ch->fn = ch->fn_dead = 0;
+        ch->guarded = ch->dead = false;
         ch->pending = 0;
         ch->nb = 0;
         ch->sig = 0;
@@ -4386,6 +4395,10 @@ void ppc_jit_ready(uint32_t token) {
     double t0 = emscripten_get_now();
     ch->pending = 0;
     ch->fn = install_fn(token, g_pending[i].msr);
+    if (ch->dead) { // written while it compiled: not entered until it is retranslated
+        ch->fn_dead = ch->fn;
+        ch->fn = 0;
+    }
     g_st.compile_ms += emscripten_get_now() - t0;
     g_st.async_landed++;
     memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip); // its entries are open now
@@ -4587,7 +4600,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                     continue;
                 }
                 if (c == NONE8 || (leader[u][i] && total[c] >= g_chunk_cap)) {
-                    for (c = 0; c < JIT_MAX_CHUNKS && (used[c] || (c < R->nchunks && R->chunk[c].fn && !fresh)); c++)
+                    for (c = 0; c < JIT_MAX_CHUNKS &&
+                                (used[c] || (c < R->nchunks && (R->chunk[c].fn || R->chunk[c].fn_dead) && !fresh));
+                         c++)
                         ;
                     if (c == JIT_MAX_CHUNKS) {
                         out = true;
@@ -4620,7 +4635,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     U.n = n;
     uint32_t nchunks = 0;
     for (uint32_t ci = 0; ci < JIT_MAX_CHUNKS; ci++)
-        if (used[ci] || (ci < R->nchunks && R->chunk[ci].fn))
+        if (used[ci] || (ci < R->nchunks && (R->chunk[ci].fn || R->chunk[ci].fn_dead)))
             nchunks = ci + 1;
     R->nchunks = nchunks;
     g_prof[2] += emscripten_get_now() - tp, tp = emscripten_get_now();
@@ -4666,7 +4681,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         uint32_t words = nwords[ci];
         if (!used[ci]) { // no pages any more
             release_fn(ch->fn);
-            ch->fn = 0;
+            release_fn(ch->fn_dead);
+            ch->fn = ch->fn_dead = 0;
+            ch->guarded = ch->dead = false;
             ch->pending = 0;
             ch->empty = false;
             ch->nb = 0;
@@ -4678,13 +4695,18 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         // its blocks): the function is still right, the new entries just
         // are not translated yet.  It is retranslated for them only every
         // so often, the interval doubling with each of its translations.
-        bool built = ch->fn || ch->pending || ch->empty;
+        bool built = ch->fn || ch->fn_dead || ch->pending || ch->empty;
         bool split = built && ch->sigw == sigws[ci] &&
                      R->ncompiles - ch->last_regen < (JIT_SPLIT_COMPILES << (ch->regens < 10 ? ch->regens : 10));
         if (built && (ch->sig == sig || split)) {
             // Unchanged words: keep the function; the words are the ones it
             // was translated from, so every block is valid again
             memset(ch->bvalid, 1, ch->nb + 1);
+            if (ch->dead) { // ... and so is the chunk
+                ch->dead = false;
+                if (!ch->fn && ch->fn_dead)
+                    ch->fn = ch->fn_dead, ch->fn_dead = 0;
+            }
             continue;
         }
         if (g_trace == 6) {
@@ -4697,7 +4719,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                             break;
                         }
             printf("jit:   chunk %u at %08x, %u words (was %u), %s\n", ci, first, words, ch->nwords,
-                   ch->fn ? (ch->sigw == sigws[ci] ? "split" : "changed") : "new");
+                   ch->fn || ch->fn_dead ? (ch->sigw == sigws[ci] ? "split" : "changed") : "new");
         }
         ch->nwords = words;
         ch->empty = false;
@@ -4705,10 +4727,15 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         ch->regens++;
         ch->last_regen = R->ncompiles;
         g_regen++;
-        g_regen_new += !ch->fn && !ch->pending;
+        g_regen_new += !ch->fn && !ch->fn_dead && !ch->pending;
         release_fn(ch->fn);
-        ch->fn = 0;
+        release_fn(ch->fn_dead);
+        ch->fn = ch->fn_dead = 0;
         ch->pending = 0; // (a compile in flight is dropped when it lands)
+        // Written since its translation: from now on its blocks test their
+        // valid flags, so a write stops only the block it hits (§3.7)
+        ch->guarded = ch->guarded || ch->dead;
+        ch->dead = false;
         ch->nb = 0;
         ch->sig = sig;
         memset(ch->refs, 0, sizeof ch->refs);
@@ -4743,6 +4770,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         memset(ch->bvalid, 1, words + 1);
         U.refs = ch->refs;
         U.bvalid = ch->bvalid;
+        U.guarded = ch->guarded;
         g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
         uint32_t nb = translate();
         g_prof[4] += emscripten_get_now() - tp, tp = emscripten_get_now();
@@ -5752,6 +5780,14 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
                            LOAD_BE32(s->host + 4 * w));
                 s->last_hit = (uint16_t)w;
                 R->chunk[c].bvalid[b] = 0;
+                if (!R->chunk[c].guarded && !R->chunk[c].dead) {
+                    // Its blocks carry no valid-flag test: the whole chunk
+                    // stops (the dispatcher and the chain stubs read fn)
+                    jit_chunk_t *ch = &R->chunk[c];
+                    ch->dead = true;
+                    if (ch->fn)
+                        ch->fn_dead = ch->fn, ch->fn = 0;
+                }
                 R->stale++;
                 g_st.block_invals++;
                 hit = true;

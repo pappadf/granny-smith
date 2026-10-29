@@ -575,9 +575,24 @@ the PM8500 diverge).  It runs before the store lands, so it cannot tell a
 same-value store apart, and it counts `writes[]` for every word written.
 The tier clears the valid flag of
 exactly the blocks that translated the stored words: a store next to code
-(a data word, a link field) invalidates nothing.  A stale block leaves at
-its start; the region is retranslated once the writes have been quiet for
-`jit.quiet` entries.  A pool reset resets the tier
+(a data word, a link field) invalidates nothing.  The region is
+retranslated once the writes have been quiet for `jit.quiet` entries.
+
+What a stale block does depends on the chunk's history.  A chunk that
+has never been written is translated without the per-block flag test
+(its blocks' guards are the budget and fold compares alone): the first
+write that hits one of its blocks stops the whole chunk -- its function
+index moves from `fn` to `fn_dead`, so the dispatcher (`region_entry`)
+and every chain stub, which read `fn`, decline it until the retranslation
+revalidates it (same words: `fn` is restored) or regenerates it.  A
+chunk regenerated after a write is `guarded`: its blocks test their flag
+and a stale block leaves at its start, as every block did before.  The
+flag test was a byte load and a compare per block of 2.5-4 instructions;
+on Quake III's demo (9 invalidations in 80 s) emitting none measured
+about +3 % (291 / 293 against 278 / 284 MIPS while running).  A write that
+lands while the chunk's function is on the stack is the function's own
+`ppc_jit_code_store`, after which it leaves; a write during an
+asynchronous compile makes the function land dead.  A pool reset resets the tier
 (`g_pd_tier_reset_hook`), as do a memory map change and a model change.
 
 ### 3.8 Where the time goes, and what was tried
