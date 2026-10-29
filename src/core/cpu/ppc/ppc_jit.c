@@ -709,6 +709,11 @@ static uint32_t g_block_mask, g_block_defs; // the registers it loads; the ones 
 // jit.regs = 1: the GPRs live in their locals for the whole function instead
 // (loaded by the prologue, stored at $out and before a chain)
 static uint32_t g_fn_regs;
+// jit.direct (default 1): a forward branch inside a chunk is a br to its
+// block's label (the labels close in block order, right before each
+// block's code) instead of a trip through the dispatcher's br_table; 0
+// sends every branch through the dispatcher, as before
+static uint32_t g_direct = 1;
 static uint32_t g_fn_mask, g_fn_defs;
 static void emit_store_regs(uint32_t defs) {
     for (uint32_t r = 0; r < 32; r++) {
@@ -948,6 +953,13 @@ static void emit_goto(uint32_t target) {
     if ((uint32_t)k != g_cur_page)
         emit_fetch_check(target, U.pages[k].host_adjust);
     emit_flush();
+    if (g_direct && b > g_cur_block) {
+        // blocks b+1..n-1's labels are open, innermost first: block b's
+        // ends right before its code, where the dispatcher would land too
+        op(W_BR);
+        uleb(b - g_cur_block - 1 + g_depth);
+        return;
+    }
     iconst(b);
     lset(L_IDX);
     op(W_BR);
@@ -5799,6 +5811,7 @@ enum {
     JA_LOOKUPS,
     JA_DEFERRED,
     JA_RFI_SKIPS,
+    JA_DIRECT,
     JA_ASYNC,
     JA_BUDGET,
     JA_REGS
@@ -5852,6 +5865,8 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_st.deferred);
     case JA_RFI_SKIPS:
         return val_uint(8, g_st.rfi_skips);
+    case JA_DIRECT:
+        return val_uint(4, g_direct);
     case JA_ASYNC:
         return val_uint(4, g_async);
 #endif
@@ -5905,6 +5920,12 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
     case JA_REGS:
 #ifdef __EMSCRIPTEN__
         g_fn_regs = in.u ? 1 : 0;
+        ppc_jit_reset();
+#endif
+        return val_none();
+    case JA_DIRECT:
+#ifdef __EMSCRIPTEN__
+        g_direct = in.u ? 1 : 0;
         ppc_jit_reset();
 #endif
         return val_none();
@@ -5986,6 +6007,7 @@ static const member_t jit_members[] = {
              jit_attr_set),
     JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),
     JIT_ATTR("regs", JA_REGS, "0 = guest registers in locals per block, 1 = per function", jit_attr_set),
+    JIT_ATTR("direct", JA_DIRECT, "1 = a forward branch inside a chunk goes to its block directly, 0 = through the dispatcher", jit_attr_set),
     {.kind = MK_METHOD,
                                                                                                   .name = "reset",
                                                                                                   .doc = "Drop every translation",

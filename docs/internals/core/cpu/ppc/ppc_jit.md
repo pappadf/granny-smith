@@ -164,6 +164,15 @@ the chain stub).  A block with loads or stores wraps its body in `$deopt`:
 an access that misses the fast path sets the instruction's index and
 branches there, and one tail per block gives the slots back and leaves.
 
+A branch to a later block of the chunk is a `br` to that block's label
+(`jit.direct`, the default): the labels close in block order right
+before each block's code, so block *j* is `(j - b - 1)` levels out from
+block *b*'s body, and it lands on the same guard the dispatcher would.
+A backward branch, a self-loop and an entry set `$idx` and go through
+the `br_table`.  On Quake III's demo 72 of the hottest chunk's 108
+dispatcher trips were forward; making them direct measured about +1 %
+(two runs each, within the noise).
+
 One module per function, importing the emulator's memory (shared in the
 pthreads build), its function table, `ppc_jit_code_store`, `ppc_jit_tb`, `ppc_jit_fp`
 and `ppc_jit_dcbz`; the export
