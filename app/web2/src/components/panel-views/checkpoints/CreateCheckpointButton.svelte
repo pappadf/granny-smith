@@ -6,7 +6,7 @@
   import { startActivity, endActivity } from '@/state/activity.svelte';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { checkpointsView } from './checkpointsView.svelte';
+  import { checkpointsView } from './checkpointsViewState.svelte';
   import { formatLocalStamp } from '@/lib/checkpointMeta';
 
   // Save a checkpoint of the running machine (also the panel header's

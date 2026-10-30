@@ -228,7 +228,11 @@ later Radeon documentation numbers it BITBLT). The 3D packets hand vertices to t
 engine: `3D_RNDR_GEN_PRIM` carries them inline; `3D_RNDR_GEN_INDX_PRIM`
 names a vertex list in AGP space (`VLOFF`, an offset in the AGP window)
 that the vertex walker reads in order or by 16-bit indices, and
-`NEXT_VERTEX_BUNDLE` adds indices to the last one. `SMALL_TEXT`, the scaler
+`NEXT_VERTEX_BUNDLE` adds indices to the last one. A walk that names most
+of its span of the list (Quake III's index lists, each vertex named
+several times) fetches the span in one read, one GART lookup a page, and
+decodes each vertex once; a sparse one fetches vertex by vertex, still
+one lookup a page. Either way the fetch fails whole or not at all. `SMALL_TEXT`, the scaler
 packets and `LOAD_PALETTE` are skipped by their count, logged once each.
 
 Packets arrive three ways, chosen by `PM4_BUFFER_CNTL`'s mode: through
@@ -357,7 +361,20 @@ worker attaches, the card keeps the software rasteriser and
   each) before anyone sees it; a write marks its rows VRAM-newer, uploaded
   before the next GPU use, and bumps a per-4 KB page generation the
   texture cache checks (AGP-resident textures are content-hashed once a
-  frame instead). Not engaged, the test is one comparison.
+  frame instead). Not engaged, the test is one comparison.  A batch finds
+  its textures' cache entries through a hint table indexed by a hash of
+  the key (format, sizes, level offsets), checked in full against the
+  entry, before any scan of the 1024 entries; and its triangles append to
+  the open DRAW record after one check per batch that the record carries
+  the batch's header and 512-byte uniform, not one per triangle. A
+  batch drawn with the state of the one before (most of Quake III's
+  45,000 a second) skips the state's rebuild: the walker remembers every
+  register its gather read, with the value, and reuses the gathered state
+  while each still holds it and the fog table is unwritten (a reset or
+  restore forgets it); each new gather has a generation, and the
+  takeover keeps its classification and uniform for the generation (the
+  uniform also for the target's size and depth buffer), so the open
+  record's uniform is compared only when it was rebuilt.
 - **The 2D engine's fills** of a surface — no source, no destination read,
   a solid brush or none, no colour compare, every bit written — are GPU
   fills, so a Z buffer cleared every frame (Quake III's) never comes back

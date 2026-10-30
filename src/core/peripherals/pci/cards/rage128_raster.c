@@ -51,6 +51,7 @@
 #include "rage128_raster_priv.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void tell_once(rage128_t *r, uint8_t bit, const char *what) {
@@ -166,15 +167,26 @@ static int32_t s14(uint32_t v) {
     return (int32_t)((v & 0x3FFFu) ^ 0x2000u) - 0x2000;
 }
 
+// A register read by the gather, remembered with its value: a later batch
+// whose reads would all see the same values has the same state.  Past
+// R128_ST_READS reads the gather is not remembered.
+static uint32_t gather_reg(rage128_t *r, uint32_t off) {
+    uint32_t v = REG(r, off);
+    if (r->st_nreads < R128_ST_READS)
+        r->st_read_off[r->st_nreads] = off, r->st_read_val[r->st_nreads] = v;
+    r->st_nreads++;
+    return v;
+}
+
 static void tex_gather(rage128_t *r, tex_unit_t *u, bool on, uint32_t cntl_reg, uint32_t comb_reg, uint32_t off_reg,
                        uint32_t border_reg, uint32_t size_shift) {
     u->on = on;
     if (!on)
         return;
-    u->cntl = REG(r, cntl_reg);
-    u->comb = REG(r, comb_reg);
+    u->cntl = gather_reg(r, cntl_reg);
+    u->comb = gather_reg(r, comb_reg);
     u->fmt = TX_DATATYPE(u->cntl);
-    uint32_t sp = REG(r, R_TEX_SIZE_PITCH_C) >> size_shift;
+    uint32_t sp = gather_reg(r, R_TEX_SIZE_PITCH_C) >> size_shift;
     u->lpitch = sp & 0xFu;
     u->lsize = (sp >> 4) & 0xFu;
     u->lheight = (sp >> 8) & 0xFu;
@@ -192,56 +204,56 @@ static void tex_gather(rage128_t *r, tex_unit_t *u, bool on, uint32_t cntl_reg, 
     uint32_t top = u->lsize - u->lmin;
     bool mip = !(u->cntl & TX_MIP_DIS) && TX_MIN_FN(u->cntl) >= MIN_NEAREST_MIP;
     for (uint32_t i = 0; i < 11; i++) {
-        u->off[i] = REG(r, off_reg + 4u * i);
+        u->off[i] = gather_reg(r, off_reg + 4u * i);
         if (!(u->off[i] & 0x2000000u)) // VRAM, not AGP: wraps onto the memory fitted
             u->off[i] = (u->off[i] & ~0x1FFFFFFu) | r128_vram_wrap(r, u->off[i] & 0x1FFFFFFu);
         if ((u->off[i] & 0xC0000000u) && i <= top && (mip || i == top))
             tell_once(r, TOLD_TILED, "a tiled texture, surface or Z buffer is addressed linearly");
     }
-    u->border = REG(r, border_reg);
+    u->border = gather_reg(r, border_reg);
     u->persp = !(u->cntl & TX_PERSP_DIS);
-    u->premult = (REG(r, R_SETUP_CNTL) & SU_ST_PREMULT) != 0;
+    u->premult = (gather_reg(r, R_SETUP_CNTL) & SU_ST_PREMULT) != 0;
 }
 
 static bool gather(rage128_t *r, st_t *s) {
     memset(s, 0, sizeof(*s));
     s->r = r;
-    s->misc = REG(r, R_MISC_3D_STATE);
+    s->misc = gather_reg(r, R_MISC_3D_STATE);
     if (MISC_3D_FN(s->misc) != SCALE_3D_TEXMAP) {
         tell_once(r, TOLD_OFF, "a primitive with SCALE_3D_FCN not set to texture map/shade is not drawn");
         return false;
     }
-    s->dst_type = REG(r, R_DP_DATATYPE) & 0xFu;
+    s->dst_type = gather_reg(r, R_DP_DATATYPE) & 0xFu;
     s->dst_bpp = dst_bytes(s->dst_type);
     if (!s->dst_bpp) {
         tell_once(r, TOLD_FORMAT, "a colour buffer format the 3D engine does not write — primitive dropped");
         return false;
     }
-    s->dst_base = r128_vram_wrap(r, REG(r, R_DST_OFFSET) & 0x3FFFFF0u);
-    s->dst_stride = (REG(r, R_DST_PITCH) & 0x3FFu) * 8u * s->dst_bpp;
-    r->diag.dst3d = REG(r, R_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it, before wrapping
+    s->dst_base = r128_vram_wrap(r, gather_reg(r, R_DST_OFFSET) & 0x3FFFFF0u);
+    s->dst_stride = (gather_reg(r, R_DST_PITCH) & 0x3FFu) * 8u * s->dst_bpp;
+    r->diag.dst3d = gather_reg(r, R_DST_OFFSET) & 0x3FFFFF0u; // as the driver placed it, before wrapping
     if (s->dst_base & 0x2000000u) {
         tell_once(r, TOLD_AGP_DST, "a colour buffer in AGP space is not drawn");
         return false;
     }
-    s->sc_l = s14(REG(r, R_SC_LEFT));
-    s->sc_r = s14(REG(r, R_SC_RIGHT));
-    s->sc_t = s14(REG(r, R_SC_TOP));
-    s->sc_b = s14(REG(r, R_SC_BOTTOM));
-    s->aux_cntl = REG(r, R_AUX_SC_CNTL);
+    s->sc_l = s14(gather_reg(r, R_SC_LEFT));
+    s->sc_r = s14(gather_reg(r, R_SC_RIGHT));
+    s->sc_t = s14(gather_reg(r, R_SC_TOP));
+    s->sc_b = s14(gather_reg(r, R_SC_BOTTOM));
+    s->aux_cntl = gather_reg(r, R_AUX_SC_CNTL);
     for (int k = 0; k < 3; k++)
         for (int e = 0; e < 4; e++)
-            s->aux[k][e] = s14(REG(r, R_AUX1_SC_LEFT + 16u * (uint32_t)k + 4u * (uint32_t)e));
-    s->write_mask = REG(r, R_DP_WRITE_MSK);
-    s->rop = (REG(r, R_DP_MIX) >> 16) & 0xFFu;
-    uint32_t brush = (REG(r, R_DP_DATATYPE) >> 8) & 0xFu;
+            s->aux[k][e] = s14(gather_reg(r, R_AUX1_SC_LEFT + 16u * (uint32_t)k + 4u * (uint32_t)e));
+    s->write_mask = gather_reg(r, R_DP_WRITE_MSK);
+    s->rop = (gather_reg(r, R_DP_MIX) >> 16) & 0xFFu;
+    uint32_t brush = (gather_reg(r, R_DP_DATATYPE) >> 8) & 0xFu;
     s->brush_masks = brush < 13u;
-    s->scale = REG(r, R_SCALE_3D_CNTL);
-    s->tex_cntl = REG(r, R_TEX_CNTL_C);
-    s->fpu = REG(r, R_PM4_VC_FPU_SETUP);
-    s->setup = REG(r, R_SETUP_CNTL);
-    s->zs = REG(r, R_Z_STEN_CNTL_C);
-    s->sten = REG(r, R_STEN_REF_MSK_C);
+    s->scale = gather_reg(r, R_SCALE_3D_CNTL);
+    s->tex_cntl = gather_reg(r, R_TEX_CNTL_C);
+    s->fpu = gather_reg(r, R_PM4_VC_FPU_SETUP);
+    s->setup = gather_reg(r, R_SETUP_CNTL);
+    s->zs = gather_reg(r, R_Z_STEN_CNTL_C);
+    s->sten = gather_reg(r, R_STEN_REF_MSK_C);
     switch (ZS_PIX_WIDTH(s->zs)) {
     case 0:
         s->z_bytes = 2, s->z_max = 0xFFFFu;
@@ -253,18 +265,18 @@ static bool gather(rage128_t *r, st_t *s) {
         s->z_bytes = 4, s->z_max = 0xFFFFFFFFu;
         break;
     }
-    s->z_base = r128_vram_wrap(r, REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u);
-    r->diag.z3d = REG(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
-    s->z_stride = (REG(r, R_Z_PITCH_C) & 0x3FFu) * 8u * s->z_bytes;
-    s->fog_color = REG(r, R_FOG_COLOR_C);
-    s->constant = REG(r, R_CONSTANT_COLOR_C);
-    s->key = REG(r, R_TEX_CLR_CMP_CLR);
-    s->key_mask = REG(r, R_TEX_CLR_CMP_MSK);
+    s->z_base = r128_vram_wrap(r, gather_reg(r, R_Z_OFFSET_C) & 0x3FFFFF0u);
+    r->diag.z3d = gather_reg(r, R_Z_OFFSET_C) & 0x3FFFFF0u;
+    s->z_stride = (gather_reg(r, R_Z_PITCH_C) & 0x3FFu) * 8u * s->z_bytes;
+    s->fog_color = gather_reg(r, R_FOG_COLOR_C);
+    s->constant = gather_reg(r, R_CONSTANT_COLOR_C);
+    s->key = gather_reg(r, R_TEX_CLR_CMP_CLR);
+    s->key_mask = gather_reg(r, R_TEX_CLR_CMP_MSK);
     memcpy(s->fog_table, r->fog_table, sizeof(s->fog_table));
     // WINDOW_XY_OFFSET: signed, with SUB_PIX_AMNT's fraction bits.
     bool sub4 = (s->fpu & FPU_SUB_PIX_4) != 0;
     float unit = sub4 ? 16.0f : 4.0f;
-    uint32_t w = REG(r, R_WINDOW_XY_OFFSET);
+    uint32_t w = gather_reg(r, R_WINDOW_XY_OFFSET);
     s->win_x = (float)(int16_t)(w >> 16) / unit;
     s->win_y = (float)(int16_t)(w & 0xFFFFu) / unit;
     s->snap = unit;
@@ -291,6 +303,34 @@ static bool gather(rage128_t *r, st_t *s) {
         bool mip = !(t->cntl & TX_MIP_DIS) && minf >= MIN_NEAREST_MIP;
         bool min_linear = minf == MIN_LINEAR || minf == MIN_LINEAR_MIP || minf == MIN_TRILINEAR;
         s->need_lod[u] = t->on && ((mip && t->lsize != t->lmin) || ((magf & 1u) != 0) != min_linear);
+    }
+    return true;
+}
+
+// The batch's state: the last gather's when every register it read still
+// holds what it read and the fog table has not been written since (the
+// rest of what the gather reads, VRAM's size, is fixed); otherwise a new
+// gather, remembered.  Quake III draws most of its 45,000 batches a second
+// with the state of the one before.
+static bool gather_cached(rage128_t *r, st_t *s) {
+    if (r->st_valid && r->st_fog_gen == r->fog_gen) {
+        uint32_t i = 0, n = r->st_nreads;
+        while (i < n && REG(r, r->st_read_off[i]) == r->st_read_val[i])
+            i++;
+        if (i == n) {
+            *s = *r->st_cache;
+            return true;
+        }
+    }
+    r->st_valid = false;
+    r->st_nreads = 0;
+    if (!gather(r, s))
+        return false;
+    s->gen = ++r->st_gen;
+    if (r->st_nreads <= R128_ST_READS && (r->st_cache || (r->st_cache = malloc(sizeof(st_t))))) {
+        *r->st_cache = *s;
+        r->st_fog_gen = r->fog_gen;
+        r->st_valid = true;
     }
     return true;
 }
@@ -1231,12 +1271,12 @@ static void line(st_t *s, const r128_vertex_t *a, const r128_vertex_t *b) {
 
 void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t n) {
     st_t s;
-    if (!n || !gather(r, &s))
+    if (!n || !gather_cached(r, &s))
         return;
-    // The batch's host time, for the status line: every 16th batch, scaled.
+    // The batch's host time, for the status line: every 256th batch, scaled.
     // A host clock read is a JS call on the wasm build, dearer than many a
-    // small batch (Quake III draws some 30,000 a second).
-    bool timed = (++r->diag.timed_batches & 15u) == 0;
+    // small batch (Quake III draws some 45,000 a second).
+    bool timed = (++r->diag.timed_batches & 255u) == 0;
     double t0 = timed ? host_time_ms() : 0;
     // Under the WebGPU takeover the GPU draws the batch's triangles when it
     // can express them; otherwise the walker below draws everything, its
@@ -1285,5 +1325,5 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     if (s.gpu)
         r128_gpu_batch_end(r->gpu, &s);
     if (timed)
-        r->diag.ms3d += 16.0 * (host_time_ms() - t0);
+        r->diag.ms3d += 256.0 * (host_time_ms() - t0);
 }

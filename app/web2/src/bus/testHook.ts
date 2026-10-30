@@ -10,6 +10,7 @@
 // production surface for a real user is unchanged.
 
 import { gsEval } from './emulator';
+import { tapPrintLines } from './logSink';
 import { showNotification, type ToastSeverity } from '@/state/toasts.svelte';
 import { showPrintedDocument } from '@/state/printer.svelte';
 
@@ -33,6 +34,8 @@ export function installEvalHookForAutomation(win: Window = window): boolean {
 export interface GsUiForTests {
   notify: (msg: string, severity: ToastSeverity) => void;
   showPdf: (doc: { name: string; title: string; pages: number; pdf: number[] }) => void;
+  // Every console print line from now on (the terminal keeps only the last)
+  tapPrint: (fn: (line: string) => void) => void;
 }
 
 // Install `__gsUiForTests` on `win` when it is driven by automation.
@@ -41,6 +44,7 @@ export function installUiHookForAutomation(win: Window = window): boolean {
   const hook: GsUiForTests = {
     notify: (msg, severity) => showNotification(msg, severity),
     showPdf: (doc) => showPrintedDocument({ ...doc, pdf: new Uint8Array(doc.pdf) }),
+    tapPrint: (fn) => tapPrintLines(fn),
   };
   (win as unknown as { __gsUiForTests?: GsUiForTests }).__gsUiForTests = hook;
   return true;

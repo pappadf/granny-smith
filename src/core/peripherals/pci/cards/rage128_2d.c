@@ -783,6 +783,7 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t v) {
         return;
     case 0x1A18u: // FOG_TABLE_DATA: one 8-bit entry per write, the index advancing
         r->fog_table[r->fog_index++] = (uint8_t)v;
+        r->fog_gen++;
         return;
     case G_PLANE_3D_MASK_C:
         REG(r, G_DP_WRITE_MSK) = v;

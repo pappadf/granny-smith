@@ -13,7 +13,7 @@
     selectCheckpoint,
     type CheckpointSortColumn,
   } from '@/state/checkpoints.svelte';
-  import { checkpointsView } from './checkpointsView.svelte';
+  import { checkpointsView } from './checkpointsViewState.svelte';
   import {
     checkpointCreatedToDate,
     describeMachine,
