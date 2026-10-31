@@ -108,6 +108,12 @@ DSP3210 sits behind the reset latch ([dsp.md](dsp.md)).
   Implemented as a free-running frame counter derived from emulated time at
   the programmed codec rate; the Singer frame engine is phase-locked to the
   same formula, so play position and frame interrupts cannot drift apart.
+  **A word or long read is served from one sample.**  The access reaches the
+  model as byte reads with bus time passing between them; sampling each lane
+  afresh tore the value whenever the offset carried between lanes (at
+  1023 → 1024 a long read returned `$00000000`), and `CycloneBeep`, which
+  spins for offset 0 and then chains the next double buffer, chained twice
+  in that pass, skipping chime audio and ending it early.
 - **`dspOverRun` (`$50F3121C`)** is a sense-bit latch over
   pdspReset/pdspResetEn/pdspFrameOvr; writes are surfaced to the DSP glue
   (`av_psc_set_dsp_hook`) — a bit-0 clear write is the RTM's release, and on

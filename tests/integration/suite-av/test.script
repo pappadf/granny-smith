@@ -19,8 +19,8 @@
 #                   adopted from the image's own Driver Descriptor Map.
 #   av-chime        Power-on chime through the Singer output engine — the
 #                   ROM's CycloneBeep PCM, captured at guest rate and
-#                   sample-exact against the golden (content-identical to
-#                   an independent reference render).  ROM only.
+#                   sample-exact against the golden (the ROM's chime
+#                   sample end to end).  ROM only.
 #   av-dsp-boot     The DSP3210 comes alive: the RTM init releases the
 #                   DSP, Apple's kernel boots out of the ROM's '3210'
 #                   segments (three-stage handshake), the GPB calibration
@@ -125,6 +125,18 @@ let av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 # selects the ProductInfo.  A mismatch sends the ROM into `UnknownCPU: bra.s
 # UnknownCPU` — an infinite loop with no other symptom — so "the machine is
 # still executing ROM after POST" IS the identity assertion.
+# Past POST and running ROM code: the PC is in ROM, or gets there within a
+# few million instructions (RAM-resident boot code runs in between; a PC
+# stuck outside ROM never returns).
+def av_in_rom(label) {
+    let spent = 0
+    while machine.cpu.pc < 0x40800000 {
+        assert $spent < 10000000 "av-identity: ${$label} PC ${machine.cpu.pc:08x} outside ROM"
+        scheduler.run 100000
+        $spent = $spent + 100000
+    }
+}
+
 def row_av_identity() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
     scheduler.run 90000000
@@ -139,7 +151,7 @@ def row_av_identity() {
     assert machine.memory.peek.l(0x50F30440) >= 0x80000000 "av-identity: 840AV strap 2 low"
     assert machine.memory.peek.l(0x50F30444) >= 0x80000000 "av-identity: 840AV strap 3 low"
     # Past POST and running: not stuck in the UnknownCPU self-loop.
-    assert machine.cpu.pc >= 0x40800000 "av-identity: 840AV PC ${machine.cpu.pc:08x} outside ROM"
+    av_in_rom("840AV")
     assert machine.cpu.instr_count > 20000000 "av-identity: 840AV made no progress"
 
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
@@ -150,7 +162,7 @@ def row_av_identity() {
     assert machine.memory.peek.l(0x50F3043C) >= 0x80000000 "av-identity: 660AV strap 1 low"
     assert machine.memory.peek.l(0x50F30440) < 0x80000000 "av-identity: 660AV strap 2 high — that is a Cyclone nibble"
     assert machine.memory.peek.l(0x50F30444) >= 0x80000000 "av-identity: 660AV strap 3 low"
-    assert machine.cpu.pc >= 0x40800000 "av-identity: 660AV PC ${machine.cpu.pc:08x} outside ROM"
+    av_in_rom("660AV")
     assert machine.cpu.instr_count > 20000000 "av-identity: 660AV made no progress"
     # A 660AV without the NuBus adapter has no MUNI: the ROM's TestForMUNI
     # probe must bus-error rather than read a value, which is what clears
@@ -470,6 +482,10 @@ def row_av_floppy_write_eject() {
     machine.adb.keyboard.press 0x2D
     scheduler.run 2000000
     machine.adb.keyboard.up 0x37
+    # The screen holds still while the Finder writes the new folder to the
+    # disk (the menu title stays inverted until it is done), so a stability
+    # wait alone can stop mid-write: wait for the finished window.
+    reach("goldens/q840av-7.1-floppy-write.png", 0, 2000000000, 50000000)
     wait_stable(600000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} writing to the floppy"
     check("goldens/q840av-7.1-floppy-write.png")
@@ -954,12 +970,16 @@ def row_av_chime() {
     assert len(machine.psc.levels) == 4 "av-chime: PSC level map is not L3..L6"
     assert machine.psc.levels[0].ipl == 3 "av-chime: PSC level map does not start at IPL 3"
     assert len(machine.psc.level_ier) == 4 "av-chime: PSC has four level IERs"
-    # 38,400 frames (~1.6 s).  It was 27,840 (~1.16 s) at CPI 4, and 52,800
-    # before a sprint ended early stopped freezing the CPU to the next event.
-    # The envelope is the same chime (same sustain level, same decay); the
-    # output is held open longer since the 68040 moved to CPI 1, a hold time
-    # not yet understood.
-    check_sound("goldens/av-chime.wav", 38400)
+    # 53,760 frames (2.24 s): 28 passes of the 1920-frame double buffer,
+    # CycloneBeep's loop count.  The length used to wander with CPU timing
+    # (27,840 at CPI 4, 52,800, then 38,400): a long read of sndPhase was
+    # served lane by lane with time passing between the lanes, a carry
+    # between lanes read as offset 0, and each false 0 counted as a pass and
+    # ended the chime early.  The same false 0s chained the next buffer twice
+    # in one pass, so the old golden skipped through the sample; this one is
+    # the ROM's chime PCM ($408C5D24) end to end at one gain, checked against
+    # the ROM bytes.
+    check_sound("goldens/av-chime.wav", 53760)
     report_perf("suite-av/av-chime", scheduler.instr_count)
 }
 
