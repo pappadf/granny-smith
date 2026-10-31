@@ -58,7 +58,9 @@ if have_media($cd) {
     # The floppy test's disk request, then a blank HD disk for it.
     reach("insert-disk.png", 1000000000, 1000000000, 50000000)
     check("insert-disk.png")
-    machine.floppy.create "${$RESULTS_DIR}/blank-hd.dsk" hd
+    let blank = "${$WORK_DIR}/blank-hd.dsk"
+    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    machine.floppy.drive[0].insert "${$blank}" true
 
     # ~20 G instructions for the seven tests.
     run_until_match("passed.png", 40000000000, 500000000)
