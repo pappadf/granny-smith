@@ -815,7 +815,7 @@ static uint8_t rad_read(config_t *cfg, uint32_t offset, bool peek) {
         case 0x11:
             return c->rad_misc[c->rad_addr & 1u];
         default:
-            return 0;
+            return c->rad_reg[c->rad_addr];
         }
     default: { // +$30: CLUT data, RGB phase auto-advances
         uint8_t v = c->clut[c->rad_addr][c->rad_phase];
@@ -868,6 +868,10 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
             c->rad_misc[c->rad_addr & 1u] = value;
             break;
         default:
+            // Indices with no modelled function still hold what was
+            // written: MacTest Pro's Color Look Up Register test walks
+            // a bit through misc $22 and reads each pattern back.
+            c->rad_reg[c->rad_addr] = value;
             break;
         }
         break;

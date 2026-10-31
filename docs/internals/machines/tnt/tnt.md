@@ -127,10 +127,14 @@ The board model is the chipset skeleton plus the DMA architecture:
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
   DBDMA channel windows (`+$8000+n*$100`).  It also carries AWACS
-  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3
-  aperture (`+$15000`, swim3.c) is the shared floppy controller on DBDMA
-  channel 1; the internal MESH SCSI (`+$18000`, `scsi_mesh.c`, absent on
-  the Network Servers) and the external 53C94 chain (`+$10000`) are
+  (`+$14000`; output on DBDMA channel 8, input on channel 9, which records
+  silence at the codec rate — MacTest Pro's play/record test runs both)
+  and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3 aperture
+  (`+$15000`, swim3.c) is the shared floppy controller on DBDMA channel 1;
+  the internal MESH SCSI (`+$18000`, `scsi_mesh.c` — DATA OUT, programmed
+  or DMA, ends in a phase mismatch when the target takes fewer bytes than
+  the count; absent on the Network Servers) and the external 53C94 chain
+  (`+$10000`) are
   modelled, and the MACE aperture (`+$11000`) logs and reads open bus
   until it is.  (Reference:
   [grand-central.md](../../../reference/machines/tnt/grand-central.md)
@@ -154,7 +158,16 @@ The board model is the chipset skeleton plus the DMA architecture:
   refetched rather than cached (the operation-word commit rule; STOP
   parks *on* its descriptor so the overwrite-and-WAKE ring idiom works),
   and `resCount`/`xferStatus` write-back is guest-visible *before* the
-  channel interrupt.  A channel whose device port is not attached yet
+  channel interrupt.  Every completed command but STOP writes its result
+  word, interrupt or not — the active bit in `xferStatus` is the done
+  flag drivers poll (MacTest Pro's codec control test runs a STORE_QUAD
+  with no interrupt and waits for it).  STORE_QUAD/LOAD_QUAD are one bus
+  access of the command's width, not a byte stream: the board's port
+  sends a device address through the bus's 16/32-bit path, so a codec
+  command through the AWACS codec-control register reaches it whole.
+  A port may supply a `stop` hook, called when software clears RUN, to
+  drop what the device buffered for the abandoned program.  A channel
+  whose device port is not attached yet
   stalls its data commands honestly — except audio-out (channel 8),
   which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
@@ -189,7 +202,8 @@ The board model is the chipset skeleton plus the DMA architecture:
   (bank 2 shows through at `+$600000`; the framebuffer lives in the
   `+$800000` half with pixel 0 at +16), the RaDACal byte cells at GC
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
-  = 8/16/32 bpp; in the direct-colour modes the table stays in the DAC
+  = 8/16/32 bpp; misc indices with no modelled function hold what is
+  written — MacTest Pro walks a bit through `$22`; in the direct-colour modes the table stays in the DAC
   path, published as `display_t.dac_lut` and applied by the renderer and
   by capture alike — MkLinux's console draws palette indexes into 32 bpp
   pixels and relies on it, #147), monitor sense strapped from the boot
@@ -778,6 +792,11 @@ SWIM3 engine *pushes* decoded bytes as a sector passes under the head,
 a DBDMA INPUT command *pulls* up to N bytes from the device port — so a
 4 KB byte ring (`tnt_fdring_t`, checkpointed with the board) sits
 between them: reads fill the ring and kick the channel, writes drain it.
+The ring is emptied when the driver stops the channel (the DBDMA port's
+`stop` hook): a write's OUTPUT command is larger than the sector, so the
+channel tops the ring up past the one stream the chip consumes, and that
+tail used to become the start of the next write — every sector of
+MacTest Pro's seek test carried the previous one's data.
 
 The customer that drove the work is not Mac OS but Open Firmware's own
 `swim3` package, which is what a Network Server boots a floppy with: the

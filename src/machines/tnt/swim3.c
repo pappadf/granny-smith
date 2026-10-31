@@ -117,6 +117,17 @@ static int fd_port_in(void *ctx, uint8_t *buf, int len) {
     return n;
 }
 
+// The driver stopped the channel: the program and whatever it staged in the
+// ring part company.  A write's OUTPUT command is typically larger than the
+// sector (Mac OS hands the channel a whole buffer), so the channel tops the
+// ring up past the one stream the chip consumes; left there, that tail would
+// be laid down as the start of the NEXT write -- every sector of MacTest
+// Pro's seek test carried the previous one's data.
+static void fd_port_stop(void *ctx) {
+    tnt_state_t *st = tnt_st((config_t *)ctx);
+    st->fdring.head = st->fdring.tail;
+}
+
 // --- board glue -------------------------------------------------------------
 
 void tnt_swim3_bind(config_t *cfg) {
@@ -138,6 +149,7 @@ void tnt_swim3_init(config_t *cfg) {
         .in = fd_port_in,
         .s_bits = NULL,
         .ctx = cfg,
+        .stop = fd_port_stop,
     };
     dbdma_set_port(st->dbdma, FD_CHAN, &port);
 }
