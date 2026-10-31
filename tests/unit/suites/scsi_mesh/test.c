@@ -52,6 +52,7 @@
 #define SEQ_ARBITRATE 0x1
 #define SEQ_SELECT    0x2
 #define SEQ_COMMAND   0x3
+#define SEQ_DATAOUT   0x5
 #define SEQ_DATAIN    0x6
 #define SEQ_DMA_MODE  0x80
 
@@ -285,6 +286,29 @@ TEST(datain_without_dma_pumps_the_fifo) {
     teardown();
 }
 
+// The programmed-I/O DATA OUT path checks the target's phase byte by byte,
+// as the DMA path does: a target that is not (or no longer) in DATA OUT ends
+// the sequence in a phase mismatch with the bytes left in the FIFO.  Pushing
+// them anyway once put them on the bus in the wrong phase and overran the
+// target's staging buffer -- an assertion, i.e. the guest aborting the
+// emulator (a second CD-ROM on a Power Macintosh 8500's MESH bus did it).
+TEST(dataout_without_dma_stops_when_the_target_leaves_data_out) {
+    setup();
+    wr(R_DEST_ID, TARGET);
+    wr(R_SEQUENCE, SEQ_SELECT);
+    ASSERT_TRUE(s_m->connected);
+
+    wr(R_COUNT_HI, 0x00);
+    wr(R_COUNT_LO, 0x10);
+    wr(R_SEQUENCE, SEQ_DATAOUT); // no SEQ_DMA_MODE: bytes go as the FIFO fills
+    wr(R_FIFO, 0xA5); // the target is in COMMAND, not DATA OUT
+
+    ASSERT_EQ_INT(s_m->active, 0); // the command was retired
+    ASSERT_TRUE((rd(R_EXCEPTION) & 0x02) != 0); // EXC_PHASEMM
+    ASSERT_EQ_INT(rd(R_FIFO_COUNT), 1); // the byte stayed in the FIFO
+    teardown();
+}
+
 // The other direction, and the one that catches a dangling else on its own:
 // with the DMA bit set but NO channel wired, the correct code does nothing at
 // all.  The buggy form falls through to pump_in and retires the command.
@@ -415,6 +439,7 @@ TEST(reset_clears_state_but_keeps_the_wiring) {
 int main(void) {
     RUN(datain_without_dma_pumps_the_fifo);
     RUN(datain_with_dma_never_pumps_the_fifo);
+    RUN(dataout_without_dma_stops_when_the_target_leaves_data_out);
     RUN(datain_with_dma_asks_the_channel);
     RUN(status_holds_ack_until_the_next_sequence);
     RUN(select_absent_target_times_out);

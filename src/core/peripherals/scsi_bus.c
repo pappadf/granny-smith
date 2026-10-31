@@ -1852,7 +1852,16 @@ void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value) {
     // this model needs no knowledge of who wrote it.
     if (!scsi->bus.req)
         return;
-    assert(scsi->buf.size < scsi->buf.max);
+    // Nor does a byte offered outside COMMAND / DATA OUT, or past the count
+    // the target asked for: on the wire the target has changed phase and
+    // the initiator's handshake goes nowhere.  A front-end that keeps
+    // pushing (MESH with a transfer count larger than a MODE SELECT's
+    // parameter list) is the initiator's problem, not a reason to abort.
+    if ((scsi->bus.phase != scsi_command && scsi->bus.phase != scsi_data_out) || scsi->buf.size >= scsi->buf.max) {
+        LOG(2, "data-out byte $%02X dropped (phase %d, %zu/%zu staged)", value, (int)scsi->bus.phase,
+            (size_t)scsi->buf.size, (size_t)scsi->buf.max);
+        return;
+    }
     scsi->buf.data[scsi->buf.size++] = value;
 
     if (scsi->bus.phase == scsi_command) {
