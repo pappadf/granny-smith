@@ -1,0 +1,70 @@
+# MacTest Pro (PPC) CD v11.0 (12/15/98) on a Power Macintosh 7100/66.
+#
+# The CD alone, at SCSI id 3: the ROM loads the disc's own CD driver and
+# boots its Mac OS 8.1 System Folder to the Finder.  The Finder opens the
+# disc, "Run MacTest Pro (PPC)", and the "Power Macintosh" configuration,
+# which launches MacTest Pro for Power Macintosh 1.0.9 with seven tests
+# selected.  Its main window must name the machine "Power Macintosh 7100/66",
+# ID 112 (main-window.png).
+#
+# T1  Five tests -- Comprehensive Hardware Info, RAM Tests, Video RAM Tests,
+#     Comprehensive Software Info, MacTest Pro (PPC) system software -- must
+#     end in "All selected tests passed." (passed.png).  Floppy Drive 1 Tests
+#     is unchecked: it asks for a disk it may erase.
+#
+# T2  Logic Board Components Test (Power Macintosh Tests Vol. 1 v4.2) alone.
+#     KNOWN FAILURE, pinned: the video controller CLUT, register and
+#     controller tests and the sound register and access tests pass, then the
+#     Sound Status test fails and the whole test with it ("The test failed.",
+#     logic-board.png).  When the emulator passes it, this golden stops
+#     matching: recapture it (REGEN=1) showing the pass, and fold the test
+#     into T1.
+#
+# Window and icon positions come from the read-only disc's Finder data and
+# MacTest Pro's defaults, so they are the same every run; the clock is pinned
+# so the results log's timestamp is too.  It is still excluded from the T2
+# match, with the rest of that line.
+
+include "../lib/mac.script"
+
+let cd = "../../data/apps/mactest_pro_ppc_dec_1998.iso"
+
+if have_media($cd) {
+    machine.boot model="pm7100" ram=32768 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert machine.scsi.attach_cdrom($cd, 3) "attach the CD at SCSI id 3"
+
+    # The disc's Finder: ~0.8 G instructions.
+    wait_desktop(3000000000)
+    check("finder.png")
+
+    double_click_fixed(598, 42)          # the "MacTest Pro (PPC)" disc
+    wait_match("cd-window.png", 1000000000, 50000000)
+    double_click_fixed(72, 196)          # "Run MacTest Pro (PPC)"
+    wait_match("run-folder.png", 1000000000, 50000000)
+    double_click_fixed(209, 112)         # the "Power Macintosh" configuration
+
+    # Loading MacTest Pro holds still for long stretches ("Creating Log
+    # Window", "Validating Test Modules and Help"), so a stability wait alone
+    # stops early: ~4 G instructions to the main window.
+    reach("main-window.png", 5000000000, 2000000000, 100000000)
+    check("main-window.png")
+
+    # --- T1: the five tests that pass -----------------------------------------
+    click_fixed(91, 295)                 # uncheck Floppy Drive 1 Tests
+    click_fixed(91, 402)                 # uncheck Logic Board Components Test
+    click_fixed(107, 128)                # Test
+    run_until_match("passed.png", 10000000000, 250000000)
+    check("passed.png")
+
+    # --- T2: Logic Board Components Test (known failure, see above) -----------
+    click_fixed(296, 251)                # Deselect All
+    click_fixed(91, 402)                 # check Logic Board Components Test
+    click_fixed(107, 128)                # Test
+    run_until_match_ex("logic-board.png", 255, 20, 275, 440, 10000000000, 250000000)
+    check_ex("logic-board.png", 255, 20, 275, 440)
+} else {
+    skip_test("pm7100-mactest-pro (tests/data/apps/mactest_pro_ppc_dec_1998.iso is not fetched -- scripts/fetch-test-data.sh)")
+}
+
+quit
