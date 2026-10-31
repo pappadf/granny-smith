@@ -24,6 +24,7 @@ register by register.)
 |---|---|
 | `+$00` | codec command handshake: software loads `+$01`/`+$02`, strobes `$C0`; **BUSY (bit 7) clears within the same access** (the serial link is fast at emulated-time scale, and the ROM spins on it with a ~170k-iteration timeout per command otherwise).  `$40` = idle/cancel. |
 | `+$01/+$02` | 16-bit command, big-endian: `reg<<12 \| data12`.  Registers are write-only on hardware; the model keeps shadows. |
+| `+$04/+$05` | codec status, bits 23:8 of the ASCO status aux field: `+$04` = expand / A/D valid / overflow L,R / error number, **always `$40`** (valid, error 0); `+$05` = revision (7:4) / manufacturer (3:0), **always `$21`** — the original AWACS is revision 2 (Screamer is 3).  No ROM path reads them; MacTest Pro's Sound Status test requires exactly these values. |
 | `+$06` | codec status; bit 3 = headphone connected — **always 0** (no jack modeled), so the speaker path stays live. |
 | `+$08/+$09` | half-buffer length in frames (system software always writes `$0400` = 1024). |
 | `+$0C…+$0E` | 24-bit output position: window offset of the current fetch pointer, 64-byte granularity, advancing in real time while RUN is set; **0 when stopped** (the boot beep drains by polling `(value & $3FFC0) == 0`). |

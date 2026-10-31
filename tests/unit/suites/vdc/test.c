@@ -383,9 +383,12 @@ static int cuda_xact(const uint8_t *cmd, int cmd_len, uint8_t *resp, int max) {
     // Byte 2 follows after Cuda's think time (a scheduled push), not
     // inside the TIP store: fire the recorded Cuda events to land it.
     fire_events(s_st.cuda);
-    // Toggle BYTEACK for each further byte until TREQ rises with the last.
-    while (s_treq == 0 && s_sr_count < max)
+    // Toggle BYTEACK for each further byte until TREQ rises with the last;
+    // each byte, too, is clocked a byte time after the acknowledge.
+    while (s_treq == 0 && s_sr_count < max) {
         pb((uint8_t)(s_pb ^ PB_BYTEACK));
+        fire_events(s_st.cuda);
+    }
     pb((uint8_t)(s_pb | PB_TIP)); // terminate
     int n = s_sr_count < max ? s_sr_count : max;
     memcpy(resp, s_sr_bytes, (size_t)n);
