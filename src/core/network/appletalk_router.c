@@ -1184,6 +1184,12 @@ static DEF_SETTER(router_attr_set_name) {
     value_free(&in);
     return val_none();
 }
+static DEF_GETTER(router_attr_linked) {
+    for (int i = 0; i < ATALK_LINK_MAX; i++)
+        if (g_router.links[i].in_use && g_router.links[i].state == ATALK_LINK_OPEN)
+            return val_bool(true);
+    return val_bool(false);
+}
 static DEF_GETTER(router_attr_share) {
     return val_bool(g_router.share_host_services);
 }
@@ -1498,6 +1504,10 @@ static const member_t router_members[] = {
      .name = "name",
      .doc = "This instance's display name, sent to linked instances",
      .attr = {.type = VK_STRING, .get = router_attr_name, .set = router_attr_set_name}                              },
+    {.kind = MK_ATTR,
+     .name = "linked",
+     .doc = "True while a link to another instance is open (Max speed waits for none)",
+     .attr = {.type = VK_BOOL, .get = router_attr_linked}                                                           },
     {.kind = MK_METHOD,
      .name = "link_channel",
      .doc = "Link to another instance's router through the page (browser: a WebRTC data channel)",

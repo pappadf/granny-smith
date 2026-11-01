@@ -38,7 +38,7 @@ import { checkStoragePersistence } from '@/bus/storageHealth';
 import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
-import { takeJoinFromUrl } from '@/state/network.svelte';
+import { takeJoinFromUrl, watchLinks } from '@/state/network.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -168,6 +168,8 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
       renderStartupErrorPage(target, e instanceof Error ? e.message : String(e));
       return;
     }
+    // Whether this Mac is linked to another (the toolbar's Max follows it)
+    watchLinks();
 
     // A worker that dies later (a wasm trap, an abort) cannot be recovered in
     // this page: every request now fails at once.  The page stays up under a

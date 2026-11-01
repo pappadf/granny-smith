@@ -32,6 +32,7 @@ export type FriendPhase =
   | 'failed';
 
 interface NetworkState {
+  linked: boolean; // a link to another instance is open (appletalk.router.linked)
   active: boolean; // the router runs (AppleTalk on, a machine on the cable)
   thisNet: number;
   zone: string;
@@ -49,6 +50,7 @@ interface NetworkState {
 }
 
 export const network: NetworkState = $state({
+  linked: false,
   active: false,
   thisNet: 0,
   zone: '',
@@ -189,6 +191,15 @@ export function resetFriend(): void {
   network.friend.reply = '';
   network.friend.error = '';
   network.friend.peerName = '';
+}
+
+// Follow appletalk.router.linked, whatever tab the panel shows: Max speed
+// is not offered while this Mac is linked to another (its clock would run
+// ahead of the other's, and AppleTalk's timers with it).
+export function watchLinks(): void {
+  setInterval(async () => {
+    network.linked = (await gsEval('appletalk.router.linked')) === true;
+  }, 2000);
 }
 
 // The page was opened from an invitation link (#join=...): keep it for the

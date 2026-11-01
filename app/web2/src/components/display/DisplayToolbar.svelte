@@ -22,6 +22,7 @@
   } from '@/state/microphone.svelte';
   import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { network } from '@/state/network.svelte';
   import { confirmPowerAction } from '@/state/powerConfirm';
   import {
     pauseEmulator,
@@ -136,7 +137,12 @@
     void applySchedulerMode(mode);
   }
 
-  const schedulerOptions: Array<{ value: SchedulerMode; label: string; title: string }> = [
+  const schedulerOptions: Array<{
+    value: SchedulerMode;
+    label: string;
+    title: string;
+    disabled?: boolean;
+  }> = $derived([
     {
       value: 'live',
       label: 'Real',
@@ -151,10 +157,23 @@
     {
       value: 'turbo',
       label: 'Max',
-      title:
-        'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
+      title: network.linked
+        ? 'Max is off while this Mac is linked to another: its clock would run ahead, and AppleTalk sessions would drop'
+        : 'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
+      disabled: network.linked,
     },
-  ];
+  ]);
+
+  // A link opened while running at Max: back to Real, and say why
+  $effect(() => {
+    if (network.linked && machine.scheduler === 'turbo') {
+      void applySchedulerMode('live');
+      showNotification(
+        'Speed set to Real: Max is off while this Mac is linked to another.',
+        'info',
+      );
+    }
+  });
 
   // Camera toggle — shown only on machines with the on-board video
   // digitizer (capabilities.video_in, the AV family). The click doubles as

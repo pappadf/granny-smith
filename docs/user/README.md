@@ -29,6 +29,7 @@ disk images.
 | [Disks and images](disks-and-images.md) | Image formats, loading and creating disks, the Images and Filesystem panels, compact storage |
 | [Saving and resuming](saving-and-resuming.md) | Automatic checkpoints, resuming after a reload, saved-state files |
 | [Sharing files with the Mac](sharing-files.md) | Getting files into and out of the emulated Mac |
+| [Networking Macs together](networking.md) | Macs in other tabs connect by themselves; a friend's Mac with an invitation and a reply |
 | [Printing](printing.md) | The ImageWriter and the LaserWriter; printed pages as PDF |
 | [Sound, camera and 3D](sound-and-video.md) | Sound output, microphone and camera on the AV Macs, speech recognition, the Voodoo2 3D card |
 
