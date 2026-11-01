@@ -250,6 +250,8 @@ struct atalk_conn {
 // gathered here is the registry they share and the cable.
 struct atalk_network {
     bool up; // appletalk_network_init has run
+    // This network's number: 0 until a router serves the cable (atalk_this_net)
+    uint16_t this_net;
     // The cable: the one connection the network is serving, or NULL.  The
     // active machine's connection is plugged in (atalk_conn_plug, from
     // system_swap_in); deleting it leaves the cable empty.
@@ -283,6 +285,10 @@ static const atalk_stats_t k_no_stats;
 
 scheduler_t *atalk_scheduler(void) {
     return g_net.plugged ? g_net.plugged->scheduler : NULL;
+}
+
+uint16_t atalk_this_net(void) {
+    return g_net.this_net;
 }
 
 uint64_t atalk_now_ns(void) {
@@ -369,6 +375,7 @@ typedef struct {
 
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
 static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
+static void ddp_extended_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
 static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len);
@@ -719,8 +726,11 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_DDP_EXTENDED:
-        // LocalTalk nodes use short headers; extended DDP is for routers.
-        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
+        // A node that knows a router sends every datagram for another network,
+        // and may send any other, with the extended header (Inside AppleTalk
+        // 4-18, the nonrouter algorithm).
+        LOG_LLAP(11, "LLAP DDP_EXTENDED rx len=%zu", len - 3);
+        ddp_extended_in(c, &header, buf + 3, len - 3);
         break;
 
     default:
@@ -798,9 +808,14 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
     reply->llap.src = ATALK_HOST_NODE;
     reply->llap.type = request->llap.type;
 
+    reply->extended = request->extended;
+    reply->hop = 0;
+    reply->checksum = 0;
     reply->len = request->len;
     reply->dst_net = request->src_net;
-    reply->src_net = request->dst_net;
+    // The request may have named this network as 0 ("this network"); the
+    // reply says which one it is.
+    reply->src_net = request->extended ? g_net.this_net : request->dst_net;
 
     reply->dst_socket = request->src_socket;
     reply->src_socket = request->dst_socket;
@@ -1036,25 +1051,65 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
         return -1;
 
-    uint8_t buffer[DDP_SHORT_HEADER_SIZE + DDP_MAX_DATA_SIZE];
-    uint16_t length = (uint16_t)(size + DDP_SHORT_HEADER_SIZE);
+    uint8_t buffer[DDP_EXTENDED_HEADER_SIZE + DDP_MAX_DATA_SIZE];
+    size_t hdr = header->extended ? DDP_EXTENDED_HEADER_SIZE : DDP_SHORT_HEADER_SIZE;
+    uint16_t length = (uint16_t)(size + hdr);
+    llap_header_t llap = header->llap;
 
     ddp_log_summary(5, "-> Mac", header, length, (size_t)size);
 
-    // Short DDP header: low 2 bits carry the high bits of the 10-bit length.
-    buffer[0] = (uint8_t)((length >> 8) & 0x03);
-    buffer[1] = length & 0xFF;
-    buffer[2] = header->dst_socket;
-    buffer[3] = header->src_socket;
-    buffer[4] = header->type;
-    memcpy(&buffer[5], data, (size_t)size);
+    if (header->extended) {
+        // Extended header (Inside AppleTalk 4-15): hop count in bits 2..5 of
+        // the first byte, above the 10-bit length; no checksum (0).
+        buffer[0] = (uint8_t)(((header->hop & 0x0F) << 2) | ((length >> 8) & 0x03));
+        buffer[1] = length & 0xFF;
+        buffer[2] = 0; // checksum high: none
+        buffer[3] = 0; // checksum low
+        buffer[4] = (uint8_t)(header->dst_net >> 8);
+        buffer[5] = (uint8_t)header->dst_net;
+        buffer[6] = (uint8_t)(header->src_net >> 8);
+        buffer[7] = (uint8_t)header->src_net;
+        buffer[8] = header->llap.dst; // destination node
+        buffer[9] = header->llap.src; // source node
+        buffer[10] = header->dst_socket;
+        buffer[11] = header->src_socket;
+        buffer[12] = header->type;
+        llap.type = LLAP_DDP_EXTENDED;
+    } else {
+        // Short DDP header: low 2 bits carry the high bits of the 10-bit length.
+        buffer[0] = (uint8_t)((length >> 8) & 0x03);
+        buffer[1] = length & 0xFF;
+        buffer[2] = header->dst_socket;
+        buffer[3] = header->src_socket;
+        buffer[4] = header->type;
+        llap.type = LLAP_DDP_SHORT;
+    }
+    memcpy(&buffer[hdr], data, (size_t)size);
 
     LOG_INDENT(4);
     log_hex(log_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
     c->stats.ddp_out++;
-    return llap_send(c, &header->llap, buffer, length);
+    return llap_send(c, &llap, buffer, length);
+}
+
+// Address a datagram this host originates from `src_socket` to `dest`.
+// Another network's address needs the extended header; this one's, or net 0
+// ("this network"), fits the short one.
+static void ddp_header_to(ddp_header_t *ddp, const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type,
+                          int payload_len) {
+    memset(ddp, 0, sizeof(*ddp));
+    ddp->extended = dest->net != 0 && dest->net != g_net.this_net;
+    ddp->llap.dst = dest->node;
+    ddp->llap.src = ATALK_HOST_NODE;
+    ddp->llap.type = ddp->extended ? LLAP_DDP_EXTENDED : LLAP_DDP_SHORT;
+    ddp->len = (uint16_t)(payload_len + (ddp->extended ? DDP_EXTENDED_HEADER_SIZE : DDP_SHORT_HEADER_SIZE));
+    ddp->dst_net = dest->net;
+    ddp->src_net = ddp->extended ? g_net.this_net : 0;
+    ddp->dst_socket = dest->socket;
+    ddp->src_socket = src_socket;
+    ddp->type = ddp_type;
 }
 
 // Send one datagram to a remote socket.  The higher protocol modules (ADSP,
@@ -1068,15 +1123,7 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     if (!c || !c->enabled)
         return -1; // no machine on the cable, or it is detached from the link
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = dest->node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_net = dest->net;
-    ddp.dst_socket = dest->socket;
-    ddp.src_socket = src_socket;
-    ddp.type = ddp_type;
+    ddp_header_to(&ddp, dest, src_socket, ddp_type, len);
     return ddp_send(c, &ddp, data, len);
 }
 
@@ -1178,6 +1225,8 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     }
 
     ddp.llap = *llap;
+    ddp.extended = false;
+    ddp.hop = 0;
     ddp.checksum = 0;
     ddp.dst_net = 0;
     ddp.src_net = 0;
@@ -1192,6 +1241,71 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
     log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
     ddp_in(c, &ddp, buf + 5, len - 5);
+    LOG_INDENT(-4);
+}
+
+// The DDP checksum (Inside AppleTalk 4-17): over every byte from the
+// destination network number to the end, add then rotate the 16-bit sum left
+// by one; a result of 0 is sent as $FFFF, since 0 means "no checksum".
+static uint16_t ddp_checksum(const uint8_t *buf, size_t len) {
+    uint16_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum = (uint16_t)(sum + buf[i]); // add the byte
+        sum = (uint16_t)((sum << 1) | (sum >> 15)); // rotate left one bit
+    }
+    return sum ? sum : 0xFFFF;
+}
+
+// Process an incoming extended DDP header (Inside AppleTalk 4-15) and dispatch
+// to ddp_in.  The guest sends one once it knows a router: to another network
+// through it, and -- at its driver's choice -- to this one.
+static void ddp_extended_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len) {
+    ddp_header_t ddp;
+
+    if (len < DDP_EXTENDED_HEADER_SIZE || len > DDP_MAX_DATA_SIZE + DDP_EXTENDED_HEADER_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP frame of %zu bytes", len);
+        return;
+    }
+    memset(&ddp, 0, sizeof(ddp));
+    ddp.extended = true;
+    ddp.hop = (uint8_t)((buf[0] >> 2) & 0x0F); // hop count above the length bits
+    ddp.len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]); // 10-bit datagram length
+    if (ddp.len != len) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP length field %u in a %zu-byte frame", (unsigned)ddp.len, len);
+        return;
+    }
+    ddp.checksum = (uint16_t)((buf[2] << 8) | buf[3]);
+    // A nonzero checksum covers the network numbers onward; verify it.
+    if (ddp.checksum != 0 && ddp_checksum(buf + 4, len - 4) != ddp.checksum) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP checksum %04X does not match", (unsigned)ddp.checksum);
+        return;
+    }
+    ddp.dst_net = (uint16_t)((buf[4] << 8) | buf[5]);
+    ddp.src_net = (uint16_t)((buf[6] << 8) | buf[7]);
+    ddp.llap.dst = buf[8]; // the datagram's destination node, not the link's
+    ddp.llap.src = buf[9]; // ...and its source node
+    ddp.llap.type = llap->type;
+    ddp.dst_socket = buf[10];
+    ddp.src_socket = buf[11];
+    ddp.type = buf[12];
+
+    // This network is net 0 or its own number; anything else is for another
+    // network, which only a router could forward, and none runs here yet.
+    if (ddp.dst_net != 0 && ddp.dst_net != g_net.this_net) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP for network %u", (unsigned)ddp.dst_net);
+        return;
+    }
+    if (ddp.llap.dst != ATALK_HOST_NODE && ddp.llap.dst != 0xFF) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP for node %02X", (unsigned)ddp.llap.dst);
+        return;
+    }
+
+    size_t payload_len = len - DDP_EXTENDED_HEADER_SIZE;
+    ddp_log_summary(4, "<- Mac", &ddp, ddp.len, payload_len);
+
+    LOG_INDENT(4);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
+    ddp_in(c, &ddp, buf + DDP_EXTENDED_HEADER_SIZE, payload_len);
     LOG_INDENT(-4);
 }
 
@@ -1713,8 +1827,23 @@ static void nbp_dispatch(atalk_conn_t *c, const ddp_header_t *ddp_header, const 
         return;
     switch (header->function) {
     case NBP_BRRQ:
+        // A broadcast request goes to a router's NIS (Inside AppleTalk 8-18):
+        // the guest sends one only when it knows a router.  A router answers
+        // with LkUps on every network of the zone; until one runs here, the
+        // only network is this one, so answering it as a local lookup is the
+        // same thing.
+        for (int i = 0; i < tuple_count; i++)
+            nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
+        break;
     case NBP_LKUP:
+        // A lookup on this network: answer for the names this host registers.
+        for (int i = 0; i < tuple_count; i++)
+            nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
+        break;
     case NBP_FWDREQ:
+        // A router's forwarded request for this network (8-19), which this
+        // network's router turns into a local LkUp.  No router sends one here
+        // yet; answer it as a lookup, as before.
         for (int i = 0; i < tuple_count; i++)
             nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
         break;
@@ -2096,14 +2225,7 @@ static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     buffer[2] = (uint8_t)((req->tid >> 8) & 0xFF);
     buffer[3] = (uint8_t)(req->tid & 0xFF);
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(DDP_SHORT_HEADER_SIZE + sizeof(buffer));
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, (int)sizeof(buffer));
     ddp_send(c, &ddp, buffer, sizeof(buffer));
     LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket);
@@ -2121,14 +2243,7 @@ static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req,
     int total = 8 + req->payload_len;
 
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(total + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, total);
     ddp_send(c, &ddp, atp_buf, total);
     LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket, (unsigned)bitmap);

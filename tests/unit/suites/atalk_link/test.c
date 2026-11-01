@@ -402,8 +402,9 @@ TEST(every_discard_is_counted_by_reason) {
     // Well-formed, but nothing here serves it.
     uint8_t ack[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ACK};
     expect_drop(ack, sizeof ack, 1);
-    uint8_t ext[16] = {HOST_NODE, GUEST_NODE, 0x02};
-    expect_drop(ext, sizeof ext, 1); // extended DDP
+    // An extended datagram for another network: no router forwards it here.
+    uint8_t ext[3 + 13] = {HOST_NODE, GUEST_NODE, 0x02, 0, 13, 0, 0, 0, 7, 0, 0, HOST_NODE, GUEST_NODE, 4, 200, 4};
+    expect_drop(ext, sizeof ext, 1);
     uint8_t other[8] = {HOST_NODE + 1, GUEST_NODE, LLAP_TYPE_DDP_SHORT, 0, 5, 2, 253, 2};
     expect_drop(other, sizeof other, 1); // data for another node
     b = counts();
@@ -675,6 +676,113 @@ TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
     guest_ddp(GUEST_NODE, 4, 200, 4, NULL, 0); // nor an empty packet
     guest_advance_to(link_now_ns() + 30e6);
     ASSERT_TRUE(wire_last_ddp(GUEST_NODE, 4, NULL) == NULL);
+    link_delete();
+}
+
+// --- extended DDP headers ---------------------------------------------------------
+
+// Build an extended-header DDP frame (Inside AppleTalk 4-15) from the guest
+// at `src_net`.`GUEST_NODE` to `dst_net`.`dst_node`; returns its length.
+static size_t ext_frame(uint8_t *f, uint16_t dst_net, uint16_t src_net, uint8_t dst_node, uint8_t dst_sock,
+                        uint8_t src_sock, uint8_t type, const uint8_t *payload, size_t plen) {
+    size_t ddp_len = 13 + plen;
+    f[0] = HOST_NODE; // LLAP: the frame goes to our node
+    f[1] = GUEST_NODE;
+    f[2] = 0x02; // LLAP type: extended DDP
+    f[3] = (uint8_t)(ddp_len >> 8); // hop count 0, length high bits
+    f[4] = (uint8_t)ddp_len;
+    f[5] = 0; // no checksum
+    f[6] = 0;
+    f[7] = (uint8_t)(dst_net >> 8);
+    f[8] = (uint8_t)dst_net;
+    f[9] = (uint8_t)(src_net >> 8);
+    f[10] = (uint8_t)src_net;
+    f[11] = dst_node;
+    f[12] = GUEST_NODE;
+    f[13] = dst_sock;
+    f[14] = src_sock;
+    f[15] = type;
+    memcpy(f + 16, payload, plen);
+    return 3 + ddp_len;
+}
+
+// The DDP checksum (Inside AppleTalk 4-17), from the destination network on.
+static uint16_t ext_checksum(const uint8_t *frame, size_t len) {
+    uint16_t sum = 0;
+    for (size_t i = 7; i < len; i++) {
+        sum = (uint16_t)(sum + frame[i]);
+        sum = (uint16_t)((sum << 1) | (sum >> 15));
+    }
+    return sum ? sum : 0xFFFF;
+}
+
+// The last extended-DDP frame to `dst`, or NULL.
+static const uint8_t *last_ext(uint8_t dst, size_t *len) {
+    for (int i = wire_count() - 1; i >= 0; i--) {
+        size_t n = 0;
+        const uint8_t *f = wire_frame(i, &n);
+        if (n >= 16 && f[0] == dst && f[2] == 0x02) {
+            *len = n;
+            return f;
+        }
+    }
+    return NULL;
+}
+
+// A guest that knows a router may address us with the extended header; the
+// answer comes back in the same form, to the requester's network and node.
+TEST(an_extended_request_gets_an_extended_reply) {
+    link_boot();
+    uint8_t f[64];
+    uint8_t ping[] = {1, 'e', 'x', 't'};
+    size_t n = ext_frame(f, 0, 0, HOST_NODE, 4, 200, 4, ping, sizeof ping);
+    counts_t before = counts();
+    guest_frame(f, n);
+    ASSERT_EQ_INT(1, (int)(counts().ddp_in - before.ddp_in));
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *r = last_ext(GUEST_NODE, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT((int)(3 + 13 + sizeof ping), (int)len);
+    ASSERT_EQ_INT(GUEST_NODE, r[11]); // destination node in the DDP header
+    ASSERT_EQ_INT(HOST_NODE, r[12]); // source node
+    ASSERT_EQ_INT(200, r[13]); // back to the requesting socket
+    ASSERT_EQ_INT(4, r[14]); // from the Echoer
+    ASSERT_EQ_INT(4, r[15]); // AEP
+    ASSERT_EQ_INT(2, r[16]); // Echo Reply
+    ASSERT_EQ_INT(0, memcmp(r + 17, ping + 1, sizeof ping - 1));
+
+    // A broadcast with the extended header is accepted too.
+    wire_clear();
+    n = ext_frame(f, 0, 0, 0xFF, 4, 201, 4, ping, sizeof ping);
+    guest_frame(f, n);
+    guest_advance_to(link_now_ns() + 30e6);
+    ASSERT_TRUE(last_ext(GUEST_NODE, &len) != NULL);
+    link_delete();
+}
+
+// A nonzero checksum is verified; zero means none.  A length that disagrees
+// with the frame, or a frame shorter than the header, is malformed.
+TEST(an_extended_header_is_checked_before_it_is_used) {
+    link_boot();
+    uint8_t f[64];
+    uint8_t ping[] = {1, 'c', 's'};
+    size_t n = ext_frame(f, 0, 0, HOST_NODE, 4, 200, 4, ping, sizeof ping);
+    uint16_t sum = ext_checksum(f, n);
+    f[5] = (uint8_t)(sum >> 8);
+    f[6] = (uint8_t)sum;
+    counts_t before = counts();
+    guest_frame(f, n); // the right checksum
+    ASSERT_EQ_INT(1, (int)(counts().ddp_in - before.ddp_in));
+    f[6] ^= 1;
+    expect_drop(f, n, 0); // the wrong one
+    f[5] = f[6] = 0;
+    f[4] = (uint8_t)(f[4] + 1);
+    expect_drop(f, n, 0); // length field one too long
+    expect_drop(f, 3 + 12, 0); // shorter than an extended header
+    // Another node on this network: nobody else is on this wire.
+    n = ext_frame(f, 0, 0, HOST_NODE + 1, 4, 200, 4, ping, sizeof ping);
+    expect_drop(f, n, 1);
     link_delete();
 }
 
@@ -1037,6 +1145,8 @@ int main(void) {
     RUN(a_lookup_goes_out_in_macroman_and_its_replies_come_back_in_utf8);
     RUN(a_name_macroman_cannot_hold_is_refused);
     RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
+    RUN(an_extended_request_gets_an_extended_reply);
+    RUN(an_extended_header_is_checked_before_it_is_used);
     RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);

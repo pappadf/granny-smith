@@ -540,7 +540,7 @@ afp_server_t *atalk_server_init(void) {
 // ============================================================================
 
 // The ASP sockets of servers 1..3: statically assigned, free of the stack's
-// others (6 PAP, 8 and 54 AFP, 9 the ImageWriter).
+// others (8 and 54 AFP, 9 the ImageWriter, 16 PAP).
 #define AFP_EXTRA_SOCKET_BASE 10
 
 int atalk_afp_server_max(void) {

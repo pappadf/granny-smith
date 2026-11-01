@@ -57,11 +57,14 @@ void atalk_timer_cancel_all(atalk_timer_t *t);
 
 #define ATALK_TIMER_MIN_NS 1000u
 
-// Shared AppleTalk constants
+// Shared AppleTalk constants.  The LaserWriter's PAP listener is not on 6:
+// that is ZIP's Zone Information Socket (Inside AppleTalk 8-10), which the
+// router answers.  The printer is found through NBP, so any free static
+// socket serves; 16 clears AFP's extra servers (10..12, afp_volume.c).
 #define ATALK_HOST_NODE              33
 #define ATALK_HOST_AFP_SOCKET        8
 #define ATALK_HOST_AFP_COMPAT_SOCKET 54
-#define ATALK_HOST_PAP_SOCKET        6
+#define ATALK_HOST_PAP_SOCKET        16 // the LaserWriter
 #define ATALK_HOST_IW_PAP_SOCKET     9 // the ImageWriter's LocalTalk Option card
 
 // DDP protocol type field values (Inside AppleTalk 4-11).  ADSP is 7 — the
@@ -73,6 +76,12 @@ void atalk_timer_cancel_all(atalk_timer_t *t);
 #define DDP_TYPE_RTMP_REQUEST  0x05
 #define DDP_TYPE_ZIP           0x06
 #define DDP_TYPE_ADSP          0x07
+
+// Statically assigned sockets of the network services (Inside AppleTalk 4-8)
+#define ATALK_RTMP_SOCKET 1 // RTMP: routers' Routing Table Maintenance
+#define ATALK_NIS_SOCKET  2 // NBP: Names Information Socket
+#define ATALK_AEP_SOCKET  4 // AEP: the Echoer
+#define ATALK_ZIS_SOCKET  6 // ZIP: Zone Information Socket
 
 #define LLAP_HEADER_SIZE         3
 #define DDP_SHORT_HEADER_SIZE    5
@@ -117,11 +126,18 @@ typedef struct {
 
 // A parsed DDP header: host byte order, in memory only.  It is not a wire
 // layout and must never be copied to or from a frame; ddp_send serializes
-// one and ddp_short_in parses one.  It carries the short-header fields plus
-// the extended header's network numbers, which a short header (all this
-// stack sends or accepts) does not carry: zero when parsed.
+// one and ddp_short_in / ddp_extended_in parse one.
+//
+// `llap.dst` and `llap.src` are the datagram's destination and source *nodes*.
+// For a short header (Inside AppleTalk 4-14) those are the LLAP addresses; an
+// extended header carries its own node fields (4-15), which the parser puts
+// here, so every layer above reads the requester's node the same way.  The
+// network numbers and the hop count are zero for a short header.  `extended`
+// says which form the datagram had on the wire, and a reply built with
+// ddp_setup_reply keeps it.
 typedef struct {
     llap_header_t llap;
+    bool extended;
     uint8_t hop;
     uint16_t len;
     uint16_t checksum;
@@ -131,6 +147,10 @@ typedef struct {
     uint8_t src_socket;
     uint8_t type;
 } ddp_header_t;
+
+// This network's number (Inside AppleTalk 4-7): 0 while no router serves the
+// cable, which is what a nonrouter node assumes until it hears one.
+uint16_t atalk_this_net(void);
 
 // A parsed ATP frame.  `data` is borrowed: it points into the received
 // frame and is valid only while the handler that was given the packet runs.
