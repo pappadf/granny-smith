@@ -276,6 +276,11 @@ static const mac030_board_desc_t iici_board_desc = {
     // it to Bank A before this physical range is consulted.
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
+    // Cache-card connector, $5200_0000-$52FF_FFFF (data, then tags): decoded
+    // only by a fitted card, which this model does not have (Macintosh IIci
+    // Developer Note, memory map).
+    .io_berr_lo = 0x02000000UL,
+    .io_berr_hi = 0x02FFFFFFUL,
 };
 
 // ============================================================

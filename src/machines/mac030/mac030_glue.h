@@ -175,6 +175,15 @@ typedef struct mac030_board_desc {
     // the machine was condemned as a bad logic board.
     uint8_t io_unmapped_read;
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    // A bus-error window INSIDE the 256 MB I/O window, as offsets from its
+    // base (desc->rom_end), tested before the island mirror is applied.  An
+    // empty window (lo > hi, or both 0) means the island mirrors over the
+    // whole I/O window.  The IIci uses it for its cache-card connector
+    // ($5200_0000-$52FF_FFFF): the card decodes that range itself and the
+    // board provides no select, so with no card fitted nothing answers and
+    // the access times out.  Mirroring the island there made VIA1 answer
+    // the cache tag/data probes and MacTest Pro reported a failed cache card.
+    uint32_t io_berr_lo, io_berr_hi;
     asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)
 } mac030_board_desc_t;
 
