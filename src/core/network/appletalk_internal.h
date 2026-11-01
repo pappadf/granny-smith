@@ -152,6 +152,10 @@ typedef struct {
 // cable, which is what a nonrouter node assumes until it hears one.
 uint16_t atalk_this_net(void);
 
+// True when a datagram sent now would reach the guest: a connection is on
+// the cable, attached to the link, and the guest's AppleTalk driver is up.
+bool atalk_link_ready(void);
+
 // A parsed ATP frame.  `data` is borrowed: it points into the received
 // frame and is valid only while the handler that was given the packet runs.
 // A copy kept past that -- a request held to be answered later -- either
@@ -238,6 +242,8 @@ void atp_unregister_socket_handler(uint8_t socket);
 // True when a handler serves `socket`.
 bool atp_socket_handler_in_use(uint8_t socket);
 
+// Answer a request with response packets; both return the number of packets
+// sent, or -1 if none could be.
 int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet_t *request_atp,
                                const atp_response_packet_desc_t *packets, size_t packet_count);
 

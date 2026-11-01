@@ -20,6 +20,12 @@ include "../lib/afp.script"
 
 machine.rtc.time = "2026-04-26T21:30:36"
 
+# The routerless cable the stack had before it routed: this row runs with the
+# router off (appletalk.router.seed), so the guest finds no router and
+# addresses every lookup to the network itself.  The other AFP rows run with
+# it on.
+appletalk.router.seed = false
+
 # Boot to the Finder desktop (same budget as the scsi test).
 scheduler.run 30000000
 
@@ -36,6 +42,8 @@ assert appletalk.afp.sessions.count == 0 "an ASP session exists before the Choos
 # Apple menu → Chooser → AppleShare → the server → Guest: the volume list
 # (lib/afp.script).
 afp_chooser_to_volumes("", "")
+assert appletalk.router.stats.rtmp_requests == 0 "an RTMP Request was answered with the router off"
+assert appletalk.router.stats.nbp_brrq == 0 "the guest found a router that is off"
 
 # The session is up and speaking AFP 2.0 before a single volume is mounted.
 assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"

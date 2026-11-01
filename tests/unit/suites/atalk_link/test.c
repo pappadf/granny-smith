@@ -106,7 +106,10 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
 // of this suite and are covered by the appletalk-afp-checkpoint row).
 TEST(every_transport_timer_is_registered_at_init) {
     link_boot();
-    ASSERT_EQ_INT(0, sched_pending()); // registered, not armed
+    // Registered, not armed -- but for the router's send-RTMP timer, which
+    // runs from the moment the machine is on the cable
+    ASSERT_EQ_INT(1, sched_pending());
+    ASSERT_TRUE(sched_registered("atalk_router.rtmp_send"));
     ASSERT_TRUE(sched_registered("llap.rts_timeout"));
     ASSERT_TRUE(sched_registered("llap.rts_kick"));
     ASSERT_TRUE(sched_registered("atp.retry_timeout"));
@@ -786,6 +789,171 @@ TEST(an_extended_header_is_checked_before_it_is_used) {
     link_delete();
 }
 
+// --- the router: RTMP, ZIP, NBP BrRq ----------------------------------------------
+
+// The last frame to `dst` whose DDP (short header) type is `type`, any length.
+static const uint8_t *last_short(uint8_t dst, uint8_t type, size_t *len) {
+    for (int i = wire_count() - 1; i >= 0; i--) {
+        size_t n = 0;
+        const uint8_t *f = wire_frame(i, &n);
+        if (n >= 8 && f[0] == dst && f[2] == LLAP_TYPE_DDP_SHORT && f[7] == type) {
+            *len = n;
+            return f;
+        }
+    }
+    return NULL;
+}
+
+// An RTMP Request (function 1) gets an RTMP Response: RTMP Data without
+// tuples, directed to the requesting socket (Inside AppleTalk 5-17).  It names
+// the network (1 by default) and the router (our node).
+TEST(an_rtmp_request_is_answered_with_this_net_and_the_router) {
+    link_boot();
+    ASSERT_EQ_INT(1, atalk_this_net());
+    uint8_t req[] = {1};
+    guest_ddp(GUEST_NODE, 1, 253, 5, req, sizeof req);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *r = last_short(GUEST_NODE, 1, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(3 + 5 + 7, (int)len); // net, ID length, ID, version indicator
+    ASSERT_EQ_INT(253, r[5]); // to the requesting socket
+    ASSERT_EQ_INT(1, r[6]); // from the RTMP socket
+    ASSERT_EQ_INT(0, r[8]); // network 1
+    ASSERT_EQ_INT(1, r[9]);
+    ASSERT_EQ_INT(8, r[10]); // an 8-bit node ID...
+    ASSERT_EQ_INT(HOST_NODE, r[11]); // ...ours
+    ASSERT_EQ_INT(0x82, r[14]); // version $000082
+    // A Route Data Request gets the table: the local network at distance 0
+    wire_clear();
+    uint8_t rdr[] = {3};
+    guest_ddp(GUEST_NODE, 1, 253, 5, rdr, sizeof rdr);
+    guest_advance_to(link_now_ns() + 30e6);
+    r = last_short(GUEST_NODE, 1, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(3 + 5 + 10, (int)len);
+    ASSERT_EQ_INT(0, r[15]); // tuple: network 1, distance 0
+    ASSERT_EQ_INT(1, r[16]);
+    ASSERT_EQ_INT(0, r[17]);
+    link_delete();
+}
+
+// RTMP Data goes out every 10 s, broadcast from the RTMP socket to the RTMP
+// socket, with the routing tuples.
+TEST(the_router_broadcasts_rtmp_data_every_ten_seconds) {
+    link_boot();
+    double t0 = link_now_ns();
+    guest_advance_to(t0 + 9.9e9);
+    size_t len = 0;
+    ASSERT_TRUE(last_short(0xFF, 1, &len) == NULL);
+    guest_advance_to(t0 + 10.1e9);
+    const uint8_t *r = last_short(0xFF, 1, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(3 + 5 + 10, (int)len);
+    ASSERT_EQ_INT(1, r[5]); // to the RTMP socket
+    ASSERT_EQ_INT(1, r[6]); // from it
+    wire_clear();
+    guest_advance_to(t0 + 20.1e9);
+    ASSERT_TRUE(last_short(0xFF, 1, &len) != NULL); // and again
+    link_delete();
+}
+
+// One ZIP ATP request to the ZIS (socket 6), at-least-once; returns the
+// response frame.
+static const uint8_t *zip_atp(uint8_t func, uint16_t index, uint16_t tid, size_t *len) {
+    uint8_t treq[8] = {0x40, 1, (uint8_t)(tid >> 8), (uint8_t)tid, func, 0, (uint8_t)(index >> 8), (uint8_t)index};
+    wire_clear();
+    guest_ddp(GUEST_NODE, 6, 254, 3, treq, sizeof treq);
+    guest_advance_to(link_now_ns() + 30e6);
+    return last_short(GUEST_NODE, 3, len);
+}
+
+// GetMyZone, GetZoneList and GetLocalZones (Inside AppleTalk 8-7): the one zone
+// there is, "Granny Smith"; an index past it gets an empty last answer.
+TEST(zip_atp_requests_name_the_zone) {
+    link_boot();
+    static const char zone[] = "Granny Smith";
+    size_t zl = sizeof zone - 1;
+    for (uint8_t func = 7; func <= 9; func++) {
+        size_t len = 0;
+        const uint8_t *r = zip_atp(func, 1, (uint16_t)(0x100 + func), &len);
+        ASSERT_TRUE(r != NULL);
+        ASSERT_EQ_INT(0x80 | 0x10, r[8] & 0xD0); // TResp, EOM
+        ASSERT_EQ_INT(func == 7 ? 0 : 1, r[12]); // LastFlag (none for GetMyZone)
+        ASSERT_EQ_INT(1, r[15]); // one name
+        ASSERT_EQ_INT((int)zl, r[16]);
+        ASSERT_EQ_INT(0, memcmp(r + 17, zone, zl));
+        ASSERT_EQ_INT((int)(3 + 5 + 8 + 1 + zl), (int)len);
+    }
+    size_t len = 0;
+    const uint8_t *r = zip_atp(8, 2, 0x200, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(1, r[12]); // last
+    ASSERT_EQ_INT(0, r[15]); // and empty
+    ASSERT_EQ_INT(3 + 5 + 8, (int)len);
+    link_delete();
+}
+
+// A ZIP Query for this network gets a Reply with its zone; one for networks
+// the router does not know gets nothing (Inside AppleTalk 8-4).
+TEST(a_zip_query_for_this_network_gets_its_zone) {
+    link_boot();
+    uint8_t q[] = {1, 1, 0, 1};
+    guest_ddp(GUEST_NODE, 6, 252, 6, q, sizeof q);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *r = last_short(GUEST_NODE, 6, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(252, r[5]);
+    ASSERT_EQ_INT(2, r[8]); // Reply
+    ASSERT_EQ_INT(1, r[9]); // one network
+    ASSERT_EQ_INT(0, r[10]); // network 1
+    ASSERT_EQ_INT(1, r[11]);
+    ASSERT_EQ_INT(12, r[12]); // "Granny Smith"
+    wire_clear();
+    uint8_t q2[] = {1, 1, 0x12, 0x34};
+    guest_ddp(GUEST_NODE, 6, 252, 6, q2, sizeof q2);
+    guest_advance_to(link_now_ns() + 30e6);
+    ASSERT_TRUE(last_short(GUEST_NODE, 6, &len) == NULL);
+    link_delete();
+}
+
+// A BrRq to the router's NIS (8-18): a LkUp is broadcast on the local network
+// with "*" replaced by the zone name and net 0 by this network, and the host's
+// own names answer the requester.  A zone nobody is in gets nothing.
+TEST(a_brrq_becomes_a_local_lookup) {
+    link_boot();
+    atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
+    uint8_t brrq[] = {0x11, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '=', 8, 'L', 'i', 'n', 'k', 'T', 'e', 's', 't', 1, '*'};
+    guest_ddp(GUEST_NODE, 2, 253, 2, brrq, sizeof brrq);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *lk = last_short(0xFF, 2, &len);
+    ASSERT_TRUE(lk != NULL);
+    ASSERT_EQ_INT(0x21, lk[8]); // LkUp, one tuple
+    ASSERT_EQ_INT(0x42, lk[9]); // the requester's NBP id
+    ASSERT_EQ_INT(1, lk[11]); // the requester's net filled in: network 1
+    ASSERT_EQ_INT(GUEST_NODE, lk[12]);
+    size_t zone_at = 15 + 2 + 9; // after the object "=" and the type "LinkTest"
+    ASSERT_EQ_INT(12, lk[zone_at]); // the zone: "Granny Smith"
+    ASSERT_EQ_INT(0, memcmp(lk + zone_at + 1, "Granny Smith", 12));
+    const uint8_t *rep = last_short(GUEST_NODE, 2, &len);
+    ASSERT_TRUE(rep != NULL);
+    ASSERT_EQ_INT(0x31, rep[8]); // LkUp-Reply with our name
+    ASSERT_EQ_INT(1, rep[11]); // at network 1
+
+    wire_clear();
+    uint8_t other[] = {0x11, 0x43, 0, 0, GUEST_NODE, 253, 0, 1, '=', 1, '=', 5, 'O', 't', 'h', 'e', 'r'};
+    guest_ddp(GUEST_NODE, 2, 253, 2, other, sizeof other);
+    guest_advance_to(link_now_ns() + 30e6);
+    ASSERT_TRUE(last_short(0xFF, 2, &len) == NULL);
+    ASSERT_TRUE(last_short(GUEST_NODE, 2, &len) == NULL);
+    atalk_nbp_withdraw(&entry);
+    link_delete();
+}
+
 // --- ATP exactly-once requests a handler declines -------------------------------
 
 #define DECLINE_SOCKET 60
@@ -1147,6 +1315,11 @@ int main(void) {
     RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
     RUN(an_extended_request_gets_an_extended_reply);
     RUN(an_extended_header_is_checked_before_it_is_used);
+    RUN(an_rtmp_request_is_answered_with_this_net_and_the_router);
+    RUN(the_router_broadcasts_rtmp_data_every_ten_seconds);
+    RUN(zip_atp_requests_name_the_zone);
+    RUN(a_zip_query_for_this_network_gets_its_zone);
+    RUN(a_brrq_becomes_a_local_lookup);
     RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);
