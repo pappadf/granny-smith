@@ -54,6 +54,7 @@ tests/e2e/
 │   ├── imagewriter-print.spec.ts        # An ImageWriter job, fed to the printer, opens in the print viewer
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
+│   ├── mactest-max.spec.ts              # MacTest Pro (68k) on a IIci with a 24AC and an 8•24 GC: all nine tests pass, live at Max speed
 │   ├── machine-config-sections.spec.ts  # New Machine dialog: the Storage and Monitor sections build the machine they show
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
 │   ├── panel-tabs-overflow.spec.ts      # Narrow panel: tabs overflow into a » menu, header actions fold into ⋯ (every skin)
