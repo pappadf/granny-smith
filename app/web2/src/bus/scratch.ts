@@ -4,6 +4,19 @@
 import { gsEval } from './emulator';
 import { SCRATCH_DIR, SCRATCH_ID, SCRATCH_LOCK_PREFIX, TAB_SCRATCH_DIR } from '@/lib/opfsPaths';
 
+// Writes into the scratch area wait here while the page's startup is still
+// claiming this tab's part of it.  The page is live before the claim is done
+// (Open Checkpoint, a drop), and a write into the part before it exists fails
+// ("No such file or directory").  Nothing waits when no claim is under way.
+let claim: Promise<void> | null = null;
+let claimDone: () => void = () => {};
+export function holdScratchUntilClaimed(): void {
+  claim ??= new Promise<void>((resolve) => (claimDone = resolve));
+}
+export function whenScratchReady(): Promise<void> {
+  return claim ?? Promise.resolve();
+}
+
 // Take this tab's part of the scratch area, then remove what no live tab
 // holds.  The lock is held before the directory exists, so a tab starting at
 // the same moment never takes this one's part for an abandoned one.  Without
@@ -20,6 +33,7 @@ export async function claimScratch(): Promise<void> {
     });
   }
   await gsEval('files.mkdir', [TAB_SCRATCH_DIR]);
+  claimDone();
   if (!locks) return;
 
   const held = new Set(((await locks.query()).held ?? []).map((l) => l.name ?? ''));

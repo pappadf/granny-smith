@@ -32,7 +32,7 @@ import {
 } from '@/bus/diagnostics';
 import { routePrintLine } from '@/bus/logSink';
 import { emulatorHealth } from '@/state/emulatorHealth.svelte';
-import { claimScratch } from '@/bus/scratch';
+import { claimScratch, holdScratchUntilClaimed } from '@/bus/scratch';
 import { installRemoteAfp } from '@/bus/remoteAfp';
 import { checkStoragePersistence } from '@/bus/storageHealth';
 import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
@@ -157,6 +157,10 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // no resume prompt).  Media without a ROM only goes into a running machine.
   const urlBoots = !!mediaParams.rom;
   if (urlBoots) beginUrlBoot(mediaParams.model);
+
+  // Uploads and Open Checkpoint wait for this tab's scratch area (claimed
+  // below, once the core is up).
+  holdScratchUntilClaimed();
 
   void (async () => {
     try {

@@ -45,7 +45,14 @@ import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svel
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { interleaveHalves } from '@/lib/mediaUrl';
-import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
+import {
+  fileHasCheckpointSignature,
+  scratchPath,
+  ROMS_DIR,
+  HD_DIR,
+  CD_DIR,
+  SCRATCH_DIR,
+} from '@/lib/opfsPaths';
 import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
@@ -55,6 +62,7 @@ import {
   type MediaTypeDescriptor,
 } from '@/lib/media';
 import { mountImage, insertFloppy } from './media';
+import { whenScratchReady } from './scratch';
 import { opfsSafeName, adSidecarPath } from './fsOps';
 import { importImage, isGzipFile, isQcow2File, type DiskCategory } from './importImage';
 
@@ -73,6 +81,7 @@ export async function streamToOpfs(
   onProgress?: (bytesWritten: number) => void,
 ): Promise<boolean> {
   try {
+    if (opfsPath.startsWith(`${SCRATCH_DIR}/`)) await whenScratchReady();
     const size = await xferChunkBytes();
     let pos = 0;
     let wrote = false;
