@@ -342,6 +342,10 @@ typedef struct ppc_fetch_window {
     struct ppc_ftlb_entry *fe; // the fetch-TLB entry the window came from (NULL: real mode, a device window)
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
+// The address the last rfi returned to.  An interrupt lands on any word
+// of hot code and its return is not an entry worth a block leader: the
+// translation tier does not count it (ppc_jit_enter).
+extern uint32_t g_ppc_rfi_pc;
 
 // The fetch TLB behind the window: direct-mapped, logical page and
 // privilege to host page, for MSR[IT] set.  Each entry also remembers the
@@ -401,6 +405,9 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store);
 // dcbz's translated form: W/I alignment rule, T=1 no-op case.
 // Returns 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
 int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr);
+// The same decision for the translation tier, without side effects: the
+// block's host address when it is plain zeroing, else NULL (ppc_mmu.c).
+uint8_t *ppc_dcbz_host(ppc_t *p, uint32_t ea);
 
 // Rebuild sr_t_mask from sr[] (reset, checkpoint restore, shell pokes).
 void ppc_recompute_sr_t_mask(ppc_t *p);
