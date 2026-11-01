@@ -51,6 +51,17 @@ __attribute__((weak)) int platform_download(const char *path) {
     return -2; // no browser to hand a file to
 }
 
+// No sockets: the browser's router links are made by the page.
+__attribute__((weak)) int platform_atalk_link_udp(const char *local, const char *remote, bool friend_link, char *err,
+                                                  size_t err_len) {
+    (void)local;
+    (void)remote;
+    (void)friend_link;
+    (void)err;
+    (void)err_len;
+    return -2;
+}
+
 // Host video-input seam: the defaults model "no camera attached" — the
 // headless build drives capture from the deterministic machine.videoin
 // sources instead; em_camera.c overrides these on WASM.

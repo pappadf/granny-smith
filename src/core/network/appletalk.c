@@ -331,6 +331,11 @@ void atalk_timer_cancel_all(atalk_timer_t *t) {
         remove_event(s, t->cb, t);
 }
 
+bool atalk_timer_pending(const atalk_timer_t *t) {
+    scheduler_t *s = atalk_scheduler();
+    return s && t->cb && has_event(s, t->cb);
+}
+
 // Drop every pending event of the timers the connection registered: it is
 // coming off the cable.  The registrations stay with its scheduler, which
 // goes with its machine.

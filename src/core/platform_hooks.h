@@ -54,6 +54,15 @@ int platform_checkpoint_auto_set(bool enabled);
 int platform_quit(void);
 int platform_download(const char *path);
 
+// AppleTalk router links over the host's network (appletalk_link.h).  The
+// weak default answers -2: no sockets on this platform (the browser's links
+// are made by the page).  The headless build overrides it with UDP.
+//
+//   platform_atalk_link_udp(local, remote, friend_link, err, err_len)
+//                            — bind "host:port" `local`, open a link to the
+//                              router at `remote`; 0, or -1 with `err` set.
+int platform_atalk_link_udp(const char *local, const char *remote, bool friend_link, char *err, size_t err_len);
+
 // Host video-input seam (the AV video digitizer's webcam source).  The weak
 // defaults model "no camera": headless machines use the deterministic
 // machine.videoin sources instead; the WASM platform overrides these with the

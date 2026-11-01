@@ -349,3 +349,15 @@ bool atalk_printer_get_capture(void) {
 void atalk_printer_set_capture(bool en) {
     g_printer_capture = en;
 }
+
+// ---- platform (platform_hooks.c) ------------------------------------------
+//
+// No sockets here: the suite's links are loopback transports it drives itself.
+int platform_atalk_link_udp(const char *local, const char *remote, bool friend_link, char *err, size_t err_len) {
+    (void)local;
+    (void)remote;
+    (void)friend_link;
+    (void)err;
+    (void)err_len;
+    return -2;
+}

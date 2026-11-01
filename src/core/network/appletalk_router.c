@@ -19,6 +19,7 @@
 #include "log.h"
 #include "macroman.h"
 #include "object.h"
+#include "platform_hooks.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -54,7 +55,8 @@ LOG_USE_CATEGORY_NAME("appletalk");
 #define ZIP_QUERY_NS            10000000000ull // query retransmission (8-12)
 
 // Links
-#define LINK_PING_NS 5000000000ull // PING every 5 s of guest time
+#define LINK_PING_NS        5000000000ull // PING every 5 s of guest time
+#define LINK_HELLO_RETRY_NS 1000000000ull // HELLO again every second until the other end answers
 
 // DDP extended header field offsets (Inside AppleTalk 4-15)
 #define DG_DST_NET  4
@@ -667,15 +669,21 @@ static int zone_list(const route_t **zones, int cap) {
 }
 
 int atalk_router_nets_in_zone(const uint8_t *zone, int len, uint16_t *nets, int cap) {
+    // "*" is the requester's zone (8-19), which may span other networks too:
+    // with one zone name on every instance, it is all of them
+    if (len == 1 && zone[0] == '*') {
+        zone = g_router.zone_mac;
+        len = (int)g_router.zone_mac_len;
+    }
     int n = 0;
-    bool any = len == 1 && zone[0] == '*';
-    for (int i = 0; i < MAX_ROUTES && n < cap; i++) {
-        const route_t *r = &g_router.routes[i];
-        if (!r->in_use || !r->zone_known || !route_usable(r))
-            continue;
-        bool local = r->port == PORT_LOCAL;
-        if ((any && local) || (!any && zone_equal(zone, len, r->zone, r->zone_len)))
-            nets[n++] = r->net;
+    for (int pass = 0; pass < 2; pass++) { // local first
+        for (int i = 0; i < MAX_ROUTES && n < cap; i++) {
+            const route_t *r = &g_router.routes[i];
+            if (!r->in_use || !r->zone_known || !route_usable(r) || (pass == 0) != (r->port == PORT_LOCAL))
+                continue;
+            if (zone_equal(zone, len, r->zone, r->zone_len))
+                nets[n++] = r->net;
+        }
     }
     return n;
 }
@@ -920,6 +928,8 @@ atalk_link_t *atalk_link_open(const atalk_link_transport_t *transport, void *ctx
     l->rtt_ns = -1;
     LOG(1, "atalk router: link %d (%s) opening", link_index(l), l->kind);
     link_send_hello(l);
+    if (g_router.plugged)
+        atalk_timer_arm(&g_router.ping_timer, 0, LINK_HELLO_RETRY_NS);
     return l;
 }
 
@@ -974,6 +984,9 @@ static void link_hello_in(atalk_link_t *l, const uint8_t *b, size_t len) {
     l->peer_name[nl] = '\0';
     l->peer_net = net;
     if (l->state == ATALK_LINK_CONNECTING) {
+        // Our own HELLO may have been lost before the other end listened:
+        // answer this one, so it opens too
+        link_send_hello(l);
         l->state = ATALK_LINK_OPEN;
         LOG(1, "atalk router: link %d (%s) open to network %u '%s'", link_index(l), l->kind, (unsigned)net,
             l->peer_name);
@@ -1036,27 +1049,34 @@ static void ping_timer_cb(void *source, uint64_t data) {
     uint8_t b[8];
     for (int i = 0; i < 8; i++)
         b[i] = (uint8_t)(now >> (56 - 8 * i));
-    bool any = false;
+    bool connecting = false;
     for (int i = 0; i < ATALK_LINK_MAX; i++) {
         atalk_link_t *l = &g_router.links[i];
-        if (l->in_use && l->state == ATALK_LINK_OPEN) {
+        if (l->in_use && l->state == ATALK_LINK_OPEN)
             link_send(l, ATALK_LINK_PING, b, sizeof(b), true);
-            any = true;
+        if (l->in_use && l->state == ATALK_LINK_CONNECTING) {
+            link_send_hello(l); // the first may have gone before the other end listened
+            connecting = true;
         }
     }
-    (void)any;
+    // Every second while a link waits for its other end, else every 5 s
     if (g_router.plugged)
-        atalk_timer_arm(&g_router.ping_timer, 0, LINK_PING_NS);
+        atalk_timer_arm(&g_router.ping_timer, 0, connecting ? LINK_HELLO_RETRY_NS : LINK_PING_NS);
 }
 
 // === Lifecycle =================================================================
 
 // Start or stop the router's timers to match its state.
+// A timer already pending -- one a checkpoint restore replayed -- keeps its
+// time, so a restored machine runs on exactly as the saved one would have.
 static void router_timers_update(void) {
     if (g_router.seed && g_router.plugged) {
-        atalk_timer_arm(&g_router.rtmp_timer, 0, ATALK_RTMP_SEND_NS);
-        atalk_timer_arm(&g_router.validity_timer, 0, RTMP_VALIDITY_NS);
-        atalk_timer_arm(&g_router.ping_timer, 0, LINK_PING_NS);
+        if (!atalk_timer_pending(&g_router.rtmp_timer))
+            atalk_timer_arm(&g_router.rtmp_timer, 0, ATALK_RTMP_SEND_NS);
+        if (!atalk_timer_pending(&g_router.validity_timer))
+            atalk_timer_arm(&g_router.validity_timer, 0, RTMP_VALIDITY_NS);
+        if (!atalk_timer_pending(&g_router.ping_timer))
+            atalk_timer_arm(&g_router.ping_timer, 0, LINK_PING_NS);
     } else {
         atalk_timer_cancel_all(&g_router.rtmp_timer);
         atalk_timer_cancel_all(&g_router.validity_timer);
@@ -1265,9 +1285,23 @@ static struct object *routes_get(struct object *self, int index) {
     return object_cache_at(&g_route_objects, index, NULL);
 }
 
+// Named lookup by network number, so `appletalk.router.routes["54"]` resolves.
+static struct object *routes_lookup(struct object *self, const char *name) {
+    (void)self;
+    char *end = NULL;
+    unsigned long net = strtoul(name, &end, 0);
+    if (!end || *end || net == 0 || net > ATALK_ROUTER_NET_MAX)
+        return NULL;
+    for (int i = 0; i < MAX_ROUTES; i++)
+        if (g_router.routes[i].in_use && g_router.routes[i].net == net)
+            return object_cache_at(&g_route_objects, i, NULL);
+    return NULL;
+}
+
 static const collection_desc_t routes_entries = {
     .entry = &route_class,
     .by_index = {.get = routes_get, .slots = MAX_ROUTES},
+    .by_key = {.lookup = routes_lookup},
 };
 
 static const member_t routes_members[] = {
@@ -1395,30 +1429,57 @@ static const class_desc_t links_class = {
     .n_members = ARRAY_LEN(links_members),
 };
 
+static DEF_METHOD(router_method_link_udp) {
+    char err[192] = "";
+    const char *local = argv[0].s;
+    const char *remote = argv[1].s;
+    bool friend_link = argc > 2 && argv[2].kind == VK_BOOL && argv[2].b;
+    int rc = platform_atalk_link_udp(local, remote, friend_link, err, sizeof(err));
+    if (rc == -2)
+        return val_err("links over the host's network are not available on this platform");
+    if (rc != 0)
+        return val_err("%s", err[0] ? err : "cannot open the link");
+    return val_none();
+}
+
+static const arg_decl_t link_udp_args[] = {
+    {.name = "local", .kind = VK_STRING, .doc = "host:port this end binds"},
+    {.name = "remote", .kind = VK_STRING, .doc = "host:port of the other instance's router"},
+    {.name = "friend",
+     .kind = VK_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "The other end is another person's"},
+};
+
 static const member_t router_members[] = {
     {.kind = MK_ATTR,
      .name = "seed",
      .doc = "Run as this network's router (RTMP, ZIP); off leaves a routerless cable",
-     .attr = {.type = VK_BOOL, .get = router_attr_seed, .set = router_attr_set_seed}          },
+     .attr = {.type = VK_BOOL, .get = router_attr_seed, .set = router_attr_set_seed}                                },
     {.kind = MK_ATTR,
      .name = "net",
      .doc = "This network's number, 1..65279; a running guest picks a change up when it restarts AppleTalk",
-     .attr = {.type = VK_UINT, .width = 2, .get = router_attr_net, .set = router_attr_set_net}},
+     .attr = {.type = VK_UINT, .width = 2, .get = router_attr_net, .set = router_attr_set_net}                      },
     {.kind = MK_ATTR,
      .name = "zone",
      .doc = "This network's zone name, as the Chooser lists it",
      .attr = {.type = VK_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = router_attr_zone,
-              .set = router_attr_set_zone}                                                    },
+              .set = router_attr_set_zone}                                                                          },
     {.kind = MK_ATTR,
      .name = "name",
      .doc = "This instance's display name, sent to linked instances",
-     .attr = {.type = VK_STRING, .get = router_attr_name, .set = router_attr_set_name}        },
+     .attr = {.type = VK_STRING, .get = router_attr_name, .set = router_attr_set_name}                              },
+    {.kind = MK_METHOD,
+     .name = "link_udp",
+     .doc = "Link to another instance's router over UDP (headless only)",
+     .method =
+         {.args = link_udp_args, .nargs = 3, .result = VK_NONE, .fn = router_method_link_udp, .ui_flags = MM_MUTATE}},
     {.kind = MK_ATTR,
      .name = "share_host_services",
      .doc = "Let friends' Macs use this host's services (Shared Folders, printer, program linking)",
-     .attr = {.type = VK_BOOL, .get = router_attr_share, .set = router_attr_set_share}        },
+     .attr = {.type = VK_BOOL, .get = router_attr_share, .set = router_attr_set_share}                              },
 };
 
 static const class_desc_t router_class = {

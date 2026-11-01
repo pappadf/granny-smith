@@ -62,8 +62,9 @@ carries records; the router frames them (`appletalk_link.h`):
 | `PING` / `PONG` | a guest-time stamp, echoed: round trip in `links[i].rtt_ms` |
 | `BYE` | the reason |
 
-A link opens when the other end's HELLO arrives; the router then sends its
-table at once. A HELLO, or a distance-0 RTMP tuple, naming our own network
+A link opens when the other end's HELLO arrives; the router answers it with
+its own (the first may have gone before the other end listened) and sends its
+table at once. While a link waits, its HELLO goes out again every second. A HELLO, or a distance-0 RTMP tuple, naming our own network
 number closes the link ("both sides use network N"): two networks with one
 number cannot be routed. `atalk_link_lost` (the transport lost the other end)
 and BYE close it too; its routes go bad at once.
@@ -135,6 +136,7 @@ appletalk.router
   .net                  r/w  this network's number, 1..65279 (default 1); not while linked
   .zone                 r/w  zone name (default "Granny Smith")
   .name                 r/w  display name sent in HELLO
+  .link_udp(local, remote, [friend])   headless: link to a router over UDP
   .share_host_services  r/w  friends may use the host's services (default false)
   .routes[i]                 net, distance, state, via, zone
   .links[i]                  state, transport, friend, peer_net, peer_zone, peer_name,
@@ -165,6 +167,28 @@ re-armed when the restored machine takes the cable.
 - Integration: `appletalk-afp` (System 6: the guest asks for a router and
   routes its lookups through it), `appletalk-afp-sys7` (System 7.5: zone
   requests), `appletalk-afp-longname` (the router off).
+- Multi-process integration rows (`TEST_RUNNER`), linked over UDP on the
+  loopback interface with `appletalk.router.link_udp`:
+  - `appletalk-router-links`: three routers in a triangle learn every network
+    and zone at distance 1; C closes its link to A, and A and C reroute to each
+    other through B at distance 2.
+  - `appletalk-router-afp`: two instances in one zone; B shares its host
+    services over a friend link. A's System 6 guest finds B's file server in
+    the Chooser (BrRq → FwdReq → LkUp on B's network) and mounts its volume:
+    ATP, ASP and AFP across both routers.
+  The processes run at independent speeds, so the scripts never wait on fixed
+  budgets for each other: they poll routing state with large caps and finish
+  on a barrier (marker directories, or the link's BYE).
+
+### Headless transport
+
+`src/platform/headless/headless_atalk_link.c` implements the platform hook
+`platform_atalk_link_udp` (`platform_hooks.h`; the weak default answers "not
+on this platform"): one UDP socket per link, bound to `local` and connected
+to `remote`, one record per datagram. `hl_pump_once` drains the sockets
+between frame-units, so records reach the router on the machine's thread. UDP
+may lose a record; nothing above needs it not to (DDP is best effort, HELLO is
+retried, PINGs are periodic).
 
 ## 7. Known debts
 

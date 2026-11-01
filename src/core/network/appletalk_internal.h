@@ -54,6 +54,9 @@ void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns);
 // Cancel the pending event carrying `data`, or every pending event.
 void atalk_timer_cancel(atalk_timer_t *t, uint64_t data);
 void atalk_timer_cancel_all(atalk_timer_t *t);
+// True if an event of this timer is pending (one a checkpoint restore
+// replayed, for instance).
+bool atalk_timer_pending(const atalk_timer_t *t);
 
 #define ATALK_TIMER_MIN_NS 1000u
 
