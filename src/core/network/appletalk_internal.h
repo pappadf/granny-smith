@@ -156,6 +156,12 @@ uint16_t atalk_this_net(void);
 // the cable, attached to the link, and the guest's AppleTalk driver is up.
 bool atalk_link_ready(void);
 
+// Deliver a datagram the router received from another network to this one:
+// `dg` is the extended DDP header and data.  `to_host` hands it to the
+// stack's own node (33); otherwise it goes onto LocalTalk to the node it
+// names, from node 33 (the router).
+void atalk_deliver_datagram(const uint8_t *dg, size_t len, bool to_host);
+
 // A parsed ATP frame.  `data` is borrowed: it points into the received
 // frame and is valid only while the handler that was given the packet runs.
 // A copy kept past that -- a request held to be answered later -- either

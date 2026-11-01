@@ -1,8 +1,9 @@
 # The AppleTalk router
 
-The router in the built-in AppleTalk stack: `src/core/network/appletalk_router.c`
-and `appletalk_router.h`, wired into the stack in `src/core/network/appletalk.c`
-(DDP dispatch, NBP BrRq, the connection lifecycle). The protocols are specified
+The router in the built-in AppleTalk stack: `src/core/network/appletalk_router.c`,
+`appletalk_router.h` and the link seam `appletalk_link.h`, wired into the stack
+in `src/core/network/appletalk.c` (DDP dispatch and delivery, NBP BrRq and
+FwdReq, the connection lifecycle). The protocols are specified
 in *Inside AppleTalk*, 2nd ed. (Apple, 1990), ch. 5 (RTMP) and ch. 8 (ZIP and
 NBP routing); page numbers below are from that book.
 
@@ -22,9 +23,13 @@ also that network's **seed router**:
 - it turns the guest's NBP BrRq into a LkUp broadcast on the local network
   (8-18), answering for the host's own names as before.
 
-Until a link to another instance exists, the routing table holds only the local
-network: a gateway that leads nowhere. Links, transit forwarding and RTMP/ZIP
-between routers are later work on the same module.
+Toward other instances it is an ordinary AppleTalk router whose ports, beside
+the local network, are **links**: point-to-point half-router links (5-4) with
+no network number of their own. Over every link it exchanges RTMP (routing
+table, split horizon, aging, notify neighbor) and ZIP (Query/Reply for zones it
+does not know), forwards datagrams in both directions and in transit, and turns
+NBP BrRqs for remote zones into FwdReqs. Until a link exists, the routing table
+holds only the local network: a gateway that leads nowhere.
 
 `appletalk.router.seed = false` turns the router off and gives back the
 routerless cable the stack always had: RTMP Requests and ZIP requests go
@@ -44,6 +49,58 @@ The LaserWriter's PAP listener moved from socket 6 to 16 to free the ZIS
 (`ATALK_HOST_PAP_SOCKET`).
 
 ## 3. Behaviour
+
+### 3.0 Links
+
+A transport (`atalk_link_transport_t`: `send(record, reliable)`, `close`)
+carries records; the router frames them (`appletalk_link.h`):
+
+| Record | Content |
+|---|---|
+| `HELLO` | version 1, the sender's network number, flags (friend link), display name |
+| `DDP` | one datagram: extended header + data, as on the wire |
+| `PING` / `PONG` | a guest-time stamp, echoed: round trip in `links[i].rtt_ms` |
+| `BYE` | the reason |
+
+A link opens when the other end's HELLO arrives; the router then sends its
+table at once. A HELLO, or a distance-0 RTMP tuple, naming our own network
+number closes the link ("both sides use network N"): two networks with one
+number cannot be routed. `atalk_link_lost` (the transport lost the other end)
+and BYE close it too; its routes go bad at once.
+
+Datagrams addressed to network 0 on a link are for the router at that end:
+its RTMP Data (sender network 0, as for any port that is not an AppleTalk
+network, 5-15) and ZIP Queries. Everything else is routed.
+
+### 3.1 Routing table and forwarding
+
+- Entries: network, distance, port (local or a link), state good / suspect /
+  bad0 / bad1, and the zone (the zone information table, 8-4).
+- RTMP Data in through a link: Update-the-Entry / Create-New-Entry exactly as
+  5-22; out every 10 s on every port and 100 ms after any change (links only),
+  with split horizon; bad entries go out as distance 31.
+- The validity timer (20 s) ages entries good → suspect → bad0 → bad1 → gone;
+  an entry is usable while good or suspect.
+- A new network, or one coming back from bad, has an unknown zone: a ZIP Query
+  goes out on its link at once and every 10 s until the Reply.
+- Forwarding: from the local network (the guest's long-header datagrams, and
+  the host stack's own datagrams for another network, which `ddp_send` hands to
+  the router), from a link to this network (to the host on node 33 or 0, or onto
+  LocalTalk from node 33 with the DDP node fields kept), and from link to link
+  in transit. Each hop increments the hop count; one arriving with 15 is
+  dropped (4-13). The checksum does not cover the hop count, so it stays.
+- **Host services filter**: from a link, the host (node 33) is reachable only on
+  sockets 1, 2 and 6, and a FwdReq's LkUp is not answered for the host's names,
+  unless `share_host_services` is on and the link is a friend link. Tabs of one
+  browser serve the same OPFS shared folder, so it is never offered between them.
+
+### 3.2 NBP routing (8-18 to 8-20)
+
+- BrRq from the guest: for every network of the zone (`*` = the local zone):
+  the local one gets a LkUp broadcast (and the host answers for its names);
+  every other gets a FwdReq to node 0 ("any router") on that network, routed.
+- FwdReq for this network (from a link): a LkUp broadcast here; the guest's
+  replies go to the requester's address in the tuple, through the router.
 
 - **RTMP Data** (5-13): sender's net, node ID length 8, node 33, version
   indicator `$000082`, then the tuples (the local net at distance 0). The RTMP
@@ -74,10 +131,15 @@ server's zone ("Shared Folders in Granny Smith").
 
 ```
 appletalk.router
-  .seed    r/w  run as router (default true)
-  .net     r/w  this network's number, 1..65279 (default 1)
-  .zone    r/w  zone name (default "Granny Smith")
-  .stats        rtmp_data_out, rtmp_requests, zip_queries, zip_atp_requests, nbp_brrq
+  .seed                 r/w  run as router (default true)
+  .net                  r/w  this network's number, 1..65279 (default 1); not while linked
+  .zone                 r/w  zone name (default "Granny Smith")
+  .name                 r/w  display name sent in HELLO
+  .share_host_services  r/w  friends may use the host's services (default false)
+  .routes[i]                 net, distance, state, via, zone
+  .links[i]                  state, transport, friend, peer_net, peer_zone, peer_name,
+                             rtt_ms, reason, close()
+  .stats                     RTMP, ZIP, NBP routing, forwarding and drop counters
 ```
 
 A running guest picks up a changed `net` when it restarts AppleTalk; `seed`
@@ -96,6 +158,10 @@ re-armed when the restored machine takes the cable.
 - `tests/unit/suites/atalk_link`: RTMP Request/Response and Route Data
   Request, the 10 s broadcast, the three ZIP ATP requests and ZIP Query, BrRq
   → LkUp, and long-header DDP in and out.
+- `atalk_link` also plays a scripted peer router on a loopback transport:
+  learning networks and zones, forwarding both ways, the host-services filter,
+  BrRq → FwdReq, transit with split horizon and the hop limit, aging and
+  notify-neighbor, a lost link, and a peer with our network number.
 - Integration: `appletalk-afp` (System 6: the guest asks for a router and
   routes its lookups through it), `appletalk-afp-sys7` (System 7.5: zone
   requests), `appletalk-afp-longname` (the router off).
@@ -104,8 +170,13 @@ re-armed when the restored machine takes the cable.
 
 - The network number is fixed per process until the web app chooses one per
   machine; two instances need different numbers before they can be linked.
-- NBP replies still go to the requester's DDP source rather than to the address
-  in the tuple; the two are the same for a guest on this network.
+- NBP replies to a local lookup still go to the requester's DDP source rather
+  than to the address in the tuple (the two are the same for a guest on this
+  network); replies to a forwarded lookup go to the tuple.
+- ATP's exactly-once cache keys a transaction by the requester's node, not its
+  network: with `share_host_services` on, a friend's node with the same number
+  as the guest's could collide.
+- The zone list keeps one name per network (LocalTalk is nonextended).
 
 ## 8. See also
 

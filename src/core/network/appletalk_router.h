@@ -38,9 +38,20 @@ struct object;
 typedef struct {
     uint64_t rtmp_data_out; // RTMP Data broadcasts on the local network
     uint64_t rtmp_requests; // RTMP Requests and Route Data Requests answered
+    uint64_t rtmp_link_out; // RTMP Data sent over links
+    uint64_t rtmp_link_in; // RTMP Data received over links
     uint64_t zip_queries; // ZIP Queries answered
+    uint64_t zip_queries_out; // ZIP Queries sent for zones not yet known
+    uint64_t zip_replies_in; // zones learnt from ZIP Replies
     uint64_t zip_atp_requests; // GetMyZone, GetZoneList and GetLocalZones answered
-    uint64_t nbp_brrq; // NBP broadcast requests turned into local lookups
+    uint64_t nbp_brrq; // NBP broadcast requests routed
+    uint64_t nbp_fwdreq_out; // NBP forward requests sent toward other networks
+    uint64_t nbp_fwdreq_in; // NBP forward requests turned into local lookups
+    uint64_t forwarded_out; // datagrams from this network forwarded over a link
+    uint64_t forwarded_transit; // datagrams forwarded from one link to another
+    uint64_t dropped_no_route; // datagrams for a network with no usable route
+    uint64_t dropped_hops; // datagrams that had crossed 15 routers already
+    uint64_t dropped_filter; // datagrams from a link for the host's services, filtered
 } atalk_router_stats_t;
 
 // Lifecycle (called from appletalk.c): init once when the network comes up
@@ -66,8 +77,26 @@ bool atalk_router_zone_is_local(const uint8_t *zone, int len);
 bool atalk_router_rtmp_request_in(const ddp_header_t *ddp, const uint8_t *buf, size_t len);
 void atalk_router_zip_in(const ddp_header_t *ddp, const uint8_t *buf, size_t len);
 
-// Count an NBP BrRq the stack turned into a local lookup.
+// Count NBP routing work done in appletalk.c: a BrRq routed, a FwdReq sent
+// toward another network, a FwdReq turned into a local lookup.
 void atalk_router_note_brrq(void);
+void atalk_router_note_fwdreq(void);
+void atalk_router_note_fwdreq_in(void);
+
+// The networks of zone `zone` (MacRoman, `len` bytes; "*" is the local zone)
+// that the router can reach now, local first; returns how many it wrote.
+int atalk_router_nets_in_zone(const uint8_t *zone, int len, uint16_t *nets, int cap);
+
+// A datagram from this network -- the guest's, or one the host stack sent --
+// addressed to another network: `dg` is the extended DDP header and data as
+// on the wire.  The router forwards it over the link its table names, or
+// drops it if there is no route.
+void atalk_router_from_local(const uint8_t *dg, size_t len);
+
+// While the router hands the host a datagram from a link, whether its sender
+// may use the host's services (always true for the local network).  The NBP
+// layer asks this before answering a FwdReq for the host's names.
+bool atalk_router_host_shared_with_sender(void);
 
 // Object model (appletalk.router).
 const atalk_router_stats_t *atalk_router_get_stats(void);

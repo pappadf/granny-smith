@@ -14,6 +14,8 @@
 #include "appletalk.h"
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
+#include "appletalk_link.h"
+#include "appletalk_router.h"
 #include "link_harness.h"
 #include "stub_upper.h"
 #include "test_assert.h"
@@ -106,10 +108,14 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
 // of this suite and are covered by the appletalk-afp-checkpoint row).
 TEST(every_transport_timer_is_registered_at_init) {
     link_boot();
-    // Registered, not armed -- but for the router's send-RTMP timer, which
-    // runs from the moment the machine is on the cable
-    ASSERT_EQ_INT(1, sched_pending());
+    // Registered, not armed -- but for the router's send-RTMP, validity and
+    // link-ping timers, which run from the moment the machine is on the cable
+    ASSERT_EQ_INT(3, sched_pending());
     ASSERT_TRUE(sched_registered("atalk_router.rtmp_send"));
+    ASSERT_TRUE(sched_registered("atalk_router.validity"));
+    ASSERT_TRUE(sched_registered("atalk_router.link_ping"));
+    ASSERT_TRUE(sched_registered("atalk_router.rtmp_trigger"));
+    ASSERT_TRUE(sched_registered("atalk_router.zip_query"));
     ASSERT_TRUE(sched_registered("llap.rts_timeout"));
     ASSERT_TRUE(sched_registered("llap.rts_kick"));
     ASSERT_TRUE(sched_registered("atp.retry_timeout"));
@@ -339,7 +345,7 @@ static counts_t counts(void) {
 }
 
 // Feed one raw frame and check which counter it moved: exactly one, by one.
-static void expect_drop(const uint8_t *frame, size_t len, int which /* 0 malformed, 1 unhandled */) {
+static void expect_drop(const uint8_t *frame, size_t len, int which /* 0 malformed, 1 unhandled, -1 neither */) {
     counts_t before = counts();
     guest_frame(frame, len);
     counts_t after = counts();
@@ -405,9 +411,12 @@ TEST(every_discard_is_counted_by_reason) {
     // Well-formed, but nothing here serves it.
     uint8_t ack[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ACK};
     expect_drop(ack, sizeof ack, 1);
-    // An extended datagram for another network: no router forwards it here.
+    // An extended datagram for another network the router has no route to:
+    // the router drops it, and counts it as its own.
     uint8_t ext[3 + 13] = {HOST_NODE, GUEST_NODE, 0x02, 0, 13, 0, 0, 0, 7, 0, 0, HOST_NODE, GUEST_NODE, 4, 200, 4};
-    expect_drop(ext, sizeof ext, 1);
+    uint64_t no_route = atalk_router_get_stats()->dropped_no_route;
+    expect_drop(ext, sizeof ext, -1);
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->dropped_no_route - no_route));
     uint8_t other[8] = {HOST_NODE + 1, GUEST_NODE, LLAP_TYPE_DDP_SHORT, 0, 5, 2, 253, 2};
     expect_drop(other, sizeof other, 1); // data for another node
     b = counts();
@@ -954,6 +963,322 @@ TEST(a_brrq_becomes_a_local_lookup) {
     link_delete();
 }
 
+// --- the router between instances: links, RTMP, ZIP, forwarding -----------------
+
+// A scripted peer router at the other end of a loopback link: what the router
+// sends is captured here, and the test plays the peer's part.
+#define PEER_REC_MAX 256
+typedef struct {
+    int n;
+    size_t len[PEER_REC_MAX];
+    uint8_t rec[PEER_REC_MAX][ATALK_LINK_REC_MAX];
+    bool closed;
+} peer_t;
+static peer_t g_peers[2];
+
+static void peer_send(void *ctx, const uint8_t *rec, size_t len, bool reliable) {
+    (void)reliable;
+    peer_t *p = ctx;
+    if (p->n < PEER_REC_MAX) {
+        memcpy(p->rec[p->n], rec, len);
+        p->len[p->n++] = len;
+    }
+}
+static void peer_close(void *ctx) {
+    ((peer_t *)ctx)->closed = true;
+}
+static const atalk_link_transport_t k_peer_transport = {.send = peer_send, .close = peer_close};
+
+// Open a link to peer `i`, whose network is `net`, and finish its HELLO.
+static atalk_link_t *peer_link(int i, uint16_t net, bool friend_link) {
+    memset(&g_peers[i], 0, sizeof g_peers[i]);
+    atalk_link_t *l = atalk_link_open(&k_peer_transport, &g_peers[i], "loopback", friend_link);
+    ASSERT_TRUE(l != NULL);
+    ASSERT_EQ_INT(ATALK_LINK_HELLO, g_peers[i].rec[0][0]); // ours goes out at once
+    uint8_t hello[] = {ATALK_LINK_HELLO, 1, (uint8_t)(net >> 8), (uint8_t)net, 0, 4, 'P', 'e', 'e', 'r'};
+    atalk_link_receive(l, hello, sizeof hello);
+    ASSERT_EQ_INT(ATALK_LINK_OPEN, atalk_link_state(l));
+    return l;
+}
+
+// Feed the router one datagram from the peer: an extended DDP header, `data`.
+static void peer_ddp(atalk_link_t *l, uint16_t dst_net, uint8_t dst_node, uint8_t dst_sock, uint16_t src_net,
+                     uint8_t src_node, uint8_t src_sock, uint8_t type, const uint8_t *data, size_t dlen, uint8_t hop) {
+    uint8_t rec[ATALK_LINK_REC_MAX];
+    size_t total = 13 + dlen;
+    rec[0] = ATALK_LINK_DDP;
+    rec[1] = (uint8_t)((hop << 2) | (total >> 8));
+    rec[2] = (uint8_t)total;
+    rec[3] = rec[4] = 0;
+    rec[5] = (uint8_t)(dst_net >> 8);
+    rec[6] = (uint8_t)dst_net;
+    rec[7] = (uint8_t)(src_net >> 8);
+    rec[8] = (uint8_t)src_net;
+    rec[9] = dst_node;
+    rec[10] = src_node;
+    rec[11] = dst_sock;
+    rec[12] = src_sock;
+    rec[13] = type;
+    memcpy(rec + 14, data, dlen);
+    atalk_link_receive(l, rec, 1 + total);
+}
+
+// The peer's RTMP Data: `tuples` is net/distance pairs.
+static void peer_rtmp(atalk_link_t *l, const uint16_t *tuples, int n) {
+    uint8_t d[7 + 3 * 16] = {0, 0, 8, 33, 0, 0, 0x82};
+    for (int i = 0; i < n; i++) {
+        d[7 + 3 * i] = (uint8_t)(tuples[2 * i] >> 8);
+        d[8 + 3 * i] = (uint8_t)tuples[2 * i];
+        d[9 + 3 * i] = (uint8_t)tuples[2 * i + 1];
+    }
+    peer_ddp(l, 0, 33, 1, 0, 33, 1, 1, d, (size_t)(7 + 3 * n), 0);
+}
+
+// The last DDP record sent to peer `i` whose DDP type is `type`, or NULL;
+// `*len` is the datagram's length (without the record's kind byte).
+static const uint8_t *peer_last_ddp(int i, uint8_t type, size_t *len) {
+    for (int k = g_peers[i].n - 1; k >= 0; k--) {
+        const uint8_t *r = g_peers[i].rec[k];
+        if (r[0] == ATALK_LINK_DDP && g_peers[i].len[k] >= 14 && r[13] == type) {
+            *len = g_peers[i].len[k] - 1;
+            return r + 1;
+        }
+    }
+    return NULL;
+}
+
+// The distance the router advertises for `net` in a datagram of RTMP Data,
+// or -1 if the tuple is not there.
+static int rtmp_distance(const uint8_t *dg, size_t len, uint16_t net) {
+    for (size_t p = 13 + 7; p + 3 <= len; p += 3)
+        if (((dg[p] << 8) | dg[p + 1]) == net)
+            return dg[p + 2];
+    return -1;
+}
+
+// Link up: HELLO both ways, then the router tells the peer its table at once.
+// The peer's networks come in by RTMP, one hop further, and the router asks
+// for their zones; with a reply the zones are known and listed.
+TEST(a_linked_router_learns_the_peers_networks_and_zones) {
+    link_boot();
+    atalk_link_t *l = peer_link(0, 54, true);
+    size_t len = 0;
+    const uint8_t *rtmp = peer_last_ddp(0, 1, &len);
+    ASSERT_TRUE(rtmp != NULL);
+    ASSERT_EQ_INT(0, rtmp_distance(rtmp, len, 1)); // our network, directly connected
+    ASSERT_EQ_INT(0, (rtmp[13] << 8) | rtmp[14]); // sender network 0 on a link (5-15)
+
+    uint16_t tuples[] = {54, 0, 99, 1};
+    peer_rtmp(l, tuples, 2);
+    ASSERT_EQ_INT(54, atalk_link_peer_net(l));
+    guest_advance_to(link_now_ns() + 1e6); // the ZIP timer asks at once
+    const uint8_t *q = peer_last_ddp(0, 6, &len);
+    ASSERT_TRUE(q != NULL);
+    ASSERT_EQ_INT(1, q[13]); // ZIP Query
+    ASSERT_EQ_INT(2, q[14]); // for two networks
+    uint8_t reply[] = {2, 2, 0, 54, 9, 'A', 'l', 'e', 'x', 0x27, 's', ' ', 'M', 'c', 0, 99, 4, 'F', 'a', 'r', '!'};
+    peer_ddp(l, 1, 33, 6, 54, 33, 6, 6, reply, sizeof reply, 1);
+
+    // GetZoneList from the guest: ours first, then the two learnt
+    uint8_t treq[8] = {0x40, 1, 0x33, 0x01, 8, 0, 0, 1};
+    wire_clear();
+    guest_ddp(GUEST_NODE, 6, 254, 3, treq, sizeof treq);
+    guest_advance_to(link_now_ns() + 30e6);
+    const uint8_t *r = last_short(GUEST_NODE, 3, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(1, r[12]); // last
+    ASSERT_EQ_INT(3, r[15]); // three zones
+    ASSERT_EQ_INT(12, r[16]);
+    ASSERT_EQ_INT(0, memcmp(r + 17, "Granny Smith", 12));
+    ASSERT_EQ_INT(9, r[29]);
+    ASSERT_EQ_INT(0, memcmp(r + 30, "Alex's Mc", 9));
+    ASSERT_EQ_INT(4, r[39]);
+    atalk_link_close(l, "test over");
+    ASSERT_TRUE(g_peers[0].closed);
+    link_delete();
+}
+
+// A guest datagram for a network behind the link is forwarded over it, one
+// hop further; a datagram from the link for the guest goes onto LocalTalk
+// from the router's node, with the guest's node in the DDP header.
+TEST(datagrams_are_forwarded_both_ways) {
+    link_boot();
+    atalk_link_t *l = peer_link(0, 154, true);
+    uint16_t tuples[] = {154, 0};
+    peer_rtmp(l, tuples, 1);
+
+    uint64_t fwd0 = atalk_router_get_stats()->forwarded_out;
+    uint8_t f[64];
+    uint8_t ping[] = {1, 'h', 'i'};
+    size_t n = ext_frame(f, 154, 1, 77, 4, 200, 4, ping, sizeof ping);
+    int before = g_peers[0].n;
+    guest_frame(f, n);
+    ASSERT_EQ_INT(before + 1, g_peers[0].n);
+    const uint8_t *fw = g_peers[0].rec[before];
+    ASSERT_EQ_INT(ATALK_LINK_DDP, fw[0]);
+    ASSERT_EQ_INT(1, (fw[1] >> 2) & 0x0F); // one hop
+    ASSERT_EQ_INT(77, fw[9]); // to node 77 on network 154
+    ASSERT_EQ_INT(1, (fw[7] << 8) | fw[8]); // from network 1
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->forwarded_out - fwd0));
+
+    wire_clear();
+    uint8_t echo[] = {2, 'h', 'i'};
+    peer_ddp(l, 1, GUEST_NODE, 200, 154, 77, 4, 4, echo, sizeof echo, 1);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *r = last_ext(GUEST_NODE, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(HOST_NODE, r[1]); // LLAP: from the router
+    ASSERT_EQ_INT(77, r[12]); // DDP: from node 77...
+    ASSERT_EQ_INT(154, (r[9] << 8) | r[10]); // ...on network 154
+    ASSERT_EQ_INT(1, (r[3] >> 2) & 0x0F); // the hop count it arrived with
+    atalk_link_close(l, "test over");
+    link_delete();
+}
+
+// The host's own services are not offered over links: a datagram for its AFP
+// socket from a link is filtered, and a FwdReq becomes a LkUp on this network
+// without the host answering for its names -- unless the user shares them
+// with friends (tabs never: share_host_services is for friend links).
+TEST(the_host_services_are_filtered_from_links) {
+    link_boot();
+    atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
+    atalk_link_t *l = peer_link(0, 254, true);
+    uint16_t tuples[] = {254, 0};
+    peer_rtmp(l, tuples, 1);
+
+    uint64_t filtered = atalk_router_get_stats()->dropped_filter;
+    uint8_t treq[8] = {0x40, 1, 0, 9, 3, 0, 0, 0};
+    peer_ddp(l, 1, 33, 8, 254, 77, 250, 3, treq, sizeof treq, 1);
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->dropped_filter - filtered));
+
+    // FwdReq for =:LinkTest@Granny Smith from 254.77 socket 250
+    uint8_t fwd[] = {0x41, 0x50, 0,  254, 77,  250, 0,   1,   '=', 8,   'L', 'i', 'n', 'k', 'T', 'e',
+                     's',  't',  12, 'G', 'r', 'a', 'n', 'n', 'y', ' ', 'S', 'm', 'i', 't', 'h'};
+    wire_clear();
+    int before = g_peers[0].n;
+    peer_ddp(l, 1, 0, 2, 254, 33, 2, 2, fwd, sizeof fwd, 1);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *lk = last_short(0xFF, 2, &len);
+    ASSERT_TRUE(lk != NULL);
+    ASSERT_EQ_INT(0x21, lk[8]); // a LkUp on this network
+    ASSERT_EQ_INT(254, (lk[10] << 8) | lk[11]); // the requester's address kept
+    ASSERT_TRUE(peer_last_ddp(0, 2, &len) == NULL); // and the host did not answer over the link
+    (void)before;
+
+    atalk_link_close(l, "test over");
+    atalk_nbp_withdraw(&entry);
+    link_delete();
+}
+
+// A BrRq from the guest for a zone on the other network becomes a FwdReq to
+// that network's router (node 0, "any router" there), routed over the link.
+TEST(a_brrq_for_a_remote_zone_is_forwarded) {
+    link_boot();
+    atalk_link_t *l = peer_link(0, 354, true);
+    uint16_t tuples[] = {354, 0};
+    peer_rtmp(l, tuples, 1);
+    uint8_t reply[] = {2, 1, 354 >> 8, 354 & 0xFF, 4, 'A', 'l', 'e', 'x'};
+    peer_ddp(l, 1, 33, 6, 354, 33, 6, 6, reply, sizeof reply, 1);
+
+    uint64_t fwd0 = atalk_router_get_stats()->nbp_fwdreq_out;
+    uint8_t brrq[] = {0x11, 0x44, 0, 0, GUEST_NODE, 253, 0, 1, '=', 1, '=', 4, 'A', 'l', 'e', 'x'};
+    guest_ddp(GUEST_NODE, 2, 253, 2, brrq, sizeof brrq);
+    size_t len = 0;
+    const uint8_t *fw = peer_last_ddp(0, 2, &len);
+    ASSERT_TRUE(fw != NULL);
+    ASSERT_EQ_INT(354, (fw[4] << 8) | fw[5]); // to network 354...
+    ASSERT_EQ_INT(0, fw[8]); // ...node 0, any router there
+    ASSERT_EQ_INT(2, fw[10]); // its NIS
+    ASSERT_EQ_INT(0x41, fw[13]); // FwdReq, one tuple
+    ASSERT_EQ_INT(1, (fw[15] << 8) | fw[16]); // requester net 0 filled in as 1
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->nbp_fwdreq_out - fwd0));
+    atalk_link_close(l, "test over");
+    link_delete();
+}
+
+// Two links: a datagram from one for a network behind the other is forwarded
+// in transit; RTMP to each link leaves out what was learnt from it (split
+// horizon); a datagram that has crossed 15 routers goes no further.
+TEST(transit_and_split_horizon) {
+    link_boot();
+    atalk_link_t *a = peer_link(0, 454, false);
+    atalk_link_t *b = peer_link(1, 477, false);
+    uint16_t ta[] = {454, 0};
+    uint16_t tb[] = {477, 0};
+    peer_rtmp(a, ta, 1);
+    peer_rtmp(b, tb, 1);
+    guest_advance_to(link_now_ns() + 200e6); // the triggered update goes out
+
+    size_t len = 0;
+    const uint8_t *to_a = peer_last_ddp(0, 1, &len);
+    ASSERT_TRUE(to_a != NULL);
+    ASSERT_EQ_INT(-1, rtmp_distance(to_a, len, 454)); // not told its own network back
+    ASSERT_EQ_INT(1, rtmp_distance(to_a, len, 477)); // told the other one, one hop away
+    ASSERT_EQ_INT(0, rtmp_distance(to_a, len, 1));
+
+    uint64_t transit0 = atalk_router_get_stats()->forwarded_transit;
+    uint64_t hops0 = atalk_router_get_stats()->dropped_hops;
+    int before = g_peers[1].n;
+    uint8_t data[] = {1, 2, 3};
+    peer_ddp(a, 477, 9, 4, 454, 8, 4, 4, data, sizeof data, 2);
+    ASSERT_EQ_INT(before + 1, g_peers[1].n);
+    ASSERT_EQ_INT(3, (g_peers[1].rec[before][1] >> 2) & 0x0F); // 2 hops + ours
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->forwarded_transit - transit0));
+
+    peer_ddp(a, 477, 9, 4, 454, 8, 4, 4, data, sizeof data, 15);
+    ASSERT_EQ_INT(before + 1, g_peers[1].n); // dropped
+    ASSERT_EQ_INT(1, (int)(atalk_router_get_stats()->dropped_hops - hops0));
+    atalk_link_close(a, "test over");
+    atalk_link_close(b, "test over");
+    link_delete();
+}
+
+// Routes age without RTMP: suspect after one validity period, bad after two
+// (advertised with distance 31), gone after four.  A lost link makes its
+// routes bad at once.  A peer with our own network number is refused.
+TEST(routes_age_and_links_fail) {
+    link_boot();
+    atalk_link_t *a = peer_link(0, 554, false);
+    atalk_link_t *b = peer_link(1, 577, false);
+    uint16_t ta[] = {554, 0};
+    uint16_t tb[] = {577, 0};
+    peer_rtmp(a, ta, 1);
+    peer_rtmp(b, tb, 1);
+    double t0 = link_now_ns();
+    // Peer b keeps talking; peer a goes silent
+    for (int s = 1; s <= 5; s++) {
+        guest_advance_to(t0 + s * 10e9 - 1e9);
+        peer_rtmp(b, tb, 1);
+    }
+    guest_advance_to(t0 + 50e9);
+    size_t len = 0;
+    const uint8_t *to_b = peer_last_ddp(1, 1, &len);
+    ASSERT_TRUE(to_b != NULL);
+    ASSERT_EQ_INT(31, rtmp_distance(to_b, len, 554)); // bad: notify neighbor
+    guest_advance_to(t0 + 100e9);
+    for (int s = 6; s <= 10; s++)
+        peer_rtmp(b, tb, 1);
+    to_b = peer_last_ddp(1, 1, &len);
+    ASSERT_EQ_INT(-1, rtmp_distance(to_b, len, 554)); // gone
+
+    atalk_link_lost(b, "transport gone");
+    ASSERT_EQ_INT(ATALK_LINK_CLOSED, atalk_link_state(b));
+    atalk_link_close(a, "test over");
+
+    // Network 1 is ours: a peer claiming it is refused
+    memset(&g_peers[0], 0, sizeof g_peers[0]);
+    atalk_link_t *c = atalk_link_open(&k_peer_transport, &g_peers[0], "loopback", false);
+    uint8_t hello[] = {ATALK_LINK_HELLO, 1, 0, 1, 0, 0};
+    atalk_link_receive(c, hello, sizeof hello);
+    ASSERT_EQ_INT(ATALK_LINK_CLOSED, atalk_link_state(c));
+    ASSERT_TRUE(g_peers[0].closed);
+    link_delete();
+}
+
 // --- ATP exactly-once requests a handler declines -------------------------------
 
 #define DECLINE_SOCKET 60
@@ -1320,6 +1645,12 @@ int main(void) {
     RUN(zip_atp_requests_name_the_zone);
     RUN(a_zip_query_for_this_network_gets_its_zone);
     RUN(a_brrq_becomes_a_local_lookup);
+    RUN(a_linked_router_learns_the_peers_networks_and_zones);
+    RUN(datagrams_are_forwarded_both_ways);
+    RUN(the_host_services_are_filtered_from_links);
+    RUN(a_brrq_for_a_remote_zone_is_forwarded);
+    RUN(transit_and_split_horizon);
+    RUN(routes_age_and_links_fail);
     RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);
