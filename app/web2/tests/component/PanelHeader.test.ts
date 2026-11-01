@@ -27,6 +27,7 @@ describe('PanelHeader', () => {
       'Checkpoints',
       'Debug',
       'Logs',
+      'Network',
     ]);
   });
 

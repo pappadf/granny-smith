@@ -19,6 +19,8 @@
   import Hero from '../ui/Hero.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import ListRow from '../ui/ListRow.svelte';
+  import Callout from '../ui/Callout.svelte';
+  import { network } from '@/state/network.svelte';
 
   // The Recent card: machines started in this browser (state/recent.svelte.ts),
   // each the exact initEmulator input -- the machine.boot document with its
@@ -93,6 +95,12 @@
     titleClass="welcome-title"
     subtitleClass="welcome-subtitle"
   />
+  {#if network.pendingJoin}
+    <Callout intent="info" class="card">
+      You were invited to link your Macs over AppleTalk. Start any Mac: the invitation opens in its
+      Network tab, where you get a reply to send back.
+    </Callout>
+  {/if}
   <Card class="card" heading="Start">
     <div class="card-rows">
       <ActionRow class="card-row" icon="mac" label="New Machine..." onclick={openConfigSlide} />

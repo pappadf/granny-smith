@@ -211,6 +211,33 @@ distance 1; a closed page is noticed. A second test fires the visibilitychange
 a hidden tab gets and checks the machine runs on (headless Chromium never
 pauses RAF, so this is a smoke test of the switch, not of a real hidden tab).
 
+### Browser: friend links over WebRTC
+
+A link to another person's instance is set up by hand in the panel's Network
+tab (`app/web2/src/components/panel-views/network/NetworkView.svelte`,
+`state/network.svelte.ts`, `network/friendLink.ts`): one invitation and one
+reply, swapped over any chat or mail, no signalling server, public STUN only.
+
+- The inviter's page creates an `RTCPeerConnection` with two data channels,
+  `ctl` (reliable, ordered: HELLO, PING, BYE) and `ddp` (unordered, no
+  retransmits: datagrams), waits for ICE gathering (non-trickle, 5 s at most)
+  and packs the offer -- JSON, `deflate-raw`, base64url -- into a link whose
+  fragment carries it (`#join=…`, never sent to a server).
+- The friend opens the link (a Welcome-view banner holds it until a Mac runs,
+  then the Network tab accepts it) or pastes it, and gets the reply to send
+  back; the inviter pastes the reply into the tab that made the invitation.
+- When both channels open, the page opens a private `BroadcastChannel` and
+  calls `appletalk.router.link_channel(name, true)`: the emulator's worker
+  (`em_atalk_tabs.c`, `platform_atalk_link_channel`) links the router through
+  that channel, and the page relays records between it and the data channels
+  (`{t: "rec", d, r}` either way, `{t: "lost"}` and `{t: "closed"}`). The
+  proposal's shared-memory ring is not needed: channel delivery is not
+  throttled in a hidden tab, and the worker side is the tab mesh's pattern.
+
+`tests/e2e/web2-specs/appletalk-friend-link.spec.ts`: two browser contexts
+(two people) swap the invitation and the reply through the Network tab; both
+routers reach each other's network at distance 1; Disconnect closes both ends.
+
 ### Headless transport
 
 `src/platform/headless/headless_atalk_link.c` implements the platform hook

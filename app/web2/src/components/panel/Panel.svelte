@@ -8,6 +8,7 @@
   import CheckpointsView from '../panel-views/checkpoints/CheckpointsView.svelte';
   import DebugView from '../panel-views/debug/DebugView.svelte';
   import LogsView from '../panel-views/logs/LogsView.svelte';
+  import NetworkView from '../panel-views/network/NetworkView.svelte';
 
   let terminalOpened = $state(false);
   $effect(() => {
@@ -32,6 +33,7 @@
     {:else if layout.activeTab === 'checkpoints'}<CheckpointsView />
     {:else if layout.activeTab === 'debug'}<DebugView />
     {:else if layout.activeTab === 'logs'}<LogsView />
+    {:else if layout.activeTab === 'network'}<NetworkView />
     {/if}
   </div>
 </aside>

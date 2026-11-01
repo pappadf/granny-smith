@@ -30,6 +30,7 @@ tests/e2e/
 │   ├── afp-remote.spec.ts               # An archive.org volume of "Internet Archive" mounted, fetched and unpacked on System 6
 │   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
 │   ├── app-states.spec.ts               # The workbench in fixed states, screenshotted in every skin
+│   ├── appletalk-friend-link.spec.ts    # Two people link their Macs over WebRTC in the Network tab: invitation, reply, routes
 │   ├── appletalk-tab-mesh.spec.ts       # Tabs with AppleTalk on link their routers by themselves; a hidden tab keeps running
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
 │   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera

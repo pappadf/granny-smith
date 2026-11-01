@@ -18,6 +18,7 @@ const TABS = [
   "checkpoints",
   "debug",
   "logs",
+  "network",
 ];
 
 // Load the app with the panel docked right in a narrow window.

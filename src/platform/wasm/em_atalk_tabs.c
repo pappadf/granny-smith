@@ -191,6 +191,109 @@ EM_JS(void, tabs_start_js, (int max_links), {
 });
 // clang-format on
 
+// === Friend links: carried by the page =========================================
+//
+// A link to another person's instance travels over a WebRTC data channel,
+// which only the page's main thread can hold.  For each one the page opens
+// a private BroadcastChannel and asks the core (appletalk.router.link_channel)
+// to link through it; records cross between this worker and the page there:
+//
+//   worker -> page   {t: "rec", d, r}   one record; r: wants the reliable channel
+//                    {t: "closed"}      the router is done with the link
+//   page -> worker   {t: "rec", d}      one record from the other instance
+//                    {t: "lost", why}   the peer connection went away
+
+#include "platform_hooks.h"
+
+#include <stdio.h>
+
+static atalk_link_t *s_friends[ATALK_LINK_MAX];
+
+// clang-format off
+EM_JS(int, friend_attach_js, (int slot, const char *name), {
+    if (typeof BroadcastChannel === "undefined") return -1;
+    var f = Module.gsAtalkFriends = (Module.gsAtalkFriends || {});
+    var ch = new BroadcastChannel(UTF8ToString(name));
+    f[slot] = ch;
+    ch.onmessage = function(ev) {
+        var msg = ev.data;
+        if (!msg) return;
+        if (msg.t === "rec" && msg.d && msg.d.length <= 640) {
+            HEAPU8.set(msg.d, _em_atalk_tab_rxbuf());
+            _em_atalk_friend_rx(slot, msg.d.length);
+        } else if (msg.t === "lost") {
+            _em_atalk_friend_lost(slot);
+        }
+    };
+    return 0;
+});
+
+EM_JS(void, friend_post_js, (int slot, const uint8_t *rec, int len, int reliable), {
+    var f = Module.gsAtalkFriends;
+    if (f && f[slot]) f[slot].postMessage({t: "rec", d: HEAPU8.slice(rec, rec + len), r: reliable !== 0});
+});
+
+EM_JS(void, friend_detach_js, (int slot), {
+    var f = Module.gsAtalkFriends;
+    if (f && f[slot]) {
+        try { f[slot].postMessage({t: "closed"}); } catch (e) {}
+        f[slot].close();
+        delete f[slot];
+    }
+});
+// clang-format on
+
+static void friend_send(void *ctx, const uint8_t *rec, size_t len, bool reliable) {
+    friend_post_js((int)(intptr_t)ctx, rec, (int)len, reliable ? 1 : 0);
+}
+
+static void friend_close(void *ctx) {
+    int slot = (int)(intptr_t)ctx;
+    if (slot >= 0 && slot < ATALK_LINK_MAX)
+        s_friends[slot] = NULL;
+    friend_detach_js(slot);
+}
+
+static const atalk_link_transport_t k_friend_transport = {.send = friend_send, .close = friend_close};
+
+// A record from the page for the friend link in `slot`.
+EMSCRIPTEN_KEEPALIVE void em_atalk_friend_rx(int slot, int len) {
+    if (slot >= 0 && slot < ATALK_LINK_MAX && s_friends[slot] && len > 0 && len <= (int)sizeof(s_rx))
+        atalk_link_receive(s_friends[slot], s_rx, (size_t)len);
+}
+
+// The page lost the peer connection of the friend link in `slot`.
+EMSCRIPTEN_KEEPALIVE void em_atalk_friend_lost(int slot) {
+    if (slot < 0 || slot >= ATALK_LINK_MAX || !s_friends[slot])
+        return;
+    atalk_link_t *l = s_friends[slot];
+    s_friends[slot] = NULL;
+    atalk_link_lost(l, "the connection to your friend was lost");
+    friend_detach_js(slot);
+}
+
+int platform_atalk_link_channel(const char *name, bool friend_link, char *err, size_t err_len) {
+    int slot = -1;
+    for (int i = 0; i < ATALK_LINK_MAX && slot < 0; i++)
+        if (!s_friends[i])
+            slot = i;
+    if (slot < 0 || !name || !name[0]) {
+        snprintf(err, err_len, "%s", slot < 0 ? "every link slot is in use" : "no channel named");
+        return -1;
+    }
+    if (friend_attach_js(slot, name) != 0) {
+        snprintf(err, err_len, "this browser has no BroadcastChannel");
+        return -1;
+    }
+    s_friends[slot] = atalk_link_open(&k_friend_transport, (void *)(intptr_t)slot, "webrtc", friend_link);
+    if (!s_friends[slot]) {
+        friend_detach_js(slot);
+        snprintf(err, err_len, "the router has no free link slot");
+        return -1;
+    }
+    return 0;
+}
+
 // A random network number, 1..65279, from the browser's generator.
 // clang-format off
 EM_JS(int, tabs_random_net_js, (int max), {

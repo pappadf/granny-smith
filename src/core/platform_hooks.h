@@ -62,6 +62,12 @@ int platform_download(const char *path);
 //                            — bind "host:port" `local`, open a link to the
 //                              router at `remote`; 0, or -1 with `err` set.
 int platform_atalk_link_udp(const char *local, const char *remote, bool friend_link, char *err, size_t err_len);
+//   platform_atalk_link_channel(name, friend_link, err, err_len)
+//                            — open a link whose records travel over the page's
+//                              BroadcastChannel `name` (the browser: the page
+//                              carries them on to a WebRTC data channel);
+//                              0, or -1 with `err` set.
+int platform_atalk_link_channel(const char *name, bool friend_link, char *err, size_t err_len);
 
 // Host video-input seam (the AV video digitizer's webcam source).  The weak
 // defaults model "no camera": headless machines use the deterministic

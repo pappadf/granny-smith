@@ -3,7 +3,7 @@
 
 export type PanelPos = 'bottom' | 'left' | 'right';
 export type PanelTab =
-  'terminal' | 'machine' | 'filesystem' | 'images' | 'checkpoints' | 'debug' | 'logs';
+  'terminal' | 'machine' | 'filesystem' | 'images' | 'checkpoints' | 'debug' | 'logs' | 'network';
 
 // Tab order is fixed and affects future config serialization.
 export const PANEL_TABS: ReadonlyArray<PanelTab> = [
@@ -14,6 +14,7 @@ export const PANEL_TABS: ReadonlyArray<PanelTab> = [
   'checkpoints',
   'debug',
   'logs',
+  'network',
 ];
 
 const DEFAULT_PANEL_SIZE = { bottom: 280, left: 340, right: 340 };

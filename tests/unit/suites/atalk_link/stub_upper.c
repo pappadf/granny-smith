@@ -361,3 +361,12 @@ int platform_atalk_link_udp(const char *local, const char *remote, bool friend_l
     (void)err_len;
     return -2;
 }
+
+// No page either: friend links are the browser's.
+int platform_atalk_link_channel(const char *name, bool friend_link, char *err, size_t err_len) {
+    (void)name;
+    (void)friend_link;
+    (void)err;
+    (void)err_len;
+    return -2;
+}

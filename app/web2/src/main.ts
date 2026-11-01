@@ -38,6 +38,7 @@ import { checkStoragePersistence } from '@/bus/storageHealth';
 import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import { takeJoinFromUrl } from '@/state/network.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -63,6 +64,8 @@ window.addEventListener('vite:preloadError', (ev) => {
 // script already set it; this corrects it against the registry) and the
 // auto-picked layout.
 loadPersistedState();
+// An invitation link (#join=...) waits for the Network tab
+takeJoinFromUrl();
 applyUrlSkin(new URLSearchParams(window.location.search));
 applyAppearance();
 

@@ -1450,6 +1450,25 @@ static DEF_METHOD(router_method_link_udp) {
     return val_none();
 }
 
+static DEF_METHOD(router_method_link_channel) {
+    char err[192] = "";
+    bool friend_link = argc > 1 && argv[1].kind == VK_BOOL && argv[1].b;
+    int rc = platform_atalk_link_channel(argv[0].s, friend_link, err, sizeof(err));
+    if (rc == -2)
+        return val_err("links carried by the page are only available in the browser");
+    if (rc != 0)
+        return val_err("%s", err[0] ? err : "cannot open the link");
+    return val_none();
+}
+
+static const arg_decl_t link_channel_args[] = {
+    {.name = "channel", .kind = VK_STRING, .doc = "The page's BroadcastChannel that carries the link's records"},
+    {.name = "friend",
+     .kind = VK_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "The other end is another person's"},
+};
+
 static const arg_decl_t link_udp_args[] = {
     {.name = "local", .kind = VK_STRING, .doc = "host:port this end binds"},
     {.name = "remote", .kind = VK_STRING, .doc = "host:port of the other instance's router"},
@@ -1479,6 +1498,14 @@ static const member_t router_members[] = {
      .name = "name",
      .doc = "This instance's display name, sent to linked instances",
      .attr = {.type = VK_STRING, .get = router_attr_name, .set = router_attr_set_name}                              },
+    {.kind = MK_METHOD,
+     .name = "link_channel",
+     .doc = "Link to another instance's router through the page (browser: a WebRTC data channel)",
+     .method = {.args = link_channel_args,
+                .nargs = 2,
+                .result = VK_NONE,
+                .fn = router_method_link_channel,
+                .ui_flags = MM_MUTATE}                                                                              },
     {.kind = MK_METHOD,
      .name = "link_udp",
      .doc = "Link to another instance's router over UDP (headless only)",
