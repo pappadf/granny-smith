@@ -5124,8 +5124,9 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
             else if (++s->extra[idx] == JIT_ENTRY_HOT) {
                 R->want = true;
                 if (g_trace == 6)
-                    printf("jit: leader %08x prev %08x id %u ipc %08x rfi %08x exit %u\n", pc, idx ? s->words[idx - 1] : 0,
-                           idx ? s->ids[idx - 1] : 0, p->instruction_pc, g_ppc_rfi_pc, g_ppc_jit_exit);
+                    printf("jit: leader %08x prev %08x id %u ipc %08x rfi %08x exit %u\n", pc,
+                           idx ? s->words[idx - 1] : 0, idx ? s->ids[idx - 1] : 0, p->instruction_pc, g_ppc_rfi_pc,
+                           g_ppc_jit_exit);
             }
         }
         if (member && s->extra[idx] >= JIT_ENTRY_HOT && R->cool)
@@ -6043,11 +6044,13 @@ static const member_t jit_members[] = {
              jit_attr_set),
     JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),
     JIT_ATTR("regs", JA_REGS, "0 = guest registers in locals per block, 1 = per function", jit_attr_set),
-    JIT_ATTR("direct", JA_DIRECT, "1 = a forward branch inside a chunk goes to its block directly, 0 = through the dispatcher", jit_attr_set),
+    JIT_ATTR("direct", JA_DIRECT,
+             "1 = a forward branch inside a chunk goes to its block directly, 0 = through the dispatcher",
+             jit_attr_set),
     {.kind = MK_METHOD,
-                                                                                                  .name = "reset",
-                                                                                                  .doc = "Drop every translation",
-                                                                                                  .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = jit_method_reset, .ui_flags = MM_MUTATE}},
+       .name = "reset",
+       .doc = "Drop every translation",
+       .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = jit_method_reset, .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t jit_class = {
