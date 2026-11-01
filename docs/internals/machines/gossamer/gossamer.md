@@ -23,7 +23,7 @@ the inherited cells — and are cited from there, not restated.
 | `gossamer.c` | The substrate: construction order, bus reset, teardown, the checkpoint stream, the VIA/Cuda, SCC, MESH and SWIM3 glue, the PCI slot table (three slots plus the on-board ATI as slot "F1"), the media hooks. |
 | `grackle.c` | The MPC106: its configuration registers behind the little-endian `CONFIG_ADDR`/`CONFIG_DATA` ports, the memory bank registers the RAM decode is rebuilt from, the PCI windows, the board-register page at `$FF000000`, and `machine.grackle`. |
 | `heathrow.c` | The I/O controller: its PCI header (`$106B:0010`, BAR0 512 KB), the two-bank interrupt controller, the feature-control and control-block registers, the NVRAM window, the cell decode, `machine.heathrow` and `machine.nvram`. |
-| `gossamer_i2c.c` | The Cuda's I2C bus: the DIMMs' SPD EEPROMs (built from the RAM size) and the personality card's ID EEPROM. |
+| `gossamer_i2c.c` | The Cuda's I2C bus: the DIMMs' SPD EEPROMs (built from the RAM size), the personality card's ID EEPROM, and the TDA7433 audio processor the sound path's volume goes through (below). |
 | `gossamer_ata.c` | Heathrow's two ATA cells on the core channel model ([ata.md](../../core/peripherals/ata.md)), the ATAPI back end, `machine.ata`. |
 | `gossamer_bmac.c` | The Ethernet cell on the core BMAC model ([bmac.md](../../core/peripherals/bmac.md)): the 16-bit bus edge, the FCR enable and reset, `machine.bmac`. |
 | `pmg3dt.c`, `pmg3mt.c` | The profiles: CPU clock, PVR and HID1 straps, the board-register value, RAM options, the ATI identity, the personality card. |
@@ -33,6 +33,17 @@ The shared core models carry the rest: `core/cpu/ppc` with the 750 deltas
 [ppc.md](../../core/cpu/ppc.md)), `core/peripherals/dbdma.c` (thirteen
 channels), `davbus.c` in its Screamer face, `scsi_mesh.c`, `scc.c`,
 `swim3.c`, and the Rage Pro face of `pci/cards/mach64gx.c`.
+
+Sound on this board is the Screamer codec passing through to a TDA7433
+audio processor on the I2C bus, which drives the speaker, the line-out and
+the headphone jacks.  Open Firmware's beep and the Start Manager's chime
+leave both codec outputs unmuted, but the Sound Manager's driver keeps the
+codec's own speaker output (C) muted, enables the pass-through (register
+1's parallel-out bit), and sets volume and mute in the TDA7433 (volume
+register 1, front attenuators 3 and 5).  `davbus.c` renders the codec's
+live output (C, else A: `awacs_output_gains`) and then the family's stage
+after it, `gos_tda7433_gains`; before that stage existed the chime played
+and everything after the Finder was silent.
 
 The Rage Pro's port offers the 13" RGB (the default) or `monitor="none"`:
 with no cable every sense line floats high (sense 7), the chip's FCode

@@ -464,6 +464,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     snd->in_chan = GOS_DMA_AUD_IN;
     snd->cpu_hz = cfg->machine->freq;
     snd->screamer = true;
+    snd->post_gains = gos_tda7433_gains; // the TDA7433 between the codec and the speaker
+    snd->post_ctx = cfg;
     davbus_register_events(snd);
     davbus_init(snd);
     davbus_reset(snd);

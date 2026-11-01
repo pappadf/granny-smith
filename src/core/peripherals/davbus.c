@@ -76,9 +76,21 @@ static uint32_t awacs_rate(davbus_t *w) {
 // The output datapath: DBDMA channel-8 device port
 // ============================================================
 
+// The gains and mute of what reaches the listener: the codec's live output
+// (awacs_output_gains), then the family's stage after it, if any.
+static void davbus_gains(const davbus_host_t *h, uint32_t *gl, uint32_t *gr, bool *mute) {
+    awacs_output_gains(h->regs->codec, gl, gr, mute);
+    if (h->post_gains)
+        h->post_gains(h->post_ctx, gl, gr, mute);
+}
+
+static int16_t clamp16(int32_t v) {
+    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
 // Render whole frames from the port byte stream into the host stream:
 // 16-bit interleaved stereo, big-endian unless the byte-swap register
-// says little, through the speaker path's codec gains.
+// says little, through the codec's and the family's output gains.
 static void awacs_render(davbus_host_t *h, const uint8_t *bytes, uint32_t nframes) {
     davbus_t *w = h->regs;
     if (!h->stage)
@@ -86,15 +98,15 @@ static void awacs_render(davbus_host_t *h, const uint8_t *bytes, uint32_t nframe
     bool le = (w->byte_swap & 1u) != 0;
     bool mute;
     uint32_t gl, gr;
-    awacs_speaker_gains(w->codec, &gl, &gr, &mute);
+    davbus_gains(h, &gl, &gr, &mute);
     for (uint32_t i = 0; i < nframes; i++) {
         const uint8_t *f = bytes + i * 4;
         int16_t l = 0, r = 0;
         if (!mute) {
             l = (int16_t)(le ? (f[1] << 8) | f[0] : (f[0] << 8) | f[1]);
             r = (int16_t)(le ? (f[3] << 8) | f[2] : (f[2] << 8) | f[3]);
-            l = (int16_t)(((int32_t)l * (int32_t)gl) >> 16);
-            r = (int16_t)(((int32_t)r * (int32_t)gr) >> 16);
+            l = clamp16((int32_t)(((int64_t)l * (int64_t)gl) >> 16));
+            r = clamp16((int32_t)(((int64_t)r * (int64_t)gr) >> 16));
         }
         h->stage[i * 2] = l;
         h->stage[i * 2 + 1] = r;
@@ -304,9 +316,11 @@ void davbus_write32(davbus_host_t *h, uint32_t offset, uint32_t value) {
 // machine.sound — the shared surface (sound_surface.h)
 // ============================================================
 //
-// As on the PDM: the render path already calls awacs_speaker_gains() and
-// applies the ladder before pushing a hardcoded 7 to audio_out, so volume and
-// mute existed here and had nowhere to be read from.  Both are now reported.
+// As on the PDM: the render path already applies the codec's ladder (and the
+// family's stage after it) before pushing a hardcoded 7 to audio_out, so
+// volume and mute existed here and had nowhere to be read from.  Both are
+// now reported: the volume as the live output's left attenuation code (C,
+// or A when C is muted), the mute as what the render path applies.
 //
 // in_enabled is false because the input path is not modelled.  The hardware
 // has one -- the TNT sound-control register's bits 0-3 are the Input SubFrame
@@ -325,16 +339,19 @@ static uint32_t davbus_snd_sample_rate(void *ctx) {
 
 static uint32_t davbus_snd_volume(void *ctx) {
     davbus_t *w = snd_awacs_ctx(ctx);
-    return w ? sound_volume_from_atten((w->codec[4] >> 6) & 15u) : 0;
+    if (!w)
+        return 0;
+    uint16_t vol = (w->codec[1] & AWACS_R1_SPEAKER_MUTE) ? w->codec[2] : w->codec[4];
+    return sound_volume_from_atten((vol >> 6) & 15u);
 }
 
 static bool davbus_snd_muted(void *ctx) {
-    davbus_t *w = snd_awacs_ctx(ctx);
-    if (!w)
+    davbus_host_t *h = (davbus_host_t *)ctx;
+    if (!h || !h->regs)
         return true;
     bool mute;
     uint32_t gl, gr;
-    awacs_speaker_gains(w->codec, &gl, &gr, &mute);
+    davbus_gains(h, &gl, &gr, &mute);
     return mute;
 }
 
