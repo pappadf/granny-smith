@@ -7,11 +7,16 @@
 # which launches MacTest Pro for Power Macintosh 1.0.9.  Its main window
 # must name the machine "Power Macintosh 7100/66", ID 112 (main-window.png).
 #
-# Select All picks the seven tests: Floppy Drive 1 Tests, Comprehensive
-# Hardware Info, Logic Board Components (Power Macintosh Tests Vol. 1),
-# RAM Tests, Video RAM Tests, Comprehensive Software Info, and the
-# MacTest Pro (PPC) system software test.  The floppy test runs first and
-# asks for "a known good disk (all data on the disk will be erased)"
+# Two NuBus display cards ride along so the run also covers them: a
+# Macintosh Display Card 8*24 in slot $C and a Display Card 24AC in slot
+# $D, each with its monitor.  MacTest Pro offers Expansion Card Tests for
+# both ("4*8/8*24 Display Card - slot $C", "24AC Display Card - slot $D").
+#
+# Select All picks the nine tests: the two Expansion Card tests, Floppy
+# Drive 1 Tests, Comprehensive Hardware Info, Logic Board Components (Power
+# Macintosh Tests Vol. 1), RAM Tests, Video RAM Tests, Comprehensive
+# Software Info, and the MacTest Pro (PPC) system software test.  The
+# floppy test runs after the card tests and asks for "a known good disk (all data on the disk will be erased)"
 # (insert-disk.png): a blank 1.44 MB disk goes into the internal drive, and
 # the test formats, writes and verifies it.  The run must end with
 # "All selected tests passed." (passed.png).
@@ -22,6 +27,13 @@
 #   Logic Board Components / Keyboard Controller -- Cuda RdTime round trips
 #     at the real part's pace: the test waits for two RTC ticks out of one
 #     4096-call budget.
+#   Expansion Card / 24AC -- the card's monitor-sense register answers a
+#     longword read at its odd address $D8000D byte by byte, as the bus
+#     splits it; read whole, the lines said "no monitor" and the card was
+#     not offered.
+#   The 8*24 at all -- Mac OS 8.1 polls its Stopwatch status with a
+#     misaligned longword read at +$C3; read whole, the boot hung at
+#     "Welcome to Mac OS".
 #
 # Window and icon positions come from the read-only disc's Finder data and
 # MacTest Pro's defaults, so they are the same every run; the clock is
@@ -32,7 +44,7 @@ include "../lib/mac.script"
 let cd = "../../data/apps/mactest_pro_ppc_dec_1998.iso"
 
 if have_media($cd) {
-    machine.boot model="pm7100" ram=32768 rom="${$ROM}"
+    machine.boot model="pm7100" ram=32768 slots="12=mdc_8_24;13=display_card_24ac" rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
     assert machine.scsi.attach_cdrom($cd, 3) "attach the CD at SCSI id 3"
 
@@ -52,17 +64,21 @@ if have_media($cd) {
     reach("main-window.png", 5000000000, 2000000000, 100000000)
     check("main-window.png")
 
-    click_fixed(230, 251)                # Select All
-    click_fixed(107, 128)                # Test
+    click_fixed(225, 234)                # Select All
+    click_fixed(107, 115)                # Test
 
     # The floppy test's disk request, then a blank HD disk for it.
     reach("insert-disk.png", 1000000000, 1000000000, 50000000)
     check("insert-disk.png")
+    # The prompt is up before the floppy test is listening for the disk:
+    # with the Expansion Card tests ahead of it, a disk inserted at once
+    # reached the Finder ("This disk is unreadable") instead.
+    scheduler.run 6000000000
     let blank = "${$WORK_DIR}/blank-hd.dsk"
     assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
 
-    # ~20 G instructions for the seven tests.
+    # ~20 G instructions for the nine tests.
     run_until_match("passed.png", 40000000000, 500000000)
     check("passed.png")
 } else {

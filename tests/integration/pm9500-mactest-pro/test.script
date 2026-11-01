@@ -8,7 +8,9 @@
 # Macintosh 1.0.9; its main window shows Gestalt machine 67, the 9500
 # (main-window.png).  The 9500 has no built-in video: its display is the
 # ATI mach64 card in slot A1, which MacTest Pro tests too, and its main
-# window sits 27 pixels higher than on the 8500.
+# window sits 27 pixels higher than on the 8500.  Two more PCI cards ride
+# along -- a Rage 128 in slot A2 and a Voodoo2 in A3 -- which this 1998
+# MacTest Pro does not test, but which must not upset the run.
 #
 # All seven tests start selected: Expansion Card Tests (the ATI mach64 in
 # slot A1), Floppy Drive 1 Tests, Comprehensive Hardware Info, Logic Board
@@ -41,7 +43,7 @@ include "../lib/mac.script"
 let cd = "../../data/apps/mactest_pro_ppc_dec_1998.iso"
 
 if have_media($cd) {
-    machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+    machine.boot model="pm9500" ram=32768 slots="1=mach64_gx;2=rage128;3=voodoo2" rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
     assert machine.scsi2.device[3].type == "cdrom" "no CD-ROM drive at machine.scsi2 ID 3"
     machine.attach_cdrom "${$cd}"
@@ -67,6 +69,10 @@ if have_media($cd) {
     # The floppy test's disk request, then a blank HD disk for it.
     reach("insert-disk.png", 1500000000, 1000000000, 50000000)
     check("insert-disk.png")
+    # The prompt is up before the floppy test is listening for the disk:
+    # with the Expansion Card tests ahead of it, a disk inserted at once
+    # reached the Finder ("This disk is unreadable") instead.
+    scheduler.run 6000000000
     let blank = "${$WORK_DIR}/blank-hd.dsk"
     assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true

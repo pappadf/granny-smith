@@ -5,17 +5,22 @@
 # Folder to the Finder, whose "MacTest Pro" window opens with the disc
 # (finder.png).  The Finder opens "Run MacTest Pro (sys 7)" (run-folder.png)
 # and its "Mac II Family" configuration, which launches MacTest Pro.  Its
-# main window must name the machine "Macintosh IIci", ID 11, with seven
+# main window must name the machine "Macintosh IIci", ID 11, with eight
 # tests available and selected (main-window.png).
 #
-# The seven: File Checker (MacTest Pro), Floppy Drive 1, Comprehensive
-# Hardware Info, Logic Board Components, RAM Tests, Video RAM Tests and
-# Comprehensive Software Info.  The floppy test runs early and asks for "a
-# known good disk (all data on the disk will be erased)" (insert-disk.png):
-# a blank 1.44 MB disk goes into the internal drive.  The run must end with
-# "All selected tests passed." (passed.png).
+# The eight: Expansion Card Tests for the display card (24AC in slot $C),
+# then File Checker (MacTest Pro), Floppy Drive 1, Comprehensive Hardware
+# Info, Logic Board Components, RAM Tests, Video RAM Tests and Comprehensive
+# Software Info.  The floppy test runs early and asks for "a known good disk
+# (all data on the disk will be erased)" (insert-disk.png): a blank 1.44 MB
+# disk goes into the internal drive.  The run must end with "All selected
+# tests passed." (passed.png).
 #
 # What it leans on (each was a failure once):
+#   Expansion Card / 24AC -- the card's monitor-sense register answers a
+#     longword read at its odd address $D8000D byte by byte, as the bus
+#     splits it; read whole, the lines said "no monitor" and the card was
+#     not offered.
 #   One floppy drive -- the second drive select answers "no drive" (/DRVIN
 #     high); a phantom "Floppy Drive 2" test used to be offered and fail.
 #   No cache card -- the cache connector's $52000000-$52FFFFFF window
@@ -34,7 +39,7 @@ include "../lib/mac.script"
 let cd = "../../data/apps/mactest_pro_68k_feb_1996.iso"
 
 if have_media($cd) {
-    machine.boot model="iici" ram=8192 rom="${$ROM}"
+    machine.boot model="iici" ram=8192 slots="12=display_card_24ac" rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
     assert machine.scsi.attach_cdrom($cd, 3) "attach the CD at SCSI id 3"
 
@@ -52,7 +57,7 @@ if have_media($cd) {
     reach("main-window.png", 3000000000, 2000000000, 100000000)
     check("main-window.png")
 
-    click_fixed(107, 103)                # Test (all seven are selected by default)
+    click_fixed(107, 103)                # Test (all eight are selected by default)
 
     # The floppy test's disk request, then a blank HD disk for it.
     reach("insert-disk.png", 1500000000, 1000000000, 50000000)
