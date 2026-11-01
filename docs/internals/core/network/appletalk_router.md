@@ -180,6 +180,37 @@ re-armed when the restored machine takes the cable.
   budgets for each other: they poll routing state with large caps and finish
   on a barrier (marker directories, or the link's BYE).
 
+### Browser: the tab mesh
+
+`src/platform/wasm/em_atalk_tabs.c` links the routers of every tab of one
+browser profile, with no user action. It runs in the emulator's own worker
+(the router's thread) over one `BroadcastChannel`, `gs-atalk`:
+
+- every 2 s an eligible tab (a machine on the cable, router on) posts
+  `{t: "hello", id, net}`; a tab that hears another's hello opens a link to
+  it, so each pair has one link, one on each side;
+- link records travel as `{t: "rec", from, to, d}`, addressed by tab id;
+- a tab not heard for 7 s is lost (its routes go bad); one that turns
+  AppleTalk off posts `{t: "bye"}`.
+
+At startup each tab picks a random network number (`atalk_router_set_net`):
+tabs that all kept the default 1 would refuse each other. A clash between two
+random numbers is refused like any other.
+
+**Hidden tabs keep running.** Browsers pause `requestAnimationFrame` in hidden
+documents, workers included, which stopped the machine (and its router) the
+moment its tab was hidden. On `visibilitychange` the main loop now switches to
+a 16 ms timer while hidden and back to RAF when shown (`em_update_loop_timing`
+in `em_main.c`); a worker's timers are not throttled like the page's. Nothing is
+drawn meanwhile. A browser may still freeze or discard a long-hidden tab; its
+links then go silent and are lost on the other tabs after 7 s.
+
+`tests/e2e/web2-specs/appletalk-tab-mesh.spec.ts`: three pages in one context
+link themselves, pick three numbers and reach each other's networks at
+distance 1; a closed page is noticed. A second test fires the visibilitychange
+a hidden tab gets and checks the machine runs on (headless Chromium never
+pauses RAF, so this is a smoke test of the switch, not of a real hidden tab).
+
 ### Headless transport
 
 `src/platform/headless/headless_atalk_link.c` implements the platform hook
@@ -192,8 +223,9 @@ retried, PINGs are periodic).
 
 ## 7. Known debts
 
-- The network number is fixed per process until the web app chooses one per
-  machine; two instances need different numbers before they can be linked.
+- The web app picks a random network number per tab at startup; it is not yet
+  kept per machine configuration, so a guest may see a new number after a
+  reload (it learns it again at boot).
 - NBP replies to a local lookup still go to the requester's DDP source rather
   than to the address in the tuple (the two are the same for a guest on this
   network); replies to a forwarded lookup go to the tuple.

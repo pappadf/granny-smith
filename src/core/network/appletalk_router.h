@@ -64,6 +64,11 @@ void atalk_router_plug(bool plugged);
 // True while the router runs (`seed`).
 bool atalk_router_active(void);
 
+// Set this network's number, 1..ATALK_ROUTER_NET_MAX: what
+// appletalk.router.net's setter does.  0, or -1 (nothing changed) if it is out
+// of range or the router is linked (a linked network cannot be renumbered).
+int atalk_router_set_net(uint16_t net);
+
 // The local zone name in MacRoman, `*len` bytes (not NUL-terminated).
 const uint8_t *atalk_router_zone_mac(size_t *len);
 

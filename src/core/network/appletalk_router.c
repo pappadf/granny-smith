@@ -1136,17 +1136,25 @@ static DEF_SETTER(router_attr_set_seed) {
 static DEF_GETTER(router_attr_net) {
     return val_uint(2, g_router.net);
 }
+int atalk_router_set_net(uint16_t net) {
+    if (net < 1 || net > ATALK_ROUTER_NET_MAX)
+        return -1;
+    if (net == g_router.net)
+        return 0;
+    for (int i = 0; i < ATALK_LINK_MAX; i++)
+        if (g_router.links[i].in_use && g_router.links[i].state != ATALK_LINK_CLOSED)
+            return -1;
+    g_router.net = net;
+    route_set_local();
+    return 0;
+}
+
 static DEF_SETTER(router_attr_set_net) {
     if (in.u < 1 || in.u > ATALK_ROUTER_NET_MAX)
         return val_err("network number %llu is out of range: 1..%u", (unsigned long long)in.u,
                        (unsigned)ATALK_ROUTER_NET_MAX);
-    if (in.u == g_router.net)
-        return val_none();
-    for (int i = 0; i < ATALK_LINK_MAX; i++)
-        if (g_router.links[i].in_use && g_router.links[i].state != ATALK_LINK_CLOSED)
-            return val_err("cannot renumber the network while it is linked to another");
-    g_router.net = (uint16_t)in.u;
-    route_set_local();
+    if (atalk_router_set_net((uint16_t)in.u) != 0)
+        return val_err("cannot renumber the network while it is linked to another");
     return val_none();
 }
 static DEF_GETTER(router_attr_zone) {

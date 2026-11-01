@@ -664,16 +664,32 @@ void platform_machine_attached(void) {
 // wait out the rest of each frame -- the core has this worker to itself,
 // and returning to its event loop between ticks (input, presenting the
 // canvas) costs microseconds.  Changed only on a transition.
-static bool s_loop_immediate;
+//
+// A hidden tab gets a timer instead of RAF: browsers pause
+// requestAnimationFrame in a hidden document, workers included, which used
+// to stop the machine dead the moment its tab was hidden.  A worker's timers
+// are not throttled the way the page's are, so a ~16 ms timeout keeps the
+// machine -- and the AppleTalk router other tabs reach through it -- running
+// at its pace.  Nothing is drawn meanwhile: the render thread is RAF-driven.
+typedef enum { LOOP_RAF, LOOP_TIMER, LOOP_IMMEDIATE } loop_timing_t;
+static loop_timing_t s_loop_timing = LOOP_RAF;
+static bool s_tab_hidden; // the page's visibilitychange said hidden
+#define HIDDEN_TICK_MS 16 // the hidden tab's timer, about one display frame
 
 static void em_update_loop_timing(void) {
     scheduler_t *sched = system_scheduler();
-    bool want = sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled;
-    if (want == s_loop_immediate)
+    loop_timing_t want = LOOP_RAF;
+    if (sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled)
+        want = LOOP_IMMEDIATE;
+    else if (s_tab_hidden)
+        want = LOOP_TIMER;
+    if (want == s_loop_timing)
         return;
-    s_loop_immediate = want;
-    if (want)
+    s_loop_timing = want;
+    if (want == LOOP_IMMEDIATE)
         emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
+    else if (want == LOOP_TIMER)
+        emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, HIDDEN_TICK_MS);
     else
         emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
 }
@@ -1058,9 +1074,13 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
                                               void *userData) {
     (void)eventType;
     (void)userData;
-    if (!event || !event->hidden)
+    if (!event)
         return EM_FALSE;
-    maybe_request_background_checkpoint("visibilitychange", true);
+    // Hidden or shown: the main loop switches between a timer and RAF
+    s_tab_hidden = event->hidden;
+    em_update_loop_timing();
+    if (event->hidden)
+        maybe_request_background_checkpoint("visibilitychange", true);
     return EM_FALSE;
 }
 
@@ -1216,6 +1236,7 @@ int main(void) {
     em_audio_init();
     em_camera_init(); // announce the webcam frame transport to the main thread
     em_audio_in_init(); // ...and the microphone sample ring
+    em_atalk_tabs_init(); // the AppleTalk tab mesh: this tab's router links to the others
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();
