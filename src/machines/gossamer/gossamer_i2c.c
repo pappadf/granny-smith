@@ -179,7 +179,8 @@ void gos_tda7433_gains(void *ctx, uint32_t *gl_x65536, uint32_t *gr_x65536, bool
     const uint8_t *r = gos_st(cfg)->i2c.tda7433;
     // Input code 3 selects no input: the driver's mute (it ORs 2 into its
     // input 1); both fronts muted is one too.
-    if ((r[TDA7433_INPUT] & 3u) == 3u || ((r[TDA7433_ATT_LF] & TDA7433_ATT_MUTE) && (r[TDA7433_ATT_RF] & TDA7433_ATT_MUTE)))
+    if ((r[TDA7433_INPUT] & 3u) == 3u ||
+        ((r[TDA7433_ATT_LF] & TDA7433_ATT_MUTE) && (r[TDA7433_ATT_RF] & TDA7433_ATT_MUTE)))
         *mute = true;
     if (*mute)
         return;
