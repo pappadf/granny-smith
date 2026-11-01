@@ -197,9 +197,29 @@ export function resetFriend(): void {
 // is not offered while this Mac is linked to another (its clock would run
 // ahead of the other's, and AppleTalk's timers with it).
 export function watchLinks(): void {
+  void keepNetworkNumber();
   setInterval(async () => {
     network.linked = (await gsEval('appletalk.router.linked')) === true;
   }, 2000);
+}
+
+// This tab's network number survives a reload (sessionStorage is per tab),
+// so a guest that remembered its network finds the same one: the core picked
+// a random number at startup; an earlier one of this tab's takes its place
+// before any machine runs.
+const NET_KEY = 'gs-atalk-net';
+async function keepNetworkNumber(): Promise<void> {
+  try {
+    const kept = Number(sessionStorage.getItem(NET_KEY));
+    if (kept >= 1 && kept <= 0xfeff) {
+      await gsEval('appletalk.router.net', [kept]);
+    } else {
+      const now = num(await gsEval('appletalk.router.net'));
+      if (now) sessionStorage.setItem(NET_KEY, String(now));
+    }
+  } catch {
+    // No session storage: a new number each load, as before
+  }
 }
 
 // The page was opened from an invitation link (#join=...): keep it for the
