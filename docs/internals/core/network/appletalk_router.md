@@ -245,6 +245,15 @@ with `Atomics.wait` (`emscripten_thread_sleep`). Between ticks the worker still
 returns to its event loop, so proxied calls and the mesh's messages are
 served. Back to RAF when shown. Nothing is drawn meanwhile.
 
+**`appletalk.router.heartbeat = true`** (browser) prints, once a second of
+wall-clock time, a timestamped line on the Terminal: shown or HIDDEN, the
+loop's timing, ticks and MIPS in that second, open links, link records in and
+out, datagrams forwarded off this network, BrRqs routed and FwdReqs answered.
+A tab that did not run shows as a gap, and the next line says `GAP`. Each
+`visibilitychange` prints too, and the mesh's own 2 s timer (the worker's event
+loop, not the main loop) prints what it heard, which tells a stalled emulator
+loop from a stopped worker.
+
 **Suspended tabs.** A browser may still freeze a long-hidden tab (Page
 Lifecycle `freeze`), and then nothing in it runs, its worker included. The
 page's `freeze` handler (`state/network.svelte.ts`) posts `{t: "suspend",

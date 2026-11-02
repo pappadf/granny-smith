@@ -110,6 +110,7 @@ typedef struct {
     size_t zone_mac_len;
     char name[64]; // this instance's display name, sent in HELLO
     bool share_host_services; // friends may use the host's services (§5.6 of the design)
+    bool heartbeat; // the platform prints a status line every second (diagnostics)
     bool plugged; // a connection is on the cable
     route_t routes[MAX_ROUTES];
     atalk_link_t links[ATALK_LINK_MAX];
@@ -183,6 +184,25 @@ uint16_t atalk_this_net(void) {
 
 bool atalk_router_active(void) {
     return g_router.seed;
+}
+
+bool atalk_router_heartbeat(void) {
+    return g_router.heartbeat;
+}
+
+int atalk_router_link_totals(uint64_t *rx, uint64_t *tx) {
+    int open = 0;
+    *rx = *tx = 0;
+    for (int i = 0; i < ATALK_LINK_MAX; i++) {
+        const atalk_link_t *l = &g_router.links[i];
+        if (!l->in_use)
+            continue;
+        *rx += l->rx_records;
+        *tx += l->tx_records;
+        if (l->state == ATALK_LINK_OPEN)
+            open++;
+    }
+    return open;
 }
 
 const uint8_t *atalk_router_zone_mac(size_t *len) {
@@ -1219,6 +1239,14 @@ static DEF_SETTER(router_attr_set_share) {
     return val_none();
 }
 
+static DEF_GETTER(router_attr_heartbeat) {
+    return val_bool(g_router.heartbeat);
+}
+static DEF_SETTER(router_attr_set_heartbeat) {
+    g_router.heartbeat = in.b;
+    return val_none();
+}
+
 static const member_t router_stats_members[] = {
     OBJ_U64_FIELD(atalk_router_stats_t, rtmp_data_out, "RTMP Data broadcasts on the local network"),
     OBJ_U64_FIELD(atalk_router_stats_t, rtmp_requests, "RTMP Requests and Route Data Requests answered"),
@@ -1546,6 +1574,10 @@ static const member_t router_members[] = {
      .name = "share_host_services",
      .doc = "Let friends' Macs use this host's services (Shared Folders, printer, program linking)",
      .attr = {.type = VK_BOOL, .get = router_attr_share, .set = router_attr_set_share}                              },
+    {.kind = MK_ATTR,
+     .name = "heartbeat",
+     .doc = "Print a status line every second (browser): visibility, run rate, link and NBP traffic",
+     .attr = {.type = VK_BOOL, .get = router_attr_heartbeat, .set = router_attr_set_heartbeat}                      },
 };
 
 static const class_desc_t router_class = {

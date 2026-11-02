@@ -35,8 +35,12 @@
 #include "appletalk_router.h"
 
 #include <emscripten.h>
+#include <emscripten/html5.h>
+#include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // One peer tab's link: slot i here is peer i in the JS table.
 static atalk_link_t *s_links[ATALK_LINK_MAX];
@@ -85,6 +89,20 @@ static const atalk_link_transport_t k_tabs_transport = {.send = tabs_send, .clos
 // The buffer a record is copied into before em_atalk_tab_rx.
 EMSCRIPTEN_KEEPALIVE uint8_t *em_atalk_tab_rxbuf(void) {
     return s_rx;
+}
+
+// appletalk.router.heartbeat: the mesh's own timer says it ran, with what it
+// heard since -- it runs in this worker's event loop, not the main loop, so
+// it tells a stalled emulator loop from a stopped worker.
+EMSCRIPTEN_KEEPALIVE void em_atalk_tab_hb(int peers, int heard, int eligible) {
+    if (!atalk_router_heartbeat())
+        return;
+    double now = emscripten_date_now();
+    time_t secs = (time_t)(now / 1000.0);
+    struct tm tm;
+    localtime_r(&secs, &tm);
+    printf("[hb %02d:%02d:%02d.%03d] mesh timer: peers=%d messages since last=%d eligible=%d\n", tm.tm_hour, tm.tm_min,
+           tm.tm_sec, (int)fmod(now, 1000.0), peers, heard, eligible);
 }
 
 // Whether this tab takes part: its machine is on the cable with the router
@@ -137,7 +155,8 @@ EM_JS(void, tabs_start_js, (int max_links), {
         bySlotPeer: {},                          // peer id -> slot
         seen: {},                                // peer id -> last heard (ms)
         nets: {},                                // peer id -> its network
-        eligible: false
+        eligible: false,
+        heard: 0                                 // messages since the last tick
     };
     function slotOf(peer, open) {
         var s = m.bySlotPeer[peer];
@@ -169,6 +188,7 @@ EM_JS(void, tabs_start_js, (int max_links), {
     m.ch.onmessage = function(ev) {
         var msg = ev.data;
         if (!msg || msg.from === m.id || msg.id === m.id) return;
+        m.heard++;
         if (msg.t === "hello") {
             m.seen[msg.id] = Date.now();
             m.nets[msg.id] = msg.net;
@@ -203,6 +223,8 @@ EM_JS(void, tabs_start_js, (int max_links), {
         var now = Date.now();
         for (var p2 in m.seen)
             if (now - m.seen[p2] > LOST_MS) lose(p2, 0);
+        _em_atalk_tab_hb(Object.keys(m.bySlotPeer).length, m.heard, m.eligible ? 1 : 0);
+        m.heard = 0;
     };
     m.timer = setInterval(m.tick, ANNOUNCE_MS);
     m.tick();

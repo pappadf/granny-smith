@@ -8,6 +8,7 @@
 // Includes
 // ============================================================================
 
+#include "appletalk_router.h"
 #include "breadcrumb.h"
 #include "em.h"
 #include "io/io_worker.h"
@@ -24,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +35,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <emscripten/stack.h>
@@ -715,6 +718,64 @@ static void em_hidden_pace(void) {
         emscripten_thread_sleep(wait);
 }
 
+// appletalk.router.heartbeat: once a second of wall-clock time, a status
+// line on the Terminal -- for finding out whether a hidden tab keeps running
+// and answering the other tabs.  Each line carries the local time, so a tab
+// that stopped shows as a gap; a gap is also said outright.
+static double s_hb_last; // when the last line was printed (ms since the epoch)
+static uint64_t s_hb_instr, s_hb_rx, s_hb_tx, s_hb_fwd_out, s_hb_fwd_in, s_hb_brrq;
+static unsigned s_hb_ticks;
+
+static const char *em_hb_clock(char *buf, size_t len) {
+    double now = emscripten_date_now();
+    time_t secs = (time_t)(now / 1000.0);
+    struct tm tm;
+    localtime_r(&secs, &tm);
+    snprintf(buf, len, "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, (int)fmod(now, 1000.0));
+    return buf;
+}
+
+static const char *em_hb_loop(void) {
+    return s_loop_timing == LOOP_HIDDEN ? "hidden-paced" : s_loop_timing == LOOP_IMMEDIATE ? "immediate" : "raf";
+}
+
+static void em_heartbeat(void) {
+    s_hb_ticks++;
+    if (!atalk_router_heartbeat()) {
+        s_hb_last = 0;
+        return;
+    }
+    double now = emscripten_date_now();
+    scheduler_t *sched = system_scheduler();
+    uint64_t instr = sched ? scheduler_instr_count(sched) : 0;
+    uint64_t rx = 0, tx = 0;
+    int links = atalk_router_link_totals(&rx, &tx);
+    const atalk_router_stats_t *st = atalk_router_get_stats();
+    if (s_hb_last == 0) {
+        s_hb_last = now;
+        s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0;
+        s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
+        return;
+    }
+    double dt = now - s_hb_last;
+    if (dt < 1000.0)
+        return;
+    char clock[16];
+    if (dt > 2500.0)
+        printf("[hb %s] GAP: %.1f s since the last line (this tab did not run)\n", em_hb_clock(clock, sizeof clock),
+               dt / 1000.0);
+    printf("[hb %s] %s loop=%s ticks=%u mips=%.1f running=%d links=%d rec rx=%llu tx=%llu fwd_out=%llu "
+           "brrq=%llu fwdreq_in=%llu\n",
+           em_hb_clock(clock, sizeof clock), s_tab_hidden ? "HIDDEN" : "shown", em_hb_loop(), s_hb_ticks,
+           (double)(instr - s_hb_instr) / (dt * 1000.0), sched ? (int)scheduler_is_running(sched) : 0, links,
+           (unsigned long long)(rx - s_hb_rx), (unsigned long long)(tx - s_hb_tx),
+           (unsigned long long)(st->forwarded_out - s_hb_fwd_out), (unsigned long long)(st->nbp_brrq - s_hb_brrq),
+           (unsigned long long)(st->nbp_fwdreq_in - s_hb_fwd_in));
+    s_hb_last = now;
+    s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0;
+    s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
+}
+
 static void em_timed_tick(void) {
     double t0 = emscripten_get_now();
     tick_poll_ms_current = 0;
@@ -723,6 +784,7 @@ static void em_timed_tick(void) {
     tick_wall_ms[slot] = emscripten_get_now() - t0;
     tick_poll_ms[slot] = tick_poll_ms_current;
     em_update_loop_timing();
+    em_heartbeat();
     if (s_loop_timing == LOOP_HIDDEN)
         em_hidden_pace();
 }
@@ -1102,6 +1164,11 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
     // Hidden or shown: the main loop switches between a timer and RAF
     s_tab_hidden = event->hidden;
     em_update_loop_timing();
+    if (atalk_router_heartbeat()) {
+        char clock[16];
+        printf("[hb %s] visibilitychange: tab %s, loop=%s\n", em_hb_clock(clock, sizeof clock),
+               event->hidden ? "HIDDEN" : "SHOWN", em_hb_loop());
+    }
     if (event->hidden)
         maybe_request_background_checkpoint("visibilitychange", true);
     return EM_FALSE;
