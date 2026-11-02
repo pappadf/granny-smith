@@ -24,5 +24,9 @@ TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 
 TEST_RUNNER := run.sh
 
+# Two 8100s at once, the game at real time: about 220 s alone, 620 s on a
+# busy CI shard; the default 900 s leaves too little margin.
+TEST_TIMEOUT := 1800
+
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended
