@@ -1237,7 +1237,12 @@ uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32
                 ram[(phys + i) ^ 7u] = in[i];
         return len;
     }
+    // Device space or a range straddling the end of RAM: byte writes.
+    if (!rev) {
+        memory_write_bytes_slow(phys, in, len);
+        return len;
+    }
     for (uint32_t i = 0; i < len; i++)
-        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), in[i]);
+        memory_write_uint8_slow((phys + i) ^ 7u, in[i]);
     return len;
 }

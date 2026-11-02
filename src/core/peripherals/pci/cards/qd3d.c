@@ -60,11 +60,24 @@
 // the scanline it first touches.  Each finished scanline streams through
 // the descriptor list (WRITE / SKIP / STOP), and at STOP the card raises
 // its interrupt.  The driver gives up after a 3 s watchdog.
+//
+// === Rendering ===============================================================
+//
+// This file is the card's host interface and the PRODUCER side of a raster
+// seam shaped like the Voodoo2's (qd3d_raster.h): the walk of the control
+// program, the object decode and every bus-master access stay here, and
+// the walk becomes commands -- start a frame, add an object, render a
+// scanline -- for the renderer in qd3d_raster.c, which runs inline (sw,
+// normative), on a worker thread (thread, the default) or not at all
+// (null).  A frame's pixels reach host memory when the frame completes, at
+// the time its size gives it, whichever backend drew them.
 
 #include "checkpoint.h"
 #include "log.h"
+#include "machine_build_opts.h"
 #include "object.h"
 #include "pci.h"
+#include "qd3d_raster.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_internal.h"
@@ -108,8 +121,8 @@ LOG_USE_CATEGORY_NAME("qd3d");
 #define QD3D_NREGS       64u // $00-$FF, one word each
 #define QD3D_OCACHE_BASE 0x400000u
 #define QD3D_OCACHE_SIZE 0x20000u // 128 KB
-#define QD3D_TEX_BASE    0x800000u
-#define QD3D_TEX_TEXELS  0x40000u // revision 2: 2^18 texels
+#define QD3D_TEX_BASE    Q3_TEX_BASE
+#define QD3D_TEX_TEXELS  Q3_TEX_TEXELS // revision 2: 2^18 texels
 
 // Renderer registers (byte addresses).
 #define REG_MODE       0x00u // (cardIndex << 8) | flags
@@ -131,23 +144,14 @@ LOG_USE_CATEGORY_NAME("qd3d");
 
 // Object header bits.
 #define HDR_OPCODE_SHIFT 29
-#define HDR_BACKFACING   0x04000000u
 #define HDR_TEXTURED     0x02000000u
-#define HDR_CSG          0x01000000u
 #define HDR_BITMAP       0x00800000u
-#define HDR_OPAQUE       0x00200000u
 
 // Output descriptor commands (bits 27..24 of word 0).
 #define DESC_WRITE 0x0u
 #define DESC_SKIP  0x1u
 #define DESC_STOP  0x8u
 
-// Most fragments one pixel keeps; the ASIC keeps four layers per 16-pixel
-// segment and re-renders a segment that overflows, which software never
-// sees -- a few more than four here stands in for that.
-#define QD3D_LAYERS 8
-// Widest output scanline: 13.3 coordinates cap the card at 8K pixels.
-#define QD3D_MAX_WIDTH 8192u
 // More zero-length output descriptors in a row than this is a list the
 // channel has run off the end of.
 #define QD3D_MAX_EMPTY_DESCS 65536u
@@ -156,41 +160,6 @@ LOG_USE_CATEGORY_NAME("qd3d");
 
 // Packet-parser states.
 enum { PORT_HEADER = 0, PORT_DATA, PORT_COUNT, PORT_BLOCK };
-
-// One decoded object, live from the scanline it first touches to its last.
-enum { OBJ_GOURAUD = 0, OBJ_TEXTURED, OBJ_BITMAP };
-enum { A_DEPTH = 0, A_ALPHA, A_R, A_G, A_B, A_U, A_V, A_LOD, A_NATTR };
-#define A_KD A_R // textured triangles shade with one grey diffuse...
-#define A_KS A_G // ...and one grey specular intensity
-
-typedef struct qd3d_obj {
-    uint8_t kind;
-    uint32_t header;
-    int first, last; // scanline range
-    uint16_t x13[3], y13[3]; // vertices, 13.3 fixed point
-    float x0, y0; // vertex 0 in pixels (the plane-equation origin)
-    float a0[A_NATTR], dx[A_NATTR], dy[A_NATTR]; // attribute planes
-    // textured: the map
-    int tex_slot, tex_size, tex_levels;
-    // bitmap tile
-    int bx, by;
-    uint32_t colour;
-    uint32_t mask[12];
-} qd3d_obj_t;
-
-// One fragment of one pixel.
-typedef struct qd3d_frag {
-    float depth;
-    float r, g, b, a; // 0..1, colour premultiplied by alpha
-    uint8_t flags; // FRAG_*
-} qd3d_frag_t;
-
-// Fragment flags: an opaque layer hides everything behind it; a CSG
-// operand's surface enters (front face) or leaves (back face) operand ID.
-#define FRAG_OPAQUE    0x80u
-#define FRAG_CSG       0x40u
-#define FRAG_BACKFACE  0x20u
-#define FRAG_CSG_ID(f) ((f) & 7u)
 
 // The pixel-output DMA channel's progress through its descriptor list.
 typedef struct qd3d_dma {
@@ -207,7 +176,8 @@ typedef struct qd3d {
     uint32_t cfg_position; // config register $40
     uint32_t port_state, port_addr, port_count;
     uint32_t irq; // the INTA line
-    uint32_t irq_pending; // completion event armed
+    uint32_t irq_pending; // a frame in flight: its completion event armed
+    uint32_t frame_cmdptr; // the in-flight frame's descriptor list (DMACMDPTR at go)
     uint32_t frames; // frames rendered
     uint32_t last_objects; // objects in the last frame
     uint32_t last_lines; // scanlines the last frame output
@@ -218,13 +188,10 @@ typedef struct qd3d {
     config_t *cfg;
     memory_interface_t bar_if;
     qd3d_dma_t dma;
-    qd3d_obj_t *active; // objects live on the current scanline
-    uint32_t n_active, cap_active;
-    qd3d_frag_t *frags; // [QD3D_LAYERS * width]
-    uint8_t *nfrags; // [width]
-    uint8_t *line; // one output scanline
+    q3_target_t tgt; // the renderer's own state (qd3d_raster.h)
+    q3_raster_t *raster; // where the renderer runs: sw, null or thread
     uint64_t frame_pixels, frame_objects; // work of the last frame (pacing)
-    uint32_t frame_lines;
+    uint32_t frame_lines, frame_records;
 } qd3d_t;
 
 // ============================================================
@@ -275,10 +242,10 @@ static void update_irq(qd3d_t *q, bool on) {
 // Pixel output DMA
 // ============================================================
 
-// Start the channel on the list DMACMDPTR names.
-static void dma_begin(qd3d_t *q) {
+// Start the channel on the descriptor list at `list`.
+static void dma_begin(qd3d_t *q, uint32_t list) {
     memset(&q->dma, 0, sizeof(q->dma));
-    q->dma.next = q->cmdptr;
+    q->dma.next = list;
 }
 
 // Load the next descriptor; false once the list has stopped.
@@ -316,10 +283,10 @@ static bool dma_load(qd3d_t *q) {
 
 // Consume `len` bytes of the pixel stream: WRITE spans go to their
 // address, SKIP spans are discarded, and anything past STOP is dropped.
-static void dma_stream(qd3d_t *q, const uint8_t *bytes, uint32_t len) {
+static void dma_stream(qd3d_t *q, const uint8_t *bytes, size_t len) {
     qd3d_dma_t *d = &q->dma;
     while (len && dma_load(q)) {
-        uint32_t n = len < d->remaining ? len : d->remaining;
+        uint32_t n = len < d->remaining ? (uint32_t)len : d->remaining;
         if (d->cmd == DESC_WRITE)
             pci_dma_write(q->dev, d->addr, bytes, n);
         d->addr += n;
@@ -360,69 +327,13 @@ static bool tex_resolve(const qd3d_t *q, uint32_t page, int *slot, int *size) {
     return true;
 }
 
-// One texel of mip level `level` of the map in `slot`, wrapping u and v.
-// Mip levels are stored level by level for all maps: register $48+4L is
-// the base of global level L (256² down to 1²), a 128² map's own level 0
-// living in global level 1.  Row 0 is the image's bottom row.
-static uint32_t tex_fetch(const qd3d_t *q, const qd3d_obj_t *o, int level, int s, int x, int y) {
-    int global = level + (o->tex_size == 128 ? 1 : 0);
-    uint32_t base = q->reg[(REG_MAPBASE0 >> 2) + (uint32_t)global];
-    x &= s - 1;
-    y &= s - 1;
-    uint32_t addr =
-        base + ((uint32_t)o->tex_slot * (uint32_t)s * (uint32_t)s + (uint32_t)y * (uint32_t)s + (uint32_t)x) * 4u;
-    uint32_t idx = (addr - QD3D_TEX_BASE) >> 2;
-    return idx < QD3D_TEX_TEXELS ? q->tex[idx] : 0;
-}
-
-// Bilinear sample of one mip level, as floats 0..255.
-static void tex_bilinear(const qd3d_t *q, const qd3d_obj_t *o, int level, float u, float v, float rgb[3]) {
-    int s = o->tex_size >> level;
-    if (s < 1)
-        s = 1;
-    float fu = u * (float)s - 0.5f, fv = v * (float)s - 0.5f;
-    float iu = floorf(fu), iv = floorf(fv);
-    float wu = fu - iu, wv = fv - iv;
-    int x = (int)iu, y = (int)iv;
-    uint32_t t00 = tex_fetch(q, o, level, s, x, y), t10 = tex_fetch(q, o, level, s, x + 1, y);
-    uint32_t t01 = tex_fetch(q, o, level, s, x, y + 1), t11 = tex_fetch(q, o, level, s, x + 1, y + 1);
-    for (int c = 0; c < 3; c++) {
-        int sh = 16 - 8 * c;
-        float a = (float)((t00 >> sh) & 0xFF), b = (float)((t10 >> sh) & 0xFF);
-        float cc = (float)((t01 >> sh) & 0xFF), d = (float)((t11 >> sh) & 0xFF);
-        rgb[c] = (a + (b - a) * wu) * (1.0f - wv) + (cc + (d - cc) * wu) * wv;
-    }
-}
-
-// Trilinear sample: the footprint (texture units per pixel, normalised)
-// picks the level, and the two nearest levels are blended.
-static void tex_sample(const qd3d_t *q, const qd3d_obj_t *o, float u, float v, float footprint, float rgb[3]) {
-    float lambda = footprint > 0.0f ? log2f(footprint * (float)o->tex_size) : 0.0f;
-    float maxl = (float)(o->tex_levels - 1);
-    if (lambda <= 0.0f || o->tex_levels <= 1) {
-        tex_bilinear(q, o, 0, u, v, rgb);
-        return;
-    }
-    if (lambda >= maxl) {
-        tex_bilinear(q, o, o->tex_levels - 1, u, v, rgb);
-        return;
-    }
-    int l0 = (int)lambda;
-    float w = lambda - (float)l0;
-    float c0[3], c1[3];
-    tex_bilinear(q, o, l0, u, v, c0);
-    tex_bilinear(q, o, l0 + 1, u, v, c1);
-    for (int c = 0; c < 3; c++)
-        rgb[c] = c0[c] + (c1[c] - c0[c]) * w;
-}
-
 // ============================================================
 // Object decode
 // ============================================================
 
 // Fit attribute planes f(x,y) = a0 + dx(x-x0) + dy(y-y0) through the three
 // vertices.  False for a degenerate (zero-area) triangle.
-static bool obj_planes(qd3d_obj_t *o, float v[3][A_NATTR], int nattr) {
+static bool obj_planes(q3_obj_t *o, float v[3][Q3_A_NATTR], int nattr) {
     float x[3], y[3];
     for (int i = 0; i < 3; i++) {
         x[i] = (float)o->x13[i] / 8.0f;
@@ -445,7 +356,7 @@ static bool obj_planes(qd3d_obj_t *o, float v[3][A_NATTR], int nattr) {
 // The scanlines a triangle covers: those whose centre lies in
 // (yMin, yMax] -- the half-open rule that keeps abutting edges from
 // drawing a scanline twice.
-static bool obj_tri_range(qd3d_obj_t *o) {
+static bool obj_tri_range(q3_obj_t *o) {
     int ymin = o->y13[0], ymax = o->y13[0];
     for (int i = 1; i < 3; i++) {
         if (o->y13[i] < ymin)
@@ -466,7 +377,7 @@ static float f20(uint32_t top16, uint32_t nibble) {
 
 // Decode the object record whose header word is at `w` (the first payload
 // byte after the link words) into `o`.  False when it draws nothing.
-static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, qd3d_obj_t *o) {
+static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, q3_obj_t *o) {
     uint8_t rec[68];
     pci_dma_read(q->dev, w, rec, sizeof(rec));
     memset(o, 0, sizeof(*o));
@@ -480,8 +391,8 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, qd3d_obj_t *o) {
     if (header & HDR_BITMAP) {
         // A 32 x 12 one-bit tile: depth, left/top, colour (twice), 12 rows
         // with bit 31 the leftmost pixel.
-        o->kind = OBJ_BITMAP;
-        o->a0[A_DEPTH] = f32_bits(be32(rec + 4));
+        o->kind = Q3_OBJ_BITMAP;
+        o->a0[Q3_A_DEPTH] = f32_bits(be32(rec + 4));
         uint32_t xy = be32(rec + 8);
         o->bx = (int)(xy >> 19);
         o->by = (int)((xy & 0xFFFFu) >> 3);
@@ -501,14 +412,14 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, qd3d_obj_t *o) {
         o->x13[2], o->y13[2]);
     if (!obj_tri_range(o))
         return false;
-    float v[3][A_NATTR];
+    float v[3][Q3_A_NATTR];
     memset(v, 0, sizeof(v));
     for (int i = 0; i < 3; i++)
-        v[i][A_DEPTH] = f32_bits(be32(rec + 16 + 4 * i));
+        v[i][Q3_A_DEPTH] = f32_bits(be32(rec + 16 + 4 * i));
     if (header & HDR_TEXTURED) {
         // Per vertex: alpha, the low mantissa nibbles of v and u, a bfloat16
         // mip footprint; v and u's top 16 bits; grey kd (1.7) and ks (0.8).
-        o->kind = OBJ_TEXTURED;
+        o->kind = Q3_OBJ_TEXTURED;
         if (!tex_resolve(q, (header >> 4) & 0xFu, &o->tex_slot, &o->tex_size)) {
             LOG(2, "textured object on unloaded page %u: dropped", (header >> 4) & 0xFu);
             return false;
@@ -518,265 +429,53 @@ static bool obj_decode(qd3d_t *q, uint32_t w, uint32_t header, qd3d_obj_t *o) {
             uint32_t a = be32(rec + 28 + 4 * i);
             uint32_t vu = be32(rec + 40 + 4 * i);
             uint32_t ks = be32(rec + 52 + 4 * i);
-            v[i][A_ALPHA] = (float)(a >> 24) / 255.0f;
-            v[i][A_V] = f20(vu >> 16, (a >> 20) & 0xFu);
-            v[i][A_U] = f20(vu & 0xFFFFu, (a >> 16) & 0xFu);
-            v[i][A_LOD] = f32_bits((a & 0xFFFFu) << 16);
-            v[i][A_KD] = (float)((ks >> 8) & 0xFFu) / 128.0f;
-            v[i][A_KS] = (float)(ks & 0xFFu) / 255.0f;
+            v[i][Q3_A_ALPHA] = (float)(a >> 24) / 255.0f;
+            v[i][Q3_A_V] = f20(vu >> 16, (a >> 20) & 0xFu);
+            v[i][Q3_A_U] = f20(vu & 0xFFFFu, (a >> 16) & 0xFu);
+            v[i][Q3_A_LOD] = f32_bits((a & 0xFFFFu) << 16);
+            v[i][Q3_A_KD] = (float)((ks >> 8) & 0xFFu) / 128.0f;
+            v[i][Q3_A_KS] = (float)(ks & 0xFFu) / 255.0f;
         }
     } else {
-        o->kind = OBJ_GOURAUD;
+        o->kind = Q3_OBJ_GOURAUD;
         for (int i = 0; i < 3; i++) {
             uint32_t c = be32(rec + 28 + 4 * i);
-            v[i][A_ALPHA] = (float)(c >> 24) / 255.0f;
-            v[i][A_R] = (float)((c >> 16) & 0xFFu) / 255.0f;
-            v[i][A_G] = (float)((c >> 8) & 0xFFu) / 255.0f;
-            v[i][A_B] = (float)(c & 0xFFu) / 255.0f;
+            v[i][Q3_A_ALPHA] = (float)(c >> 24) / 255.0f;
+            v[i][Q3_A_R] = (float)((c >> 16) & 0xFFu) / 255.0f;
+            v[i][Q3_A_G] = (float)((c >> 8) & 0xFFu) / 255.0f;
+            v[i][Q3_A_B] = (float)(c & 0xFFu) / 255.0f;
         }
     }
-    return obj_planes(o, v, A_NATTR);
+    return obj_planes(o, v, Q3_A_NATTR);
 }
 
 // ============================================================
-// Scanline rendering
+// The producer side of the raster seam (qd3d_raster.h)
 // ============================================================
 
-// Is depth `a` nearer than `b`?  With perspective depth the fields hold
-// 1/w (larger is nearer), otherwise z (smaller is nearer).
-static bool nearer(bool persp, float a, float b) {
-    return persp ? a > b : a < b;
+// Does register byte address `rr` belong to the draw-state snapshot?
+static bool reg_in_state(uint32_t rr) {
+    return rr == REG_MODE || rr == REG_BACKGROUND || rr == REG_CSG ||
+           (rr >= REG_MAPBASE0 && rr < REG_MAPBASE0 + 4u * Q3_MAP_LEVELS);
 }
 
-// Add a fragment to pixel `x`: hidden behind an opaque layer it is
-// dropped; an opaque fragment drops everything behind it.
-static void frag_add(qd3d_t *q, bool persp, uint32_t x, const qd3d_frag_t *f) {
-    qd3d_frag_t *list = &q->frags[x * QD3D_LAYERS];
-    uint32_t n = q->nfrags[x];
-    for (uint32_t i = 0; i < n; i++)
-        if ((list[i].flags & FRAG_OPAQUE) && !nearer(persp, f->depth, list[i].depth))
-            return;
-    if (f->flags & FRAG_OPAQUE) {
-        uint32_t k = 0;
-        for (uint32_t i = 0; i < n; i++)
-            if (nearer(persp, list[i].depth, f->depth))
-                list[k++] = list[i];
-        n = k;
-    }
-    if (n < QD3D_LAYERS) {
-        list[n++] = *f;
-    } else {
-        // Full: replace the farthest layer if this one is nearer.
-        uint32_t far = 0;
-        for (uint32_t i = 1; i < n; i++)
-            if (nearer(persp, list[far].depth, list[i].depth))
-                far = i;
-        if (nearer(persp, f->depth, list[far].depth))
-            list[far] = *f;
-    }
-    q->nfrags[x] = (uint8_t)n;
+// Fill a draw-state slot from the live registers (q3_state_build_fn).
+static void build_state(void *ctx, q3_draw_state_t *st) {
+    qd3d_t *q = (qd3d_t *)ctx;
+    uint32_t mode = q->reg[REG_MODE >> 2];
+    st->background = q->reg[REG_BACKGROUND >> 2];
+    st->csg = q->reg[REG_CSG >> 2];
+    for (uint32_t i = 0; i < Q3_MAP_LEVELS; i++)
+        st->mapbase[i] = q->reg[(REG_MAPBASE0 >> 2) + i];
+    st->persp = (mode & MODE_PERSPECTIVE) != 0;
+    st->dest16 = (q->dmactl & DMACTL_16BPP) != 0 || (mode & MODE_DEST16) != 0;
 }
 
-// A fragment's flags from its object's header.  The plug-in marks an
-// object opaque only when all its vertex alphas are 255 and it is no CSG
-// operand, so CSG surfaces never hide what is behind them.
-static uint8_t frag_flags(uint32_t header) {
-    uint8_t f = (header & HDR_OPAQUE) ? FRAG_OPAQUE : 0u;
-    if (header & HDR_CSG)
-        f |= (uint8_t)(FRAG_CSG | (header & 7u) | ((header & HDR_BACKFACING) ? FRAG_BACKFACE : 0u));
-    return f;
-}
-
-// Rasterise one triangle on scanline `y`: the pixels whose centres lie from
-// the left edge up to but excluding the right edge.  The card samples at
-// pixel centres (13.3 coordinates, centres at .5); vertically the plug-in's
-// own bucketing fixes the rule as yTop < centre <= yBottom, horizontally
-// this is the usual left-inclusive convention.  (Apple's software engine
-// truncates x to whole pixels instead, so its edges can differ by a column.)
-static void draw_tri(qd3d_t *q, const qd3d_obj_t *o, int y, uint32_t width, bool persp) {
-    int yc = y * 8 + 4; // the scanline centre in 13.3
-    float xs[3];
-    int n = 0;
-    for (int i = 0; i < 3; i++) {
-        int j = (i + 1) % 3;
-        int ya = o->y13[i], yb = o->y13[j];
-        float xa = o->x13[i], xb = o->x13[j];
-        if (ya > yb) {
-            int t = ya;
-            ya = yb;
-            yb = t;
-            float tx = xa;
-            xa = xb;
-            xb = tx;
-        }
-        if (ya < yc && yc <= yb)
-            xs[n++] = (xa + (xb - xa) * (float)(yc - ya) / (float)(yb - ya)) / 8.0f;
-    }
-    if (n < 2)
-        return;
-    float xl = xs[0] < xs[1] ? xs[0] : xs[1];
-    float xr = xs[0] < xs[1] ? xs[1] : xs[0];
-    int px0 = (int)ceilf(xl - 0.5f), px1 = (int)ceilf(xr - 0.5f) - 1;
-    if (px0 < 0)
-        px0 = 0;
-    if (px1 >= (int)width)
-        px1 = (int)width - 1;
-    float cy = (float)y + 0.5f - o->y0;
-    for (int px = px0; px <= px1; px++) {
-        float cx = (float)px + 0.5f - o->x0;
-        float at[A_NATTR];
-        for (int k = 0; k < A_NATTR; k++)
-            at[k] = o->a0[k] + o->dx[k] * cx + o->dy[k] * cy;
-        qd3d_frag_t f;
-        f.flags = frag_flags(o->header);
-        f.depth = at[A_DEPTH];
-        f.a = at[A_ALPHA] < 0.0f ? 0.0f : (at[A_ALPHA] > 1.0f ? 1.0f : at[A_ALPHA]);
-        if (o->kind == OBJ_TEXTURED) {
-            // Perspective: u, v and the footprint carry 1/w factors the
-            // card divides out per pixel.
-            float u = at[A_U], v = at[A_V], fp = at[A_LOD];
-            if (persp && at[A_DEPTH] != 0.0f) {
-                float w = 1.0f / at[A_DEPTH];
-                u *= w;
-                v *= w;
-                fp *= w * w;
-            }
-            float rgb[3];
-            tex_sample(q, o, u, v, fabsf(fp), rgb);
-            float kd = at[A_KD] < 0.0f ? 0.0f : at[A_KD], ks = at[A_KS] < 0.0f ? 0.0f : at[A_KS];
-            f.r = rgb[0] / 255.0f * kd + ks;
-            f.g = rgb[1] / 255.0f * kd + ks;
-            f.b = rgb[2] / 255.0f * kd + ks;
-        } else {
-            f.r = at[A_R];
-            f.g = at[A_G];
-            f.b = at[A_B];
-        }
-        frag_add(q, persp, (uint32_t)px, &f);
-    }
-}
-
-// One row of a bitmap tile: set bits draw the tile's colour.
-static void draw_bitmap(qd3d_t *q, const qd3d_obj_t *o, int y, uint32_t width, bool persp) {
-    uint32_t bits = o->mask[y - o->by];
-    qd3d_frag_t f;
-    // A tile is never marked opaque, but a fully opaque colour hides what
-    // is behind it all the same.
-    f.flags = (uint8_t)(frag_flags(o->header) | ((o->colour >> 24) == 0xFFu ? FRAG_OPAQUE : 0u));
-    f.depth = o->a0[A_DEPTH];
-    f.a = (float)(o->colour >> 24) / 255.0f;
-    f.r = (float)((o->colour >> 16) & 0xFFu) / 255.0f;
-    f.g = (float)((o->colour >> 8) & 0xFFu) / 255.0f;
-    f.b = (float)(o->colour & 0xFFu) / 255.0f;
-    for (int i = 0; i < 32 && bits; i++, bits <<= 1) {
-        int px = o->bx + i;
-        if ((bits & 0x80000000u) && px >= 0 && px < (int)width)
-            frag_add(q, persp, (uint32_t)px, &f);
-    }
-}
-
-// Saturate a 0..1 float to a byte.
-static uint8_t to_byte(float v) {
-    if (v <= 0.0f)
-        return 0;
-    if (v >= 1.0f)
-        return 255;
-    return (uint8_t)(v * 255.0f + 0.5f);
-}
-
-// Render scanline `y` from the active objects and stream it out.
-static void render_scanline(qd3d_t *q, int y, uint32_t width) {
-    bool persp = (q->reg[REG_MODE >> 2] & MODE_PERSPECTIVE) != 0;
-    bool dest16 = (q->dmactl & DMACTL_16BPP) != 0 || (q->reg[REG_MODE >> 2] & MODE_DEST16) != 0;
-    memset(q->nfrags, 0, width);
-    // Retire objects above this scanline; draw the rest that cover it.
-    uint32_t k = 0;
-    for (uint32_t i = 0; i < q->n_active; i++) {
-        qd3d_obj_t *o = &q->active[i];
-        if (o->last < y)
-            continue;
-        if (k != i)
-            q->active[k] = *o;
-        o = &q->active[k++];
-        if (o->first > y)
-            continue;
-        if (o->kind == OBJ_BITMAP)
-            draw_bitmap(q, o, y, width, persp);
-        else
-            draw_tri(q, o, y, width, persp);
-    }
-    q->n_active = k;
-    // Composite each pixel front to back over the background.
-    uint32_t bg = q->reg[REG_BACKGROUND >> 2];
-    uint32_t csg = q->reg[REG_CSG >> 2];
-    float bgr = (float)((bg >> 16) & 0xFFu) / 255.0f, bgg = (float)((bg >> 8) & 0xFFu) / 255.0f,
-          bgb = (float)(bg & 0xFFu) / 255.0f;
-    uint8_t *out = q->line;
-    for (uint32_t x = 0; x < width; x++) {
-        qd3d_frag_t *list = &q->frags[x * QD3D_LAYERS];
-        uint32_t n = q->nfrags[x];
-        // insertion sort, nearest first
-        for (uint32_t i = 1; i < n; i++) {
-            qd3d_frag_t t = list[i];
-            uint32_t j = i;
-            while (j > 0 && nearer(persp, t.depth, list[j - 1].depth)) {
-                list[j] = list[j - 1];
-                j--;
-            }
-            list[j] = t;
-        }
-        // Colours are premultiplied, RAVE's default blend (the card ignores
-        // the Blend tag): each layer adds its colour and lets 1 - alpha of
-        // what is behind it through.  CSG: walking front to back from
-        // outside every operand, a front face enters its operand and a
-        // back face leaves it; the 5-bit inside state indexes the truth
-        // table, and an operand's surface is part of the result only where
-        // the table's answer changes.
-        float r = 0, g = 0, b = 0, t = 1.0f;
-        uint32_t state = 0;
-        for (uint32_t i = 0; i < n && t > 0.0f; i++) {
-            if (list[i].flags & FRAG_CSG) {
-                uint32_t before = (csg >> state) & 1u, bit = 1u << FRAG_CSG_ID(list[i].flags);
-                state = (list[i].flags & FRAG_BACKFACE) ? (state & ~bit) : (state | bit);
-                if (((csg >> state) & 1u) == before)
-                    continue;
-            }
-            r += t * list[i].r;
-            g += t * list[i].g;
-            b += t * list[i].b;
-            t *= 1.0f - list[i].a;
-        }
-        r += t * bgr;
-        g += t * bgg;
-        b += t * bgb;
-        uint8_t R = to_byte(r), G = to_byte(g), B = to_byte(b);
-        if (dest16) {
-            uint16_t p = (uint16_t)(((R >> 3) << 10) | ((G >> 3) << 5) | (B >> 3));
-            *out++ = (uint8_t)(p >> 8);
-            *out++ = (uint8_t)p;
-        } else {
-            *out++ = 0;
-            *out++ = R;
-            *out++ = G;
-            *out++ = B;
-        }
-    }
-    dma_stream(q, q->line, (uint32_t)(out - q->line));
-    q->frame_pixels += width;
-    q->frame_lines++;
-}
-
-// Make room for one more active object.
-static qd3d_obj_t *active_push(qd3d_t *q) {
-    if (q->n_active == q->cap_active) {
-        uint32_t cap = q->cap_active ? q->cap_active * 2 : 1024;
-        qd3d_obj_t *p = realloc(q->active, cap * sizeof(*p));
-        if (!p)
-            return NULL;
-        q->active = p;
-        q->cap_active = cap;
-    }
-    return &q->active[q->n_active];
+// A renderer register written, by the port or by the control program.
+static void reg_write(qd3d_t *q, uint32_t rr, uint32_t data) {
+    q->reg[rr >> 2] = data;
+    if (reg_in_state(rr))
+        q3_raster_state_dirty(q->raster);
 }
 
 // Execute one control block's seven command words.  `width` tracks
@@ -796,8 +495,15 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
         }
         uint32_t rr = cmd & 0xFFu;
         if (rr == REG_SCAN_START) {
-            if ((*cur & 0xFFFFu) != 0xFFFFu)
-                render_scanline(q, (int)((*cur & 0xFFFFu) >> 3), *width);
+            if ((*cur & 0xFFFFu) != 0xFFFFu) {
+                q3_cmd_t c;
+                c.kind = Q3_CMD_SCANLINE;
+                c.u.line.y = (int32_t)((*cur & 0xFFFFu) >> 3);
+                c.u.line.width = *width;
+                q3_raster_submit(q->raster, &c);
+                q->frame_pixels += *width;
+                q->frame_lines++;
+            }
             continue;
         }
         if (rr == REG_SCAN_END)
@@ -811,23 +517,24 @@ static void control_block(qd3d_t *q, uint32_t w, uint32_t *width, uint32_t *cur)
                 *cur = data;
         } else if (rr == REG_NPIXELS_M1) {
             *width = (data & 0xFFFFu) + 1u;
-            if (*width > QD3D_MAX_WIDTH)
-                *width = QD3D_MAX_WIDTH;
+            if (*width > Q3_MAX_WIDTH)
+                *width = Q3_MAX_WIDTH;
         } else if (rr < QD3D_NREGS * 4u) {
-            q->reg[rr >> 2] = data;
+            reg_write(q, rr, data);
         }
     }
 }
 
-// Run a frame: walk the control program from register $20, rendering this
-// card's scanlines through the output list.
-static void render_frame(qd3d_t *q) {
+// Walk a frame's control program from register $20 and hand the renderer
+// this card's scanlines: one command per object and per scanline.
+static void frame_walk(qd3d_t *q) {
     uint32_t n = card_count(q), me = card_index(q);
     uint32_t width = 1, cur = 0xFFFFFFFFu, records = 0;
-    q->n_active = 0;
     q->frame_pixels = q->frame_objects = 0;
     q->frame_lines = 0;
-    dma_begin(q);
+    q3_cmd_t c;
+    c.kind = Q3_CMD_FRAME;
+    q3_raster_submit(q->raster, &c);
     for (uint32_t rec = q->reg[REG_GO >> 2]; rec; records++) {
         if (records >= QD3D_MAX_RECORDS) {
             LOG(1, "control program runs past %u records: frame abandoned", QD3D_MAX_RECORDS);
@@ -837,9 +544,9 @@ static void render_frame(qd3d_t *q) {
         uint32_t w = rec + 4u * n;
         uint32_t header = dma_word(q, w);
         if ((header >> HDR_OPCODE_SHIFT) == 3u) {
-            qd3d_obj_t *o = active_push(q);
-            if (o && obj_decode(q, w, header, o)) {
-                q->n_active++;
+            if (obj_decode(q, w, header, &c.u.obj)) {
+                c.kind = Q3_CMD_OBJECT;
+                q3_raster_submit(q->raster, &c);
                 q->frame_objects++;
             }
         } else {
@@ -847,34 +554,67 @@ static void render_frame(qd3d_t *q) {
         }
         rec = next;
     }
+    q->frames++;
+    q->frame_records = records;
+    q->last_objects = (uint32_t)q->frame_objects;
+    q->last_lines = q->frame_lines;
+}
+
+// The in-flight frame's pixels go out: stream the renderer's output
+// through the descriptor list the frame started with.  This is the moment
+// they reach host memory -- the frame's completion, or whatever cuts it
+// short (a reset, the next frame).
+static void frame_output(qd3d_t *q) {
+    q3_raster_sync(q->raster);
+    q3_target_t *t = &q->tgt;
+    if (t->out_failed)
+        LOG(1, "frame %u: no memory for its output: its last scanlines are lost", q->frames);
+    dma_begin(q, q->frame_cmdptr);
+    dma_stream(q, t->out, t->out_len);
     // The list should be at its STOP now.
     if (dma_load(q))
         LOG(1, "frame %u: control program ended with output descriptors left ($%08X)", q->frames, q->dma.next - 16);
-    q->frames++;
-    q->last_objects = (uint32_t)q->frame_objects;
-    q->last_lines = q->frame_lines;
-    LOG(3, "frame %u: %u records, %llu objects, %llu pixels", q->frames, records, (unsigned long long)q->frame_objects,
-        (unsigned long long)q->frame_pixels);
+    if (log_would_log(log_local_category(), 3)) {
+        uint32_t hash = 2166136261u; // FNV-1a over the frame's pixels: a cheap identity for comparisons
+        for (size_t i = 0; i < t->out_len; i++)
+            hash = (hash ^ t->out[i]) * 16777619u;
+        LOG(3, "frame %u: %u records, %llu objects, %llu pixels, hash %08X", q->frames, q->frame_records,
+            (unsigned long long)q->frame_objects, (unsigned long long)q->frame_pixels, hash);
+    }
+    t->out_len = 0;
 }
 
-// The frame has finished on the card: interrupt if enabled.
+// The frame has finished on the card: its pixels land, then the interrupt
+// if enabled.
 static void frame_done_event(void *source, uint64_t data) {
     (void)data;
     qd3d_t *q = (qd3d_t *)source;
     q->irq_pending = 0;
+    frame_output(q);
     if (q->dmactl & DMACTL_IE)
         update_irq(q, true);
 }
 
-// Register $20 written: render the frame and finish it after the time the
+// A frame in flight is cut short (reset, or the next go): no interrupt,
+// but its pixels still go out.
+static void frame_cut_short(qd3d_t *q) {
+    if (!q->irq_pending)
+        return;
+    remove_event(q->cfg->scheduler, frame_done_event, q);
+    q->irq_pending = 0;
+    frame_output(q);
+}
+
+// Register $20 written: walk the frame and finish it after the time the
 // ASIC would take (about 20 Mpixel/s plus per-object setup), never
 // synchronously -- the driver marks itself running only after this write.
 static void frame_start(qd3d_t *q) {
+    frame_cut_short(q);
     if (!(q->dmactl & DMACTL_RUN))
         LOG(2, "frame started with the output channel not running (DMACONTROL $%04X)", q->dmactl);
-    render_frame(q);
+    q->frame_cmdptr = q->cmdptr;
+    frame_walk(q);
     uint64_t ns = 20000 + q->frame_pixels * 50 + q->frame_objects * 100;
-    remove_event(q->cfg->scheduler, frame_done_event, q);
     q->irq_pending = 1;
     scheduler_new_cpu_event(q->cfg->scheduler, frame_done_event, q, 0, 0, ns);
 }
@@ -886,7 +626,7 @@ static void frame_start(qd3d_t *q) {
 // One word written into the internal address space.
 static void internal_write(qd3d_t *q, uint32_t addr, uint32_t value) {
     if (addr < QD3D_NREGS * 4u) {
-        q->reg[addr >> 2] = value;
+        reg_write(q, addr, value);
         LOG(4, "reg $%02X = $%08X", addr, value);
         if (addr == REG_GO)
             frame_start(q);
@@ -897,6 +637,7 @@ static void internal_write(qd3d_t *q, uint32_t addr, uint32_t value) {
         p[2] = (uint8_t)(value >> 8);
         p[3] = (uint8_t)value;
     } else if (addr >= QD3D_TEX_BASE && addr < QD3D_TEX_BASE + QD3D_TEX_TEXELS * 4u) {
+        q3_raster_sync(q->raster); // the renderer may still be reading the SRAM
         q->tex[(addr - QD3D_TEX_BASE) >> 2] = texel_store(value);
     } else {
         LOG(2, "write to unmapped internal address $%06X = $%08X", addr, value);
@@ -946,15 +687,16 @@ static void dmactl_write(qd3d_t *q, uint32_t v) {
     if (v & DMACTL_RESET) {
         // Reset the channel and the parser; both SRAMs keep their contents
         // (the driver resets before every frame and relies on the object
-        // cache's free list surviving).
-        remove_event(q->cfg->scheduler, frame_done_event, q);
-        q->irq_pending = 0;
+        // cache's free list surviving).  A frame still in flight is cut
+        // short: its pixels go out, its interrupt never comes.
+        frame_cut_short(q);
         q->port_state = PORT_HEADER;
         update_irq(q, false);
     }
     if (v & DMACTL_ACK)
         update_irq(q, false);
     q->dmactl = v & ~(DMACTL_ACK | DMACTL_RESET);
+    q3_raster_state_dirty(q->raster); // the 16-bpp bits
 }
 
 static uint32_t bar_read32(void *ctx, uint32_t off) {
@@ -1039,12 +781,16 @@ static bool qd3d_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8
 static void qd3d_reset(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     qd3d_t *q = (qd3d_t *)dev->priv;
+    // A frame in flight is dropped with the rest of the machine's state.
     remove_event(q->cfg->scheduler, frame_done_event, q);
+    q3_raster_sync(q->raster);
+    q->tgt.out_len = 0;
     update_irq(q, false);
     memset(q->reg, 0, sizeof(q->reg));
     q->dmactl = q->cmdptr = q->cfg_position = 0;
     q->port_state = PORT_HEADER;
     q->irq_pending = 0;
+    q3_raster_state_dirty(q->raster);
 }
 
 static void qd3d_teardown(pci_device_t *dev, config_t *cfg) {
@@ -1053,10 +799,8 @@ static void qd3d_teardown(pci_device_t *dev, config_t *cfg) {
     if (!q)
         return;
     scheduler_forget_source(q->cfg->scheduler, q);
-    free(q->active);
-    free(q->frags);
-    free(q->nfrags);
-    free(q->line);
+    q3_raster_destroy(q->raster); // fences and joins the worker before the target goes
+    q3_target_free(&q->tgt);
     free(q);
     dev->priv = NULL;
 }
@@ -1066,15 +810,38 @@ static const char *qd3d_name(const pci_device_t *dev) {
     return "QuickDraw 3D Accelerator";
 }
 
+// The plain-data head, then the output of a frame still in flight (its
+// pixels reach host memory only when it completes): a byte count and the
+// bytes.
 static void qd3d_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
+    q3_raster_sync(q->raster);
     system_write_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    uint32_t len = q->irq_pending ? (uint32_t)q->tgt.out_len : 0u;
+    system_write_checkpoint_data(cp, &len, sizeof(len));
+    if (len)
+        system_write_checkpoint_data(cp, q->tgt.out, len);
 }
 
 static void qd3d_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     qd3d_t *q = (qd3d_t *)dev->priv;
-    uint32_t irq = 0;
+    uint32_t irq = 0, len = 0;
+    q3_raster_sync(q->raster);
     system_read_checkpoint_data(cp, q, offsetof(qd3d_t, dev));
+    system_read_checkpoint_data(cp, &len, sizeof(len));
+    q->tgt.out_len = 0;
+    q->tgt.out_failed = false;
+    if (len && q3_target_reserve(&q->tgt, len)) {
+        system_read_checkpoint_data(cp, q->tgt.out, len);
+        q->tgt.out_len = len;
+    } else if (len) {
+        // Keep the stream in step even without room for the pixels.
+        uint8_t sink[4096];
+        for (uint32_t done = 0; done < len; done += (uint32_t)sizeof(sink))
+            system_read_checkpoint_data(cp, sink, len - done < sizeof(sink) ? len - done : sizeof(sink));
+        q->tgt.out_failed = true;
+    }
+    q3_raster_state_dirty(q->raster);
     // Re-derive the line from the restored state.
     irq = q->irq;
     q->irq = 0;
@@ -1107,22 +874,40 @@ static const pci_config_decl_t qd3d_decl = {
     .rom_size = 0,
 };
 
+// The rasteriser is not a choice a user is offered -- there is only the
+// card's own -- but pci_option="raster=thread|sw|null" picks one per boot
+// for the tests and the terminal, as on the Voodoo2.  The default is the
+// worker thread on every build: its output is byte-identical to the
+// normative walker's.  -DGS_QD3D_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a
+// build default to the walker; -DGS_QD3D_THREAD_BACKEND=0 compiles the
+// thread backend out of qd3d_raster.c, and the default follows.
+#ifndef GS_QD3D_RASTER_DEFAULT
+#if defined(GS_QD3D_THREAD_BACKEND) && !GS_QD3D_THREAD_BACKEND
+#define GS_QD3D_RASTER_DEFAULT "sw"
+#else
+#define GS_QD3D_RASTER_DEFAULT "thread"
+#endif
+#endif
+
+static bool qd3d_accepts_option(const char *key, const char *value) {
+    if (strcmp(key, "raster") == 0)
+        return strcmp(value, "thread") == 0 || strcmp(value, "sw") == 0 || strcmp(value, "null") == 0;
+    return false;
+}
+
 static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    (void)opts;
     pci_device_t *dev = calloc(1, sizeof(*dev));
     qd3d_t *q = calloc(1, sizeof(*q));
-    if (q) {
-        q->frags = calloc(QD3D_MAX_WIDTH * QD3D_LAYERS, sizeof(*q->frags));
-        q->nfrags = calloc(QD3D_MAX_WIDTH, 1);
-        q->line = calloc(QD3D_MAX_WIDTH, 4);
+    if (!dev || !q || !q3_target_init(&q->tgt, q->tex)) {
+        free(q);
+        free(dev);
+        return NULL;
     }
-    if (!dev || !q || !q->frags || !q->nfrags || !q->line) {
-        if (q) {
-            free(q->frags);
-            free(q->nfrags);
-            free(q->line);
-        }
+    const char *raster = slot_opts_option(opts, "raster");
+    q->raster = q3_raster_create(raster ? raster : GS_QD3D_RASTER_DEFAULT, &q->tgt, build_state, q);
+    if (!q->raster) {
+        q3_target_free(&q->tgt);
         free(q);
         free(dev);
         return NULL;
@@ -1147,7 +932,8 @@ static pci_device_t *qd3d_factory(int slot_index, config_t *cfg, const rom_image
 
     scheduler_new_event_type(cfg->scheduler, "qd3d", q, "frame-done", frame_done_event);
     q->port_state = PORT_HEADER;
-    LOG(1, "seated in slot %d (revision %u, %u texels)", slot_index, QD3D_REVISION, QD3D_TEX_TEXELS);
+    LOG(1, "seated in slot %d (revision %u, %u texels), raster backend %s", slot_index, QD3D_REVISION, QD3D_TEX_TEXELS,
+        q3_raster_name(q->raster));
     return dev;
 }
 
@@ -1184,6 +970,31 @@ static DEF_GETTER(r_attr_irq) {
     return val_bool(q && q->irq);
 }
 
+static DEF_GETTER(r_attr_raster) {
+    qd3d_t *q = node_card(self);
+    return val_str(q ? q3_raster_name(q->raster) : "");
+}
+// Swap the raster backend in place: fence the old one, build the new one on
+// the same target, then let the old one go.  The backends are equivalent by
+// contract, so a run can switch at any instruction boundary.
+static DEF_SETTER(r_attr_raster_set) {
+    qd3d_t *q = node_card(self);
+    char kind[8];
+    snprintf(kind, sizeof(kind), "%s", in.s ? in.s : "");
+    value_free(&in);
+    if (!q)
+        return val_err("renderer.raster: no card");
+    if (!qd3d_accepts_option("raster", kind))
+        return val_err("renderer.raster: %s is not one of thread, sw, null", kind);
+    q3_raster_sync(q->raster);
+    q3_raster_t *next = q3_raster_create(kind, &q->tgt, build_state, q);
+    if (!next)
+        return val_err("renderer.raster: could not create the %s backend", kind);
+    q3_raster_destroy(q->raster);
+    q->raster = next;
+    return val_none();
+}
+
 static const arg_decl_t r_read_arg[] = {
     {.name = "offset", .kind = VK_INT, .doc = "Renderer register byte address ($00-$FC)"},
 };
@@ -1199,28 +1010,32 @@ static const member_t renderer_members[] = {
     {.kind = MK_ATTR,
      .name = "frames",
      .doc = "Frames the card has rendered since power-on",
-     .attr = {.type = VK_UINT, .get = r_attr_frames}                                                                                          },
+     .attr = {.type = VK_UINT, .get = r_attr_frames}                                                                                                                         },
     {.kind = MK_ATTR,
      .name = "objects",
      .doc = "Objects (triangles and bitmap tiles) in the last frame",
-     .attr = {.type = VK_UINT, .get = r_attr_objects}                                                                                         },
+     .attr = {.type = VK_UINT, .get = r_attr_objects}                                                                                                                        },
     {.kind = MK_ATTR,
      .name = "lines",
      .doc = "Scanlines the last frame rendered",
-     .attr = {.type = VK_UINT, .get = r_attr_lines}                                                                                           },
+     .attr = {.type = VK_UINT, .get = r_attr_lines}                                                                                                                          },
     {.kind = MK_ATTR,
      .name = "dma_control",
      .doc = "DMACONTROL: $8000 run, $4000 interrupt enable, $0C00 16-bpp output",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = r_attr_dma_control}                                                    },
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = r_attr_dma_control}                                                                                   },
     {.kind = MK_ATTR,
      .name = "position",
      .doc = "Config register $40: $F0 | (cards-1) << 2 | card index, once the driver has set it",
-     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = r_attr_position}                                                       },
-    {.kind = MK_ATTR,   .name = "irq", .doc = "The card's interrupt line",                        .attr = {.type = VK_BOOL, .get = r_attr_irq}},
+     .attr = {.type = VK_UINT, .presentation_flags = VFLAG_HEX, .get = r_attr_position}                                                                                      },
+    {.kind = MK_ATTR,   .name = "irq", .doc = "The card's interrupt line",                        .attr = {.type = VK_BOOL, .get = r_attr_irq}                               },
+    {.kind = MK_ATTR,
+     .name = "raster",
+     .doc = "Where the renderer runs: thread (default), sw (normative) or null (pci_option=\"raster=...\"); "
+            "assigning one swaps the backend in place",                                           .attr = {.type = VK_STRING, .get = r_attr_raster, .set = r_attr_raster_set}},
     {.kind = MK_METHOD,
      .name = "read",
      .doc = "Read a renderer register by its byte address",
-     .method = {.args = r_read_arg, .nargs = 1, .result = VK_UINT, .fn = r_method_read}                                                       },
+     .method = {.args = r_read_arg, .nargs = 1, .result = VK_UINT, .fn = r_method_read}                                                                                      },
 };
 
 static const class_desc_t renderer_class = {
@@ -1247,5 +1062,6 @@ const pci_card_kind_t qd3d_kind = {
     .attach = PCI_ATTACH_PCI,
     .card_class = "other",
     .factory = qd3d_factory,
+    .accepts_option = qd3d_accepts_option,
     .attach_objects = qd3d_attach_objects,
 };

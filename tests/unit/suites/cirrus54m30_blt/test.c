@@ -79,6 +79,10 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
     (void)addr, (void)value;
 }
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(addr + i, bytes[i]);
+}
 
 // The card publishes its framebuffer as an object node (the shared display
 // framebuffer class).  Nothing here walks the object tree, so the node is

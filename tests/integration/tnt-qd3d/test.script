@@ -183,7 +183,8 @@ def port_reg(bar, reg, value) {
 }
 
 # Start the frame and check every output pixel against `want(x)` for
-# x 0-5, 6-11 and 12-15.
+# x 0-5, 6-11 and 12-15.  The pixels land, and the interrupt rises, when the
+# frame completes -- some microseconds after the go write, never inside it.
 def run_frame(bar, csg, w0, w1, w2) {
     put($bar + 0x40, 0x1000)
     put($bar + 0x40, 0)
@@ -197,6 +198,12 @@ def run_frame(bar, csg, w0, w1, w2) {
     assert machine.pci.slot[1].card.renderer.frames == $f0 + 1 "the frame did not run"
     assert machine.pci.slot[1].card.renderer.lines == 5 "the program has 5 scanlines (4 + the drain line), not ${machine.pci.slot[1].card.renderer.lines}"
     assert machine.pci.slot[1].card.renderer.objects == 8 "8 triangles, not ${machine.pci.slot[1].card.renderer.objects}"
+    assert !machine.pci.slot[1].card.renderer.irq "the interrupt is not raised synchronously with the go write"
+    assert machine.memory.peek.l($out) == 0xEEEEEEEE "the pixels reach memory when the frame completes, not at the go write"
+    scheduler.run 200000
+    assert machine.pci.slot[1].card.renderer.irq "the frame completed without raising its interrupt"
+    put($bar + 0x40, 0xE000)
+    assert !machine.pci.slot[1].card.renderer.irq "writing the acknowledge bit drops the interrupt"
     let y = 0
     while $y < 4 {
         let x = 0
@@ -238,18 +245,35 @@ def row_qd3d_device() {
     cfg_wr(0x04, 0x0016)
     assert (cfg_rd(0x04) & 0x16) == 0x16 "memory space, bus master, memory write and invalidate latch"
     let bar = machine.pci.slot[1].card.config.bar[0].base
-    # Plain: the nearest surface wins -- A's red front, then B's green
-    # front, which is nearer than A's wherever the two overlap.
-    build_frame(0x68200000, 0x68200000)
-    run_frame($bar, 0, 0x00FF0000, 0x0000FF00, 0x0000FF00)
-    # CSG A - B (kQ3CSGEquationAandnotB, 0x22222222): A is operand 0, B
-    # operand 1.  Where only A is, its front face shows; where B carves A,
-    # the surface is B's back face, where the ray leaves B still inside A;
-    # where only B is, nothing of the result is there: background.
-    build_frame(0x69000000, 0x69000001)
-    run_frame($bar, 0x22222222, 0x00FF0000, 0x000000FF, 0x00404040)
-    # The interrupt follows the frame, not inside the register write.
-    assert !machine.pci.slot[1].card.renderer.irq "the interrupt is not raised synchronously with the go write"
+    # Both frames on every raster backend, swapped in place: the worker
+    # thread (the default), the inline walker (normative) and null, which
+    # draws no objects -- every pixel the background.
+    assert machine.pci.slot[1].card.renderer.raster == "thread" "the renderer runs on its worker thread by default"
+    for backend in ["thread", "sw", "null"] {
+        machine.pci.slot[1].card.renderer.raster = $backend
+        assert machine.pci.slot[1].card.renderer.raster == $backend "the ${$backend} backend is in use"
+        let bg = 0x00404040
+        let drawn = $backend != "null"
+        # Plain: the nearest surface wins -- A's red front, then B's green
+        # front, which is nearer than A's wherever the two overlap.
+        build_frame(0x68200000, 0x68200000)
+        if $drawn {
+            run_frame($bar, 0, 0x00FF0000, 0x0000FF00, 0x0000FF00)
+        } else {
+            run_frame($bar, 0, $bg, $bg, $bg)
+        }
+        # CSG A - B (kQ3CSGEquationAandnotB, 0x22222222): A is operand 0, B
+        # operand 1.  Where only A is, its front face shows; where B carves
+        # A, the surface is B's back face, where the ray leaves B still
+        # inside A; where only B is, nothing of the result is there.
+        build_frame(0x69000000, 0x69000001)
+        if $drawn {
+            run_frame($bar, 0x22222222, 0x00FF0000, 0x000000FF, $bg)
+        } else {
+            run_frame($bar, 0x22222222, $bg, $bg, $bg)
+        }
+    }
+    machine.pci.slot[1].card.renderer.raster = "thread"
 }
 
 # ---- qd3d-boot --------------------------------------------------------------

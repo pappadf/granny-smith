@@ -150,6 +150,10 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
     g_slow_last_addr = addr;
     g_slow_last_value = value;
 }
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(addr + i, bytes[i]);
+}
 
 // The object model is exercised by the integration suites, not here.
 void pci_objects_build(pci_root_t *root) {

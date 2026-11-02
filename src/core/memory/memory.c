@@ -1659,6 +1659,48 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
     write_slow_n(addr, value, 4);
 }
 
+// A run of byte writes, as `len` calls of memory_write_uint8_slow would
+// make them.  Where a page is a device page planted in the table -- the
+// branch write_slow_n takes first -- the bytes go to its handler without
+// re-deciding that per byte; with no held cache line and no logpoint hook
+// (the per-access work dev_desc_write does besides dispatching) they go
+// straight to the device's byte handler.  Anything else takes the full slow
+// path.  For bus masters streaming into device memory (pci_dma_write).
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) {
+    while (len) {
+        uint32_t page = addr >> MEM_PAGE_SHIFT;
+        uintptr_t e = (g_active_write && page < g_page_count) ? g_active_write[page] : 0;
+        if (!e || MEM_ENTRY_IS_RAM(e)) {
+            write_slow_n(addr, *bytes, 1);
+            addr++;
+            bytes++;
+            len--;
+            continue;
+        }
+        const mem_dev_desc_t *d = (const mem_dev_desc_t *)e;
+        uint32_t chunk = MEM_PAGE_SIZE - (addr & MEM_PAGE_MASK);
+        if (chunk > len)
+            chunk = len;
+        g_mem_slowpath_count += chunk;
+        g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)] += chunk;
+        // The first byte the full way (which also checks the entry is live).
+        dev_desc_write(d, addr, bytes[0], 1);
+        uint32_t i = 1;
+        if (!g_mem_lines && !g_mem_logpoint_hook && d->iface->write_uint8) {
+            uint32_t off = addr & MEM_PAGE_MASK;
+            // A write that remaps the page ends the run; the rest re-decide.
+            for (; i < chunk && g_active_write[page] == e; i++)
+                d->iface->write_uint8(d->ctx, d->sub_base + ((off + i) ^ (d->lane_reverse ? 7u : 0u)), bytes[i]);
+        } else {
+            for (; i < chunk && g_active_write[page] == e; i++)
+                dev_desc_write(d, addr + i, bytes[i], 1);
+        }
+        addr += i;
+        bytes += i;
+        len -= i;
+    }
+}
+
 // Read memory at the given address with specified size (1, 2, or 4 bytes)
 uint32_t memory_read(unsigned int size, uint32_t addr) {
     switch (size) {
