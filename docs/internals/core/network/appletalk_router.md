@@ -234,10 +234,16 @@ random numbers is refused like any other.
 
 **Hidden tabs keep running.** Browsers pause `requestAnimationFrame` in hidden
 documents, workers included, which stopped the machine (and its router) the
-moment its tab was hidden. On `visibilitychange` the main loop now switches to
-a 16 ms timer while hidden and back to RAF when shown (`em_update_loop_timing`
-in `em_main.c`); a worker's timers are not throttled like the page's. Nothing is
-drawn meanwhile.
+moment its tab was hidden. A 16 ms timer in the worker was no better: Chrome
+throttles a background tab's timers, worker timers included, so a hidden Mac
+crawled and answered another tab's lookups only when its tab was brought
+forward. So on `visibilitychange` -> hidden the main loop paces itself
+(`em_update_loop_timing`, `em_hidden_pace` in `em_main.c`): it re-enters at
+once (`EM_TIMING_SETIMMEDIATE`, a `scheduler.postTask` with no delay, which
+timer throttling does not touch) and each tick sleeps to its 16 ms deadline
+with `Atomics.wait` (`emscripten_thread_sleep`). Between ticks the worker still
+returns to its event loop, so proxied calls and the mesh's messages are
+served. Back to RAF when shown. Nothing is drawn meanwhile.
 
 **Suspended tabs.** A browser may still freeze a long-hidden tab (Page
 Lifecycle `freeze`), and then nothing in it runs, its worker included. The
@@ -252,8 +258,10 @@ crashed without a word is lost after 7 s of silence.
 `tests/e2e/web2-specs/appletalk-tab-mesh.spec.ts`: three pages in one context
 link themselves, pick three numbers and reach each other's networks at
 distance 1; a closed page is noticed. A second test fires the visibilitychange
-a hidden tab gets and checks the machine runs on (headless Chromium never
-pauses RAF, so this is a smoke test of the switch, not of a real hidden tab).
+a hidden tab gets and checks the machine runs at least half as fast as it did
+shown (headless Chromium neither pauses RAF nor throttles timers, so this
+tests the self-paced loop, not a real hidden tab; Playwright keeps every page
+it drives visible, even headed).
 A third fires the `freeze` event on one of two linked pages and checks the
 other drops the link as suspended and links again (headless Chromium fires no
 freeze, and CDP's `Page.setWebLifecycleState` neither fires it nor stops the

@@ -80,21 +80,31 @@ test("tabs with AppleTalk on link themselves and learn each other's networks", a
   for (const p of pages.slice(0, 2)) await expect.poll(() => openLinks(p), { timeout: 60_000 }).toBe(1);
 });
 
-test("a hidden tab's machine keeps running", async ({ page }) => {
+test("a hidden tab's machine keeps running at its pace", async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
   await bootPlus(page);
   await gsCallInPage(page, "scheduler.run", []);
+  const rate = async () => {
+    const t0 = Date.now();
+    const i0 = Number(await gsEvalInPage(page, "scheduler.instr_count"));
+    await page.waitForTimeout(4000);
+    const i1 = Number(await gsEvalInPage(page, "scheduler.instr_count"));
+    return (i1 - i0) / ((Date.now() - t0) / 1000);
+  };
+  await page.waitForTimeout(2000);
+  const shown = await rate();
   // What the browser does when the tab is hidden: document.hidden and
-  // visibilitychange (the emulator's worker hears it through Emscripten)
+  // visibilitychange (the emulator's worker hears it through Emscripten).
+  // The loop then paces itself (postTask + Atomics.wait), not on RAF or a
+  // timer, which a real hidden tab pauses or throttles.
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  const before = Number(await gsEvalInPage(page, "scheduler.instr_count"));
-  await expect
-    .poll(async () => Number(await gsEvalInPage(page, "scheduler.instr_count")) - before, { timeout: 30_000 })
-    .toBeGreaterThan(1_000_000);
+  await page.waitForTimeout(1000);
+  const hidden = await rate();
+  expect(hidden, `hidden ${hidden.toFixed(0)}/s against shown ${shown.toFixed(0)}/s`).toBeGreaterThan(shown * 0.5);
 });
 
 // The browser freezes a long-hidden tab (Page Lifecycle "freeze"): nothing

@@ -665,16 +665,23 @@ void platform_machine_attached(void) {
 // and returning to its event loop between ticks (input, presenting the
 // canvas) costs microseconds.  Changed only on a transition.
 //
-// A hidden tab gets a timer instead of RAF: browsers pause
-// requestAnimationFrame in a hidden document, workers included, which used
-// to stop the machine dead the moment its tab was hidden.  A worker's timers
-// are not throttled the way the page's are, so a ~16 ms timeout keeps the
-// machine -- and the AppleTalk router other tabs reach through it -- running
-// at its pace.  Nothing is drawn meanwhile: the render thread is RAF-driven.
-typedef enum { LOOP_RAF, LOOP_TIMER, LOOP_IMMEDIATE } loop_timing_t;
+// A hidden tab paces itself: browsers pause requestAnimationFrame in a
+// hidden document, workers included, which stopped the machine dead the
+// moment its tab was hidden -- and with it the AppleTalk router the other
+// tabs reach through it.  A ~16 ms timer in this worker was no better: Chrome
+// throttles a background tab's timers, worker timers included, so a hidden
+// Mac crawled and answered another tab's lookups only when brought forward.
+// So hidden, the loop re-enters at once (SETIMMEDIATE: a postTask with no
+// delay, which timer throttling does not touch) and each tick sleeps to its
+// ~16 ms deadline with Atomics.wait (emscripten_thread_sleep), which no
+// throttling touches either.  Between ticks the worker still returns to its
+// event loop: proxied calls and the tab mesh's messages are served.  Nothing
+// is drawn meanwhile: the render thread is RAF-driven.
+typedef enum { LOOP_RAF, LOOP_HIDDEN, LOOP_IMMEDIATE } loop_timing_t;
 static loop_timing_t s_loop_timing = LOOP_RAF;
 static bool s_tab_hidden; // the page's visibilitychange said hidden
-#define HIDDEN_TICK_MS 16 // the hidden tab's timer, about one display frame
+#define HIDDEN_TICK_MS 16.0 // a hidden tab's tick, about one display frame
+static double s_hidden_deadline; // when the hidden loop's next tick is due (ms)
 
 static void em_update_loop_timing(void) {
     scheduler_t *sched = system_scheduler();
@@ -682,16 +689,30 @@ static void em_update_loop_timing(void) {
     if (sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled)
         want = LOOP_IMMEDIATE;
     else if (s_tab_hidden)
-        want = LOOP_TIMER;
+        want = LOOP_HIDDEN;
     if (want == s_loop_timing)
         return;
     s_loop_timing = want;
     if (want == LOOP_IMMEDIATE)
         emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
-    else if (want == LOOP_TIMER)
-        emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, HIDDEN_TICK_MS);
-    else
+    else if (want == LOOP_HIDDEN) {
+        s_hidden_deadline = 0;
+        emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
+    } else
         emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
+}
+
+// The hidden loop's pacing: sleep to this tick's deadline.  A tick that ran
+// long is not caught up with a burst: past 100 ms behind, the next deadline
+// starts from now.
+static void em_hidden_pace(void) {
+    double now = emscripten_get_now();
+    if (s_hidden_deadline == 0 || now - s_hidden_deadline > 100.0)
+        s_hidden_deadline = now;
+    s_hidden_deadline += HIDDEN_TICK_MS;
+    double wait = s_hidden_deadline - now;
+    if (wait > 0)
+        emscripten_thread_sleep(wait);
 }
 
 static void em_timed_tick(void) {
@@ -702,6 +723,8 @@ static void em_timed_tick(void) {
     tick_wall_ms[slot] = emscripten_get_now() - t0;
     tick_poll_ms[slot] = tick_poll_ms_current;
     em_update_loop_timing();
+    if (s_loop_timing == LOOP_HIDDEN)
+        em_hidden_pace();
 }
 
 // Forward formatted log lines to the page as log events.
