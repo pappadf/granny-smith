@@ -1,0 +1,73 @@
+# Driving Marathon 2 on an 8100 under Mac OS 7.6.1 (appletalk-router-marathon).
+# Coordinates are the 640x480 desktop's and the game's dialogs'.
+
+# Command-key chord, then let the Finder act on it
+def m2_cmd(k) {
+    machine.adb.keyboard.down "Command"
+    scheduler.run 60000000
+    machine.adb.keyboard.down $k
+    scheduler.run 60000000
+    machine.adb.keyboard.up $k
+    machine.adb.keyboard.up "Command"
+    scheduler.run 1000000000
+}
+
+# Select the item called `name` in the front Finder window by typing, open it
+def m2_open(name, run) {
+    machine.adb.keyboard.type "${$name}"
+    scheduler.run 1000000000
+    m2_cmd("o")
+    scheduler.run $run
+}
+
+# A click that lands before the game's menu gives way to its demo
+def m2_click(x, y) {
+    machine.adb.mouse.move $x $y
+    scheduler.run 50000000
+    machine.adb.mouse.move $x $y
+    scheduler.run 50000000
+    machine.adb.mouse.click true
+    scheduler.run 50000000
+    machine.adb.mouse.click false
+    scheduler.run 1500000000
+}
+
+# Boot the 8100 from `img` and bring Marathon 2 to its main menu: open the
+# disk (selected on the desktop), its "Marathon 2 f" folder and the game,
+# then Escape out of the self-running demo.
+def m2_boot_to_menu(img) {
+    machine.boot model="pm8100" ram=32768 rom="${$ROM}"
+    machine.rtc.time = "2026-11-01T12:00:00"
+    machine.scsi.attach_hd "${$img}" 0
+    machine.rtc.pram.boot_device = 0
+    scheduler.run 5000000000
+    m2_cmd("o")
+    scheduler.run 2000000000
+    m2_open("Marathon 2", 2000000000)
+    m2_open("Marathon 2", 8000000000)
+    machine.adb.keyboard.press "esc"
+    scheduler.run 2000000000
+}
+
+# Run windows of `step` instructions until `windows` in a row each forward
+# at least `per` datagrams off this network (a running game: its ring of
+# action packets), within `ceiling`.  Returns how many windows ran.
+def m2_wait_game_traffic(per, windows, step, ceiling) {
+    let spent = 0
+    let busy = 0
+    let n = 0
+    let before = 0
+    while $busy < $windows && $spent < $ceiling {
+        $before = appletalk.router.stats.forwarded_out
+        scheduler.run $step
+        $spent = $spent + $step
+        $n = $n + 1
+        if appletalk.router.stats.forwarded_out - $before >= $per {
+            $busy = $busy + 1
+        } else {
+            $busy = 0
+        }
+    }
+    assert $busy >= $windows "no running game: fewer than ${$per} datagrams forwarded per window"
+    return $n
+}

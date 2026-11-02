@@ -88,7 +88,13 @@ network, 5-15) and ZIP Queries. Everything else is routed.
 - The validity timer (20 s) ages entries good → suspect → bad0 → bad1 → gone;
   an entry is usable while good or suspect.
 - A new network, or one coming back from bad, has an unknown zone: a ZIP Query
-  goes out on its link at once and every 10 s until the Reply.
+  goes out on its link at once and every 10 s until the Reply. A new machine
+  taking the cable restarts the query timer if any zone is still unknown
+  (unplugging stops it with the other timers; a network learnt before
+  `machine.boot` replaced the machine stayed zoneless, and lookups in `*`
+  never reached it).
+- Every datagram the router routes is traced at `log.set appletalk 5`:
+  `in`/`out`, source and destination net.node:socket, DDP type and length.
 - Forwarding: from the local network (the guest's long-header datagrams, and
   the host stack's own datagrams for another network, which `ddp_send` hands to
   the router), from a link to this network (to the host on node 33 or 0, or onto
@@ -107,6 +113,22 @@ network, 5-15) and ZIP Queries. Everything else is routed.
   every other gets a FwdReq to node 0 ("any router") on that network, routed.
 - FwdReq for this network (from a link): a LkUp broadcast here; the guest's
   replies go to the requester's address in the tuple, through the router.
+
+### 3.3 Guest node numbers on a numbered network
+
+Every instance runs the same deterministic emulation, so identical guests
+acquire identical LocalTalk node numbers -- and Open Transport ignores a LkUp
+whose reply-to node is its own, whatever the network in the tuple. Two 8100s
+running Marathon 2 under 7.6.1 were both node 1, and Gather never listed the
+other player. So on a network whose number is not the default 1, the host
+answers the guest's LLAP ENQ (claims the node) for every node outside a set
+derived from the network number (a multiplicative hash of net and node; about
+one node in eight, 13 to 17 of the client nodes 1–127 per network, and as many
+server nodes). The guest tries another number until one goes unanswered.
+Two random networks' guests share a node about 0.7% of the time. A network
+that kept the default number (headless instances that are not linked, which
+is the whole existing test suite) leaves every node to its guest, as before;
+browser tabs pick random numbers, and linked headless rows set theirs.
 
 - **RTMP Data** (5-13): sender's net, node ID length 8, node 33, version
   indicator `$000082`, then the tuples (the local net at distance 0). The RTMP
@@ -181,6 +203,14 @@ re-armed when the restored machine takes the cable.
     services over a friend link. A's System 6 guest finds B's file server in
     the Chooser (BrRq → FwdReq → LkUp on B's network) and mounts its volume:
     ATP, ASP and AFP across both routers.
+  - `appletalk-router-marathon` (extended, media-gated): two Power Mac 8100s
+    under 7.6.1 with Open Transport start Marathon 2; B's player joins, A's
+    Gather dialog lists it through both routers (the golden), A starts the
+    game, and each side checks the game's datagrams keep crossing the link
+    (three windows in a row of 100 or more). The guests boot at turbo and play
+    at real time, as linked tabs do. Both instances must run without a pause:
+    a guest whose instance stops running stops answering, and the other's
+    ADSP open (the map, error -1277) or the game's ring times out.
   The processes run at independent speeds, so the scripts never wait on fixed
   budgets for each other: they poll routing state with large caps and finish
   on a barrier (marker directories, or the link's BYE).

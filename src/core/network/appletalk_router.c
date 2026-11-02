@@ -785,6 +785,9 @@ static void route_datagram(uint8_t *dg, size_t len, int in_port, atalk_link_t *f
     if (len < DDP_EXTENDED_HEADER_SIZE)
         return;
     uint16_t dst = rd16(&dg[DG_DST_NET]);
+    LOG(5, "atalk router: %s %u.%u:%u -> %u.%u:%u type %u, %zu bytes", in_port == PORT_LOCAL ? "out" : "in",
+        (unsigned)rd16(&dg[DG_SRC_NET]), (unsigned)dg[DG_DST_NODE + 1], (unsigned)dg[DG_DST_SOCK + 1], (unsigned)dst,
+        (unsigned)dg[DG_DST_NODE], (unsigned)dg[DG_DST_SOCK], (unsigned)dg[DG_DST_SOCK + 2], len);
     if (dst == 0 || dst == atalk_this_net()) {
         if (in_port != PORT_LOCAL)
             deliver_local(dg, len, from);
@@ -1088,6 +1091,13 @@ static void router_timers_update(void) {
             atalk_timer_arm(&g_router.validity_timer, 0, RTMP_VALIDITY_NS);
         if (!atalk_timer_pending(&g_router.ping_timer))
             atalk_timer_arm(&g_router.ping_timer, 0, LINK_PING_NS);
+        // Zones learnt before an unplug (a new machine) may still be
+        // unknown: ask again.  The timer stops by itself when none are.
+        bool unknown = false;
+        for (int i = 0; i < MAX_ROUTES && !unknown; i++)
+            unknown = g_router.routes[i].in_use && !g_router.routes[i].zone_known;
+        if (unknown && !atalk_timer_pending(&g_router.zip_timer))
+            atalk_timer_arm(&g_router.zip_timer, 0, ATALK_TIMER_MIN_NS);
     } else {
         atalk_timer_cancel_all(&g_router.rtmp_timer);
         atalk_timer_cancel_all(&g_router.validity_timer);

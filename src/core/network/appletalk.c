@@ -618,6 +618,26 @@ static int llap_send(atalk_conn_t *c, const llap_header_t *llap, const uint8_t *
     return 0;
 }
 
+// Whether a guest may take `node` (its ENQ goes unanswered).  Every
+// instance runs the same deterministic emulation, so identical guests pick
+// identical node numbers -- and Open Transport ignores a lookup whose
+// reply-to node is its own whatever the network (Marathon 2 between two
+// 8100s under 7.6.1 never found the other player, both being node 1).  So a
+// network that is part of an internet takes its guests' nodes from a set of
+// its own: the host claims (ACKs) the rest, and the guest tries another.
+// About one node in eight is offered, a different set per network number,
+// so two networks' guests rarely meet on one node.  A network that kept the
+// default number (1) is no instance of an internet -- browser tabs pick
+// random numbers, linked headless instances set theirs -- and its guests
+// take any node, as before.
+static bool llap_node_offered(uint8_t node) {
+    uint16_t net = atalk_this_net();
+    if (node == 0 || node == 0xFF || net == ATALK_ROUTER_DEFAULT_NET || !atalk_router_active())
+        return true;
+    uint32_t h = ((uint32_t)net << 8 | node) * 2654435761u; // Knuth's multiplicative hash
+    return ((h >> 24) & 7) == 0;
+}
+
 static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...) {
     static const char *const names[] = {"malformed", "unhandled", "not transmitted"};
     switch (kind) {
@@ -671,8 +691,9 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
             break;
         }
         LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
-        if (header.dst == ATALK_HOST_NODE) {
+        // Reply with ACK if this ENQ targets our node (dynamic node ID
+        // probe/ack), or a node this network does not hand out.
+        if (header.dst == ATALK_HOST_NODE || !llap_node_offered(header.dst)) {
             llap_header_t ack;
             ack.dst = header.src;
             ack.src = ATALK_HOST_NODE;

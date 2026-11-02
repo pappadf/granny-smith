@@ -54,6 +54,27 @@ TEST(enq_for_our_node_is_acked_and_others_are_not) {
     link_delete();
 }
 
+// On a network of an internet (not the default number) the host also claims
+// the nodes the network does not offer, so identical guests on two networks
+// land on different nodes: for network 301, node 10 is offered and node 2
+// is not.  The default network leaves every node to its guest.
+TEST(a_numbered_network_offers_its_guest_only_its_own_nodes) {
+    link_boot();
+    ASSERT_EQ_INT(0, atalk_router_set_net(301));
+    uint8_t taken[3] = {2, 2, LLAP_TYPE_ENQ};
+    guest_frame(taken, sizeof taken);
+    ASSERT_EQ_INT(1, wire_count_type(2, LLAP_TYPE_ACK));
+    uint8_t offered[3] = {10, 10, LLAP_TYPE_ENQ};
+    guest_frame(offered, sizeof offered);
+    ASSERT_EQ_INT(0, wire_count_type(10, LLAP_TYPE_ACK));
+
+    ASSERT_EQ_INT(0, atalk_router_set_net(1));
+    uint8_t again[3] = {3, 3, LLAP_TYPE_ENQ};
+    guest_frame(again, sizeof again);
+    ASSERT_EQ_INT(0, wire_count_type(3, LLAP_TYPE_ACK));
+    link_delete();
+}
+
 // A directed data frame from the guest is preceded by the guest's RTS, which
 // we answer with CTS; one of ours goes out only after the guest's CTS.  This
 // drives both directions through an NBP LkUp for a name we registered.
@@ -1309,6 +1330,30 @@ TEST(a_hello_on_an_open_link_is_answered_once) {
     link_delete();
 }
 
+// A zone still unknown when its machine goes (the ZIP Query unanswered) is
+// asked for again once the next machine takes the cable.  Unplugging stops
+// the ZIP timer with the others, and plugging in did not start it again: the
+// route stayed zoneless, and lookups in "*" never reached that network.
+TEST(a_zone_unknown_across_a_new_machine_is_asked_again) {
+    link_boot();
+    atalk_link_t *l = peer_link(0, 640, false);
+    uint16_t tuples[] = {640, 0};
+    peer_rtmp(l, tuples, 1);
+    guest_advance_to(link_now_ns() + 1e6);
+    size_t len = 0;
+    ASSERT_TRUE(peer_last_ddp(0, 6, &len) != NULL); // asked once, never answered
+    link_delete();
+
+    link_boot();
+    g_peers[0].n = 0;
+    guest_advance_to(link_now_ns() + 1e6);
+    const uint8_t *q = peer_last_ddp(0, 6, &len);
+    ASSERT_TRUE(q != NULL);
+    ASSERT_EQ_INT(1, q[13]); // ZIP Query
+    atalk_link_close(l, "test over");
+    link_delete();
+}
+
 // --- ATP exactly-once requests a handler declines -------------------------------
 
 #define DECLINE_SOCKET 60
@@ -1650,6 +1695,7 @@ int main(void) {
     RUN(a_publish_that_fails_changes_nothing);
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
+    RUN(a_numbered_network_offers_its_guest_only_its_own_nodes);
     RUN(nbp_lookup_is_answered_after_the_rts_cts_handshake);
     RUN(every_transport_timer_is_registered_at_init);
     RUN(a_rebuilt_stack_serves_a_write_the_old_one_left_pending);
@@ -1682,6 +1728,7 @@ int main(void) {
     RUN(transit_and_split_horizon);
     RUN(routes_age_and_links_fail);
     RUN(a_hello_on_an_open_link_is_answered_once);
+    RUN(a_zone_unknown_across_a_new_machine_is_asked_again);
     RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);
