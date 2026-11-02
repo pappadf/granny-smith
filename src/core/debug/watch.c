@@ -8,6 +8,7 @@
 
 #include "watch.h"
 
+#include "breadcrumb.h" // the GPU wait totals
 #include "cpu.h" // cpu_get_pc
 #include "debug.h" // debug_mac_xlate
 #include "display.h" // display_t
@@ -23,6 +24,7 @@
 #include "system_internal.h" // config_t::cpu / ppc
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -62,6 +64,28 @@ typedef struct {
 
 static watch_t g_watch;
 static uint32_t g_interval_s = 60; // log.status_every
+static uint32_t g_perf_s; // log.perf_every (0: off)
+
+// The tick's parts since the last perf line (watch_note_phase)
+#define WATCH_PHASES 8
+static struct {
+    const char *what;
+    uint64_t n;
+    double sum, max;
+} g_parts[WATCH_PHASES];
+
+// The perf line's baselines
+static struct {
+    bool primed;
+    config_t *machine;
+    double ms; // host time of the last line
+    uint64_t instr;
+    double time_ns; // emulated time
+    double sleep_ms;
+    ppc_jit_perf_t jit;
+    uint32_t gpu_waits, gpu_wait_ms;
+    double gap_max; // the longest gap between two polls since the line
+} g_perf;
 
 // The devices' reporters (watch_add_reporter)
 static struct {
@@ -90,6 +114,15 @@ uint32_t watch_get_interval(void) {
 
 void watch_set_interval(uint32_t seconds) {
     g_interval_s = seconds;
+}
+
+uint32_t watch_get_perf_interval(void) {
+    return g_perf_s;
+}
+
+void watch_set_perf_interval(uint32_t seconds) {
+    g_perf_s = seconds;
+    g_perf.primed = false;
 }
 
 // Guest reads in the Mac world's logical space (0 with no memory)
@@ -241,6 +274,116 @@ void watch_note_phase(const char *what, double ms) {
         g_phase.what = what;
         g_phase.ms = ms;
     }
+    for (int i = 0; i < WATCH_PHASES; i++)
+        if (g_parts[i].what == what || !g_parts[i].what) {
+            g_parts[i].what = what;
+            g_parts[i].n++;
+            g_parts[i].sum += ms;
+            if (ms > g_parts[i].max)
+                g_parts[i].max = ms;
+            break;
+        }
+}
+
+// The perf line (log.perf_every): everything the run loop, the scheduler,
+// the translation tier and the devices measured since the last one, as
+// rates over the interval.  Several lines, one subject each, "perf:" first.
+static void perf_take_baseline(config_t *m, double now_ms) {
+    scheduler_t *sched = m ? m->scheduler : NULL;
+    g_perf.primed = true;
+    g_perf.machine = m;
+    g_perf.ms = now_ms;
+    g_perf.instr = scheduler_instr_count(sched);
+    g_perf.time_ns = sched ? scheduler_time_ns(sched) : 0;
+    g_perf.sleep_ms = sched ? scheduler_sleep_host_ms(sched) : 0;
+    ppc_jit_perf(&g_perf.jit);
+    volatile uint32_t *crumb = crumb_block();
+    g_perf.gpu_waits = crumb[CRUMB_GPU_WAITS];
+    g_perf.gpu_wait_ms = crumb[CRUMB_GPU_WAIT_MS];
+    g_perf.gap_max = 0;
+    memset(g_parts, 0, sizeof g_parts);
+    scheduler_perf_t sp;
+    scheduler_perf_take(sched, &sp); // restart its interval counters
+}
+
+static void perf_report(config_t *m, double now_ms) {
+    scheduler_t *sched = m ? m->scheduler : NULL;
+    double secs = (now_ms - g_perf.ms) / 1000.0;
+    if (secs <= 0)
+        return;
+    uint64_t instr = scheduler_instr_count(sched);
+    double time_ns = sched ? scheduler_time_ns(sched) : 0;
+    double sleep_ms = sched ? scheduler_sleep_host_ms(sched) : 0;
+    uint64_t di = instr >= g_perf.instr ? instr - g_perf.instr : 0;
+    scheduler_perf_t sp;
+    scheduler_perf_take(sched, &sp);
+    ppc_jit_perf_t j;
+    ppc_jit_perf(&j);
+    const ppc_jit_perf_t *b = &g_perf.jit;
+    char pc[48];
+    format_pc(m, pc, sizeof pc);
+
+    // The machine: throughput against the wall clock and against the time
+    // the CPU actually had (run time less the scheduler's sleeps)
+    double run_ms = sp.run_ms - (sleep_ms - g_perf.sleep_ms);
+    char turbo[32] = "";
+    if (!isnan(sp.turbo_ratio))
+        snprintf(turbo, sizeof turbo, ", turbo ratio %.2f", sp.turbo_ratio);
+    log_status("perf: %.2fs %s %s, %.1f MIPS wall, %.1f MIPS while running (%.0f%% of wall), guest %.3fx real time "
+               "(speed %.2fx, governor rung %d%s), %s",
+               secs, sched && scheduler_is_running(sched) ? "running" : "stopped", sp.mode, di / secs / 1e6,
+               run_ms > 0 ? di / (run_ms * 1000.0) : 0.0, 100.0 * sp.run_ms / (secs * 1000.0),
+               time_ns > g_perf.time_ns ? (time_ns - g_perf.time_ns) / (secs * 1e9) : 0.0, sp.speed, sp.governor_rung,
+               turbo, pc);
+
+    // The host loop: ticks, the frame-units they ran, and where each tick's
+    // time went (count, total, longest)
+    char parts[400];
+    int k = 0;
+    parts[0] = 0;
+    for (int i = 0; i < WATCH_PHASES && g_parts[i].what && k >= 0 && (size_t)k < sizeof parts; i++)
+        k += snprintf(parts + k, sizeof parts - (size_t)k, " %s %llux %.0f/%.1fms", g_parts[i].what,
+                      (unsigned long long)g_parts[i].n, g_parts[i].sum, g_parts[i].max);
+    log_status("perf: loop %llu ticks ran %llu frame-units (most %u in one, %llu behind), run %.0fms (longest tick "
+               "%.1fms), est %.2fms/frame-unit %.2fms/loop; longest gap between polls %.0fms; parts:%s",
+               (unsigned long long)sp.ticks, (unsigned long long)sp.vbls, sp.vbls_max, (unsigned long long)sp.behind,
+               sp.run_ms, sp.run_ms_max, sp.host_ms_per_vbl, sp.host_ms_per_loop, g_perf.gap_max, parts);
+
+    // The translation tier, per second
+    if (j.on || j.calls) {
+        uint64_t dins = j.insns - b->insns;
+        log_status("perf: jit %.0f%% of instructions, %.0f calls/s, %.0f deopts/s, %.0f lookups/s, %.1f compiles/s, "
+                   "%.1f functions/s, %.0f KB/s generated, %.0f ms compiling (%.0f%%), %.0f deferred/s, "
+                   "%.0f block invalidations/s, async %llu sent %llu installed %llu dropped (%lld in flight); "
+                   "total %llu regions %llu KB, budget %u%%",
+                   di ? 100.0 * (double)dins / (double)di : 0.0, (j.calls - b->calls) / secs,
+                   (j.deopts - b->deopts) / secs, (j.lookups - b->lookups) / secs, (j.compiles - b->compiles) / secs,
+                   (j.functions - b->functions) / secs, (j.bytes - b->bytes) / 1024.0 / secs,
+                   j.compile_ms - b->compile_ms, 100.0 * (j.compile_ms - b->compile_ms) / (secs * 1000.0),
+                   (j.deferred - b->deferred) / secs, (j.block_invals - b->block_invals) / secs,
+                   (unsigned long long)(j.async_issued - b->async_issued),
+                   (unsigned long long)(j.async_landed - b->async_landed),
+                   (unsigned long long)(j.async_dropped - b->async_dropped),
+                   (long long)(j.async_issued - j.async_landed - j.async_dropped), (unsigned long long)j.regions,
+                   (unsigned long long)(j.bytes / 1024), j.budget_pct);
+    }
+
+    // Waits on GPU workers (every card's), then each device's own line
+    volatile uint32_t *crumb = crumb_block();
+    uint32_t waits = crumb[CRUMB_GPU_WAITS] - g_perf.gpu_waits;
+    uint32_t wait_ms = crumb[CRUMB_GPU_WAIT_MS] - g_perf.gpu_wait_ms;
+    if (waits)
+        log_status("perf: gpu waits %u, %u ms (%.0f%% of wall)", waits, wait_ms, 100.0 * wait_ms / (secs * 1000.0));
+    for (int i = 0; i < WATCH_MAX_REPORTERS; i++) {
+        if (!g_reporters[i].fn)
+            continue;
+        char line[1536] = "";
+        g_reporters[i].fn(g_reporters[i].ctx, line, sizeof line);
+        if (line[0])
+            log_status("perf: %s", line);
+    }
+
+    perf_take_baseline(m, now_ms);
 }
 
 // The detectors: a system error, Ticks frozen, the CPU not advancing
@@ -310,6 +453,8 @@ void watch_poll(double now_ms) {
     double gap = now_ms - g_watch.last_poll_ms;
     if (gap < 1000.0)
         return;
+    if (gap > g_perf.gap_max)
+        g_perf.gap_max = gap;
     g_watch.last_poll_ms = now_ms;
     // The thread that polls is the emulator's: a late poll means it was
     // busy elsewhere that long (the page's 3 s heartbeat watch fires on this)
@@ -327,6 +472,12 @@ void watch_poll(double now_ms) {
     detect(m, now_ms);
     if (g_interval_s && now_ms - g_watch.last_report_ms >= g_interval_s * 1000.0)
         report(m, now_ms);
+    if (g_perf_s) {
+        if (!g_perf.primed || g_perf.machine != m)
+            perf_take_baseline(m, now_ms);
+        else if (now_ms - g_perf.ms >= g_perf_s * 1000.0 - 1.0)
+            perf_report(m, now_ms);
+    }
 }
 
 void watch_report_now(void) {

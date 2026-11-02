@@ -71,5 +71,6 @@ void r128_gpu_sync_all(r128_gpu_t *g);
 void r128_gpu_disengage(r128_gpu_t *g, bool discard);
 
 const char *r128_gpu_stats(r128_gpu_t *g, char *buf, size_t n);
+const char *r128_gpu_wait_stats(r128_gpu_t *g, char *buf, size_t n);
 
 #endif // RAGE128_GPU_H

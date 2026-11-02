@@ -62,6 +62,16 @@
 //     both TLBs (604UM §5.4.3.2; the 64-iteration flush idiom).
 
 #include "ppc_internal.h"
+#include "ppc_jit.h" // g_ppc_jit_on: TLB-hit fills for RAM only with the tier on
+
+// Whether a TLB hit refills RAM's table entry (ppc_dxlate_slow): only where
+// a miss is a deopt, with the translation tier on -- wasm builds; native
+// builds have no tier and do not link it (the unit suites)
+#ifdef __EMSCRIPTEN__
+#define TLB_HIT_FILLS_RAM() g_ppc_jit_on
+#else
+#define TLB_HIT_FILLS_RAM() false
+#endif
 
 #include "log.h"
 
@@ -86,6 +96,7 @@ static xtlb_entry_t g_xtlb[XTLB_SIZE];
 // Fetch cache: a one-page window (checked inline in ppc_run.c via the
 // extern below) backed by a small direct-mapped TLB of page→host maps.
 ppc_fetch_window_t g_ppc_fetch; // the inline-checked window
+uint32_t g_ppc_rfi_pc = 1; // (odd: none yet)
 ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE]; // the fetch TLB (ppc_internal.h)
 
 // Pages filled into the logical SoA arrays -- the user ones and the
@@ -947,9 +958,21 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> MEM_PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
-        // A device page served from the TLB gets its table entry,
-        // so the next access to it skips this walk entirely.
-        if (dt && (te->pa_page >> MEM_PAGE_SHIFT) < g_page_count && g_page_table[te->pa_page >> MEM_PAGE_SHIFT].dev) {
+        // A device page served from the TLB gets its table entry, so the next
+        // access to it skips this walk entirely.  So does RAM whose entry a
+        // flush took away (the TLB keeps a RAM page only when a walk could not
+        // fill it for a store: a code page, a store owing C), but only with
+        // the translation tier on: there a miss is a deopt -- leave, the
+        // predecoded loop's step, a lookup, enter again -- and every load from
+        // such a page missed for as long as its TLB entry lived (Quake III's
+        // driver data: 75 % of the exits).  In the predecoded loop a miss
+        // costs little more than a hit, and refilling pages the guest keeps
+        // evicting cost the pm8500-finder bench row 5 % more host
+        // instructions.  Not a store into a code page: its write entry is
+        // refused, so the fill would be redone, in vain, on every such store.
+        uint32_t tppage = te->pa_page >> MEM_PAGE_SHIFT;
+        if (dt && tppage < g_page_count &&
+            (g_page_table[tppage].dev || (TLB_HIT_FILLS_RAM() && (!store || g_page_table[tppage].writable)))) {
             if (user) {
                 user_soa_fill(ea, te->pa_page, te->w_ok);
                 if ((store ? g_user_write : g_user_read)[ea >> MEM_PAGE_SHIFT])
@@ -1146,6 +1169,37 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     }
     *addr = out.pa;
     return 0;
+}
+
+// dcbz from the translation tier (ppc_jit_dcbz): the block's host address
+// when ppc_dxlate_dcbz would zero it through a live write entry -- the
+// data cache on, no T=1 segment, W and I clear, not a device's block, and
+// the active write table covering the page -- else NULL with nothing
+// changed (the walk runs without side effects), and the instruction is
+// left to the predecoded loop: the exception, the no-op, the held line or
+// the fill.  `ea` is the block's (32-byte aligned).  604 family only.
+uint8_t *ppc_dcbz_host(ppc_t *p, uint32_t ea) {
+    if (!(p->hid0 & 0x00004000u) || (p->hid0 & 0x00001000u)) // DCE clear or DCL set
+        return NULL;
+    if (p->sr_t_mask & (1u << (ea >> 28)))
+        return NULL;
+    uint32_t masked = ea & g_address_mask;
+    uintptr_t base = g_active_write[masked >> MEM_PAGE_SHIFT];
+    if (!MEM_ENTRY_IS_RAM(base))
+        return NULL;
+    bool dt = (p->msr & PPC_MSR_DT) != 0;
+    if (!dt) {
+        if (dcbz_device(ea))
+            return NULL;
+    } else {
+        if (g_active_read == g_supervisor_read) // no logical maps: ppc_dxlate_dcbz rewrites the address
+            return NULL;
+        xl_out_t out;
+        if (xlate(p, ea, (p->msr & PPC_MSR_PR) != 0, true, false, true, true, &out, NULL) != XL_OK ||
+            (out.wimg & 0x6u) || dcbz_device(out.pa))
+            return NULL;
+    }
+    return MEM_ENTRY_HOST(base, masked);
 }
 
 // ============================================================

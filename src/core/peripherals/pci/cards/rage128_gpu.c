@@ -34,6 +34,7 @@
 
 #include "rage128_gpu.h"
 
+#include "breadcrumb.h"
 #include "display.h"
 #include "log.h"
 #include "platform_hooks.h"
@@ -52,6 +53,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define R128GPU_MAX_SURF      8
 #define R128GPU_MAX_ROWS      2048
 #define R128GPU_MAX_TEX       1024
+#define R128GPU_TEX_HINTS     1024 // tex_resolve's hint table (a power of two)
 #define R128GPU_TEX_BYTES_CAP (96u << 20) // atlas bytes held on the GPU
 #define R128GPU_PAGE_SHIFT    12 // VRAM write tracking granularity (4 KB)
 #define R128GPU_IDLE_VBLS     120 // vblanks without 3D before disengaging
@@ -131,13 +133,33 @@ struct r128_gpu {
     bool write_color, write_depth;
     r128gpu_draw_hdr_t hdr;
     uint32_t uni[R128GPU_U_WORDS];
+    // What the uniform was built from (st_t.gen, the depth buffer's
+    // presence, the target's size): a batch with the same is not rebuilt.
+    // uni_ver counts the builds.
+    uint64_t uni_gen;
+    bool uni_depth;
+    uint32_t uni_w, uni_h, uni_ver;
+    // classify()'s answer for state cls_gen, triangles or not.
+    uint64_t cls_gen;
+    bool cls_tris;
+    int cls_why;
+    uint32_t cls_key;
     // The open DRAW record.
     bool draw_open;
+    // ...holds this batch's header and uniform: r128_gpu_tri checks only
+    // its room, not the 512-byte uniform, per triangle (r128_gpu_batch_begin
+    // clears it, and a closed record is never current)
+    bool draw_current;
     uint32_t draw_off;
     r128gpu_draw_hdr_t draw_hdr;
     uint32_t draw_uni[R128GPU_U_WORDS];
+    uint32_t draw_uni_ver; // uni_ver when it opened: equal, the uniforms are
     // Textures.
     gtex_t *tex;
+    // The entry a texture key last resolved to, by the key's hash: checked
+    // in full, so a stale or colliding hint costs only the scan it saves
+    // (a batch resolved its textures by scanning up to 1024 entries)
+    uint16_t tex_hint[R128GPU_TEX_HINTS];
     uint64_t tex_bytes;
     uint64_t frame;
     // The display table last sent.
@@ -156,6 +178,9 @@ struct r128_gpu {
     uint64_t n_readback_bands, n_readback_rows, n_upload_rows;
     uint64_t n_tex_create, n_tex_upload_bytes, n_tex_evict;
     uint64_t n_fallback[FB_COUNT];
+    // Waits on the worker (the perf line): how many, and host ms spent
+    uint64_t n_wait_ring, n_wait_ack, n_wait_pace;
+    double ms_wait_ring, ms_wait_ack, ms_wait_pace, ms_wait_max;
 };
 
 // ============================================================
@@ -220,23 +245,40 @@ static void publish(r128_gpu_t *g) {
 
 // Reserve a record (header included) that does not wrap, waiting for
 // room; UINT32_MAX when the worker is gone.
+// A wait on the worker ends: count it (the perf line, the breadcrumbs)
+static void wait_done(r128_gpu_t *g, crumb_phase_t outer, double t0, uint64_t *n, double *ms) {
+    double dt = now_ms() - t0;
+    (*n)++;
+    *ms += dt;
+    if (dt > g->ms_wait_max)
+        g->ms_wait_max = dt;
+    crumb_gpu_wait(dt);
+    crumb_leave(outer);
+}
+
 static uint32_t reserve(r128_gpu_t *g, uint32_t kind, uint32_t len) {
+    uint32_t at = mbx_reserve(&g->ring, kind, len);
+    if (at != UINT32_MAX)
+        return at;
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_RING);
     for (;;) {
         uint32_t tail = gload(g, R128GPU_C_TAIL);
-        uint32_t at = mbx_reserve(&g->ring, kind, len);
+        at = mbx_reserve(&g->ring, kind, len);
         if (at != UINT32_MAX)
-            return at;
+            break;
         if (worker_lost(g))
-            return UINT32_MAX;
+            break;
         publish(g);
         platform_v2gpu_wait(&g->ctrl[R128GPU_C_TAIL], tail, 20);
         platform_v2gpu_keepalive();
         if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped consuming the op ring");
-            return UINT32_MAX;
+            break;
         }
     }
+    wait_done(g, outer, t0, &g->n_wait_ring, &g->ms_wait_ring);
+    return at;
 }
 
 static inline uint8_t *payload(r128_gpu_t *g, uint32_t at) {
@@ -254,9 +296,16 @@ static bool emit(r128_gpu_t *g, uint32_t kind, const uint32_t *words, uint32_t n
     return true;
 }
 
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0);
 static bool wait_ack(r128_gpu_t *g, uint32_t seq) {
     publish(g);
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_ACK);
+    bool ok = wait_ack_inner(g, seq, t0);
+    wait_done(g, outer, t0, &g->n_wait_ack, &g->ms_wait_ack);
+    return ok;
+}
+static bool wait_ack_inner(r128_gpu_t *g, uint32_t seq, double t0) {
     for (;;) {
         uint32_t ack = gload(g, R128GPU_C_ACK);
         if ((int32_t)(ack - seq) >= 0) {
@@ -323,6 +372,13 @@ static inline void bit_clr(uint8_t *b, uint32_t y) {
 }
 
 static void mark_gpu_newer(surf_t *s, uint32_t y0, uint32_t y1) {
+    // Every row already newer on the GPU and none newer in VRAM: nothing
+    // to change.  That is the steady state of a scene being drawn (the
+    // CPU never touches the colour or depth buffer), and this runs for
+    // every batch over every row the batch spans -- about 50 K batches a
+    // second, tens to hundreds of rows each, on Quake III.
+    if (s->n_gpu == s->h && !s->n_cpu)
+        return;
     for (uint32_t y = y0; y < y1 && y < s->h; y++) {
         if (bit_get(s->cpu_newer, y))
             bit_clr(s->cpu_newer, y), s->n_cpu--;
@@ -815,19 +871,34 @@ static uint32_t tex_resolve(r128_gpu_t *g, const tex_unit_t *u) {
     for (uint32_t i = 0; i <= top; i++)
         agp |= (offs[i] & 0x2000000u) != 0;
     gtex_t *e = NULL, *free_slot = NULL;
-    for (int i = 0; i < R128GPU_MAX_TEX; i++) {
-        gtex_t *t = &g->tex[i];
-        if (!t->id) {
-            if (!free_slot)
-                free_slot = t;
-            continue;
-        }
-        if (t->fmt == u->fmt && t->lpitch == u->lpitch && t->lheight == u->lheight && t->top == top &&
-            !memcmp(t->off, offs, sizeof(offs))) {
-            e = t;
-            break;
+#define TEX_KEY_MATCHES(t)                                                                                             \
+    ((t)->id && (t)->fmt == u->fmt && (t)->lpitch == u->lpitch && (t)->lheight == u->lheight && (t)->top == top &&     \
+     !memcmp((t)->off, offs, sizeof(offs)))
+    uint32_t h = 2166136261u; // FNV-1a over the key
+    uint32_t key[4] = {u->fmt, u->lpitch, u->lheight, top};
+    for (int i = 0; i < 4; i++)
+        h = (h ^ key[i]) * 16777619u;
+    for (int i = 0; i < 11; i++)
+        h = (h ^ offs[i]) * 16777619u;
+    uint16_t *hint = &g->tex_hint[(h ^ (h >> 16)) & (R128GPU_TEX_HINTS - 1)];
+    if (TEX_KEY_MATCHES(&g->tex[*hint]))
+        e = &g->tex[*hint];
+    else {
+        for (int i = 0; i < R128GPU_MAX_TEX; i++) {
+            gtex_t *t = &g->tex[i];
+            if (!t->id) {
+                if (!free_slot)
+                    free_slot = t;
+                continue;
+            }
+            if (TEX_KEY_MATCHES(t)) {
+                e = t;
+                *hint = (uint16_t)i;
+                break;
+            }
         }
     }
+#undef TEX_KEY_MATCHES
     if (e) {
         bool stale;
         if (e->agp) {
@@ -864,6 +935,7 @@ static uint32_t tex_resolve(r128_gpu_t *g, const tex_unit_t *u) {
             return 0;
     }
     e = free_slot;
+    *hint = (uint16_t)(e - g->tex);
     memset(e, 0, sizeof(*e));
     e->id = ++g->next_id;
     e->fmt = u->fmt;
@@ -1035,8 +1107,14 @@ bool r128_gpu_batch_begin(r128_gpu_t *g, st_t *s, uint32_t prim, const r128_vert
     // Any 3D keeps the takeover engaged, drawn here or by the walker: what
     // the walker's batches cost in readbacks is the storm rule's business.
     g->idle_vbls = 0;
-    uint32_t key = 0;
-    int why = classify(s, prim, &key);
+    // classify() reads the state and only whether the batch is triangles
+    bool tris = prim >= 4 && prim <= 7;
+    if (g->cls_gen != s->gen || g->cls_tris != tris) {
+        g->cls_why = classify(s, prim, &g->cls_key);
+        g->cls_gen = s->gen, g->cls_tris = tris;
+    }
+    uint32_t key = g->cls_key;
+    int why = g->cls_why;
     if (why != FB_COUNT) {
         g->n_fallback[why]++;
         return false;
@@ -1104,7 +1182,12 @@ bool r128_gpu_batch_begin(r128_gpu_t *g, st_t *s, uint32_t prim, const r128_vert
     g->hdr.tex_id[1] = tex_id[1];
     g->hdr.pipe_key = key;
     g->hdr.sx0 = x0, g->hdr.sy0 = y0, g->hdr.sx1 = x1, g->hdr.sy1 = y1;
-    build_uniform(g, s);
+    if (g->uni_gen != s->gen || g->uni_depth != (bd != NULL) || g->uni_w != bc->w || g->uni_h != bc->h) {
+        build_uniform(g, s);
+        g->uni_gen = s->gen, g->uni_depth = bd != NULL, g->uni_w = bc->w, g->uni_h = bc->h;
+        g->uni_ver++;
+    }
+    g->draw_current = false; // a new header and uniform: the open record is checked again
     g->n_batches++;
     return true;
 }
@@ -1122,6 +1205,7 @@ static bool open_draw(r128_gpu_t *g) {
     g->draw_hdr = g->hdr;
     g->draw_hdr.n_verts = 0;
     memcpy(g->draw_uni, g->uni, R128GPU_U_BYTES);
+    g->draw_uni_ver = g->uni_ver;
     memcpy(payload(g, at) + sizeof(r128gpu_draw_hdr_t), g->uni, R128GPU_U_BYTES);
     return true;
 }
@@ -1129,7 +1213,7 @@ static bool open_draw(r128_gpu_t *g) {
 static bool draw_matches(const r128_gpu_t *g) {
     return g->draw_open && g->draw_hdr.n_verts + 3u <= R128GPU_MAX_VERTS &&
            !memcmp(&g->draw_hdr, &g->hdr, offsetof(r128gpu_draw_hdr_t, n_verts)) &&
-           !memcmp(g->draw_uni, g->uni, R128GPU_U_BYTES);
+           (g->draw_uni_ver == g->uni_ver || !memcmp(g->draw_uni, g->uni, R128GPU_U_BYTES));
 }
 
 static void put_vertex(float *o, const svtx_t *v) {
@@ -1151,8 +1235,11 @@ void r128_gpu_tri(r128_gpu_t *g, const st_t *s, const svtx_t *a, const svtx_t *b
     (void)s;
     if (g->batch_empty || g->lost)
         return;
-    if (!draw_matches(g) && !open_draw(g))
-        return;
+    if (!(g->draw_current && g->draw_open && g->draw_hdr.n_verts + 3u <= R128GPU_MAX_VERTS)) {
+        if (!draw_matches(g) && !open_draw(g))
+            return;
+        g->draw_current = true;
+    }
     float *o = (float *)(payload(g, g->draw_off) + sizeof(r128gpu_draw_hdr_t) + R128GPU_U_BYTES +
                          g->draw_hdr.n_verts * R128GPU_VERTEX_BYTES);
     const svtx_t *vv[3] = {a, b, c};
@@ -1241,21 +1328,29 @@ bool r128_gpu_fill(r128_gpu_t *g, uint32_t base, uint32_t stride, uint32_t bpp, 
 // slow GPU draws them, and the next readback would wait for the whole
 // backlog.  Wait until at most R128GPU_FRAMES_AHEAD presents are pending.
 static bool pace(r128_gpu_t *g) {
+    if ((uint32_t)(g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE)) < R128GPU_FRAMES_AHEAD)
+        return true;
     double t0 = now_ms();
+    crumb_phase_t outer = crumb_enter(CRUMB_GPU_PACE);
+    bool ok = false;
     for (;;) {
         uint32_t done = gload(g, R128GPU_C_PRESENTS_DONE);
-        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD)
-            return true;
+        if ((uint32_t)(g->present_seq - done) < R128GPU_FRAMES_AHEAD) {
+            ok = true;
+            break;
+        }
         if (worker_lost(g))
-            return false;
+            break;
         publish(g);
         platform_v2gpu_wait(&g->ctrl[R128GPU_C_PRESENTS_DONE], done, 20);
         platform_v2gpu_keepalive();
         if (now_ms() - t0 > (double)R128GPU_ACK_MS) {
             mark_lost(g, "the GPU worker stopped completing frames");
-            return false;
+            break;
         }
     }
+    wait_done(g, outer, t0, &g->n_wait_pace, &g->ms_wait_pace);
+    return ok;
 }
 
 // Send the hardware cursor when it changed: its position and visibility
@@ -1404,9 +1499,31 @@ const char *r128_gpu_stats(r128_gpu_t *g, char *buf, size_t n) {
     for (int i = 0; i < FB_COUNT && k > 0 && (size_t)k < n; i++)
         k += snprintf(buf + k, n - (size_t)k, " fallback_%s=%llu", k_fb_names[i], (unsigned long long)g->n_fallback[i]);
     if (g->ctrl && k > 0 && (size_t)k < n)
-        snprintf(buf + k, n - (size_t)k, " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
-                 gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
-                 gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+        k += snprintf(buf + k, n - (size_t)k,
+                      " gpu_frames=%u gpu_draws=%u gpu_flushes=%u gpu_pipelines=%u gpu_readbacks=%u",
+                      gload(g, R128GPU_C_STAT_FRAMES), gload(g, R128GPU_C_STAT_DRAWS), gload(g, R128GPU_C_STAT_FLUSHES),
+                      gload(g, R128GPU_C_STAT_PIPELINES), gload(g, R128GPU_C_STAT_READBACKS));
+    if (k > 0 && (size_t)k < n)
+        r128_gpu_wait_stats(g, buf + k, n - (size_t)k);
+    return buf;
+}
+
+// The waits on the worker and where the rings stand: the part of the
+// statistics the perf line prints every interval
+const char *r128_gpu_wait_stats(r128_gpu_t *g, char *buf, size_t n) {
+    if (!g) {
+        if (n)
+            buf[0] = 0;
+        return buf;
+    }
+    uint32_t backlog = g->ctrl ? gload(g, R128GPU_C_HEAD) - gload(g, R128GPU_C_TAIL) : 0;
+    uint32_t pending = g->ctrl ? g->present_seq - gload(g, R128GPU_C_PRESENTS_DONE) : 0;
+    snprintf(buf, n,
+             " waits ring %llu/%.0fms ack %llu/%.0fms pace %llu/%.0fms (longest %.0fms); ring backlog %u B, "
+             "presents pending %u, status %u, lost %d",
+             (unsigned long long)g->n_wait_ring, g->ms_wait_ring, (unsigned long long)g->n_wait_ack, g->ms_wait_ack,
+             (unsigned long long)g->n_wait_pace, g->ms_wait_pace, g->ms_wait_max, backlog, pending,
+             g->ctrl ? gload(g, R128GPU_C_STATUS) : 0, g->lost);
     return buf;
 }
 

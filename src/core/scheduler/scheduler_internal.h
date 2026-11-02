@@ -121,6 +121,12 @@ struct scheduler {
     // real time (scheduler_effective_speed_x256).
     double turbo_ratio;
 
+    // The perf line's interval counters (scheduler_perf_take); host state,
+    // not checkpointed
+    uint64_t perf_ticks, perf_vbls, perf_behind;
+    uint32_t perf_vbls_max;
+    double perf_run_ms, perf_run_ms_max;
+
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
     int num_event_types;

@@ -5,7 +5,7 @@ import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';
 import { applyAppearance, applyUrlSkin } from '@/state/appearance.svelte';
-import { autoPickPanelPos, layout } from '@/state/layout.svelte';
+import { autoPickPanelPos, layout, setActiveTab } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
 import {
@@ -17,9 +17,21 @@ import {
 import {
   whenModuleReady,
   onEmulatorCrash,
+  onEmulatorStall,
+  onEmulatorResume,
+  onPerfEvery,
   onRendererFailure,
   applySchedulerMode,
 } from '@/bus/emulator';
+import {
+  applyPerfFromUrl,
+  dumpDiagnostics,
+  ensureLagProbe,
+  setPageMonitor,
+  stallTrace,
+} from '@/bus/diagnostics';
+import { routePrintLine } from '@/bus/logSink';
+import { emulatorHealth } from '@/state/emulatorHealth.svelte';
 import { claimScratch } from '@/bus/scratch';
 import { installRemoteAfp } from '@/bus/remoteAfp';
 import { checkStoragePersistence } from '@/bus/storageHealth';
@@ -155,16 +167,53 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     }
 
     // A worker that dies later (a wasm trap, an abort) cannot be recovered in
-    // this page: every request now fails at once; say so and offer a reload.
-    // A crash and a renderer failure each replace the UI; the first one wins
-    // (a renderer failure can be followed by a crash).
+    // this page: every request now fails at once.  The page stays up under a
+    // banner (EmulatorHealthBanner) with the console in view, and dumps what
+    // it can read about the emulator there (bus/diagnostics.ts).  A stall --
+    // the heartbeat still with requests pending -- is the same without the
+    // failing: the core may come back, and the banner goes when it does.
+    // A renderer failure still replaces the UI.
     let failed = false;
+    const showConsole = () => {
+      if (document.pointerLockElement) document.exitPointerLock();
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      setActiveTab('terminal');
+    };
+    let stallTimer: ReturnType<typeof setInterval> | null = null;
     onEmulatorCrash((reason) => {
-      if (failed) return;
-      failed = true;
-      void unmount(mounted);
-      renderStartupErrorPage(target, reason, 'The emulator stopped');
+      failed = true; // (a renderer failure after it must not take the console away)
+      if (stallTimer) clearInterval(stallTimer);
+      stallTimer = null;
+      emulatorHealth.stalled = false;
+      emulatorHealth.crashed = true;
+      emulatorHealth.crashReason = reason;
+      showConsole();
+      void dumpDiagnostics('crash', reason);
     });
+    onEmulatorStall((reason) => {
+      emulatorHealth.stalled = true;
+      emulatorHealth.stallSince = performance.now() - 3_000;
+      emulatorHealth.stallReason = reason;
+      emulatorHealth.stalls++;
+      ensureLagProbe();
+      showConsole();
+      void dumpDiagnostics('stall', reason);
+      // While it lasts: where the emulator thread is, every 5 s
+      if (stallTimer) clearInterval(stallTimer);
+      stallTimer = setInterval(() => {
+        const s = Math.round((performance.now() - emulatorHealth.stallSince) / 1000);
+        routePrintLine(`diag: still stalled after ${s} s: ${stallTrace()}`);
+      }, 5_000);
+    });
+    onEmulatorResume((ms) => {
+      if (stallTimer) clearInterval(stallTimer);
+      stallTimer = null;
+      emulatorHealth.stalled = false;
+      routePrintLine(
+        `diag: the emulator answers again, after ${(ms / 1000).toFixed(1)} s without a heartbeat`,
+      );
+    });
+    onPerfEvery((seconds) => setPageMonitor(seconds));
 
     // The renderer gave up (no context, a lost one, shaders the driver would
     // not build): the screen is dead even though the core runs on, so say why.
@@ -185,6 +234,9 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     // the terminal (bus/testHook.ts).
     installEvalHookForAutomation();
     installUiHookForAutomation();
+
+    // ?perf=N: the core's perf lines and the page monitor from the start
+    void applyPerfFromUrl(urlParams);
 
     // Before anything else: if the worker had to put /opfs on memory, say
     // so now and keep saying so (the banner), before the user adds anything.

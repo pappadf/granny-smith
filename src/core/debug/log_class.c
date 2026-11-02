@@ -19,6 +19,7 @@
 #include "out.h"
 #include "value.h"
 #include "watch.h"
+#include "event/event.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -302,6 +303,24 @@ static DEF_SETTER(log_attr_status_every_set) {
     return val_none();
 }
 
+// `log.perf_every` — seconds between two perf lines on the console
+// (watch.h); 0 (the default) turns them off.  The page runs its own
+// monitor at the same interval (its lines start "page:"), so it is told.
+static DEF_GETTER(log_attr_perf_every_get) {
+    return val_uint(4, watch_get_perf_interval());
+}
+
+static DEF_SETTER(log_attr_perf_every_set) {
+    bool ok = false;
+    int64_t secs = val_as_i64(&in, &ok);
+    value_free(&in);
+    if (!ok || secs < 0 || secs > 3600)
+        return val_err("perf_every is a number of seconds, 0 to 3600 (0: off)");
+    watch_set_perf_interval((uint32_t)secs);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"perf_every\",\"seconds\":%u}", (unsigned)secs);
+    return val_none();
+}
+
 // `log.alerts` — how many alerts (LOG_ALERT) have been raised since start
 static DEF_GETTER(log_attr_alerts) {
     return val_uint(8, log_alert_total());
@@ -326,6 +345,10 @@ static const member_t log_members[] = {
      .name = "status_every",
      .doc = "Seconds between two status lines on the console (what the machine is doing); 0: off",
      .attr = {.type = VK_UINT, .width = 4, .get = log_attr_status_every_get, .set = log_attr_status_every_set}   },
+    {.kind = MK_ATTR,
+     .name = "perf_every",
+     .doc = "Seconds between two perf lines on the console (MIPS, ticks, scheduler, JIT, GPU waits); 0: off",
+     .attr = {.type = VK_UINT, .width = 4, .get = log_attr_perf_every_get, .set = log_attr_perf_every_set}       },
     {.kind = MK_ATTR,
      .name = "alerts",
      .doc = "Alerts raised since start (disk errors, failed checkpoints, a hung guest...)",

@@ -95,7 +95,8 @@ interface DetachMsg {
 interface DebugMsg {
   type: 'debug';
 }
-type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg;
+type StatsMsg = { type: 'stats' };
+type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg | StatsMsg;
 
 // --- device state -------------------------------------------------------
 
@@ -139,6 +140,28 @@ let lost = false;
 let loopRunning = false;
 let readbackPending = false;
 let lastKind = -1;
+
+// What this worker did since the page last asked (a 'stats' message; the
+// page's perf monitor and diagnostics print it): records and bytes
+// consumed, time spent consuming, readbacks and their latency, presents
+// and how far the GPU's completion of them lags.
+const st = {
+  t0: performance.now(),
+  records: 0,
+  bytes: 0,
+  drains: 0,
+  drainMs: 0,
+  drainMaxMs: 0,
+  readbacks: 0,
+  readbackMs: 0,
+  readbackMaxMs: 0,
+  presents: 0,
+  presentLagMaxMs: 0,
+  draws: 0,
+  idleWaits: 0,
+};
+let drainingSince = 0; // performance.now() the current drain began (0: idle)
+let readbackSince = 0; // ...the readback in flight began
 
 // --- GPU-side resources --------------------------------------------------
 
@@ -762,6 +785,7 @@ function onDraw(hdrOff: number): void {
   uniformCursor++;
   vertexCursor += vertexBytes;
   stat(C_STAT_DRAWS, 1);
+  st.draws++;
 }
 
 // The overlay is shown by the page only after the first present that
@@ -784,7 +808,11 @@ let presentsSeen = 0;
 
 function presentDone(): void {
   const n = ++presentsSeen;
+  const t0 = performance.now();
+  st.presents++;
   void device!.queue.onSubmittedWorkDone().then(() => {
+    const lag = performance.now() - t0;
+    if (lag > st.presentLagMaxMs) st.presentLagMaxMs = lag;
     if (!ctrl) return;
     Atomics.store(ctrl, C_PRESENTS_DONE, n | 0);
     Atomics.notify(ctrl, C_PRESENTS_DONE);
@@ -900,8 +928,14 @@ async function onReadback(seq: number, id: number, y0: number, y1: number): Prom
     }
     d.queue.submit([enc.finish()]);
     readbackPending = true;
+    readbackSince = performance.now();
     await staging.mapAsync(GPUMapMode.READ);
     readbackPending = false;
+    const rbMs = performance.now() - readbackSince;
+    readbackSince = 0;
+    st.readbacks++;
+    st.readbackMs += rbMs;
+    if (rbMs > st.readbackMaxMs) st.readbackMaxMs = rbMs;
     const src = new Uint8Array(staging.getMappedRange());
     const out = u8!;
     if (s.color) {
@@ -951,6 +985,20 @@ function advanceTail(): void {
 }
 
 async function drain(head: number): Promise<boolean> {
+  const t0 = performance.now();
+  drainingSince = t0;
+  st.drains++;
+  try {
+    return await drainRecords(head);
+  } finally {
+    const ms = performance.now() - t0;
+    drainingSince = 0;
+    st.drainMs += ms;
+    if (ms > st.drainMaxMs) st.drainMaxMs = ms;
+  }
+}
+
+async function drainRecords(head: number): Promise<boolean> {
   const mask = ringSize - 1;
   while (consumed !== head) {
     const off = consumed & mask;
@@ -963,6 +1011,8 @@ async function drain(head: number): Promise<boolean> {
     }
     const p = (at >> 2) + 2;
     lastKind = kind;
+    st.records++;
+    st.bytes += len;
     switch (kind) {
       case R_PAD:
         break;
@@ -1045,6 +1095,7 @@ async function loop(): Promise<void> {
     while (attached && !lost) {
       const head = Atomics.load(ctrl!, C_HEAD) >>> 0;
       if (head === consumed) {
+        st.idleWaits++;
         const r = Atomics.waitAsync(ctrl!, C_HEAD, head | 0, 1000);
         if (r.async) await r.value;
         continue;
@@ -1120,6 +1171,41 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
     });
   } else if (msg.type === 'detach') {
     if (ctrl && ctrlBase === msg.ctrl) detach();
+  } else if (msg.type === 'stats') {
+    const now = performance.now();
+    postMessage({
+      type: 'stats',
+      seconds: (now - st.t0) / 1000,
+      ...st,
+      t0: undefined,
+      attached,
+      lost,
+      loopRunning,
+      readbackPending,
+      readbackForMs: readbackSince ? now - readbackSince : 0,
+      drainingForMs: drainingSince ? now - drainingSince : 0,
+      consumed: consumed >>> 0,
+      head: ctrl ? Atomics.load(ctrl, C_HEAD) >>> 0 : -1,
+      lastKind,
+      surfaces: surfaces.size,
+      atlases: atlases.size,
+      pipelines: pipelines.size,
+    });
+    Object.assign(st, {
+      t0: now,
+      records: 0,
+      bytes: 0,
+      drains: 0,
+      drainMs: 0,
+      drainMaxMs: 0,
+      readbacks: 0,
+      readbackMs: 0,
+      readbackMaxMs: 0,
+      presents: 0,
+      presentLagMaxMs: 0,
+      draws: 0,
+      idleWaits: 0,
+    });
   } else if (msg.type === 'debug') {
     postMessage({
       type: 'debug',

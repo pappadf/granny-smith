@@ -78,4 +78,16 @@ typedef struct ppc_jit_status {
 } ppc_jit_status_t;
 void ppc_jit_status(ppc_jit_status_t *out);
 
+// Every running total the tier keeps, for the perf line (log.perf_every);
+// all zero where there is no tier.  The async counts are the compiles
+// sent off the core thread, installed, and dropped (stale on landing).
+typedef struct ppc_jit_perf {
+    bool on, async;
+    uint32_t budget_pct;
+    uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns, lookups, deferred;
+    uint64_t async_issued, async_landed, async_dropped;
+    double compile_ms;
+} ppc_jit_perf_t;
+void ppc_jit_perf(ppc_jit_perf_t *out);
+
 #endif // PPC_JIT_H

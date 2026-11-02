@@ -11,6 +11,7 @@
 #include "scheduler.h"
 #include "scheduler_internal.h"
 
+#include "breadcrumb.h"
 #include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
@@ -1263,6 +1264,32 @@ uint32_t scheduler_run_owner(struct scheduler *restrict s) {
     return s ? s->run_owner : 0;
 }
 
+void scheduler_perf_take(struct scheduler *s, scheduler_perf_t *out) {
+    memset(out, 0, sizeof *out);
+    out->turbo_ratio = NAN;
+    if (!s) {
+        out->mode = "none";
+        return;
+    }
+    out->mode = s->pacing.mode == schedule_unthrottled   ? "turbo"
+                : s->pacing.mode == schedule_accelerated ? "accelerated"
+                                                         : "paced";
+    out->ticks = s->perf_ticks;
+    out->vbls = s->perf_vbls;
+    out->vbls_max = s->perf_vbls_max;
+    out->behind = s->perf_behind;
+    out->run_ms = s->perf_run_ms;
+    out->run_ms_max = s->perf_run_ms_max;
+    out->host_ms_per_vbl = s->host_secs_per_vbl * 1000.0;
+    out->host_ms_per_loop = s->host_secs_per_loop * 1000.0;
+    out->speed = scheduler_effective_speed_x256(s) / 256.0;
+    out->turbo_ratio = s->turbo_ratio;
+    out->governor_rung = s->governor.rung;
+    s->perf_ticks = s->perf_vbls = s->perf_behind = 0;
+    s->perf_vbls_max = 0;
+    s->perf_run_ms = s->perf_run_ms_max = 0;
+}
+
 uint32_t scheduler_mode_id(struct scheduler *restrict s) {
     return s ? s->mode_seq : 0;
 }
@@ -1740,16 +1767,29 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs, const host
     // trigger_vbl + one-VBL-period run (scheduler_run_frame) — the same unit the
     // headless pump runs, so the guest execution sequence is identical across
     // targets; only how many units a single host tick batches differs.
+    crumb_tick_begin((uint32_t)budget.vbls, s->host_secs_per_vbl * 1e6, s->host_secs_per_loop * 1e6,
+                     (uint32_t)s->pacing.mode);
     int executed_vbls = 0;
     for (int i = 0; i < budget.vbls; i++) {
         scheduler_run_frame(s, config, pacing);
         executed_vbls++;
+        crumb_after_vbl(config, scheduler_instr_count(s));
         if (!s->saved.running)
             break;
     }
 
     // Update smoothed host-seconds-per-VBL estimate
     double delta = host_time_ms() / 1000.0 - now;
+    if (executed_vbls > 0) {
+        s->perf_ticks++;
+        s->perf_vbls += (uint64_t)executed_vbls;
+        if ((uint32_t)budget.vbls > s->perf_vbls_max)
+            s->perf_vbls_max = (uint32_t)budget.vbls;
+        s->perf_behind += budget.behind;
+        s->perf_run_ms += delta * 1000.0;
+        if (delta * 1000.0 > s->perf_run_ms_max)
+            s->perf_run_ms_max = delta * 1000.0;
+    }
     int denom = executed_vbls > 0 ? executed_vbls : 1;
     if (isnan(s->host_secs_per_vbl))
         s->host_secs_per_vbl = delta / denom;

@@ -1339,6 +1339,7 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r128_cce_reset(r);
     memset(r->fog_table, 0, sizeof(r->fog_table));
     r->fog_index = 0;
+    r->st_valid = false;
     r->crtc_offset_live = 0;
     r->flip_pending = false;
     r->prims3d = 0;
@@ -1378,7 +1379,7 @@ static void r128_watch_report(void *ctx, char *buf, size_t size) {
     r->diag.since_ms = now;
     r->diag.ms3d = r->diag.ms2d = r->diag.ms_scan = 0;
     if (r->gpu && k > 0 && (size_t)k < size) {
-        char stats[400];
+        char stats[1024];
         snprintf(buf + k, size - (size_t)k, "; gpu %s", r128_gpu_stats(r->gpu, stats, sizeof stats));
     }
     r->diag.prims3d = r->prims3d;
@@ -1397,6 +1398,11 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     free(r->vram);
     free(r->blank);
     free(r->compose);
+    free(r->walk_v);
+    free(r->walk_dec);
+    free(r->walk_raw);
+    free(r->walk_done);
+    free(r->st_cache);
     free(r);
     dev->priv = NULL;
 }
@@ -1465,6 +1471,7 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     memcpy(&r->host, c.host, sizeof(r->host));
     memcpy(r->fog_table, c.fog_table, sizeof(r->fog_table));
     r->fog_index = c.fog_index;
+    r->st_valid = false;
     r->crtc_offset_live = c.crtc_offset_live;
     r->flip_pending = c.flip_pending != 0;
     system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));
@@ -1626,6 +1633,10 @@ static DEF_GETTER(regs_attr_prims3d) {
     rage128_t *c = node_card(self);
     return val_uint(8, c ? c->prims3d : 0);
 }
+static DEF_GETTER(regs_attr_flips) {
+    rage128_t *c = node_card(self);
+    return val_uint(8, c ? c->diag.flips : 0);
+}
 static DEF_GETTER(regs_attr_cce_packets) {
     rage128_t *c = node_card(self);
     return val_uint(8, c ? c->cce.packets : 0);
@@ -1681,6 +1692,10 @@ static const member_t regs_members[] = {
      .name = "prims3d",
      .doc = "3D primitives the engine has rasterised since reset",
      .attr = {.type = VK_UINT, .get = regs_attr_prims3d}                                     },
+    {.kind = MK_ATTR,
+     .name = "flips",
+     .doc = "Page flips: CRTC_OFFSET changes that took effect (a double-buffered game's frames)",
+     .attr = {.type = VK_UINT, .get = regs_attr_flips}                                       },
     {.kind = MK_ATTR,
      .name = "raster",
      .doc = "The 3D rasteriser in use: sw (exact) or webgpu (the host GPU; pci_option \"raster=...\")",

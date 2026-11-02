@@ -117,6 +117,13 @@ async function shot(
   // The skin's fonts and overrides load after the first paint.
   await page.waitForSelector("html[data-skin-ready]", { state: "attached" });
   await page.evaluate(() => document.fonts.ready);
+  // What a state hides goes in as a stylesheet on the page: toHaveScreenshot
+  // takes no `style` option (only stylePath), so the one below is ignored,
+  // and a chip that rendered before the shot stayed visible.
+  if (hidden)
+    await page.addStyleTag({
+      content: `${hidden} { visibility: hidden !important; }`,
+    });
   // The pointer rests over the empty display background, hovering nothing.
   await page.mouse.move(1279, 60);
   await page.waitForTimeout(400);
