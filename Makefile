@@ -208,6 +208,9 @@ FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
 # audio out, Voodoo2, printer) turns a pointer into a word index with a signed
 # `ptr >> 2`, which goes negative above 2 GB.  Raising the cap means switching
 # those to `>>> 2` first.
+# INITIAL_MEMORY only sizes the heap the module starts with (it grows from
+# there): the 5 MB stack plus the static data -- the JIT's compile buffers,
+# the mailbox and transfer regions -- no longer fit emcc's 16 MB default.
 # -pthread with ALLOW_MEMORY_GROWTH is deliberate (see the heap note below);
 # emcc's warning about it says nothing new.
 LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
@@ -226,6 +229,7 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -s EXPORTED_FUNCTIONS="['_main','_get_mailbox','_get_breadcrumbs']" \
            -sINCOMING_MODULE_JS_API=canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
            -s STACK_SIZE=5MB \
+           -s INITIAL_MEMORY=32MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1 \
            $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
