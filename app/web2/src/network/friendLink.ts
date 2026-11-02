@@ -31,7 +31,8 @@ export interface Signal {
   name: string; // the sender's display name
 }
 
-// Public STUN, to learn each side's public address; there is no TURN relay.
+// Public STUN, to learn each side's public address.  Granny Smith runs no
+// relay (TURN); a user may add their own (network.svelte.ts iceServers).
 export const DEFAULT_ICE: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const GATHER_TIMEOUT_MS = 5000;

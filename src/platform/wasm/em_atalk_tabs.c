@@ -18,6 +18,12 @@
 //                                 a machine runs with its router on
 //   {t: "rec", from, to, d}       one link record (Uint8Array) for tab `to`
 //   {t: "bye", id}                this tab leaves (AppleTalk off, page gone)
+//   {t: "suspend", net}           posted by the PAGE of the tab with network
+//                                 `net` as the browser freezes it (the Page
+//                                 Lifecycle "freeze" event; network.svelte.ts):
+//                                 the others drop its link at once, saying
+//                                 why, instead of after LOST_MS of silence.
+//                                 On resume its hellos bring the link back.
 //
 // A tab that hears another's hello opens a link to it; both ends do, so each
 // pair has one link, one on each side.  A tab not heard for LOST_MS is gone:
@@ -102,13 +108,19 @@ EMSCRIPTEN_KEEPALIVE void em_atalk_tab_rx(int slot, int len) {
         atalk_link_receive(s_links[slot], s_rx, (size_t)len);
 }
 
-// The peer in `slot` left or went silent.
-EMSCRIPTEN_KEEPALIVE void em_atalk_tab_lost(int slot, int said_bye) {
+// Why a peer tab's link went: what the Network tab shows (network.svelte.ts
+// matches TAB_SUSPENDED).
+#define TAB_LEFT      "the other tab left"
+#define TAB_SILENT    "the other tab stopped answering"
+#define TAB_SUSPENDED "the other tab was suspended by the browser"
+
+// The peer in `slot` left (why 1), went silent (0) or was suspended (2).
+EMSCRIPTEN_KEEPALIVE void em_atalk_tab_lost(int slot, int why) {
     if (slot < 0 || slot >= ATALK_LINK_MAX || !s_links[slot])
         return;
     atalk_link_t *l = s_links[slot];
     s_links[slot] = NULL;
-    atalk_link_lost(l, said_bye ? "the other tab left" : "the other tab stopped answering");
+    atalk_link_lost(l, why == 2 ? TAB_SUSPENDED : why == 1 ? TAB_LEFT : TAB_SILENT);
 }
 
 // --- the mesh ----------------------------------------------------------------
@@ -124,6 +136,7 @@ EM_JS(void, tabs_start_js, (int max_links), {
         slots: new Array(max_links).fill(null), // slot -> peer id
         bySlotPeer: {},                          // peer id -> slot
         seen: {},                                // peer id -> last heard (ms)
+        nets: {},                                // peer id -> its network
         eligible: false
     };
     function slotOf(peer, open) {
@@ -144,19 +157,21 @@ EM_JS(void, tabs_start_js, (int max_links), {
         }
         return -1;
     }
-    function lose(peer, bye) {
+    function lose(peer, why) { // why: 0 silent, 1 left, 2 suspended
         var s = m.bySlotPeer[peer];
         delete m.seen[peer];
+        delete m.nets[peer];
         if (s === undefined) return;
         delete m.bySlotPeer[peer];
         m.slots[s] = null;
-        _em_atalk_tab_lost(s, bye ? 1 : 0);
+        _em_atalk_tab_lost(s, why);
     }
     m.ch.onmessage = function(ev) {
         var msg = ev.data;
         if (!msg || msg.from === m.id || msg.id === m.id) return;
         if (msg.t === "hello") {
             m.seen[msg.id] = Date.now();
+            m.nets[msg.id] = msg.net;
             if (m.eligible && msg.net > 0) slotOf(msg.id, true);
         } else if (msg.t === "rec") {
             if (msg.to !== m.id || !m.eligible) return;
@@ -169,7 +184,10 @@ EM_JS(void, tabs_start_js, (int max_links), {
             HEAPU8.set(d, _em_atalk_tab_rxbuf());
             _em_atalk_tab_rx(s, d.length);
         } else if (msg.t === "bye") {
-            lose(msg.id, true);
+            lose(msg.id, 1);
+        } else if (msg.t === "suspend" && msg.net > 0) {
+            for (var p in m.nets)
+                if (m.nets[p] === msg.net) lose(p, 2);
         }
     };
     m.tick = function() {
@@ -180,11 +198,11 @@ EM_JS(void, tabs_start_js, (int max_links), {
             m.ch.postMessage({t: "hello", id: m.id, net: net});
         } else if (was) {
             m.ch.postMessage({t: "bye", id: m.id});
-            for (var p in m.bySlotPeer) lose(p, true);
+            for (var p in m.bySlotPeer) lose(p, 1);
         }
         var now = Date.now();
         for (var p2 in m.seen)
-            if (now - m.seen[p2] > LOST_MS) lose(p2, false);
+            if (now - m.seen[p2] > LOST_MS) lose(p2, 0);
     };
     m.timer = setInterval(m.tick, ANNOUNCE_MS);
     m.tick();

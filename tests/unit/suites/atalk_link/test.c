@@ -1279,6 +1279,36 @@ TEST(routes_age_and_links_fail) {
     link_delete();
 }
 
+// The other end starts its side of an open link again (its tab was frozen
+// and dropped by the others, while this end never noticed): its first HELLO
+// is answered with a reply and our table, so its side opens; a reply is
+// never answered, so two open ends do not trade HELLOs for ever.
+TEST(a_hello_on_an_open_link_is_answered_once) {
+    link_boot();
+    atalk_link_t *l = peer_link(0, 612, false);
+    // The connecting side's answer carried the reply flag
+    ASSERT_EQ_INT(ATALK_LINK_HELLO, g_peers[0].rec[1][0]);
+    ASSERT_TRUE((g_peers[0].rec[1][4] & ATALK_LINK_FLAG_REPLY) != 0);
+    ASSERT_TRUE((g_peers[0].rec[0][4] & ATALK_LINK_FLAG_REPLY) == 0); // the first was not one
+
+    g_peers[0].n = 0;
+    uint8_t again[] = {ATALK_LINK_HELLO, 1, 612 >> 8, 612 & 0xFF, 0, 4, 'P', 'e', 'e', 'r'};
+    atalk_link_receive(l, again, sizeof again);
+    ASSERT_EQ_INT(ATALK_LINK_OPEN, atalk_link_state(l));
+    ASSERT_TRUE(g_peers[0].n >= 2);
+    ASSERT_EQ_INT(ATALK_LINK_HELLO, g_peers[0].rec[0][0]);
+    ASSERT_TRUE((g_peers[0].rec[0][4] & ATALK_LINK_FLAG_REPLY) != 0);
+    size_t len = 0;
+    ASSERT_TRUE(peer_last_ddp(0, 1, &len) != NULL); // the table again
+
+    g_peers[0].n = 0;
+    uint8_t reply[] = {ATALK_LINK_HELLO, 1, 612 >> 8, 612 & 0xFF, ATALK_LINK_FLAG_REPLY, 4, 'P', 'e', 'e', 'r'};
+    atalk_link_receive(l, reply, sizeof reply);
+    ASSERT_EQ_INT(0, g_peers[0].n);
+    atalk_link_close(l, "test over");
+    link_delete();
+}
+
 // --- ATP exactly-once requests a handler declines -------------------------------
 
 #define DECLINE_SOCKET 60
@@ -1651,6 +1681,7 @@ int main(void) {
     RUN(a_brrq_for_a_remote_zone_is_forwarded);
     RUN(transit_and_split_horizon);
     RUN(routes_age_and_links_fail);
+    RUN(a_hello_on_an_open_link_is_answered_once);
     RUN(a_declined_xo_request_is_seen_again_on_its_retry);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);

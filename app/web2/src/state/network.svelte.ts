@@ -8,7 +8,13 @@
 // or paste an invitation, copy the reply back).
 
 import { gsEval } from '@/bus/emulator';
-import { FriendLink } from '@/network/friendLink';
+import { DEFAULT_ICE, FriendLink } from '@/network/friendLink';
+
+export interface TurnServer {
+  url: string; // turn:host:port or turns:host:port
+  username: string;
+  credential: string;
+}
 
 export interface RouterLink {
   index: number;
@@ -45,9 +51,15 @@ interface NetworkState {
     peerName: string;
   };
   yourName: string;
+  // A relay of the user's own (TURN), for networks that block direct
+  // connections; kept in this browser's local storage
+  turn: TurnServer;
   // An invitation the page was opened with (#join=...), waiting for a machine
   pendingJoin: string | null;
 }
+
+// Where the relay (below) is kept
+const TURN_KEY = 'gs-atalk-turn';
 
 export const network: NetworkState = $state({
   linked: false,
@@ -57,10 +69,62 @@ export const network: NetworkState = $state({
   links: [],
   friend: { phase: 'none', invitation: '', reply: '', error: '', peerName: '' },
   yourName: '',
+  turn: loadTurn(),
   pendingJoin: null,
 });
 
 let link: FriendLink | null = null;
+
+// --- the relay (TURN) --------------------------------------------------------
+// Granny Smith runs no relay; a user whose network blocks direct connections
+// brings their own (a managed service's free tier, or their own coturn).
+// The credential stays in this browser's local storage, nowhere else.
+
+function loadTurn(): TurnServer {
+  const none = { url: '', username: '', credential: '' };
+  try {
+    const t = JSON.parse(localStorage.getItem(TURN_KEY) ?? 'null') as Partial<TurnServer> | null;
+    if (!t || typeof t !== 'object') return none;
+    return { url: str(t.url), username: str(t.username), credential: str(t.credential) };
+  } catch {
+    return none;
+  }
+}
+
+// Why the relay address is not usable, or '' if it is (or none is set).
+export function turnProblem(t: TurnServer): string {
+  const url = t.url.trim();
+  if (!url) return '';
+  if (!/^turns?:[^\s]+$/.test(url)) return 'A relay address starts with turn: or turns:';
+  return '';
+}
+
+export function saveTurn(): void {
+  try {
+    const t = network.turn;
+    if (t.url.trim()) localStorage.setItem(TURN_KEY, JSON.stringify(t));
+    else localStorage.removeItem(TURN_KEY);
+  } catch {
+    // No local storage: the relay holds for this page only
+  }
+}
+
+// STUN, plus the user's relay when one is set.
+export function iceServers(): RTCIceServer[] {
+  const t = network.turn;
+  const url = t.url.trim();
+  if (!url || turnProblem(t)) return DEFAULT_ICE;
+  return [...DEFAULT_ICE, { urls: url, username: t.username, credential: t.credential }];
+}
+
+// What a round trip of `ms` means for the Macs: file sharing and the Chooser
+// work at any delay; Marathon's ring of players turns the round trip into
+// input lag (each tick goes around every player).
+export function latencyNote(ms: number): string {
+  if (ms < 0 || ms <= 100) return '';
+  if (ms <= 200) return 'Network games feel the delay';
+  return 'Too slow for action games; file sharing works';
+}
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -136,7 +200,7 @@ export async function startInvitation(): Promise<void> {
   resetFriend();
   network.friend.phase = 'inviting';
   await useName();
-  link = new FriendLink('offer');
+  link = new FriendLink('offer', iceServers());
   follow(link);
   try {
     const blob = await link.invite(nameForSignal());
@@ -167,7 +231,7 @@ export async function acceptInvitation(invitation: string): Promise<void> {
   resetFriend();
   network.friend.phase = 'accepting';
   await useName();
-  link = new FriendLink('answer');
+  link = new FriendLink('answer', iceServers());
   follow(link);
   try {
     network.friend.reply = await link.accept(invitation, nameForSignal());
@@ -200,7 +264,39 @@ export function watchLinks(): void {
   void keepNetworkNumber();
   setInterval(async () => {
     network.linked = (await gsEval('appletalk.router.linked')) === true;
+    if (network.linked) linkedNet = num(await gsEval('appletalk.router.net'));
   }, 2000);
+  document.addEventListener('freeze', sayFrozen);
+}
+
+// The browser is freezing this tab (Page Lifecycle API: a long-hidden tab
+// under Energy Saver, say).  Nothing runs once it is frozen, the emulator's
+// worker included, so tell the other tabs now: they drop the link to this
+// one saying why ("suspended by the browser"), instead of noticing seven
+// seconds of silence.  On resume this tab's hellos bring the links back.
+// The handler must not wait for anything, so the network number is the one
+// the last poll saw.
+let linkedNet = 0;
+function sayFrozen(): void {
+  if (!network.linked || !linkedNet || typeof BroadcastChannel === 'undefined') return;
+  const ch = new BroadcastChannel('gs-atalk');
+  ch.postMessage({ t: 'suspend', net: linkedNet });
+  ch.close();
+}
+
+// The core's reason for a tab link the browser suspended (em_atalk_tabs.c).
+const TAB_SUSPENDED = 'the other tab was suspended by the browser';
+
+// Other tabs the browser has suspended: their links closed for that reason,
+// and no open link to the same network has replaced them yet.
+export function suspendedTabs(): RouterLink[] {
+  const shown: number[] = linkedTabs().map((l) => l.peerNet);
+  return network.links.filter((l) => {
+    if (l.transport !== 'tabs' || l.state !== 'closed' || l.reason !== TAB_SUSPENDED) return false;
+    if (shown.includes(l.peerNet)) return false;
+    shown.push(l.peerNet);
+    return true;
+  });
 }
 
 // This tab's network number survives a reload (sessionStorage is per tab),

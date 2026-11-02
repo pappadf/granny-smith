@@ -40,6 +40,7 @@
 
 // HELLO flags
 #define ATALK_LINK_FLAG_FRIEND 0x01 // the link reaches another person (not a tab of this browser)
+#define ATALK_LINK_FLAG_REPLY  0x02 // an answer to the other end's HELLO: never answered itself
 
 // How the router sends on a link.  `send` hands one record to the transport;
 // `reliable` asks for in-order, retransmitted delivery (control records),

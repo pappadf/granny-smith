@@ -17,7 +17,8 @@
 // A hidden tab keeps its machine running (the main loop switches from
 // requestAnimationFrame to a timer); headless Chromium never hides a page,
 // so the last test fires the visibilitychange the browser would and checks
-// the machine runs on through it.
+// the machine runs on through it.  A tab the browser freezes is dropped by
+// the others as suspended, and links again when it runs.
 
 import { test, expect, type Page } from "../helpers/test";
 import * as path from "node:path";
@@ -94,4 +95,40 @@ test("a hidden tab's machine keeps running", async ({ page }) => {
   await expect
     .poll(async () => Number(await gsEvalInPage(page, "scheduler.instr_count")) - before, { timeout: 30_000 })
     .toBeGreaterThan(1_000_000);
+});
+
+// The browser freezes a long-hidden tab (Page Lifecycle "freeze"): nothing
+// in it runs, its worker included.  The page says so on the mesh as it
+// freezes, so the other tabs drop its link at once, saying why, instead of
+// after seven seconds of silence; when it runs again its hellos link it
+// again.  Headless Chromium fires no freeze event (CDP's
+// Page.setWebLifecycleState neither fires it nor stops the worker), so the
+// test fires the event the browser would; the worker, not really frozen,
+// keeps saying hello, which is the resume.
+test("a tab the browser freezes is dropped as suspended, and links again", async ({ page, context }) => {
+  test.setTimeout(4 * 60 * 1000);
+  const other = await context.newPage();
+  for (const p of [page, other]) await bootPlus(p);
+  await gsCallInPage(page, "scheduler.run", []); // the page shows a running Mac's Network tab
+  for (const p of [page, other]) await expect.poll(() => openLinks(p), { timeout: 60_000 }).toBe(1);
+  // The page learns its network number by polling (every 2 s): let it
+  await other.waitForTimeout(3_000);
+
+  await other.evaluate(() => document.dispatchEvent(new Event("freeze")));
+  const reasons = async () => {
+    const out: string[] = [];
+    for (let i = 0; i < 16; i++) {
+      const r = await gsEvalInPage(page, `appletalk.router.links[${i}].reason`);
+      if (typeof r === "string" && r) out.push(r);
+    }
+    return out;
+  };
+  await expect
+    .poll(reasons, { timeout: 5_000 })
+    .toContain("the other tab was suspended by the browser");
+  // Back: one open link again, and the suspension is history
+  await expect.poll(() => openLinks(page), { timeout: 30_000 }).toBe(1);
+  await page.getByRole("tab", { name: "Network" }).click();
+  await expect(page.getByTestId("network-tab-peer")).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.getByTestId("network-tab-suspended")).toHaveCount(0);
 });

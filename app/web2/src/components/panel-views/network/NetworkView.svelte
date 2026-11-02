@@ -12,12 +12,16 @@
     network,
     refreshNetwork,
     linkedTabs,
+    suspendedTabs,
     linkedFriends,
     startInvitation,
     completeWithReply,
     acceptInvitation,
     disconnectFriend,
     resetFriend,
+    latencyNote,
+    saveTurn,
+    turnProblem,
   } from '@/state/network.svelte';
   import Button from '@/components/ui/Button.svelte';
   import Badge from '@/components/ui/Badge.svelte';
@@ -31,6 +35,8 @@
 
   let replyText = $state('');
   let inviteText = $state('');
+  let showRelay = $state(!!network.turn.url);
+  const relayProblem = $derived(turnProblem(network.turn));
 
   onMount(() => {
     void refreshNetwork();
@@ -61,6 +67,52 @@
   }
 </script>
 
+{#snippet relay()}
+  <div class="actions">
+    <Button variant="ghost" size="sm" onclick={() => (showRelay = !showRelay)}
+      >{showRelay ? 'Hide relay server' : 'Relay server (TURN)…'}</Button
+    >
+  </div>
+  {#if showRelay}
+    <div class="relay" data-testid="network-relay">
+      <label class="field">
+        <span>Relay address</span>
+        <TextInput
+          size="sm"
+          placeholder="turn:relay.example.net:3478"
+          bind:value={network.turn.url}
+          onchange={saveTurn}
+          aria-label="Relay address"
+        />
+      </label>
+      <label class="field">
+        <span>User name</span>
+        <TextInput
+          size="sm"
+          bind:value={network.turn.username}
+          onchange={saveTurn}
+          aria-label="Relay user name"
+        />
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <TextInput
+          size="sm"
+          type="password"
+          bind:value={network.turn.credential}
+          onchange={saveTurn}
+          aria-label="Relay password"
+        />
+      </label>
+      {#if relayProblem}<Callout intent="warning">{relayProblem}</Callout>{/if}
+      <Hint
+        >Used for the next invitation or reply, when a direct connection fails. Granny Smith runs no
+        relay: use a service's free tier or your own. The password stays in this browser.</Hint
+      >
+    </div>
+  {/if}
+{/snippet}
+
 <div class="gs-network">
   <section aria-label="This computer">
     <SectionHeading>This computer</SectionHeading>
@@ -79,6 +131,12 @@
           <Badge intent="success">Linked</Badge>
         </div>
       {/each}
+      {#each suspendedTabs() as l (l.index)}
+        <div class="peer" data-testid="network-tab-suspended">
+          <span>Other tab · network {l.peerNet}</span>
+          <Badge intent="warning">Suspended by the browser</Badge>
+        </div>
+      {/each}
       <Hint>Tabs in this browser with AppleTalk on are linked automatically.</Hint>
     {/if}
   </section>
@@ -88,9 +146,15 @@
     {#each linkedFriends() as l (l.index)}
       <div class="peer" data-testid="network-friend-peer">
         <span>{l.peerName || 'Friend'} · network {l.peerNet}</span>
-        <span class="muted">{rtt(l.rttMs)}</span>
+        <span class="muted" title={latencyNote(l.rttMs)}>{rtt(l.rttMs)}</span>
         <Badge intent="success">Connected</Badge>
       </div>
+      {#if latencyNote(l.rttMs)}
+        <Hint
+          >{latencyNote(l.rttMs)}: a message takes {l.rttMs} ms to {l.peerName || 'your friend'} and back.
+          In Marathon, choose Net Speed "AppleTalk Remote Access".</Hint
+        >
+      {/if}
     {/each}
 
     {#if !running}
@@ -123,6 +187,7 @@
         >You swap one invitation and one reply by chat or email. Your friend will see the Macs in
         all your tabs, and you theirs.</Hint
       >
+      {@render relay()}
     {:else if network.friend.phase === 'inviting' || network.friend.phase === 'accepting'}
       <div class="row"><Spinner /> <span>Gathering network addresses…</span></div>
     {:else if network.friend.phase === 'invitation'}
@@ -162,9 +227,16 @@
       </div>
     {:else if network.friend.phase === 'failed'}
       <Callout intent="danger">{network.friend.error || 'The connection failed.'}</Callout>
+      {#if !network.turn.url}
+        <Hint
+          >Some networks block direct connections. A relay server of your own (TURN) gets through
+          them: set one below, then start again.</Hint
+        >
+      {/if}
       <div class="actions">
         <Button variant="secondary" onclick={resetFriend}>Start again</Button>
       </div>
+      {@render relay()}
     {/if}
   </section>
 </div>
@@ -198,6 +270,11 @@
   }
   .muted {
     color: var(--gs-text-muted);
+  }
+  .relay {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gs-space-2);
   }
   .field {
     display: flex;

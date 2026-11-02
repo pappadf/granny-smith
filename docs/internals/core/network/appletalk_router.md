@@ -57,14 +57,19 @@ carries records; the router frames them (`appletalk_link.h`):
 
 | Record | Content |
 |---|---|
-| `HELLO` | version 1, the sender's network number, flags (friend link), display name |
+| `HELLO` | version 1, the sender's network number, flags (friend link; reply), display name |
 | `DDP` | one datagram: extended header + data, as on the wire |
 | `PING` / `PONG` | a guest-time stamp, echoed: round trip in `links[i].rtt_ms` |
 | `BYE` | the reason |
 
 A link opens when the other end's HELLO arrives; the router answers it with
-its own (the first may have gone before the other end listened) and sends its
-table at once. While a link waits, its HELLO goes out again every second. A HELLO, or a distance-0 RTMP tuple, naming our own network
+its own, flagged as a reply (the first may have gone before the other end
+listened), and sends its table at once. While a link waits, its HELLO goes out
+again every second. A HELLO that is not a reply on a link already open means
+the other end started its side again (its tab was suspended, say, and dropped
+by the others while this end never noticed): it is answered with a reply and
+the table, so that side opens too. A reply is never answered, so two open ends
+do not trade HELLOs for ever. A HELLO, or a distance-0 RTMP tuple, naming our own network
 number closes the link ("both sides use network N"): two networks with one
 number cannot be routed. `atalk_link_lost` (the transport lost the other end)
 and BYE close it too; its routes go bad at once.
@@ -202,21 +207,40 @@ documents, workers included, which stopped the machine (and its router) the
 moment its tab was hidden. On `visibilitychange` the main loop now switches to
 a 16 ms timer while hidden and back to RAF when shown (`em_update_loop_timing`
 in `em_main.c`); a worker's timers are not throttled like the page's. Nothing is
-drawn meanwhile. A browser may still freeze or discard a long-hidden tab; its
-links then go silent and are lost on the other tabs after 7 s.
+drawn meanwhile.
+
+**Suspended tabs.** A browser may still freeze a long-hidden tab (Page
+Lifecycle `freeze`), and then nothing in it runs, its worker included. The
+page's `freeze` handler (`state/network.svelte.ts`) posts `{t: "suspend",
+net}` on `gs-atalk` with the network number its last poll saw; the other
+tabs' workers drop the link to the tab with that number at once, with the
+reason "the other tab was suspended by the browser", which their Network tabs
+show ("Suspended by the browser") until it links again. When it runs again
+its hellos reopen the links (the HELLO rule above). A tab discarded or
+crashed without a word is lost after 7 s of silence.
 
 `tests/e2e/web2-specs/appletalk-tab-mesh.spec.ts`: three pages in one context
 link themselves, pick three numbers and reach each other's networks at
 distance 1; a closed page is noticed. A second test fires the visibilitychange
 a hidden tab gets and checks the machine runs on (headless Chromium never
 pauses RAF, so this is a smoke test of the switch, not of a real hidden tab).
+A third fires the `freeze` event on one of two linked pages and checks the
+other drops the link as suspended and links again (headless Chromium fires no
+freeze, and CDP's `Page.setWebLifecycleState` neither fires it nor stops the
+worker, so the still-running worker's hellos stand in for the resume).
 
 ### Browser: friend links over WebRTC
 
 A link to another person's instance is set up by hand in the panel's Network
 tab (`app/web2/src/components/panel-views/network/NetworkView.svelte`,
 `state/network.svelte.ts`, `network/friendLink.ts`): one invitation and one
-reply, swapped over any chat or mail, no signalling server, public STUN only.
+reply, swapped over any chat or mail, no signalling server, public STUN. A
+user whose network blocks direct connections may add a relay of their own
+(TURN: address, user name, password) under "Relay server (TURN)…"; it is kept
+in the browser's local storage and used for the next invitation or reply
+(`iceServers()`). Granny Smith runs no relay. A friend's round trip shows
+beside the name, with a note past 100 ms (network games feel it) and past
+200 ms (too slow for action games; file sharing works).
 
 - The inviter's page creates an `RTCPeerConnection` with two data channels,
   `ctl` (reliable, ordered: HELLO, PING, BYE) and `ddp` (unordered, no

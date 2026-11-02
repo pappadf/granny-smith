@@ -17,7 +17,9 @@ networks for you. The Chooser on each Mac shows the others' file servers.
 
 A tab keeps its Mac running while it is hidden behind another, so the other
 tabs can still reach it. Close a tab, or turn AppleTalk off in it, and the
-others notice within a few seconds.
+others notice within a few seconds. A browser may suspend a tab that has been
+hidden for a long time (to save power); the other tabs then show it as
+**Suspended by the browser**, and it rejoins when you look at it again.
 
 ## 2. A friend's Mac
 
@@ -47,6 +49,11 @@ or email will do. You both need a Mac running.
    and back.
 
 Your friend can then reach the Macs in all your tabs, and you theirs.
+
+The time beside your friend's name is how long a message takes to go there
+and back. File sharing works at any delay. Past about 100 ms network games
+feel it, and past 200 ms action games are hard to play; in Marathon, choose
+**Net Speed: AppleTalk Remote Access**.
 
 ### 2.3 Disconnecting
 
@@ -78,6 +85,16 @@ would drop. **Real** and **Faster** work normally.
 | What you see | What to try |
 |---|---|
 | "That is not an invitation" or "not a reply" | Copy the whole text again: a part of it is missing |
-| "The two networks could not reach each other" | Some networks (some workplaces, schools and mobile connections) block direct connections. Try another network on one side |
+| "The two networks could not reach each other" | Some networks (some workplaces, schools and mobile connections) block direct connections. Try another network on one side, or use a relay server (below) |
 | The tabs do not connect | Check that AppleTalk is **Active** on each Mac, and that the tabs are in the same browser profile (a private window is separate) |
 | The other Mac is not in the Chooser | Its file sharing must be on, and AppleTalk must be **Active** in the Chooser on both Macs |
+
+### 5.1 A relay server
+
+When the two networks cannot connect directly, a relay server (TURN) can pass
+the traffic between them. Granny Smith does not run one: use the free tier of
+a TURN service, or your own. In the **Network** tab, click
+**Relay server (TURN)…** and fill in its address (it starts with `turn:` or
+`turns:`), user name and password. They are kept in this browser only, and
+used for your next invitation or reply. One side having a relay is usually
+enough. The traffic is small: an hour of use is around 100 MB at most.

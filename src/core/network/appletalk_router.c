@@ -877,14 +877,14 @@ static void link_send(atalk_link_t *l, uint8_t kind, const uint8_t *body, size_t
     l->transport.send(l->ctx, rec, 1 + len, reliable);
 }
 
-static void link_send_hello(atalk_link_t *l) {
+static void link_send_hello(atalk_link_t *l, bool reply) {
     uint8_t b[4 + 64];
     size_t nl = strlen(g_router.name);
     if (nl > 63)
         nl = 63;
     b[0] = ATALK_LINK_VERSION;
     wr16(&b[1], atalk_this_net());
-    b[3] = (uint8_t)((l->friend_link ? ATALK_LINK_FLAG_FRIEND : 0));
+    b[3] = (uint8_t)((l->friend_link ? ATALK_LINK_FLAG_FRIEND : 0) | (reply ? ATALK_LINK_FLAG_REPLY : 0));
     b[4] = (uint8_t)nl;
     memcpy(&b[5], g_router.name, nl);
     link_send(l, ATALK_LINK_HELLO, b, 5 + nl, true);
@@ -927,7 +927,7 @@ atalk_link_t *atalk_link_open(const atalk_link_transport_t *transport, void *ctx
     l->friend_link = friend_link;
     l->rtt_ns = -1;
     LOG(1, "atalk router: link %d (%s) opening", link_index(l), l->kind);
-    link_send_hello(l);
+    link_send_hello(l, false);
     if (g_router.plugged)
         atalk_timer_arm(&g_router.ping_timer, 0, LINK_HELLO_RETRY_NS);
     return l;
@@ -983,15 +983,26 @@ static void link_hello_in(atalk_link_t *l, const uint8_t *b, size_t len) {
     memcpy(l->peer_name, &b[5], nl);
     l->peer_name[nl] = '\0';
     l->peer_net = net;
+    bool reply = (b[3] & ATALK_LINK_FLAG_REPLY) != 0;
     if (l->state == ATALK_LINK_CONNECTING) {
         // Our own HELLO may have been lost before the other end listened:
         // answer this one, so it opens too
-        link_send_hello(l);
+        link_send_hello(l, true);
         l->state = ATALK_LINK_OPEN;
         LOG(1, "atalk router: link %d (%s) open to network %u '%s'", link_index(l), l->kind, (unsigned)net,
             l->peer_name);
         if (g_router.seed)
             rtmp_send_link(l); // tell the other end our table at once
+    } else if (!reply) {
+        // A first HELLO on a link that is open here: the other end started
+        // its side again (its tab was frozen and dropped by the others, say,
+        // while this end never noticed).  Answer, so its side opens, and
+        // tell it the table again.  A reply is never answered, so two open
+        // ends do not trade HELLOs for ever.
+        LOG(1, "atalk router: link %d (%s): network %u started its side again", link_index(l), l->kind, (unsigned)net);
+        link_send_hello(l, true);
+        if (g_router.seed)
+            rtmp_send_link(l);
     }
 }
 
@@ -1055,7 +1066,7 @@ static void ping_timer_cb(void *source, uint64_t data) {
         if (l->in_use && l->state == ATALK_LINK_OPEN)
             link_send(l, ATALK_LINK_PING, b, sizeof(b), true);
         if (l->in_use && l->state == ATALK_LINK_CONNECTING) {
-            link_send_hello(l); // the first may have gone before the other end listened
+            link_send_hello(l, false); // the first may have gone before the other end listened
             connecting = true;
         }
     }
