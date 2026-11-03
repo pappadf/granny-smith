@@ -64,6 +64,19 @@ target. Taking every compare-less transfer ran straight into the first
 empty slot's destination. With both compares enabled, a true branch needs
 both true and a false branch needs both false (SYM53C825A Data Manual v3.0).
 
+**Select runs on while the target thinks.** "Once the SYM53C825A has won
+arbitration, it fetches the next instruction... the scripts can move to the
+next instruction before the selection has completed. It will continue
+executing SCRIPTS until a SCRIPT that requires a response from the target is
+encountered." The engine waits only at the first instruction that needs one
+(`needs_target`: a block move, a phase-compare transfer, Select, Wait
+Disconnect or Wait Reselect), with DSP past it, and the selection time-out
+reports from there. IBM's OS/2 NCR script disables the target's scheduler
+slot with a Memory Move straight after its SELECT. Halting at the SELECT
+left every absent target's slot armed, so every later doorbell re-selected
+a dead target ahead of the real command, and the boot deadlocked waiting
+for a CD read that was never sent.
+
 **Memory Move** honours DMODE's `SIOM`/`DIOM` bits (source/destination in
 PCI *I/O* space). The one I/O target a script reaches in practice is the
 chip itself, through its own I/O BAR. That is how a script written for the

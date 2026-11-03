@@ -1122,7 +1122,11 @@ SCRIPTS.  The IBM Microkernel then starts its servers, its NCR driver scans
 the bus (the CD-ROM at ID 3, the ANS's empty internal bay at 0), and the
 serial, parallel, floppy and audio stages load.  The OS/2 file system
 server comes up and the OS/2 personality's loadable-device initialisation
-runs.  Getting there took four 53C8xx fidelity fixes the OS/2 driver
-depends on and AIX and NT did not: `Wait Reselect` leaving `SIGP` set,
-Transfer Control's NO OP, I/O-space Memory Move, and the `IRQ/` pulse
-between stacked interrupts (see the SCRIPTS engine's notes).
+runs, followed by the installer and the video server.  Getting there took
+five 53C8xx fidelity fixes the OS/2 driver depends on and AIX and NT did
+not: `Wait Reselect` leaving `SIGP` set, Transfer Control's NO OP,
+I/O-space Memory Move, the `IRQ/` pulse between stacked interrupts, and
+SCRIPTS running on past a SELECT until an instruction needs the target (see
+the SCRIPTS engine's notes).  The video server then finds no display
+adapter it supports (S3 928/864, WD 90C24, Weitek P9100, Cirrus 5434) on
+the PReP-visible bus.

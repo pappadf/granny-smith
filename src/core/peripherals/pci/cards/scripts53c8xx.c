@@ -674,9 +674,23 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
             // so the driver's own timers never expire and nothing ever
             // gives up.  A quarter of a million retries per second is not a
             // slow machine; it is a machine that has stopped.
+            //
+            // But the engine itself does not stop here.  "Once the SYM53C825A
+            // has won arbitration, it fetches the next instruction from the
+            // address pointed to by the DSP register.  Therefore, the
+            // scripts can move to the next instruction before the selection
+            // has completed.  It will continue executing SCRIPTS until a
+            // SCRIPT that requires a response from the target is
+            // encountered" (SYM53C825A Data Manual v3.0, Select
+            // Instruction).  step() parks at that instruction
+            // (needs_target).  IBM's OS/2 PowerPC NCR script disables the
+            // target's scheduler slot with a Memory Move straight after its
+            // SELECT, and relies on it: a model that halted at the SELECT
+            // left every absent target's slot armed, so each later doorbell
+            // re-selected a dead target ahead of the real command, and the
+            // boot deadlocked waiting for a read that was never sent.
             LOG(3, "ch%d: select %d — arbitrating, no answer yet", s->channel, target);
             s->select_timeout_armed = true;
-            s->running = false;
             sym53c8xx_arm_select_timeout(s);
             return;
         }
@@ -1014,6 +1028,24 @@ static void exec_load_store(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
 // The instruction engine
 // ============================================================
 
+// Does this instruction need an answer from the target?  While a selection
+// is still unanswered (select_timeout_armed) the engine runs everything else
+// and waits at the first instruction that does (see the Select case of
+// exec_io): a block move, a transfer that compares the phase, or a bus I/O
+// instruction other than Set/Clear.
+static bool needs_target(uint32_t insn) {
+    switch ((insn >> 30) & 3u) {
+    case 0: // Block Move
+        return true;
+    case 1: // I/O (opcode <= 4) or Read/Write
+        return ((insn >> 27) & 7u) <= 2u; // Select, Wait Disconnect, Wait Reselect
+    case 2: // Transfer Control
+        return (insn & (1u << 17)) != 0; // compare phase
+    default: // Memory Move, Load/Store
+        return false;
+    }
+}
+
 // Fetch and execute one instruction.  Returns false when the engine
 // stopped (an interrupt, a mismatch, an illegal instruction).
 static bool step(sym53c8xx_t *s) {
@@ -1032,6 +1064,15 @@ static bool step(sym53c8xx_t *s) {
     set_reg32(s, SYM825_DSP, pc + ((type3 == 6) ? 12u : 8u));
     s->insn_count++;
     LOG(5, "ch%d: $%08X: %08X %08X", s->channel, pc, insn, dsps);
+
+    // A selection nobody has answered yet: this instruction waits for the
+    // target, so the engine waits here -- fetched, DSP past it, as the part
+    // leaves it -- until the time-out reports.
+    if (s->select_timeout_armed && needs_target(insn)) {
+        LOG(4, "ch%d: waiting on the selection at $%08X", s->channel, pc);
+        s->running = false;
+        return false;
+    }
 
     switch (type2) {
     case 0:
