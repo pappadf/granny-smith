@@ -3,8 +3,9 @@
 let PLUS = "${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
 let LISA = "${$TEST_DATA}/roms/lisa2-revh-098917b2.rom"
 
-# The option is in every profile, default none
-assert catalog.default_config("plus").options.imagewriter == "none" "the Plus has no ImageWriter option"
+# The option is in every profile: on a Mac an ImageWriter II on AppleTalk by
+# default, beside the LaserWriter; on the Lisa none
+assert catalog.default_config("plus").options.imagewriter == "localtalk" "the Plus's ImageWriter is not on AppleTalk by default"
 assert catalog.default_config("lisa").options.imagewriter == "none" "the Lisa has no ImageWriter option"
 
 # AppleTalk active (the default): the modem port
@@ -20,8 +21,20 @@ assert machine.imagewriter.model == "imagewriter" "not an ImageWriter"
 assert machine.imagewriter.connection == "serial-b" "not on the printer port"
 assert machine.scc.b.device == "imagewriter" "the printer port has no printer"
 
-# No option: unplugged
+# No option: the default, an ImageWriter II with the LocalTalk Option card,
+# published on the network with no serial port taken
 machine.boot model="plus" rom="${$PLUS}"
+assert machine.imagewriter.model == "imagewriter2" "the default printer is not an ImageWriter II"
+assert machine.imagewriter.connection == "localtalk" "the default printer is not on AppleTalk"
+assert machine.scc.a.device == none "the LocalTalk printer took the modem port"
+assert machine.scc.b.device == none "the LocalTalk printer took the printer port"
+
+# AppleTalk inactive does not unplug it: the Chooser makes AppleTalk active
+machine.boot model="plus" rom="${$PLUS}" config="{\"options\":{\"appletalk\":\"inactive\"}}"
+assert machine.imagewriter.connection == "localtalk" "the LocalTalk printer is gone with AppleTalk inactive"
+
+# none: unplugged
+machine.boot model="plus" rom="${$PLUS}" config="{\"options\":{\"imagewriter\":\"none\"}}"
 assert machine.imagewriter.connection == "none" "a printer was plugged in unasked"
 
 # The Lisa: Serial A

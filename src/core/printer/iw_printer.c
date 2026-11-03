@@ -839,7 +839,10 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
 bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn) {
     if (!p || model >= IW_MODEL_COUNT || conn >= IW_CONN_COUNT)
         return false;
-    if (conn == IW_CONN_LOCALTALK && (model != IW_MODEL_IW2 || (g_localtalk && g_localtalk != p)))
+    // The machine being built takes the card over from the one it replaces
+    // (build, swap, destroy: the old printer is still alive here), as a
+    // checkpoint restore does in port_attach
+    if (conn == IW_CONN_LOCALTALK && model != IW_MODEL_IW2)
         return false;
     // Unplug, swap the printer, power it on, then plug it in where it goes
     port_attach(p, false);

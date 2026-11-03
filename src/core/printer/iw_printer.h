@@ -57,7 +57,8 @@ void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn);
 
 // The machine configuration's printer, at a fresh boot: `model` powered on and
 // plugged into `conn`.  False when the combination is impossible (the
-// LocalTalk card on an ImageWriter, or another printer already on LocalTalk).
+// LocalTalk card on an ImageWriter).  On LocalTalk it takes the card over
+// from the printer of the machine it replaces.
 bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn);
 
 void iw_printer_delete(iw_printer_t *p);

@@ -200,14 +200,19 @@ At the end of a job the PDF goes to `printer_sink_deliver()`:
 
 ## 8. Object model
 
-The machine configuration's `imagewriter` option (`none`, `imagewriter`,
-`imagewriter2`; the dialog's "ImageWriter" menu, every model, default
-`none`) plugs the printer in at a fresh boot (`machine_part_imagewriter`,
-`iw_printer_install`): on the serial port AppleTalk does not use -- the
-modem port (channel A) while the `appletalk` option is active, else the
-printer port (channel B) -- and on the Lisa, Serial A. A checkpoint restore
-keeps the checkpoint's printer instead; the object can change it at any
-time.
+The machine configuration's `imagewriter` option (`none`, `localtalk`,
+`imagewriter`, `imagewriter2`; the dialog's "ImageWriter" menu, every model)
+plugs the printer in at a fresh boot (`machine_part_imagewriter`,
+`iw_printer_install`). On a Mac the default is `localtalk`: an ImageWriter II
+with the LocalTalk Option card, published on the network like the
+LaserWriter, whatever the `appletalk` option says (the Chooser turns
+AppleTalk on). A serial printer goes on the port AppleTalk does not use --
+the modem port (channel A) while the `appletalk` option is active, else the
+printer port (channel B) -- and on the Lisa, Serial A (the Lisa has no
+`localtalk` value; default `none`). The machine being built takes the card
+over from the printer of the machine it replaces (build, swap, destroy), as
+a checkpoint restore does. A checkpoint restore keeps the checkpoint's
+printer instead; the object can change it at any time.
 
 `machine.imagewriter` (every machine with an SCC): `model`
 (`imagewriter` / `imagewriter2`), `connection`, `localtalk_name`, `status`,
@@ -246,7 +251,7 @@ printer back into its port or re-publishes the card.
 | `appletalk-imagewriter` | the same over the LocalTalk card, with paper-out alert and recovery |
 | `imagewriter-handshake` | a scripted host fills the simulated 2 KB buffer through the SCC and waits on CTS each time the printer goes busy; nothing is lost |
 | `imagewriter-checkpoint` | a checkpoint mid-job restores to the same PDF |
-| `imagewriter-config` | the configuration's `imagewriter` option plugs the chosen printer into the port AppleTalk leaves free (Plus, Lisa) |
+| `imagewriter-config` | the configuration's `imagewriter` option puts the chosen printer on AppleTalk (the Mac default) or into the port AppleTalk leaves free (Plus, Lisa) |
 | e2e `imagewriter-print` | a job opens in the browser's print viewer |
 
 The goldens are CRCs (`last_pdf_crc`): every output is deterministic.

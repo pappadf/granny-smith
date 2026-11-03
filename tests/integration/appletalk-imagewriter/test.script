@@ -25,7 +25,8 @@ def print_directory() {
     click(448, 62)
 }
 
-machine.imagewriter.connection = "localtalk"
+# The default configuration has the LocalTalk card on the network: no setup
+assert machine.imagewriter.connection == "localtalk" "the ImageWriter II is not on AppleTalk by default"
 assert machine.imagewriter.localtalk_name == "Virtual ImageWriter" "the card's name"
 
 machine.rtc.time = "2026-04-26T21:30:36"
