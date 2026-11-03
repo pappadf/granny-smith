@@ -289,6 +289,7 @@ typedef struct tnt_control {
     uint8_t rad_ctrl; // misc $20: depth control (bits 3:2 = 8/16/32 bpp)
     uint8_t rad_bank; // misc $21: VRAM bank select
     uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
+    uint8_t rad_reg[256]; // every other misc index: latched, read back
     uint8_t clut[256][3];
     uint8_t crsr[8][3]; // cursor palette (+$10 port)
     uint8_t crsr_phase;

@@ -164,8 +164,18 @@ the chain stub).  A block with loads or stores wraps its body in `$deopt`:
 an access that misses the fast path sets the instruction's index and
 branches there, and one tail per block gives the slots back and leaves.
 
+A branch to a later block of the chunk is a `br` to that block's label
+(`jit.direct`, the default): the labels close in block order right
+before each block's code, so block *j* is `(j - b - 1)` levels out from
+block *b*'s body, and it lands on the same guard the dispatcher would.
+A backward branch, a self-loop and an entry set `$idx` and go through
+the `br_table`.  On Quake III's demo 72 of the hottest chunk's 108
+dispatcher trips were forward; making them direct measured about +1 %
+(two runs each, within the noise).
+
 One module per function, importing the emulator's memory (shared in the
-pthreads build), its function table, `ppc_jit_code_store` and `ppc_jit_tb`; the export
+pthreads build), its function table, `ppc_jit_code_store`, `ppc_jit_tb`, `ppc_jit_fp`
+and `ppc_jit_dcbz`; the export
 goes into the table (a freed slot, or a new one: `-sALLOW_TABLE_GROWTH`,
 64 at a time; without the reuse the table grew on every recompile and
 smc-burst ran at 101 MIPS instead of 569), and its index is the function
@@ -253,7 +263,14 @@ calls the chunk's function.  Otherwise it counts: a page becomes a member
 once the predecoded tier has run `jit.threshold` instructions in it (the
 budget spent between a declined lookup and the next one); a word that
 leads no block becomes an entry point after `JIT_ENTRY_HOT` (8) entries
-(one entered rarely is not worth a translation).  The region is retranslated
+(one entered rarely is not worth a translation) -- except the word the
+last `rfi` returned to (`g_ppc_rfi_pc`), which is not counted
+(`jit.rfi_skips`): an interrupt lands on any word of hot code, and
+counting its return made a leader of every word of the hottest routines
+within seconds of play, splitting them into one-instruction blocks for
+good (Quake III's vertex transform ran at 121 wasm operations per
+instruction that way).  The loop runs on from an interrupt's return to
+the next leader instead.  The region is retranslated
 when entry points were added, or invalidated blocks have been quiet for
 `jit.quiet` entries, and the region's cooldown has passed: `jit.cooldown`
 entries, doubling with every translation of the region up to
@@ -304,6 +321,12 @@ decoded again).  A word the guest keeps rewriting — stored into
 `JIT_UNSTABLE_WRITES` (4) times between two translations of its region;
 the 68K emulator toggles some of its own branches — is not translated from
 then on: the walk continues after it, and the predecoded loop runs it.
+Such a word, and a never-decoded one, is never `reached`, so the walk
+marks it `walked` and expands it once: before that, every branch into a
+run of them walked the whole run again, quadratic in the run's length (a
+Quake III region took 227 M pushes for 9 K instructions, 0.5-9.7 s per
+compile on the emulator thread, and the translation budget then deferred
+everything after it).
 Then it assigns words to chunks (§2.1); new words that continue a run of
 a chunk join that chunk.  A word of another chunk, or one not reached,
 ends a block (the translator's leader value 2): a block covers only words
@@ -381,15 +404,50 @@ helper; `fadd`/`fsub`/`fmul` and the madd family, single and double, inline:
 operands, product and result inside its exponent envelope, a product of
 two short significands, which is exact so no fma is needed -- wasm has
 none) with FPSCR[XE] clear, so only FR, FI, XX (FX on its rise) and FPRF
-change; any check that fails, and every other arithmetic or move with
+change; zeros inline as well, which the C fast path leaves to its slow
+one: a zero operand (a zero factor's product is an exact ±0, a sum with a
+zero term is the other term, rounded as any result) and an exact zero
+result (cancellation, or a product with a zero factor: FR and FI clear,
+FPRF ±zero), with IEEE's signed-zero rules, which round to nearest shares
+with the kernel (a product of two nonzero factors that underflows to zero
+still leaves); any check that fails, and every other arithmetic or move with
 Rc clear, and `fcmpu`/`fcmpo`, call an imported helper (`ppc_jit_fp`)
 that runs the interpreter's own routines, so results and FPSCR are the
 predecoded loop's either way; it declines (leave at the instruction)
 when FP is unavailable or an FP exception is enabled, and a compare
-returns its CR field for the translation's CR local.
+returns its CR field for the translation's CR local.  A compare with
+ordered operands (no NaN) runs inline instead, as `ppc_fcmp`'s ordered
+path does: c from the comparison (-0 == +0) into the CR field and
+FPSCR[FPCC], nothing else changing (FPCC is no exception bit, so the
+summary bits stay derived); a NaN operand takes the helper.  The moves
+(`fmr`, `fneg`, `fabs`, `fnabs`) and `fsel` (frA >= 0, -0 included, a NaN
+frA picking frB), which change no FPSCR bit, run inline once MSR[FP] is
+set; `fctiwz` of a finite value whose truncation fits 32 bits runs inline
+with FP exceptions off and FPSCR[XE] clear (`ppc_sf_fctiw`'s in-range
+path: FR and FI cleared, FI and XX -- FX on its rise -- when inexact,
+FPRF unchanged); the rest of `fctiwz` (VXCVI, the saturations) takes the
+helper.  On Quake III's demo these took the helper's calls from 427 M to
+303 M, and the zeros from 315 M to 69 M (+2.4 % MIPS over the demo, +4 %
+in its second half; zero operands were two thirds of the calls, `fmadds`
+with one 39 %).  What is left: `fdivs` (40 %), double-precision
+arithmetic with long significands, whose product is not exact in a
+double (35 %), `frsp` (17 %) and `frsqrte` (5 %).  `jit.trace = 17`, set
+before the code is translated, checks every inline arithmetic word
+against the kernel (the helper computes the kernel's result and FPSCR
+before it, restoring the state, and compares them after); `jit.trace =
+18` prints the totals (695 M words checked over the demo, none
+different).
 Mode changes (`rfi`, `sc`, traps), DEC (its reads depend on time), the
-segment registers, the FP record forms and FPSCR moves stay in C, as
-does `dcbz`.  The kernel runs translated only
+segment registers, the FP record forms and FPSCR moves stay in C.
+`dcbz` (not the 601's) calls an imported helper (`ppc_jit_dcbz`) with its
+EA: it zeroes the block through the live write entry when
+`ppc_dcbz_host` (ppc_mmu.c) finds the block plain memory — the data
+cache on, no T=1 segment, W and I clear, not a device's block, the page
+in the active write table, decided with a side-effect-free walk — and
+otherwise declines, leaving the instruction to the predecoded loop (the
+alignment exception, the no-op, the held line, the fill).  A page with
+translated code has no RAM write entry, so it never zeroes a translation.
+Untranslated, it was 29 % of all exits on the Quake III demo.  The kernel runs translated only
 with `jit.supervisor` set, the default.  When it was introduced the
 kernel was a net loss translated: on the Mac OS X 10.1 boot to the
 Finder (Node, 6.1 G instructions) 89 % of instructions ran translated,
@@ -517,12 +575,34 @@ the PM8500 diverge).  It runs before the store lands, so it cannot tell a
 same-value store apart, and it counts `writes[]` for every word written.
 The tier clears the valid flag of
 exactly the blocks that translated the stored words: a store next to code
-(a data word, a link field) invalidates nothing.  A stale block leaves at
-its start; the region is retranslated once the writes have been quiet for
-`jit.quiet` entries.  A pool reset resets the tier
+(a data word, a link field) invalidates nothing.  The region is
+retranslated once the writes have been quiet for `jit.quiet` entries.
+
+What a stale block does depends on the chunk's history.  A chunk that
+has never been written is translated without the per-block flag test
+(its blocks' guards are the budget and fold compares alone): the first
+write that hits one of its blocks stops the whole chunk -- its function
+index moves from `fn` to `fn_dead`, so the dispatcher (`region_entry`)
+and every chain stub, which read `fn`, decline it until the retranslation
+revalidates it (same words: `fn` is restored) or regenerates it.  A
+chunk regenerated after a write is `guarded`: its blocks test their flag
+and a stale block leaves at its start, as every block did before.  The
+flag test was a byte load and a compare per block of 2.5-4 instructions;
+on Quake III's demo (9 invalidations in 80 s) emitting none measured
+about +3 % (291 / 293 against 278 / 284 MIPS while running).  A write that
+lands while the chunk's function is on the stack is the function's own
+`ppc_jit_code_store`, after which it leaves; a write during an
+asynchronous compile makes the function land dead.  A pool reset resets the tier
 (`g_pd_tier_reset_hook`), as do a memory map change and a model change.
 
 ### 3.8 Where the time goes, and what was tried
+
+Each module carries a name section that names its function
+`ppc_<address>` after its first block, so a CPU profile tells the
+translations apart.  On Quake III's demo (20 s of the core thread in
+Chrome) translated code is spread thin: 476 functions, the hottest 4.8 %,
+the top 20 about 40 %; the FP helper and its kernel were 11 % before the
+inline zeros.
 
 On the Mac OS X scenario's warm round (Node `--cpu-prof` with a
 `--profiling-funcs` relink, JIT with supervisor code): `ppc_pd_run` 39 %,
@@ -643,10 +723,11 @@ Open Firmware (`pm7500-of`, 58 -> 50 MIPS): a few seconds at power-on.
 | `chunk_cap` | the most instructions one function translates (1024; 64..65536) |
 | `async` | 1 = compile through `WebAssembly.compile` off the call path (§2.2; the default except under Node) |
 | `regs` | 0 = guest GPRs in locals per block, 1 = per function; setting it drops every translation |
-| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them; 13 appends a snapshot of every translated page to `jitsnap.bin` |
+| `trace` | debugging: 1 every entry and exit; 2 a histogram of exit pcs, 3 prints it with the untranslated exits summed by opcode; 4 writes every module to the working directory; 5 the bytes per instruction, and per instruction by what they are for; 6 every region translation and what it regenerated, and every word promoted to a leader with the word before it and how the loop arrived; 7 where translation time goes; 8 every block invalidation; 9 every code-page write; 10 why `ppc_jit_code_store` declined; 11 collects per-word and per-writer statistics of the writes reaching translated pages (invalidating or not, value changed or not, CPU / translated code / DMA, and a timeline of invalidations), 12 prints them (and the hook's calls per code page); 13 appends a snapshot of every translated page to `jitsnap.bin`; 14 counts `ppc_jit_fp`'s calls by opcode, 15 prints them; 17 checks every inline FP arithmetic word translated from then on against the C kernel, printing mismatches, 18 prints the totals |
 | `regions`, `compiles`, `functions`, `bytes` | regions created, region translations, functions generated, bytes of WebAssembly |
 | `calls`, `deopts`, `block_invals`, `compile_us`, `instructions` | entries into translated code, exits at a missed access, blocks invalidated by code writes, time spent translating and compiling, budget slots consumed inside translated code |
 | `lookups`, `deferred` | calls into the dispatcher, translations the governor put off |
+| `rfi_skips` | entries not counted because the word is where the last `rfi` returned (§3.1) |
 | `reset()` | drop every translation |
 
 `ppc_jit_status()` reports on, supervisor, instructions run translated,

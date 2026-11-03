@@ -50,6 +50,7 @@ therefore a source the storage engine can mount with no adapter.
 | `chunk_cache_t` | `chunk_cache.c` | LRU of decoded chunks with coalescing and spill |
 | `format_t`, `format_unwrap` | `format_registry.c` | the one table of formats |
 | `ndif_source_open`, `udif_source_open`, `qcow2_source_open` | `image_chunkmap.c` | NDIF / UDIF / QCOW2 as chunk-mapped sources |
+| `moof_source_open` | `image_moof.c` | a MOOF's GCR tracks decoded to a DiskCopy 4.2 image in memory |
 
 ## 3. Behaviour/algorithms
 
@@ -65,7 +66,8 @@ check can compare sources that were reached by different routes.
   `source_key_same_source` compares keys that way there and exactly natively.
 - A view: its parent's key and the range, or a key the adapter chooses
   (a DiskCopy payload is `<key>#dc42`, a LisaEm ProFile image's 532-byte <!-- lint-allow: LisaEm -->
-  view `<key>#lisaem`, a decoded NDIF `<key>#ndif`). <!-- lint-allow: LisaEm -->
+  view `<key>#lisaem`, a decoded NDIF `<key>#ndif`, a decoded MOOF <!-- lint-allow: LisaEm -->
+  `<key>#moof`).
 - A member of a namespace: the parent's key and the member path
   (`<key>/partition1/Disk.img`, `<key>/System 7.sit/rsrc`).
 
@@ -103,7 +105,9 @@ Finder info come from an AppleDouble companion (`._NAME`, or the legacy
 One table replaces the image opener's, the VFS mount probe's and SCSI media
 validation's probe orders. Wrappers (source → source) are built in and tried
 first, in a loop, so any nesting unwraps: UDIF (by its trailer), NDIF (by the
-resource fork's `bcem` map), QCOW2 (by its `QFI\xfb` header), DiskCopy 4.2 (by its header; a LisaEm ProFile image <!-- lint-allow: LisaEm -->
+resource fork's `bcem` map), QCOW2 (by its `QFI\xfb` header), MOOF (by its
+`MOOF FF 0A 0D 0A` magic; its tracks decode to a DiskCopy 4.2 image, which
+the next round peels: `moof+dc42`), DiskCopy 4.2 (by its header; a LisaEm ProFile image <!-- lint-allow: LisaEm -->
 — 20 tag bytes per block — is its own row, `lisaem`, tried first: it <!-- lint-allow: LisaEm -->
 re-orders the blocks and folds the tags back in), and peeler's
 BinHex, MacBinary and gzip. Namespace formats (a disk, an archive) register

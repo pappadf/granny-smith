@@ -405,11 +405,24 @@ static inline uint8_t dev_read8(const page_entry_t *pe, uint32_t addr, uint32_t 
     logpoint_notify_device(addr, 1, v, false);
     return v;
 }
+// A wide access at an address that is not a multiple of its width is several
+// bus cycles on the real machine -- the 68030/68040 split it by byte lane, the
+// byte at the lowest address landing in the most significant byte -- and a
+// device sees each of them at its own address.  Handing the device one wide
+// access at the odd address instead made it answer for the aligned register
+// pair: MacTest Pro's Expansion Card test reads the 24AC's sense register with
+// a longword move at $D8000D, and Mac OS 8.1 on a Power Macintosh polls the
+// 8*24's Stopwatch status with a longword read at +$C3 (both hung or misread).
+// The split goes to byte reads, which every device composes consistently.
 static inline uint16_t dev_read16_raw(const page_entry_t *pe, uint32_t off) {
-    return pe->dev->read_uint16 ? pe->dev->read_uint16(pe->dev_context, off)
-                                : (uint16_t)((dev_raw8(pe, off) << 8) | dev_raw8(pe, off + 1));
+    if ((off & 1u) == 0 && pe->dev->read_uint16)
+        return pe->dev->read_uint16(pe->dev_context, off);
+    return (uint16_t)((dev_raw8(pe, off) << 8) | dev_raw8(pe, off + 1));
 }
 static inline uint32_t dev_read32_raw(const page_entry_t *pe, uint32_t off) {
+    if (__builtin_expect((off & 3u) != 0, 0))
+        return ((uint32_t)dev_raw8(pe, off) << 24) | ((uint32_t)dev_raw8(pe, off + 1) << 16) |
+               ((uint32_t)dev_raw8(pe, off + 2) << 8) | dev_raw8(pe, off + 3);
     if (pe->dev->read_uint32)
         return pe->dev->read_uint32(pe->dev_context, off);
     if (pe->dev->read_uint16)
@@ -433,7 +446,7 @@ static inline void dev_write8(const page_entry_t *pe, uint32_t addr, uint32_t of
     logpoint_notify_device(addr, 1, value, true);
 }
 static inline void dev_write16_raw(const page_entry_t *pe, uint32_t off, uint16_t value) {
-    if (pe->dev->write_uint16) {
+    if ((off & 1u) == 0 && pe->dev->write_uint16) {
         pe->dev->write_uint16(pe->dev_context, off, value);
         return;
     }
@@ -441,6 +454,13 @@ static inline void dev_write16_raw(const page_entry_t *pe, uint32_t off, uint16_
     dev_raw_w8(pe, off + 1, (uint8_t)value);
 }
 static inline void dev_write32_raw(const page_entry_t *pe, uint32_t off, uint32_t value) {
+    if (__builtin_expect((off & 3u) != 0, 0)) { // split by byte lane (see dev_read16_raw)
+        dev_raw_w8(pe, off, (uint8_t)(value >> 24));
+        dev_raw_w8(pe, off + 1, (uint8_t)(value >> 16));
+        dev_raw_w8(pe, off + 2, (uint8_t)(value >> 8));
+        dev_raw_w8(pe, off + 3, (uint8_t)value);
+        return;
+    }
     if (pe->dev->write_uint32) {
         pe->dev->write_uint32(pe->dev_context, off, value);
         return;
@@ -1657,6 +1677,48 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 }
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
     write_slow_n(addr, value, 4);
+}
+
+// A run of byte writes, as `len` calls of memory_write_uint8_slow would
+// make them.  Where a page is a device page planted in the table -- the
+// branch write_slow_n takes first -- the bytes go to its handler without
+// re-deciding that per byte; with no held cache line and no logpoint hook
+// (the per-access work dev_desc_write does besides dispatching) they go
+// straight to the device's byte handler.  Anything else takes the full slow
+// path.  For bus masters streaming into device memory (pci_dma_write).
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) {
+    while (len) {
+        uint32_t page = addr >> MEM_PAGE_SHIFT;
+        uintptr_t e = (g_active_write && page < g_page_count) ? g_active_write[page] : 0;
+        if (!e || MEM_ENTRY_IS_RAM(e)) {
+            write_slow_n(addr, *bytes, 1);
+            addr++;
+            bytes++;
+            len--;
+            continue;
+        }
+        const mem_dev_desc_t *d = (const mem_dev_desc_t *)e;
+        uint32_t chunk = MEM_PAGE_SIZE - (addr & MEM_PAGE_MASK);
+        if (chunk > len)
+            chunk = len;
+        g_mem_slowpath_count += chunk;
+        g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)] += chunk;
+        // The first byte the full way (which also checks the entry is live).
+        dev_desc_write(d, addr, bytes[0], 1);
+        uint32_t i = 1;
+        if (!g_mem_lines && !g_mem_logpoint_hook && d->iface->write_uint8) {
+            uint32_t off = addr & MEM_PAGE_MASK;
+            // A write that remaps the page ends the run; the rest re-decide.
+            for (; i < chunk && g_active_write[page] == e; i++)
+                d->iface->write_uint8(d->ctx, d->sub_base + ((off + i) ^ (d->lane_reverse ? 7u : 0u)), bytes[i]);
+        } else {
+            for (; i < chunk && g_active_write[page] == e; i++)
+                dev_desc_write(d, addr + i, bytes[i], 1);
+        }
+        addr += i;
+        bytes += i;
+        len -= i;
+    }
 }
 
 // Read memory at the given address with specified size (1, 2, or 4 bytes)

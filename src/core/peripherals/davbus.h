@@ -68,6 +68,12 @@ typedef struct davbus_host {
     int in_chan;
     uint32_t cpu_hz; // scheduler cycle rate the pacing is exact against
     bool screamer; // Screamer codec (revision 3) instead of AWACS
+    // A stage after the codec on the way to the speaker, when the family has
+    // one (the beige G3's TDA7433 on the I2C bus): applied to the codec's
+    // output gains and mute before rendering.  NULL: the codec drives the
+    // speaker itself.
+    void (*post_gains)(void *ctx, uint32_t *gl_x65536, uint32_t *gr_x65536, bool *mute);
+    void *post_ctx;
     int16_t *stage; // gain-applied staging frames for audio_out_push
     struct object *snd_object; // machine.sound
 } davbus_host_t;

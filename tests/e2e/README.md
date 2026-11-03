@@ -54,6 +54,7 @@ tests/e2e/
 │   ├── imagewriter-print.spec.ts        # An ImageWriter job, fed to the printer, opens in the print viewer
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
+│   ├── mactest-max.spec.ts              # MacTest Pro (68k) on a IIci with a 24AC and an 8•24 GC: all nine tests pass, live at Max speed
 │   ├── machine-config-sections.spec.ts  # New Machine dialog: the Storage and Monitor sections build the machine they show
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
 │   ├── panel-tabs-overflow.spec.ts      # Narrow panel: tabs overflow into a » menu, header actions fold into ⋯ (every skin)
@@ -66,6 +67,7 @@ tests/e2e/
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
 │   ├── perf-quake3-gpu/perf-quake3-gpu.spec.ts # Quake III's demo on the host GPU (WebGPU + JIT), timed; real GPU only (opt-in: GS_Q3_GPU=1; README.md beside it is the runbook)
 │   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
+│   ├── qd3d-thread.spec.ts              # QuickDraw 3D card's renderer on a Web Worker; frame lands on completion
 │   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-lisa-chips.spec.ts    # Two Lisa ROM chips upload as one ROM; a lone chip is refused

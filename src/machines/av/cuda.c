@@ -103,6 +103,15 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_TICK_NS 1000000000.0
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
+// How long Cuda takes to clock each further response byte after the host
+// acknowledges the previous one: the firmware notices the ByteAck edge and
+// shifts 8 bits out on CB1 -- "byte transfer nominal ~65 us incl. handshake"
+// (CudaMgr.a, the IrqMissed timing notes).  A RdTime round trip is about ten
+// byte times, which is what code timing the Cuda by iteration count assumes:
+// MacTest Pro's Keyboard Controller test polls RdTime for two clock ticks
+// (up to two seconds) out of one 4096-call budget, so it needs every call to
+// take at least half a millisecond, as on the real part.
+#define CUDA_BYTE_NS 65000.0
 // How long after the host negates ByteAck at the end of a sync cycle Cuda
 // takes to negate TREQ.  The firmware is a microcontroller reacting to a
 // pin, not a combinational path: a host that polls TREQ the instant after
@@ -250,12 +259,16 @@ static void cuda_set_treq(av_cuda_t *cuda, bool high) {
 }
 
 // Clock a byte into the host's SR after the firmware's ~25 us think time.
-static void cuda_push_delayed(av_cuda_t *cuda, uint8_t byte) {
+static void cuda_push_after(av_cuda_t *cuda, uint8_t byte, double delay_ns) {
     cuda->push_pending = true;
     cuda->push_byte = byte;
     cuda->push_last = false;
     remove_event(cuda->sched, &cuda_push_event, cuda);
-    scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)CUDA_PUSH_DELAY_NS);
+    scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)delay_ns);
+}
+
+static void cuda_push_delayed(av_cuda_t *cuda, uint8_t byte) {
+    cuda_push_after(cuda, byte, CUDA_PUSH_DELAY_NS);
 }
 
 // Cancel a stale delayed push.  The host is allowed to consume an in-flight
@@ -293,12 +306,14 @@ static void cuda_push_byte(av_cuda_t *cuda, int idx) {
     via_input_sr(cuda->via1, cuda->tx_buf[idx]);
 }
 
-// Advance to and push the next response byte, or ignore if none remain
-// (the trailing idle acknowledge is produced on the TIP rising edge).
+// Advance to the next response byte and clock it one byte time later (see
+// CUDA_BYTE_NS), or ignore if none remain (the trailing idle acknowledge is
+// produced on the TIP rising edge).  TREQ negates with the last byte.
 static void cuda_advance_tx(av_cuda_t *cuda) {
     if (cuda->tx_idx + 1 < cuda->tx_len) {
         cuda->tx_idx++;
-        cuda_push_byte(cuda, cuda->tx_idx);
+        cuda_push_after(cuda, cuda->tx_buf[cuda->tx_idx], CUDA_BYTE_NS);
+        cuda->push_last = (cuda->tx_idx == cuda->tx_len - 1);
     }
 }
 

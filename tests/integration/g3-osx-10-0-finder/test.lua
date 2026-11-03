@@ -61,6 +61,12 @@ if mac.have_media(hd) then
         end
         echo(F"the Finder after ${spent} of scheduler time")
     end
+    -- The Finder's window is INACTIVE in the golden.  Which process holds
+    -- the front when the window opens is a race in the login sequence, and
+    -- it moves with boot timing (see the head start above); it went this
+    -- way when the DBDMA engine began writing every command's result word,
+    -- as the architecture says, not only an interrupting one's.  Both
+    -- outcomes are a Finder at 1024 x 768; the golden pins today's.
     gs.try(function() return machine.screen.save(F"${mac.RESULTS_DIR}/finder.png") end, nil)
 
     -- The ndrv drives the Rage Pro at 1024 x 768 and the Finder is up.

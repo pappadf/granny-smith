@@ -140,7 +140,17 @@ const mac030_io_range_t *mac030_io_decode_indexed(const mac030_io_t *io, uint32_
     return io_find(io, NULL, addr & io->mirror_mask);
 }
 
+// True when `addr` (window-relative, before the mirror) lies in the board's
+// undecoded span: nothing answers there, so the cycle times out.
+static inline bool io_in_berr(const mac030_io_t *io, uint32_t addr) {
+    return addr >= io->berr_lo && addr <= io->berr_hi;
+}
+
 static inline uint8_t io_read_byte(mac030_io_t *io, uint32_t addr, const mac030_io_range_t *hint) {
+    if (io_in_berr(io, addr)) {
+        memory_signal_bus_error(io->window_base + addr, false);
+        return io->unmapped_read;
+    }
     uint32_t offset = addr & io->mirror_mask;
     const mac030_io_range_t *r = io_find(io, hint, offset);
     if (!r) {
@@ -176,6 +186,10 @@ static inline uint8_t io_peek_byte(mac030_io_t *io, uint32_t addr, const mac030_
 }
 
 static inline void io_write_byte(mac030_io_t *io, uint32_t addr, uint8_t value, const mac030_io_range_t *hint) {
+    if (io_in_berr(io, addr)) {
+        memory_signal_bus_error(io->window_base + addr, true);
+        return;
+    }
     uint32_t offset = addr & io->mirror_mask;
     const mac030_io_range_t *r = io_find(io, hint, offset);
     if (!r) {
@@ -344,6 +358,14 @@ void mac030_io_install(mac030_io_t *io, config_t *cfg, const struct mac030_board
     io->mirror_mask = desc->io_mirror_mask;
     io->cfg = cfg;
     io->unmapped_read = desc->io_unmapped_read;
+    io->window_base = desc->rom_end;
+    if (desc->io_berr_hi > desc->io_berr_lo) {
+        io->berr_lo = desc->io_berr_lo;
+        io->berr_hi = desc->io_berr_hi;
+    } else {
+        io->berr_lo = 1;
+        io->berr_hi = 0;
+    }
     io->miss_logged_read = io->miss_logged_write = 0;
     io_build_page_index(io);
 }

@@ -71,7 +71,7 @@ fi
 
 # Extract configuration from config.mk: the first `KEY :=` line, exactly that
 # key (TEST_SETUP never matches TEST_SETUP_EXTRA), empty when absent.
-cfg() { sed -n "/^$1[[:space:]]*:=/{s/^[^=]*=[[:space:]]*//p;q}" "$TEST/config.mk"; }
+cfg() { sed -n "/^$1[[:space:]]*:=/{s/^[^=]*=[[:space:]]*//p;q;}" "$TEST/config.mk"; }
 TEST_ROM=$(cfg TEST_ROM)
 TEST_ARGS=$(cfg TEST_ARGS)
 TEST_SETUP=$(cfg TEST_SETUP)

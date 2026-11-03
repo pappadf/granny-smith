@@ -95,8 +95,9 @@ void image_set_tags(image_t *image, uint8_t *tags, uint32_t tag_bytes, uint32_t 
 // Every opener takes a path the VFS resolves: a host file, or a file inside
 // an image or archive (outer.img/partition1/inner.img, disks.zip/a.dsk).
 // Wrapper formats are peeled through the format registry -- UDIF, NDIF,
-// QCOW2, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
-// engine reads the innermost source directly: nothing is decoded to a file.
+// QCOW2, MOOF, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the
+// storage engine reads the innermost source directly: nothing is decoded to a
+// file (a MOOF is decoded to its sectors in memory).
 image_t *image_open_readonly(const char *base_path);
 
 // Why this thread's last image open failed when the file is a container
@@ -245,7 +246,8 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 // Export the full disk content (base + delta) of an open image to a new file.
 // The destination's name picks the format: .dmg is UDIF; .dc42 and
 // .diskcopy are DiskCopy 4.2 with the sector tags (floppies only), as is
-// .image for a floppy -- the classic Mac name for a DiskCopy file; any
+// .image for a floppy -- the classic Mac name for a DiskCopy file; .moof
+// is an Applesauce MOOF bitstream image (400K/800K floppies only); any
 // other name is the flat raw image.  Whatever the format, the destination
 // is created exclusively (an existing file is never overwritten) and an
 // unreadable base block fails the export.  Returns 0 on success, -1 on

@@ -54,6 +54,7 @@ static const class_desc_t debug_mac_globals_class;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // ============================================================================
 // Type Definitions

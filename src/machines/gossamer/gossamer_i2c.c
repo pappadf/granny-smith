@@ -15,8 +15,11 @@
 //   * the personality card's ID EEPROM at 7-bit $53 (8-bit $A6), from
 //     which Open Firmware builds the /perch node (Whisper: `0F AA 55 AA
 //     "Whisper" 00 .. 02`, the rest of the first 32 bytes zero, then $FF);
-//   * the TDA7433 tone/volume chip at 8-bit $8A, written by every audio
-//     driver when /perch exists — a write sink here.
+//   * the TDA7433 audio processor at 8-bit $8A, written by every audio
+//     driver when /perch exists.  On the beige G3 it sits between the codec
+//     and the jacks: the codec passes sound through its output A (its
+//     driver keeps output C muted), and the TDA7433's volume and front
+//     attenuators set what the internal speaker plays (gos_tda7433_gains).
 //
 // The SPD image is the JEDEC 168-pin SDRAM layout (bytes 0-63), built
 // from the DIMM geometry the profile's RAM size decomposes into: PC66
@@ -28,6 +31,7 @@
 
 #include "log.h"
 
+#include <math.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("i2c");
@@ -35,6 +39,18 @@ LOG_USE_CATEGORY_NAME("i2c");
 #define SPD_ADDR0    0xA0u // 8-bit address of DIMM 0's SPD; DIMM k at +2k
 #define PERCH_ADDR   0xA6u
 #define TDA7433_ADDR 0x8Au
+// Its registers (the subaddress byte's low bits; bit 4 auto-increments):
+// the input register's bits 1:0 select the input (3 = none: mute), the
+// volume's low 7 bits are 32 - dB (0 = +32 dB, $20 = 0 dB, $6F = -79 dB),
+// and each speaker attenuator's bits 4:0 are 1.5 dB steps (0 to -37.5 dB)
+// with bit 5 muting the channel.  Registers 3 and 5 (left and right front)
+// feed the internal speaker, 4 and 6 (rear) the line-out jack.
+#define TDA7433_INPUT    0u
+#define TDA7433_VOLUME   1u
+#define TDA7433_TONE     2u
+#define TDA7433_ATT_LF   3u
+#define TDA7433_ATT_RF   5u
+#define TDA7433_ATT_MUTE 0x20u
 
 // One standard DIMM type, by size: rows/columns of its 64-Mbit/128-Mbit
 // SDRAM parts, sides, bytes per side.  4 internal banks, x8 organisation
@@ -145,6 +161,10 @@ void gos_i2c_init(config_t *cfg) {
         LOG(2, "DIMM %u: %u side(s) of %u MB (rows %u cols %u)", k, st->dimm[k].sides, st->dimm[k].side_bytes >> 20,
             st->dimm[k].rows, st->dimm[k].cols);
     }
+    // The TDA7433 at unity until a driver programs it: volume 0 dB (code
+    // $20), tone flat, every attenuator at 0 dB and unmuted.
+    bus->tda7433[TDA7433_VOLUME] = 0x20;
+    bus->tda7433[TDA7433_TONE] = 0xFF;
     const uint8_t *id = gos_board(cfg)->perch_eeprom;
     memset(bus->perch, 0xFF, sizeof(bus->perch));
     if (id) {
@@ -152,6 +172,25 @@ void gos_i2c_init(config_t *cfg) {
         memcpy(bus->perch, id, 16);
         bus->perch_present = true;
     }
+}
+
+void gos_tda7433_gains(void *ctx, uint32_t *gl_x65536, uint32_t *gr_x65536, bool *mute) {
+    config_t *cfg = (config_t *)ctx;
+    const uint8_t *r = gos_st(cfg)->i2c.tda7433;
+    // Input code 3 selects no input: the driver's mute (it ORs 2 into its
+    // input 1); both fronts muted is one too.
+    if ((r[TDA7433_INPUT] & 3u) == 3u ||
+        ((r[TDA7433_ATT_LF] & TDA7433_ATT_MUTE) && (r[TDA7433_ATT_RF] & TDA7433_ATT_MUTE)))
+        *mute = true;
+    if (*mute)
+        return;
+    double vol_db = 32.0 - (double)(r[TDA7433_VOLUME] & 0x7Fu);
+    double l_db = vol_db - 1.5 * (double)(r[TDA7433_ATT_LF] & 0x1Fu);
+    double r_db = vol_db - 1.5 * (double)(r[TDA7433_ATT_RF] & 0x1Fu);
+    double gl = (r[TDA7433_ATT_LF] & TDA7433_ATT_MUTE) ? 0.0 : pow(10.0, l_db / 20.0);
+    double gr = (r[TDA7433_ATT_RF] & TDA7433_ATT_MUTE) ? 0.0 : pow(10.0, r_db / 20.0);
+    *gl_x65536 = (uint32_t)((double)*gl_x65536 * gl + 0.5);
+    *gr_x65536 = (uint32_t)((double)*gr_x65536 * gr + 0.5);
 }
 
 // Which EEPROM an 8-bit address names (NULL = nobody answers).
@@ -195,7 +234,10 @@ bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len) {
     if ((addr8 & 0xFEu) == TDA7433_ADDR) {
         if (len >= 2 && (data[0] & 7u) < sizeof(st->i2c.tda7433))
             st->i2c.tda7433[data[0] & 7u] = data[1];
-        LOG(3, "TDA7433 write (%d bytes)", len);
+        if (len >= 2)
+            LOG(3, "TDA7433 reg %u = $%02X%s", data[0] & 7u, data[1], len > 2 ? " (+more)" : "");
+        else
+            LOG(3, "TDA7433 write (%d bytes)", len);
         return true;
     }
     if (!eeprom_at(st, addr8)) {

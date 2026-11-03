@@ -224,10 +224,16 @@ static void mcu_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 // The Apple presentation the SONIC driver consumes (SonicEnet.a @GetAddr):
 // bytes 0-5 hold the station address with each byte BIT-REVERSED (the
 // driver's NormAddr undoes it), and the XOR of all eight bytes must equal
-// $FF (checksum probed before the address is trusted).  The address here is
-// the locally-administered 02:00:00:09:07:01 → bit-reversed 40 00 00 90 E0
-// 80; byte 6 is zero and byte 7 makes the XOR come out to $FF.
-static const uint8_t mcu_mac_prom[8] = {0x40, 0x00, 0x00, 0x90, 0xE0, 0x80, 0x00, 0x4F};
+// $FF (checksum probed before the address is trusted).  The address is
+// 08:00:07:09:07:01, in Apple's own OUI: MacTest Pro's "Ethernet ROM" test
+// insists on 08:00:07 (bit-reversed 10 00 E0) and fails anything else, the
+// locally administered 02:00:00 included.  Bit-reversed: 10 00 E0 90 E0 80;
+// byte 6 is zero and byte 7 makes the XOR come out to $FF.
+//
+// The eight bytes repeat across the PROM's $2000 window (mcu.md §5): the same
+// test reads sixteen bytes and checks each half's XOR, which an 8-byte window
+// floating $FF above it failed.
+static const uint8_t mcu_mac_prom[8] = {0x10, 0x00, 0xE0, 0x90, 0xE0, 0x80, 0x00, 0xFF};
 
 static uint8_t mcu_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -348,6 +354,22 @@ static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t win_off, uint32_t ad
 // NuBus transactions run through the memory map + nubus core directly; the
 // write-buffer/error machinery this register controls is not modeled yet.
 
+// YANCC presents its control/status bits one per longword: bit n is bit 0 of
+// the long at offset n*4 (MacTest Pro's NuBus Controller test packs and
+// unpacks the file that way).  Two of them form the write-buffer error
+// interrupt: bit 7 is the error flag and bit 10 its enable.  With both set,
+// YANCC requests level 7, the NMI line it shares ("NMI/YANCC err", Quadra
+// 700 Developer Note Table 2-7); clearing either drops the request.  The test
+// arms bit 10, sets bit 7 25 times and expects 25 level-7 interrupts, its
+// handler clearing bit 7 each time.  Nothing on the modelled NuBus sets the
+// flag on its own: the write buffer never reports an error.
+#define MCU_YANCC_BIT_ERR    7
+#define MCU_YANCC_BIT_ERR_EN 10
+
+static bool mcu_yancc_err_irq(const mcu_state_t *st) {
+    return (st->yancc_regs[MCU_YANCC_BIT_ERR] & 1u) && (st->yancc_regs[MCU_YANCC_BIT_ERR_EN] & 1u);
+}
+
 static uint8_t mcu_yancc_access(config_t *cfg, uint32_t addr, bool peek) {
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0x1FFFu;
@@ -377,9 +399,13 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0x1FFFu;
     uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
+    bool was = mcu_yancc_err_irq(st);
     be_lane8_set(&st->yancc_regs[idx], off & 3, value);
     LOG(2, "YANCC write $%04X = $%08X (pc=%08X)", off, st->yancc_regs[idx], cpu_get_pc(cfg->cpu));
     st->yancc_touched |= 1ull << (idx & 63);
+    bool now = mcu_yancc_err_irq(st);
+    if (now != was)
+        mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_NMI, now);
 }
 
 // ============================================================
@@ -402,7 +428,7 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 const mac030_io_range_t mcu_q700_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, MAC030_DEV_VIA2, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x08008, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
+    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
     {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC, MCU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
@@ -432,7 +458,7 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
 const mac030_io_range_t mcu_q900_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, MAC030_DEV_VIA2, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x08008, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
+    {0x08000, 0x0A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
     {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_iop"},
     {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
@@ -800,6 +826,9 @@ static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
         via_input_c(cfg->via2, 1, 1, st->scsi_irq_or ? 0 : 1);
     if (st->scc_iop)
         mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
+    // A YANCC error interrupt pending at save time keeps requesting level 7.
+    if (mcu_yancc_err_irq(st))
+        mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_NMI, true);
     mmu_invalidate_tlb(st->bus_mmu);
     via_redrive_outputs(cfg->via1);
 }

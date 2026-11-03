@@ -81,7 +81,7 @@ ALL_TEST_DIRS := $(sort $(patsubst %/test.lua,%,$(wildcard */test.lua)) $(patsub
 # has no recognised `TEST_TIER := unit|matrix|extended` line (a typo, `?=`,
 # trailing blanks, no config.mk at all) would run nowhere while still being
 # listed.  Refuse to proceed instead.
-tier_of = $(shell sed -n 's/^TEST_TIER := \(unit\|matrix\|extended\)$$/\1/p' $(1)/config.mk 2>/dev/null)
+tier_of = $(shell sed -En 's/^TEST_TIER := (unit|matrix|extended)$$/\1/p' $(1)/config.mk 2>/dev/null)
 UNTIERED := $(strip $(foreach d,$(ALL_TEST_DIRS),$(if $(call tier_of,$(d)),,$(d))))
 ifneq ($(UNTIERED),)
 $(error tests with no recognised TEST_TIER (unit | matrix | extended): $(UNTIERED))

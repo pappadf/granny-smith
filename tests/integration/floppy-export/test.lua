@@ -2,7 +2,8 @@
 -- Integration test: machine.floppy.drive[N].disk.export on a Plus.
 -- fd0 holds a raw 800K System 6.0.8 disk.  A raw export reproduces it; a
 -- DiskCopy 4.2 export adds the header and one 12-byte tag per sector:
--- 84 + 1600 x 512 + 1600 x 12 = 838484 bytes.  The runner cd's into this
+-- 84 + 1600 x 512 + 1600 x 12 = 838484 bytes; a MOOF export reads back to
+-- the same sectors.  The runner cd's into this
 -- directory, so WORK_DIR is absolute.
 
 scheduler.run(50000)
@@ -21,8 +22,18 @@ assert(files.path_compare(F"${vars.WORK_DIR}/disk.dc42", F"${vars.WORK_DIR}/disk
 -- Never overwrites.
 assert(gs.try(function() return machine.floppy.drive[0].disk.export(F"${vars.WORK_DIR}/disk.dc42") end, false) == false, "export overwrote an existing file")
 
+-- .moof is an Applesauce MOOF: the sectors laid down as GCR bitstreams.
+assert(machine.floppy.drive[0].disk.export(F"${vars.WORK_DIR}/disk.moof"), "MOOF export returned false")
+
 -- The DiskCopy export mounts back as the same 800K disk.
 machine.floppy.drive[0].eject()
 machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/disk.dc42")
 assert(machine.floppy.drive[0].disk.density == "800k", "DiskCopy export did not mount as 800K")
+
+-- So does the MOOF, decoding to the very sectors it was written from.
+machine.floppy.drive[0].eject()
+machine.floppy.drive[0].insert(F"${vars.WORK_DIR}/disk.moof")
+assert(machine.floppy.drive[0].disk.density == "800k", "MOOF export did not mount as 800K")
+assert(machine.floppy.drive[0].disk.export(F"${vars.WORK_DIR}/disk-from-moof.img"), "raw export of the MOOF returned false")
+assert(files.path_compare("../../data/systems/System_6_0_8.dsk", F"${vars.WORK_DIR}/disk-from-moof.img") == -1, "MOOF round trip differs from the source")
 quit()

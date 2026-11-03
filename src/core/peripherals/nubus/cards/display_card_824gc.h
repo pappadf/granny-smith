@@ -117,9 +117,9 @@
 
 // Accelerator control registers (card-local low 28 bits).
 #define GC824_REG_ATTACH  0x4000028u // W: 0 detach / -1 attach (never read)
-#define GC824_REG_ALIVE_C 0x4000044u // R bit31 = alive flag C
-#define GC824_REG_ALIVE_B 0x4000048u // R bit31 = alive flag B
-#define GC824_REG_ALIVE_A 0x400004Cu // R bit31 = alive flag A
+#define GC824_REG_ALIVE_C 0x4000044u // bit31 = monitor-sense line 2 (also .GraphAccel "alive" C); a write drives it
+#define GC824_REG_ALIVE_B 0x4000048u // bit31 = monitor-sense line 1 ("alive" B); a write drives it
+#define GC824_REG_ALIVE_A 0x400004Cu // bit31 = monitor-sense line 0 ("alive" A); a write drives it
 #define GC824_REG_KICK    0x4000050u // W -1: firmware start/restart doorbell
 #define GC824_REG_MEMCFG  0x400009Cu // R bit31: memory-config discriminator
 // MFB sync/heartbeat register (RISC memory/interrupt controller).  The

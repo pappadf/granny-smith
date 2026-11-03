@@ -287,8 +287,8 @@ with the machine; the host mic is checkpoint-ephemeral.
 
 ## Tests
 
-`suite-av`: `av-chime` (power-on chime golden, content-identical to the
-reference recording `boot-chime-24kHz.wav`), `av-audio-in-device` (plug
+`suite-av`: `av-chime` (power-on chime golden: the ROM's chime PCM played
+end to end, 28 passes of the double buffer), `av-audio-in-device` (plug
 contract + tone landing in the guest double buffer), plus the DSP rows
 that ride the frame tick (`av-dsp-boot`, `av-dsp-determinism`).
 
