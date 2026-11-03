@@ -607,7 +607,7 @@ static void probe_report_partitions(image_t *img, uint64_t size) {
 
 // `files.probe(path)` — identify the format of a disk image.
 // `files.image_error(path)` — why the file at `path` cannot be opened as a
-// disk image when it is a container image (UDIF, NDIF, QCOW2) the emulator
+// disk image when it is a container image (UDIF, NDIF, QCOW2, MOOF) the emulator
 // cannot read, else "".  The upload says it instead of "not a valid Hard
 // Disk image" (the reason was only in the terminal).
 static DEF_METHOD(files_method_image_error) {
@@ -617,6 +617,16 @@ static DEF_METHOD(files_method_image_error) {
         return val_str("");
     }
     return val_str(image_open_error());
+}
+
+// `files.identify_floppy(path)` -- true when the image layer opens the file
+// as a floppy (400K/800K GCR, 720K/1440K MFM), whatever wraps it: the
+// Floppy Disk upload's test for a file its size does not identify (a MOOF).
+static DEF_METHOD(files_method_identify_floppy) {
+    image_t *img = image_open_readonly(argv[0].s);
+    bool fd = img && image_is_floppy(image_get_type(img));
+    image_close(img);
+    return val_bool(fd);
 }
 
 static DEF_METHOD(files_method_probe) {
@@ -1782,8 +1792,13 @@ static const member_t files_members[] = {
     {.kind = MK_METHOD,
      .name = "image_error",
      .examples = EXAMPLES("files.image_error \"/opfs/upload/disk.qcow2\""),
-     .doc = "Why a container image (UDIF, NDIF, QCOW2) cannot be read, or \"\"",
+     .doc = "Why a container image (UDIF, NDIF, QCOW2, MOOF) cannot be read, or \"\"",
      .method = {.args = files_path_arg, .nargs = 1, .result = VK_STRING, .fn = files_method_image_error}},
+    {.kind = MK_METHOD,
+     .name = "identify_floppy",
+     .examples = EXAMPLES("files.identify_floppy \"/opfs/upload/game.moof\""),
+     .doc = "True if the file opens as a floppy disk image (any wrapper, MOOF included)",
+     .method = {.args = files_path_arg, .nargs = 1, .result = VK_BOOL, .fn = files_method_identify_floppy}},
     {.kind = MK_METHOD,
      .name = "probe",
      .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
