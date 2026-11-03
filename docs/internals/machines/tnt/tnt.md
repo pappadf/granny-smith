@@ -1082,7 +1082,10 @@ it on:
   the 8 KB NVRAM behind `$74/$75/$77`, an 8042, and the 8259 pair with
   `$4D0/$4D1`; ports in an enabled PCI I/O BAR go to Bandit 1.
 - `$80800000` is PReP direct-mapped configuration; PReP slot 12 is the
-  first 53C825A (presented with the 53C810's device ID), slot 13 the second.
+  first 53C825A (presented with the 53C810's device ID).  The second is not
+  shown: a Sandalfoot has one on-board SCSI controller, and a driver that
+  found it drove it at the I/O BAR Open Firmware left, `$800`, which on a
+  PReP machine is IBM's planar register block.
 - `$A0000000-$BF7FFFFF` is a second Bandit 1 I/O window carrying all 32
   address bits (PReP puts I/O BARs at `$20000000`), and bus masters see
   memory at PCI `$80000000` (`pci_bus_set_dma_offset`).
@@ -1107,7 +1110,19 @@ at the OS/2 loader's hand-off from its big-endian stub, converting RAM with
 the same point as the reversing run: the dependency on PReP's lane reversal
 is the stub's, not the loader's or the microkernel's.
 
-Not checkpointed.  With it, the OS/2 loader (booted by hand into RAM, with
-synthesised PReP residual data) reads its configuration from the CD over
-its own 53C810 SCRIPTS, and the IBM Microkernel starts its servers and its
-console and SCSI driver stages.
+Not checkpointed: `machine.prep.save_state(path)` writes the window's
+device state (8259s, UART registers, RTC, 8042, NVRAM) to a side file, and
+`machine.prep.load_state(path)` reads it back after restoring the
+checkpoint it was saved with.  That makes a checkpoint taken mid-guest
+usable.  The side file is this build's struct layout, not a file format.
+
+With it, the OS/2 loader (booted by hand into RAM, with synthesised PReP
+residual data) reads its configuration from the CD over its own 53C810
+SCRIPTS.  The IBM Microkernel then starts its servers, its NCR driver scans
+the bus (the CD-ROM at ID 3, the ANS's empty internal bay at 0), and the
+serial, parallel, floppy and audio stages load.  The OS/2 file system
+server comes up and the OS/2 personality's loadable-device initialisation
+runs.  Getting there took four 53C8xx fidelity fixes the OS/2 driver
+depends on and AIX and NT did not: `Wait Reselect` leaving `SIGP` set,
+Transfer Control's NO OP, I/O-space Memory Move, and the `IRQ/` pulse
+between stacked interrupts (see the SCRIPTS engine's notes).

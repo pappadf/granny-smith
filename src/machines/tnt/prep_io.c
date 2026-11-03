@@ -36,8 +36,8 @@
 //                        i.e. slot 12 with A19 set).  The PReP slots are
 //                        mapped onto the Network Server's own devices: slot
 //                        12 (the Sandalfoot's on-board 53C810) is the first
-//                        53C825A (Bandit 1 device $11), slot 13 the second
-//                        ($12).  Every other slot is empty.  Slot 12
+//                        53C825A (Bandit 1 device $11).  Every other slot is
+//                        empty -- the second 53C825A included.  Slot 12
 //                        presents the 53C810's device ID: the platform's
 //                        stanzas (RDF.STZ, "11000") bind the NCR driver to
 //                        it, and the 53C825A is register-compatible.
@@ -87,6 +87,7 @@ LOG_USE_CATEGORY_NAME("prep");
 #define PREP_CFG_BASE  0x00800000u // offset of the config window inside ours
 #define PREP_PCI_IO    0x1000u // ports from here up are PCI I/O (Bandit 1)
 #define COM_FIFO       4096u
+#define COM_TX_LOG     (256u * 1024u) // what the guest sent, until a sent() drains it
 
 typedef struct prep_uart {
     uint8_t ier, lcr, mcr, scr, dll, dlm, fcr;
@@ -94,7 +95,7 @@ typedef struct prep_uart {
     unsigned rx_head, rx_tail;
     unsigned rx_hold; // LSR polls before the next queued byte "arrives" (one character time)
     uint64_t polls_since_tx; // LSR reads since the guest last transmitted: large = it is waiting for input
-    uint8_t tx[COM_FIFO];
+    uint8_t tx[COM_TX_LOG];
     unsigned tx_len;
     uint64_t tx_dropped;
 } prep_uart_t;
@@ -188,7 +189,7 @@ static void uart_write(prep_uart_t *u, unsigned reg, uint8_t v) {
     case 0:
         if (dlab) {
             u->dll = v;
-        } else if (u->tx_len < COM_FIFO) {
+        } else if (u->tx_len < COM_TX_LOG) {
             u->tx[u->tx_len++] = v;
             u->polls_since_tx = 0;
         } else {
@@ -562,10 +563,12 @@ static bool prep_cfg_decode(uint32_t off, int *dev, uint32_t *fn, uint32_t *reg)
     if (!sel || (sel & (sel - 1)))
         return false; // no slot bit, or more than one: no device answers
     int slot = 11 + __builtin_ctz(sel);
+    // A Sandalfoot has one on-board SCSI controller: slot 12.  The Network
+    // Server's second 53C825A is not shown (a driver that found it would
+    // drive it at whatever I/O BAR Open Firmware left, $800, which on a PReP
+    // machine is IBM's planar register block).
     if (slot == 12)
         *dev = 0x11;
-    else if (slot == 13)
-        *dev = 0x12;
     else
         return false;
     *fn = (off >> 8) & 7u;
@@ -696,6 +699,7 @@ static void prep_out8(tnt_prep_io_t *p, uint32_t port, uint8_t v) {
     case 0x4D0:
     case 0x4D1:
         p->pic[port & 1].elcr = v;
+        LOG(2, "ELCR%d = $%02X", port & 1, v);
         return;
     case 0x70:
         p->rtc.index = v;
@@ -906,6 +910,73 @@ static const arg_decl_t prep_bandit_le_args[] = {
      .doc = "reverse the lanes (default true)"},
 };
 
+// The window's device state is not part of a checkpoint (see the top of the
+// file), so a checkpoint taken mid-guest would come back with its 8259s,
+// UART and NVRAM at power-on.  These two methods carry that state in a side
+// file instead: save it next to the checkpoint, load it after the restore.
+// The format is this build's struct layout -- an experiment's tool, not a
+// file format.
+// clang-format off
+#define PREP_STATE_FIELDS(X) \
+    X(port92) \
+    X(port850) \
+    X(lane_reversal) \
+    X(com1.ier) \
+    X(com1.lcr) \
+    X(com1.mcr) \
+    X(com1.scr) \
+    X(com1.dll) \
+    X(com1.dlm) \
+    X(com1.fcr) \
+    X(rtc) \
+    X(kbc) \
+    X(pic) \
+    X(nv_index) \
+    X(nvram)
+// clang-format on
+
+static DEF_METHOD(prep_method_save_state) {
+    (void)self;
+    if (!g_prep)
+        return val_err("prep_io not enabled");
+    if (argc != 1 || argv[0].kind != VK_STRING || !argv[0].s)
+        return val_err("save_state: expected a path");
+    FILE *f = fopen(argv[0].s, "wb");
+    if (!f)
+        return val_err("save_state: cannot create the file");
+    bool ok = true;
+#define PREP_SAVE(field) ok = ok && fwrite(&g_prep->field, sizeof g_prep->field, 1, f) == 1;
+    PREP_STATE_FIELDS(PREP_SAVE)
+#undef PREP_SAVE
+    ok = fclose(f) == 0 && ok;
+    return ok ? val_bool(true) : val_err("save_state: write failed");
+}
+
+static DEF_METHOD(prep_method_load_state) {
+    (void)self;
+    if (!g_prep)
+        return val_err("prep_io not enabled");
+    if (argc != 1 || argv[0].kind != VK_STRING || !argv[0].s)
+        return val_err("load_state: expected a path");
+    FILE *f = fopen(argv[0].s, "rb");
+    if (!f)
+        return val_err("load_state: cannot open the file");
+    bool ok = true;
+#define PREP_LOAD(field) ok = ok && fread(&g_prep->field, sizeof g_prep->field, 1, f) == 1;
+    PREP_STATE_FIELDS(PREP_LOAD)
+#undef PREP_LOAD
+    fclose(f);
+    if (!ok)
+        return val_err("load_state: short file (a different build's layout?)");
+    ppc_set_le_bridge(g_prep->lane_reversal && (g_prep->port92 & PREP_PORT92_LE));
+    pic_update(g_prep);
+    return val_bool(true);
+}
+
+static const arg_decl_t prep_state_args[] = {
+    {.name = "path", .kind = VK_STRING, .doc = "the side file"},
+};
+
 static const member_t prep_members[] = {
     {.kind = MK_ATTR,
      .name = "lane_reversal",
@@ -919,6 +990,14 @@ static const member_t prep_members[] = {
      .name = "port92",
      .doc = "System Control Port A; bit 1 is the bridge's little-endian mode",
      .attr = {.type = VK_UINT, .get = prep_attr_port92}                                                                                                                               },
+    {.kind = MK_METHOD,
+     .name = "save_state",
+     .doc = "Write the window's device state (8259s, UART registers, RTC, 8042, NVRAM) to a side file",
+     .method = {.args = prep_state_args, .nargs = 1, .result = VK_BOOL, .fn = prep_method_save_state}                                                                                 },
+    {.kind = MK_METHOD,
+     .name = "load_state",
+     .doc = "Read back a save_state file, after the checkpoint it goes with has been restored",
+     .method = {.args = prep_state_args, .nargs = 1, .result = VK_BOOL, .fn = prep_method_load_state}                                                                                 },
     {.kind = MK_ATTR,
      .name = "unknown",
      .doc = "Accesses to ports no device answers (logged under `prep` at level 1)",

@@ -153,6 +153,15 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
         return;
     if (s->reg[SYM825_SIST0] || s->reg[SYM825_SIST1] || !(s->sist0_stacked | s->sist1_stacked))
         return;
+    // "After the first interrupt is cleared by reading the appropriate
+    // register, the IRQ/ pin will be deasserted for a minimum of three CLKs;
+    // the stacked interrupt(s) will move into the SIST0, SIST1, or DSTAT; and
+    // the IRQ/ pin will be asserted once again" (SYM53C825A Data Manual v3.0,
+    // Stacked Interrupts).  The pulse is what an edge-triggered controller
+    // sees: OS/2 PowerPC's NCR driver sits on an edge-triggered 8259 input,
+    // and a pin held high straight through lost the UDC stacked behind a
+    // selection time-out.
+    sym53c8xx_update_irq(s);
     s->reg[SYM825_SIST0] = s->sist0_stacked;
     s->reg[SYM825_SIST1] = s->sist1_stacked;
     s->sist0_stacked = 0;

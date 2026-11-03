@@ -34,6 +34,7 @@
 #include "sym53c8xx.h"
 
 #include "checkpoint.h"
+#include "config_space.h"
 #include "log.h"
 #include "memory.h"
 #include "pci.h"
@@ -693,12 +694,17 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         disconnect(s);
         return;
     case 2: // Wait Reselect
-        // The driver's doorbell decides this instruction: "if the SIGP bit
-        // in the ISTAT register is set, then the SCRIPTS processor will
-        // fetch the next instruction from the alternate address" — and
-        // SIGP is cleared by the jump.
+        // The driver's doorbell decides this instruction: "If the CPU sets
+        // the SIGP bit in the ISTAT register, the SYM53C825A will abort the
+        // Wait Reselect instruction and fetch the next instruction from" the
+        // alternate address.  The jump does NOT clear SIGP: "The instructions
+        // at the alternate jump address should check the status of SIGP to
+        // determine the cause of the jump", and SIGP is "polled and reset via
+        // CTEST2" (SYM53C825A Data Manual v3.0, ISTAT and Wait Reselect).
+        // IBM's OS/2 PowerPC NCR script does exactly that -- MOVE CTEST2 TO
+        // SFBR, JUMP IF 0x40 -- and took its "unexpected interrupt" exit
+        // when the jump had already eaten the bit.
         if (s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) {
-            s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
             set_reg32(s, SYM825_DSP, alt);
             return;
         }
@@ -842,21 +848,33 @@ static void exec_transfer(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
     uint8_t mask = (uint8_t)((insn >> 8) & 0xFFu);
     uint8_t value = (uint8_t)(insn & 0xFFu);
 
-    // "If both the Phase Compare and Data Compare bits are set, then both
-    // compares must be true to branch on a true condition."  With neither
-    // set and no carry test the transfer is unconditional.
-    bool cond = true;
+    // Bit 19 picks the sense: "If both the Phase Compare and Data Compare
+    // bits are set, then both compares must be true to branch on a true
+    // condition.  Both compares must be false to branch on a false
+    // condition" (SYM53C825A Data Manual v3.0, Transfer Control).  With no
+    // compare and no carry test the result is true, so the transfer goes
+    // only when bit 19 is set: 0x80080000 is JUMP and 0x80000000 is the NO
+    // OP drivers patch in and out (IBM's OS/2 PowerPC NCR script has one
+    // right after its doorbell handler).
+    bool take;
     if (carry_test) {
-        cond = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
+        bool carry = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
+        take = (carry == jump_if_true);
+    } else if (!cmp_phase && !cmp_data) {
+        take = jump_if_true;
     } else {
+        bool phase_ok = true, data_ok = true;
         if (cmp_phase) {
             publish_phase(s);
-            cond = cond && (s->phase == want);
+            phase_ok = (s->phase == want);
         }
         if (cmp_data)
-            cond = cond && (((s->reg[SYM825_SFBR] ^ value) & (uint8_t)~mask) == 0);
+            data_ok = (((s->reg[SYM825_SFBR] ^ value) & (uint8_t)~mask) == 0);
+        if (jump_if_true)
+            take = phase_ok && data_ok;
+        else
+            take = (!cmp_phase || !phase_ok) && (!cmp_data || !data_ok);
     }
-    bool take = (cmp_phase || cmp_data || carry_test) ? (cond == jump_if_true) : true;
 
     if (opc == 3) { // Interrupt
         if (!take)
@@ -891,6 +909,43 @@ static void exec_transfer(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
 // Memory Move, and Load/Store
 // ============================================================
 
+// An I/O-space Memory Move.  The one I/O target a script reaches in practice
+// is the chip itself, through its own I/O BAR: that is how a script written
+// for the 53C810 -- which has no LOAD/STORE -- sets DSA from a per-target
+// table (IBM's OS/2 PowerPC NCR driver does it for every queued target).
+// Each byte is an ordinary register access, side effects included.  An I/O
+// cycle to anything else is not modelled: it reads all ones and writes go
+// nowhere, as on a bus where nobody claims the cycle.
+static int own_io_register(sym53c8xx_t *s, uint32_t addr) {
+    if (!s->dev || !pci_cfg_bar_enabled(s->dev, 0))
+        return -1;
+    uint32_t base = pci_cfg_bar_base(s->dev, 0);
+    uint32_t off = addr - base;
+    return off < SYM825_REGS ? (int)off : -1;
+}
+
+static void io_read_block(sym53c8xx_t *s, uint32_t addr, uint8_t *buf, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        int r = own_io_register(s, addr + i);
+        if (r < 0) {
+            LOG(1, "ch%d: Memory Move from unclaimed I/O $%08X", s->channel, addr + i);
+            buf[i] = 0xFF;
+        } else {
+            buf[i] = sym53c8xx_reg_read(s, (uint32_t)r);
+        }
+    }
+}
+
+static void io_write_block(sym53c8xx_t *s, uint32_t addr, const uint8_t *buf, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        int r = own_io_register(s, addr + i);
+        if (r < 0)
+            LOG(1, "ch%d: Memory Move to unclaimed I/O $%08X", s->channel, addr + i);
+        else
+            sym53c8xx_reg_write(s, (uint32_t)r, buf[i], true);
+    }
+}
+
 static void exec_memory_move(sym53c8xx_t *s, uint32_t insn, uint32_t src, uint32_t dst) {
     uint32_t count = insn & 0x00FFFFFFu;
     // "Both the source and destination addresses must start with the same
@@ -901,11 +956,23 @@ static void exec_memory_move(sym53c8xx_t *s, uint32_t insn, uint32_t src, uint32
         sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
         return;
     }
+    // DMODE's SIOM/DIOM put the source/destination in PCI I/O space:
+    // "This bit is defined as an I/O Memory Enable bit for the source [the
+    // destination] address of a Memory Move or Block Move Command"
+    // (SYM53C825A Data Manual v3.0, DMODE bits 5 and 4).
+    bool src_io = (s->reg[SYM825_DMODE] & 0x20u) != 0;
+    bool dst_io = (s->reg[SYM825_DMODE] & 0x10u) != 0;
     uint8_t buf[512];
     while (count) {
         uint32_t chunk = count > sizeof(buf) ? (uint32_t)sizeof(buf) : count;
-        sym53c8xx_read_block(s, src, buf, chunk);
-        sym53c8xx_write_block(s, dst, buf, chunk);
+        if (src_io)
+            io_read_block(s, src, buf, chunk);
+        else
+            sym53c8xx_read_block(s, src, buf, chunk);
+        if (dst_io)
+            io_write_block(s, dst, buf, chunk);
+        else
+            sym53c8xx_write_block(s, dst, buf, chunk);
         src += chunk;
         dst += chunk;
         count -= chunk;
