@@ -14,6 +14,7 @@
 #include "appletalk_aevt.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
+#include "appletalk_router.h"
 #include "object.h"
 #include "value.h"
 
@@ -98,6 +99,7 @@ void atalk_install_objects(void) {
     }
 
     // The further file servers and their remote volumes (afp_remote_object.c)
+    atalk_router_install_objects(atalk);
     afp_remote_install_objects(atalk);
 
     // Each program-linking layer owns its own subtree.
@@ -120,6 +122,7 @@ void atalk_install_objects(void) {
 // The tree published here:
 //
 //   appletalk            enabled / node_id / stats / nbp
+//     router             seed / net / zone / stats    (appletalk_router.c)
 //     afp                enabled / name / message / versions
 //       volumes          add(name, path) -> the created volume, remove(name), count
 //       sessions         one entry per live ASP session, count

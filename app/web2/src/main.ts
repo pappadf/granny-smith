@@ -32,12 +32,13 @@ import {
 } from '@/bus/diagnostics';
 import { routePrintLine } from '@/bus/logSink';
 import { emulatorHealth } from '@/state/emulatorHealth.svelte';
-import { claimScratch } from '@/bus/scratch';
+import { claimScratch, holdScratchUntilClaimed } from '@/bus/scratch';
 import { installRemoteAfp } from '@/bus/remoteAfp';
 import { checkStoragePersistence } from '@/bus/storageHealth';
 import { markSchedulerChosen, setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import { takeJoinFromUrl, watchLinks } from '@/state/network.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { diagnoseGraphics, rendererFailure } from '@/lib/gpuDiagnostics';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -63,6 +64,8 @@ window.addEventListener('vite:preloadError', (ev) => {
 // script already set it; this corrects it against the registry) and the
 // auto-picked layout.
 loadPersistedState();
+// An invitation link (#join=...) waits for the Network tab
+takeJoinFromUrl();
 applyUrlSkin(new URLSearchParams(window.location.search));
 applyAppearance();
 
@@ -155,6 +158,10 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   const urlBoots = !!mediaParams.rom;
   if (urlBoots) beginUrlBoot(mediaParams.model);
 
+  // Uploads and Open Checkpoint wait for this tab's scratch area (claimed
+  // below, once the core is up).
+  holdScratchUntilClaimed();
+
   void (async () => {
     try {
       await whenModuleReady();
@@ -165,6 +172,8 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
       renderStartupErrorPage(target, e instanceof Error ? e.message : String(e));
       return;
     }
+    // Whether this Mac is linked to another (the toolbar's Max follows it)
+    watchLinks();
 
     // A worker that dies later (a wasm trap, an abort) cannot be recovered in
     // this page: every request now fails at once.  The page stays up under a

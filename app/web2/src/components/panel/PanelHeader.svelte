@@ -24,6 +24,7 @@
     checkpoints: 'Checkpoints',
     debug: 'Debug',
     logs: 'Logs',
+    network: 'Network',
   };
 
   // When the panel is too narrow for the active tab beside the view's

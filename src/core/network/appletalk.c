@@ -16,6 +16,7 @@
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
+#include "appletalk_router.h"
 #include "atalk_id.h"
 #include "checkpoint.h"
 #include "common.h"
@@ -99,7 +100,7 @@ typedef struct {
     uint32_t generation; // bumps on every RTS; a stale timeout is ignored
 } llap_rts_queue_t;
 
-#define ATP_MAX_HANDLERS     8
+#define ATP_MAX_HANDLERS     12
 #define ATP_MAX_OUTGOING     16
 #define ATP_MAX_XO_CACHE     16
 #define ATP_DEFAULT_RETRY_MS 2000u
@@ -189,7 +190,7 @@ typedef struct {
 // so unplugging it can drop their pending events: the link and transport
 // timers below, and those of the layers above (ASP, ADSP, the printer's PAP
 // and LaserWriter timers).
-#define ATALK_MAX_TIMERS 16
+#define ATALK_MAX_TIMERS 24
 
 // ============================================================================
 // The network and the connection (appletalk.h, "Lifecycle")
@@ -330,6 +331,11 @@ void atalk_timer_cancel_all(atalk_timer_t *t) {
         remove_event(s, t->cb, t);
 }
 
+bool atalk_timer_pending(const atalk_timer_t *t) {
+    scheduler_t *s = atalk_scheduler();
+    return s && t->cb && has_event(s, t->cb);
+}
+
 // Drop every pending event of the timers the connection registered: it is
 // coming off the cable.  The registrations stay with its scheduler, which
 // goes with its machine.
@@ -369,6 +375,7 @@ typedef struct {
 
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
 static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
+static void ddp_extended_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
 static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len);
@@ -611,6 +618,26 @@ static int llap_send(atalk_conn_t *c, const llap_header_t *llap, const uint8_t *
     return 0;
 }
 
+// Whether a guest may take `node` (its ENQ goes unanswered).  Every
+// instance runs the same deterministic emulation, so identical guests pick
+// identical node numbers -- and Open Transport ignores a lookup whose
+// reply-to node is its own whatever the network (Marathon 2 between two
+// 8100s under 7.6.1 never found the other player, both being node 1).  So a
+// network that is part of an internet takes its guests' nodes from a set of
+// its own: the host claims (ACKs) the rest, and the guest tries another.
+// About one node in eight is offered, a different set per network number,
+// so two networks' guests rarely meet on one node.  A network that kept the
+// default number (1) is no instance of an internet -- browser tabs pick
+// random numbers, linked headless instances set theirs -- and its guests
+// take any node, as before.
+static bool llap_node_offered(uint8_t node) {
+    uint16_t net = atalk_this_net();
+    if (node == 0 || node == 0xFF || net == ATALK_ROUTER_DEFAULT_NET || !atalk_router_active())
+        return true;
+    uint32_t h = ((uint32_t)net << 8 | node) * 2654435761u; // Knuth's multiplicative hash
+    return ((h >> 24) & 7) == 0;
+}
+
 static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...) {
     static const char *const names[] = {"malformed", "unhandled", "not transmitted"};
     switch (kind) {
@@ -664,8 +691,9 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
             break;
         }
         LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
-        if (header.dst == ATALK_HOST_NODE) {
+        // Reply with ACK if this ENQ targets our node (dynamic node ID
+        // probe/ack), or a node this network does not hand out.
+        if (header.dst == ATALK_HOST_NODE || !llap_node_offered(header.dst)) {
             llap_header_t ack;
             ack.dst = header.src;
             ack.src = ATALK_HOST_NODE;
@@ -719,8 +747,11 @@ static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_DDP_EXTENDED:
-        // LocalTalk nodes use short headers; extended DDP is for routers.
-        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
+        // A node that knows a router sends every datagram for another network,
+        // and may send any other, with the extended header (Inside AppleTalk
+        // 4-18, the nonrouter algorithm).
+        LOG_LLAP(11, "LLAP DDP_EXTENDED rx len=%zu", len - 3);
+        ddp_extended_in(c, &header, buf + 3, len - 3);
         break;
 
     default:
@@ -798,9 +829,14 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
     reply->llap.src = ATALK_HOST_NODE;
     reply->llap.type = request->llap.type;
 
+    reply->extended = request->extended;
+    reply->hop = 0;
+    reply->checksum = 0;
     reply->len = request->len;
     reply->dst_net = request->src_net;
-    reply->src_net = request->dst_net;
+    // The request may have named this network as 0 ("this network"); the
+    // reply says which one it is.
+    reply->src_net = request->extended ? atalk_this_net() : request->dst_net;
 
     reply->dst_socket = request->src_socket;
     reply->src_socket = request->dst_socket;
@@ -829,6 +865,8 @@ atalk_network_t *appletalk_network_init(void) {
     // The ImageWriter's LocalTalk Option card: published only while the
     // machine's printer is on LocalTalk
     atalk_imagewriter_register();
+    // The network's router: RTMP and ZIP, the latter on the ZIS (socket 6)
+    atalk_router_init();
     g_net.up = true;
     atalk_install_objects();
     return &g_net;
@@ -853,6 +891,7 @@ static void atalk_conn_plug_in(atalk_conn_t *c) {
     atalk_ppc_plug(c->ppc);
     atalk_aevt_plug(c->aevt);
     atalk_printer_plug(c->pap);
+    atalk_router_plug(true);
 }
 
 // Register every timer the connection and the layers above use with its
@@ -868,6 +907,7 @@ static void atalk_conn_register_timers(atalk_conn_t *c) {
     atalk_adsp_link_register_timers(c, c->adsp);
     atalk_printer_register_timers(c, c->pap);
     atalk_imagewriter_register_timers(c);
+    atalk_router_register_timers(c);
 }
 
 // Take `c` off the cable, as a server sees a Mac vanish: every session with
@@ -884,6 +924,7 @@ static void atalk_conn_unplug(atalk_conn_t *c) {
     atalk_imagewriter_unplug();
     afp_plug(NULL);
     asp_plug(NULL);
+    atalk_router_plug(false);
 
     // Then the transport: nothing above can call into it any more, so
     // requests are dropped without completing.
@@ -1018,6 +1059,11 @@ int atalk_set_enabled(bool enabled, char *err, size_t err_len) {
     return 0;
 }
 
+bool atalk_link_ready(void) {
+    atalk_conn_t *c = g_net.plugged;
+    return c && c->enabled && (!c->scc || scc_sdlc_ready(c->scc));
+}
+
 // Our LLAP node address is fixed (ATALK_HOST_NODE) rather than acquired by the
 // dynamic-node-assignment probe, so it is known as soon as the stack is up.
 unsigned atalk_node_id(void) {
@@ -1036,25 +1082,70 @@ static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
         return -1;
 
-    uint8_t buffer[DDP_SHORT_HEADER_SIZE + DDP_MAX_DATA_SIZE];
-    uint16_t length = (uint16_t)(size + DDP_SHORT_HEADER_SIZE);
+    uint8_t buffer[DDP_EXTENDED_HEADER_SIZE + DDP_MAX_DATA_SIZE];
+    size_t hdr = header->extended ? DDP_EXTENDED_HEADER_SIZE : DDP_SHORT_HEADER_SIZE;
+    uint16_t length = (uint16_t)(size + hdr);
+    llap_header_t llap = header->llap;
 
     ddp_log_summary(5, "-> Mac", header, length, (size_t)size);
 
-    // Short DDP header: low 2 bits carry the high bits of the 10-bit length.
-    buffer[0] = (uint8_t)((length >> 8) & 0x03);
-    buffer[1] = length & 0xFF;
-    buffer[2] = header->dst_socket;
-    buffer[3] = header->src_socket;
-    buffer[4] = header->type;
-    memcpy(&buffer[5], data, (size_t)size);
+    if (header->extended) {
+        // Extended header (Inside AppleTalk 4-15): hop count in bits 2..5 of
+        // the first byte, above the 10-bit length; no checksum (0).
+        buffer[0] = (uint8_t)(((header->hop & 0x0F) << 2) | ((length >> 8) & 0x03));
+        buffer[1] = length & 0xFF;
+        buffer[2] = 0; // checksum high: none
+        buffer[3] = 0; // checksum low
+        buffer[4] = (uint8_t)(header->dst_net >> 8);
+        buffer[5] = (uint8_t)header->dst_net;
+        buffer[6] = (uint8_t)(header->src_net >> 8);
+        buffer[7] = (uint8_t)header->src_net;
+        buffer[8] = header->llap.dst; // destination node
+        buffer[9] = header->llap.src; // source node
+        buffer[10] = header->dst_socket;
+        buffer[11] = header->src_socket;
+        buffer[12] = header->type;
+        llap.type = LLAP_DDP_EXTENDED;
+    } else {
+        // Short DDP header: low 2 bits carry the high bits of the 10-bit length.
+        buffer[0] = (uint8_t)((length >> 8) & 0x03);
+        buffer[1] = length & 0xFF;
+        buffer[2] = header->dst_socket;
+        buffer[3] = header->src_socket;
+        buffer[4] = header->type;
+        llap.type = LLAP_DDP_SHORT;
+    }
+    memcpy(&buffer[hdr], data, (size_t)size);
 
     LOG_INDENT(4);
     log_hex(log_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
     c->stats.ddp_out++;
-    return llap_send(c, &header->llap, buffer, length);
+    // For another network: the router forwards it over a link
+    if (header->extended && header->dst_net != 0 && header->dst_net != atalk_this_net()) {
+        atalk_router_from_local(buffer, length);
+        return 0;
+    }
+    return llap_send(c, &llap, buffer, length);
+}
+
+// Address a datagram this host originates from `src_socket` to `dest`.
+// Another network's address needs the extended header; this one's, or net 0
+// ("this network"), fits the short one.
+static void ddp_header_to(ddp_header_t *ddp, const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type,
+                          int payload_len) {
+    memset(ddp, 0, sizeof(*ddp));
+    ddp->extended = dest->net != 0 && dest->net != atalk_this_net();
+    ddp->llap.dst = dest->node;
+    ddp->llap.src = ATALK_HOST_NODE;
+    ddp->llap.type = ddp->extended ? LLAP_DDP_EXTENDED : LLAP_DDP_SHORT;
+    ddp->len = (uint16_t)(payload_len + (ddp->extended ? DDP_EXTENDED_HEADER_SIZE : DDP_SHORT_HEADER_SIZE));
+    ddp->dst_net = dest->net;
+    ddp->src_net = ddp->extended ? atalk_this_net() : 0;
+    ddp->dst_socket = dest->socket;
+    ddp->src_socket = src_socket;
+    ddp->type = ddp_type;
 }
 
 // Send one datagram to a remote socket.  The higher protocol modules (ADSP,
@@ -1068,15 +1159,7 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     if (!c || !c->enabled)
         return -1; // no machine on the cable, or it is detached from the link
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = dest->node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_net = dest->net;
-    ddp.dst_socket = dest->socket;
-    ddp.src_socket = src_socket;
-    ddp.type = ddp_type;
+    ddp_header_to(&ddp, dest, src_socket, ddp_type, len);
     return ddp_send(c, &ddp, data, len);
 }
 
@@ -1137,14 +1220,30 @@ static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_
         break;
 
     case DDP_RTMP_REQUEST:
-        // An RTMP Request (one byte, function 1) asks for a router; there is
-        // none on this cable, so it goes unanswered.  Only an odd one is logged.
-        if (len == 0) {
-            LOG(3, "RTMP req with no payload");
+        // An RTMP Request (function 1) asks for a router, a Route Data Request
+        // (2, 3) for its table: the router answers both.  With the router off
+        // the cable has none, and they go unanswered.
+        if (ddp->dst_socket != ATALK_RTMP_SOCKET) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "RTMP request on socket %u", (unsigned)ddp->dst_socket);
             break;
         }
-        if (len != 1 || buf[0] != 1)
-            LOG(3, "RTMP req unexpected payload len=%zu first=0x%02X", len, buf[0]);
+        atalk_router_rtmp_request_in(ddp, buf, len);
+        break;
+
+    case DDP_RTMP_RESPONSE:
+        // RTMP Data comes from routers, and the only one here is us; a guest
+        // sends none.
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "RTMP Data from node %u", (unsigned)ddp->llap.src);
+        break;
+
+    case DDP_ZIP:
+        // ZIP Queries (DDP type 6) go to the ZIS; ZIP's ATP requests arrive as
+        // ATP on the same socket, which the router registered.
+        if (ddp->dst_socket != ATALK_ZIS_SOCKET) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "ZIP on socket %u", (unsigned)ddp->dst_socket);
+            break;
+        }
+        atalk_router_zip_in(ddp, buf, len);
         break;
 
     default:
@@ -1178,6 +1277,8 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     }
 
     ddp.llap = *llap;
+    ddp.extended = false;
+    ddp.hop = 0;
     ddp.checksum = 0;
     ddp.dst_net = 0;
     ddp.src_net = 0;
@@ -1193,6 +1294,104 @@ static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *bu
     log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
     ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
+}
+
+// The DDP checksum (Inside AppleTalk 4-17): over every byte from the
+// destination network number to the end, add then rotate the 16-bit sum left
+// by one; a result of 0 is sent as $FFFF, since 0 means "no checksum".
+static uint16_t ddp_checksum(const uint8_t *buf, size_t len) {
+    uint16_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum = (uint16_t)(sum + buf[i]); // add the byte
+        sum = (uint16_t)((sum << 1) | (sum >> 15)); // rotate left one bit
+    }
+    return sum ? sum : 0xFFFF;
+}
+
+// Parse an extended DDP datagram (Inside AppleTalk 4-15) into `ddp`; false,
+// counted as malformed, if it is not one.  `llap_type` is kept in the header.
+static bool ddp_extended_parse(atalk_conn_t *c, uint8_t llap_type, const uint8_t *buf, size_t len, ddp_header_t *ddp) {
+    if (len < DDP_EXTENDED_HEADER_SIZE || len > DDP_MAX_DATA_SIZE + DDP_EXTENDED_HEADER_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP frame of %zu bytes", len);
+        return false;
+    }
+    memset(ddp, 0, sizeof(*ddp));
+    ddp->extended = true;
+    ddp->hop = (uint8_t)((buf[0] >> 2) & 0x0F); // hop count above the length bits
+    ddp->len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]); // 10-bit datagram length
+    if (ddp->len != len) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP length field %u in a %zu-byte frame", (unsigned)ddp->len,
+                   len);
+        return false;
+    }
+    ddp->checksum = (uint16_t)((buf[2] << 8) | buf[3]);
+    // A nonzero checksum covers the network numbers onward; verify it.
+    if (ddp->checksum != 0 && ddp_checksum(buf + 4, len - 4) != ddp->checksum) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "extended DDP checksum %04X does not match", (unsigned)ddp->checksum);
+        return false;
+    }
+    ddp->dst_net = (uint16_t)((buf[4] << 8) | buf[5]);
+    ddp->src_net = (uint16_t)((buf[6] << 8) | buf[7]);
+    ddp->llap.dst = buf[8]; // the datagram's destination node, not the link's
+    ddp->llap.src = buf[9]; // ...and its source node
+    ddp->llap.type = llap_type;
+    ddp->dst_socket = buf[10];
+    ddp->src_socket = buf[11];
+    ddp->type = buf[12];
+    return true;
+}
+
+// Hand a parsed datagram to the protocol layers of this host.
+static void ddp_extended_deliver(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    size_t payload_len = len - DDP_EXTENDED_HEADER_SIZE;
+    ddp_header_t copy = *ddp;
+    ddp_log_summary(4, "<- Mac", &copy, copy.len, payload_len);
+    LOG_INDENT(4);
+    log_hex(log_local_category(), 9, "DDP rx dump", buf, len);
+    ddp_in(c, &copy, buf + DDP_EXTENDED_HEADER_SIZE, payload_len);
+    LOG_INDENT(-4);
+}
+
+// Process an incoming extended DDP header (Inside AppleTalk 4-15) and dispatch
+// to ddp_in.  The guest sends one once it knows a router: to another network
+// through it, and -- at its driver's choice -- to this one.
+static void ddp_extended_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len) {
+    ddp_header_t ddp;
+    if (!ddp_extended_parse(c, llap->type, buf, len, &ddp))
+        return;
+
+    // This network is net 0 or its own number; anything else is for another
+    // network: the router forwards it (or drops it, without a route).
+    if (ddp.dst_net != 0 && ddp.dst_net != atalk_this_net()) {
+        if (!atalk_router_active()) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP for network %u", (unsigned)ddp.dst_net);
+            return;
+        }
+        atalk_router_from_local(buf, len);
+        return;
+    }
+    // Node 0 on this network is "any router" (4-8): us.
+    if (ddp.llap.dst != ATALK_HOST_NODE && ddp.llap.dst != 0xFF && ddp.llap.dst != 0) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP for node %02X", (unsigned)ddp.llap.dst);
+        return;
+    }
+    ddp_extended_deliver(c, &ddp, buf, len);
+}
+
+void atalk_deliver_datagram(const uint8_t *dg, size_t len, bool to_host) {
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !c->enabled)
+        return; // no machine on the cable: nobody to deliver to
+    if (to_host) {
+        ddp_header_t ddp;
+        if (ddp_extended_parse(c, LLAP_DDP_EXTENDED, dg, len, &ddp))
+            ddp_extended_deliver(c, &ddp, dg, len);
+        return;
+    }
+    // Onto LocalTalk: from the router's node, to the datagram's node
+    llap_header_t llap = {.dst = dg[8], .src = ATALK_HOST_NODE, .type = LLAP_DDP_EXTENDED};
+    c->stats.ddp_out++;
+    llap_send(c, &llap, dg, len);
 }
 
 #define NBP_BRRQ       1
@@ -1655,7 +1854,9 @@ static bool nbp_zone_matches(const nbp_tuple_t *query, const atalk_nbp_entry_t *
 
 static void nbp_build_tuple_from_entry(const atalk_nbp_entry_t *entry, nbp_tuple_t *tuple) {
     memset(tuple, 0, sizeof(*tuple));
-    tuple->net = entry->net;
+    // A name registered without a network is on this one: say which (0 while
+    // no router has given it a number).
+    tuple->net = entry->net ? entry->net : atalk_this_net();
     tuple->node = entry->node;
     tuple->socket = entry->socket;
     tuple->enumerator = entry->enumerator;
@@ -1667,21 +1868,26 @@ static void nbp_build_tuple_from_entry(const atalk_nbp_entry_t *entry, nbp_tuple
     memcpy(tuple->zone, entry->zone, entry->zone_len);
 }
 
-static void nbp_send_reply_batch(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
-                                 const nbp_tuple_t *tuples, int count) {
+// Replies go back to the request's sender, or -- for a lookup forwarded from
+// another network -- to the requester's address in the tuple (8-20).
+static void nbp_send_reply_batch(atalk_conn_t *c, const ddp_header_t *request, const atalk_socket_addr_t *reply_to,
+                                 uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
     if (count <= 0)
         return;
     ddp_header_t reply;
     nbp_header_t nbp_header;
-    ddp_setup_reply(request, &reply);
+    if (reply_to)
+        ddp_header_to(&reply, reply_to, ATALK_NIS_SOCKET, DDP_NBP, 0);
+    else
+        ddp_setup_reply(request, &reply);
     nbp_header.function = NBP_LKUP_REPLY;
     nbp_header.tuple_count = (count > 15) ? 15 : count;
     nbp_header.nbp_id = nbp_id;
     nbp_send(c, &reply, &nbp_header, tuples);
 }
 
-static void nbp_handle_lookup_tuple(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
-                                    const nbp_tuple_t *query) {
+static void nbp_handle_lookup_tuple_to(atalk_conn_t *c, const ddp_header_t *request,
+                                       const atalk_socket_addr_t *reply_to, uint8_t nbp_id, const nbp_tuple_t *query) {
     if (!request || !query)
         return;
     nbp_tuple_t batch[NBP_MAX_TUPLES_PER_PACKET];
@@ -1699,12 +1905,84 @@ static void nbp_handle_lookup_tuple(atalk_conn_t *c, const ddp_header_t *request
             continue;
         nbp_build_tuple_from_entry(entry, &batch[batch_len++]);
         if (batch_len == NBP_MAX_TUPLES_PER_PACKET) {
-            nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
+            nbp_send_reply_batch(c, request, reply_to, nbp_id, batch, batch_len);
             batch_len = 0;
         }
     }
     if (batch_len > 0)
-        nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
+        nbp_send_reply_batch(c, request, reply_to, nbp_id, batch, batch_len);
+}
+
+// Answer a lookup from this network for the names this host registers.
+static void nbp_handle_lookup_tuple(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
+                                    const nbp_tuple_t *query) {
+    nbp_handle_lookup_tuple_to(c, request, NULL, nbp_id, query);
+}
+
+// Broadcast `lkup` as a LkUp on the local network, from the router's NIS.
+static void nbp_local_lkup(atalk_conn_t *c, uint8_t nbp_id, const nbp_tuple_t *lkup) {
+    ddp_header_t bcast;
+    atalk_socket_addr_t all = {.net = 0, .node = 0xFF, .socket = ATALK_NIS_SOCKET};
+    nbp_header_t h = {.function = NBP_LKUP, .tuple_count = 1, .nbp_id = nbp_id};
+    ddp_header_to(&bcast, &all, ATALK_NIS_SOCKET, DDP_NBP, 0);
+    nbp_send(c, &bcast, &h, lkup);
+}
+
+// A BrRq the router received (Inside AppleTalk 8-18 to 8-20): for every network
+// in the target zone, a LkUp on that network.  A zone of "*" is the
+// requester's own (8-19: no router could know it otherwise).  For the local
+// network: broadcast a LkUp on it, for the nodes there, and answer it for the
+// names this host registers -- the host is on that network too, and does not
+// hear its own broadcast.  For every other network: a FwdReq to its router
+// (node 0, "any router", on that network), which turns it into a LkUp there.
+// Replies come straight back to the requester's address in the tuple.
+static void nbp_route_brrq(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *query) {
+    uint16_t nets[64];
+    int n = atalk_router_nets_in_zone(query->zone, query->zone_len, nets, (int)ARRAY_LEN(nets));
+    if (n == 0) {
+        LOG(4, "NBP BrRq for a zone no network here is in: dropped");
+        return;
+    }
+    atalk_router_note_brrq();
+    nbp_tuple_t lkup = *query;
+    // The LkUp names the zone; "*" becomes the local zone's name
+    if (lkup.zone_len == 1 && lkup.zone[0] == '*') {
+        size_t zlen = 0;
+        const uint8_t *zone = atalk_router_zone_mac(&zlen);
+        memcpy(lkup.zone, zone, zlen);
+        lkup.zone_len = (int)zlen;
+    }
+    // A requester that sent before it knew THIS-NET put net 0 in its tuple;
+    // a router fills it in, or replies from other networks could not get back
+    if (lkup.net == 0)
+        lkup.net = atalk_this_net();
+
+    for (int i = 0; i < n; i++) {
+        if (nets[i] == atalk_this_net()) {
+            nbp_local_lkup(c, nbp_id, &lkup);
+            nbp_handle_lookup_tuple(c, request, nbp_id, query);
+            continue;
+        }
+        ddp_header_t fwd;
+        atalk_socket_addr_t router = {.net = nets[i], .node = 0, .socket = ATALK_NIS_SOCKET};
+        nbp_header_t h = {.function = NBP_FWDREQ, .tuple_count = 1, .nbp_id = nbp_id};
+        ddp_header_to(&fwd, &router, ATALK_NIS_SOCKET, DDP_NBP, 0);
+        nbp_send(c, &fwd, &h, &lkup);
+        atalk_router_note_fwdreq();
+    }
+}
+
+// A FwdReq for this network, from another network's router (8-19): a LkUp on
+// this network.  The host answers for its own names only if the requester
+// may use its services (§5.6 of the router design); its replies go to the
+// requester's address in the tuple, on its own network.
+static void nbp_fwdreq_in(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *query) {
+    atalk_router_note_fwdreq_in();
+    nbp_local_lkup(c, nbp_id, query);
+    if (atalk_router_host_shared_with_sender()) {
+        atalk_socket_addr_t to = {.net = query->net, .node = query->node, .socket = query->socket};
+        nbp_handle_lookup_tuple_to(c, request, &to, nbp_id, query);
+    }
 }
 
 static void nbp_dispatch(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *header,
@@ -1713,10 +1991,29 @@ static void nbp_dispatch(atalk_conn_t *c, const ddp_header_t *ddp_header, const 
         return;
     switch (header->function) {
     case NBP_BRRQ:
+        // A broadcast request goes to a router's NIS (Inside AppleTalk 8-18):
+        // the guest sends one once it knows a router.
+        if (atalk_router_active()) {
+            for (int i = 0; i < tuple_count; i++)
+                nbp_route_brrq(c, ddp_header, header->nbp_id, &tuples[i]);
+        } else {
+            // No router, so this network is all there is: answer it as a lookup
+            for (int i = 0; i < tuple_count; i++)
+                nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
+        }
+        break;
     case NBP_LKUP:
-    case NBP_FWDREQ:
+        // A lookup on this network: answer for the names this host registers.
         for (int i = 0; i < tuple_count; i++)
             nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
+        break;
+    case NBP_FWDREQ:
+        // A router's forwarded request for this network (8-19): a local LkUp.
+        // Without a router there is no other network for one to come from.
+        if (!atalk_router_active())
+            break;
+        for (int i = 0; i < tuple_count; i++)
+            nbp_fwdreq_in(c, ddp_header, header->nbp_id, &tuples[i]);
         break;
     case NBP_LKUP_REPLY:
         // Replies to a lookup we issued (the PPC browse is the only client).
@@ -2096,14 +2393,7 @@ static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     buffer[2] = (uint8_t)((req->tid >> 8) & 0xFF);
     buffer[3] = (uint8_t)(req->tid & 0xFF);
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(DDP_SHORT_HEADER_SIZE + sizeof(buffer));
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, (int)sizeof(buffer));
     ddp_send(c, &ddp, buffer, sizeof(buffer));
     LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket);
@@ -2121,14 +2411,7 @@ static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req,
     int total = 8 + req->payload_len;
 
     ddp_header_t ddp;
-    memset(&ddp, 0, sizeof(ddp));
-    ddp.llap.dst = req->dest.node;
-    ddp.llap.src = ATALK_HOST_NODE;
-    ddp.llap.type = LLAP_DDP_SHORT;
-    ddp.len = (uint16_t)(total + DDP_SHORT_HEADER_SIZE);
-    ddp.dst_socket = req->dest.socket;
-    ddp.src_socket = req->src_socket;
-    ddp.type = DDP_ATP;
+    ddp_header_to(&ddp, &req->dest, req->src_socket, DDP_ATP, total);
     ddp_send(c, &ddp, atp_buf, total);
     LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket, (unsigned)bitmap);

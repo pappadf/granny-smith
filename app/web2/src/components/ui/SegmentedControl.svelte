@@ -8,6 +8,7 @@
     value: V;
     label: string;
     title?: string;
+    disabled?: boolean; // this option alone (the whole control: `disabled`)
   }
   interface Props {
     options: readonly Option[];
@@ -47,7 +48,7 @@
       class:active={o.value === value}
       aria-pressed={o.value === value}
       title={o.title}
-      {disabled}
+      disabled={disabled || o.disabled}
       onclick={() => onChange(o.value)}>{o.label}</button
     >
   {/each}

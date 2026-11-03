@@ -12,6 +12,7 @@ STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/network/appletalk.c \
                 ../../../../src/core/network/appletalk_object.c \
+                ../../../../src/core/network/appletalk_router.c \
                 ../../../../src/core/network/appletalk_asp.c \
                 ../../../../src/core/storage/macroman.c \
                 ../../../../src/core/object/object.c \

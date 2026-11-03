@@ -51,6 +51,13 @@ assert appletalk.afp.sessions.count == 0 "an ASP session exists before the Choos
 # (lib/afp.script), checking the screens on the way.
 afp_chooser_to_volumes("chooser-server-listed.png", "volume-list.png")
 
+# The network has a router (appletalk.router): the guest asked for it when
+# AppleTalk came up, and sent its lookups through it as BrRqs.  The Chooser
+# lists no zones -- with one zone on the internet it never does.
+assert appletalk.router.net == 1 "the network is not network 1"
+assert appletalk.router.stats.rtmp_requests >= 1 "the guest did not ask for a router"
+assert appletalk.router.stats.nbp_brrq >= 1 "the guest's lookups did not go through the router"
+
 # The session is up and speaking AFP 2.0 before a single volume is mounted.
 assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
 assert appletalk.afp.stats.commands_served > 0 "no AFP commands were served"

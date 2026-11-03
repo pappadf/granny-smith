@@ -24,6 +24,7 @@ import { debug, resetDebugSections } from '@/state/debug.svelte';
 import { formatRamKb } from '@/lib/machine';
 import { recentLabel } from '@/lib/recentMachines';
 import { addRecentMachine } from '@/state/recent.svelte';
+import { network } from '@/state/network.svelte';
 
 // Read a model's capability probe from `catalog.profile().capabilities` and
 // apply it to the shared machine state. Replaces the old display-name regex
@@ -189,7 +190,9 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   if (model) await applyCapabilities(model);
   if (model && !isSchedulerChosen()) {
     const profile = await getProfile(model).catch(() => null);
-    const mode = defaultSchedulerMode(profile?.capabilities.realtime_default === true);
+    let mode = defaultSchedulerMode(profile?.capabilities.realtime_default === true);
+    // Max is not offered while linked to another Mac (DisplayToolbar)
+    if (mode === 'turbo' && network.linked) mode = 'live';
     if (mode !== machine.scheduler && gsOk(await gsEval('pacing.mode', [CORE_MODE[mode]])))
       setSchedulerMode(mode);
   }

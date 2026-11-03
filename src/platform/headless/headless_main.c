@@ -519,6 +519,7 @@ bool hl_pump_once(void) {
         platform_quit();
     }
     bool did = hl_run_frame();
+    hl_atalk_links_poll(); // records from linked routers, between frame-units
     if (mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
     if (job_layer_has_work())

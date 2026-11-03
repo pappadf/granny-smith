@@ -28,6 +28,10 @@ extern volatile sig_atomic_t g_quit_requested; // `quit`
 // Returns whether anything happened.
 bool hl_pump_once(void);
 
+// Drain the AppleTalk router links' sockets (headless_atalk_link.c); every
+// pump calls it.
+void hl_atalk_links_poll(void);
+
 // Start counting the --cycles budget: the REPL and the daemon call it when
 // their loop starts, so a startup script does not spend it.
 void hl_cycles_start(void);

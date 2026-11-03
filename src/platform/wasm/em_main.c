@@ -8,6 +8,7 @@
 // Includes
 // ============================================================================
 
+#include "appletalk_router.h"
 #include "breadcrumb.h"
 #include "em.h"
 #include "io/io_worker.h"
@@ -24,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +35,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <emscripten/stack.h>
@@ -664,18 +667,122 @@ void platform_machine_attached(void) {
 // wait out the rest of each frame -- the core has this worker to itself,
 // and returning to its event loop between ticks (input, presenting the
 // canvas) costs microseconds.  Changed only on a transition.
-static bool s_loop_immediate;
+//
+// A hidden tab drives itself from a timer of its own.  Browsers pause
+// requestAnimationFrame in a hidden document, workers included, which stopped
+// the machine dead the moment its tab was hidden -- and with it the AppleTalk
+// router the other tabs reach through it.  Emscripten's other timings are no
+// better there: Chrome 156 on macOS starves a background tab's postTask
+// (SETIMMEDIATE) -- 36 ticks in 26 s, while the same worker's setInterval
+// kept firing on time -- so a hidden Mac answered another tab's lookups only
+// when brought forward.  So, hidden, Emscripten's loop is paused and a plain
+// setInterval in this worker wakes em_hidden_wake, which catches up on the
+// wall-clock time since the last wake: ticks paced to ~16 ms each with
+// Atomics.wait (emscripten_thread_sleep, which no throttling touches), within
+// a budget of the measured gap between wakes (16 ms to 1 s).  However often
+// the browser lets the timer fire, the machine keeps time; between wakes the
+// worker serves its event loop (proxied calls, the tab mesh's messages).
+// Nothing is drawn meanwhile: the render thread is RAF-driven.
+typedef enum { LOOP_RAF, LOOP_HIDDEN, LOOP_IMMEDIATE } loop_timing_t;
+static loop_timing_t s_loop_timing = LOOP_RAF;
+static bool s_tab_hidden; // the page's visibilitychange said hidden
+#define HIDDEN_TICK_MS   16.0 // a hidden tab's tick, about one display frame
+#define HIDDEN_BUDGET_MS 1000.0 // the most one wake runs before serving the event loop
+static double s_hidden_next; // when the hidden driver's next tick is due (ms)
+static double s_hidden_last_wake; // when it last woke (ms)
+static unsigned s_hb_wakes; // wakes since the last heartbeat line
+
+// clang-format off
+EM_JS(void, hidden_driver_js, (int on, double interval_ms), {
+    if (Module.gsHiddenDriver) { clearInterval(Module.gsHiddenDriver); Module.gsHiddenDriver = 0; }
+    if (on) Module.gsHiddenDriver = setInterval(function() { _em_hidden_wake(); }, interval_ms);
+});
+// clang-format on
 
 static void em_update_loop_timing(void) {
     scheduler_t *sched = system_scheduler();
-    bool want = sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled;
-    if (want == s_loop_immediate)
+    loop_timing_t want = LOOP_RAF;
+    if (s_tab_hidden)
+        want = LOOP_HIDDEN;
+    else if (sched && scheduler_is_running(sched) && s_pacing.mode == schedule_unthrottled)
+        want = LOOP_IMMEDIATE;
+    if (want == s_loop_timing)
         return;
-    s_loop_immediate = want;
-    if (want)
+    loop_timing_t was = s_loop_timing;
+    s_loop_timing = want;
+    if (want == LOOP_HIDDEN) {
+        emscripten_pause_main_loop();
+        s_hidden_next = 0;
+        s_hidden_last_wake = 0;
+        hidden_driver_js(1, HIDDEN_TICK_MS);
+        return;
+    }
+    if (was == LOOP_HIDDEN) {
+        hidden_driver_js(0, 0);
+        emscripten_resume_main_loop();
+    }
+    if (want == LOOP_IMMEDIATE)
         emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
     else
         emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
+}
+
+// appletalk.router.heartbeat: once a second of wall-clock time, a status
+// line on the Terminal -- for finding out whether a hidden tab keeps running
+// and answering the other tabs.  Each line carries the local time, so a tab
+// that stopped shows as a gap; a gap is also said outright.
+static double s_hb_last; // when the last line was printed (ms since the epoch)
+static uint64_t s_hb_instr, s_hb_rx, s_hb_tx, s_hb_fwd_out, s_hb_fwd_in, s_hb_brrq;
+static unsigned s_hb_ticks;
+
+static const char *em_hb_clock(char *buf, size_t len) {
+    double now = emscripten_date_now();
+    time_t secs = (time_t)(now / 1000.0);
+    struct tm tm;
+    localtime_r(&secs, &tm);
+    snprintf(buf, len, "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, (int)fmod(now, 1000.0));
+    return buf;
+}
+
+static const char *em_hb_loop(void) {
+    return s_loop_timing == LOOP_HIDDEN ? "hidden-timer" : s_loop_timing == LOOP_IMMEDIATE ? "immediate" : "raf";
+}
+
+static void em_heartbeat(void) {
+    s_hb_ticks++;
+    if (!atalk_router_heartbeat()) {
+        s_hb_last = 0;
+        return;
+    }
+    double now = emscripten_date_now();
+    scheduler_t *sched = system_scheduler();
+    uint64_t instr = sched ? scheduler_instr_count(sched) : 0;
+    uint64_t rx = 0, tx = 0;
+    int links = atalk_router_link_totals(&rx, &tx);
+    const atalk_router_stats_t *st = atalk_router_get_stats();
+    if (s_hb_last == 0) {
+        s_hb_last = now;
+        s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0;
+        s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
+        return;
+    }
+    double dt = now - s_hb_last;
+    if (dt < 1000.0)
+        return;
+    char clock[16];
+    if (dt > 2500.0)
+        printf("[hb %s] GAP: %.1f s since the last line (this tab did not run)\n", em_hb_clock(clock, sizeof clock),
+               dt / 1000.0);
+    printf("[hb %s] %s loop=%s wakes=%u ticks=%u mips=%.1f running=%d links=%d rec rx=%llu tx=%llu fwd_out=%llu "
+           "brrq=%llu fwdreq_in=%llu\n",
+           em_hb_clock(clock, sizeof clock), s_tab_hidden ? "HIDDEN" : "shown", em_hb_loop(), s_hb_wakes, s_hb_ticks,
+           (double)(instr - s_hb_instr) / (dt * 1000.0), sched ? (int)scheduler_is_running(sched) : 0, links,
+           (unsigned long long)(rx - s_hb_rx), (unsigned long long)(tx - s_hb_tx),
+           (unsigned long long)(st->forwarded_out - s_hb_fwd_out), (unsigned long long)(st->nbp_brrq - s_hb_brrq),
+           (unsigned long long)(st->nbp_fwdreq_in - s_hb_fwd_in));
+    s_hb_last = now;
+    s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0, s_hb_wakes = 0;
+    s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
 }
 
 static void em_timed_tick(void) {
@@ -686,6 +793,38 @@ static void em_timed_tick(void) {
     tick_wall_ms[slot] = emscripten_get_now() - t0;
     tick_poll_ms[slot] = tick_poll_ms_current;
     em_update_loop_timing();
+    em_heartbeat();
+}
+
+// The hidden driver's wake (hidden_driver_js): run the ticks the wall clock
+// owes since the last one, each paced to HIDDEN_TICK_MS (none at Max: back to
+// back), for at most the gap since the previous wake -- the browser's own
+// idea of how often this timer may fire -- then return to the event loop.
+EMSCRIPTEN_KEEPALIVE void em_hidden_wake(void) {
+    if (s_loop_timing != LOOP_HIDDEN)
+        return;
+    double start = emscripten_get_now();
+    double gap = s_hidden_last_wake ? start - s_hidden_last_wake : HIDDEN_TICK_MS;
+    s_hidden_last_wake = start;
+    s_hb_wakes++;
+    double budget = gap < HIDDEN_TICK_MS ? HIDDEN_TICK_MS : gap > HIDDEN_BUDGET_MS ? HIDDEN_BUDGET_MS : gap;
+    if (s_hidden_next == 0 || start - s_hidden_next > HIDDEN_BUDGET_MS)
+        s_hidden_next = start; // far behind (a long freeze): no burst to catch up
+    while (s_loop_timing == LOOP_HIDDEN) {
+        double now = emscripten_get_now();
+        if (now < s_hidden_next) {
+            // Ahead of the clock: wait for the next tick within the budget,
+            // else leave it to the next wake
+            if (s_hidden_next - start > budget)
+                break;
+            emscripten_thread_sleep(s_hidden_next - now);
+        }
+        em_timed_tick();
+        bool unthrottled = s_pacing.mode == schedule_unthrottled;
+        s_hidden_next = unthrottled ? emscripten_get_now() : s_hidden_next + HIDDEN_TICK_MS;
+        if (emscripten_get_now() - start >= budget)
+            break;
+    }
 }
 
 // Forward formatted log lines to the page as log events.
@@ -1058,9 +1197,18 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
                                               void *userData) {
     (void)eventType;
     (void)userData;
-    if (!event || !event->hidden)
+    if (!event)
         return EM_FALSE;
-    maybe_request_background_checkpoint("visibilitychange", true);
+    // Hidden or shown: the main loop switches between a timer and RAF
+    s_tab_hidden = event->hidden;
+    em_update_loop_timing();
+    if (atalk_router_heartbeat()) {
+        char clock[16];
+        printf("[hb %s] visibilitychange: tab %s, loop=%s\n", em_hb_clock(clock, sizeof clock),
+               event->hidden ? "HIDDEN" : "SHOWN", em_hb_loop());
+    }
+    if (event->hidden)
+        maybe_request_background_checkpoint("visibilitychange", true);
     return EM_FALSE;
 }
 
@@ -1216,6 +1364,7 @@ int main(void) {
     em_audio_init();
     em_camera_init(); // announce the webcam frame transport to the main thread
     em_audio_in_init(); // ...and the microphone sample ring
+    em_atalk_tabs_init(); // the AppleTalk tab mesh: this tab's router links to the others
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();

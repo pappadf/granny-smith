@@ -65,6 +65,12 @@ wait_mouse_taken(100000000)
 run_until_match("sys7-server-listed.png", 120000000, 5000000)
 check("sys7-server-listed.png")
 
+# System 7.5's Chooser asks the router for its zone and the zone list (ZIP
+# GetMyZone and GetZoneList over ATP, on socket 6), and looks names up
+# through it; with one zone it shows no zone list.
+assert appletalk.router.stats.zip_atp_requests >= 2 "the Chooser did not ask the router for zones"
+assert appletalk.router.stats.nbp_brrq >= 1 "the guest's lookups did not go through the router"
+
 # --- 3. Select the server, OK, connect as Guest -----------------------------
 
 machine.adb.mouse.move 380 111 "global"

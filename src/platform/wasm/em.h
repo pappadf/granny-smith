@@ -37,6 +37,10 @@ void em_video_machine_attached(void);
 // opened by the machine's sound frontend via platform_audio_open)
 void em_audio_init(void);
 void em_camera_init(void);
+
+// The AppleTalk tab mesh (em_atalk_tabs.c): picks this tab's network number
+// and links its router to every other tab's.
+void em_atalk_tabs_init(void);
 // Announce the microphone sample ring to the main thread (em_audio_in.c).
 void em_audio_in_init(void);
 

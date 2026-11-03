@@ -1110,7 +1110,9 @@ This section provides abbreviated overviews of the application-layer protocols. 
 ### 1.1 Overview
 
 PAP provides a bidirectional, flow-controlled session between a workstation and a printer.
-It runs over ATP on DDP socket 6. Each connection is full-duplex and packet-windowed.
+It runs over ATP. The printer's listening socket is not a well-known one: clients
+find it in the printer's NBP tuple (socket 6 is ZIP's Zone Information Socket, 8-10).
+Each connection is full-duplex and packet-windowed.
 
 Used by: LaserWriter and AppleTalk spoolers.
 
@@ -1135,7 +1137,7 @@ Used by: LaserWriter and AppleTalk spoolers.
 ### 1.3 Connection Establishment Sequence
 
 ```
-Client → Server: OpenConn (socket 6)
+Client → Server: OpenConn (the socket from the NBP tuple)
 Server → Client: OpenConnReply (accept or busy)
 → Full-duplex session established
 ```
@@ -1199,7 +1201,7 @@ note: (Ready)
 ### 1.6 Example Connection (Complete)
 
 ```text
-1. NBP Lookup (type="LaserWriter") → Node=0x0E, Socket=6
+1. NBP Lookup (type="LaserWriter") → Node=0x0E, Socket=0x10
 2. ATP OpenConn → OK
 3. PAP SendData: "%!PS-Adobe-3.0\n"
 4. PAP SendData: "...<job>..."
@@ -1301,7 +1303,7 @@ AFP FPLogout → ASP CloseSess
 
 ```
 NBP Lookup (type="LaserWriter")
-→ Node=0x0F Socket=6
+→ Node=0x0F Socket=0x10
 ATP OpenConn → OK
 PAP SendData (PostScript header)
 PAP SendData (job body)
@@ -1319,8 +1321,8 @@ To avoid propagating incorrect numeric constants, this appendix shows field‑le
 Examples include:
 
 - LLAP + DDP (Short Header) — broadcast NBP Lookup: LLAP DestNodeID = 0xFF, Type = [Short DDP per Appendix C]; DDP DestSocket = 0x02 (NBP); SrcSocket = dynamic.
-- NBP Lookup Reply — tuple includes service’s listening socket (e.g., 0x06 for LaserWriter/PAP).
+- NBP Lookup Reply — tuple includes service’s listening socket (e.g., the LaserWriter's PAP listener).
 - ATP transaction — ASP OpenSess (SLS socket 8 per Appendix C) with UserBytes conveying OpenSess fields; zero ATP data.
 - AFP SPCommand — XO request carrying AFP payload with the opcode as the first byte of ATP data; reply data begins with a 4‑byte CmdResult, followed by the AFP reply payload.
-- PAP Open/SendData/Status — layered on ATP over DDP socket 6.
+- PAP Open/SendData/Status — layered on ATP, to the socket the printer's NBP tuple names.
 
