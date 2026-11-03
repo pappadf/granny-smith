@@ -321,6 +321,22 @@ TEST(test_stall_and_kick) {
     ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0); // parked on STOP
 }
 
+// FLUSH on an INPUT command that has received nothing still writes its
+// status (ACTIVE|FLUSH, full residual): the serial receive drivers' poll.
+TEST(test_flush_idle_input_reports_status) {
+    fixture();
+    desc(0x1000, op(INPUT_MORE, NEVER, NEVER, NEVER, 768), 0x2000, 0);
+    start(0, 0x1000);
+    ASSERT_TRUE(dbdma_active(s_d, 0));
+    ASSERT_EQ_INT((int)peek32(0x100C), 0);
+    control(0, ((uint32_t)DBDMA_FLUSH << 16) | DBDMA_FLUSH);
+    uint32_t result = peek32(0x100C);
+    ASSERT_EQ_INT((int)(result & 0xFFFF), 768);
+    ASSERT_TRUE(((result >> 16) & (DBDMA_ACTIVE | DBDMA_FLUSH)) == (DBDMA_ACTIVE | DBDMA_FLUSH));
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_FLUSH), 0); // self-cleared
+    ASSERT_TRUE(dbdma_active(s_d, 0)); // still waiting for data
+}
+
 // Frame devices (BMAC): `in_end` ends an INPUT command short at a frame's
 // last byte, its residual the unused remainder; a frame ending exactly on
 // a descriptor's last byte ends that descriptor only.  `out_last` fires
@@ -622,6 +638,7 @@ int main(void) {
     RUN(test_output_program);
     RUN(test_stop_reset_sequences);
     RUN(test_stall_and_kick);
+    RUN(test_flush_idle_input_reports_status);
     RUN(test_frame_boundaries);
     RUN(test_port_burst_yields_mid_command_and_resumes);
     RUN(test_zero_burst_still_runs_a_command_to_completion);

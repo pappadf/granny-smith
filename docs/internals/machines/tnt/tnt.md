@@ -154,7 +154,11 @@ The board model is the chipset skeleton plus the DMA architecture:
   refetched rather than cached (the operation-word commit rule; STOP
   parks *on* its descriptor so the overwrite-and-WAKE ring idiom works),
   and `resCount`/`xferStatus` write-back is guest-visible *before* the
-  channel interrupt.  A channel whose device port is not attached yet
+  channel interrupt.  FLUSH on an executing INPUT command writes its
+  result word even when nothing has arrived (xferStatus ACTIVE|FLUSH,
+  full residual): the Mac OS 9 serial driver flushes its receive channel
+  and polls that word, and froze the beige G3's startup without it
+  (#212).  A channel whose device port is not attached yet
   stalls its data commands honestly — except audio-out (channel 8),
   which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
