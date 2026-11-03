@@ -78,6 +78,9 @@ void ppc_set_identity(ppc_t *p, uint32_t pvr, uint32_t hid1);
 // cpu_model itself survives.  Execution resumes at $FFF00100 (MSR[EP]=1
 // vectors the reset exception high on both models).
 void ppc_reset(ppc_t *p);
+// A lane-reversing PReP host bridge in little-endian mode (ppc_mmu.c): LE-mode
+// accesses then see true little-endian memory.  Experimental (machines/tnt/prep_io.c).
+void ppc_set_le_bridge(bool on);
 
 // === Execution ===
 

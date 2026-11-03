@@ -87,6 +87,7 @@ struct pci_bus {
     pci_window_t window[PCI_MAX_WINDOWS];
     int window_count;
     bool lane_reverse; // the bridge is reversing byte lanes (pci.h)
+    uint32_t dma_offset; // bus-master address of host physical 0 (pci_bus_set_dma_offset); 0 = identity
     // The bridge's master-abort policy (pci_bus_set_abort_policy): NULL =
     // every unclaimed access faults, the Bandit contract.
     bool (*abort_faults)(void *ctx, bool write);
@@ -481,6 +482,22 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window) {
     if (!bus || window < 0 || window >= bus->window_count)
         return NULL;
     return &bus->window[window];
+}
+
+void pci_bus_set_dma_offset(pci_bus_t *bus, uint32_t offset) {
+    if (bus)
+        bus->dma_offset = offset;
+}
+
+// A bus master's address -> host physical, through the bridge's inbound map.
+static uint32_t dma_inbound(const pci_bus_t *bus, uint32_t addr) {
+    if (bus && bus->dma_offset && addr - bus->dma_offset < 0x40000000u)
+        return addr - bus->dma_offset;
+    return addr;
+}
+
+uint32_t pci_dma_inbound(const pci_device_t *dev, uint32_t addr) {
+    return dev ? dma_inbound(dev->bus, addr) : addr;
 }
 
 void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
@@ -1199,6 +1216,7 @@ static bool dma_in_ram(const config_t *cfg, uint32_t phys, uint32_t len) {
 
 uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len) {
     uint8_t *out = (uint8_t *)buf;
+    phys = dma_inbound(dev->bus, phys);
     if (!dma_permitted(dev, "read", phys, len)) {
         memset(out, 0xFF, len); // nothing drove the bus: all-ones
         return 0;
@@ -1224,6 +1242,7 @@ uint32_t pci_dma_read(pci_device_t *dev, uint32_t phys, void *buf, uint32_t len)
 
 uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32_t len) {
     const uint8_t *in = (const uint8_t *)buf;
+    phys = dma_inbound(dev->bus, phys);
     if (!dma_permitted(dev, "write", phys, len))
         return 0;
     config_t *cfg = dev->bus->cfg;

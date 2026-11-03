@@ -70,6 +70,7 @@ static bool lanes_reversed(const sym53c8xx_t *s) {
 
 void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
+    phys = pci_dma_inbound(s->dev, phys); // the host bridge's inbound map (pci.h)
     bool rev = lanes_reversed(s);
     if (cfg && cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
         const uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);
@@ -86,6 +87,7 @@ void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t 
 
 void sym53c8xx_write_block(sym53c8xx_t *s, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
+    phys = pci_dma_inbound(s->dev, phys);
     bool rev = lanes_reversed(s);
     if (cfg && cfg->memory_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
         uint8_t *ram = ram_native_pointer(cfg->memory_map, 0);

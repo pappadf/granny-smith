@@ -135,6 +135,14 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window);
 // an N-byte access at window offset o reaches PCI offset o^(8-N) with its
 // bytes reversed — and a bus master consults it (pci_bus_lane_reverse) so
 // the same reversal is applied on its way to host memory.
+// A host bridge's inbound map for bus masters: a DMA address in
+// [offset, offset + 1 GB) reaches host physical (address - offset).  0, the
+// default, is the identity (Bandit's).  A PReP bridge presents memory at
+// PCI $80000000 (the experimental PReP window, machines/tnt/prep_io.c).
+void pci_bus_set_dma_offset(pci_bus_t *bus, uint32_t offset);
+// The same map for a device that moves host memory itself (the SCRIPTS
+// engine's block movers): its bus-master address -> host physical.
+uint32_t pci_dma_inbound(const pci_device_t *dev, uint32_t addr);
 void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on);
 bool pci_bus_lane_reverse(const pci_bus_t *bus);
 

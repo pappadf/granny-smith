@@ -50,6 +50,19 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     s_line = level ? 1 : 0;
 }
 
+// --- the experimental PReP window (prep_io.c): never built here, so inert ---
+bool tnt_prep_io_owns_irq(config_t *cfg) {
+    (void)cfg;
+    return false;
+}
+bool tnt_prep_io_irq_line(config_t *cfg) {
+    (void)cfg;
+    return false;
+}
+void tnt_prep_io_gc_source(config_t *cfg, int n, bool level) {
+    (void)cfg, (void)n, (void)level;
+}
+
 // --- the AWACS block is not exercised here (it has its own datapath in
 // machines/tnt/awacs.c); the island dispatch references it, so stub it ---
 uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset) {

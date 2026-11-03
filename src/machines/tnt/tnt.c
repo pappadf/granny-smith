@@ -954,6 +954,7 @@ static void tnt_teardown(config_t *cfg) {
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
+        tnt_prep_io_teardown(cfg);
     }
     // The PCI root is NOT deleted here: system_destroy owns both expansion
     // buses and tears them down before calling this, which is what frees
@@ -1179,8 +1180,24 @@ static const config_value_decl_t ans_keyswitch_values[] = {
 #define ANS_KEYSWITCH_OPTION                                                                                           \
     {.id = "keyswitch", .label = "Keyswitch", .values = ans_keyswitch_values, .default_value = "unlocked"}
 
+// The PReP-compatibility I/O window at $80000000 (prep_io.c): an experiment
+// for running PReP software (OS/2 Warp PowerPC Edition), off by default.
+static const config_value_decl_t prep_io_values[] = {
+    {.id = "off", .label = "Off"},
+    {.id = "on", .label = "On"},
+    {.id = NULL},
+};
+#define PREP_IO_OPTION                                                                                                 \
+    {.id = "prep_io",                                                                                                  \
+     .label = "PReP I/O window",                                                                                       \
+     .detail = "Experimental: ISA-style I/O at $80000000 for PReP software. Moves Bandit 1's PCI memory window to "    \
+               "$81000000.",                                                                                           \
+     .values = prep_io_values,                                                                                         \
+     .default_value = "off"}
+
 const config_option_decl_t ans500_options[] = {
     ANS_KEYSWITCH_OPTION,
+    PREP_IO_OPTION,
     {.id = NULL},
 };
 
@@ -1194,6 +1211,7 @@ static const config_value_decl_t ans_psu_values[] = {
 const config_option_decl_t ans700_options[] = {
     {.id = "power_supplies", .label = "Power supplies", .values = ans_psu_values, .default_value = "one"},
     ANS_KEYSWITCH_OPTION,
+    PREP_IO_OPTION,
     {.id = NULL},
 };
 

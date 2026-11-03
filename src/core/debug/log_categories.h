@@ -114,6 +114,7 @@
     X("vrom", 0, "Video declaration ROMs")                                                                             \
     X("prom", 0, "Boot/parameter ROM")                                                                                 \
     X("board", 0, "Machine construction and teardown")                                                                 \
+    X("prep", 0, "The experimental PReP I/O window on the TNT boards")                                                 \
     X("system", 0, "System setup and media attachment")                                                                \
     X("ckpt", 0, "Checkpoint save and restore")                                                                        \
     X("alias", 0, "Shell alias table")                                                                                 \

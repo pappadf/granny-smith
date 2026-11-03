@@ -303,6 +303,15 @@ precedent).  The deltas, each keyed on `cpu_model`:
   endian bit), so the CPU's address munge and the bridge's lane reversal
   cancel and a little-endian client reaches PCI with plain loads and stores
   — see "Bridge byte-lane reversal" in docs/internals/core/peripherals/pci.md.
+- **A lane-reversing PReP bridge** (`ppc_set_le_bridge`, experimental;
+  set only by the TNT boards' PReP window, docs/internals/machines/tnt/tnt.md):
+  in LE mode a PReP host bridge reverses the byte lanes to memory, which
+  munges the address a second time and reverses the value.  With the flag
+  set, `ppc_le_ea` does not munge, scalar accesses swap their value
+  (`ppc_scalar_gate`), fetches swap their word (`le_swap`), and the table
+  walk reads each PTE as the byte-reversed doubleword it is.  `mfspr` with
+  SPR 268/269 reads the time base on the 604/750, as the OS/2 PowerPC
+  loader (shipped for 604 Power Series machines) requires.
 - **MMU**: the ARCHITECTED BAT format (BEPI/BL/Vs/Vp upper,
   BRPN/WIMG/PP lower; blocks 128 KB–256 MB; PP-only protection) with
   four SPLIT pairs each way — fetch consults the IBATs (`batu/batl`),

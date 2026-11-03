@@ -205,6 +205,59 @@ static const arg_decl_t mem_translate_args[] = {
     {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "logical guest address"},
 };
 
+// `memory.load(path, addr, [offset], [count])` — copy a host file's bytes
+// into guest memory at addr, through the same debug write path as poke (so
+// physical on PowerPC, ROM and unmapped pages dropped).  For handing a guest
+// a boot image without a firmware loader in the way.
+static DEF_METHOD(method_mem_load) {
+    const char *path = argv[0].s;
+    uint32_t addr = (uint32_t)argv[1].u;
+    uint64_t offset = argc >= 3 ? argv[2].u : 0;
+    uint64_t count = argc >= 4 ? argv[3].u : 0;
+    if (!path || !*path)
+        return val_err("memory.load: path is empty");
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return val_err("memory.load: cannot open '%s'", path);
+    if (offset && fseek(f, (long)offset, SEEK_SET) != 0) {
+        fclose(f);
+        return val_err("memory.load: cannot seek to %llu in '%s'", (unsigned long long)offset, path);
+    }
+    uint8_t buf[4096];
+    uint64_t done = 0;
+    for (;;) {
+        size_t want = sizeof(buf);
+        if (count && count - done < want)
+            want = (size_t)(count - done);
+        if (want == 0)
+            break;
+        size_t got = fread(buf, 1, want, f);
+        for (size_t i = 0; i < got; i++)
+            memory_debug_write_uint8(addr + (uint32_t)(done + i), buf[i]);
+        done += got;
+        if (got < want)
+            break;
+    }
+    fclose(f);
+    return val_uint(4, (uint32_t)done);
+}
+
+static const value_t mem_def_zero = {.kind = VK_UINT, .u = 0};
+static const arg_decl_t mem_load_args[] = {
+    {.name = "path", .kind = VK_STRING, .doc = "host file to read"},
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "guest address of the first byte"},
+    {.name = "offset",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mem_def_zero,
+     .doc = "byte offset into the file"},
+    {.name = "count",
+     .kind = VK_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mem_def_zero,
+     .doc = "bytes to copy (0 = to end of file)"},
+};
+
 static DEF_GETTER(attr_mem_slowpath_count) {
     return val_uint(8, g_mem_slowpath_count);
 }
@@ -260,6 +313,13 @@ static const member_t memory_members[] = {
                 .nargs = 1,
                 .result = VK_STRING,
                 .fn = method_mem_translate}},
+    {.kind = MK_METHOD,
+     .name = "load",
+     .examples =
+         EXAMPLES("machine.memory.load \"boot.img\" 0x800000", "machine.memory.load \"cd.iso\" 0x800000 512 0x8ff47"),
+     .doc = "Copy a host file's bytes into guest memory (debug write path)",
+     .method =
+         {.result_doc = "bytes copied", .args = mem_load_args, .nargs = 4, .result = VK_UINT, .fn = method_mem_load}},
 };
 
 static const class_desc_t memory_class = {

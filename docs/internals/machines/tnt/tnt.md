@@ -1062,3 +1062,40 @@ so a command that never completes shows up as a completely idle machine
 rather than as anything resembling a crash. The fourth lever remains
 `suite-ans`'s `ans500-proto20-macos` row: any device can be
 cross-examined through a stack we do understand.
+
+## The PReP-compatibility window (experimental, `prep_io=on`)
+
+`src/machines/tnt/prep_io.c`, off by default and built only on the Network
+Servers when the configuration's `prep_io` option is `on` (or
+`GS_PREP_IO=1` is in the environment: a checkpoint restore rebuilds the
+machine from model and RAM alone).  It exists to run software written for
+an IBM PReP machine -- OS/2 Warp, PowerPC Edition, whose loader and
+microkernel drive PC-style ISA devices at fixed addresses -- on the ANS,
+standing in for the PCI-to-ISA bridge card such a port would need.  With
+it on:
+
+- `$80000000-$80FFFFFF` is the window (Bandit 1's PCI memory starts at
+  `$81000000`): ISA ports including PReP's discontiguous map (`$850`
+  bit 0), System Control Port A (`$92`), the planar ID (`$80C`, the
+  Sandalfoot's `$FE`), a 16550 at `$3F8` (`machine.prep.com1`: `sent()`,
+  `receive()`, `waiting`), an MC146818 at `$70/$71` on the board clock,
+  the 8 KB NVRAM behind `$74/$75/$77`, an 8042, and the 8259 pair with
+  `$4D0/$4D1`; ports in an enabled PCI I/O BAR go to Bandit 1.
+- `$80800000` is PReP direct-mapped configuration; PReP slot 12 is the
+  first 53C825A (presented with the 53C810's device ID), slot 13 the second.
+- `$A0000000-$BF7FFFFF` is a second Bandit 1 I/O window carrying all 32
+  address bits (PReP puts I/O BARs at `$20000000`), and bus masters see
+  memory at PCI `$80000000` (`pci_bus_set_dma_offset`).
+- `$BFFFFFF0` is the interrupt acknowledge; once the guest sets port `$92`'s
+  endian bit the 8259 pair drives the CPU's external interrupt, with the
+  53C825As (Grand Central 22/26) on ISA IRQ 13/15.
+- Port `$92`'s endian bit also sets the core's lane-reversing bridge flag
+  (`ppc_set_le_bridge`, see ppc.md): a PReP bridge in little-endian mode
+  reverses the eight byte lanes to memory, so little-endian software sees
+  true little-endian memory.  Hammerhead never does this; it is the reason
+  PReP binaries cannot run unchanged on any Macintosh.
+
+Not checkpointed.  With it, the OS/2 loader (booted by hand into RAM, with
+synthesised PReP residual data) reads its configuration from the CD over
+its own 53C810 SCRIPTS, and the IBM Microkernel starts its servers and its
+console and SCSI driver stages.

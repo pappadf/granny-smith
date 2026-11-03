@@ -274,7 +274,17 @@ static inline uint32_t ppc_msr_exception_keep(const ppc_t *p) {
 // mode (604UM §4.5.6).  `ea` stays architected (unmunged) everywhere the
 // instruction writes it back or reports it; only the address handed to
 // memory is munged.
+//
+// A PReP host bridge in little-endian mode (g_ppc_le_bridge, set by the
+// experimental PReP window: machines/tnt/prep_io.c) also reverses the eight
+// byte lanes between CPU and memory, which munges the address a second time
+// and byte-reverses the value: the program sees TRUE little-endian memory.
+// So with the bridge set nothing is munged here, and multi-byte accesses
+// swap their value (ppc_scalar_gate) and fetches their word (le_swap).
+extern bool g_ppc_le_bridge;
 static inline uint32_t ppc_le_ea(const ppc_t *p, uint32_t ea, uint32_t size) {
+    if (__builtin_expect(g_ppc_le_bridge, 0))
+        return ea;
     // (8 - size) & 7 is 7/6/4/0 for size 1/2/4/8; the mask is all-ones in LE mode.
     return ea ^ ((0u - (p->msr & PPC_MSR_LE)) & (8u - size) & 7u);
 }
@@ -339,6 +349,8 @@ typedef struct ppc_fetch_window {
     uintptr_t host_adjust;
     struct pd_block *blk; // the predecoded block of the window's page (NULL: not looked up / none)
     uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
+    uint32_t
+        le_swap; // 1 while MSR[LE] is set behind a lane-reversing PReP bridge (g_ppc_le_bridge): byte-reverse the word
     struct ppc_ftlb_entry *fe; // the fetch-TLB entry the window came from (NULL: real mode, a device window)
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
@@ -374,7 +386,8 @@ static inline bool ppc_fetch_window_hit(uint32_t msr, uint32_t pc) {
     g_ppc_fetch.lo = page;
     g_ppc_fetch.span = MEM_PAGE_SIZE;
     g_ppc_fetch.host_adjust = fe->host_adjust;
-    g_ppc_fetch.le_xor = (msr & PPC_MSR_LE) ? 4u : 0u;
+    g_ppc_fetch.le_xor = (msr & PPC_MSR_LE) && !g_ppc_le_bridge ? 4u : 0u;
+    g_ppc_fetch.le_swap = (msr & PPC_MSR_LE) && g_ppc_le_bridge ? 1u : 0u;
     g_ppc_fetch.blk = fe->blk;
     g_ppc_fetch.fe = fe;
     return true;

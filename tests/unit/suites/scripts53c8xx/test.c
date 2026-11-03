@@ -162,6 +162,13 @@ bool pci_bus_lane_reverse(const struct pci_bus *bus) {
     return false;
 }
 
+// ...and its inbound map, which on the mock bus is the identity.
+uint32_t pci_dma_inbound(const struct pci_device *dev, uint32_t addr);
+uint32_t pci_dma_inbound(const struct pci_device *dev, uint32_t addr) {
+    (void)dev;
+    return addr;
+}
+
 // sym53c825.c is linked for its register file (the engine and the host share
 // one set of accessors), which drags in the two PCI entry points it uses to
 // publish its BAR windows and reset its config header.  Neither is on any path

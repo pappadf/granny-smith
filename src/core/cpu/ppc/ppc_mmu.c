@@ -96,6 +96,15 @@ static xtlb_entry_t g_xtlb[XTLB_SIZE];
 // Fetch cache: a one-page window (checked inline in ppc_run.c via the
 // extern below) backed by a small direct-mapped TLB of page→host maps.
 ppc_fetch_window_t g_ppc_fetch; // the inline-checked window
+bool g_ppc_le_bridge; // a lane-reversing PReP bridge is in little-endian mode (ppc_internal.h, ppc_le_ea)
+
+// Set by the board's PReP-compatibility window when software flips the
+// bridge's endian bit (System Control Port A, $92 bit 1).  The fetch window
+// caches the munge, so it is dropped.
+void ppc_set_le_bridge(bool on) {
+    g_ppc_le_bridge = on;
+    g_ppc_fetch.span = 0;
+}
 uint32_t g_ppc_rfi_pc = 1; // (odd: none yet)
 ppc_ftlb_entry_t g_ppc_ftlb[PPC_FTLB_SIZE]; // the fetch TLB (ppc_internal.h)
 
@@ -571,6 +580,23 @@ static inline bool ppc_pte_page_writable(uint32_t pa) {
     return pg < g_page_count && g_page_table[pg].host_base && g_page_table[pg].writable;
 }
 
+// A PTE's two words as the table walk sees them.  Behind a lane-reversing
+// PReP bridge in little-endian mode (g_ppc_le_bridge) the walk's doubleword
+// read is byte-reversed like every other CPU access, so word 0 is the
+// byte-reversed word at +4 and word 1 the one at +0 -- which is exactly how
+// a little-endian OS on PReP lays its PTEs out.
+static inline uint32_t pte_word(const uint8_t *pte, int w) {
+    if (__builtin_expect(g_ppc_le_bridge, 0))
+        return __builtin_bswap32(LOAD_BE32(pte + (w ? 0 : 4)));
+    return LOAD_BE32(pte + (w ? 4 : 0));
+}
+static inline uint8_t *pte_word1_ptr(uint8_t *pte) {
+    return g_ppc_le_bridge ? pte : pte + 4;
+}
+static inline void pte_store_word1(uint8_t *pte, uint32_t v) {
+    STORE_BE32(pte_word1_ptr(pte), g_ppc_le_bridge ? __builtin_bswap32(v) : v);
+}
+
 // Hashed page table search (601UM §6.9): SDR1 = HTABORG[0:15] |
 // HTABMASK[23:31]; hash1 = low 19 VSID bits XOR page index; PTEG PA =
 // ORG[0:6] || (ORG[7:15] | (hash[0:8] & MASK)) || hash[9:18] || 000000.
@@ -609,9 +635,9 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
         }
         uint32_t want = match | (h ? 0x40u : 0u);
         for (int s = 0; s < 8; s++, pte += 8) {
-            if (LOAD_BE32(pte) != want)
+            if (pte_word(pte, 0) != want)
                 continue;
-            uint32_t lo = LOAD_BE32(pte + 4);
+            uint32_t lo = pte_word(pte, 1);
             uint32_t key = user ? ((sr >> 29) & 1u) : ((sr >> 30) & 1u);
             bool allowed = pp_allows(key, lo & 3u, store);
             if (dbg) {
@@ -646,8 +672,8 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             if (!nosideffect && ppc_pte_page_writable(pteg)) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
                 if (nlo != lo) {
-                    memory_host_written(pte + 4, 4); // a PTEG that is also cached code (absurd, but honest)
-                    STORE_BE32(pte + 4, nlo);
+                    memory_host_written(pte_word1_ptr(pte), 4); // a PTEG that is also cached code (absurd, but honest)
+                    pte_store_word1(pte, nlo);
                 }
                 lo = nlo;
             }
@@ -1221,8 +1247,10 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     // pc ^ 4.  Cached in the window for the inline fast path; every MSR
     // write flushes the window, so a stale value cannot survive a mode
     // change.  Translation is unaffected (the munge stays inside the page).
-    const uint32_t le_xor = (p->msr & PPC_MSR_LE) ? 4u : 0u;
+    const uint32_t le_xor = (p->msr & PPC_MSR_LE) && !g_ppc_le_bridge ? 4u : 0u;
+    const bool le_swap = (p->msr & PPC_MSR_LE) && g_ppc_le_bridge;
     g_ppc_fetch.le_xor = le_xor;
+    g_ppc_fetch.le_swap = le_swap ? 1u : 0u;
 
     if (p->msr & PPC_MSR_IT) {
         uint32_t tag = page | (user ? 2u : 0u) | 1u;
@@ -1234,6 +1262,8 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.blk = fe->blk; // re-validated by the predecoded loop before use
             g_ppc_fetch.fe = fe;
             *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + (pc ^ le_xor)));
+            if (le_swap)
+                *iw = __builtin_bswap32(*iw);
             return true;
         }
         xl_out_t out;
@@ -1281,6 +1311,8 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.blk = NULL;
             g_ppc_fetch.fe = fe;
             *iw = LOAD_BE32((uint8_t *)(adj + (pc ^ le_xor)));
+            if (le_swap)
+                *iw = __builtin_bswap32(*iw);
             return true;
         }
     } else {
@@ -1295,6 +1327,8 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.blk = NULL;
             g_ppc_fetch.fe = NULL; // real mode: no fetch-TLB entry behind the window
             *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ le_xor)));
+            if (le_swap)
+                *iw = __builtin_bswap32(*iw);
             return true;
         }
     }
@@ -1306,6 +1340,8 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     g_ppc_fetch.blk = NULL;
     g_ppc_fetch.fe = NULL;
     *iw = memory_read_uint32_slow((pa ^ le_xor) & g_address_mask);
+    if (le_swap)
+        *iw = __builtin_bswap32(*iw);
     return !g_bus_error_pending;
 }
 

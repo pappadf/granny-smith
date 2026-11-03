@@ -142,6 +142,11 @@ void tnt_gc_recompute(config_t *cfg) {
     // guest had deliberately turned off.
     // Mode 0 (power-on; the MkLinux scheme): combinational
     // ((events | levels) & mask), with Events cleared by explicit W1C.
+    // A PReP guest (prep_io.c) owns the line through its 8259s.
+    if (tnt_prep_io_owns_irq(cfg)) {
+        ppc_set_ext_irq(cfg->ppc, tnt_prep_io_irq_line(cfg));
+        return;
+    }
     bool line;
     if (gc->int_mode1)
         line = (gc->int_latch & gc->int_mask) != 0;
@@ -158,6 +163,7 @@ static void gc_edge(tnt_gc_t *gc, uint32_t bit) {
 }
 
 void tnt_gc_set_source(config_t *cfg, int n, bool level) {
+    tnt_prep_io_gc_source(cfg, n, level);
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
     uint32_t bit = 1u << n;
     bool was = (gc->int_levels & bit) != 0;

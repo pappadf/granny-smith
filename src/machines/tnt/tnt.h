@@ -390,6 +390,7 @@ typedef struct tnt_state {
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
     memory_interface_t control_regs_if; // Control BAR $14 (register block)
     memory_interface_t control_vram_if; // Control BAR $18 (VRAM aperture)
+    struct tnt_prep_io *prep; // the experimental PReP I/O window (prep_io.c); NULL unless prep_io=on
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -419,6 +420,15 @@ extern const pci_slot_decl_t ans_pci_slots[];
 // -- that is where the bays differ.  And their default devices.
 extern const storage_bay_decl_t ans_bays_bus0[];
 extern const storage_device_decl_t ans_default_storage[];
+// The experimental PReP-compatibility window (prep_io.c), built when the
+// machine's `prep_io` option is "on" (or GS_PREP_IO=1, for restores).
+bool tnt_prep_io_enabled(config_t *cfg);
+void tnt_prep_io_init(config_t *cfg);
+void tnt_prep_io_teardown(config_t *cfg);
+bool tnt_prep_io_owns_irq(config_t *cfg); // the guest put the bridge in PReP mode: the 8259 pair drives the CPU
+bool tnt_prep_io_irq_line(config_t *cfg);
+void tnt_prep_io_gc_source(config_t *cfg, int n, bool level);
+
 // The Network Servers' options (keyswitch; the 700's power supplies) and
 // their built-in video (the Cirrus Logic 54M30).
 extern const config_option_decl_t ans500_options[];

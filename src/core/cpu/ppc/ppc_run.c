@@ -313,7 +313,23 @@ int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool s
             return -1;
         }
         *addr = ppc_le_ea(p, ea, size);
-        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+        if (ppc_dxlate(p, iw, addr, store))
+            return -1;
+        // Behind a lane-reversing PReP bridge: one access at the real
+        // address, value byte-reversed (true little-endian memory).
+        if (g_ppc_le_bridge && size > 1) {
+            if (store) {
+                if (size == 2)
+                    memory_write_uint16(*addr, __builtin_bswap16((uint16_t)*val));
+                else
+                    memory_write_uint32(*addr, __builtin_bswap32((uint32_t)*val));
+            } else {
+                *val = size == 2 ? __builtin_bswap16(memory_read_uint16(*addr))
+                                 : __builtin_bswap32(memory_read_uint32(*addr));
+            }
+            return 1;
+        }
+        return 0;
     }
     // With translation off the identity map is contiguous and the normal
     // access handles any misalignment; translated page crossings go
@@ -523,7 +539,8 @@ void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
     // stwcx."  The PEM leaves a mismatched store undefined, so storing is
     // also a valid 604 implementation.
     if (p->reserve) {
-        memory_write_uint32(xa, p->gpr[PPC_RT(iw)]);
+        uint32_t v = p->gpr[PPC_RT(iw)];
+        memory_write_uint32(xa, (g_ppc_le_bridge && (p->msr & PPC_MSR_LE)) ? __builtin_bswap32(v) : v);
         ppc_set_cr_field(p, 0, 2u | ((p->xer & PPC_XER_SO) ? 1u : 0u));
     } else {
         ppc_set_cr_field(p, 0, (p->xer & PPC_XER_SO) ? 1u : 0u);
@@ -595,11 +612,15 @@ static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
         // otherwise and is refreshed by every refill (an MSR write flushes
         // the window), so the BE path pays one XOR against a cached field.
         *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ g_ppc_fetch.le_xor)));
+        if (__builtin_expect(g_ppc_fetch.le_swap, 0))
+            *iw = __builtin_bswap32(*iw);
         return true;
     }
     // A page seen before: refill the window from the fetch TLB inline.
     if (ppc_fetch_window_hit(p->msr, pc)) {
         *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ g_ppc_fetch.le_xor)));
+        if (__builtin_expect(g_ppc_fetch.le_swap, 0))
+            *iw = __builtin_bswap32(*iw);
         return true;
     }
     return ppc_fetch_fill(p, pc, iw);

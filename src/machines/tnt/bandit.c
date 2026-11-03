@@ -538,7 +538,23 @@ void tnt_bandit_claim_memory(config_t *cfg) {
         else if (st->bridge[i].base == TNT_BANDIT2_BASE)
             bandit2 = &st->bridge[i];
     }
-    if (bandit1)
+    // With the experimental PReP window (prep_io.c) the bottom 16 MB is the
+    // window's, and Bandit 1 forwards from $81000000.
+    if (bandit1 && tnt_prep_io_enabled(cfg)) {
+        tnt_prep_io_init(cfg);
+        pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1 + 0x01000000u, 0x0F000000u,
+                           TNT_PCI_MEM1 + 0x01000000u, 0xFFFFFFFFu, "PCI memory (Bandit 1)");
+        // PReP's I/O space runs from $80000000 to $BF7FFFFF (I/O addresses up
+        // to $3F7FFFFF, all 32 bits driven), and PReP software puts PCI I/O
+        // BARs high in it: the OS/2 loader gives the Sandalfoot's SCSI chip
+        // port $20000000 and drives it at $A0000000.  Bandit's own I/O
+        // window drives 16 bits, so the upper part gets a window of its own;
+        // the bottom 16 MB is prep_io.c's ISA window.
+        pci_bus_add_window(bandit1->bus, PCI_SPACE_IO, 0xA0000000u, 0x1F800000u, 0x20000000u, 0xFFFFFFFFu,
+                           "PReP PCI I/O (Bandit 1)");
+        // And PReP bus masters address memory at PCI $80000000 + physical.
+        pci_bus_set_dma_offset(bandit1->bus, 0x80000000u);
+    } else if (bandit1)
         pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
                            "PCI memory (Bandit 1)");
 
