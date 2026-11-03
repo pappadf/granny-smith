@@ -805,9 +805,16 @@ static void route_datagram(uint8_t *dg, size_t len, int in_port, atalk_link_t *f
     if (len < DDP_EXTENDED_HEADER_SIZE)
         return;
     uint16_t dst = rd16(&dg[DG_DST_NET]);
-    LOG(5, "atalk router: %s %u.%u:%u -> %u.%u:%u type %u, %zu bytes", in_port == PORT_LOCAL ? "out" : "in",
-        (unsigned)rd16(&dg[DG_SRC_NET]), (unsigned)dg[DG_DST_NODE + 1], (unsigned)dg[DG_DST_SOCK + 1], (unsigned)dst,
-        (unsigned)dg[DG_DST_NODE], (unsigned)dg[DG_DST_SOCK], (unsigned)dg[DG_DST_SOCK + 2], len);
+    if (dg[DG_TYPE] == 3 && len >= DDP_EXTENDED_HEADER_SIZE + 4) // ATP: control, bitmap/sequence, TID
+        LOG(5, "atalk router: %s %u.%u:%u -> %u.%u:%u type 3, %zu bytes, atp ctrl %02x seq %02x tid %u",
+            in_port == PORT_LOCAL ? "out" : "in", (unsigned)rd16(&dg[DG_SRC_NET]), (unsigned)dg[DG_SRC_NODE],
+            (unsigned)dg[DG_SRC_SOCK], (unsigned)dst, (unsigned)dg[DG_DST_NODE], (unsigned)dg[DG_DST_SOCK], len,
+            (unsigned)dg[DDP_EXTENDED_HEADER_SIZE], (unsigned)dg[DDP_EXTENDED_HEADER_SIZE + 1],
+            (unsigned)rd16(&dg[DDP_EXTENDED_HEADER_SIZE + 2]));
+    else
+        LOG(5, "atalk router: %s %u.%u:%u -> %u.%u:%u type %u, %zu bytes", in_port == PORT_LOCAL ? "out" : "in",
+            (unsigned)rd16(&dg[DG_SRC_NET]), (unsigned)dg[DG_SRC_NODE], (unsigned)dg[DG_SRC_SOCK], (unsigned)dst,
+            (unsigned)dg[DG_DST_NODE], (unsigned)dg[DG_DST_SOCK], (unsigned)dg[DG_TYPE], len);
     if (dst == 0 || dst == atalk_this_net()) {
         if (in_port != PORT_LOCAL)
             deliver_local(dg, len, from);

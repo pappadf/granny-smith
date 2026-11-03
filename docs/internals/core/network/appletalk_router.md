@@ -237,16 +237,21 @@ documents, workers included, which stopped the machine (and its router) the
 moment its tab was hidden. Neither a 16 ms timer as the loop's timing nor
 Emscripten's SETIMMEDIATE (a `scheduler.postTask`) survives a background tab
 in Chrome 156 on macOS: postTask was starved (36 ticks in 26 s) while the same
-worker's `setInterval` fired on time. So on `visibilitychange` -> hidden,
-`em_update_loop_timing` pauses Emscripten's loop and starts a plain
-`setInterval` in the worker (`hidden_driver_js`); each wake
-(`em_hidden_wake`) runs the ticks the wall clock owes since the last one, each
-paced to 16 ms with `Atomics.wait` (`emscripten_thread_sleep`), within a budget
-of the measured gap between wakes (16 ms to 1 s). However often the browser
-lets the timer fire, the machine keeps time: with the timer forced to one wake
-a second it still ran 63 ticks and ~120 MIPS a second. Between wakes the
-worker serves its event loop (proxied calls, the mesh's messages), so a
-message waits at most one wake interval. served. Back to RAF when shown. Nothing is drawn meanwhile.
+worker's `setInterval` still fired, if late (7 to 22 times a second). So on
+`visibilitychange` -> hidden, Emscripten's loop idles on a 1 s timeout (it is
+never paused: pausing drops the thread's runtime keepalive, Emscripten closes
+the thread's mailbox, and the next input event aborts) and a plain
+`setInterval` in the worker (`hidden_driver_js`) wakes `em_hidden_wake`. Each
+wake runs the frames the wall clock owes since the last one back to back on a
+virtual clock (`em_hidden_run`: each tick is told its frame's time; the
+scheduler itself runs at most 4 frames a tick and drops older debt), for at
+most the gap since the previous wake. It never sleeps, so the worker's event
+loop is free between wakes, and a link record arriving then runs the machine
+at once, up to three frames ahead of the clock (`em_hidden_kick`), so a hidden
+file server answers within milliseconds instead of a wake later -- a mounted
+volume makes the Finder wait on every request. With the timer forced to 10 or
+to 1 wake a second, a hidden PM6100 still ran 60 ticks and ~120 MIPS a second.
+Between wakes the worker serves proxied calls and the mesh's messages. served. Back to RAF when shown. Nothing is drawn meanwhile.
 
 **`appletalk.router.heartbeat = true`** (browser) prints, once a second of
 wall-clock time, a timestamped line on the Terminal: shown or HIDDEN, the

@@ -33,6 +33,7 @@
 #include "appletalk_internal.h"
 #include "appletalk_link.h"
 #include "appletalk_router.h"
+#include "em.h"
 
 #include <emscripten.h>
 #include <emscripten/html5.h>
@@ -122,8 +123,10 @@ EMSCRIPTEN_KEEPALIVE int em_atalk_tab_open(int slot) {
 
 // A record for the link in `slot`, `len` bytes in em_atalk_tab_rxbuf().
 EMSCRIPTEN_KEEPALIVE void em_atalk_tab_rx(int slot, int len) {
-    if (slot >= 0 && slot < ATALK_LINK_MAX && s_links[slot] && len > 0 && len <= (int)sizeof(s_rx))
+    if (slot >= 0 && slot < ATALK_LINK_MAX && s_links[slot] && len > 0 && len <= (int)sizeof(s_rx)) {
         atalk_link_receive(s_links[slot], s_rx, (size_t)len);
+        em_hidden_kick();
+    }
 }
 
 // Why a peer tab's link went: what the Network tab shows (network.svelte.ts
@@ -298,8 +301,10 @@ static const atalk_link_transport_t k_friend_transport = {.send = friend_send, .
 
 // A record from the page for the friend link in `slot`.
 EMSCRIPTEN_KEEPALIVE void em_atalk_friend_rx(int slot, int len) {
-    if (slot >= 0 && slot < ATALK_LINK_MAX && s_friends[slot] && len > 0 && len <= (int)sizeof(s_rx))
+    if (slot >= 0 && slot < ATALK_LINK_MAX && s_friends[slot] && len > 0 && len <= (int)sizeof(s_rx)) {
         atalk_link_receive(s_friends[slot], s_rx, (size_t)len);
+        em_hidden_kick();
+    }
 }
 
 // The page lost the peer connection of the friend link in `slot`.

@@ -464,6 +464,10 @@ static int mailbox_idle_wait(void) {
 }
 
 // Main tick function called by the Emscripten main loop
+// The time the scheduler is told it is, while the hidden driver catches up
+// (0: the real time).  See em_hidden_run.
+static double s_now_override;
+
 void em_main_tick(void) {
     tick_counter++;
     crumb_enter(CRUMB_TICK);
@@ -554,7 +558,8 @@ void em_main_tick(void) {
         // checkpoint.load) is a request served on this thread.
         double run_t0 = emscripten_get_now();
         crumb_enter(CRUMB_RUN);
-        scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
+        // The hidden driver runs owed frames back to back on a virtual clock
+        scheduler_main_loop(system_config(), s_now_override > 0 ? s_now_override : now, &s_pacing);
         double run_dt = emscripten_get_now() - run_t0;
         run_ms += run_dt;
         watch_note_phase("run", run_dt);
@@ -674,21 +679,23 @@ void platform_machine_attached(void) {
 // router the other tabs reach through it.  Emscripten's other timings are no
 // better there: Chrome 156 on macOS starves a background tab's postTask
 // (SETIMMEDIATE) -- 36 ticks in 26 s, while the same worker's setInterval
-// kept firing on time -- so a hidden Mac answered another tab's lookups only
-// when brought forward.  So, hidden, Emscripten's loop is paused and a plain
-// setInterval in this worker wakes em_hidden_wake, which catches up on the
-// wall-clock time since the last wake: ticks paced to ~16 ms each with
-// Atomics.wait (emscripten_thread_sleep, which no throttling touches), within
-// a budget of the measured gap between wakes (16 ms to 1 s).  However often
-// the browser lets the timer fire, the machine keeps time; between wakes the
-// worker serves its event loop (proxied calls, the tab mesh's messages).
-// Nothing is drawn meanwhile: the render thread is RAF-driven.
+// kept firing (if late: 7 to 22 times a second).  So, hidden, Emscripten's
+// loop idles on a slow timeout and a setInterval in this worker wakes
+// em_hidden_wake, which runs the frames the wall clock owes since the last
+// wake back to back, on a virtual clock (em_hidden_run) -- the scheduler
+// runs at most PACED_MAX_CATCHUP frames per tick and drops older debt, so
+// one tick per late wake would lose time.  It never sleeps: between wakes the
+// worker's event loop is free, and a record from another tab arriving then
+// runs the machine at once (em_hidden_kick), so a hidden file server answers
+// in milliseconds, not a wake later.  Nothing is drawn meanwhile: the render
+// thread is RAF-driven.
 typedef enum { LOOP_RAF, LOOP_HIDDEN, LOOP_IMMEDIATE } loop_timing_t;
 static loop_timing_t s_loop_timing = LOOP_RAF;
 static bool s_tab_hidden; // the page's visibilitychange said hidden
-#define HIDDEN_TICK_MS   16.0 // a hidden tab's tick, about one display frame
-#define HIDDEN_BUDGET_MS 1000.0 // the most one wake runs before serving the event loop
-static double s_hidden_next; // when the hidden driver's next tick is due (ms)
+#define HIDDEN_TICK_MS  16.0 // the hidden driver's timer, about one display frame
+#define HIDDEN_FRAME_MS (MAC_VBL_PERIOD * 1000.0) // one frame of emulated time
+#define HIDDEN_DEBT_MS  2000.0 // owed time past this is dropped, not caught up
+static double s_hidden_next; // the virtual time of the hidden driver's next tick (ms)
 static double s_hidden_last_wake; // when it last woke (ms)
 static unsigned s_hb_wakes; // wakes since the last heartbeat line
 
@@ -806,35 +813,51 @@ static void em_loop_iteration(void) {
         em_timed_tick();
 }
 
-// The hidden driver's wake (hidden_driver_js): run the ticks the wall clock
-// owes since the last one, each paced to HIDDEN_TICK_MS (none at Max: back to
-// back), for at most the gap since the previous wake -- the browser's own
-// idea of how often this timer may fire -- then return to the event loop.
+// Run the frames owed up to `until` (ms), each a tick told it is that frame's
+// time, for at most `cpu_ms` of real time; the rest is owed to the next run.
+// At Max there is no clock to keep: ticks back to back for `cpu_ms`.
+static void em_hidden_run(double until, double cpu_ms) {
+    double start = emscripten_get_now();
+    if (s_pacing.mode == schedule_unthrottled) {
+        do
+            em_timed_tick();
+        while (s_loop_timing == LOOP_HIDDEN && emscripten_get_now() - start < cpu_ms);
+        return;
+    }
+    if (s_hidden_next == 0 || until - s_hidden_next > HIDDEN_DEBT_MS)
+        s_hidden_next = until - HIDDEN_FRAME_MS; // a long stall: start afresh, no burst
+    while (s_loop_timing == LOOP_HIDDEN && s_hidden_next <= until) {
+        s_now_override = s_hidden_next;
+        em_timed_tick();
+        s_now_override = 0;
+        s_hidden_next += HIDDEN_FRAME_MS;
+        if (emscripten_get_now() - start >= cpu_ms)
+            break;
+    }
+}
+
+// The hidden driver's wake (hidden_driver_js): catch up with the wall clock.
 EMSCRIPTEN_KEEPALIVE void em_hidden_wake(void) {
     if (s_loop_timing != LOOP_HIDDEN)
         return;
-    double start = emscripten_get_now();
-    double gap = s_hidden_last_wake ? start - s_hidden_last_wake : HIDDEN_TICK_MS;
-    s_hidden_last_wake = start;
     s_hb_wakes++;
-    double budget = gap < HIDDEN_TICK_MS ? HIDDEN_TICK_MS : gap > HIDDEN_BUDGET_MS ? HIDDEN_BUDGET_MS : gap;
-    if (s_hidden_next == 0 || start - s_hidden_next > HIDDEN_BUDGET_MS)
-        s_hidden_next = start; // far behind (a long freeze): no burst to catch up
-    while (s_loop_timing == LOOP_HIDDEN) {
-        double now = emscripten_get_now();
-        if (now < s_hidden_next) {
-            // Ahead of the clock: wait for the next tick within the budget,
-            // else leave it to the next wake
-            if (s_hidden_next - start > budget)
-                break;
-            emscripten_thread_sleep(s_hidden_next - now);
-        }
-        em_timed_tick();
-        bool unthrottled = s_pacing.mode == schedule_unthrottled;
-        s_hidden_next = unthrottled ? emscripten_get_now() : s_hidden_next + HIDDEN_TICK_MS;
-        if (emscripten_get_now() - start >= budget)
-            break;
-    }
+    // As long as the gap since the last wake: running the owed frames costs
+    // the real time they stand for when the guest is busy
+    double now = emscripten_get_now();
+    double gap = s_hidden_last_wake ? now - s_hidden_last_wake : HIDDEN_TICK_MS;
+    s_hidden_last_wake = now;
+    em_hidden_run(now, gap < HIDDEN_TICK_MS ? HIDDEN_TICK_MS : gap > 1000.0 ? 1000.0 : gap);
+}
+
+// A record from another tab or a friend arrived (em_atalk_tabs.c): while
+// hidden, run the machine now -- up to three frames (~50 ms) ahead of the
+// clock, so the guest has the time to take the datagram and answer it in the
+// same burst -- instead of at the next wake.  Later wakes then owe that much
+// less.
+void em_hidden_kick(void) {
+    if (s_loop_timing != LOOP_HIDDEN)
+        return;
+    em_hidden_run(emscripten_get_now() + 3 * HIDDEN_FRAME_MS, 40.0);
 }
 
 // Forward formatted log lines to the page as log events.

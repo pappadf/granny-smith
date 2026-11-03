@@ -41,6 +41,9 @@ void em_camera_init(void);
 // The AppleTalk tab mesh (em_atalk_tabs.c): picks this tab's network number
 // and links its router to every other tab's.
 void em_atalk_tabs_init(void);
+
+// A link record arrived: a hidden tab runs its machine at once (em_main.c).
+void em_hidden_kick(void);
 // Announce the microphone sample ring to the main thread (em_audio_in.c).
 void em_audio_in_init(void);
 
