@@ -464,6 +464,11 @@ static int mailbox_idle_wait(void) {
 }
 
 // Main tick function called by the Emscripten main loop
+// Where the emulator thread's time goes, for the heartbeat (ms since its last
+// line): waiting between ticks, emulating, video, serving requests, and the
+// automatic checkpoint.
+static double s_hb_between, s_hb_run, s_hb_video, s_hb_req, s_hb_ckpt;
+
 // The time the scheduler is told it is, while the hidden driver catches up
 // (0: the real time).  See em_hidden_run.
 static double s_now_override;
@@ -477,6 +482,8 @@ void em_main_tick(void) {
     double tick_t0 = emscripten_get_now();
     if (s_tick_end_ms > 0)
         watch_note_phase("between", tick_t0 - s_tick_end_ms);
+    if (s_tick_end_ms > 0)
+        s_hb_between += tick_t0 - s_tick_end_ms;
 
     // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks and
     // push them to the UI (MIPS from instr_count deltas —
@@ -550,6 +557,7 @@ void em_main_tick(void) {
                 double cp_t0 = emscripten_get_now();
                 system_quick_checkpoint("tick-auto", false, true);
                 watch_note_phase("checkpoint", emscripten_get_now() - cp_t0);
+                s_hb_ckpt += emscripten_get_now() - cp_t0;
                 crumb_enter(CRUMB_TICK);
             }
         }
@@ -563,12 +571,14 @@ void em_main_tick(void) {
         double run_dt = emscripten_get_now() - run_t0;
         run_ms += run_dt;
         watch_note_phase("run", run_dt);
+        s_hb_run += run_dt;
 
         // Update video if framebuffer changed
         double video_t0 = emscripten_get_now();
         crumb_enter(CRUMB_VIDEO);
         em_video_update();
         watch_note_phase("video", emscripten_get_now() - video_t0);
+        s_hb_video += emscripten_get_now() - video_t0;
     }
 
     // Poll for pending shell commands every tick.  This must run regardless
@@ -601,6 +611,7 @@ void em_main_tick(void) {
     }
     tick_poll_ms_current = emscripten_get_now() - poll_t0;
     watch_note_phase("requests", tick_poll_ms_current);
+    s_hb_req += tick_poll_ms_current;
     if (served) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))
@@ -774,6 +785,7 @@ static void em_heartbeat(void) {
         s_hb_last = now;
         s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0;
         s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
+        s_hb_run = s_hb_video = s_hb_req = s_hb_ckpt = s_hb_between = 0;
         return;
     }
     double dt = now - s_hb_last;
@@ -790,6 +802,11 @@ static void em_heartbeat(void) {
            (unsigned long long)(rx - s_hb_rx), (unsigned long long)(tx - s_hb_tx),
            (unsigned long long)(st->forwarded_out - s_hb_fwd_out), (unsigned long long)(st->nbp_brrq - s_hb_brrq),
            (unsigned long long)(st->nbp_fwdreq_in - s_hb_fwd_in));
+    printf("[hb %s]   ms: run=%.0f video=%.0f requests=%.0f checkpoint=%.0f between-ticks=%.0f; speed=%.2fx "
+           "pacing=%d\n",
+           clock, s_hb_run, s_hb_video, s_hb_req, s_hb_ckpt, s_hb_between,
+           sched ? scheduler_effective_speed_x256(sched) / 256.0 : 0.0, (int)s_pacing.mode);
+    s_hb_run = s_hb_video = s_hb_req = s_hb_ckpt = s_hb_between = 0;
     s_hb_last = now;
     s_hb_instr = instr, s_hb_rx = rx, s_hb_tx = tx, s_hb_ticks = 0, s_hb_wakes = 0;
     s_hb_fwd_out = st->forwarded_out, s_hb_fwd_in = st->nbp_fwdreq_in, s_hb_brrq = st->nbp_brrq;
