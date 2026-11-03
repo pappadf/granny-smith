@@ -125,19 +125,12 @@ extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
 extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
 extern const pci_card_kind_t rage128_webgpu_kind; // ...the same card, its 3D drawn by the host GPU
+extern const pci_card_kind_t qd3d_kind; // peripherals/pci/cards/qd3d.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,
-    &mach64_gx_kind,
-    &cirrus_54m30_kind,
-    &sym53c825_ch0_kind,
-    &sym53c825_ch1_kind,
-    &voodoo2_kind,
-    &voodoo2_webgpu_kind,
-    &ati_rage_pro_kind,
-    &rage128_kind,
-    &rage128_webgpu_kind,
-    NULL,
+    &tnt_control_kind,   &mach64_gx_kind,      &cirrus_54m30_kind,   &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind, &voodoo2_kind,        &voodoo2_webgpu_kind, &ati_rage_pro_kind,
+    &rage128_kind,       &rage128_webgpu_kind, &qd3d_kind,           NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -1244,7 +1237,12 @@ uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32
                 ram[(phys + i) ^ 7u] = in[i];
         return len;
     }
+    // Device space or a range straddling the end of RAM: byte writes.
+    if (!rev) {
+        memory_write_bytes_slow(phys, in, len);
+        return len;
+    }
     for (uint32_t i = 0; i < len; i++)
-        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), in[i]);
+        memory_write_uint8_slow((phys + i) ^ 7u, in[i]);
     return len;
 }

@@ -258,6 +258,8 @@ host memory with the device as bus master. Three rules:
   these machines (the DBDMA rule). RAM moves through the backing store
   directly; anything else — a device register, unmapped space, a range
   straddling the end of RAM — takes the bus's slow path byte by byte.
+  A write resolves each device page once (`memory_write_bytes_slow`) and
+  hands the device its bytes in order, exactly as the per-byte path would.
 - **The bridge's lane reversal applies** (above): while it is on, PCI byte
   `n` of the transfer is host byte `n ^ 7`.
 
