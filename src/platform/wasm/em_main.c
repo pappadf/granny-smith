@@ -711,16 +711,19 @@ static void em_update_loop_timing(void) {
     loop_timing_t was = s_loop_timing;
     s_loop_timing = want;
     if (want == LOOP_HIDDEN) {
-        emscripten_pause_main_loop();
+        // Not emscripten_pause_main_loop: pausing drops the thread's runtime
+        // keepalive, Emscripten then takes the thread for finished and closes
+        // its mailbox, and the next input event proxied here aborts
+        // ("emscripten_proxy_async failed").  The loop keeps running, on a
+        // slow timeout, and its iterations do nothing while hidden.
+        emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 1000);
         s_hidden_next = 0;
         s_hidden_last_wake = 0;
         hidden_driver_js(1, HIDDEN_TICK_MS);
         return;
     }
-    if (was == LOOP_HIDDEN) {
+    if (was == LOOP_HIDDEN)
         hidden_driver_js(0, 0);
-        emscripten_resume_main_loop();
-    }
     if (want == LOOP_IMMEDIATE)
         emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
     else
@@ -794,6 +797,13 @@ static void em_timed_tick(void) {
     tick_poll_ms[slot] = tick_poll_ms_current;
     em_update_loop_timing();
     em_heartbeat();
+}
+
+// Emscripten's main loop callback: a tick, except while hidden, when the
+// hidden driver ticks instead (em_hidden_wake).
+static void em_loop_iteration(void) {
+    if (s_loop_timing != LOOP_HIDDEN)
+        em_timed_tick();
 }
 
 // The hidden driver's wake (hidden_driver_js): run the ticks the wall clock
@@ -1372,7 +1382,7 @@ int main(void) {
     // RAF-driven; simulate_infinite_loop=1 unwinds main() here, so nothing
     // after this call runs (and main never returns).
     scheduler_set_turbo_slice(TURBO_SLICE_MS / 1000.0); // used once the loop re-enters at once (em_update_loop_timing)
-    emscripten_set_main_loop(em_timed_tick, 0, 1);
+    emscripten_set_main_loop(em_loop_iteration, 0, 1);
 }
 
 // ============================================================================

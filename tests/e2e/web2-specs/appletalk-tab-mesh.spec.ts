@@ -105,6 +105,24 @@ test("a hidden tab's machine keeps running at its pace", async ({ page }) => {
   await page.waitForTimeout(1000);
   const hidden = await rate();
   expect(hidden, `hidden ${hidden.toFixed(0)}/s against shown ${shown.toFixed(0)}/s`).toBeGreaterThan(shown * 0.5);
+
+  // Shown again, the page's input still reaches the emulator thread: hiding
+  // must not end the thread's runtime (pausing Emscripten's main loop did,
+  // and the next mouse or key event aborted: "emscripten_proxy_async failed")
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(500);
+  const box = await page.locator("#screen").boundingBox();
+  expect(box).not.toBeNull();
+  for (let i = 0; i < 20; i++) await page.mouse.move(box!.x + 20 + i * 5, box!.y + 20 + i * 3);
+  await page.mouse.click(box!.x + 100, box!.y + 100);
+  await page.keyboard.press("a");
+  await page.waitForTimeout(1000);
+  await expect(page.getByText(/Aborted\(/)).toHaveCount(0);
+  expect(await rate(), "the machine runs on after showing").toBeGreaterThan(shown * 0.5);
 });
 
 // The browser freezes a long-hidden tab (Page Lifecycle "freeze"): nothing
