@@ -1096,8 +1096,10 @@ it on:
   PReP binaries cannot run unchanged on any Macintosh.
 
 `machine.prep.lane_reversal = false` drops that reversal -- a Macintosh's
-memory -- and the window undoes the CPU's munge itself (ISA byte order, as
-Bandit does for PCI with its lanes reversed); `machine.prep.bandit_little_endian()`
+memory -- and the window is a device behind Bandit 1 like any other: while
+Bandit's lanes are reversed it undoes the CPU's munge itself (ISA byte
+order, as Bandit does for its PCI devices), so a little-endian client's
+port accesses work before and after port `$92` alike; `machine.prep.bandit_little_endian()`
 reverses Bandit 1's lanes by a config cycle, and `machine.memory.byte_reverse`
 converts a RAM image between the two layouts.  Restoring a checkpoint taken
 at the OS/2 loader's hand-off from its big-endian stub, converting RAM with

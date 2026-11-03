@@ -733,12 +733,17 @@ static void prep_out8(tnt_prep_io_t *p, uint32_t port, uint8_t v) {
     LOG(2, "out8 $%04X = $%02X (no device)", port, v);
 }
 
-// Little-endian mode without memory lane reversal (a Macintosh): the CPU
-// hands over its munged address (byte ^7, halfword ^6, word ^4) and the
-// register's bytes in big-endian order, so the window undoes the munge and
-// reverses the bytes -- what Bandit does for PCI with its lanes reversed.
-static bool munged(const tnt_prep_io_t *p) {
-    return !p->lane_reversal && (p->port92 & PREP_PORT92_LE);
+// Without memory lane reversal (a Macintosh) the window is a device behind
+// Bandit 1 like any other: when the bridge's lanes are reversed for a
+// little-endian client, the CPU hands over its munged address (byte ^7,
+// halfword ^6, word ^4) with the register's bytes in big-endian order, and
+// the window undoes the munge and reverses the bytes, as Bandit does for
+// its PCI devices.
+static bool munged(tnt_prep_io_t *p) {
+    if (p->lane_reversal)
+        return false;
+    pci_bus_t *bus = prep_bus(p);
+    return bus && pci_bus_lane_reverse(bus);
 }
 
 // Every access is split into bytes: the ISA side is a byte bus, and PCI
