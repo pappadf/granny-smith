@@ -194,7 +194,7 @@ contract (*Inside Macintosh: Devices*) and the ROM behaviour above — no Apple
 driver code is shipped, harvested from user disks or synthesised into images.
 68000 instructions only, so one binary serves every family — the PowerPC
 ROMs (PDM, TNT) run it under their 68k emulator exactly as they run Apple's
-pre-native drivers; ~1.4 KB (3 blocks).
+pre-native drivers; ~1.9 KB (4 blocks).
 
 - **Install** (the first byte, entered from `SCSILoad`): allocate private
   storage (`_NewPtr ,Sys,Clear`); `_DrvrInstall` a DCE at unit `32 + id`
@@ -208,21 +208,56 @@ pre-native drivers; ~1.4 KB (3 blocks).
   `dNeedLock` is required, not optional: without it the Device Manager's
   IODone treats `dCtlDriver` as a handle and `_HUnlock`s it.
   The driver avoids `_StripAddress`, which the Plus ROM does not implement.
+  Install also picks the SCSI API (below) and keeps the choice in its storage.
 - **Prime**: `dCtlPosition` (the Device Manager has already applied
   `ioPosMode`) and `ioReqCount` against the partition; whole blocks go
   straight to/from the caller's buffer as READ(10)/WRITE(10) of up to 64
   blocks, a partial block through a 512-byte bounce buffer
-  (read-modify-write). SCSI I/O is the SCSI Manager's polled
-  `_SCSIDispatch` calls (Get, Select, Cmd, Read/Write with an `scInc`/`scStop`
-  TIB, Complete), retried up to 8 times on a busy bus or bad status (the first
-  command after a reset reports a unit attention). Synchronous: completes
-  through IODone (or RTS for an immediate call).
+  (read-modify-write). Each READ(10)/WRITE(10) goes through one of two SCSI
+  APIs (below) and is retried up to 8 times on a busy bus or bad status (the
+  first command after a reset reports a unit attention). Synchronous:
+  completes through IODone (or RTS for an immediate call).
 - **Control**: kill, verify, format, eject → no error (a preformatted,
   non-removable disk); 21/22 → the driver's own drive icon; **65 (`accRun`)**
   → announce drives (below); anything else `controlErr`.
 - **Status**: 8 (drive status) → the drive's flag bytes and queue element;
   anything else `statusErr`.
 - **Close**: `closErr` — a boot driver is never closed.
+
+**Which SCSI API.** On a ROM that implements SCSI Manager 4.3 (the AV
+Quadras, PDM, TNT, Gossamer) the driver uses its `SCSIAction` call
+(`_SCSIAtomic` selector 1): one synchronous `SCSIExecIO` per transfer (no
+completion routine, polled transfer, autosense off). Everywhere else it uses
+the original polled `_SCSIDispatch` calls (Get, Select, Cmd, Read/Write with
+an `scInc`/`scStop` TIB, Complete). Install decides once:
+
+- `_SCSIAtomic` (`$A089`) counts as present only when the ROM has separate
+  OS and Toolbox trap tables (`_InitGraf` and its 512-entry alias `$AA6E`
+  differ; on the Plus and SE an OS trap number aliases a Toolbox entry) and
+  its `_GetOSTrapAddress` is not `_Unimplemented`'s.
+- `SCSIGetVirtualIDInfo` (`$80`) turns the original-API SCSI ID into the
+  device's `DeviceIdent` (bus, target, LUN), `SCSIBusInquiry` (`$03`) on that
+  bus gives the `SCSIExecIOPB` size the bus wants (at least 176 bytes), and
+  the block is allocated once (`_NewPtr ,Sys,Clear`).
+- Any failure on the way leaves the driver on the original API.
+
+The original API is not dependable on a SCSI Manager 4.3 ROM. Mac OS 9.0's
+driver loader (`'citt'` 46 in its System file), when it loads a driver for a
+device other than the boot disk (the 6100's empty internal CD-ROM), ORs bit 1
+into byte `$48` of the XPT globals (`SCSIGlobals` + `$1B4`) and never clears
+it. The PDM ROM's original-API emulation uses that bit as its
+call-in-progress lock, so every later `SCSIGet` returns `scSequenceErr`:
+every read failed with `ioErr`, and boot ended in `SysError` (issue #250).
+Apple's own 4.3-aware drivers use `SCSIAction` and never meet the lock.
+
+Parameter-block layout (from *Inside Macintosh: Devices*, "SCSI Manager
+4.3", and matching Mac OS 9.0's own `SCSIExecIO` users): header
+`scsiPBLength` +6, `scsiFunctionCode` +8, `scsiResult` +10, `scsiDevice`
++12, `scsiFlags` +20; `SCSIExecIOPB` `scsiDataPtr` +40, `scsiDataLength`
++44, `scsiCDBLength` +53, `scsiSCSIstatus` +60, `scsiCDB` +68,
+`scsiTransferType` +103; `SCSIBusInquiryPB` `scsiIOpbSize` +44 (block 172
+bytes); `SCSIGetVirtualIDInfoPB` `scsiOldCallID` +36, `scsiExists` +38
+(block 40 bytes).
 
 **Announcing volumes.** A disk-inserted event posted during `SCSILoad` does
 not survive startup, so the boot volume is mounted by the Start Manager and
@@ -268,7 +303,9 @@ fallback when the assembler is missing. The sniffs and sizing live in
   its Apple-partitioned image at setup by `scripts/apm-extract-hfs.py`
   (System 7.5.3 stops with "illegal instruction" on the emulated 840AV behind
   Apple's own driver too). Plus two wrapped disks on one bus and a checkpoint
-  round trip. The Lisa/MacXL (ProFile, no SCSI) and the Network Servers (no
+  round trip. Every boot row also asserts which API the driver chose, and the
+  `pm6100-xpt-lock` row sets the Mac OS 9.0 lock bit mid-boot on the 6100 and
+  still boots to the Finder. The Lisa/MacXL (ProFile, no SCSI) and the Network Servers (no
   Mac OS) are out of scope. Media: `tests/data/systems/system_7_5_3_25mb_bare.img`
   and `system_7_0_1_10mb_bare_plus.img`. The `driverless` row boots the IIci
   off the 7.5.3 volume put behind a driverless map at setup by

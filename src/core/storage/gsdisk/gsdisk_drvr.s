@@ -45,6 +45,9 @@
 .equ _DrvrInstall,    0xA03D          | A0 driver, D0 refNum -> blank DCE
 .equ _AddDrive,       0xA04E          | A0 qEl, D0 = drive<<16 | refNum
 .equ _SCSIDispatch,   0xA815          | selector word on the stack
+.equ _SCSIAtomic,     0xA089          | SCSI Manager 4.3: D0 selector, A0 pb
+.equ _GetOSTrapAddr,  0xA346          | D0 trap -> A0 (OS table)
+.equ _GetToolTrapAddr, 0xA746         | D0 trap -> A0 (Toolbox table)
 
 | SCSIDispatch selectors (stack-based, Pascal convention)
 .equ scsiGet,         1
@@ -53,6 +56,39 @@
 .equ scsiComplete,    4
 .equ scsiRead,        5
 .equ scsiWrite,       6
+
+| SCSI Manager 4.3 (Inside Macintosh: Devices, "SCSI Manager 4.3").  SCSIAction
+| is _SCSIAtomic selector 1; a request with no completion routine runs
+| synchronously.  Function codes and the parameter-block fields used here.
+.equ scsiActionSel,   1               | _SCSIAtomic D0: SCSIAction
+.equ fnExecIO,        0x01            | SCSIExecIO
+.equ fnBusInquiry,    0x03            | SCSIBusInquiry
+.equ fnVirtualID,     0x80            | SCSIGetVirtualIDInfo
+| SCSIHdr (every SCSIAction parameter block starts with it)
+.equ pbLength,        6               | word: scsiPBLength
+.equ pbFunction,      8               | byte: scsiFunctionCode
+.equ pbResult,        10              | word: scsiResult
+.equ pbDevice,        12              | long: scsiDevice (rsvd, bus, target, LUN)
+.equ pbFlags,         20              | long: scsiFlags
+| SCSIGetVirtualIDInfoPB
+.equ viOldCallID,     36              | word: the original-API SCSI ID
+.equ viExists,        38              | byte: a device answers at that ID
+.equ viPbSize,        40
+| SCSIBusInquiryPB
+.equ biIOpbSize,      44              | word: SCSIExecIOPB size this bus wants
+.equ biPbSize,        172
+| SCSIExecIOPB
+.equ ioDataPtr,       40              | long: scsiDataPtr
+.equ ioDataLength,    44              | long: scsiDataLength
+.equ ioCDBLength,     53              | byte: scsiCDBLength
+.equ ioSCSIstatus,    60              | byte: scsiSCSIstatus
+.equ ioCDB,           68              | 16 bytes: scsiCDB (the CDB itself)
+.equ ioTransferType,  103             | byte: scsiTransferType
+.equ ioPbMinSize,     176             | sizeof(SCSIExecIOPB)
+.equ scsiDirIn,       0x40000000
+.equ scsiDirOut,      0x80000000
+.equ scsiNoAutosense, 0x20000000      | scsiDisableAutosense: no sense buffer
+.equ scsiPolled,      1               | scsiTransferPolled
 
 | Transfer Instruction Block opcodes
 .equ scInc,           1
@@ -125,7 +161,11 @@
 .equ psMsg,           8               | word: SCSIComplete message
 .equ psCdb,           10              | 10-byte CDB
 .equ psTib,           20              | 2 TIB instructions x 10 bytes
-.equ psDrives,        40              | MaxDrives x dvSize
+.equ psUse43,         40              | byte: nonzero = SCSIAction path (psPb valid)
+.equ psDevice,        42              | long: our DeviceIdent (SCSI Manager 4.3)
+.equ psPb,            46              | long: our SCSIExecIOPB (_NewPtrSysClear)
+.equ psPbLen,         50              | word: its length
+.equ psDrives,        52              | MaxDrives x dvSize
 .equ psBounce,        psDrives+MaxDrives*dvSize  | one 512-byte block
 .equ psSize,          psBounce+512
 
@@ -171,6 +211,7 @@ Install:
 	add.w	#32,d0                  | unit 32+id ...
 	not.w	d0                      | ... refNum ~unit
 	move.w	d0,psRefNum(a2)
+	bsr	Probe43                 | SCSIAction path, if the ROM has it
 
 	lea	DrvrHdr(pc),a0
 	dc.w	_DrvrInstall            | blank DCE handle in the unit table
@@ -199,10 +240,112 @@ Install:
 	bsr	AddDrives               | put them in the drive queue
 	bra.s	InstDone
 InstFail:
+	tst.b	psUse43(a2)
+	beq.s	InstFreeStorage
+	movea.l	psPb(a2),a0
+	dc.w	_DisposePtr
+InstFreeStorage:
 	movea.l	a2,a0
 	dc.w	_DisposePtr
 InstDone:
 	movem.l	(sp)+,d0-d7/a0-a6
+	rts
+
+| --- Probe43: use SCSI Manager 4.3's SCSIAction when the ROM implements it --
+| (A2 = storage).  The original polled API is not dependable once SCSI Manager
+| 4.3 runs the bus: Mac OS 9.0's driver loader sets a bit in the PDM ROM's
+| XPT globals that its original-API emulation also uses as its call-in-
+| progress lock, after which every SCSIGet fails with scSequenceErr.  So,
+| like Apple's 4.3-aware drivers, go through SCSIAction when it exists.
+| _SCSIAtomic counts as present only on a ROM with separate OS and Toolbox
+| trap tables (on the Plus and SE the OS trap number aliases a Toolbox
+| entry) whose $A089 is not _Unimplemented.  Then map our original-API ID
+| to its DeviceIdent (SCSIGetVirtualIDInfo), ask that bus for its
+| SCSIExecIOPB size (SCSIBusInquiry) and allocate one.  Any failure leaves
+| psUse43 clear: the polled API, as before.
+Probe43:
+	movem.l	d0-d2/a0-a1,-(sp)
+	move.w	#0xA86E,d0              | _InitGraf ...
+	dc.w	_GetToolTrapAddr
+	move.l	a0,d1
+	move.w	#0xAA6E,d0              | ... and its alias in a 512-entry table
+	dc.w	_GetToolTrapAddr
+	cmpa.l	d1,a0
+	beq	ProbeNo                 | one shared table: no separate OS traps
+	move.w	#0xA89F,d0              | _Unimplemented
+	dc.w	_GetToolTrapAddr
+	move.l	a0,d1
+	move.w	#_SCSIAtomic,d0
+	dc.w	_GetOSTrapAddr
+	cmpa.l	d1,a0
+	beq	ProbeNo
+	| SCSIGetVirtualIDInfo(our ID): the bus and target behind it.
+	lea	-viPbSize(sp),sp
+	movea.l	sp,a0
+	moveq	#viPbSize/2-1,d0
+ProbeClrVi:
+	clr.w	(a0)+
+	dbra	d0,ProbeClrVi
+	movea.l	sp,a0
+	move.w	#viPbSize,pbLength(a0)
+	move.b	#fnVirtualID,pbFunction(a0)
+	move.w	psId(a2),viOldCallID(a0)
+	moveq	#scsiActionSel,d0
+	dc.w	_SCSIAtomic
+	movea.l	sp,a0
+	move.l	pbDevice(a0),d2         | D2 = DeviceIdent
+	tst.w	d0
+	bne.s	ProbeViBad
+	tst.w	pbResult(a0)
+	bne.s	ProbeViBad
+	tst.b	viExists(a0)
+	bne.s	ProbeViOk
+ProbeViBad:
+	moveq	#-1,d2
+ProbeViOk:
+	lea	viPbSize(sp),sp
+	tst.l	d2
+	bmi.s	ProbeNo
+	move.l	d2,psDevice(a2)
+	| SCSIBusInquiry on that bus: the SCSIExecIOPB size it wants.
+	lea	-biPbSize(sp),sp
+	movea.l	sp,a0
+	move.w	#biPbSize/2-1,d0
+ProbeClrBi:
+	clr.w	(a0)+
+	dbra	d0,ProbeClrBi
+	movea.l	sp,a0
+	move.w	#biPbSize,pbLength(a0)
+	move.b	#fnBusInquiry,pbFunction(a0)
+	move.l	d2,pbDevice(a0)
+	moveq	#scsiActionSel,d0
+	dc.w	_SCSIAtomic
+	movea.l	sp,a0
+	moveq	#0,d1
+	move.w	biIOpbSize(a0),d1       | D1 = SCSIExecIOPB size
+	tst.w	d0
+	bne.s	ProbeBiBad
+	tst.w	pbResult(a0)
+	beq.s	ProbeBiOk
+ProbeBiBad:
+	moveq	#0,d1
+ProbeBiOk:
+	lea	biPbSize(sp),sp
+	tst.l	d1
+	beq.s	ProbeNo
+	cmp.l	#ioPbMinSize,d1
+	bcc.s	ProbeSize
+	move.l	#ioPbMinSize,d1
+ProbeSize:
+	move.w	d1,psPbLen(a2)
+	move.l	d1,d0
+	dc.w	_NewPtrSysClear
+	tst.w	d0
+	bne.s	ProbeNo
+	move.l	a0,psPb(a2)
+	st	psUse43(a2)
+ProbeNo:
+	movem.l	(sp)+,d0-d2/a0-a1
 	rts
 
 | --- ScanMap: record every Apple_HFS partition (A2 = storage) --------------------
@@ -626,6 +769,8 @@ XferCdbOp:
 	lsr.w	#8,d0
 	move.b	d0,7(a0)
 	clr.b	9(a0)
+	tst.b	psUse43(a2)
+	bne	XferAction
 	| TIB: scInc buffer, count; scStop
 	lea	psTib(a2),a0
 	move.w	#scInc,(a0)+
@@ -674,11 +819,59 @@ XferComplete:
 	move.w	#scsiComplete,-(sp)
 	dc.w	_SCSIDispatch
 	move.w	(sp)+,d0
-	bne.s	XferRetry
+	bne	XferRetry
 	tst.w	d6
-	bne.s	XferRetry
+	bne	XferRetry
 	move.w	psStat(a2),d0
 	and.w	#0x1E,d0                | status byte: good = 0
+	bne	XferRetry
+	moveq	#0,d0
+	bra	XferOut
+XferAction:
+	| SCSI Manager 4.3: one synchronous SCSIExecIO (no completion routine,
+	| polled transfer, no autosense; a check condition is retried as above).
+	movea.l	psPb(a2),a0
+	move.w	psPbLen(a2),d0
+	lsr.w	#1,d0
+	subq.w	#1,d0
+XferClrPb:
+	clr.w	(a0)+
+	dbra	d0,XferClrPb
+	movea.l	psPb(a2),a0
+	move.w	psPbLen(a2),pbLength(a0)
+	move.b	#fnExecIO,pbFunction(a0)
+	move.l	psDevice(a2),pbDevice(a0)
+	move.l	#scsiDirIn+scsiNoAutosense,d0
+	tst.l	d5
+	beq.s	XferDir
+	move.l	#scsiDirOut+scsiNoAutosense,d0
+XferDir:
+	move.l	d0,pbFlags(a0)
+	move.l	a1,ioDataPtr(a0)
+	move.l	d4,d0
+	moveq	#9,d1
+	lsl.l	d1,d0
+	move.l	d0,ioDataLength(a0)
+	move.b	#10,ioCDBLength(a0)
+	move.b	#scsiPolled,ioTransferType(a0)
+	move.l	a1,-(sp)                | CDB into the block
+	lea	psCdb(a2),a1
+	lea	ioCDB(a0),a0
+	moveq	#10-1,d0
+XferCopyCdb:
+	move.b	(a1)+,(a0)+
+	dbra	d0,XferCopyCdb
+	movea.l	(sp)+,a1
+	movea.l	psPb(a2),a0
+	moveq	#scsiActionSel,d0
+	dc.w	_SCSIAtomic
+	movea.l	psPb(a2),a0
+	tst.w	d0
+	bne.s	XferRetry
+	tst.w	pbResult(a0)
+	bne.s	XferRetry
+	moveq	#0x1E,d0
+	and.b	ioSCSIstatus(a0),d0     | status byte: good = 0
 	bne.s	XferRetry
 	moveq	#0,d0
 	bra.s	XferOut
