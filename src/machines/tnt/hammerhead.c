@@ -221,7 +221,10 @@ void tnt_hh_init(config_t *cfg) {
     // an earlier "$3001 required" reading was the Catalyst branch).
     hh->reg[HH_REG_ID >> 4] = tnt_board(cfg)->hh_id;
     hh->reg[HH_REG_MACHID >> 4] = tnt_board(cfg)->hh_r20;
-    hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
+    // TwoCPU: set on the dual-processor card (mp.c), clear on a uniprocessor.
+    hh->reg[HH_REG_ARBCONFIG >> 4] = tnt_mp_present(cfg) ? (0x02u << 24) : 0x00u;
+    // IntReg idles with SecInt (bit $80, active low) released.
+    hh->reg[HH_REG_INTREG >> 4] = tnt_mp_present(cfg) ? (0xFFu << 24) : 0x00u;
     hh->reg[HH_REG_WHOAMI >> 4] = 0x10u << 24; // primary CPU
     hh->reg[HH_REG_L2CFG >> 4] = (uint32_t)hh_l2cfg_strap(cfg) << 24;
     // The strap above is the whole story: +$E0 reports what the cache DIMM
@@ -253,6 +256,9 @@ uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     }
     uint32_t lane = offset & 0xFu;
     uint32_t value = hh->reg[offset >> 4];
+    // WhoAmI answers the core that issued the load (mp.c).
+    if ((offset >> 4) == (HH_REG_WHOAMI >> 4) && tnt_mp_present(cfg))
+        value = (uint32_t)tnt_mp_whoami(cfg) << 24;
     uint8_t b = (lane < 4) ? be_lane8(value, lane) : 0;
     // R1 instrumentation: every Hammerhead access is loggable so the T5
     // memory-sizing sequence can be recorded and the model fitted to it.
@@ -288,6 +294,9 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     // written (accept-and-readback everywhere else).
     if ((offset >> 4) == (HH_REG_ID >> 4))
         hh->reg[HH_REG_ID >> 4] = (hh->reg[HH_REG_ID >> 4] & 0x0000FFFFu) | (tnt_board(cfg)->hh_id & 0xFFFF0000u);
+    // The dual-processor card's doorbell register (mp.c).
+    if ((offset >> 4) == (HH_REG_INTREG >> 4) && lane == 0)
+        tnt_mp_intreg(cfg);
     // A bank base moved: the DRAM decode follows it.
     if (offset >= HH_BANK_A(0) && offset < HH_BANK_REGS_END && lane == 0)
         tnt_hh_remap(cfg);

@@ -220,6 +220,7 @@ void scsi_bus_cancel_select_timeout(struct scsi *bus) {
 #define R_COMMAND   0x3
 #define R_STATUS    0x4
 #define R_INTERRUPT 0x5
+#define R_SEQSTEP   0x6
 #define R_FIFOFLAGS 0x7
 
 static scsi_53c96_t *chip;
@@ -691,6 +692,30 @@ TEST(short_transfer_ignores_a_pump_that_stopped_on_its_own) {
     teardown();
 }
 
+// BeOS 5.0.3's PIO data-in loop (the 9500's CD-ROM on the 53C94): after a
+// non-DMA select with ATN it reads the interrupt register, then issues each
+// Transfer Information only while FIFO Flags reads non-zero.  The FIFO is
+// empty, so it needs the sequence step (4: the select ran to completion) to
+// survive the interrupt read in FIFO Flags bits 7:5 -- the AMD cell's
+// Internal State, which lasts until the next selection or reset.
+TEST(interrupt_read_keeps_the_sequence_step) {
+    setup();
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    const uint8_t bytes[7] = {0x80, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00}; // IDENTIFY, READ(6)
+    for (int i = 0; i < 7; i++)
+        wr(R_FIFO, bytes[i]);
+    wr(R_COMMAND, 0x42); // select with ATN
+    ASSERT_TRUE(irq_level);
+    ASSERT_EQ_INT(MB_data_in, mb.phase);
+    ASSERT_EQ_INT(4, rd(R_SEQSTEP) & 7);
+    ASSERT_EQ_INT(0x18, take_int()); // function complete + bus service
+    ASSERT_EQ_INT(0x80, rd(R_FIFOFLAGS)); // step 4, FIFO empty
+    ASSERT_EQ_INT(4, rd(R_SEQSTEP) & 7);
+    teardown();
+}
+
 int main(void) {
     RUN(reset_defaults);
     RUN(select_timeout_no_device);
@@ -706,6 +731,7 @@ int main(void) {
     RUN(short_transfer_ignores_a_pump_that_stopped_on_its_own);
     RUN(status_reflects_live_phase);
     RUN(flush_preserves_paused_select);
+    RUN(interrupt_read_keeps_the_sequence_step);
     printf("[scsi96] all tests passed\n");
     return 0;
 }

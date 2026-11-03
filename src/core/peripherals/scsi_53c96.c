@@ -554,11 +554,17 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg, bool peek) {
         return c->status;
     case R_INTERRUPT: {
         // Reading the interrupt register releases INT and clears the
-        // status latches + sequence step (ch. 4, interrupt register).
+        // status latches (ch. 4, interrupt register).  The NCR manual has it
+        // clear the sequence step too; the AMD cell inside Curio keeps its
+        // Internal State until the next selection or reset, and BeOS relies
+        // on that: its PIO data-in loop issues each Transfer Information
+        // only while FIFO Flags reads non-zero, which after a completed
+        // select is the step (4) in bits 7:5 -- cleared, the loop spins
+        // forever on the 9500's CD-ROM drive.  Apple's driver reads the
+        // step before the interrupt, so it sees no difference.
         uint8_t v = c->intr;
         if (c->int_line && !peek) {
             c->intr = 0;
-            c->seq_step = 0;
             c->status &= (uint8_t) ~(ST_GE | ST_PE | ST_VGC);
             set_int(c, false);
         }
