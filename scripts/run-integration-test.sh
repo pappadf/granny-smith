@@ -59,7 +59,14 @@ fail() {
 }
 
 [ -d "$TEST" ] || { echo "ERROR: Test directory '$TEST' not found"; exit 1; }
-[ -f "$TEST/test.script" ] || { echo "ERROR: Test script '$TEST/test.script' not found"; exit 1; }
+# The test's script: test.lua, or test.script for a test not yet ported.
+if [ -f "$TEST/test.lua" ]; then
+    TEST_SCRIPT=test.lua
+elif [ -f "$TEST/test.script" ]; then
+    TEST_SCRIPT=test.script
+else
+    echo "ERROR: Test script '$TEST/test.lua' not found"; exit 1
+fi
 [ -f "$TEST/config.mk" ] || { echo "ERROR: Test config '$TEST/config.mk' not found"; exit 1; }
 
 # Extract configuration from config.mk: the first `KEY :=` line, exactly that
@@ -184,7 +191,7 @@ else
     timeout -k 30 "$TEST_TIMEOUT" ${WRAPPER:-} "$HEADLESS_BIN" \
         rom="$ROM_PATH" \
         $EXPANDED_ARGS \
-        script=test.script \
+        script="$TEST_SCRIPT" \
         --var WORK_DIR="$WORK_DIR" \
         --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         --var ROM="$ROM_PATH" \

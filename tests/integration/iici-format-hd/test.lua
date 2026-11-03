@@ -1,0 +1,97 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: IIci + built-in RBV — format a blank HD under System 6.0.8
+--
+-- Creates a blank HD20SC SCSI disk, boots a IIci from the SSW 6.0.8 800K floppy
+-- (Disk2of4, volume "Utilities"), opens Apple HD SC Setup v2.0.3 off the floppy,
+-- and initializes the blank drive — verifying the guest OS reports the format
+-- succeeded.
+--
+-- Regression guard for the NCR 5380 BLIND-vs-DRQ primer-gate fix: HD SC Setup's
+-- HFS volume-init writes zero-filled bitmap / B-tree blocks whose first byte is
+-- $00 via Mac OS's DRQ pseudo-DMA. Before the fix the primer-slot gate (meant
+-- only for A/UX's BLIND-window CLR.B primer) dropped that leading $00, corrupted
+-- every such block, and the format aborted with "unable to mount volume". Here
+-- the 5380 is reached through the MDU rather than GLUE, so the same guard covers
+-- a second bus path.
+--
+-- EVERY WAIT IS A CONDITION. The IIcx original ran this flow on fixed
+-- instruction budgets tuned to that host; re-hosted unchanged, its first budget
+-- landed on "Welcome to Macintosh" and the rest of the flow then clicked at the
+-- splash while its goldens captured it. Nothing below states a duration as an
+-- expectation: the ceilings are hang detectors, and each step waits for the
+-- screen to settle before asserting or clicking.
+--
+-- Mouse geometry is in screen ("global") pixels at 640x480x1, all coordinates
+-- re-derived from measured frames on this host.
+local mac = dofile("../lib/mac.lua")
+
+-- Create a blank HD20SC hard disk (21,307,392 bytes, zero-filled), stored as
+-- the web app stores one: a .dmg of one zero run, a few KB.
+files.hd_create(F"${vars.WORK_DIR}/blank.dmg", "HD20SC")
+assert(files.path_size(F"${vars.WORK_DIR}/blank.dmg") < 8192, "a blank .dmg is not a few KB")
+
+-- Built-in RBV named explicitly: this row's declared cell is the RBV one, and an
+-- unnamed machine.boot inherits whatever staging came before it.
+machine.boot{model = "iici", ram = 8192, video_card = "builtin_rbv_video", rom = vars.ROM}
+
+-- Attach the blank HD at SCSI ID 0 (unformatted -> won't boot / won't mount),
+-- and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that
+-- carries Apple HD SC Setup).
+machine.scsi.attach_hd(F"${vars.WORK_DIR}/blank.dmg", 0)
+machine.floppy.drive[0].insert("../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk2of4")
+
+-- Boot to the Finder desktop. No Cmd-Shift-Power synthesis here, unlike the IIcx
+-- original: this ROM does not sit in the boot-drive-discovery wait, and the
+-- desktop is up by ~100 M. The fixed lead-in only skips the early boot frames so
+-- the settle below cannot latch onto a static pre-Finder screen.
+scheduler.run(60000000)
+mac.wait_stable(900000000)
+assert(machine.id == "iici", "machine.id != iici")
+assert(machine.screen.width == 640, "screen.width != 640")
+assert(machine.screen.height == 480, "screen.height != 480")
+assert(machine.screen.depth == 1, "screen.depth != 1")
+mac.check("desktop.png")
+
+-- Double-click the "Utilities" floppy icon (top-right) to open its window.
+mac.double_click(590, 45)
+scheduler.run(600000000)
+
+-- Double-click the "Apple HD SC Setup" label to launch it. (The clickable hit
+-- region is the text label, not the gap above it.)
+mac.double_click(196, 113)
+scheduler.run(900000000)
+-- HD SC Setup recognises the uninitialised drive at SCSI Device 0.
+mac.check("ready.png")
+
+-- Click "Initialize" -> the "erase all data" confirmation alert.
+mac.click(247, 121)
+scheduler.run(400000000)
+
+-- Click "Init" to confirm.
+mac.click(432, 194)
+scheduler.run(900000000)
+
+-- Click "OK" to accept the default volume name ("Untitled"). This writes the
+-- full HFS volume (MDB + bitmap + catalog/extents B-trees + alternate MDB).
+mac.click(263, 181)
+scheduler.run(900000000)
+-- The guest OS reports the format completed and mounted the volume.
+mac.check("done.png")
+
+mac.report_row("6.0.8", "rbv", "hd-format 5380-drq")
+
+-- The format's writes went to the delta, which holds what was written --
+-- the volume's structures at both ends of the disk -- not everything up to
+-- the highest block (the alternate MDB sits in the last sectors).
+local cache = files.list(F"${vars.WORK_DIR}/storage-cache")
+local spent = 0
+for i = 1, #cache do
+    spent = spent + cache[i].size
+end
+assert(spent < 2097152, F"the delta of a freshly formatted 20 MB disk is ${spent} bytes")
+assert(files.path_size(F"${vars.WORK_DIR}/blank.dmg") < 8192, "the format wrote into the .dmg")
+
+-- Export the formatted HD (base + delta flattened) for inspection.
+machine.scsi.device[0].image.export(F"${vars.WORK_DIR}/formatted.img")
+
+quit()

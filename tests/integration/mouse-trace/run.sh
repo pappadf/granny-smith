@@ -12,35 +12,35 @@ CP="$TEST_TMPDIR/mouse.gs"
 # A Plus with no disk runs its ROM to the question-mark screen; 30 M
 # instructions is past the ROM overlay, so low memory is RAM.  One emulated
 # second is ~8 M instructions, so 20 M covers at least two trace ticks.
-cat > "$TEST_TMPDIR/test.script" << EOF
-scheduler.run 30000000
-machine.adb.mouse.trace true
-machine.adb.mouse.move 100 80 "global"
-scheduler.run 20000000
-echo "MARK first-machine"
+cat > "$TEST_TMPDIR/test.lua" << EOF
+scheduler.run(30000000)
+machine.adb.mouse.trace(true)
+machine.adb.mouse.move(100, 80, "global")
+scheduler.run(20000000)
+echo("MARK first-machine")
 
-# A new machine starts without the trace, and it can be turned on again.
-machine.boot model="plus" rom="$ROM"
-scheduler.run 30000000
-echo "MARK fresh-machine"
-machine.adb.mouse.trace true
-machine.adb.mouse.move 120 90 "global"
-scheduler.run 20000000
-echo "MARK second-machine"
+-- A new machine starts without the trace, and it can be turned on again.
+machine.boot{model = "plus", rom = "$ROM"}
+scheduler.run(30000000)
+echo("MARK fresh-machine")
+machine.adb.mouse.trace(true)
+machine.adb.mouse.move(120, 90, "global")
+scheduler.run(20000000)
+echo("MARK second-machine")
 
-# Saved with the trace running; restored into a third machine without it.
-assert checkpoint.save("$CP") "checkpoint save"
-machine.boot model="plus" rom="$ROM"
-scheduler.run 1000000
-assert checkpoint.load("$CP") "checkpoint load"
-echo "MARK restored"
-machine.adb.mouse.move 10 10 "global"
-scheduler.run 20000000
-echo "MARK end"
-quit
+-- Saved with the trace running; restored into a third machine without it.
+assert(checkpoint.save("$CP"), "checkpoint save")
+machine.boot{model = "plus", rom = "$ROM"}
+scheduler.run(1000000)
+assert(checkpoint.load("$CP"), "checkpoint load")
+echo("MARK restored")
+machine.adb.mouse.move(10, 10, "global")
+scheduler.run(20000000)
+echo("MARK end")
+quit()
 EOF
 
-GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN rom="$ROM" model=plus script="$TEST_TMPDIR/test.script" \
+GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN rom="$ROM" model=plus script="$TEST_TMPDIR/test.lua" \
     --speed=turbo > "$TEST_TMPDIR/out.log" 2>&1 || { cat "$TEST_TMPDIR/out.log"; exit 1; }
 
 # Trace lines between each pair of markers.

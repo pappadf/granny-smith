@@ -1,0 +1,39 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: image-VFS descent into A/UX UFS.
+-- Runner cd's into this directory; paths are relative.
+
+-- Partition 6 is "UNIX Root&Usr slice 0" — the A/UX root filesystem.
+files.partmap("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso")
+
+-- Descend into the mount: should list partition1..7.
+files.ls("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso")
+
+-- UFS root directory — A/UX 3.0 layout includes bin, etc, usr, dev, mac, ...
+files.ls("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6")
+
+-- One level deeper — /etc has well-known files (motd, passwd, ...).
+files.ls("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc")
+
+-- Exercise file reads end to end: small text file + size check.
+files.cat("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc/motd")
+files.path_exists("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc/passwd")
+files.path_exists("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/unix")
+
+-- Writes into a UFS image path must be structurally refused (EROFS).
+assert(gs.try(function() return files.mkdir("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir") end, "refused") == "refused", "mkdir into the image is refused")
+
+-- Recursive cp out of UFS into WORK_DIR (host path provided by runner).
+-- /etc is ~380 entries including symlinks; exercises direct + single-indirect
+-- reads, symlink extraction (via file contents), and mkdir recursion.
+files.cp("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc", F"${vars.WORK_DIR}/aux-etc", {recursive = true})
+files.ls(F"${vars.WORK_DIR}/aux-etc")
+
+-- Auto-mount cache visible to the user.
+echo(F"cached mounts: ${files.mounts.count}")
+
+-- Force-unmount releases the cache entry.
+local n = files.mounts.find("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso")
+files.mounts[n].unmount()
+echo(F"cached mounts: ${files.mounts.count}")
+
+quit()

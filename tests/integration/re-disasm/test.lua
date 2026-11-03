@@ -1,0 +1,3 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- See run.sh — this file exists only to make the runner's wildcard
+-- pick up the directory.

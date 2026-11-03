@@ -1,0 +1,32 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- M8 (slice 2) integration: the `files` object class.
+-- Plus boots with one SCSI HD (hd1.img) and one floppy (System 6.0.8).
+-- files.images should enumerate at least these two entries.
+
+scheduler.run(50000)
+
+-- Tree shape.
+local _ = files
+local _ = files.images
+
+-- First image: HD attached at boot. Pin the catalog-driven attrs so a
+-- regression in files.images enumeration order or attribute mapping
+-- fails fast. raw_size is the hd1.img file size (HD20SC catalog).
+local _ = files.images[0]
+assert(files.images[0].index == 0)
+assert(files.images[0].type == "hd")
+assert(files.images[0].writable == true)
+assert(files.images[0].raw_size == 21411840)
+local _ = files.images[0].filename
+
+-- Second image: the System 6 floppy.
+assert(files.images[1].type == "fd_ds")
+local _ = files.images[1].filename
+
+-- files.import — copy a small file to a chosen destination.  The
+-- destination is required: the core does not choose where media lives.
+echo(F"${files.import(\"../../data/roms/plus-v3-4d1f8172.rom\", \"/tmp/imported_rom.bin\")}")
+assert(files.path_exists("/tmp/imported_rom.bin"), "files.import did not copy")
+assert(not gs.truthy(function() return files.import("../../data/roms/plus-v3-4d1f8172.rom", "") end), "files.import without a destination must fail")
+
+quit()

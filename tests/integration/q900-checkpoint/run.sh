@@ -11,19 +11,19 @@ set -e
 CHECKPOINT_FILE="$TEST_TMPDIR/q900.gs"
 
 echo "Step 1: boot the tower HD image 500M instructions, save checkpoint"
-cat > "$TEST_TMPDIR/step1.script" << EOF
-# Mid-boot: extensions loading; IOPs/Caboose/53C96 carry live state.
-scheduler.run 500000000
-assert debug.mac.globals.read("MMUFluff") == 14 "not identified as Quadra 900"
-assert checkpoint.save("$CHECKPOINT_FILE") "step1 checkpoint save failed"
-quit
+cat > "$TEST_TMPDIR/step1.lua" << EOF
+-- Mid-boot: extensions loading; IOPs/Caboose/53C96 carry live state.
+scheduler.run(500000000)
+assert(debug.mac.globals.read("MMUFluff") == 14, "not identified as Quadra 900")
+assert(checkpoint.save("$CHECKPOINT_FILE"), "step1 checkpoint save failed")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=q900 ram=8192 \
     hd="$TEST_TMPDIR/hd.img" \
-    script="$TEST_TMPDIR/step1.script" \
+    script="$TEST_TMPDIR/step1.lua" \
     --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
@@ -34,22 +34,22 @@ echo "Checkpoint saved: $CHECKPOINT_FILE ($(stat -c%s "$CHECKPOINT_FILE") bytes)
 
 echo ""
 echo "Step 2: restore in a fresh process, finish the boot, match the golden"
-cat > "$TEST_TMPDIR/step2.script" << EOF
-assert checkpoint.load("$CHECKPOINT_FILE") "step2 checkpoint load failed"
-# Finish the boot: the desktop is stable from ~800M in the straight run;
-# the extra margin absorbs restore-time scheduler drift.
-scheduler.run 500000000
-assert debug.mac.globals.read("MMUFluff") == 14 "restored machine is not a Quadra 900"
-assert machine.screen.width == 640 "not in 640x480 mode"
-assert machine.screen.height == 480 "not in 640x480 mode"
-machine.screen.match hd-desktop.png
-quit
+cat > "$TEST_TMPDIR/step2.lua" << EOF
+assert(checkpoint.load("$CHECKPOINT_FILE"), "step2 checkpoint load failed")
+-- Finish the boot: the desktop is stable from ~800M in the straight run;
+-- the extra margin absorbs restore-time scheduler drift.
+scheduler.run(500000000)
+assert(debug.mac.globals.read("MMUFluff") == 14, "restored machine is not a Quadra 900")
+assert(machine.screen.width == 640, "not in 640x480 mode")
+assert(machine.screen.height == 480, "not in 640x480 mode")
+machine.screen.match("hd-desktop.png")
+quit()
 EOF
 
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=q900 ram=8192 \
-    script="$TEST_TMPDIR/step2.script" \
+    script="$TEST_TMPDIR/step2.lua" \
     --speed=turbo
 
 echo "Quadra 900 checkpoint test passed!"

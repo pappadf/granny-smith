@@ -18,14 +18,14 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOW="$HERE/allow.txt"
-SCRIPT="$WORK_DIR/lint.script"
+SCRIPT="$WORK_DIR/lint.lua"
 mkdir -p "$WORK_DIR"
 cat > "$SCRIPT" <<'SCRIPT_EOF'
-scheduler.run 200000
-for l in shell.lint_members() {
-    echo "LINT $l"
-}
-quit
+scheduler.run(200000)
+for _, l in ipairs(shell.lint_members()) do
+    echo(F"LINT ${l}")
+end
+quit()
 SCRIPT_EOF
 
 # model:rom-under-tests/data/roms

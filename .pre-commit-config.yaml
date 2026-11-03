@@ -7,6 +7,8 @@ repos:
     hooks:
       - id: clang-format
         types_or: [c, c++]
+        # Vendored code keeps its upstream formatting.
+        exclude: ^third-party/
   - repo: local
     hooks:
         # Comments and docs state their reasons in full: no citations of

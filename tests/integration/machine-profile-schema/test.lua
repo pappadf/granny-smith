@@ -1,0 +1,6 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- The real test logic lives in run.sh (it dumps catalog.profile for each
+-- model, normalizes to a shape string via schema.mjs, and diffs the golden).
+-- The harness requires a test.script to exist; this stub is unused by the
+-- TEST_RUNNER path.
+quit()

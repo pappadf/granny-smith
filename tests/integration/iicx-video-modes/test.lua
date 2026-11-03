@@ -1,0 +1,179 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: IIcx Video Modes
+--
+-- Cold-boot matrix covering 4 monitor types × 4 colour depths on the
+-- Macintosh Display Card 8•24 (JMFB).  Each combination is a
+-- separate `machine.boot` of the IIcx with the System 7.0.1 floppy at
+-- the chosen `nubus.video_sense`, with PRAM seeded so the Slot
+-- Manager's GET_SLOT_DEPTH (boot ROM $40800820 → $408009F6) picks up
+-- the desired sResource at boot time.  Mac OS draws the "Welcome to
+-- Macintosh" splash into the JMFB framebuffer at the seeded depth,
+-- and the test verifies the rendered framebuffer against a checked-in
+-- reference PNG.  (Matching at Welcome rather than Finder cuts each
+-- boot's wall time roughly in half — the JMFB is fully configured by
+-- the time Welcome paints, so the splash exercises the same depth /
+-- stride / CLUT plumbing as a Finder match would.)
+--
+-- Boot-to-Welcome budget = 49M instructions.  The PRAM a machine is built
+-- with already disables the Start Manager's startup-drive wait (rtc.h
+-- pram_defaults_t), so the ROM goes straight to the floppy; 49M sits in the
+-- middle of the stable Welcome window, measured at 45..52M for every cell.  (This used
+-- to be 62.5M around a $017A Cmd-Shift-Power poke that short-circuited the
+-- ~13 s wait by hand.)
+--
+-- Seeded slot-9 sPRAMRec (8 bytes packed as one big-endian literal):
+--
+--   $46..$47 = $0027              BoardID = JMFB
+--   $48      = spDepth (varies)   savedMode  = $80/$81/$82/$83
+--   $49..$4A = sister / sister    savedSRsrcID, savedRawSRsrcID
+--                                 (the ACTIVE Ax sister for this sense
+--                                  per the JMFB VROM mode catalog)
+--   $4B..$4D = 00 00 00           specialFlag / clock / pad
+--
+-- `rtc.pram.validate` stamps the XPRAM validity token ($0C-$0F='NuMc') so
+-- `_InitUtil` skips its XPRAM cold-init pass; without it the seeded
+-- slot-PRAM gets clobbered (docs/internals/core/memory/pram.md §3).  A machine is
+-- built with the token already, so the call only restates it.
+--
+-- (sense → sister sRsrcID) mapping derived empirically — see Section
+-- 6b of the JMFB VROM disasm for the full catalog.  PrimaryInit picks
+-- the Ax sister at boot time; SecondaryInit would upgrade to Bx if
+-- 32-bit QuickDraw were in ROM, but System 7.0.1 leaves us on Ax:
+--
+--   sense $0  21" Color Kong / Mac Two-Page    $A7   1152×870
+--   sense $1  Mac Portrait Display (B&W)        $A1    640×870
+--   sense $2  Mac 12" RGB / small RGB           $A2    512×384
+--   sense $6  Mac Hi-Res 13" RGB                $A6    640×480
+--
+-- spDepth $80/$81/$82/$83 = 1/2/4/8 bpp on every Bx/Ax sister.
+--
+-- 24/32 bpp is intentionally NOT covered: on the JMFB, 32bpp lives
+-- only in spDepth4 of the Ax INACTIVE-pair sisters (e.g. $A6 spDepth4)
+-- and `_SlotManager $06 sReadFHeader` rejects them at boot — Apple's
+-- "Millions of Colors" mode was runtime-only on this card and never
+-- persisted across a reboot.
+--
+-- Reference-image note (Kong yellow tint).  The 21" Color reference
+-- PNGs at $\geq$2 bpp show a subtle yellow tint compared to the
+-- perceptually-neutral 13"/12" RGB images.  This is real Apple
+-- firmware behavior, not an emulation bug: the JMFB driver applies
+-- a per-monitor gamma table at CLUT-write time (see disasm
+-- $40FF7E06 + ProgramCLUT at $40FF75BC) that pre-distorts RGB values
+-- to compensate for each CRT's physical response curve.  On real
+-- hardware the CRT phosphors apply the inverse and the user sees
+-- neutral.  Our headless `screen.save` emits the post-driver,
+-- pre-CRT-response RGB ("what the JMFB put on the bus"), so Kong's
+-- pre-distortion shows through.  That makes the references
+-- byte-stable for regression testing but not directly representative
+-- of the user-facing image; the WebGL frontend applies a per-monitor
+-- response LUT in the fragment shader, which is the correct place
+-- for that compensation.
+
+-- === Depth × Resolution matrix — one cold boot per (sense, depth) =============
+--
+-- Each iteration: boot, insert the floppy, seed the slot record, and run
+-- 49M instructions into the Welcome splash (see the header).
+
+-- --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
+local mac = dofile("../lib/mac.lua") -- report_row (coverage records)
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002780a6a6000000, 8))
+scheduler.run(49000000)
+assert(machine.id == "iicx", "machine.id != iicx")
+assert(machine.screen.width == 640, "13in_rgb 1bpp width != 640")
+assert(machine.screen.height == 480, "13in_rgb 1bpp height != 480")
+assert(machine.rtc.pram.peek(0x48) == 0x80, "13in_rgb 1bpp savedMode rewritten by ROM")
+assert(machine.memory.peek.l(0xf9200208) == 0x80, "13in_rgb 1bpp CLUTPBCR != 0x80")
+assert(machine.memory.peek.l(0xf920000c) == 0x14, "13in_rgb 1bpp RowWords != 0x14")
+mac.check("welcome-13in_rgb-640x480-1bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x1 13in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002781a6a6000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x81, "13in_rgb 2bpp savedMode rewritten by ROM")
+assert(machine.memory.peek.l(0xf9200208) == 0x88, "13in_rgb 2bpp CLUTPBCR != 0x88")
+assert(machine.memory.peek.l(0xf920000c) == 0x28, "13in_rgb 2bpp RowWords != 0x28")
+-- golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+-- - the Welcome splash is pure black-and-white, so it scans out to identical
+-- pixels at both depths. The depth change is proven by the three asserts above
+-- (savedMode 0x80 vs 0x81, CLUT PBCR, RowWords), not by the frame; the golden
+-- only pins that the raster still scans out correctly.
+mac.check("welcome-13in_rgb-640x480-2bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x2 13in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002782a6a6000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x82, "13in_rgb 4bpp savedMode rewritten by ROM")
+assert(machine.memory.peek.l(0xf9200208) == 0x90, "13in_rgb 4bpp CLUTPBCR != 0x90")
+assert(machine.memory.peek.l(0xf920000c) == 0x50, "13in_rgb 4bpp RowWords != 0x50")
+mac.check("welcome-13in_rgb-640x480-4bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x4 13in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 6, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002783a6a6000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x83, "13in_rgb 8bpp savedMode rewritten by ROM")
+assert(machine.memory.peek.l(0xf9200208) == 0x98, "13in_rgb 8bpp CLUTPBCR != 0x98")
+assert(machine.memory.peek.l(0xf920000c) == 0xa0, "13in_rgb 8bpp RowWords != 0xa0")
+mac.check("welcome-13in_rgb-640x480-8bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 640x480x8 13in_rgb")
+
+-- --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
+machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002780a2a2000000, 8))
+scheduler.run(49000000)
+assert(machine.screen.width == 512, "12in_rgb 1bpp width != 512")
+assert(machine.screen.height == 384, "12in_rgb 1bpp height != 384")
+assert(machine.rtc.pram.peek(0x48) == 0x80, "12in_rgb 1bpp savedMode rewritten by ROM")
+mac.check("welcome-12in_rgb-512x384-1bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x1 12in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002781a2a2000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x81, "12in_rgb 2bpp savedMode rewritten by ROM")
+mac.check("welcome-12in_rgb-512x384-2bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x2 12in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002782a2a2000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x82, "12in_rgb 4bpp savedMode rewritten by ROM")
+mac.check("welcome-12in_rgb-512x384-4bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x4 12in_rgb")
+
+machine.boot{model = "iicx", ram = 8192, video_sense = 2, rom = vars.ROM}
+machine.floppy.drive[0].insert("../../data/systems/System_7_0_1.image")
+machine.rtc.pram.validate()
+machine.rtc.pram.poke(0x46, gs.bytes(0x002783a2a2000000, 8))
+scheduler.run(49000000)
+assert(machine.rtc.pram.peek(0x48) == 0x83, "12in_rgb 8bpp savedMode rewritten by ROM")
+mac.check("welcome-12in_rgb-512x384-8bpp.png")
+mac.report_row("7.0.1", "jmfb", "rom-stage 512x384x8 12in_rgb")
+
+-- --- 15" Portrait B&W (sense $1) and 21" RGB Kong (sense $0) ---
+-- RE-HOSTED to suite-iix (an 8-of-16 split): those eight cells now run on the
+-- IIx, whose JMFB also seats in slot 9, so the same sixteen (sense x depth)
+-- cells span two hosts instead of one. See suite-iix's iix-jmfb-sweep row —
+-- including why a 4/4 media split is not buildable
+-- (seeding slot PRAM suppresses the ROM's startup-device init, which a SCSI
+-- boot needs), and what takes the IIx x 7.5 cell instead.
+
+quit()

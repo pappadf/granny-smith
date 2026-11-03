@@ -57,7 +57,7 @@ attenuation/mute fields live.
 `match(reference)`, plus the shared `capture` node
 (`machine.sound.capture.start/stop`, `frames`, `peak`) — the same
 golden-WAV machinery as the ASC machines (`check_sound()` in
-tests/integration/lib/mac.script).
+tests/integration/lib/mac.lua).
 
 ## `machine.audioin` — the emulator's first microphone
 

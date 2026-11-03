@@ -1,0 +1,2 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- See run.sh — placeholder for the runner's wildcard discovery.

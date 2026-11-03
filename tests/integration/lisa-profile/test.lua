@@ -1,0 +1,72 @@
+-- Converted from test.script by scripts/script-to-lua.py
+-- Integration test: Apple Lisa 2 — ProFile parallel hard disk.
+--
+-- Verifies the ProFile device end-to-end through Apple's own boot-ROM driver.
+-- With no floppy, the rev-H boot ROM settles into its boot-menu COPS input wait
+-- (a tight poll loop).  We stop there for a stable, known machine state, attach a
+-- blank ProFile (drives OCD/ low — "connected"), then call the ROM's PROREAD
+-- routine directly to read the controller's reserved device-info block ($FFFFFF).
+--
+-- PROREAD performs the full parallel handshake — assert CMD/, read state $01,
+-- reply $55, send the 6-byte command, read state $02, then stream 4 status bytes
+-- + the 532-byte block.  This drives our VIA2 port-A read/write hooks, the
+-- lisa_profile state machine, and the BSY/OCD lines exactly as real hardware
+-- would, with no synthetic shortcuts.  The controller synthesizes the device-info
+-- block (it is not platter data), so we can assert its contents deterministically.
+--
+-- rev-H ROM addresses: PROREAD = $FE1F70, the boot-menu input poll loop = $FE2DC6.
+-- Boot-ROM working RAM at logical $0..$7FF is mapped in this context, so the read
+-- buffers live there ($400 = the 20-byte header/tag, $420 = the 512-byte data).
+-- We hijack PC inside the menu's COPS-read subroutine, so PROREAD's RTS pops that
+-- subroutine's return address and lands back in the menu loop — i.e. the run
+-- deterministically stops again at the $FE2DC6 breakpoint once PROREAD completes.
+
+-- Settle at the boot-menu input wait (stable state) before injecting the call.
+debug.breakpoints.add(0x00FE2DC6)
+scheduler.run(40000000)
+assert(machine.id == "lisa", "machine.id != lisa")
+assert(machine.rom.id == "3f7b", "rom.id != 3f7b (rev-H)")
+-- The Lisa 2/5's old I/O board clocks its VIAs at CPU/10: its ROM id ($A0)
+-- says "slow timers", and LisaOS sizes its 20 ms tick from that.  At CPU/4
+-- (the Pepsi board's rate) every tick was 8 ms and DELAY_TIME ran 2.5x fast.
+assert(machine.via1.freq_factor == 10, "via1 not at the 2/5's CPU/10")
+assert(machine.via2.freq_factor == 10, "via2 not at the 2/5's CPU/10")
+assert(machine.cpu.pc == 0x00FE2DC6, "did not reach the boot-menu input wait")
+
+-- Attach a blank in-memory ProFile (drives OCD/ low; the ROM now sees it connected).
+machine.hd.attach()
+assert(machine.hd.present == true, "ProFile should be attached")
+
+-- Set up the PROREAD call: D1 = block $FFFFFF (device-info), D2 = timeout,
+-- D3 = retry, D4 = sparing threshold; A1 = 20-byte header buffer, A2 = data buffer.
+machine.cpu.d1 = 0x00FFFFFF
+machine.cpu.d2 = 0x00100000
+machine.cpu.d3 = 0x04
+machine.cpu.d4 = 0x00
+machine.cpu.a1 = 0x00000400
+machine.cpu.a2 = 0x00000420
+machine.cpu.pc = 0x00FE1F70
+scheduler.run(8000000)
+
+-- PROREAD returned cleanly to the menu loop.  (D0 is not checked here: by the
+-- time the menu reaches the poll at $FE2DC6 its own code has reused D0 -- it
+-- holds $0A on the first arrival.  This used to read 0 only because the
+-- breakpoint's resume skip stayed armed and the run stopped on the SECOND
+-- arrival.  The block's contents below are what show the read succeeded.)
+assert(machine.cpu.pc == 0x00FE2DC6, "PROREAD did not return cleanly to the boot menu")
+
+-- The device-info header buffer at $400 holds the controller's identity:
+--   "PROFILE      " (13-byte name), device number 0 -> drive type 0 = ProFile,
+--   firmware rev, then the 24-bit block count (9728 = $002600).
+assert(machine.memory.peek.l(0x400) == 0x50524F46, "header[0..3] != 'PROF'")
+assert(machine.memory.peek.l(0x404) == 0x494C4520, "header[4..7] != 'ILE '")
+-- Block-count high/mid bytes (offsets 18..19 within the 20-byte header).
+assert(machine.memory.peek.b(0x412) == 0x00, "block-count MSB != 0x00")
+assert(machine.memory.peek.b(0x413) == 0x26, "block-count mid != 0x26 (9728 blocks)")
+-- Block-count LSB (offset 20) and bytes/block (offsets 21..22 = 532 = $0214)
+-- land in the data buffer at $420.
+assert(machine.memory.peek.b(0x420) == 0x00, "block-count LSB != 0x00")
+assert(machine.memory.peek.b(0x421) == 0x02, "bytes/block hi != 0x02")
+assert(machine.memory.peek.b(0x422) == 0x14, "bytes/block lo != 0x14 (532)")
+
+quit()

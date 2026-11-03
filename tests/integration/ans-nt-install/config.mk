@@ -23,10 +23,10 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 TEST_ARGS := model=ans500 ram=65536
 
 # Turns $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/product-id.txt, when there is
-# one, into $(WORK_DIR)/nt-pid.script: the script language cannot index a
-# string, so the ID is typed from a generated list of key presses.
+# one, into $(WORK_DIR)/nt-pid.lua: the ID is the owner's own and never in
+# the repository, so it is typed from a generated list of key presses.
 # ($EXTRA_MEDIA is the runner's own variable; TEST_SETUP is eval'd there.)
-TEST_SETUP := sh ans-nt-install/nt-pid.sh "$EXTRA_MEDIA/windows-nt-ppc-ans/product-id.txt" $(WORK_DIR)/nt-pid.script
+TEST_SETUP := sh ans-nt-install/nt-pid.sh "$EXTRA_MEDIA/windows-nt-ppc-ans/product-id.txt" $(WORK_DIR)/nt-pid.lua
 
 # The whole installation is ~10 minutes on a fast host; the runner's default
 # 900 s leaves a CI runner no margin.

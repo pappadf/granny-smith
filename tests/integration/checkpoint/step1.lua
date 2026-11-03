@@ -1,0 +1,13 @@
+-- Converted from step1.script by scripts/script-to-lua.py
+-- Checkpoint step 1: boot the 6.0.8 floppy to a settled desktop and save.
+-- The floppy comes from fd= (run.sh); the library's settle wait means the
+-- save point is a screen state rather than an instruction count that rots.
+
+local mac = dofile("../lib/mac.lua")
+
+mac.wait_stable(400000000)
+mac.check(F"${vars.TEST_DIR}/desktop.png")
+
+assert(checkpoint.save("checkpoint.gs"), "step1: checkpoint save failed")
+machine.screen.save(F"${mac.RESULTS_DIR}/screenshot-step1.png")
+quit()
