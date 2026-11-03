@@ -527,6 +527,58 @@ static inline uint32_t reg_narrow(uint32_t v, unsigned width) {
     return v;
 }
 
+// One monitor-sense line, as the cable presents it.
+//
+// The three lines are open-collector: a monitor grounds some of them through
+// its cable and the rest are pulled up, and the card can pull any of them low
+// itself.  A line reads low when the card drives it or the monitor's wiring
+// pulls it down.  Apple's sense protocol: the undriven 3-bit code first ($44 =
+// line 2, $48 = line 1, $4C = line 0); code 7 (all up) means an extended-sense
+// monitor, read by driving one line low at a time and sampling the other two
+// (drive line 2 -> lines 1,0 = ext bits 5,4; drive 1 -> lines 2,0 = bits 3,2;
+// drive 0 -> lines 2,1 = bits 1,0).
+//
+// The card drives a line from two places: the drive latches at $2C/$30/$34,
+// which PrimaryInit's extended probe ($243C) and the GC firmware use, and a
+// write to the sense register itself, which is how MacTest Pro's Expansion
+// Card test drives them.  Any non-zero latch value drives.
+//
+// Which monitor: code 7, extended code $00.  PrimaryInit maps that to config
+// 0, the 640x480 configuration this model's display path implements and is
+// verified against (the 13" RGB's own code 6 selects config 6, whose
+// framebuffer layout the model does not reproduce).  .GraphAccel's start-up
+// check reads the undriven lines too and wants all three high.  Before, the
+// lines read high unless a $2C/$30/$34 latch was set, so MacTest's own drives
+// went unseen, it read extended code $3F ("no monitor") and skipped the card.
+#define GC824_SENSE_CODE 7u // see gc_sense_line
+#define GC824_SENSE_EXT  0x00u
+
+static bool gc_sense_line(display_card_824gc_priv_t *p, uint32_t reg) {
+    int line = reg == GC824_REG_ALIVE_C ? 2 : reg == GC824_REG_ALIVE_B ? 1 : 0; // $44 / $48 / $4C
+    uint8_t drive = 0;
+    if (buf_read(p->regs, 0x2C, GC824_REGS_SIZE, 4) || buf_read(p->regs, 0x44, GC824_REGS_SIZE, 4))
+        drive |= 4u;
+    if (buf_read(p->regs, 0x30, GC824_REGS_SIZE, 4) || buf_read(p->regs, 0x48, GC824_REGS_SIZE, 4))
+        drive |= 2u;
+    if (buf_read(p->regs, 0x34, GC824_REGS_SIZE, 4) || buf_read(p->regs, 0x4C, GC824_REGS_SIZE, 4))
+        drive |= 1u;
+    if (drive & (1u << line))
+        return false;
+    if (GC824_SENSE_CODE != 7 || !drive)
+        return (GC824_SENSE_CODE >> line) & 1u;
+    const uint8_t ext = GC824_SENSE_EXT;
+    switch (drive) {
+    case 4: // line 2 driven: line 1 -> bit 5, line 0 -> bit 4
+        return line == 1 ? (ext >> 5) & 1u : (ext >> 4) & 1u;
+    case 2: // line 1 driven: line 2 -> bit 3, line 0 -> bit 2
+        return line == 2 ? (ext >> 3) & 1u : (ext >> 2) & 1u;
+    case 1: // line 0 driven: line 2 -> bit 1, line 1 -> bit 0
+        return line == 2 ? (ext >> 1) & 1u : ext & 1u;
+    default:
+        return false; // more than one line driven: no standard reading
+    }
+}
+
 // One read: the guest's (`peek` false) or an inspection's
 // (memory_interface_t.peek_*), which returns what the read would return now
 // and leaves the JMFB Stopwatch VBL toggle, the SYNC_HB read counter and the
@@ -562,32 +614,15 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         case GC824_REG_ALIVE_A:
         case GC824_REG_ALIVE_B:
         case GC824_REG_ALIVE_C: {
-            // These MFB sense registers ($44/$48/$4C) serve triple duty:
-            //   (1) .GraphAccel "board alive" flags — bit 31 = 1 when idle;
-            //   (2) the video driver's 3-bit config strap — PrimaryInit reads
-            //       bit 31 of each ($1CFE-$1D24) → a config code 0..7;
-            //   (3) the VRAM-interconnect sense — vramProbe ($243C) drives
-            //       walking-ones into the bank-drive lines $2C/$30/$34 one at a
-            //       time and reads which sense bits respond, assembling a 6-bit
-            //       signature: {p1.s48, p1.s4C, p2.s44, p2.s4C, p3.s44, p3.s48}
-            //       (pass N = drive line $2C/$30/$34).  PrimaryInit maps
-            //       $14→config 4, $00/$30→config 0, $2D→config 5, else 9.
-            // Idle (no bank line driven) → bit 31 = 1: satisfies the alive
-            // check AND makes the strap code 7 (→ the deep vramProbe path).
-            // While vramProbe is driving a bank line → read 0, so the assembled
-            // signature is 0, which the caller maps to **config 0** — the
-            // 640×480 configuration this model is verified against.  (Probed
-            // alternatives, for the record: signature $14 → config 4 = the
-            // 512×384 monitor; $2D → config 5 = 640×480 with a 128-byte 1-bpp
-            // pitch and no 32-bpp mode.  Config 0's post-SecondaryInit
-            // sResource $A0 carries all six depths; 16/32 bpp are reachable at
-            // RUNTIME via Monitors/cscSetMode → VidComm — never at boot: the
-            // ROM Slot Manager keeps the 24-bit $B0 family, capped at 8 bpp,
-            // until SecondaryInit swaps it, exactly like real hardware.)
-            uint32_t bank_drive = buf_read(p->regs, 0x2C, GC824_REGS_SIZE, 4) |
-                                  buf_read(p->regs, 0x30, GC824_REGS_SIZE, 4) |
-                                  buf_read(p->regs, 0x34, GC824_REGS_SIZE, 4);
-            uint32_t v = bank_drive ? 0u : 0x80000000u;
+            // The three monitor-sense lines, bit 31 each ($44 = line 2,
+            // $48 = line 1, $4C = line 0 of Apple's 3-bit sense code), with
+            // the extended-sense drives at $2C/$30/$34 (one per line, any
+            // non-zero value pulls that line low).  PrimaryInit ($1CF6) reads
+            // the code; for code 7 it drives each line in turn ($243C) and
+            // reads the other two, Apple's extended sense.  MacTest Pro's
+            // Expansion Card test reads the same lines, and so does
+            // .GraphAccel's start-up check.  See gc_sense_line.
+            uint32_t v = gc_sense_line(p, cl) ? 0x80000000u : 0u;
             // The meaningful state is bit 31, so a narrow read must return the
             // big-endian MSB byte/word (the strap probe BFEXTUs bit 31 via a
             // BYTE read at offset 0 — returning the low byte read the strap as 0

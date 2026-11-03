@@ -22,6 +22,9 @@
 //     the select registers and the device's s-bits, host s-bit latches,
 //     cmdptr write protection while running, partial-residual write-back
 //     on stop.
+//  7. The result word written by every command but STOP (no interrupt
+//     needed), a quad as one scalar bus access, and the port's stop hook
+//     on a RUN clear.
 
 #include "checkpoint.h"
 #include "dbdma.h"
@@ -521,6 +524,74 @@ TEST(test_quads) {
     ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1020);
 }
 
+// Every completed command but STOP writes its result word, interrupt or
+// not: the active bit in xferStatus is the done flag a driver polls (a
+// STORE_QUAD to a device register, then a wait for exactly that).
+TEST(test_result_written_without_interrupt) {
+    fixture();
+    desc(0x1000, op(STORE_QUAD, NEVER, NEVER, NEVER, 4), 0x2000, 0x1);
+    desc(0x1010, op(NOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    desc(0x1020, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_irq_count, 0);
+    ASSERT_EQ_INT((int)(peek32(0x100C) >> 16) & (DBDMA_RUN | DBDMA_ACTIVE), DBDMA_RUN | DBDMA_ACTIVE);
+    ASSERT_EQ_INT((int)(peek32(0x101C) >> 16) & DBDMA_ACTIVE, DBDMA_ACTIVE);
+    ASSERT_EQ_INT((int)peek32(0x102C), 0); // STOP parks without a result
+}
+
+// A quad is ONE bus access of the command's width: a port with a scalar
+// writer sees a single 4-byte write, cmdDep's low byte at the lowest
+// address (big-endian value), not four byte writes.
+static int s_scalar_writes;
+static uint32_t s_scalar_addr, s_scalar_value;
+static unsigned s_scalar_width;
+static void mem_write1(void *ctx, uint32_t phys, uint32_t value, unsigned width) {
+    (void)ctx;
+    s_scalar_writes++;
+    s_scalar_addr = phys;
+    s_scalar_value = value;
+    s_scalar_width = width;
+}
+
+TEST(test_quad_is_one_access) {
+    fixture();
+    static const dma_mem_port_t scalar_port = {.write = mem_write1, .read_block = mem_read, .write_block = mem_write};
+    dbdma_set_memory_port(s_d, &scalar_port);
+    s_scalar_writes = 0;
+    desc(0x1000, op(STORE_QUAD, NEVER, NEVER, NEVER, 4), 0x3000, 0x00004145);
+    desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_scalar_writes, 1);
+    ASSERT_EQ_INT((int)s_scalar_addr, 0x3000);
+    ASSERT_EQ_INT((int)s_scalar_width, 4);
+    ASSERT_EQ_INT((int)s_scalar_value, 0x45410000);
+}
+
+// Clearing RUN tells the port its program is gone (a device that staged
+// bytes for it drops them); setting RUN, or a STOP command, does not.
+static int s_stop_calls;
+static void dev_stop(void *ctx) {
+    (void)ctx;
+    s_stop_calls++;
+}
+
+TEST(test_port_stop_hook) {
+    fixture();
+    static dbdma_port_t port;
+    port.out = dev_out;
+    port.in = dev_in;
+    port.stop = dev_stop;
+    dbdma_set_port(s_d, 0, &port);
+    s_stop_calls = 0;
+    desc(0x1000, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_stop_calls, 0);
+    control(0, DBDMA_RUN << 16); // clear RUN
+    ASSERT_EQ_INT(s_stop_calls, 1);
+    control(0, DBDMA_RUN << 16); // already clear: no transition
+    ASSERT_EQ_INT(s_stop_calls, 1);
+}
+
 // Conditional branch/wait/interrupt against the select registers and the
 // device's live s-bits (mask 23:16 / value 7:0; cond is masked equality).
 TEST(test_conditions) {
@@ -629,6 +700,9 @@ int main(void) {
     RUN(test_nop_branch_ring);
     RUN(test_stop_wake_overwrite);
     RUN(test_quads);
+    RUN(test_result_written_without_interrupt);
+    RUN(test_quad_is_one_access);
+    RUN(test_port_stop_hook);
     RUN(test_conditions);
     RUN(test_cmdptr_protect_and_pause);
     RUN(test_checkpoint_roundtrip);

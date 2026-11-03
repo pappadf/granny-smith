@@ -80,6 +80,8 @@ struct av_psc {
     uint8_t berrie; // $800 bus-error interrupt enable (bit 0)
     uint8_t psctest[4]; // $400 test register latch (no known function)
     uint8_t snd[0x1C]; // $200-$21B sound-block latches ($20C reads computed)
+    uint32_t phase_snap; // sndPhase as sampled by the access being served
+    uint8_t phase_lane; // the lane that access reads next (see the $20C read)
     uint8_t dsp_overrun; // $21C sense-bit latch (pdspReset/pdspResetEn/pdspFrameOvr)
     av_psc_chan_t chan[AV_PSC_DMA_CHANNELS]; // the 7-channel DMA engine
 
@@ -553,8 +555,21 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     case 0x214:
     case 0x218:
         return psc->snd[off & 0x1F];
-    case 0x20C: // sndPhase — computed free-runner
-        return be_lane8(psc_snd_phase(psc), off);
+    case 0x20C: { // sndPhase — computed free-runner
+        // A word or long read reaches us as byte reads with bus time passing
+        // between them, where the real bus moves the register in one cycle.
+        // The lanes of one access are served from one sample: sampling each
+        // lane afresh tore the value whenever the offset carried between
+        // lanes -- at 1023 -> 1024 the long read returned $00000000 -- and
+        // the boot chime, which spins until the offset reads 0 and then
+        // chains the next double buffer, chained twice in that pass and
+        // skipped a buffer of the chime.
+        uint32_t lane = off & 3;
+        if (lane == 0 || psc->phase_lane != lane)
+            psc->phase_snap = psc_snd_phase(psc);
+        psc->phase_lane = (uint8_t)(lane + 1);
+        return be_lane8(psc->phase_snap, off);
+    }
     case 0x21C: // dspOverRun on lane 0; lanes 1-3 latch nothing (writes drop)
         return (off & 3) == 0 ? psc->dsp_overrun : 0;
     case 0x300: // UTSC least-significant longword

@@ -601,6 +601,15 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         phase_selection(scsi);
     }
 
+    // A selection the initiator abandons -- SEL and BSY both released before
+    // any target answered -- leaves nothing driving the bus: it is free.  A
+    // completed selection has already moved on to COMMAND (BSY release
+    // above), so only a guest that toggles ICR bits without selecting gets
+    // here, e.g. MacTest Pro's IIci "SCSI Controller" register walk.  Left in
+    // SELECTION, the next arbitration was refused and the bus stayed busy.
+    if (scsi->bus.phase == scsi_selection && !(val & (ICR_SEL | ICR_BSY)))
+        phase_free(scsi);
+
     // ATN asserted: the initiator requests MESSAGE OUT phase.
     // On real hardware the target notices ATN during the next REQ/ACK
     // handshake and transitions at the first opportunity.  In the
@@ -645,6 +654,17 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // drives BSY when it becomes bus master; the ROM polls CSR_BSY
         // to detect arbitration completion.
         scsi->bus.bsy = true;
+    } else if ((bits_cleared & MR_ARBITRATE) && scsi->bus.phase == scsi_arbitration) {
+        // ARBITRATE dropped before any selection began: the chip stops
+        // driving BSY and its ID, and the bus is free again (NCR 5380 MR bit
+        // 0: resetting it ends arbitration).  An initiator that won and went
+        // on to select has already asserted SEL (ICR), which moved the phase
+        // to selection, so this path never cuts a real selection short.
+        // MacTest Pro's IIci "SCSI Controller" register test toggles the bit
+        // on its own; leaving BSY latched hung every later CD access and the
+        // app bombed.
+        scsi->chip5380->reg.icr &= ~(ICR_AIP | ICR_LA);
+        phase_free(scsi);
     }
 
     if (bits_cleared & MR_DMA) {

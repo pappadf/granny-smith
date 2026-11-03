@@ -475,7 +475,11 @@ CPU-bus mastership, drawn in the cache-timing appendix as /BR, /BG, /BGACK, the 
 The cache connector is the IIci's second expansion path and the family's most unusual one; its
 bus-level contract — the CACHE signal that disables the MDU, the BGACK~ pull-up rule, the
 card-decoded data/tag windows at $5200 0000–$527F FFFF and $5280 0000–$52FF FFFF, the ROM traps
-off HWPriv — is the family doc's (mdu.md §2.4, §3.7) and is not restated. What is IIci-specific:
+off HWPriv — is the family doc's (mdu.md §2.4, §3.7) and is not restated. Because the card decodes
+those windows itself, an empty connector leaves nothing to answer there: the emulator (which models
+no cache card) bus-errors the whole $5200 0000–$52FF FFFF range (`io_berr_lo/hi` in the board
+descriptor) rather than mirroring the I/O devices into it. Mirrored, VIA1 answered the probes and
+MacTest Pro found — and failed — a cache card. What is IIci-specific:
 
 - **Physical.** A 120-pin Euro-DIN connector, "the same connector as the SE/30 provides", but
   "SE/30 cards are not compatible with the Macintosh IIci" — the four printed reasons: a

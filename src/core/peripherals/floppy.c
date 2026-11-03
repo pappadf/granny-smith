@@ -225,6 +225,12 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
 // The sense line as the CA lines in `lines` address it.  An inspection
 // (`peek`) builds no GCR track cache to answer RDDATA.
 int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
+    // A drive select the machine does not cable reaches no drive: every
+    // sense line floats high, /DRVIN included ("no drive").  Answering for
+    // it made a one-drive Quadra 700 or IIci report a second drive, and
+    // MacTest Pro listed and tested "Floppy Drive 2".
+    if (drv >= floppy->n_drives)
+        return 1;
     floppy_drive_t *drive = &floppy->drives[drv];
     bool ca0 = (lines & IWM_LINE_CA0) != 0, ca1 = (lines & IWM_LINE_CA1) != 0, ca2 = (lines & IWM_LINE_CA2) != 0;
 
