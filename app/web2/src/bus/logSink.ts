@@ -27,12 +27,20 @@ export function routeConsole(r: ConsoleRecord): void {
   appConsole.model.push(r);
 }
 
+// Listeners that see every console print line (automation only, through
+// testHook: a spec keeps the perf lines the terminal scrolls away)
+const printTaps: Array<(line: string) => void> = [];
+export function tapPrintLines(fn: (line: string) => void): void {
+  printTaps.push(fn);
+}
+
 // Module.print: a stdout line outside any job.
 export function routePrintLine(line: string): void {
   // Logs are populated exclusively from routeLogEmit (the C-side global
   // sink).  log.c writes the same formatted line to both, so parsing it
   // here too would double-count every entry.
   routeConsole({ kind: 'print', line });
+  for (const tap of printTaps) tap(line);
 }
 
 // Module.printErr: a stderr line.

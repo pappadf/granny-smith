@@ -1,0 +1,46 @@
+# Plus + Beyond Dark Castle from MOOF floppies (see config.mk).
+#
+# All coordinates are Plus-screen absolute (512x342).  Regenerate the
+# goldens by replacing the screen.match lines with machine.screen.save.
+
+# Pin the RTC so the run is deterministic run-to-run.  (The harness booted
+# the machine already -- no machine.boot here, so the pin sticks.)
+machine.rtc.time = 3000000000
+
+# The VFS opens a MOOF like any disk image: the HFS volume and its files.
+let d1 = "../../data/apps/Beyond-Dark-Castle-Disk-1.moof"
+let d2 = "../../data/apps/Beyond-Dark-Castle-Disk-2.moof"
+assert files.identify_floppy($d1) "MOOF not identified as a floppy"
+assert files.path_exists("${$d1}/partition1/System") "no System on disk 1"
+assert files.path_exists("${$d1}/partition1/Beyond Dark Castle") "no game on disk 1"
+assert files.path_exists("${$d2}/partition1/BDC Data B") "no BDC Data B on disk 2"
+
+# Both MOOFs decode (to DiskCopy 4.2, then the disk) and mount as 800K.
+machine.floppy.drive[0].insert $d1
+machine.floppy.drive[1].insert $d2
+assert machine.floppy.drive[0].disk.density == "800k" "disk 1 is not an 800K disk"
+assert machine.floppy.drive[1].disk.density == "800k" "disk 2 is not an 800K disk"
+
+# Boot: the Launcher starts the game, which shows its title.
+scheduler.run 112000000
+machine.screen.match title.png
+
+# A click leaves the title for the Scores of Merit menu.
+machine.adb.mouse.move 256 200
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 200000
+machine.adb.mouse.click false
+scheduler.run 30000000
+machine.screen.match menu.png
+
+# Play: into the Ante Room, the status panel drawn.
+machine.adb.mouse.move 68 310
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 200000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.screen.match ante-room.png
+
+quit

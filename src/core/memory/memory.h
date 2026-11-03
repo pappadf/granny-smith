@@ -525,6 +525,8 @@ uint32_t memory_read_uint32_slow(uint32_t addr);
 void memory_write_uint8_slow(uint32_t addr, uint8_t value);
 void memory_write_uint16_slow(uint32_t addr, uint16_t value);
 void memory_write_uint32_slow(uint32_t addr, uint32_t value);
+// `len` byte writes from `addr` up, each as memory_write_uint8_slow makes it.
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len);
 
 // Side-effect-free reads for debug/inspection commands (memory.peek/.dump,
 // find.*): translate via mmu_translate_checked, read host RAM/ROM or dispatch

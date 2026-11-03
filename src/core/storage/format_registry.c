@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include "image_chunkmap.h"
+#include "image_moof.h"
 #include "log.h"
 #include "storage_util.h"
 
@@ -252,6 +253,21 @@ static int qcow2_unwrap(const format_probe_t *p, source_t **data, source_t **rsr
 }
 
 // ============================================================================
+// Applesauce MOOF (decoded to a DiskCopy 4.2 image: image_moof.h)
+// ============================================================================
+
+static bool moof_detect_probe(const format_probe_t *p) {
+    return moof_detect(p->p.head, p->p.head_len);
+}
+
+static int moof_unwrap(const format_probe_t *p, source_t **data, source_t **rsrc) {
+    int err = 0;
+    *data = moof_source_open(p->data, &err);
+    *rsrc = NULL;
+    return *data ? 0 : (err ? err : -EINVAL);
+}
+
+// ============================================================================
 // Peeler's wrappers (BinHex, MacBinary, gzip)
 // ============================================================================
 
@@ -320,12 +336,14 @@ static int gz_unwrap(const format_probe_t *p, source_t **d, source_t **r) {
 
 // Order: the trailer-identified container first (a UDIF's payload may
 // begin with anything), then the fork-identified one, then header formats
-// -- QCOW2 by its magic, and the LisaEm ProFile image before the plain
-// DiskCopy 4.2 it refines.
+// -- QCOW2 and MOOF by their magic, and the LisaEm ProFile image before the
+// plain DiskCopy 4.2 it refines.  A MOOF unwraps to a DiskCopy 4.2 image,
+// which the next round peels as dc42 ("moof+dc42").
 static const format_t g_wrappers[] = {
     {"udif",   GS_FMT_WRAPPER, "UDIF (.dmg) disk image",        udif_detect_probe,  udif_unwrap,   NULL},
     {"ndif",   GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image", ndif_detect_probe,  ndif_unwrap,   NULL},
     {"qcow2",  GS_FMT_WRAPPER, "QEMU QCOW2 disk image",         qcow2_detect_probe, qcow2_unwrap,  NULL},
+    {"moof",   GS_FMT_WRAPPER, "Applesauce MOOF floppy image",  moof_detect_probe,  moof_unwrap,   NULL},
     {"lisaem", GS_FMT_WRAPPER, "LisaEm ProFile disk image",     lisaem_detect,      lisaem_unwrap, NULL},
     {"dc42",   GS_FMT_WRAPPER, "Disk Copy 4.2 disk image",      dc42_detect,        dc42_unwrap,   NULL},
     {"hqx",    GS_FMT_WRAPPER, "BinHex 4.0",                    hqx_detect_probe,   hqx_unwrap,    NULL},

@@ -613,6 +613,17 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     uint32_t ratio = blk->arch == PD_ARCH_PPC ? g_pd_thrash_ratio_ppc : g_pd_thrash_ratio;
     if (++blk->writes > g_pd_thrash_limit && (uint64_t)blk->writes * ratio > execs)
         blk->thrashed = true;
+    // A PowerPC page that takes stores and retires nothing in the window is
+    // data beside a stale decode (memory that held code, reused for data):
+    // its mark sends every store through this path, and a page nothing runs
+    // from never reaches the lookup that acts on `thrashed`.  Released here,
+    // not demoted: no hold, and the next execution there decodes it afresh.
+    // (On Quake III's demo 487 M stores reached the coherence hooks, nearly
+    // all into a dozen such pages, from translated code.)
+    if (blk->arch == PD_ARCH_PPC && blk != g_pd_current && blk->writes > g_pd_thrash_limit && execs == 0) {
+        block_detach(blk);
+        g_pd_stats.data_releases++;
+    }
 }
 
 #ifdef GS_DEBUG
@@ -675,6 +686,7 @@ enum {
     PDA_DECODES,
     PDA_INVALIDATIONS,
     PDA_DEMOTIONS,
+    PDA_DATA_RELEASES,
     PDA_ELIDED,
     PDA_SUPPRESSED_WRITES,
     PDA_THRASH_RATIO,
@@ -714,6 +726,8 @@ static value_t pd_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_pd_stats.invalidations);
     case PDA_DEMOTIONS:
         return val_uint(8, g_pd_stats.demotions);
+    case PDA_DATA_RELEASES:
+        return val_uint(8, g_pd_stats.data_releases);
     case PDA_ELIDED:
         return val_uint(8, g_pd_stats.elided);
     case PDA_SUPPRESSED_WRITES:
@@ -884,6 +898,8 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("decodes", PDA_DECODES, "entries decoded"),
     PD_ATTR_RO("invalidations", PDA_INVALIDATIONS, "stores that reset at least one cached entry"),
     PD_ATTR_RO("demotions", PDA_DEMOTIONS, "blocks released for thrashing"),
+    PD_ATTR_RO("data_releases", PDA_DATA_RELEASES,
+               "PowerPC blocks released at a store: stores, and nothing retired from the page, in the window"),
     PD_ATTR_RO("elided", PDA_ELIDED, "entries retargeted to a no-flags twin"),
     PD_ATTR_RO("realiases", PDA_REALIASES, "blocks re-decoded because their host page ran at another guest address"),
     PD_ATTR_RO("generic_steps", PDA_GENERIC_STEPS, "instructions run through the generic tier"),
