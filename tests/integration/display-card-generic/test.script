@@ -11,6 +11,15 @@ def card(id) {
     }
     return none
 }
+# The card's own name
+def card_name(id) {
+    if $id == "mdc_8_24" {
+        return "Macintosh Display Card 8•24"
+    } elif $id == "display_card_24ac" {
+        return "Macintosh Display Card 24AC"
+    }
+    return "Macintosh Display Card 8•24 GC"
+}
 for id in ["mdc_8_24", "display_card_24ac", "824gc"] {
     let c = card($id)
     let g = card("${$id}_generic")
@@ -20,7 +29,8 @@ for id in ["mdc_8_24", "display_card_24ac", "824gc"] {
     assert $g.variant_of == $id "the variant does not name its card"
     assert $g.status == "ok" "the generic variant needs no ROM"
     assert $g.rom == none "the generic variant asks for a ROM file"
-    assert $g.label == "${$c.label} · Substitute ROM" "the variant's label"
+    assert $c.label == "${card_name($id)} (real video ROM)" "the real entry's label"
+    assert $g.label == "${card_name($id)} (generic video ROM)" "the generic entry's label"
 }
 # A card without a substitute has no variant
 assert card("mdc_8_24_generic_generic") == none "a variant of a variant"
@@ -41,12 +51,12 @@ assert machine.boot(model="iicx", rom=$ROM, config="{\"cards\":[{\"slot\":\"nubu
 assert machine.nubus.slot[9].card.substitute "the generic 8•24 GC runs Apple's ROM"
 
 # The SE/30's built-in video is no slot card: its ROM is the video_rom option
-assert catalog.default_config("se30").options.video_rom == "apple" "the SE/30 has no video_rom option"
+assert catalog.default_config("se30").options.video_rom == "real" "the SE/30 does not default to its real video ROM"
 assert try(catalog.default_config("iicx").options.video_rom, "absent") == "absent" "a IIcx has no built-in video ROM choice"
 assert machine.boot(model="se30", rom=$ROM) "the SE/30 boots"
 assert machine.nubus.slot[14].card.substitute == false "the SE/30 does not run Apple's video ROM"
-assert machine.boot(model="se30", rom=$ROM, config="{\"options\":{\"video_rom\":\"substitute\"}}") "the SE/30 on its substitute video ROM boots"
-assert machine.nubus.slot[14].card.substitute "video_rom=substitute does not run the substitute"
+assert machine.boot(model="se30", rom=$ROM, config="{\"options\":{\"video_rom\":\"generic\"}}") "the SE/30 on its substitute video ROM boots"
+assert machine.nubus.slot[14].card.substitute "video_rom=generic does not run the generic ROM"
 assert machine.nubus.slot[14].card.declrom.path == "builtin:builtin_se30_video" "the SE/30 is not on the generated video ROM"
 
 echo "PASS: display-card-generic"

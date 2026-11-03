@@ -1,4 +1,4 @@
-# Integration test: the NuBus display cards' substitute-ROM variants
+# Integration test: the NuBus display cards' real and generic video ROM entries
 #
 # Every NuBus display card with a substitute declaration ROM (the 8•24, the
 # 24AC, the 8•24 GC) is listed twice in catalog.profile: the card itself,

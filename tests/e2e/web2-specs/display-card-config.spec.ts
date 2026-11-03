@@ -26,6 +26,7 @@
 import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { gsEvalInPage } from '../helpers/web2-eval';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const VROM_8_24 = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
@@ -40,6 +41,10 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   // upload's image-revision bump re-scans and identifies them in one pass.
   await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', VROM_8_24);
   await stageOpfsFile(page, '/opfs/images/vrom/display-card-24ac-d8daab87.vrom', VROM_24AC);
+  // Staged behind the upload path's back: offer them, as an upload does
+  // (a card's real-ROM entry is listed only while its vROM is offered).
+  await gsEvalInPage(page, 'catalog.vroms.offer', ['/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom']);
+  await gsEvalInPage(page, 'catalog.vroms.offer', ['/opfs/images/vrom/display-card-24ac-d8daab87.vrom']);
 
   // Upload the IIcx ROM via the Welcome "Load ROM..." button. The persist
   // bumps the image revision, which re-scans the config slide (ROM + the two
@@ -66,11 +71,14 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await seated.getByRole('button', { name: /^Remove/ }).click();
   await expect(page.locator('.item-row[data-card]')).toHaveCount(0);
   await page.getByTestId('cfg-add-card').click();
-  // One entry per real card: the 8•24, the 24AC and the 8•24 GC.  A card
-  // whose vROM was not uploaded boots its substitute ROM; none is a file.
+  // One entry per declaration ROM (#346): every card on its generic ROM,
+  // and the 8•24 and 24AC, whose vROMs are stored, on their real ones too
+  // (the 8•24 GC's is not, so it has no real entry); none is a file.
   const card = page.locator('#cfg-add-card');
-  await expect(card.locator('option')).toHaveCount(3);
-  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(1);
+  await expect(card.locator('option')).toHaveCount(5);
+  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(2);
+  await expect(card.locator('option', { hasText: '24AC (real video ROM)' })).toHaveCount(1);
+  await expect(card.locator('option', { hasText: 'GC (real video ROM)' })).toHaveCount(0);
   await expect(card.locator('option', { hasText: '.vrom' })).toHaveCount(0);
   await card.selectOption('display_card_24ac');
   await page.locator('#cfg-add-card-slot').selectOption(slot ?? '');

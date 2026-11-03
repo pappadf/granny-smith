@@ -138,23 +138,36 @@ static const config_option_decl_t k_imagewriter_option_serial_a = {
 };
 
 static const config_value_decl_t k_video_rom_values[] = {
-    {.id = "apple", .label = "Apple's"},
-    {.id = "substitute", .label = "Substitute ROM"},
+    {.id = "real", .label = "Real video ROM"},
+    {.id = "generic", .label = "Generic video ROM"},
+    {.id = NULL},
+};
+static const config_value_decl_t k_video_rom_values_generic[] = {
+    {.id = "generic", .label = "Generic video ROM"},
     {.id = NULL},
 };
 
+#define VIDEO_ROM_DETAIL                                                                                               \
+    "The built-in video's declaration ROM: the real one (when its ROM file is loaded) or the emulator's generic one."
+
 // The built-in video's declaration ROM, on a machine whose built-in video
-// is a NuBus pseudo-slot card with a substitute ROM (the SE/30): Apple's when
-// its .vrom is stored (else the substitute, as before), or always the
-// emulator's generated one (#346).  The slot cards' choice is their
-// substitute-ROM variant instead.
+// is a NuBus pseudo-slot card that runs either ROM (the SE/30): the real one,
+// offered (and the default) only while its .vrom is, or the generic one
+// (#346).  Slot cards make the same choice by their two entries.
 static const config_option_decl_t k_video_rom_option = {
     .id = "video_rom",
     .label = "Video ROM",
-    .detail = "The built-in video's declaration ROM: Apple's (the substitute when it is not uploaded), or always "
-              "the emulator's substitute ROM.",
+    .detail = VIDEO_ROM_DETAIL,
     .values = k_video_rom_values,
-    .default_value = "apple",
+    .default_value = "real",
+};
+// The same without the real ROM offered: generic only.
+static const config_option_decl_t k_video_rom_option_generic = {
+    .id = "video_rom",
+    .label = "Video ROM",
+    .detail = VIDEO_ROM_DETAIL,
+    .values = k_video_rom_values_generic,
+    .default_value = "generic",
 };
 
 static const config_value_decl_t k_addressing_values[] = {
@@ -212,6 +225,7 @@ static const config_option_decl_t *addressing_option(const hw_profile_t *p) {
 
 static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p);
 static bool builtin_video_has_substitute(const hw_profile_t *p);
+static bool builtin_video_rom_offered(const hw_profile_t *p);
 
 // The family's declared options plus AppleTalk, the ImageWriter, the
 // addressing mode and the built-in video's ROM, in
@@ -229,7 +243,7 @@ static int scalar_options(const hw_profile_t *p, const config_option_decl_t **ou
     if (a && n < max)
         out[n++] = a;
     if (builtin_video_has_substitute(p) && n < max)
-        out[n++] = &k_video_rom_option;
+        out[n++] = builtin_video_rom_offered(p) ? &k_video_rom_option : &k_video_rom_option_generic;
     return n;
 }
 
@@ -681,12 +695,14 @@ static card_status_t nubus_status(const nubus_card_kind_t *k) {
     return k->substitute ? CARD_SUBSTITUTE : CARD_UNAVAILABLE;
 }
 
-// A NuBus card's substitute-ROM variant (v0.8.0's "(generic video ROM)" kinds): the card on the emulator's
-// generated declaration ROM even when Apple's is offered (#346).  Its id is
-// the card's with GENERIC_SUFFIX; a document naming it seats the card with
-// rom=substitute.  Only a card that has a substitute ROM has one.
+// A NuBus card that runs either Apple's declaration ROM or the emulator's
+// generated one is two entries, as in v0.8.0 (#346): "<card> (real video
+// ROM)", the card's own id, listed only while its ROM is offered; and
+// "<card> (generic video ROM)", id + GENERIC_SUFFIX, always.  A document
+// naming the generic one seats the card with rom=substitute.
 #define GENERIC_SUFFIX "_generic"
-#define GENERIC_LABEL  " \xc2\xb7 Substitute ROM"
+#define GENERIC_LABEL  " (generic video ROM)"
+#define REAL_LABEL     " (real video ROM)"
 
 static bool nubus_has_generic(const nubus_card_kind_t *k) {
     return k && k->requires_vrom && k->substitute;
@@ -731,7 +747,38 @@ static value_t monitor_ids_value(const char *const *ids, int n) {
     return vl_finish(&l);
 }
 
-// Every card kind that fits at least one socket of the model, once.
+// One NuBus card entry of the tree.  `variant_of` names the card a generic
+// variant runs (it needs no ROM file and drives the generated ROM's
+// monitors); NULL for the card itself.  Takes `fits`.
+static value_t nubus_card_entry(const nubus_card_kind_t *k, const char *id, const char *label, const char *variant_of,
+                                value_t fits) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "id", val_str(id));
+    val_map_put(b, "label", val_str(label));
+    val_map_put(b, "class", val_str(nubus_class(k)));
+    val_map_put(b, "fits", fits);
+    if (variant_of)
+        val_map_put(b, "variant_of", val_str(variant_of));
+    if (k->requires_vrom && !variant_of) {
+        value_map_builder_t *r = val_map_new();
+        val_map_put(r, "kind", val_str("vrom"));
+        val_map_put(r, "substitute", val_bool(k->substitute));
+        val_map_put(b, "rom", val_map_finish(r));
+    } else {
+        val_map_put(b, "rom", val_none());
+    }
+    put_status(b, variant_of ? CARD_OK : nubus_status(k), false);
+    const nubus_monitor_t *t = nubus_kind_monitors(k, variant_of != NULL);
+    const char *mons[MONITORS_MAX];
+    int nm = table_monitors(t, mons, MONITORS_MAX);
+    val_map_put(b, "monitors", monitor_ids_value(mons, nm));
+    val_map_put(b, "modes", card_modes_value(t));
+    val_map_put(b, "options", val_list(NULL, 0));
+    return val_map_finish(b);
+}
+
+// Every card kind that fits at least one socket of the model, once (a card
+// with both ROMs once per ROM).
 static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns) {
     vlist_t cards = {0};
     for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
@@ -751,52 +798,22 @@ static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns)
             value_free(&tmp);
             continue;
         }
-        value_map_builder_t *b = val_map_new();
-        val_map_put(b, "id", val_str((*k)->id));
-        val_map_put(b, "label", val_str((*k)->display_name));
-        val_map_put(b, "class", val_str(nubus_class(*k)));
-        val_map_put(b, "fits", vl_finish(&fits));
-        if ((*k)->requires_vrom) {
-            value_map_builder_t *r = val_map_new();
-            val_map_put(r, "kind", val_str("vrom"));
-            val_map_put(r, "substitute", val_bool((*k)->substitute));
-            val_map_put(b, "rom", val_map_finish(r));
-        } else {
-            val_map_put(b, "rom", val_none());
-        }
-        put_status(b, nubus_status(*k), false);
-        const char *mons[MONITORS_MAX];
-        int nm = table_monitors((*k)->monitors, mons, MONITORS_MAX);
-        val_map_put(b, "monitors", monitor_ids_value(mons, nm));
-        val_map_put(b, "modes", card_modes_value((*k)->monitors));
-        val_map_put(b, "options", val_list(NULL, 0));
+        value_t fits_v = vl_finish(&fits);
         if (!nubus_has_generic(*k)) {
-            vl_push(&cards, val_map_finish(b));
+            vl_push(&cards, nubus_card_entry(*k, (*k)->id, (*k)->display_name, NULL, fits_v));
             continue;
         }
-        // The same card on the generated ROM, always offered: it needs no
-        // file, and picks the substitute even with Apple's ROM stored
-        value_t card = val_map_finish(b);
-        const value_t *fits_v = value_map_get(&card, "fits");
-        value_t fits_copy = fits_v ? value_dup(fits_v) : val_list(NULL, 0);
-        vl_push(&cards, card);
-        char gid[64], glabel[128];
-        snprintf(gid, sizeof gid, "%s" GENERIC_SUFFIX, (*k)->id);
-        snprintf(glabel, sizeof glabel, "%s" GENERIC_LABEL, (*k)->display_name);
-        const nubus_monitor_t *gt = nubus_kind_monitors(*k, true);
-        value_map_builder_t *g = val_map_new();
-        val_map_put(g, "id", val_str(gid));
-        val_map_put(g, "label", val_str(glabel));
-        val_map_put(g, "class", val_str(nubus_class(*k)));
-        val_map_put(g, "fits", fits_copy);
-        val_map_put(g, "variant_of", val_str((*k)->id));
-        val_map_put(g, "rom", val_none());
-        put_status(g, CARD_OK, false);
-        nm = table_monitors(gt, mons, MONITORS_MAX);
-        val_map_put(g, "monitors", monitor_ids_value(mons, nm));
-        val_map_put(g, "modes", card_modes_value(gt));
-        val_map_put(g, "options", val_list(NULL, 0));
-        vl_push(&cards, val_map_finish(g));
+        // A card that runs either ROM is listed once per ROM (#346): on its
+        // real declaration ROM only while that is offered, on the generic
+        // (generated) one always
+        char id[64], label[128];
+        if (nubus_status(*k) == CARD_OK) {
+            snprintf(label, sizeof label, "%s" REAL_LABEL, (*k)->display_name);
+            vl_push(&cards, nubus_card_entry(*k, (*k)->id, label, NULL, value_dup(&fits_v)));
+        }
+        snprintf(id, sizeof id, "%s" GENERIC_SUFFIX, (*k)->id);
+        snprintf(label, sizeof label, "%s" GENERIC_LABEL, (*k)->display_name);
+        vl_push(&cards, nubus_card_entry(*k, id, label, (*k)->id, fits_v));
     }
     for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
         if ((*k)->variant_of)
@@ -896,6 +913,12 @@ static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p) {
 static bool builtin_video_has_substitute(const hw_profile_t *p) {
     const nubus_slot_decl_t *d = builtin_video_slot(p);
     return d && nubus_has_generic(nubus_card_find(d->builtin_card_id));
+}
+
+// Is the built-in video's real declaration ROM offered now?
+static bool builtin_video_rom_offered(const hw_profile_t *p) {
+    const nubus_slot_decl_t *d = builtin_video_slot(p);
+    return d && vrom_card_resolvable(d->builtin_card_id, NULL);
 }
 
 // The catalogue ids the built-in port takes, "none" left out.
@@ -1141,6 +1164,9 @@ static void doc_defaults(const hw_profile_t *p, doc_t *d) {
         doc_card_t *c = &d->cards[d->n_cards++];
         *c = (doc_card_t){.pci = socks[i].pci, .slot = socks[i].slot};
         copy_str(c->card, sizeof c->card, socks[i].default_card);
+        // A display card whose real ROM is not offered: its generic entry
+        const nubus_card_kind_t *nk = socks[i].pci ? NULL : nubus_card_find(socks[i].default_card);
+        c->generic = nubus_has_generic(nk) && nubus_status(nk) != CARD_OK;
     }
     d->cards_given = true;
     // Displays: one monitor, on the built-in video if there is one, else on
@@ -1352,6 +1378,10 @@ static value_t read_options(const hw_profile_t *p, const value_t *m, doc_t *d) {
                 at = j;
         if (at < 0)
             return bad("options: model '%s' has no option '%s'", p->id, k);
+        // A document asking for the real video ROM while it is not offered
+        // boots the generic one, as the card itself always did
+        if (strcmp(k, "video_rom") == 0 && strcmp(s, "real") == 0 && !option_has_value(decl[at], s))
+            s = "generic";
         if (!option_has_value(decl[at], s))
             return bad("options.%s: \"%s\" is not one of its values", k, s);
         copy_str(d->options[at].value, sizeof d->options[at].value, s);
@@ -1615,6 +1645,8 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
             const nubus_card_kind_t *nk = nubus_card_find(card);
             if (!nk && (nk = nubus_generic_base(card)) != NULL)
                 generic = true; // the card on its generated ROM
+            else if (nubus_has_generic(nk) && nubus_status(nk) != CARD_OK)
+                generic = true; // its real ROM is not offered: the generic one, as always
             const nubus_slot_decl_t *sd = NULL;
             for (const nubus_slot_decl_t *x = p->nubus_slots; x && x->slot; x++)
                 if (x->slot == socks[at].slot)
@@ -2228,9 +2260,9 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
     if (legacy->video_sense >= 0 && (err = override_sense(p, legacy->video_sense, out), val_is_error(&err)))
         goto done;
 
-    // The built-in video on its substitute ROM: its pseudo-slot's entry says so
+    // The built-in video on its generic ROM: its pseudo-slot's entry says so
     for (int i = 0; i < d->n_options; i++) {
-        if (strcmp(d->options[i].id, "video_rom") != 0 || strcmp(d->options[i].value, "substitute") != 0)
+        if (strcmp(d->options[i].id, "video_rom") != 0 || strcmp(d->options[i].value, "generic") != 0)
             continue;
         const nubus_slot_decl_t *bv = builtin_video_slot(p);
         slot_opts_t *e = bv ? entry_for(out, bv->slot) : NULL;

@@ -98,9 +98,10 @@ test('Monitor: the connected card gets the monitor and startup mode; built-in vi
   await uploadRom(page, 'iici-368cadfe.rom');
   await openNewMachine(page, 'iici');
 
-  // Seat an 8•24 (on its substitute ROM: no vROM is uploaded here).
+  // Seat an 8•24 on its generic video ROM (no vROM is uploaded here, so it
+  // is the only 8•24 entry).
   await page.getByTestId('cfg-add-card').click({ timeout: 30_000 });
-  await page.locator('#cfg-add-card').selectOption('mdc_8_24');
+  await page.locator('#cfg-add-card').selectOption('mdc_8_24_generic');
   const slot = await page.locator('#cfg-add-card-slot').inputValue();
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(page.locator(`.item-row[data-slot="${slot}"]`)).toHaveCount(1);
