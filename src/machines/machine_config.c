@@ -116,28 +116,16 @@ static const config_value_decl_t k_imagewriter_values[] = {
     {.id = NULL},
 };
 
-// The same plus the ImageWriter II with the LocalTalk Option card, on the
-// AppleTalk network: the machines with an AppleTalk option.
-static const config_value_decl_t k_imagewriter_values_localtalk[] = {
-    {.id = "none", .label = "None"},
-    {.id = "localtalk", .label = "ImageWriter II on AppleTalk"},
-    {.id = "imagewriter", .label = "ImageWriter"},
-    {.id = "imagewriter2", .label = "ImageWriter II"},
-    {.id = NULL},
-};
-
-// The dot-matrix printer (machine.imagewriter): every machine.  Default: an
-// ImageWriter II on the AppleTalk network, beside the LaserWriter (#345); a
-// serial printer goes on the port AppleTalk does not use
+// The dot-matrix printer on a serial port (machine.imagewriter): every
+// machine, default none.  It goes on the port AppleTalk does not use
 // (machine_part_imagewriter).
 static const config_option_decl_t k_imagewriter_option = {
     .id = "imagewriter",
     .label = "ImageWriter",
-    .detail = "On AppleTalk, choose AppleTalk ImageWriter in the Chooser. A serial printer goes on the port AppleTalk "
-              "does not use: the modem port while AppleTalk is active, else the printer port. Choose that port in "
-              "the Chooser.",
-    .values = k_imagewriter_values_localtalk,
-    .default_value = "localtalk",
+    .detail = "A printer on the serial port AppleTalk does not use: the modem port while AppleTalk is active, "
+              "else the printer port. Choose that port in the Chooser.",
+    .values = k_imagewriter_values,
+    .default_value = "none",
 };
 // The same on a machine with no AppleTalk option (the Lisa, whose AppleTalk
 // cable is always on Serial B): Serial A.

@@ -91,7 +91,7 @@ spaces.
 | `memory=` (or `ram=`) | `memory=32MB`, `memory=32768` | RAM size (MB with a unit, or KB as a number). |
 | `addressing=` | `addressing=32` | 24- or 32-bit addressing on 68K Macs that have the choice. Use `32` for Mac OS 7.6 and later, `24` for System 6 – 7.5. |
 | `appletalk=` | `appletalk=inactive` | Connect to the simulated AppleTalk network or not. |
-| `imagewriter=` | `imagewriter=imagewriter2` | Attach an ImageWriter II on AppleTalk (`localtalk`, the Mac default), a serial ImageWriter (`imagewriter`, `imagewriter2`) or none (`none`). |
+| `imagewriter=` | `imagewriter=imagewriter2` | Attach an ImageWriter (`imagewriter`, `imagewriter2`) or not (`none`). |
 | `monitor=` | `monitor=21in_rgb` | The monitor (`13in_rgb`, `12in_rgb`, `15in_portrait`, `21in_rgb`, …). |
 | `mode=` | `mode=1152x870x8` | Startup video mode: width × height × bits per pixel; `1152x870` alone picks the deepest mode at that size. |
 | `display=` | `display=nubus_9` | Which display device the monitor is plugged into, on a machine with several. |

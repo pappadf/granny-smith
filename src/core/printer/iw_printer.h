@@ -2,10 +2,11 @@
 // Copyright (c) pappadf
 
 // iw_printer.h
-// The virtual ImageWriter: one dot-matrix printer per machine,
-// `machine.imagewriter`, connected to a serial port (the guest's own
-// ImageWriter driver talks to it through the SCC) or, as an ImageWriter II
-// with the LocalTalk Option card, to the AppleTalk network (PAP).  Whatever
+// The virtual ImageWriters: the machine's dot-matrix printer,
+// `machine.imagewriter`, on a serial port (the guest's own ImageWriter
+// driver talks to it through the SCC), and, independent of it, the AppleTalk
+// ImageWriter, `appletalk.imagewriter`: an ImageWriter II with the LocalTalk
+// Option card, always on the network (PAP) like the LaserWriter.  Whatever
 // feeds it, the bytes go to one interpreter (iw_interp.h); a job ends when
 // the input goes quiet (serial), at the PAP EOF (AppleTalk) or on eject(),
 // and becomes one PDF handed to the platform's printer sink.
@@ -55,10 +56,15 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
 // one are titled "Print".
 void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn);
 
-// The machine configuration's printer, at a fresh boot: `model` powered on and
-// plugged into `conn`.  False when the combination is impossible (the
-// LocalTalk card on an ImageWriter).  On LocalTalk it takes the card over
-// from the printer of the machine it replaces.
+// The AppleTalk ImageWriter: an ImageWriter II with the LocalTalk Option
+// card, published on the network from now on.  With `checkpoint`, it
+// restores its state from it.  Built after the machine's AppleTalk
+// connection; the newest one takes the card over (build, swap, destroy).
+iw_printer_t *iw_printer_new_network(struct scheduler *scheduler, checkpoint_t *checkpoint);
+
+// The machine configuration's serial printer, at a fresh boot: `model` powered
+// on and plugged into `conn` (a serial port or none).  False when the
+// combination is impossible: LocalTalk is the AppleTalk ImageWriter's.
 bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn);
 
 void iw_printer_delete(iw_printer_t *p);
@@ -77,8 +83,8 @@ void iw_printer_end_job(iw_printer_t *p);
 // next top of form, so the next job starts on a new page.
 void iw_printer_end_network_job(iw_printer_t *p, bool abandoned);
 
-// The machine's printer while it is connected to LocalTalk, else NULL: the
-// PAP server's ImageWriter personality prints on it.
+// The AppleTalk ImageWriter, or NULL: the PAP server's ImageWriter
+// personality prints on it.
 iw_printer_t *iw_printer_localtalk(void);
 
 // Status for the PAP status word and the UI

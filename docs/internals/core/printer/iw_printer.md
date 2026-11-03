@@ -1,8 +1,11 @@
 # The virtual ImageWriter
 
 `machine.imagewriter` is a dot-matrix printer per machine: an ImageWriter or
-ImageWriter II that the guest's own printer driver prints to, over a serial
-port or (an ImageWriter II with the LocalTalk Option card) over AppleTalk.
+ImageWriter II that the guest's own printer driver prints to over a serial
+port. Independent of it, every machine with AppleTalk has a second one, the
+AppleTalk ImageWriter `appletalk.imagewriter`: an ImageWriter II with the
+LocalTalk Option card, always on the network beside the LaserWriter (#345).
+Both are the same model (`iw_printer.c`); only the front end differs.
 Each job becomes a PDF that the platform keeps: headless writes it to
 `--print-dir`, the browser opens it in the print viewer. The hardware it
 models is [reference/hardware/imagewriter.md](../../../reference/hardware/imagewriter.md).
@@ -149,8 +152,9 @@ again while the alert shows, then OK, prints the job. Deselected mid-job, the
 driver resumes on its own. Whether a real Macintosh behaves the same is not
 known.
 
-**LocalTalk.** `connection = "localtalk"` (ImageWriter II only) publishes
-the card: `appletalk_imagewriter.c` registers `localtalk_name:ImageWriter@*`
+**LocalTalk.** The AppleTalk ImageWriter (`iw_printer_new_network`,
+connection fixed at `localtalk`, model fixed at the ImageWriter II)
+publishes the card; the machine's serial printer refuses `localtalk`: `appletalk_imagewriter.c` registers `localtalk_name:ImageWriter@*`
 on its own PAP socket (9), separate from the LaserWriter's server
 (appletalk_printer.c), so both printers can be on the network together. It
 accepts one connection, pulls data with SendData (flow quantum 8, 10 ms of
@@ -200,19 +204,21 @@ At the end of a job the PDF goes to `printer_sink_deliver()`:
 
 ## 8. Object model
 
-The machine configuration's `imagewriter` option (`none`, `localtalk`,
-`imagewriter`, `imagewriter2`; the dialog's "ImageWriter" menu, every model)
-plugs the printer in at a fresh boot (`machine_part_imagewriter`,
-`iw_printer_install`). On a Mac the default is `localtalk`: an ImageWriter II
-with the LocalTalk Option card, published on the network like the
-LaserWriter, whatever the `appletalk` option says (the Chooser turns
-AppleTalk on). A serial printer goes on the port AppleTalk does not use --
-the modem port (channel A) while the `appletalk` option is active, else the
-printer port (channel B) -- and on the Lisa, Serial A (the Lisa has no
-`localtalk` value; default `none`). The machine being built takes the card
-over from the printer of the machine it replaces (build, swap, destroy), as
-a checkpoint restore does. A checkpoint restore keeps the checkpoint's
-printer instead; the object can change it at any time.
+The machine configuration's `imagewriter` option (`none`, `imagewriter`,
+`imagewriter2`; the dialog's "ImageWriter" menu, every model, default
+`none`) plugs the printer in at a fresh boot (`machine_part_imagewriter`,
+`iw_printer_install`): on the serial port AppleTalk does not use -- the
+modem port (channel A) while the `appletalk` option is active, else the
+printer port (channel B) -- and on the Lisa, Serial A. A checkpoint restore
+keeps the checkpoint's printer instead; the object can change it at any
+time. The option never touches the AppleTalk ImageWriter, which every
+machine with AppleTalk builds.
+
+`appletalk.imagewriter` has the same members; its `connection` is always
+`localtalk` and its `model` always `imagewriter2`. It is a part of the
+machine (rebuilt on each boot, saved in the checkpoint) attached under the
+process-lifetime `appletalk` node; the newest machine's takes the card over
+while the old machine is torn down (build, swap, destroy).
 
 `machine.imagewriter` (every machine with an SCC): `model`
 (`imagewriter` / `imagewriter2`), `connection`, `localtalk_name`, `status`,
@@ -238,7 +244,9 @@ the sheet in progress (planes deflated), the document so far (the PDF
 writer's buffer), the input queue and the capture. Its scheduler events
 (`imagewriter.process`, `.idle`, `.reply`) are registered at construction so
 a restore re-arms them. The connection is configuration: a restore plugs the
-printer back into its port or re-publishes the card.
+printer back into its port or re-publishes the card. The AppleTalk
+ImageWriter is its own part, `atalk_imagewriter`, right after it, with its
+events under `atalk_imagewriter.*`.
 
 ## 10. Tests
 
@@ -251,7 +259,7 @@ printer back into its port or re-publishes the card.
 | `appletalk-imagewriter` | the same over the LocalTalk card, with paper-out alert and recovery |
 | `imagewriter-handshake` | a scripted host fills the simulated 2 KB buffer through the SCC and waits on CTS each time the printer goes busy; nothing is lost |
 | `imagewriter-checkpoint` | a checkpoint mid-job restores to the same PDF |
-| `imagewriter-config` | the configuration's `imagewriter` option puts the chosen printer on AppleTalk (the Mac default) or into the port AppleTalk leaves free (Plus, Lisa) |
+| `imagewriter-config` | the configuration's `imagewriter` option plugs the chosen printer into the port AppleTalk leaves free (Plus, Lisa) |
 | e2e `imagewriter-print` | a job opens in the browser's print viewer |
 
 The goldens are CRCs (`last_pdf_crc`): every output is deterministic.

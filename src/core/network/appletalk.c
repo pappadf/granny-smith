@@ -826,8 +826,8 @@ atalk_network_t *appletalk_network_init(void) {
         LOG(0, "Error: out of memory creating the AppleTalk network");
         return NULL;
     }
-    // The ImageWriter's LocalTalk Option card: published only while the
-    // machine's printer is on LocalTalk
+    // The AppleTalk ImageWriter's PAP server: published by the printer, which
+    // each machine with AppleTalk builds (iw_printer_new_network)
     atalk_imagewriter_register();
     g_net.up = true;
     atalk_install_objects();

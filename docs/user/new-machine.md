@@ -23,13 +23,10 @@ and so on. [Supported machines](machines.md) lists what each model offers.
    simulated AppleTalk network, with a file server and a LaserWriter (see
    [Sharing files](sharing-files.md) and [Printing](printing.md)).
    **Inactive** leaves the Mac's printer port free for a serial printer.
-4. **ImageWriter** — **ImageWriter II on AppleTalk** (the default on a
-   Mac), **None**, **ImageWriter** or **ImageWriter II**. On AppleTalk the
-   printer is on the network beside the LaserWriter: choose **AppleTalk
-   ImageWriter** in the Chooser. A serial printer is connected to the serial
-   port AppleTalk does not use: the modem port while AppleTalk is active,
-   else the printer port. Choose that port in the Chooser. On a Lisa it is
-   Serial A (default None).
+4. **ImageWriter** — **None**, **ImageWriter** or **ImageWriter II**. The
+   printer is connected to the serial port AppleTalk does not use: the
+   modem port while AppleTalk is active, else the printer port. Choose that
+   port in the Chooser. On a Lisa it is Serial A.
 5. **Addressing** (68K Macs with a choice) — **24-bit** or **32-bit**, the
    Memory control panel's setting before the first boot. System 6 needs
    24-bit; Mac OS 7.6 and later need 32-bit. When the ROM is not 32-bit
