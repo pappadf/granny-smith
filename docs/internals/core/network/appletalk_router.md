@@ -234,16 +234,19 @@ random numbers is refused like any other.
 
 **Hidden tabs keep running.** Browsers pause `requestAnimationFrame` in hidden
 documents, workers included, which stopped the machine (and its router) the
-moment its tab was hidden. A 16 ms timer in the worker was no better: Chrome
-throttles a background tab's timers, worker timers included, so a hidden Mac
-crawled and answered another tab's lookups only when its tab was brought
-forward. So on `visibilitychange` -> hidden the main loop paces itself
-(`em_update_loop_timing`, `em_hidden_pace` in `em_main.c`): it re-enters at
-once (`EM_TIMING_SETIMMEDIATE`, a `scheduler.postTask` with no delay, which
-timer throttling does not touch) and each tick sleeps to its 16 ms deadline
-with `Atomics.wait` (`emscripten_thread_sleep`). Between ticks the worker still
-returns to its event loop, so proxied calls and the mesh's messages are
-served. Back to RAF when shown. Nothing is drawn meanwhile.
+moment its tab was hidden. Neither a 16 ms timer as the loop's timing nor
+Emscripten's SETIMMEDIATE (a `scheduler.postTask`) survives a background tab
+in Chrome 156 on macOS: postTask was starved (36 ticks in 26 s) while the same
+worker's `setInterval` fired on time. So on `visibilitychange` -> hidden,
+`em_update_loop_timing` pauses Emscripten's loop and starts a plain
+`setInterval` in the worker (`hidden_driver_js`); each wake
+(`em_hidden_wake`) runs the ticks the wall clock owes since the last one, each
+paced to 16 ms with `Atomics.wait` (`emscripten_thread_sleep`), within a budget
+of the measured gap between wakes (16 ms to 1 s). However often the browser
+lets the timer fire, the machine keeps time: with the timer forced to one wake
+a second it still ran 63 ticks and ~120 MIPS a second. Between wakes the
+worker serves its event loop (proxied calls, the mesh's messages), so a
+message waits at most one wake interval. served. Back to RAF when shown. Nothing is drawn meanwhile.
 
 **`appletalk.router.heartbeat = true`** (browser) prints, once a second of
 wall-clock time, a timestamped line on the Terminal: shown or HIDDEN, the
