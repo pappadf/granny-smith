@@ -24,7 +24,7 @@ endif
 # positional initializers stay valid").  WERROR=1 (set in CI) makes every
 # warning an error; it applies to compilation only, never to the link.
 CFLAGS_BASE := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
-               -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
+               -D_GNU_SOURCE -D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
 WERROR ?= 0
 ifeq ($(WERROR),1)
 CFLAGS_BASE += -Werror

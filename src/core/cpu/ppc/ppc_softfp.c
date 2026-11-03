@@ -600,6 +600,24 @@ static inline double sf_two_sum(double a, double b, double *t) {
     return s;
 }
 
+// The exact error of a product: x*y == p + e, p = RN(x*y), by Dekker's
+// TwoProduct with Veltkamp's split -- ordinary multiplies and adds, where
+// fma is a library call (wasm has no fused multiply-add: on Quake III's
+// demo the fma calls were an eighth of the FP helper's time).  Exact while
+// neither the split (x * 2^27 + 1) nor a partial product overflows and e
+// stays normal: both factors' biased exponents at most SF_SPLIT_EMAX, and
+// the callers' operands and p inside the envelope (2^-900 and up).
+#define SF_SPLIT_EMAX 1960u // 2^937: the split's 2^27 and a product of two halves stay below 2^1024
+static inline int sf_split_ok(uint64_t x) {
+    return ((uint32_t)(x >> 52) & 0x7FFu) <= SF_SPLIT_EMAX;
+}
+static inline double sf_two_prod_err(double x, double y, double p) {
+    const double c = 134217729.0; // 2^27 + 1
+    double cx = c * x, xh = cx - (cx - x), xl = x - xh;
+    double cy = c * y, yh = cy - (cy - y), yl = y - yh;
+    return ((xh * yh - p) + xh * yl + xl * yh) + xl * yl;
+}
+
 // Sign of (a*x + y) - r where r = RN(a*x + y): the ErrFma algorithm
 // (Boldo and Muller, "Exact and Approximated Error of the FMA", 2011),
 // which returns r2 + r3 equal to that error exactly with |r3| <= ulp(r2)/2,
@@ -641,9 +659,15 @@ static inline __attribute__((always_inline)) int sf_fast_arith(ppc_sf_op_t op, u
             return 0;
         double dc = sf_f64(c);
         r = da * dc;
-        // Two short significands multiply exactly (sf_short_product); the
-        // error needs an fma only otherwise (a library call on wasm).
-        es = sf_short_product(a, c) ? 0 : sf_sign_of(__builtin_fma(da, dc, -r));
+        // Two short significands multiply exactly (sf_short_product);
+        // otherwise the error's sign by TwoProduct, or an fma (a library
+        // call on wasm) where the split could overflow
+        if (sf_short_product(a, c))
+            es = 0;
+        else if (sf_split_ok(a) && sf_split_ok(c) && sf_fast_ok(sf_u64(r)))
+            es = sf_sign_of(sf_two_prod_err(da, dc, r));
+        else
+            es = sf_sign_of(__builtin_fma(da, dc, -r));
         break;
     }
     case PPC_SF_DIV: {
@@ -651,8 +675,16 @@ static inline __attribute__((always_inline)) int sf_fast_arith(ppc_sf_op_t op, u
             return 0;
         double db = sf_f64(b);
         r = da / db;
-        // a - r*b is exact; exact - r = (a - r*b) / b.
-        es = sf_sign_of(__builtin_fma(-r, db, da)) * (db < 0 ? -1 : 1);
+        // a - r*b is exact; exact - r = (a - r*b) / b.  By TwoProduct:
+        // r*b == p + e, and a - p is exact (p is RN(r*b) with r = RN(a/b),
+        // within a factor of two of a: Sterbenz), so the sign of
+        // (a - p) - e is a comparison -- or an fma where the split could
+        // overflow
+        if (sf_split_ok(sf_u64(r)) && sf_split_ok(b) && sf_fast_ok(sf_u64(r))) {
+            double p = r * db, e = sf_two_prod_err(r, db, p), d = da - p;
+            es = ((d > e) - (d < e)) * (db < 0 ? -1 : 1);
+        } else
+            es = sf_sign_of(__builtin_fma(-r, db, da)) * (db < 0 ? -1 : 1);
         break;
     }
     default: { // the madd family: one rounding of a*c +/- b, negated after
@@ -1013,20 +1045,27 @@ int ppc_sf_fres(uint64_t b, uint32_t *fpscr, uint64_t *frt) {
 }
 
 // Integer square root: floor(sqrt(a)) for a < 2^126 (the frsqrte scaling
-// keeps the root's MSB at bit 62).  Classic bit-pair method, maintaining
-// rem = prefix(a) - root^2.
+// keeps the root's MSB at bit 62).  A seed from the host's sqrt, taken
+// above the root (the double conversions and the sqrt are each within
+// 2^-52 relative, under 2^12 absolute at the root's size), then integer
+// Newton steps from above, each one 128-by-64 division: from above the
+// sequence never passes the root and the first step that fails to
+// descend is at it.  Two or three divisions, against the 63 iterations
+// of the bit-pair method this replaced.  Its value is unchanged: a native
+// differential against the bit-pair method agreed on 60 M inputs (the
+// frsqrte shape, random widths, squares and their neighbours), and the
+// ppc_fpu suite's corpus digest is the same.
 static uint64_t sf_isqrt128(unsigned __int128 a) {
-    unsigned __int128 rem = 0, root = 0;
-    for (int i = 62; i >= 0; i--) {
-        rem = (rem << 2) | ((a >> (2 * i)) & 3u);
-        unsigned __int128 cand = (root << 2) | 1u;
-        root <<= 1;
-        if (rem >= cand) {
-            rem -= cand;
-            root |= 1u;
-        }
+    if (a == 0)
+        return 0;
+    double d = (double)(uint64_t)(a >> 64) * 0x1p64 + (double)(uint64_t)a;
+    uint64_t s = (uint64_t)__builtin_sqrt(d) + 4096u;
+    for (;;) {
+        uint64_t t = (uint64_t)((a / s + s) >> 1);
+        if (t >= s)
+            return s;
+        s = t;
     }
-    return (uint64_t)root;
 }
 
 // frsqrte (604; PEM frsqrtex page): double-precision reciprocal square

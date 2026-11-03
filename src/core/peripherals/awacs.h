@@ -26,8 +26,10 @@
 //   5-7  Screamer extensions (stored, not interpreted)
 #define AWACS_CODEC_REGS 8
 
-// Register-1 bits this model interprets.
-#define AWACS_R1_SPEAKER_MUTE 0x0080u
+// Register-1 bits this model interprets: the output C (speaker) and output
+// A (headphone / line) mutes.
+#define AWACS_R1_SPEAKER_MUTE   0x0080u
+#define AWACS_R1_HEADPHONE_MUTE 0x0200u
 
 // D/A attenuation ladder: 4-bit code, 0 = loudest, -1.5 dB per step, as
 // x65536 gains (the ASCO 2300 ladder — identical to Singer's; the chime
@@ -37,5 +39,11 @@ extern const uint32_t awacs_atten_x65536[16];
 // The speaker output path ("volume C", register 4: left code in bits
 // 9:6, right in 3:0) plus the register-1 speaker mute, as x65536 gains.
 void awacs_speaker_gains(const uint16_t regs[AWACS_CODEC_REGS], uint32_t *gl_x65536, uint32_t *gr_x65536, bool *mute);
+// The output the listener hears: output C while it is unmuted, otherwise
+// output A ("volume A", register 2, the same field layout) -- the headphone
+// and line path, which is the only one some machines drive (the beige G3's
+// codec passes sound through output A to a TDA7433 that feeds its speaker,
+// and its driver keeps output C muted).  `mute` is set when neither is live.
+void awacs_output_gains(const uint16_t regs[AWACS_CODEC_REGS], uint32_t *gl_x65536, uint32_t *gr_x65536, bool *mute);
 
 #endif // GS_PERIPHERALS_AWACS_H

@@ -67,6 +67,7 @@ tests/e2e/
 │   ├── perf-predecode.spec.ts           # Switch vs predecoded executor, alternated in one session (tracked numbers)
 │   ├── perf-quake3-gpu/perf-quake3-gpu.spec.ts # Quake III's demo on the host GPU (WebGPU + JIT), timed; real GPU only (opt-in: GS_Q3_GPU=1; README.md beside it is the runbook)
 │   ├── qcow2-import.spec.ts             # HD= of a QCOW2 image (out-of-order clusters, a deflated one) is staged, converted to a UDIF of its guest disk, staging cleared
+│   ├── qd3d-thread.spec.ts              # QuickDraw 3D card's renderer on a Web Worker; frame lands on completion
 │   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-lisa-chips.spec.ts    # Two Lisa ROM chips upload as one ROM; a lone chip is refused

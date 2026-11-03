@@ -134,6 +134,10 @@
       "secs": 94,
       "max_test": 94
     },
+    "web2-specs/qd3d-thread.spec.ts": {
+      "secs": 40,
+      "max_test": 40
+    },
     "web2-specs/rom-upload-identity.spec.ts": {
       "secs": 5,
       "max_test": 5

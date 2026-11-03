@@ -185,6 +185,20 @@ describe('fd media descriptor', () => {
     for (const size of [0, 409601, 20971520])
       expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(false);
   });
+
+  // A MOOF (1.3 MB for an 800K disk) is no floppy size: the core's image
+  // layer, which decodes it, says what it opens as.
+  it('accepts a file of another size the image layer opens as a floppy', async () => {
+    const core = (fd: boolean): GsEval =>
+      (async (path: string) =>
+        path === 'files.path_size'
+          ? 1296302
+          : path === 'files.identify_floppy'
+            ? fd
+            : '') as unknown as GsEval;
+    expect((await MEDIA_TYPES.fd.validate('/x.moof', core(true))).valid).toBe(true);
+    expect((await MEDIA_TYPES.fd.validate('/x.moof', core(false))).valid).toBe(false);
+  });
 });
 
 // catalog.proms.identify payloads (src/core/memory/prom.c).  A structurally

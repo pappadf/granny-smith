@@ -215,7 +215,7 @@ typedef struct gos_i2c {
     uint8_t spd[GOS_DIMMS][GOS_SPD_SIZE]; // 7-bit $50-$52
     uint8_t perch[GOS_PERCH_SIZE]; // 7-bit $53
     bool perch_present;
-    uint8_t tda7433[8]; // tone/volume chip at 8-bit $8A (write sink)
+    uint8_t tda7433[8]; // the TDA7433 audio processor's registers (8-bit $8A): see gos_tda7433_gains
     uint8_t ptr; // current EEPROM byte pointer (last subaddress)
 } gos_i2c_t;
 
@@ -341,6 +341,9 @@ void gos_i2c_init(config_t *cfg);
 // The Cuda I2C transaction hooks (av_cuda_attach_i2c).
 int gos_i2c_read(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
 bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len);
+// The TDA7433's volume and front attenuators as the stage after the codec
+// (davbus_host_t.post_gains): applied to the codec's output gains and mute.
+void gos_tda7433_gains(void *ctx, uint32_t *gl_x65536, uint32_t *gr_x65536, bool *mute);
 
 // === gossamer_ata.c =========================================================
 
