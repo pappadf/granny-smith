@@ -687,6 +687,7 @@ status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer) {
     if (lba64 >= storage->block_count)
         return STATUS_E_RANGE;
     uint32_t lba = (uint32_t)lba64;
+    int rc;
 
     if (bitmap_test(storage->bitmap, lba)) {
         // Modified block — read from delta
@@ -694,6 +695,9 @@ status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer) {
         off_t pos = delta_pos(&l, lba);
         if (pos < 0 || fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
             fread(buffer, storage->block_size, 1, storage->delta_fp) != 1) {
+            int e = errno;
+            LOG_ALERT("disk read failed: block %u of the delta %s: %s", lba, storage->delta_path,
+                      pos < 0 ? "no slot" : strerror(e));
             memset(buffer, 0, storage->block_size);
             return STATUS_E_IO;
         }
@@ -705,7 +709,9 @@ status_t storage_read_block(storage_t *storage, uint64_t offset, void *buffer) {
         uint64_t at = (uint64_t)block_pos(0, lba, storage->block_size);
         if (at + storage->block_size > source_size(storage->base)) {
             memset(buffer, 0, storage->block_size);
-        } else if (source_read_exact(storage->base, at, buffer, storage->block_size) != 0) {
+        } else if ((rc = source_read_exact(storage->base, at, buffer, storage->block_size)) != 0) {
+            LOG_ALERT("disk read failed: block %u of the image %s: %s", lba, source_key(storage->base),
+                      strerror(rc < 0 ? -rc : EIO));
             memset(buffer, 0, storage->block_size);
             return STATUS_E_IO;
         }
@@ -769,8 +775,10 @@ status_t storage_write_block(storage_t *storage, uint64_t offset, const void *bu
     // An export in flight reads the delta through its own handle from a
     // bitmap it copied: a write now would tear its copy.  Refused, as a
     // drive being copied refuses.
-    if (storage->export_locks > 0)
+    if (storage->export_locks > 0) {
+        LOG_ALERT("disk write refused: block %u of %s while the drive is being exported", lba, storage->delta_path);
         return STATUS_ERROR;
+    }
 
     // Where the block goes.  The first write to any block of a cluster
     // gives the cluster the next slot at the end of the data area; a
@@ -791,16 +799,23 @@ status_t storage_write_block(storage_t *storage, uint64_t offset, const void *bu
         uint8_t old[STORAGE_MAX_BLOCK_SIZE];
         if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
             fread(old, storage->block_size, 1, storage->delta_fp) != 1) {
+            LOG_ALERT("disk write failed: cannot read block %u's preimage from the delta %s: %s", lba,
+                      storage->delta_path, strerror(errno));
             return STATUS_E_IO;
         }
         status_t rc = journal_append(storage, lba, old);
-        if (rc != STATUS_OK)
+        if (rc != STATUS_OK) {
+            LOG_ALERT("disk write failed: cannot journal block %u of %s (status %d)", lba, storage->delta_path, rc);
             return rc;
+        }
     }
 
     // Write new data to delta
-    if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 || fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
+    if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
+        fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1) {
+        LOG_ALERT("disk write failed: block %u to the delta %s: %s", lba, storage->delta_path, strerror(errno));
         return STATUS_E_IO;
+    }
 
     // Update the bitmap in memory only.  The delta's on-disk bitmap changes
     // at the next commit, and delta_flush_bitmaps flushes the block data

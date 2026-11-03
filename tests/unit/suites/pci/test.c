@@ -98,6 +98,11 @@ const pci_card_kind_t rage128_webgpu_kind = {.id = "rage128_webgpu",
                                              .attach = PCI_ATTACH_PCI,
                                              .requires_prom = true,
                                              .card_class = "display"};
+// The QuickDraw 3D Accelerator: a ROM-less co-processor.
+const pci_card_kind_t qd3d_kind = {.id = "qd3d",
+                                   .display_name = "Apple QuickDraw 3D Accelerator Card",
+                                   .attach = PCI_ATTACH_PCI,
+                                   .card_class = "other"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
@@ -144,6 +149,10 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
     g_slow_writes++;
     g_slow_last_addr = addr;
     g_slow_last_value = value;
+}
+void memory_write_bytes_slow(uint32_t addr, const uint8_t *bytes, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(addr + i, bytes[i]);
 }
 
 // The object model is exercised by the integration suites, not here.

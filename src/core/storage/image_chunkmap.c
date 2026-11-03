@@ -97,8 +97,11 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
     cm_fetch_t *f = ctx;
     const cm_run_t *r = f->run;
     uint8_t *in = malloc(r->in_len ? (size_t)r->in_len : 1);
-    if (!in)
+    if (!in) {
+        LOG_ALERT("%s image: out of memory for a %llu-byte compressed chunk (%s)", f->m->what,
+                  (unsigned long long)r->in_len, f->m->key);
         return -ENOMEM;
+    }
     int rc = r->in_len ? source_read_exact(f->m->data, r->in_off, in, (size_t)r->in_len) : 0;
     if (rc == 0) {
         if (r->kind == RUN_NDIF) {
@@ -120,6 +123,12 @@ static int64_t cm_fetch(void *ctx, uint64_t idx, uint8_t *buf, size_t cap) {
             LOG(1, "%s chunk at %llu (type %#x) failed to decode: %d", f->m->what, (unsigned long long)r->out_off,
                 r->type, rc);
     }
+    // Either the compressed bytes could not be read or they did not decode:
+    // the guest sees a disk error for every sector of the run
+    if (rc != 0)
+        LOG_ALERT("%s image: chunk at byte %llu unreadable (compressed at %llu, %llu bytes): error %d (%s)", f->m->what,
+                  (unsigned long long)r->out_off, (unsigned long long)r->in_off, (unsigned long long)r->in_len, rc,
+                  f->m->key);
     free(in);
     return rc != 0 ? (rc < 0 ? rc : -EIO) : (int64_t)r->out_len;
 }

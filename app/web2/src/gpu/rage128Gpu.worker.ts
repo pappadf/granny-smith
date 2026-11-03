@@ -31,6 +31,7 @@ import {
   C_STAT_FLUSHES,
   C_STAT_PIPELINES,
   C_STAT_READBACKS,
+  C_PRESENTS_DONE,
   STATUS_DETACHED,
   STATUS_ATTACHED,
   STATUS_LOST,
@@ -49,6 +50,7 @@ import {
   R_MODE,
   R_FENCE,
   R_SHUTDOWN,
+  R_CURSOR,
   ROLE_DEPTH,
   DH_COLOR_ID,
   DH_DEPTH_ID,
@@ -93,7 +95,8 @@ interface DetachMsg {
 interface DebugMsg {
   type: 'debug';
 }
-type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg;
+type StatsMsg = { type: 'stats' };
+type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg | StatsMsg;
 
 // --- device state -------------------------------------------------------
 
@@ -110,6 +113,9 @@ let presentUniform: GPUBuffer | null = null;
 let restorePipeline: GPURenderPipeline | null = null;
 let restoreLayout: GPUBindGroupLayout | null = null;
 let lutTexture: GPUTexture | null = null;
+let cursorTexture: GPUTexture | null = null;
+// The hardware cursor: {on, x, y} as the present's uniform takes them.
+const cursorWords = new Uint32Array(3);
 let dummyAtlas: GPUTexture | null = null;
 let uniformBuffer: GPUBuffer | null = null;
 let vertexBuffer: GPUBuffer | null = null;
@@ -134,6 +140,28 @@ let lost = false;
 let loopRunning = false;
 let readbackPending = false;
 let lastKind = -1;
+
+// What this worker did since the page last asked (a 'stats' message; the
+// page's perf monitor and diagnostics print it): records and bytes
+// consumed, time spent consuming, readbacks and their latency, presents
+// and how far the GPU's completion of them lags.
+const st = {
+  t0: performance.now(),
+  records: 0,
+  bytes: 0,
+  drains: 0,
+  drainMs: 0,
+  drainMaxMs: 0,
+  readbacks: 0,
+  readbackMs: 0,
+  readbackMaxMs: 0,
+  presents: 0,
+  presentLagMaxMs: 0,
+  draws: 0,
+  idleWaits: 0,
+};
+let drainingSince = 0; // performance.now() the current drain began (0: idle)
+let readbackSince = 0; // ...the readback in flight began
 
 // --- GPU-side resources --------------------------------------------------
 
@@ -304,6 +332,7 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'uint' } },
     ],
   });
   presentPipeline = d.createRenderPipeline({
@@ -318,7 +347,7 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
     primitive: { topology: 'triangle-list' },
   });
   presentUniform = d.createBuffer({
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   const restoreModule = d.createShaderModule({
@@ -344,6 +373,12 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
   const identity = new Uint8Array(3 * 256);
   for (let c = 0; c < 3; c++) for (let i = 0; i < 256; i++) identity[c * 256 + i] = i;
   d.queue.writeTexture({ texture: lutTexture }, identity, { bytesPerRow: 256 }, [256, 3]);
+  cursorTexture = d.createTexture({
+    size: [64, 64],
+    format: 'r32uint',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  cursorWords.fill(0);
   dummyAtlas = d.createTexture({
     size: [1, 1],
     format: 'rg32uint',
@@ -750,6 +785,7 @@ function onDraw(hdrOff: number): void {
   uniformCursor++;
   vertexCursor += vertexBytes;
   stat(C_STAT_DRAWS, 1);
+  st.draws++;
 }
 
 // The overlay is shown by the page only after the first present that
@@ -766,15 +802,39 @@ function onMode(engaged: number, w: number, h: number): void {
   overlayH = h;
 }
 
+// PRESENT records seen; PRESENTS_DONE follows them as the GPU completes
+// each one's work, which the translator paces itself by.
+let presentsSeen = 0;
+
+function presentDone(): void {
+  const n = ++presentsSeen;
+  const t0 = performance.now();
+  st.presents++;
+  void device!.queue.onSubmittedWorkDone().then(() => {
+    const lag = performance.now() - t0;
+    if (lag > st.presentLagMaxMs) st.presentLagMaxMs = lag;
+    if (!ctrl) return;
+    Atomics.store(ctrl, C_PRESENTS_DONE, n | 0);
+    Atomics.notify(ctrl, C_PRESENTS_DONE);
+  });
+}
+
 function onPresent(id: number, w: number, h: number, rb: number, gb: number, bb: number): void {
   const s = surfaces.get(id);
-  if (!s?.color || !canvas || !context) return;
+  if (!s?.color || !canvas || !context) {
+    presentDone();
+    return;
+  }
   endPass();
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
   }
-  device!.queue.writeBuffer(presentUniform!, 0, new Uint32Array([rb, gb, bb, 0]));
+  device!.queue.writeBuffer(
+    presentUniform!,
+    0,
+    new Uint32Array([rb, gb, bb, 0, cursorWords[0], cursorWords[1], cursorWords[2], 0]),
+  );
   const enc = ensureEncoder();
   const p = enc.beginRenderPass({
     colorAttachments: [
@@ -795,6 +855,7 @@ function onPresent(id: number, w: number, h: number, rb: number, gb: number, bb:
         { binding: 0, resource: s.color.createView() },
         { binding: 1, resource: lutTexture!.createView() },
         { binding: 2, resource: { buffer: presentUniform! } },
+        { binding: 3, resource: cursorTexture!.createView() },
       ],
     }),
   );
@@ -802,11 +863,27 @@ function onPresent(id: number, w: number, h: number, rb: number, gb: number, bb:
   p.end();
   usedInEncoder.add(`s${id}`);
   flush();
+  presentDone();
   stat(C_STAT_FRAMES, 1);
   if (showAfterPresent) {
     showAfterPresent = false;
     postMessage({ type: 'mode', engaged: true, w: overlayW || w, h: overlayH || h });
   }
+}
+
+// The hardware cursor, composited by the present: where it shows, and
+// its map (entries as r128_cursor_image makes them) when it changed.
+function onCursor(p: number, payload: number): void {
+  cursorWords[0] = u32![p];
+  cursorWords[1] = u32![p + 1];
+  cursorWords[2] = u32![p + 2];
+  if (u32![p + 3])
+    device!.queue.writeTexture(
+      { texture: cursorTexture! },
+      heap(),
+      { offset: payload, bytesPerRow: 256 },
+      [64, 64],
+    );
 }
 
 function onLut(payload: number): void {
@@ -851,8 +928,14 @@ async function onReadback(seq: number, id: number, y0: number, y1: number): Prom
     }
     d.queue.submit([enc.finish()]);
     readbackPending = true;
+    readbackSince = performance.now();
     await staging.mapAsync(GPUMapMode.READ);
     readbackPending = false;
+    const rbMs = performance.now() - readbackSince;
+    readbackSince = 0;
+    st.readbacks++;
+    st.readbackMs += rbMs;
+    if (rbMs > st.readbackMaxMs) st.readbackMaxMs = rbMs;
     const src = new Uint8Array(staging.getMappedRange());
     const out = u8!;
     if (s.color) {
@@ -902,6 +985,20 @@ function advanceTail(): void {
 }
 
 async function drain(head: number): Promise<boolean> {
+  const t0 = performance.now();
+  drainingSince = t0;
+  st.drains++;
+  try {
+    return await drainRecords(head);
+  } finally {
+    const ms = performance.now() - t0;
+    drainingSince = 0;
+    st.drainMs += ms;
+    if (ms > st.drainMaxMs) st.drainMaxMs = ms;
+  }
+}
+
+async function drainRecords(head: number): Promise<boolean> {
   const mask = ringSize - 1;
   while (consumed !== head) {
     const off = consumed & mask;
@@ -914,6 +1011,8 @@ async function drain(head: number): Promise<boolean> {
     }
     const p = (at >> 2) + 2;
     lastKind = kind;
+    st.records++;
+    st.bytes += len;
     switch (kind) {
       case R_PAD:
         break;
@@ -961,6 +1060,9 @@ async function drain(head: number): Promise<boolean> {
       case R_MODE:
         onMode(u32![p], u32![p + 1], u32![p + 2]);
         break;
+      case R_CURSOR:
+        onCursor(p, at + 24);
+        break;
       case R_FENCE:
         flush();
         ack(u32![p]);
@@ -993,6 +1095,7 @@ async function loop(): Promise<void> {
     while (attached && !lost) {
       const head = Atomics.load(ctrl!, C_HEAD) >>> 0;
       if (head === consumed) {
+        st.idleWaits++;
         const r = Atomics.waitAsync(ctrl!, C_HEAD, head | 0, 1000);
         if (r.async) await r.value;
         continue;
@@ -1031,6 +1134,7 @@ function attach(memory: WebAssembly.Memory | SharedArrayBuffer, ctrlPtr: number)
   rbBase = ctrlBase + u32[(ctrlPtr >> 2) + C_RB_OFF];
   rbSize = u32[(ctrlPtr >> 2) + C_RB_SIZE];
   consumed = Atomics.load(ctrl, C_HEAD) >>> 0;
+  presentsSeen = Atomics.load(ctrl, C_PRESENTS_DONE) >>> 0;
   uniformCursor = 0;
   vertexCursor = 0;
   freeEverything();
@@ -1067,6 +1171,41 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
     });
   } else if (msg.type === 'detach') {
     if (ctrl && ctrlBase === msg.ctrl) detach();
+  } else if (msg.type === 'stats') {
+    const now = performance.now();
+    postMessage({
+      type: 'stats',
+      seconds: (now - st.t0) / 1000,
+      ...st,
+      t0: undefined,
+      attached,
+      lost,
+      loopRunning,
+      readbackPending,
+      readbackForMs: readbackSince ? now - readbackSince : 0,
+      drainingForMs: drainingSince ? now - drainingSince : 0,
+      consumed: consumed >>> 0,
+      head: ctrl ? Atomics.load(ctrl, C_HEAD) >>> 0 : -1,
+      lastKind,
+      surfaces: surfaces.size,
+      atlases: atlases.size,
+      pipelines: pipelines.size,
+    });
+    Object.assign(st, {
+      t0: now,
+      records: 0,
+      bytes: 0,
+      drains: 0,
+      drainMs: 0,
+      drainMaxMs: 0,
+      readbacks: 0,
+      readbackMs: 0,
+      readbackMaxMs: 0,
+      presents: 0,
+      presentLagMaxMs: 0,
+      draws: 0,
+      idleWaits: 0,
+    });
   } else if (msg.type === 'debug') {
     postMessage({
       type: 'debug',

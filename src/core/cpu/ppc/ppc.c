@@ -880,6 +880,7 @@ bool ppc_is_supervisor(ppc_t *restrict p) {
 // caches and BHT disabled; 750UM Table 2-19 — MSR[IP], HID0 = L2CR = 0,
 // DEC all-ones).  The cpu_model and the profile's identity survive.
 void ppc_reset(ppc_t *p) {
+    memory_lines_drop_all(&p->dlines); // a reset invalidates the cache
     struct object *keep_cpu = p->cpu_object;
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
@@ -1030,6 +1031,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         memset(p, 0, sizeof(ppc_t));
         system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
         p->tick_mul = p->tick_div = 0;
+        g_mem_lines = p->dlines.count ? &p->dlines : NULL;
         // The MMU caches are derived state and refill lazily; the T-bit
         // mask is derived from the restored SRs.
         ppc_recompute_sr_t_mask(p);
@@ -1072,6 +1074,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    memory_lines_drop_all(&p->dlines);
     // The decrementer event carries `p`; only the live re-arm path removed it.
     scheduler_forget_source(p->scheduler, p);
     if (p->fpu_object) {
@@ -1110,6 +1113,7 @@ void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
 
 static void ppc_if_run_sprint(void *ctx, uint32_t *instructions) {
     ppc_run((ppc_t *)ctx, instructions);
+    memory_lines_age();
 }
 
 // HID0 power-mode bits (750UM Table 2-4).  Exactly one is meant to be set

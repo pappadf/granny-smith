@@ -8,7 +8,8 @@
 // ATP and ASP you have to stand in for all of them.
 //
 // afp_handle_command records what reached it, so ASP tests can see which
-// session and opcode a command was dispatched as.
+// session and opcode a command was dispatched as, and defers it while
+// g_afp_defer is set.
 
 #include "stub_upper.h"
 
@@ -30,7 +31,10 @@ static int g_link_dummy;
 //
 // atalk_server_init registers an ASP client that records what reached it, so
 // ASP tests can see which session and opcode a command was dispatched as.
+// While g_afp_defer is set it answers ASP_RESULT_DEFERRED, as a command
+// waiting for a remote volume's data does.
 int g_afp_calls;
+bool g_afp_defer;
 uint8_t g_afp_last_opcode;
 uint16_t g_afp_last_session;
 int g_asp_closes;
@@ -42,7 +46,7 @@ static uint32_t rec_command(void *ctx, uint16_t session_ref, uint8_t opcode, con
     g_afp_last_opcode = opcode;
     g_afp_last_session = session_ref;
     *out_len = 0;
-    return 0;
+    return g_afp_defer ? ASP_RESULT_DEFERRED : 0;
 }
 static void rec_close(void *ctx, uint16_t session_ref) {
     (void)ctx, (void)session_ref;
@@ -210,6 +214,9 @@ void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 }
 adsp_host_t *atalk_adsp_init(void) {
     return (adsp_host_t *)(void *)&g_link_dummy;
+}
+void afp_remote_install_objects(struct object *p) {
+    (void)p;
 }
 void atalk_adsp_install_objects(struct object *p) {
     (void)p;

@@ -4,7 +4,8 @@
 
 1. [Overview](#1-overview)
 2. [Register file](#2-register-file) — what this page adds to the Rage II page's map: GUI_STAT's FIFO
-   count, the DP_SET_GUI_ENGINE2 shortcut, HOST_CNTL, the BAR2 register aperture
+   count, the DP_SET_GUI_ENGINE2 shortcut, HOST_CNTL, the BAR2 register aperture, DST_X_Y and
+   DST_WIDTH_HEIGHT
 3. [Behaviour](#3-behaviour) — colour host data
 4. [Programming model](#4-programming-model) — what ATI's Mac OS accelerator does with it
 5. [Quirks & errata](#5-quirks--errata)
@@ -96,6 +97,16 @@ little-endian register face. ATI's driver depends on it (§4). It writes block 0
 `+$E00`, with HOST_BIG_ENDIAN_EN set and the pixels in big-endian order. Pixels come out in order
 only if no second byte swap happens in the aperture [5].
 
+### 2.5 DST_X_Y and DST_WIDTH_HEIGHT (block 0, dwords `$BA`, `$BB`)
+
+DST_Y_X and DST_HEIGHT_WIDTH ([mach64.md](mach64.md) §2.9) with the halves the other way round:
+DST_X_Y is (Y << 16) | X and DST_WIDTH_HEIGHT is (HEIGHT << 16) | WIDTH, by the family's rule
+that the first-named field is the low halfword. A DST_WIDTH_HEIGHT write starts the operation,
+as a DST_HEIGHT_WIDTH write does. The names and offsets (`$2E8`, `$2EC`) are those of the
+mach64GT generation's later parts in the Linux mach64 header [6]; the field order is the
+driver's traffic [5]: `$0044000D` then `$004100D1` for a 209 x 65 copy to (13, 68), the content
+of a Finder window scrolled by 16 lines, its source at SRC_Y_X `$000D0054` = (13, 84).
+
 ## 3. Behaviour
 
 ### 3.1 Colour host data
@@ -118,9 +129,15 @@ installs) is observed to [5]:
   DP_SRC or DP_MIX for them;
 - draw offscreen copies and dialog contents as colour host-data operations at 15 bpp with
   HOST_BIG_ENDIAN_EN set;
-- stream that host data with `stmw` (eight words a store), each store followed by `dcbst`. The
-  stores go not to the BAR0 register alias but to the register aperture BAR2, at `+$E00`: block
-  0's HOST_DATA through the upper copy of the two register blocks (§2.4).
+- stream that host data a cache line at a time: one `dcbz` of a HOST_DATA line when the
+  transfer starts, then for every line `stmw` eight words into it, `dcbst` it and `sync`. The
+  aperture is mapped cacheable for this, and a `dcbst` leaves the line valid, so every line
+  after the first is a cache hit and the card sees one 32-byte burst per line, never the
+  `dcbz`'s zeros. The stores go not to the BAR0 register alias but to the
+  register aperture BAR2, at `+$E00`: block 0's HOST_DATA through the upper copy of the two
+  register blocks (§2.4);
+- start its screen-to-screen blits, a window's scroll among them, through DST_X_Y and
+  DST_WIDTH_HEIGHT (§2.5).
 
 ## 5. Quirks & errata
 
@@ -129,6 +146,12 @@ installs) is observed to [5]:
 - **HOST_DATA through BAR2's upper half.** A model that decodes only BAR2's lower 2 KB drops
   every pixel ATI's driver streams. The symptom is alerts, buttons and menu-bar text drawn as
   blank boxes.
+- **The `dcbz` before a host-data transfer.** On the hardware it only allocates the line in the
+  data cache. A model without a data cache that sends its zeros to HOST_DATA feeds the
+  operation eight extra words at the start: every later pixel lands 32 bytes on, and a window's
+  icons and labels come out 16 pixels to the right at 15 bpp, with a black bar at the left edge.
+- **DST_WIDTH_HEIGHT starts blits.** A model without it drops the copy of every scroll: the old
+  content stays where it was and only the newly exposed strips are drawn, over it.
 - **The shortcut registers are write-only and stateful.** Their effects persist in the
   registers they load; DP_SRC read back after a DP_SET_GUI_ENGINE2 write shows the loaded
   sources.
@@ -164,3 +187,7 @@ installs) is observed to [5]:
    extensions. Observed: register traffic to the on-board RAGE PRO at the desktop and while an
    alert is drawn; the accelerator's code at the host-data path (its `stmw`/`dcbst` loop and the
    BAR2 base it writes through); and the device's configuration space, read through Grackle.
+   Also: the instruction sequence at the host-data path (`dcbz`, `stmw`, `dcbst`, `sync`), and
+   the registers written while a Finder window is opened, resized and scrolled.
+6. Linux kernel, `include/video/mach64.h` — DST_X_Y (`0x02E8`, dword `0_BA`) and
+   DST_WIDTH_HEIGHT (`0x02EC`, dword `0_BB`).

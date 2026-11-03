@@ -231,10 +231,16 @@ static void control_refresh_clut(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_control_t *c = &st->control;
     if (depth_bpp(c) > 8) {
+        // At 16 bpp the RaDACal indexes its table with each channel's 5-bit
+        // value, and Apple's driver loads only entries 0-31 (its gamma ramp;
+        // the rest hold whatever was there).  The consumers look the table up
+        // with the channel expanded to 8 bits, so file entry v>>3 under every
+        // expansion of v -- expand5(v) >> 3 == v.
+        uint32_t shift = depth_bpp(c) == 16 ? 3u : 0u;
         for (uint32_t i = 0; i < 256; i++) {
-            st->dac_view[0][i] = c->clut[i][0];
-            st->dac_view[1][i] = c->clut[i][1];
-            st->dac_view[2][i] = c->clut[i][2];
+            st->dac_view[0][i] = c->clut[i >> shift][0];
+            st->dac_view[1][i] = c->clut[i >> shift][1];
+            st->dac_view[2][i] = c->clut[i >> shift][2];
         }
         st->display.clut = NULL;
         st->display.clut_len = 0;

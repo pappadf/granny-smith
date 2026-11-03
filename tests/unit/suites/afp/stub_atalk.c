@@ -80,3 +80,67 @@ int __wrap_rename(const char *from, const char *to) {
     }
     return __real_rename(from, to);
 }
+
+// ---- Further servers and remote volumes ------------------------------------
+//
+// asp_add_service keeps the client and context each further server registers,
+// so the suite can drive that server the way ASP would: through the client.
+#include "afp_remote.h"
+#include "event/event.h"
+#include "io/io_worker.h"
+
+#include <stdlib.h>
+
+const asp_client_t *stub_service_client[ASP_MAX_SERVICES];
+void *stub_service_ctx[ASP_MAX_SERVICES];
+int stub_retries; // asp_retry_deferred calls
+char stub_last_event[2048]; // the last event the core emitted
+
+int asp_add_service(uint8_t socket, const asp_client_t *client, void *ctx) {
+    (void)socket;
+    for (int i = 1; i < ASP_MAX_SERVICES; i++)
+        if (!stub_service_client[i]) {
+            stub_service_client[i] = client;
+            stub_service_ctx[i] = ctx;
+            return i;
+        }
+    return -1;
+}
+void asp_remove_service(int service) {
+    if (service > 0 && service < ASP_MAX_SERVICES) {
+        stub_service_client[service] = NULL;
+        stub_service_ctx[service] = NULL;
+    }
+}
+void asp_service_broadcast_attention(int service, uint16_t code) {
+    (void)service;
+    (void)code;
+    g_attentions++;
+}
+void asp_service_close_sessions(int service) {
+    (void)service;
+}
+void asp_retry_deferred(void) {
+    stub_retries++;
+}
+
+// No I/O worker: the core does the work inline.
+uint32_t io_submit_work(io_work_fn work, void *ud, io_done_fn done, void *dud) {
+    (void)work, (void)ud, (void)done, (void)dud;
+    return 0;
+}
+
+// No VFS: nothing unpacks, so a container shows as its file.
+int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_t *bytes, char *err_buf,
+                      size_t err_cap) {
+    (void)src, (void)dst, (void)bytes;
+    if (files)
+        *files = 0;
+    snprintf(err_buf, err_cap, "no VFS in this suite");
+    return -38; // ENOSYS
+}
+
+void event_emit(event_kind_t kind, const char *json) {
+    (void)kind;
+    snprintf(stub_last_event, sizeof stub_last_event, "%s", json ? json : "");
+}

@@ -15,13 +15,29 @@
 // → Module.onVoodooGpuOverlay(0), which hides every GPU overlay).
 
 import { getModule } from '@/bus/emulator';
-import { MAGIC } from './rage128Protocol';
+import {
+  MAGIC,
+  C_HEAD,
+  C_TAIL,
+  C_REQ,
+  C_ACK,
+  C_STATUS,
+  C_STAT_FRAMES,
+  C_STAT_DRAWS,
+  C_STAT_FLUSHES,
+  C_STAT_READBACKS,
+  C_PRESENTS_DONE,
+  C_RING_SIZE,
+} from './rage128Protocol';
 
 // Reactive overlay state, read by ScreenView.
 export const rage128Overlay = $state({ visible: false, width: 640, height: 480 });
 
 let canvasEl: HTMLCanvasElement | null = null;
 let worker: Worker | null = null;
+// The worker's answers to 'stats' (the perf monitor, the diagnostics)
+let statsWaiters: Array<(s: Record<string, unknown> | null) => void> = [];
+let lostReason = '';
 // Control blocks attached through this module (an array: not state).
 const attachedCtrls: number[] = [];
 
@@ -65,6 +81,12 @@ function startWorker(): Worker | null {
     ev: MessageEvent<{ type: string; engaged?: boolean; w?: number; h?: number; reason?: string }>,
   ) => {
     const m = ev.data;
+    if (m.type === 'stats') {
+      const waiters = statsWaiters;
+      statsWaiters = [];
+      for (const w of waiters) w(m as unknown as Record<string, unknown>);
+      return;
+    }
     if (m.type === 'mode') {
       rage128Overlay.visible = !!m.engaged;
       if (m.w && m.h) {
@@ -72,6 +94,7 @@ function startWorker(): Worker | null {
         rage128Overlay.height = m.h;
       }
     } else if (m.type === 'lost') {
+      lostReason = m.reason ?? 'lost';
       console.warn('[rage128-gpu] device lost:', m.reason);
       rage128Overlay.visible = false;
     } else if (m.type === 'unavailable') {
@@ -112,4 +135,51 @@ export function onRage128GpuDetach(ctrl: number): boolean {
 
 export function hideRage128Overlay(): void {
   rage128Overlay.visible = false;
+}
+
+// The control block's words as they stand, read from this thread: where
+// the op ring and the acknowledgements are, whatever the emulator thread
+// or the worker is doing.  Null when no card is attached.
+export function rage128GpuProbe(): Record<string, number | string> | null {
+  const mod = getModule();
+  const ctrl = attachedCtrls[0];
+  if (!mod || ctrl === undefined) return null;
+  const buffer =
+    (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory?.buffer ?? mod.HEAPU8.buffer;
+  const w = new Int32Array(buffer, ctrl, 32);
+  const u = (i: number) => Atomics.load(w, i) >>> 0;
+  return {
+    head: u(C_HEAD),
+    tail: u(C_TAIL),
+    backlog: (u(C_HEAD) - u(C_TAIL)) >>> 0,
+    ringSize: u(C_RING_SIZE),
+    req: u(C_REQ),
+    ack: u(C_ACK),
+    status: u(C_STATUS),
+    frames: u(C_STAT_FRAMES),
+    draws: u(C_STAT_DRAWS),
+    flushes: u(C_STAT_FLUSHES),
+    readbacks: u(C_STAT_READBACKS),
+    presentsDone: u(C_PRESENTS_DONE),
+    workerStarted: worker ? 1 : 0,
+    lost: lostReason,
+  };
+}
+
+// The worker's own counters since the last call, or null when it does not
+// answer within `timeoutMs` (it is busy in a drain, or wedged) or there is
+// no worker.
+export function rage128GpuWorkerStats(timeoutMs = 500): Promise<Record<string, unknown> | null> {
+  if (!worker) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: Record<string, unknown> | null) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    statsWaiters.push(finish);
+    setTimeout(() => finish(null), timeoutMs);
+    worker!.postMessage({ type: 'stats' });
+  });
 }

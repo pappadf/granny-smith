@@ -14,6 +14,9 @@ export const FDHD_DIR = '/opfs/images/fdhd';
 export const HD_DIR = '/opfs/images/hd';
 export const CD_DIR = '/opfs/images/cd';
 export const CHECKPOINT_DIR = '/opfs/checkpoints';
+// The caches of the remote AFP volumes (bus/remoteAfp.ts): a folder per
+// server, in it one per volume.
+export const AFP_REMOTE_DIR = '/opfs/afp-remote';
 // Checkpoints the user created (Create Checkpoint): one self-contained
 // (consolidated) checkpoint per directory, `<id>-<created>/state.checkpoint`
 // plus its manifest.json.  A subdirectory, so the startup sweep of other

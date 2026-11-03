@@ -18,6 +18,8 @@
 #include "object.h"
 #include "out.h"
 #include "value.h"
+#include "watch.h"
+#include "event/event.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -285,6 +287,51 @@ static const collection_desc_t log_categories = {
     .entries_doc = "Log categories, by name",
 };
 
+// `log.status_every` — seconds between two status lines on the console
+// (watch.h); 0 turns the line off.
+static DEF_GETTER(log_attr_status_every_get) {
+    return val_uint(4, watch_get_interval());
+}
+
+static DEF_SETTER(log_attr_status_every_set) {
+    bool ok = false;
+    int64_t secs = val_as_i64(&in, &ok);
+    value_free(&in);
+    if (!ok || secs < 0 || secs > 86400)
+        return val_err("status_every is a number of seconds, 0 to 86400 (0: off)");
+    watch_set_interval((uint32_t)secs);
+    return val_none();
+}
+
+// `log.perf_every` — seconds between two perf lines on the console
+// (watch.h); 0 (the default) turns them off.  The page runs its own
+// monitor at the same interval (its lines start "page:"), so it is told.
+static DEF_GETTER(log_attr_perf_every_get) {
+    return val_uint(4, watch_get_perf_interval());
+}
+
+static DEF_SETTER(log_attr_perf_every_set) {
+    bool ok = false;
+    int64_t secs = val_as_i64(&in, &ok);
+    value_free(&in);
+    if (!ok || secs < 0 || secs > 3600)
+        return val_err("perf_every is a number of seconds, 0 to 3600 (0: off)");
+    watch_set_perf_interval((uint32_t)secs);
+    event_emitf(GS_EVENT_STATE, "{\"event\":\"perf_every\",\"seconds\":%u}", (unsigned)secs);
+    return val_none();
+}
+
+// `log.alerts` — how many alerts (LOG_ALERT) have been raised since start
+static DEF_GETTER(log_attr_alerts) {
+    return val_uint(8, log_alert_total());
+}
+
+// `log.status()` — print the status line now
+static DEF_METHOD(log_method_status) {
+    watch_report_now();
+    return val_none();
+}
+
 static const member_t log_members[] = {
     {.kind = MK_ATTR,
      .name = "levels",
@@ -294,6 +341,22 @@ static const member_t log_members[] = {
      .name = "set",
      .doc = "Configure a log category: log.set(cat, level=, stdout=, file=, ts=, pc=)",
      .method = {.ui_flags = MM_MUTATE, .args = log_set_args, .nargs = 6, .result = VK_NONE, .fn = log_method_set}},
+    {.kind = MK_ATTR,
+     .name = "status_every",
+     .doc = "Seconds between two status lines on the console (what the machine is doing); 0: off",
+     .attr = {.type = VK_UINT, .width = 4, .get = log_attr_status_every_get, .set = log_attr_status_every_set}   },
+    {.kind = MK_ATTR,
+     .name = "perf_every",
+     .doc = "Seconds between two perf lines on the console (MIPS, ticks, scheduler, JIT, GPU waits); 0: off",
+     .attr = {.type = VK_UINT, .width = 4, .get = log_attr_perf_every_get, .set = log_attr_perf_every_set}       },
+    {.kind = MK_ATTR,
+     .name = "alerts",
+     .doc = "Alerts raised since start (disk errors, failed checkpoints, a hung guest...)",
+     .attr = {.type = VK_UINT, .width = 8, .get = log_attr_alerts}                                               },
+    {.kind = MK_METHOD,
+     .name = "status",
+     .doc = "Print the status line now: run state, PC, MIPS, disk traffic, the Mac OS's Ticks and app, the screen",
+     .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = log_method_status}                            },
 };
 
 static const class_desc_t log_class = {

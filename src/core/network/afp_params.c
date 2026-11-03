@@ -297,6 +297,9 @@ bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, cha
         char host[AFP_MAX_NAME * 3 + 1];
         if (!afp_client_element(path->bytes + start, (size_t)(i - start), host, sizeof(host)))
             return false;
+        // A remote folder is listed before a name in it can be found.
+        if (!afp_remote_need_dir(vol, out))
+            return false;
         afp_demangle(vol, out, host, sizeof(host));
         afp_fold_lookup(vol, out, path->bytes + start, (size_t)(i - start), host, sizeof(host));
         if (!afp_append_component(out, out_len, host))
@@ -351,9 +354,10 @@ bool afp_host_path(const vol_t *vol, const char *rel, char *out, size_t out_len)
 
 bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st) {
     char full[PATH_MAX];
-    if (!afp_host_path(vol, rel, full, sizeof(full)))
+    if (!afp_host_path(vol, rel, full, sizeof(full)) || stat(full, st) != 0)
         return false;
-    return stat(full, st) == 0;
+    afp_remote_stat_fix(vol, rel, st); // a placeholder reports the listed size
+    return true;
 }
 
 // ============================================================================
@@ -645,7 +649,9 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
             WR_BE32(out + ptr, afp_fork_live_length(full, true, &len) ? len : afp_meta_rsrc_len(full));
     } else {
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 9)) >= 0)
-            WR_BE16(out + ptr, afp_count_offspring(full));
+            // A remote folder not listed yet has offspring the server cannot
+            // count: say one, so no client takes it for empty.
+            WR_BE16(out + ptr, afp_remote_dir_unlisted(vol, rel_path) ? 1 : afp_count_offspring(full));
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 10)) >= 0)
             WR_BE32(out + ptr, 0); // Owner ID — guest-only server
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 11)) >= 0)
@@ -744,7 +750,7 @@ static uint16_t afp_volume_attributes(const vol_t *v, bool afp21) {
         attr |= AFP_VOL_ATTR_FILEIDS; // FPCreateID/DeleteID/ResolveID
         attr |= AFP_VOL_ATTR_CATSEARCH; // FPCatSearch
     }
-    if (access(v->root, W_OK) != 0)
+    if (v->read_only || access(v->root, W_OK) != 0)
         attr |= AFP_VOL_ATTR_READONLY;
     return attr;
 }

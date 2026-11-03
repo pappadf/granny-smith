@@ -7,8 +7,8 @@
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
-> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/v0.9.3/)
-> Use Chromium browser (Safari and Firefox have known issues)
+> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/v0.10.1/)
+> Use Chromium browser
 
 [![WebAssembly JIT Booring Mac OS X 10.0](https://i.ytimg.com/vi/ZQJO3JfnMM4/hq720.jpg)](https://www.youtube.com/watch?v=ZQJO3JfnMM4)
 

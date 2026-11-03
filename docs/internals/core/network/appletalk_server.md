@@ -2576,11 +2576,15 @@ appletalk                        the network
       [i].catalog_generation / .cnid_count  ro  §3.1
       [i].remove()
     sessions       ro  collection session_ref, client_node, afp_version,
-                                 open_forks, idle_ns
+                                 open_forks, idle_ns, server_socket (the
+                                 server the session is with)
     stats          ro  child     commands_served, bytes_read, bytes_written,
                                  errors, open_forks, errors_by_code (a map
                                  keyed by result code), ok_by_command (a map
                                  keyed by command name: its NoErr results)
+  remote                         further file servers and their
+                                 read-only remote volumes:
+                                 afp_remote.md §4
   printer
     enabled        rw  bool
     name           rw  string    NBP entity name; the setter re-registers
@@ -2601,6 +2605,11 @@ network publishes it with the ordinary `volumes.add` then — `/opfs/shared`
 under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on the headless build. Like
 every share it stays for every machine that plugs in. No path literal lives
 in `src/core`.
+
+The network can carry further file servers beside this one, each its own
+Chooser entry with its own volumes, and a volume can be a read-only cache of
+a remote tree that commands wait on while it is filled in:
+[afp_remote.md](afp_remote.md).
 
 ---
 

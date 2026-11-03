@@ -7,9 +7,11 @@
 #ifndef STUB_UPPER_H
 #define STUB_UPPER_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 extern int g_afp_calls;
+extern bool g_afp_defer;
 extern uint8_t g_afp_last_opcode;
 extern uint16_t g_afp_last_session;
 extern int g_asp_closes;

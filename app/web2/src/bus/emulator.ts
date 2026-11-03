@@ -113,6 +113,8 @@ interface EmscriptenModule {
     close(stream: unknown): void;
   };
   _get_mailbox(): number;
+  // The emulator thread's breadcrumbs (breadcrumb.h): 32 words
+  _get_breadcrumbs(): number;
   // Returns the bytes written, excluding the terminating NUL.
   stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
@@ -444,35 +446,90 @@ export function watchRequest(path: string): () => void {
 // request at once (bridgeCrash.test.ts covers the crash half, this covers
 // the silent one).  Hidden tabs are excluded: the RAF loop legitimately
 // stops there.  `sample` is injected so the watch is unit-testable.
+//
+// A stall is not a death: a core that runs one very long tick, or waits on
+// a GPU worker, comes back.  So the watch keeps watching after it fires and
+// reports the end (`onResume`, with how long it lasted), and the page keeps
+// its UI and its console up meanwhile (onEmulatorStall); each request still
+// has its own deadline.
 export const STALL_AFTER_S = 3;
 export function watchHeartbeat(
   sample: () => { heartbeat: number; inFlight: number },
   onStall: (reason: string) => void,
+  onResume?: (stalledMs: number) => void,
 ): () => void {
   let last = -1;
   let still = 0;
+  let stalledAt = -1; // performance.now() the heartbeat stopped, while stalled
   const timer = setInterval(() => {
     if (document.visibilityState !== 'visible') return;
     const s = sample();
-    if (s.inFlight === 0 || s.heartbeat !== last) {
+    if (s.heartbeat !== last) {
       last = s.heartbeat;
+      still = 0;
+      if (stalledAt >= 0) {
+        const ms = performance.now() - stalledAt;
+        stalledAt = -1;
+        onResume?.(ms);
+      }
+      return;
+    }
+    if (stalledAt >= 0) return;
+    if (s.inFlight === 0) {
       still = 0;
       return;
     }
     still++;
     if (still >= STALL_AFTER_S) {
+      stalledAt = performance.now() - STALL_AFTER_S * 1_000;
       onStall(`emulator not responding: no heartbeat for ${STALL_AFTER_S} s with requests pending`);
-      clearInterval(timer);
     }
   }, 1_000);
   return () => clearInterval(timer);
 }
 
+const stallListeners: Array<(reason: string) => void> = [];
+const resumeListeners: Array<(stalledMs: number) => void> = [];
+
+// The heartbeat stopped with requests pending; the core may come back.
+export function onEmulatorStall(cb: (reason: string) => void): void {
+  stallListeners.push(cb);
+}
+
+// ...and it did, after `stalledMs`.
+export function onEmulatorResume(cb: (stalledMs: number) => void): void {
+  resumeListeners.push(cb);
+}
+
 function startHeartbeatWatch(): void {
   watchHeartbeat(
     () => ({ heartbeat: mailbox?.heartbeat() ?? -1, inFlight: mailbox?.inFlight() ?? 0 }),
-    (reason) => markBridgeDead(reason),
+    (reason) => {
+      if (bridgeDead) return;
+      for (const cb of stallListeners) cb(reason);
+    },
+    (ms) => {
+      if (bridgeDead) return;
+      for (const cb of resumeListeners) cb(ms);
+    },
   );
+}
+
+// What the diagnostics read (bus/diagnostics.ts): the mailbox, the
+// breadcrumb block's address (0 before the module is up), the core's
+// recent events and the last perf event.
+export function getMailbox(): Mailbox | null {
+  return mailbox;
+}
+export function breadcrumbsPtr(): number {
+  const m = Module as unknown as { _get_breadcrumbs?: () => number } | null;
+  return m?._get_breadcrumbs ? m._get_breadcrumbs() >>> 0 : 0;
+}
+export function recentCoreEvents(): readonly CoreEvent[] {
+  return coreEventTrace;
+}
+export function bridgeDeadReason(): string | null {
+  return bridgeDead;
 }
 
 // A dead worker: a wasm trap (the glue's worker.onerror prints "worker sent
@@ -769,6 +826,12 @@ const CORE_EVENT_KINDS: Record<number, CoreEventKind> = {
 const CORE_EVENT_TRACE_MAX = 64;
 const coreEventTrace: CoreEvent[] = [];
 
+// log.perf_every changed in the core: the page's own monitor follows it
+const perfEveryListeners: Array<(seconds: number) => void> = [];
+export function onPerfEvery(cb: (seconds: number) => void): void {
+  perfEveryListeners.push(cb);
+}
+
 export function dispatchCoreEvent(kindWord: number, json: string): void {
   const kind = CORE_EVENT_KINDS[kindWord];
   if (!kind) return;
@@ -816,6 +879,9 @@ function routeCoreEvent(ev: CoreEvent): void {
         typeof d.status === 'string' ? d.status : '',
         typeof d.detail === 'string' ? d.detail : '',
       );
+      break;
+    case 'state:perf_every':
+      for (const cb of perfEveryListeners) cb(num(d.seconds));
       break;
     case 'state:perf':
       setPerfStats(
@@ -873,6 +939,10 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'notify:download_chunk':
       onDownloadChunk(d);
       break;
+    case 'notify:afp_remote_request':
+      // A remote AFP volume needs a listing or a file (bus/remoteAfp.ts).
+      remoteRequestHandler?.(d);
+      break;
     // Annotation records in a job's stream, at the positions they describe:
     // the console turns the text around them into value / error entries.
     case 'log:value_begin':
@@ -894,6 +964,15 @@ function routeCoreEvent(ev: CoreEvent): void {
     default:
       break;
   }
+}
+
+// Who answers the core's remote AFP requests: bus/remoteAfp.ts, once it has
+// put its servers on the network (it then also answers the requests made
+// before).  Set from there rather than imported here, so this module does
+// not pull the upload path in.
+let remoteRequestHandler: ((d: Record<string, unknown>) => void) | null = null;
+export function setRemoteRequestHandler(fn: ((d: Record<string, unknown>) => void) | null): void {
+  remoteRequestHandler = fn;
 }
 
 // The job id of a job-stream record, when it carries one.

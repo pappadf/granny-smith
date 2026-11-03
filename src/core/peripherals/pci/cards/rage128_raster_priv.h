@@ -164,6 +164,7 @@ typedef struct tex_unit {
 
 typedef struct st {
     rage128_t *r;
+    uint64_t gen; // the gather that built it (rage128_t.st_gen)
     // The colour buffer.
     uint32_t dst_base, dst_stride, dst_type, dst_bpp;
     int32_t sc_l, sc_t, sc_r, sc_b; // inclusive
@@ -181,6 +182,9 @@ typedef struct st {
     bool round_xy;
     tex_unit_t t[2];
     bool gpu; // the WebGPU takeover draws this batch's triangles (rage128_gpu.c)
+    // What a pixel reads of its fragment (make_frag skips the rest)
+    bool need_z, need_spec, need_fog;
+    bool need_lod[2]; // the unit's sample depends on the level of detail
 } st_t;
 
 // The attributes a primitive interpolates, as an array per vertex.

@@ -8,6 +8,7 @@
 // Includes
 // ============================================================================
 
+#include "breadcrumb.h"
 #include "em.h"
 #include "io/io_worker.h"
 #include "job/job.h"
@@ -62,6 +63,7 @@
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
+#include "watch.h"
 
 // ============================================================================
 // Forward Declarations
@@ -366,6 +368,12 @@ __attribute__((constructor)) static void mailbox_construct(void) {
     mailbox_set_capture_output(&g_mailbox, true);
 }
 
+// The emulator thread's breadcrumbs (breadcrumb.h): the page reads them
+// when the thread stops answering
+EMSCRIPTEN_KEEPALIVE uint32_t get_breadcrumbs(void) {
+    return (uint32_t)(uintptr_t)crumb_block();
+}
+
 EMSCRIPTEN_KEEPALIVE uint32_t *get_mailbox(void) {
     return (uint32_t *)g_mailbox.ctrl;
 }
@@ -455,6 +463,13 @@ static int mailbox_idle_wait(void) {
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
     tick_counter++;
+    crumb_enter(CRUMB_TICK);
+    // The worker's event loop between two ticks (asynchronous compiles land
+    // there, and the browser may hold the worker back)
+    static double s_tick_end_ms;
+    double tick_t0 = emscripten_get_now();
+    if (s_tick_end_ms > 0)
+        watch_note_phase("between", tick_t0 - s_tick_end_ms);
 
     // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks and
     // push them to the UI (MIPS from instr_count deltas —
@@ -524,18 +539,28 @@ void em_main_tick(void) {
             checkpoint_tick_counter++;
             if (checkpoint_tick_counter >= CHECKPOINT_INTERVAL) {
                 checkpoint_tick_counter = 0;
+                crumb_enter(CRUMB_CHECKPOINT);
+                double cp_t0 = emscripten_get_now();
                 system_quick_checkpoint("tick-auto", false, true);
+                watch_note_phase("checkpoint", emscripten_get_now() - cp_t0);
+                crumb_enter(CRUMB_TICK);
             }
         }
 
         // The active machine is read plainly: every writer (machine.boot,
         // checkpoint.load) is a request served on this thread.
         double run_t0 = emscripten_get_now();
+        crumb_enter(CRUMB_RUN);
         scheduler_main_loop(system_config(), now, &s_pacing); // Pass milliseconds
-        run_ms += emscripten_get_now() - run_t0;
+        double run_dt = emscripten_get_now() - run_t0;
+        run_ms += run_dt;
+        watch_note_phase("run", run_dt);
 
         // Update video if framebuffer changed
+        double video_t0 = emscripten_get_now();
+        crumb_enter(CRUMB_VIDEO);
         em_video_update();
+        watch_note_phase("video", emscripten_get_now() - video_t0);
     }
 
     // Poll for pending shell commands every tick.  This must run regardless
@@ -551,15 +576,23 @@ void em_main_tick(void) {
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
     mailbox_heartbeat(&g_mailbox);
+    // The machine watch: the periodic status line and the stuck detectors
+    crumb_enter(CRUMB_WATCH);
+    watch_poll(emscripten_get_now());
     double poll_t0 = emscripten_get_now();
+    crumb_enter(CRUMB_REQUESTS);
     int served = shell_poll();
     // A stopped machine has nothing to do until the next request: wait for
     // one here (bounded) instead of at the next RAF.  The poll may have
     // swapped the machine, so ask for the scheduler again.
     sched = system_scheduler();
-    if (!(sched && scheduler_is_running(sched)))
+    if (!(sched && scheduler_is_running(sched))) {
+        crumb_enter(CRUMB_IDLE);
         served += mailbox_idle_wait();
+        crumb_enter(CRUMB_REQUESTS);
+    }
     tick_poll_ms_current = emscripten_get_now() - poll_t0;
+    watch_note_phase("requests", tick_poll_ms_current);
     if (served) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))
@@ -591,6 +624,10 @@ void em_main_tick(void) {
                         (int)lights.light[k]);
         }
     }
+    // Back to the worker's event loop (asynchronous compiles land there)
+    s_tick_end_ms = emscripten_get_now();
+    watch_note_phase("tick", s_tick_end_ms - tick_t0);
+    crumb_enter(CRUMB_EVENT_LOOP);
 }
 
 // A new machine is the active one (platform hook, system.h).  Nothing sampled

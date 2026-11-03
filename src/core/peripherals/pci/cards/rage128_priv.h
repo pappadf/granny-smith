@@ -296,6 +296,9 @@ typedef struct r128_cce {
 #define R128_UCODE_KNOWN   1u // ATI's published Rage 128 microcode
 #define R128_UCODE_UNKNOWN 2u // 256 pairs that are not it
 
+// The registers one gather may read and still be remembered.
+#define R128_ST_READS 128u
+
 typedef struct rage128 {
     pci_device_t *dev;
     config_t *cfg;
@@ -329,6 +332,22 @@ typedef struct rage128 {
     uint8_t dac_view[3][256]; // the palette as the direct-colour DAC table (display_t.dac_lut)
     uint8_t *blank; // black stub while the raster is off (vram_size)
     uint8_t *compose; // big-endian copy for the direct-colour depths (vram_size)
+    // The vertex walker's scratch (rage128_cce.c), grown as a draw needs:
+    // its vertices in order, the span of its vertex list fetched at once,
+    // and that span decoded (a vertex once however many indices name it).
+    struct r128_vertex *walk_v, *walk_dec;
+    uint32_t *walk_raw;
+    uint8_t *walk_done;
+    uint32_t walk_v_cap, walk_dec_cap, walk_raw_cap, walk_done_cap;
+    // The 3D state as last gathered (rage128_raster.c), reused by a batch
+    // whose gather would read the same: every register the gather read,
+    // with its value, and the fog table's generation then.
+    struct st *st_cache;
+    uint64_t st_gen; // bumped by each gather that builds anew (st_t.gen)
+    uint32_t st_nreads, st_fog_gen;
+    bool st_valid;
+    uint32_t st_read_off[R128_ST_READS], st_read_val[R128_ST_READS];
+    uint32_t fog_gen; // bumped by each write to the fog table
     uint32_t scan_base;
     // CRTC_OFFSET as the display uses it: a write while the CRTC runs takes
     // effect at the next vertical blank (a page flip), and until then
@@ -360,6 +379,16 @@ typedef struct rage128 {
     uint8_t fog_index;
     uint8_t told3d; // once-only 3D logs (rage128_raster.c)
 
+    // Where drawing lands, for the machine watch's status line (watch.h)
+    struct {
+        uint32_t dst3d, z3d, dst2d; // the last 3D colour / depth buffer and 2D destination (VRAM offsets)
+        uint64_t flips; // CRTC_OFFSET changes that took effect
+        uint64_t prims3d, blits, packets; // the counters at the last report
+        double ms3d, ms2d, ms_scan; // host time drawing in 3D, 2D and preparing scanout since the last report
+        uint32_t timed_batches; // 3D batches seen; every 16th is timed (ms3d)
+        double since_ms; // when the last report was
+    } diag;
+
     // The WebGPU takeover (rage128_gpu.c), NULL under the software
     // rasteriser.  While engaged, [gpu_lo, gpu_hi) bounds the VRAM the
     // GPU holds surfaces over and gpu_page_gen counts writes per 4 KB
@@ -369,6 +398,15 @@ typedef struct rage128 {
     uint32_t *gpu_page_gen;
     uint32_t gpu_gen;
 } rage128_t;
+
+// The VRAM byte an engine or CRTC address reaches.  The memory chips answer
+// to the low address bits only, so an address past the memory fitted wraps
+// onto it: a driver that sets CONFIG_MEMSIZE to 32 MB on a 16 MB board (the
+// Mac OS driver can) places its buffers above 16 MB, and on the board they
+// land 16 MB lower.  vram_size is a power of two (16 or 32 MB).
+static inline uint32_t r128_vram_wrap(const rage128_t *r, uint32_t a) {
+    return a & (r->vram_size - 1u);
+}
 
 // Every VRAM access that is not the GPU's own goes through here: the CPU
 // through the apertures and MM_DATA, the 2D engine, the CCE's fetches,
@@ -385,6 +423,12 @@ static inline void r128_vram_access(rage128_t *r, uint32_t at, uint32_t len, boo
     if (at < r->gpu_hi && at + len > r->gpu_lo)
         r128_gpu_fence(r->gpu, at, len, write);
 }
+
+// The hardware cursor as the CRTC overlays it, for a scanout composed
+// elsewhere (the WebGPU present): false when it is off, else its 64 x 64
+// map in screen order from (*x, *y), each entry 0 (transparent), 1 (the
+// frame's pixel inverted) or 2 | (a pixel in the frame's format) << 8.
+bool r128_cursor_image(rage128_t *r, uint32_t img[64 * 64], int32_t *x, int32_t *y);
 
 // === The register file (rage128.c) =========================================
 

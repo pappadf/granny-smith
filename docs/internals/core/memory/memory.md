@@ -180,6 +180,36 @@ side effect.
 is not a guest bus cycle: a transfer error the device answers it with is
 discarded rather than delivered to the guest.
 
+### Cache lines held over devices: `write_line`
+
+No CPU here models a data cache: RAM is always current and a device sees each
+store as it is made.  The exception is a line the cache allocates without
+reading it, a PowerPC `dcbz` on a cacheable (W=0, I=0) mapping of a device.
+On the hardware that line is zeroed in the cache, filled there by the guest's
+stores, and reaches the device whole at a `dcbst` or `dcbf` or when it is
+evicted.  ATI's Rage Pro driver streams host data this way: one `dcbz` of a
+HOST_DATA line, then `stmw` and `dcbst` for every line of the transfer (a
+`dcbst` leaves the line valid).  Written through, the zeros would reach the
+card as pixels.
+
+So the PowerPC core owns a small fully-associative set of held lines
+(`mem_lines_t`, `MEM_LINES` = 8, LRU), kept in `ppc_t` so a checkpoint carries
+it; `g_mem_lines` points at it while any line is held, and the device dispatch
+(`dev_desc_read/write`, `dev_read_n/dev_write_n`) checks it with one pointer
+test.  An access that falls in a held line is served from it, and a store
+makes it dirty.  `dcbst` writes a dirty line and keeps it, `dcbf` writes and
+releases it, `dcbi` releases it unwritten, and a line left idle through two
+sprint ends is flushed, standing in for eviction.
+
+A dirty line goes out as one call to the device's optional
+`write_line(device, addr, bytes)`: `MEM_LINE_SIZE` (32) bytes at a
+line-aligned address, in the interface's address order, as the castout's
+burst is on the bus.  A PCI window forwards it to the BAR that decodes the
+whole line, reversing each 8-byte lane when the bridge reverses lanes; a
+handler without `write_line` gets the eight `write_uint32` calls the stores
+would have made.  The Rage Pro's register aperture implements it, feeding a
+line of HOST_DATA to the draw engine with its state gathered once.
+
 ### Per-Instance Ownership
 
 One map is active at a time, by design: the fast path reads the `g_*`

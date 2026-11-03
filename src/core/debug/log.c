@@ -526,3 +526,109 @@ void log_emit(const log_category_t *cat, int level, const char *fmt, ...) {
     log_vemit(cat, level, fmt, ap);
     va_end(ap);
 }
+
+// Alerts raised so far (every log_alert call, folded ones not counted)
+static unsigned long s_alert_total;
+
+unsigned long log_alert_total(void) {
+    return s_alert_total;
+}
+
+// The banner's rule line
+#define LOG_ALERT_RULE "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+
+// Raises an alert: a banner on the console and one line in the Logs view,
+// with no level gate.
+void log_alert(const char *site, unsigned count, const char *fmt, ...) {
+    s_alert_total++;
+
+    // The message body, composed once for both forms
+    char stack[512];
+    line_buf_t msg = {.p = stack, .len = 0, .cap = sizeof(stack), .heap = false, .truncated = false};
+    stack[0] = '\0';
+    va_list ap;
+    va_start(ap, fmt);
+    bool ok = lb_vappendf(&msg, fmt ? fmt : "", ap);
+    va_end(ap);
+    if (!ok)
+        lb_append(&msg, "(unformattable alert)", 21);
+
+    // Where the machine was: instruction count and PC, when the hooks know
+    unsigned long long instr = (s_hooks && s_hooks->instr_count) ? s_hooks->instr_count() : 0;
+    char pcstr[48] = "PC=?";
+    if (s_hooks && s_hooks->format_pc)
+        s_hooks->format_pc(pcstr, sizeof(pcstr));
+    const char *file = site ? strrchr(site, '/') : NULL;
+    file = file ? file + 1 : (site ? site : "?");
+
+    // Another thread (an I/O worker) may not touch the sinks, which feed the
+    // emulator thread's event ring: stderr only, then
+    bool owner = !(s_hooks && s_hooks->on_owner_thread) || s_hooks->on_owner_thread();
+
+    // The banner (console): impossible to miss in a scrolling terminal
+    char bstack[1024];
+    line_buf_t b = {.p = bstack, .len = 0, .cap = sizeof(bstack), .heap = false, .truncated = false};
+    bstack[0] = '\0';
+    lb_append(&b, LOG_ALERT_RULE, sizeof(LOG_ALERT_RULE) - 1);
+    lb_appendf(&b, "!!! ALERT: %s\n", msg.p);
+    lb_appendf(&b, "!!!   at %s, %s, instr %llu", file, pcstr, instr);
+    if (count > 1)
+        lb_appendf(&b, " (seen %u times at this site)", count);
+    lb_append(&b, "\n", 1);
+    lb_append(&b, LOG_ALERT_RULE, sizeof(LOG_ALERT_RULE) - 1);
+    if (s_stdout_fn && owner)
+        s_stdout_fn(b.p, s_stdout_user);
+    else {
+        fputs(b.p, stderr);
+        fflush(stderr);
+    }
+
+    // The Logs view's line, in log_vemit's shape so it parses as one entry
+    if (owner && (s_sink_fn || (s_hooks && s_hooks->observe_line))) {
+        char lstack[768];
+        line_buf_t l = {.p = lstack, .len = 0, .cap = sizeof(lstack), .heap = false, .truncated = false};
+        lstack[0] = '\0';
+        lb_appendf(&l, "[alert] 0 %s (at %s, %s, instr %llu", msg.p, file, pcstr, instr);
+        if (count > 1)
+            lb_appendf(&l, ", seen %u times", count);
+        lb_append(&l, ")\n", 2);
+        if (s_sink_fn)
+            s_sink_fn(l.p, s_sink_user);
+        if (s_hooks && s_hooks->observe_line)
+            s_hooks->observe_line(l.p);
+        if (l.heap)
+            free(l.p);
+    }
+
+    if (b.heap)
+        free(b.p);
+    if (msg.heap)
+        free(msg.p);
+}
+
+// Emits a status line: "[status] 0 <text>" to the console and the Logs view.
+void log_status(const char *fmt, ...) {
+    char stack[768];
+    line_buf_t b = {.p = stack, .len = 0, .cap = sizeof(stack), .heap = false, .truncated = false};
+    stack[0] = '\0';
+    lb_append(&b, "[status] 0 ", 11);
+    va_list ap;
+    va_start(ap, fmt);
+    bool ok = lb_vappendf(&b, fmt ? fmt : "", ap);
+    va_end(ap);
+    if (ok) {
+        lb_append(&b, "\n", 1);
+        // Off the emulator thread only stdout is safe (as for alerts)
+        bool owner = !(s_hooks && s_hooks->on_owner_thread) || s_hooks->on_owner_thread();
+        if (s_stdout_fn && owner)
+            s_stdout_fn(b.p, s_stdout_user);
+        else {
+            fputs(b.p, stdout);
+            fflush(stdout);
+        }
+        if (owner && s_sink_fn)
+            s_sink_fn(b.p, s_sink_user);
+    }
+    if (b.heap)
+        free(b.p);
+}

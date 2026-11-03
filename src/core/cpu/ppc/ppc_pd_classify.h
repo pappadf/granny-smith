@@ -235,10 +235,6 @@ static inline uint16_t ppd_cls_spr(const ppc_cls_t *c, uint32_t iw, bool to_spr,
 #define OP_DCBT   return PPD_NOP
 #undef OP_DCBTST
 #define OP_DCBTST return PPD_NOP
-#undef OP_DCBST
-#define OP_DCBST  return PPD_NOP
-#undef OP_DCBF
-#define OP_DCBF   return PPD_NOP
 #undef OP_ISYNC
 #define OP_ISYNC  return PPD_ISYNC
 // D-form loads and stores: the common shapes with a base register (rA != 0;

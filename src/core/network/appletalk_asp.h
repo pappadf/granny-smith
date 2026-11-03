@@ -38,9 +38,32 @@ typedef struct {
     const char *(*session_version)(void *ctx, uint16_t session_ref);
 } asp_client_t;
 
-// Install the client (NULL removes it).  The AFP server does this from
-// atalk_server_init.
+// Install the client (NULL removes it) of the first service, the one on the
+// AFP sockets 8 and 54.  The AFP server does this from atalk_server_init.
 void asp_set_client(const asp_client_t *client, void *ctx);
+
+// Further services: each a server socket of its own (the SSS a workstation's
+// OpenSess learns) with its own client, so several file servers can share one
+// node.  Returns the service number, or -1 when the socket is taken or the
+// table is full.  Removing a service closes its sessions.
+#define ASP_MAX_SERVICES 4
+int asp_add_service(uint8_t socket, const asp_client_t *client, void *ctx);
+void asp_remove_service(int service);
+
+// One service's sessions: send each an attention, or close them all.
+void asp_service_broadcast_attention(int service, uint16_t code);
+void asp_service_close_sessions(int service);
+
+// A command's result that is not one: the client cannot answer yet (its data
+// is on the way) and will run the command again.  ASP keeps the request and
+// replays it on every asp_retry_deferred until it gets a real result; the
+// workstation's retransmissions of it are absorbed meanwhile.  No AFP result
+// is positive, so the value cannot collide with one.
+#define ASP_RESULT_DEFERRED 0x7FFFFFFFu
+
+// Replay every deferred command (the client's data arrived).  Safe to call
+// from inside a command: the replay then runs once that command is answered.
+void asp_retry_deferred(void);
 
 // Called once, when the network comes up: take the AFP sockets.  Returns
 // ASP's part of the network (the client it serves), which the network owns.

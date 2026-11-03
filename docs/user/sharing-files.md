@@ -66,3 +66,23 @@ each file. File names longer than 31 characters — longer than a Mac allows
 
 There is no copy and paste between your computer and the Mac yet. For
 text, save it as a file and use the shared folder.
+
+## 4. Software from the Internet Archive
+
+One more file server is on the Mac's network beside **Shared Folders**,
+for software to run straight away: **Internet Archive**, with the volumes
+**Software Library**, **Shareware Games**, **HyperCard Stacks** and
+**Macintosh Garden**, Macintosh collections on archive.org. A large
+collection is divided into folders by the first letter of each title.
+
+Connect to it in the Chooser as in §1.1. The volumes are read-only, and
+they are filled in as you open them: a folder takes a moment the first time
+it opens, and a file is downloaded the first time it is opened or copied.
+Archives and disk images (StuffIt, Compact Pro, zip, BinHex, MacBinary,
+disk images) up to 64 MB appear as folders of the files inside them, with
+their resource forks, so an application can be dragged to the Mac's disk
+and run without expanding anything.
+
+What has been opened once stays in the browser's storage, in
+`/opfs/afp-remote`, and opens without the network after that; delete that
+folder in the **Filesystem** panel to free the space.

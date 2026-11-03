@@ -1757,11 +1757,19 @@ static const doc_display_t *find_display(const doc_t *d, const char *id) {
 
 // The code the built-in port's sense lines read with catalogue monitor `mon`
 // plugged in: the family's resolver's, MACHINE_SENSE_NONE with none.  A port
-// without sense lines has no resolver, and nothing reads its code.
+// without sense lines has no resolver, and nothing reads its code.  An empty
+// port is the resolver's own "none" where it has one: the Rage Pro's resolver
+// indexes its rows, so its "nothing attached" is not MACHINE_SENSE_NONE.
 static uint8_t builtin_sense(const hw_profile_t *p, const char *mon) {
     const builtin_video_desc_t *bv = p->builtin_video;
-    if (!bv || strcmp(mon, MONITOR_NONE) == 0)
+    if (!bv)
         return MACHINE_SENSE_NONE;
+    if (strcmp(mon, MONITOR_NONE) == 0) {
+        uint8_t s = MACHINE_SENSE_NONE;
+        if (!bv->slot_monitors && bv->monitor_sense && bv->monitor_sense(MONITOR_NONE, &s))
+            return s;
+        return MACHINE_SENSE_NONE;
+    }
     if (bv->slot_monitors) {
         const nubus_slot_decl_t *d = builtin_video_slot(p);
         const nubus_card_kind_t *k = d ? nubus_card_find(d->builtin_card_id) : NULL;
@@ -1832,11 +1840,26 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
                     row_id = m->id;
             if (!on)
                 row_id = MONITOR_NONE;
-            if (row_id && k && k->accepts_option && k->accepts_option("monitor", row_id) &&
-                !slot_opts_option(e, "monitor") && e->n_options < SLOT_OPTIONS_MAX) {
-                slot_option_t *o = &e->options[e->n_options++];
-                copy_str(o->key, sizeof o->key, "monitor");
-                copy_str(o->value, sizeof o->value, row_id);
+            // A monitor= the card entry already names stands when it is a row
+            // of the same display (the Rage 128's VGA without DDC); one that
+            // names another display yields to the document's monitor.
+            const char *given = slot_opts_option(e, "monitor");
+            if (given && on) {
+                for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++)
+                    if (strcmp(m->id, given) == 0 && m->monitor && strcmp(m->monitor, x->monitor) == 0)
+                        row_id = NULL;
+            }
+            if (row_id && k && k->accepts_option && k->accepts_option("monitor", row_id)) {
+                slot_option_t *o = NULL;
+                for (int n = 0; n < e->n_options && !o; n++)
+                    if (strcmp(e->options[n].key, "monitor") == 0)
+                        o = &e->options[n];
+                if (!o && e->n_options < SLOT_OPTIONS_MAX)
+                    o = &e->options[e->n_options++];
+                if (o) {
+                    copy_str(o->key, sizeof o->key, "monitor");
+                    copy_str(o->value, sizeof o->value, row_id);
+                }
             }
         } else {
             const nubus_card_kind_t *k = nubus_card_find(e->card);

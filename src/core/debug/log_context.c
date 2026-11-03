@@ -16,6 +16,7 @@
 #include "scheduler.h" // scheduler_instr_count
 #include "system.h" // system_running
 #include "system_internal.h" // config_t::cpu / ppc / scheduler
+#include "job/job.h" // job_on_emulator_thread
 
 #include <stdio.h>
 
@@ -50,6 +51,7 @@ static const log_context_hooks_t k_hooks = {
     .instr_count = ctx_instr_count,
     .format_pc = ctx_format_pc,
     .observe_line = ctx_observe_line,
+    .on_owner_thread = job_on_emulator_thread,
 };
 
 void log_context_install(void) {

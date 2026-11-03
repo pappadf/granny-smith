@@ -125,19 +125,12 @@ extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
 extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
 extern const pci_card_kind_t rage128_webgpu_kind; // ...the same card, its 3D drawn by the host GPU
+extern const pci_card_kind_t qd3d_kind; // peripherals/pci/cards/qd3d.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,
-    &mach64_gx_kind,
-    &cirrus_54m30_kind,
-    &sym53c825_ch0_kind,
-    &sym53c825_ch1_kind,
-    &voodoo2_kind,
-    &voodoo2_webgpu_kind,
-    &ati_rage_pro_kind,
-    &rage128_kind,
-    &rage128_webgpu_kind,
-    NULL,
+    &tnt_control_kind,   &mach64_gx_kind,      &cirrus_54m30_kind,   &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind, &voodoo2_kind,        &voodoo2_webgpu_kind, &ati_rage_pro_kind,
+    &rage128_kind,       &rage128_webgpu_kind, &qd3d_kind,           NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -400,6 +393,26 @@ static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     d.iface->write_uint32(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap32(value) : value);
 }
 
+// A cache line (memory.h, write_line), `bytes` in the window's address
+// order.  One BAR decoding all of it, with a handler that takes lines, gets
+// it as a burst in PCI byte order (each 8-byte lane reversed when the bridge
+// reverses lanes); otherwise it goes as the eight word writes it was made of.
+static void window_write_line(void *ctx, uint32_t offset, const uint8_t *bytes) {
+    const pci_window_t *w = (const pci_window_t *)ctx;
+    pci_decode_t d0, d1;
+    if (window_locate(w, window_pci_addr(w, offset), &d0) && d0.iface->write_line &&
+        window_locate(w, window_pci_addr(w, offset + MEM_LINE_SIZE - 1), &d1) && d1.iface == d0.iface &&
+        d1.ctx == d0.ctx && d1.sub - d0.sub == MEM_LINE_SIZE - 1) {
+        uint8_t bus[MEM_LINE_SIZE];
+        for (uint32_t i = 0; i < MEM_LINE_SIZE; i++)
+            bus[i] = bytes[w->bus->lane_reverse ? i ^ 7u : i];
+        d0.iface->write_line(d0.ctx, d0.sub, bus);
+        return;
+    }
+    for (uint32_t o = 0; o < MEM_LINE_SIZE; o += 4)
+        window_write32(ctx, offset + o, LOAD_BE32(bytes + o));
+}
+
 // Resolve one window page for the fast tables (memory.h,
 // mem_dev_desc_t).  `out` NULL asks only whether `iface` is a PCI window.
 // A page resolves when a single BAR decodes all of it linearly; anything
@@ -453,6 +466,7 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.peek_uint8 = window_peek8;
     w->iface.peek_uint16 = window_peek16;
     w->iface.peek_uint32 = window_peek32;
+    w->iface.write_line = window_write_line;
     memory_map_add(bus->cfg->memory_map, map_base, size, w->what, &w->iface, w);
     memory_map_set_dev_resolver(bus->cfg->memory_map, window_resolve_page); // flushes resolved pages
 }
@@ -1223,7 +1237,12 @@ uint32_t pci_dma_write(pci_device_t *dev, uint32_t phys, const void *buf, uint32
                 ram[(phys + i) ^ 7u] = in[i];
         return len;
     }
+    // Device space or a range straddling the end of RAM: byte writes.
+    if (!rev) {
+        memory_write_bytes_slow(phys, in, len);
+        return len;
+    }
     for (uint32_t i = 0; i < len; i++)
-        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), in[i]);
+        memory_write_uint8_slow((phys + i) ^ 7u, in[i]);
     return len;
 }

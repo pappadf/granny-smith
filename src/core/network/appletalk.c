@@ -2030,6 +2030,10 @@ int atp_register_socket_handler(uint8_t socket, const atp_socket_handler_t *hand
     return -1;
 }
 
+bool atp_socket_handler_in_use(uint8_t socket) {
+    return atp_find_handler_slot(socket) != NULL;
+}
+
 void atp_unregister_socket_handler(uint8_t socket) {
     atp_handler_slot_t *slot = atp_find_handler_slot(socket);
     if (slot)

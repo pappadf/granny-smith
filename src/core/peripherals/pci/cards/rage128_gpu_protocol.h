@@ -22,7 +22,7 @@
 #ifndef RAGE128_GPU_PROTOCOL_H
 #define RAGE128_GPU_PROTOCOL_H
 
-#define R128GPU_PROTOCOL_VERSION 1u
+#define R128GPU_PROTOCOL_VERSION 2u
 #define R128GPU_MAGIC            0x52313247u // 'R12G'
 
 // Control-block word indices (the Voodoo2's layout, word for word).
@@ -42,6 +42,7 @@
 #define R128GPU_C_STAT_FLUSHES   13 // worker: command buffers submitted
 #define R128GPU_C_STAT_PIPELINES 14 // worker: render pipelines built
 #define R128GPU_C_STAT_READBACKS 15 // worker: readback copies serviced
+#define R128GPU_C_PRESENTS_DONE  16 // worker: PRESENT records whose GPU work has completed
 #define R128GPU_CTRL_WORDS       32
 
 #define R128GPU_STATUS_DETACHED 0u
@@ -69,6 +70,7 @@
 #define R128GPU_R_MODE         12u // {engaged, w, h}: overlay visibility for the page
 #define R128GPU_R_FENCE        13u // {seq}: ACK once everything before it was submitted
 #define R128GPU_R_SHUTDOWN     14u // {seq}: free everything, STATUS <- DETACHED, ACK
+#define R128GPU_R_CURSOR       15u // {on, x, y, has_map} [+ 64 x 64 u32 map]: the hardware cursor
 
 #define R128GPU_ROLE_COLOR 0u
 #define R128GPU_ROLE_DEPTH 1u

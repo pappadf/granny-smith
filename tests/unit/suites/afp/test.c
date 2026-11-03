@@ -1746,6 +1746,21 @@ TEST(read_past_end_of_fork_is_eof) {
     put8(0);
     ASSERT_EQ_INT((int)ERR_EOF, (int)call(OP_READ));
     ASSERT_EQ_INT(2, g_reply_len);
+    // Reading nothing is not reading past the end, even from the end:
+    // AppleShare passes on an application's zero-length FSRead, and Deja Vu
+    // reads its file to the end and then 0 bytes more, and stopped with
+    // "Error Code = -39" (eofErr) where a disk answers noErr.
+    for (uint32_t at = 4; at <= 6; at += 2) {
+        req_reset();
+        put8(0);
+        put16(ref);
+        put32(at);
+        put32(0);
+        put8(0);
+        put8(0);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+        ASSERT_EQ_INT(0, g_reply_len);
+    }
     close_fork(ref);
     fixture_down();
 }
@@ -4109,6 +4124,333 @@ TEST(cat_search_parses_find_files_request) {
     fixture_down();
 }
 
+// ============================================================================
+// Further servers and remote volumes (afp_remote.c)
+// ============================================================================
+
+#include "afp_remote.h"
+#include "appletalk_asp.h"
+
+extern const asp_client_t *stub_service_client[ASP_MAX_SERVICES];
+extern void *stub_service_ctx[ASP_MAX_SERVICES];
+extern int stub_retries;
+extern char stub_last_event[2048];
+
+#define REMOTE_SESSION 0x0031
+
+static int g_svc; // the further server's ASP service, as the stub saw it
+static char g_src[300], g_cache[300];
+static uint16_t g_rvol;
+
+// Dispatch the assembled request to the further server, as ASP does: through
+// the client it registered, with its context.
+static uint32_t rcall(uint8_t opcode) {
+    g_reply_len = 0;
+    memset(g_reply, 0, sizeof(g_reply));
+    return stub_service_client[g_svc]->on_command(stub_service_ctx[g_svc], REMOTE_SESSION, opcode, g_req, g_req_len,
+                                                  g_reply, (int)sizeof(g_reply), &g_reply_len);
+}
+
+static void put_host_file(const char *path, const char *contents) {
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    fputs(contents, f);
+    fclose(f);
+}
+
+static long host_size(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (long)st.st_size : -1;
+}
+
+// A server "Archive" with the read-only volume "Remote" on `uri`, a session
+// logged in to it at 2.1, and the volume open.
+static void remote_up(const char *tag, const char *uri) {
+    snprintf(g_src, sizeof g_src, "/tmp/gs-afp-test-%d-%s-src", (int)getpid(), tag);
+    snprintf(g_cache, sizeof g_cache, "/tmp/gs-afp-test-%d-%s-cache", (int)getpid(), tag);
+    rm_rf(g_src);
+    rm_rf(g_cache);
+    ASSERT_EQ_INT(0, mkdir(g_src, 0755));
+    char err[192], full_uri[400];
+    int idx = atalk_afp_server_add("Archive", err, sizeof err);
+    ASSERT_TRUE(idx > 0);
+    g_svc = -1;
+    for (int i = 1; i < ASP_MAX_SERVICES; i++)
+        if (stub_service_client[i])
+            g_svc = i;
+    ASSERT_TRUE(g_svc > 0);
+    snprintf(full_uri, sizeof full_uri, "%s", uri ? uri : "");
+    if (!uri)
+        snprintf(full_uri, sizeof full_uri, "dir://%s", g_src);
+    ASSERT_TRUE(afp_remote_volume_add("Archive", "Remote", full_uri, g_cache, err, sizeof err) >= 0);
+    ASSERT_TRUE(stub_service_client[g_svc]->on_open(stub_service_ctx[g_svc], REMOTE_SESSION));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_LOGIN));
+    req_reset();
+    put8(0);
+    put16(0x0020);
+    put_pstr("Remote");
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_OPEN_VOL));
+    g_rvol = rd16(g_reply + 2);
+}
+
+static void remote_down(void) {
+    stub_service_client[g_svc]->on_close(stub_service_ctx[g_svc], REMOTE_SESSION);
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_server_remove("Archive", err, sizeof err));
+    rm_rf(g_src);
+    rm_rf(g_cache);
+}
+
+static uint32_t renumerate(const char *path, uint16_t *out_actual) {
+    req_reset();
+    put8(0);
+    put16(g_rvol);
+    put32(CNID_ROOT);
+    put16(0x0140);
+    put16(0x0140);
+    put16(100);
+    put16(1);
+    put16(4000);
+    put_path(path);
+    uint32_t rc = rcall(OP_ENUMERATE);
+    if (out_actual)
+        *out_actual = (rc == ERR_OK && g_reply_len >= 6) ? rd16(g_reply + 4) : 0;
+    return rc;
+}
+
+static uint32_t rdata_len(const char *path, uint32_t *out_len) {
+    req_reset();
+    put8(0);
+    put16(g_rvol);
+    put32(CNID_ROOT);
+    put16(0x0200); // data fork length
+    put16(0);
+    put_path(path);
+    uint32_t rc = rcall(OP_GET_FD_PARMS);
+    if (out_len)
+        *out_len = rc == ERR_OK ? rd32(g_reply + 6) : 0;
+    return rc;
+}
+
+static uint32_t ropen(const char *path, uint16_t access, uint16_t *out_ref) {
+    req_reset();
+    put8(0);
+    put16(g_rvol);
+    put32(CNID_ROOT);
+    put16(0);
+    put16(access);
+    put_path(path);
+    uint32_t rc = rcall(OP_OPEN_FORK);
+    if (out_ref)
+        *out_ref = (g_reply_len >= 4) ? rd16(g_reply + 2) : 0;
+    return rc;
+}
+
+// The id and destination of the request the last event asked the page for.
+static uint32_t last_request(char *dest, size_t cap) {
+    const char *id = strstr(stub_last_event, "\"id\":");
+    const char *d = strstr(stub_last_event, "\"dest\":\"");
+    ASSERT_TRUE(id && d);
+    d += 8;
+    size_t n = strcspn(d, "\"");
+    ASSERT_TRUE(n < cap);
+    memcpy(dest, d, n);
+    dest[n] = '\0';
+    return (uint32_t)strtoul(id + 5, NULL, 10);
+}
+
+TEST(a_second_server_keeps_its_own_volumes) {
+    fixture_up("servers");
+    remote_up("servers", NULL);
+    char err[192];
+    ASSERT_TRUE(atalk_afp_server_add("Archive", err, sizeof err) < 0); // the name is taken
+    ASSERT_EQ_INT(-1, atalk_afp_server_remove("Shared Folders", err, sizeof err)); // the first stays
+    ASSERT_TRUE(g_rvol != g_vol_id); // volume IDs are unique across servers
+
+    // Each server lists only its own volumes.
+    req_reset();
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_GET_SRVR_PARMS));
+    ASSERT_EQ_INT(1, (int)g_reply[4]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 7, "Remote", 6));
+    req_reset();
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_SRVR_PARMS));
+    ASSERT_EQ_INT(1, (int)g_reply[4]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 7, "TestVol", 7));
+
+    // The first server's volume is not the second server's to open.
+    req_reset();
+    put8(0);
+    put16(0x0020);
+    put_pstr("TestVol");
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)rcall(OP_OPEN_VOL));
+    remote_down();
+    fixture_down();
+}
+
+TEST(a_remote_volume_is_listed_and_fetched_on_demand_and_refuses_changes) {
+    fixture_up("remote");
+    remote_up("remote", NULL);
+    char path[600];
+    snprintf(path, sizeof path, "%s/hello.txt", g_src);
+    put_host_file(path, "hello");
+    snprintf(path, sizeof path, "%s/Sub", g_src);
+    ASSERT_EQ_INT(0, mkdir(path, 0755));
+    snprintf(path, sizeof path, "%s/Sub/inner", g_src);
+    put_host_file(path, "in");
+    snprintf(path, sizeof path, "%s/Game.sit", g_src);
+    put_host_file(path, "not really a StuffIt archive");
+
+    // The root is listed the first time it is enumerated: a file, a folder,
+    // and the archive as a folder named without its ending.
+    uint16_t n = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)renumerate("", &n));
+    ASSERT_EQ_INT(3, (int)n);
+    snprintf(path, sizeof path, "%s/hello.txt", g_cache);
+    ASSERT_EQ_INT(0, (int)host_size(path)); // a placeholder
+    uint32_t len = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)rdata_len("hello.txt", &len));
+    ASSERT_EQ_INT(5, (int)len); // ... that reports the listed size
+
+    // A read-only volume: changes are refused before they are tried.
+    req_reset();
+    put8(0);
+    put16(g_rvol);
+    put32(CNID_ROOT);
+    put_path("new");
+    ASSERT_EQ_INT((int)0xFFFFEC59u, (int)rcall(OP_CREATE_FILE)); // VolLocked
+    req_vol_dir_path(g_rvol, CNID_ROOT, "hello.txt");
+    ASSERT_EQ_INT((int)0xFFFFEC59u, (int)rcall(OP_DELETE));
+    ASSERT_EQ_INT((int)ERR_ACCESS_DENIED, (int)ropen("hello.txt", 0x0003, NULL));
+
+    // Opening the data fork fetches the file.
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)ropen("hello.txt", 0x0001, &ref));
+    ASSERT_EQ_INT(5, (int)host_size(path));
+    req_reset();
+    put8(0);
+    put16(ref);
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_CLOSE_FORK));
+
+    // A folder is listed when it is enumerated.
+    ASSERT_EQ_INT((int)ERR_OK, (int)renumerate("Sub", &n));
+    ASSERT_EQ_INT(1, (int)n);
+
+    // An archive that does not unpack is shown as its file, in its folder.
+    ASSERT_EQ_INT((int)ERR_OK, (int)renumerate("Game", &n));
+    ASSERT_EQ_INT(1, (int)n);
+    snprintf(path, sizeof path, "%s/Game/Game.sit", g_cache);
+    ASSERT_EQ_INT(28, (int)host_size(path));
+
+    // The listing and the data stay in the cache: a later session is served
+    // from it, with no request.
+    uint32_t issued = afp_remote_requests_issued();
+    stub_service_client[g_svc]->on_close(stub_service_ctx[g_svc], REMOTE_SESSION);
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_server_remove("Archive", err, sizeof err));
+    ASSERT_TRUE(atalk_afp_server_add("Archive", err, sizeof err) > 0);
+    char uri[400];
+    snprintf(uri, sizeof uri, "dir://%s", g_src);
+    ASSERT_TRUE(afp_remote_volume_add("Archive", "Remote", uri, g_cache, err, sizeof err) >= 0);
+    ASSERT_TRUE(stub_service_client[g_svc]->on_open(stub_service_ctx[g_svc], REMOTE_SESSION));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_LOGIN));
+    req_reset();
+    put8(0);
+    put16(0x0020);
+    put_pstr("Remote");
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_OPEN_VOL));
+    g_rvol = rd16(g_reply + 2);
+    ASSERT_EQ_INT((int)ERR_OK, (int)renumerate("", &n));
+    ASSERT_EQ_INT(3, (int)n);
+    ASSERT_EQ_INT((int)ERR_OK, (int)ropen("hello.txt", 0x0001, &ref));
+    ASSERT_EQ_INT((int)issued, (int)afp_remote_requests_issued());
+    req_reset();
+    put8(0);
+    put16(ref);
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_CLOSE_FORK));
+    remote_down();
+    fixture_down();
+}
+
+TEST(a_command_waits_for_the_page_and_runs_again) {
+    fixture_up("wait");
+    remote_up("wait", "test://root");
+    char dest[600];
+
+    // The root is not here: the command is deferred and the page asked.
+    uint16_t n = 0;
+    ASSERT_EQ_INT((int)ASP_RESULT_DEFERRED, (int)renumerate("", &n));
+    ASSERT_TRUE(strstr(stub_last_event, "\"event\":\"afp_remote_request\"") != NULL);
+    ASSERT_TRUE(strstr(stub_last_event, "\"op\":\"list\"") != NULL);
+    ASSERT_TRUE(strstr(stub_last_event, "\"uri\":\"test://root\"") != NULL);
+    uint32_t id = last_request(dest, sizeof dest);
+    uint32_t q_id;
+    const char *op, *uri, *qdest;
+    ASSERT_TRUE(afp_remote_request_at(0, &q_id, &op, &uri, &qdest)); // also listed for a page that missed it
+    ASSERT_EQ_INT((int)id, (int)q_id);
+
+    // Asked again while it is on its way: still deferred, no second request.
+    uint32_t issued = afp_remote_requests_issued();
+    ASSERT_EQ_INT((int)ASP_RESULT_DEFERRED, (int)renumerate("", &n));
+    ASSERT_EQ_INT((int)issued, (int)afp_remote_requests_issued());
+
+    // The page answers: the waiting commands run again, and now succeed.
+    put_host_file(
+        dest, "# a listing\nf\tdoc.txt\t42\t1000000000\tTEXT\tttxt\ttest://doc\nd\tFolder\t0\t0\t\t\ttest://folder\n"
+              "f\tbad/name\t1\t0\t\t\ttest://bad\nx\tignored\t1\t0\t\t\ttest://x\n");
+    int retries = stub_retries;
+    ASSERT_EQ_INT(0, afp_remote_complete(id, 0, ""));
+    ASSERT_EQ_INT(retries + 1, stub_retries);
+    ASSERT_EQ_INT(-1, afp_remote_complete(id, 0, "")); // answered once
+    ASSERT_EQ_INT((int)ERR_OK, (int)renumerate("", &n));
+    ASSERT_EQ_INT(3, (int)n); // doc.txt, Folder, bad-name
+    uint32_t len = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)rdata_len("doc.txt", &len));
+    ASSERT_EQ_INT(42, (int)len);
+
+    // The listed type and creator are the placeholder's Finder info.
+    char path[600];
+    snprintf(path, sizeof path, "%s/doc.txt", g_cache);
+    afp_meta_t meta;
+    ASSERT_TRUE(afp_meta_load(path, &meta) && meta.has_finder);
+    ASSERT_EQ_INT(0, memcmp(meta.finder, "TEXTttxt", 8));
+
+    // A fetch that fails fails the command that waited for it, once; the
+    // next open asks again.
+    ASSERT_EQ_INT((int)ASP_RESULT_DEFERRED, (int)ropen("doc.txt", 0x0001, NULL));
+    ASSERT_TRUE(strstr(stub_last_event, "\"op\":\"fetch\"") != NULL);
+    id = last_request(dest, sizeof dest);
+    ASSERT_EQ_INT(0, afp_remote_complete(id, 1, "HTTP 404"));
+    ASSERT_EQ_INT((int)ERR_MISC, (int)ropen("doc.txt", 0x0001, NULL));
+    ASSERT_EQ_INT((int)ASP_RESULT_DEFERRED, (int)ropen("doc.txt", 0x0001, NULL));
+    id = last_request(dest, sizeof dest);
+    put_host_file(dest, "forty-two bytes of text, more or less ok\n");
+    ASSERT_EQ_INT(0, afp_remote_complete(id, 0, ""));
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)ropen("doc.txt", 0x0001, &ref));
+    ASSERT_EQ_INT(41, (int)host_size(path));
+    ASSERT_TRUE(afp_meta_load(path, &meta) && memcmp(meta.finder, "TEXTttxt", 8) == 0); // kept
+    req_reset();
+    put8(0);
+    put16(ref);
+    ASSERT_EQ_INT((int)ERR_OK, (int)rcall(OP_CLOSE_FORK));
+
+    // An answer for a volume that went away is dropped.
+    ASSERT_EQ_INT((int)ASP_RESULT_DEFERRED, (int)renumerate("Folder", &n));
+    id = last_request(dest, sizeof dest);
+    remote_down();
+    ASSERT_EQ_INT(-1, afp_remote_complete(id + 1000, 0, ""));
+    ASSERT_EQ_INT(0, afp_remote_complete(id, 0, ""));
+    fixture_down();
+}
+
 int main(void) {
     // The server is the network's, made once; it serves the plugged-in
     // connection's sessions -- here, one connection for the whole run.
@@ -4220,6 +4562,10 @@ int main(void) {
     RUN(meta_hides_the_names_that_back_server_state);
     RUN(meta_time_conversions_round_trip);
     RUN(desktop_store_reopens_and_prunes);
+
+    RUN(a_second_server_keeps_its_own_volumes);
+    RUN(a_remote_volume_is_listed_and_fetched_on_demand_and_refuses_changes);
+    RUN(a_command_waits_for_the_page_and_runs_again);
 
     fprintf(stderr, "All AFP tests passed\n");
     return 0;

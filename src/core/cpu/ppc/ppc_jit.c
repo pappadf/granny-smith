@@ -42,7 +42,9 @@
 
 #include "ppc_internal.h"
 #include "ppc_pd_ids.h"
+#include "ppc_softfp.h"
 
+#include "breadcrumb.h"
 #include "memory.h"
 #include "object.h"
 #include "predecode.h"
@@ -155,9 +157,87 @@ enum {
     JX_STBX,
     JX_STBUX,
     JX_ADDX,
+    // Floating point (not the 601's: T=1 segments and its alignment rules
+    // stay with the predecoded loop).  The loads and stores: a = frT/frS
+    // (the number), b = rA offset (JX_RA0: rA = 0), c = the displacement
+    // (D-form) or rB offset (X-form).
+    JX_LFS,
+    JX_LFSU,
+    JX_LFD,
+    JX_LFDU,
+    JX_STFS,
+    JX_STFSU,
+    JX_STFD,
+    JX_LFSX,
+    JX_LFSUX,
+    JX_LFDX,
+    JX_LFDUX,
+    JX_STFSX,
+    JX_STFSUX,
+    JX_STFDX,
+    JX_LWBRX, // a = rT offset, b = rA offset (JX_RA0), c = rB offset
+    JX_STWBRX, // a = rS offset, b and c as lwbrx
+    JX_FP, // FP arithmetic and moves, Rc clear, through ppc_jit_fp: c = the word
+    JX_FCMP, // fcmpu / fcmpo through ppc_jit_fp: a = crfD, c = the word
+    JX_DCBZ, // dcbz through ppc_jit_dcbz: b = rA offset (JX_RA0: rA = 0), c = rB offset
     JX_END
 };
 _Static_assert(JX_END < 65536, "translator id space overflow");
+
+// An FP arithmetic or move word (op 59/63, Rc clear) ppc_jit_fp runs: the
+// forms the decoder executes (ppc_decode.h), reserved fields as it checks
+// them; the compares, FPSCR moves and record forms stay with the
+// predecoded loop (they write CR or read FPSCR).
+static bool jit_fp_form(uint32_t iw) {
+    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u, xo10 = (iw >> 1) & 0x3FFu;
+    uint32_t ra = (iw >> 16) & 31u, rb = (iw >> 11) & 31u, rc = (iw >> 6) & 31u;
+    if (op == 63) {
+        switch (xo10) {
+        case 72: // fmr fneg fabs fnabs frsp fctiw fctiwz
+        case 40:
+        case 264:
+        case 136:
+        case 12:
+        case 14:
+        case 15:
+            return true;
+        case 0: // fcmpu fcmpo mffs mtfsf mtfsfi mtfsb0 mtfsb1 mcrfs
+        case 32:
+        case 583:
+        case 711:
+        case 134:
+        case 70:
+        case 38:
+        case 64:
+            return false;
+        default:
+            break;
+        }
+    }
+    switch (xo5) {
+    case 18: // fdiv fsub fadd: FRC reserved
+    case 20:
+    case 21:
+        return rc == 0;
+    case 25: // fmul: FRB reserved
+        return rb == 0;
+    case 28: // fmsub fmadd fnmsub fnmadd
+    case 29:
+    case 30:
+    case 31:
+        return true;
+    case 23: // fsel (604)
+        return op == 63;
+    case 24: // fres (604)
+        return op == 59 && ra == 0 && rc == 0;
+    case 26: // frsqrte (604)
+        return op == 63 && ra == 0 && rc == 0;
+    default:
+        return false;
+    }
+}
+
+static bool jit_unit_is601(void); // the unit being translated runs on a 601 (U)
 
 // The predecoded classifier, plus the translator's own shapes
 static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_entry_t *e) {
@@ -280,12 +360,33 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
         *e = (pd_entry_t){.a = PPD_GOFF(ra), .b = PPD_GOFF(rt), .c = PPD_GOFF(rb) | k << 8 | (iw & 1u) << 16};
         return JX_ARITH;
     }
+    if (!jit_unit_is601() && op >= 48 && op <= 54) { // lfs lfsu lfd lfdu stfs stfsu stfd
+        static const uint16_t fdform[7] = {JX_LFS, JX_LFSU, JX_LFD, JX_LFDU, JX_STFS, JX_STFSU, JX_STFD};
+        if ((op & 1u) && op != 54 && ra == 0)
+            return id; // an update form with rA = 0 (invalid): left to the predecoded loop
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
+        return fdform[op - 48];
+    }
+    if (!jit_unit_is601() && op == 63 && (xo == 0 || xo == 32)) { // fcmpu / fcmpo
+        *e = (pd_entry_t){.a = (uint8_t)(rt >> 2), .c = iw};
+        return JX_FCMP;
+    }
+    if (!jit_unit_is601() && (op == 59 || op == 63) && !(iw & 1u) && jit_fp_form(iw)) {
+        *e = (pd_entry_t){.c = iw};
+        return JX_FP;
+    }
     if (op == 46 || op == 47) { // lmw / stmw
         *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = (uint32_t)(int32_t)(int16_t)iw};
         return op == 46 ? JX_LMW : JX_STMW;
     }
     if (op != 31 || (iw & 1u))
         return id;
+    if (xo == 1014 && !jit_unit_is601()) { // dcbz (a reserved rT is the decoder's illegal form)
+        if (rt)
+            return id;
+        *e = (pd_entry_t){.b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
+        return JX_DCBZ;
+    }
     uint16_t x;
     bool upd = false;
     switch (xo) {
@@ -331,8 +432,44 @@ static uint16_t jit_classify(uint32_t iw, uint32_t ipc, uint32_t page_lo, pd_ent
     case 247:
         x = JX_STBUX, upd = true;
         break;
+    case 534:
+        x = JX_LWBRX;
+        break;
+    case 662:
+        x = JX_STWBRX;
+        break;
     default:
-        return id;
+        if (jit_unit_is601())
+            return id;
+        switch (xo) {
+        case 535:
+            x = JX_LFSX;
+            break;
+        case 567:
+            x = JX_LFSUX, upd = true;
+            break;
+        case 599:
+            x = JX_LFDX;
+            break;
+        case 631:
+            x = JX_LFDUX, upd = true;
+            break;
+        case 663:
+            x = JX_STFSX;
+            break;
+        case 695:
+            x = JX_STFSUX, upd = true;
+            break;
+        case 727:
+            x = JX_STFDX;
+            break;
+        default:
+            return id;
+        }
+        if (upd && ra == 0)
+            return id;
+        *e = (pd_entry_t){.a = (uint8_t)rt, .b = ra ? PPD_GOFF(ra) : JX_RA0, .c = PPD_GOFF(rb)};
+        return x;
     }
     if (upd && ra == 0)
         return id; // the 601's r0-inhibited update: left to the predecoded loop
@@ -379,7 +516,7 @@ static void sleb(int32_t v) {
 // clang-format off
 enum {
     W_BLOCK = 0x02, W_LOOP = 0x03, W_IF = 0x04, W_ELSE = 0x05, W_END = 0x0B, W_BR = 0x0C, W_BR_IF = 0x0D,
-    W_BR_TABLE = 0x0E, W_RETURN = 0x0F, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
+    W_BR_TABLE = 0x0E, W_RETURN = 0x0F, W_CALL = 0x10, W_RETURN_CALL_INDIRECT = 0x13, W_DROP = 0x1A, W_SELECT = 0x1B, W_LGET = 0x20, W_LSET = 0x21, W_LTEE = 0x22,
     W_LOAD = 0x28, W_LOAD8U = 0x2D, W_LOAD16S = 0x2E, W_LOAD16U = 0x2F, W_STORE = 0x36, W_STORE8 = 0x3A,
     W_STORE16 = 0x3B, W_CONST = 0x41, W_EQZ = 0x45, W_EQ = 0x46, W_NE = 0x47, W_LT_S = 0x48, W_LT_U = 0x49,
     W_GT_S = 0x4A, W_GT_U = 0x4B, W_LE_U = 0x4D, W_GE_U = 0x4F, W_CLZ = 0x67, W_ADD = 0x6A, W_SUB = 0x6B,
@@ -387,10 +524,17 @@ enum {
     W_DIV_S = 0x6D, W_DIV_U = 0x6E, W_ROTL = 0x77, W_ROTR = 0x78, W_I64_ADD = 0x7C, W_I64_MUL = 0x7E,
     W_I64_SHR_U = 0x88, W_WRAP = 0xA7, W_EXTEND_S = 0xAC, W_EXTEND_U = 0xAD,
     W_EXT8_S = 0xC0, W_EXT16_S = 0xC1,
+    W_I64_LOAD = 0x29, W_I64_STORE = 0x37, W_I64_CONST = 0x42, W_I64_AND = 0x83, W_I64_OR = 0x84,
+    W_I64_SHL = 0x86, W_I64_EQZ = 0x50, W_F64_PROMOTE = 0xBB, W_I64_REINTERPRET = 0xBD, W_F32_REINTERPRET = 0xBE,
+    W_I64_EQ = 0x51, W_I64_XOR = 0x85, W_F64_CONST = 0x44, W_F64_NE = 0x62, W_F64_LT = 0x63, W_F64_GT = 0x64, W_F64_GE = 0x66, W_F64_TRUNC = 0x9D, W_I32_TRUNC_F64_S = 0xAA,
+    W_F64_ABS = 0x99, W_F64_NEG = 0x9A, W_F64_ADD = 0xA0, W_F64_SUB = 0xA1, W_F64_MUL = 0xA2, W_F32_DEMOTE = 0xB6,
+    W_F64_REINTERPRET = 0xBF,
 };
 // clang-format on
 #define BT_VOID 0x40
 #define BT_I32  0x7F
+#define BT_I64  0x7E
+#define BT_F64  0x7C
 
 static void op(uint8_t o) {
     put(o);
@@ -398,6 +542,19 @@ static void op(uint8_t o) {
 static void iconst(uint32_t v) {
     put(W_CONST);
     sleb((int32_t)v);
+}
+static void i64const(uint64_t v) {
+    put(W_I64_CONST);
+    int64_t x = (int64_t)v;
+    for (;;) { // signed LEB128, 64-bit
+        uint8_t b = x & 0x7F;
+        x >>= 7;
+        if ((x == 0 && !(b & 0x40)) || (x == -1 && (b & 0x40))) {
+            put(b);
+            return;
+        }
+        put(b | 0x80);
+    }
 }
 static void lget(uint32_t l) {
     put(W_LGET);
@@ -473,6 +630,9 @@ enum {
     L_EA,
     L_COUNT
 };
+// After the i32 group: i64 locals (FPR images), then f64 ones (the inline
+// FP arithmetic's values)
+enum { L_D0 = L_COUNT, L_D1, L_D2, L_D3, L_F0, L_F1, L_F2, L_F3, L_F4, L_F5, L_ALL };
 #define NPARAMS 4
 #define GPR(r)  (L_GPR + (r))
 
@@ -507,6 +667,7 @@ static struct {
     bool it, pr; // the fetch mode it runs under (MSR[IT], MSR[PR])
     const jt_ref_t *refs; // the region's refs (indirect branches)
     uint8_t *bvalid; // the region's per-block valid flags
+    bool guarded; // blocks test their valid flag: a chunk that was invalidated before (§3.7)
     bool is601; // mtxer keeps only the 601's implemented XER bits; no time base
     uint32_t msr_mask; // the MSR bits mtmsr writes (ppc_msr_mask)
     bool shared; // the module's memory is shared (pthreads build)
@@ -515,6 +676,10 @@ static struct {
     // and chunks, the chunk size, and the field offsets the lookup reads
     uint32_t rdirect, roff_slot, roff_chunk, chunk_size, chunk_fn, chunk_maps, slot_owner, slot_hadj;
 } U;
+
+static bool jit_unit_is601(void) {
+    return U.is601;
+}
 
 // Translation state of the block being emitted
 static uint32_t g_nblocks, g_cur_block, g_depth;
@@ -545,6 +710,11 @@ static uint32_t g_block_mask, g_block_defs; // the registers it loads; the ones 
 // jit.regs = 1: the GPRs live in their locals for the whole function instead
 // (loaded by the prologue, stored at $out and before a chain)
 static uint32_t g_fn_regs;
+// jit.direct (default 1): a forward branch inside a chunk is a br to its
+// block's label (the labels close in block order, right before each
+// block's code) instead of a trip through the dispatcher's br_table; 0
+// sends every branch through the dispatcher, as before
+static uint32_t g_direct = 1;
 static uint32_t g_fn_mask, g_fn_defs;
 static void emit_store_regs(uint32_t defs) {
     for (uint32_t r = 0; r < 32; r++) {
@@ -784,6 +954,13 @@ static void emit_goto(uint32_t target) {
     if ((uint32_t)k != g_cur_page)
         emit_fetch_check(target, U.pages[k].host_adjust);
     emit_flush();
+    if (g_direct && b > g_cur_block) {
+        // blocks b+1..n-1's labels are open, innermost first: block b's
+        // ends right before its code, where the dispatcher would land too
+        op(W_BR);
+        uleb(b - g_cur_block - 1 + g_depth);
+        return;
+    }
     iconst(b);
     lset(L_IDX);
     op(W_BR);
@@ -982,8 +1159,8 @@ static void emit_access_test(uint32_t size, bool store) {
     }
 }
 
-// The store helpers every module defines after its function (index 2,
-// after the two imported helpers): the fast path of a store, called from
+// The store helpers every module defines after its function (index 3,
+// after the three imported helpers): the fast path of a store, called from
 // each store instead of repeated at it, with the slow path a store from
 // user code needs -- ppc_jit_code_store, a store into a code page -- out of
 // line.  Inline, that path was most of a store's code, and the engine
@@ -995,7 +1172,7 @@ static void emit_access_test(uint32_t size, bool store) {
 // reads a local of the function.
 //   (ea, value, table, address mask) -> status
 enum { JH_ST8, JH_ST16, JH_ST32, JH_N };
-#define JH_FN(h) (3u + (h))
+#define JH_FN(h) (5u + (h)) // after the four imports and the translation
 static uint32_t jh_store(uint32_t size) {
     return size == 4 ? JH_ST32 : size == 2 ? JH_ST16 : JH_ST8;
 }
@@ -1221,6 +1398,728 @@ static void emit_store(uint32_t size, bool helper, int upd_reg) {
     g_depth--;
 }
 
+// === Floating point (JX_LFS .. JX_FP) ===
+
+// Leave at the instruction (the predecoded loop's) when the i32 on the
+// stack is nonzero
+static void emit_deopt_if(void) {
+    op(W_IF);
+    put(BT_VOID);
+    g_depth++;
+    emit_deopt();
+    op(W_END);
+    g_depth--;
+}
+
+// An FP load or store runs here only with MSR[FP] set and MSR[LE] clear:
+// FP unavailable is the predecoded loop's to raise, and a little-endian
+// access takes its gate
+static void emit_fp_gate(void) {
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_LE);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    emit_deopt_if();
+}
+
+// ... and word-aligned at L_EA: the 604 and 750 take an alignment
+// exception otherwise (ppc_scalar_gate, iw_requires_word_align_604); a
+// doubleword need not be 8-aligned, and one crossing a page leaves
+// through the access test
+static void emit_align_gate(void) {
+    lget(L_EA);
+    iconst(3);
+    op(W_AND);
+    emit_deopt_if();
+}
+
+// i64 on the stack -> frT
+static void emit_fpr_set_from(uint32_t frt, uint32_t local) {
+    lget(L_P);
+    lget(local);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * frt);
+}
+
+// lfs/lfsu/lfsx/lfsux: EA on the stack; frT <- the single there, widened
+// exactly (ppc_f32_to_f64: bitwise for inf/NaN, so a signalling NaN stays
+// one); upd_reg: the update form's rA (-1: none)
+static void emit_lfs(uint32_t frt, int upd_reg) {
+    lset(L_EA);
+    emit_align_gate();
+    lget(L_EA);
+    emit_load(4, false);
+    lset(L_T3);
+    if (upd_reg >= 0) {
+        lget(L_EA);
+        lset(GPR(upd_reg));
+    }
+    lget(L_T3);
+    iconst(0x7F800000u);
+    op(W_AND);
+    iconst(0x7F800000u);
+    op(W_EQ);
+    op(W_IF);
+    put(BT_I64);
+    g_depth++;
+    lget(L_T3); // sign << 63 | 0x7FF << 52 | fraction << 29
+    iconst(0x80000000u);
+    op(W_AND);
+    op(W_EXTEND_U);
+    i64const(32);
+    op(W_I64_SHL);
+    lget(L_T3);
+    iconst(0x007FFFFFu);
+    op(W_AND);
+    op(W_EXTEND_U);
+    i64const(29);
+    op(W_I64_SHL);
+    op(W_I64_OR);
+    i64const(0x7FF0000000000000ull);
+    op(W_I64_OR);
+    op(W_ELSE);
+    lget(L_T3); // exact for every finite single, denormals included
+    op(W_F32_REINTERPRET);
+    op(W_F64_PROMOTE);
+    op(W_I64_REINTERPRET);
+    op(W_END);
+    g_depth--;
+    lset(L_D0);
+    emit_fpr_set_from(frt, L_D0);
+}
+
+// lfd/lfdu/lfdx/lfdux: EA on the stack; frT <- the doubleword there
+static void emit_lfd(uint32_t frt, int upd_reg) {
+    lset(L_EA);
+    emit_align_gate();
+    emit_access_test(8, false);
+    op(W_IF);
+    put(BT_I64);
+    g_depth++;
+    emit_deopt(); // stack-polymorphic after the branch: the i64 is satisfied
+    op(W_ELSE);
+    lget(L_T1);
+    lget(L_T0);
+    op(W_ADD);
+    lset(L_T3);
+    lget(L_T3);
+    mem(W_LOAD, 2, 0);
+    emit_bswap32();
+    op(W_EXTEND_U);
+    i64const(32);
+    op(W_I64_SHL);
+    lget(L_T3);
+    mem(W_LOAD, 2, 4);
+    emit_bswap32();
+    op(W_EXTEND_U);
+    op(W_I64_OR);
+    op(W_END);
+    g_depth--;
+    lset(L_D0);
+    if (upd_reg >= 0) {
+        lget(L_EA);
+        lset(GPR(upd_reg));
+    }
+    emit_fpr_set_from(frt, L_D0);
+}
+
+// The word stfs stores for frS into L_T3 (ppc_f64_to_f32_store's
+// undenormalized case: a bit selection); a value it would denormalize
+// leaves for the predecoded loop
+static void emit_stfs_value(uint32_t frs) {
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * frs);
+    lset(L_D0);
+    lget(L_D0); // exponent > 896 ...
+    i64const(52);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x7FFu);
+    op(W_AND);
+    iconst(896);
+    op(W_GT_U);
+    lget(L_D0); // ... or +-0
+    i64const(1);
+    op(W_I64_SHL);
+    op(W_I64_EQZ);
+    op(W_OR);
+    op(W_EQZ);
+    emit_deopt_if();
+    lget(L_D0); // WORD[0-1] <- frS[0-1]; WORD[2-31] <- frS[5-34]
+    i64const(32);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0xC0000000u);
+    op(W_AND);
+    lget(L_D0);
+    i64const(29);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x3FFFFFFFu);
+    op(W_AND);
+    op(W_OR);
+    lset(L_T3);
+}
+
+// stfd/stfdx: EA on the stack, frS's image in L_D0: two word stores
+// through the store helper.  A miss of either leaves at the instruction
+// (the predecoded loop stores it again whole, the same bytes); a store
+// into translated code leaves after it once both halves are done.
+static void emit_stfd(void) {
+    lset(L_EA);
+    emit_align_gate();
+    lget(L_EA);
+    lget(L_D0);
+    i64const(32);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    lget(L_WTAB);
+    lget(L_AMASK);
+    op(W_CALL);
+    uleb(JH_FN(JH_ST32));
+    ltee(L_T3); // 0 stored, 1 not stored, 2 stored into translated code
+    iconst(1);
+    op(W_EQ);
+    emit_deopt_if();
+    lget(L_EA);
+    iconst(4);
+    op(W_ADD);
+    lget(L_D0);
+    op(W_WRAP);
+    lget(L_WTAB);
+    lget(L_AMASK);
+    op(W_CALL);
+    uleb(JH_FN(JH_ST32));
+    ltee(L_T2);
+    iconst(1);
+    op(W_EQ);
+    emit_deopt_if();
+    lget(L_T2);
+    lget(L_T3);
+    op(W_OR); // 2: leave after the instruction, through the deopt tail
+    op(W_IF);
+    put(BT_VOID);
+    g_depth++;
+    iconst(((g_cur_addr - g_block_addr) >> 2) + 1u);
+    lset(L_IDX);
+    op(W_BR);
+    uleb(g_depth - g_deopt_depth);
+    op(W_END);
+    g_depth--;
+}
+
+// === Inline FP arithmetic (JX_FP's common cases) ===
+//
+// fadd/fsub/fmul and the madd family, single and double, inline: the host
+// fast path of ppc_softfp.c (sf_fast_arith) step for step -- round to
+// nearest, operands, product and result inside its exponent envelope, a
+// product of two short significands only (exact, so neither the result
+// nor its error needs an fma) -- with XE clear, so the FPSCR changes in
+// FR, FI, XX (and FX on its rise) and FPRF alone.  Zeros too, which the C
+// fast path leaves to its slow one: a zero operand (the product of a zero
+// factor is an exact ±0, a sum with a zero term is the other term) and an
+// exact zero result (cancellation; FR and FI clear, FPRF ±zero), with
+// IEEE's signed-zero rules, which round to nearest shares with the kernel.
+// Any check that fails takes the helper (ppc_jit_fp), which runs the C
+// kernel: the result and FPSCR are the same either way.
+
+static uint32_t g_fp_slow; // the depth of the inline path's $slow block
+
+// The `fp` slot of a fast-path FP kind (sf_op), or -1 (the helper only)
+static int fp_inline_op(uint32_t iw) {
+    switch ((iw >> 1) & 31u) {
+    case 21:
+        return PPC_SF_ADD;
+    case 20:
+        return PPC_SF_SUB;
+    case 25:
+        return PPC_SF_MUL;
+    case 29:
+        return PPC_SF_MADD;
+    case 28:
+        return PPC_SF_MSUB;
+    case 31:
+        return PPC_SF_NMADD;
+    case 30:
+        return PPC_SF_NMSUB;
+    default:
+        return -1;
+    }
+}
+
+static void br_slow_if(void) {
+    op(W_BR_IF);
+    uleb(g_depth - g_fp_slow);
+}
+
+static void f64const(double d) {
+    uint64_t u;
+    memcpy(&u, &d, 8);
+    put(W_F64_CONST);
+    for (int i = 0; i < 8; i++)
+        put((uint8_t)(u >> (8 * i)));
+}
+
+// 1 when the i64 local's biased exponent is outside the fast path's
+// envelope (sf_fast_ok: [123, 2023], so a zero, denormal, inf or NaN)
+static void emit_outside(uint32_t local) {
+    lget(local);
+    i64const(52);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    iconst(0x7FFu);
+    op(W_AND);
+    iconst(123);
+    op(W_SUB);
+    iconst(2023 - 123);
+    op(W_GT_U);
+}
+// 1 when the i64 local is +0 or -0
+static void emit_is_zero(uint32_t local) {
+    lget(local);
+    i64const(1);
+    op(W_I64_SHL);
+    op(W_I64_EQZ);
+}
+
+// FPR `n`'s image into the i64 local: leave for the helper unless it is
+// inside the envelope or a zero
+static void emit_fpr_operand(uint32_t n, uint32_t local) {
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * n);
+    lset(local);
+    emit_outside(local);
+    emit_is_zero(local);
+    op(W_EQZ);
+    op(W_AND);
+    br_slow_if();
+}
+
+// TwoSum (sf_two_sum): L_F3 = x + y, L_F4 = the exact error
+static void emit_two_sum(uint32_t x, uint32_t y) {
+    lget(x);
+    lget(y);
+    op(W_F64_ADD);
+    lset(L_F3); // s
+    lget(L_F3);
+    lget(x);
+    op(W_F64_SUB);
+    lset(L_F5); // bb = s - x
+    lget(x);
+    lget(L_F3);
+    lget(L_F5);
+    op(W_F64_SUB);
+    op(W_F64_SUB); // x - (s - bb)
+    lget(y);
+    lget(L_F5);
+    op(W_F64_SUB); // y - bb
+    op(W_F64_ADD);
+    lset(L_F4);
+}
+
+// jit.trace = 17: the helper's check of an inline word (ppc_jit_fp's mode 2, 3)
+static void emit_fp_check(uint32_t iw, uint32_t mode) {
+    iconst(iw);
+    iconst(mode);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    op(W_DROP);
+}
+
+static void emit_fp_inline(uint32_t iw, int fop) {
+    bool single = (iw >> 26) == 59;
+    uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw), rb = PPC_RB(iw), rc = PPC_FRC(iw);
+    bool has_b = fop != PPC_SF_MUL, has_c = fop != PPC_SF_ADD && fop != PPC_SF_SUB;
+    if (g_trace == 17)
+        emit_fp_check(iw, 2);
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    // MSR[FP] set and FE0/FE1 clear; round to nearest and XE clear
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    br_slow_if();
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+    ltee(L_T3);
+    iconst(PPC_FPSCR_RN | PPC_FPSCR_XE);
+    op(W_AND);
+    br_slow_if();
+    emit_fpr_operand(ra, L_D0);
+    if (has_b)
+        emit_fpr_operand(rb, L_D1);
+    if (has_c) {
+        emit_fpr_operand(rc, L_D2);
+        lget(L_D0); // short significands only (sf_short_product)
+        lget(L_D2);
+        op(W_I64_OR);
+        i64const(0x7FFFFFFull);
+        op(W_I64_AND);
+        op(W_I64_EQZ);
+        op(W_EQZ);
+        br_slow_if();
+    }
+    lget(L_D0);
+    op(W_F64_REINTERPRET);
+    lset(L_F0);
+    if (has_b) {
+        lget(L_D1);
+        op(W_F64_REINTERPRET);
+        if (fop == PPC_SF_SUB || fop == PPC_SF_MSUB || fop == PPC_SF_NMSUB)
+            op(W_F64_NEG);
+        lset(L_F1);
+    }
+    if (has_c) {
+        lget(L_D2);
+        op(W_F64_REINTERPRET);
+        lset(L_F2);
+    }
+    // r (L_F3) and its error (L_F4)
+    if (fop == PPC_SF_ADD || fop == PPC_SF_SUB) {
+        emit_two_sum(L_F0, L_F1);
+    } else if (fop == PPC_SF_MUL) {
+        lget(L_F0);
+        lget(L_F2);
+        op(W_F64_MUL);
+        lset(L_F3);
+        f64const(0.0);
+        lset(L_F4);
+    } else {
+        lget(L_F0); // the exact product: inside the envelope, or a zero factor's ±0
+        lget(L_F2);
+        op(W_F64_MUL);
+        lset(L_F0);
+        lget(L_F0);
+        op(W_I64_REINTERPRET);
+        lset(L_D3);
+        emit_outside(L_D3);
+        emit_is_zero(L_D0);
+        emit_is_zero(L_D2);
+        op(W_OR);
+        op(W_EQZ);
+        op(W_AND);
+        br_slow_if();
+        emit_two_sum(L_F0, L_F1);
+    }
+    // The result inside the envelope, or an exact zero: a product with a
+    // zero factor, or a sum that cancelled (the sum of two doubles that
+    // rounds to zero is zero, its error too).  (A product of two factors
+    // inside the envelope can underflow to zero: that one leaves.)
+    lget(L_F3);
+    op(W_I64_REINTERPRET);
+    lset(L_D3);
+    emit_outside(L_D3);
+    if (fop == PPC_SF_MUL) {
+        emit_is_zero(L_D0);
+        emit_is_zero(L_D2);
+        op(W_OR);
+    } else
+        emit_is_zero(L_D3);
+    op(W_EQZ);
+    op(W_AND);
+    br_slow_if();
+    // inexact -> L_T0, up (|rounded| > |exact|) -> L_T1
+    if (single) {
+        lget(L_F4); // a single-precision tie with the exact value off it: double rounding
+        f64const(0.0);
+        op(W_F64_NE);
+        lget(L_D3);
+        i64const(0x1FFFFFFFull);
+        op(W_I64_AND);
+        i64const(0x10000000ull);
+        op(W_I64_EQ);
+        op(W_AND);
+        br_slow_if();
+        lget(L_F3);
+        op(W_F32_DEMOTE);
+        op(W_F64_PROMOTE);
+        lset(L_F5); // ds
+        lget(L_F5); // tiny (or near it) or overflowed; a zero is exact
+        op(W_I64_REINTERPRET);
+        i64const(52);
+        op(W_I64_SHR_U);
+        op(W_WRAP);
+        iconst(0x7FFu);
+        op(W_AND);
+        iconst(1023u - 125u);
+        op(W_SUB);
+        iconst(252);
+        op(W_GT_U);
+        emit_is_zero(L_D3);
+        op(W_EQZ);
+        op(W_AND);
+        br_slow_if();
+        lget(L_F5);
+        lget(L_F3);
+        op(W_F64_NE);
+        op(W_IF);
+        put(BT_VOID);
+        g_depth++;
+        iconst(1);
+        lset(L_T0);
+        lget(L_F5);
+        op(W_F64_ABS);
+        lget(L_F3);
+        op(W_F64_ABS);
+        op(W_F64_GT);
+        lset(L_T1);
+        op(W_ELSE);
+    }
+    lget(L_F4);
+    f64const(0.0);
+    op(W_F64_NE);
+    ltee(L_T0);
+    lget(L_F4);
+    f64const(0.0);
+    op(W_F64_LT);
+    lget(L_F3);
+    f64const(0.0);
+    op(W_F64_LT);
+    op(W_NE);
+    op(W_AND);
+    lset(L_T1);
+    if (single) {
+        op(W_END);
+        g_depth--;
+        lget(L_F5);
+        op(W_I64_REINTERPRET);
+        lset(L_D3);
+    }
+    if (fop == PPC_SF_NMADD || fop == PPC_SF_NMSUB) {
+        lget(L_D3);
+        i64const(0x8000000000000000ull);
+        op(W_I64_XOR);
+        lset(L_D3);
+    }
+    lget(L_P);
+    lget(L_D3);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * rt);
+    // FPSCR (in L_T3): FR, FI, FPRF; XX, and FX when XX rises
+    lget(L_P);
+    lget(L_T3);
+    iconst(~(PPC_FPSCR_FR | PPC_FPSCR_FI | PPC_FPSCR_FPRF));
+    op(W_AND);
+    iconst(PPC_FPSCR_FI | PPC_FPSCR_XX);
+    iconst(0);
+    lget(L_T0);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FR);
+    iconst(0);
+    lget(L_T1);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FX); // FX: XX was clear before
+    iconst(0);
+    lget(L_T0);
+    lget(L_T3);
+    iconst(PPC_FPSCR_XX);
+    op(W_AND);
+    op(W_EQZ);
+    op(W_AND);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(0x12000u); // FPRF: -zero / +zero, -normal / +normal
+    iconst(0x02000u);
+    lget(L_D3);
+    i64const(63);
+    op(W_I64_SHR_U);
+    op(W_WRAP);
+    ltee(L_T1);
+    op(W_SELECT);
+    iconst(0x08000u);
+    iconst(0x04000u);
+    lget(L_T1);
+    op(W_SELECT);
+    emit_is_zero(L_D3);
+    op(W_SELECT);
+    op(W_OR);
+    mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
+    g_depth--;
+    if (g_trace == 17)
+        emit_fp_check(iw, 3);
+}
+
+// The FP moves (fmr fneg fabs fnabs) and fsel, Rc clear: bit operations and
+// a select, no FPSCR effect, so inline once MSR[FP] is set (without it the
+// helper declines -- leave -- and the predecoded loop raises FP
+// unavailable; an enabled FP exception changes nothing for them).  fsel:
+// frA >= 0 (so -0 too) ? frC : frB, a NaN frA giving frB.  Returns false
+// for any other word.  (On Quake III's demo these were 16 % of the helper's
+// calls, every one of them a call for a few bit operations.)
+static bool emit_fp_move_inline(uint32_t iw) {
+    uint32_t xo10 = (iw >> 1) & 0x3FFu;
+    bool sel = ((iw >> 1) & 31u) == 23;
+    if ((iw >> 26) != 63 || (!sel && xo10 != 72 && xo10 != 40 && xo10 != 264 && xo10 != 136))
+        return false;
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP);
+    op(W_AND);
+    op(W_EQZ);
+    br_slow_if();
+    lget(L_P); // the store's address
+    if (sel) {
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_FRC(iw));
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RA(iw));
+        op(W_F64_REINTERPRET);
+        f64const(0.0);
+        op(W_F64_GE);
+        op(W_SELECT);
+    } else {
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+        if (xo10 == 40) { // fneg
+            i64const(0x8000000000000000ull);
+            op(W_I64_XOR);
+        } else if (xo10 == 264) { // fabs
+            i64const(0x7FFFFFFFFFFFFFFFull);
+            op(W_I64_AND);
+        } else if (xo10 == 136) { // fnabs
+            i64const(0x8000000000000000ull);
+            op(W_I64_OR);
+        }
+    }
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * PPC_RT(iw));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
+    g_depth--;
+    return true;
+}
+
+// fctiwz (Rc clear) of a finite frB whose truncation fits 32 bits, with FP
+// available, its exceptions off and FPSCR[XE] clear: ppc_sf_fctiw's
+// in-range path at round-toward-zero -- frD = 0xFFF80000 || the integer;
+// FR and FI cleared, then FI and XX (FX on its rise) when the value was
+// inexact (never FR: truncation does not increment); FPRF unchanged, and
+// XE clear keeps FEX as derived.  NaN, infinities, out-of-range values
+// and the guards' misses take the helper (VXCVI, the saturations).
+// Returns false for any other word.  (15 % of the helper's calls on Quake
+// III's demo: its float-to-int casts.)
+static bool emit_fctiwz_inline(uint32_t iw) {
+    if ((iw >> 26) != 63 || ((iw >> 1) & 0x3FFu) != 15)
+        return false;
+    op(W_BLOCK); // $done
+    put(BT_VOID);
+    g_depth++;
+    op(W_BLOCK); // $slow
+    put(BT_VOID);
+    g_depth++;
+    g_fp_slow = g_depth;
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, msr));
+    iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+    op(W_AND);
+    iconst(PPC_MSR_FP);
+    op(W_NE);
+    br_slow_if();
+    lget(L_P);
+    mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+    ltee(L_T3);
+    iconst(PPC_FPSCR_XE);
+    op(W_AND);
+    br_slow_if();
+    lget(L_P);
+    mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(iw));
+    op(W_F64_REINTERPRET);
+    lset(L_F0);
+    lget(L_F0); // -2^31 - 1 < x < 2^31 (a NaN fails both)
+    f64const(-2147483649.0);
+    op(W_F64_GT);
+    lget(L_F0);
+    f64const(2147483648.0);
+    op(W_F64_LT);
+    op(W_AND);
+    op(W_EQZ);
+    br_slow_if();
+    lget(L_F0); // inexact -> L_T0
+    op(W_F64_TRUNC);
+    lget(L_F0);
+    op(W_F64_NE);
+    lset(L_T0);
+    lget(L_P);
+    lget(L_F0);
+    op(W_I32_TRUNC_F64_S);
+    op(W_EXTEND_U);
+    i64const(0xFFF8000000000000ull);
+    op(W_I64_OR);
+    mem(W_I64_STORE, 3, offsetof(ppc_t, fpr) + 8u * PPC_RT(iw));
+    lget(L_P);
+    lget(L_T3);
+    iconst(~(PPC_FPSCR_FR | PPC_FPSCR_FI));
+    op(W_AND);
+    iconst(PPC_FPSCR_FI | PPC_FPSCR_XX);
+    iconst(0);
+    lget(L_T0);
+    op(W_SELECT);
+    op(W_OR);
+    iconst(PPC_FPSCR_FX); // FX: XX was clear before
+    iconst(0);
+    lget(L_T0);
+    lget(L_T3);
+    iconst(PPC_FPSCR_XX);
+    op(W_AND);
+    op(W_EQZ);
+    op(W_AND);
+    op(W_SELECT);
+    op(W_OR);
+    mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+    op(W_BR); // to $done
+    uleb(1);
+    op(W_END); // $slow: the helper
+    g_depth--;
+    iconst(iw);
+    iconst(0);
+    iconst(0);
+    op(W_CALL);
+    uleb(2);
+    emit_deopt_if();
+    op(W_END); // $done
+    g_depth--;
+    return true;
+}
+
 // CR field `crf` = (L_T0 < L_T1 ? 8 : L_T0 > L_T1 ? 4 : 2) | XER[SO]
 static void emit_cmp(uint32_t crf, bool is_unsigned) {
     uint32_t sh = 28 - 4 * crf;
@@ -1396,6 +2295,14 @@ static uint32_t entry_regs(uint16_t id, const pd_entry_t *e) {
         return (~0u << e->a) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id == JX_ADDX)
         return (1u << (e->a >> 2)) | (1u << (e->b >> 2)) | (1u << ((e->c & 0xFFu) >> 2));
+    if (id == JX_FP || id == JX_FCMP)
+        return 0;
+    if (id == JX_DCBZ) // rA and rB
+        return (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
+    if (id >= JX_LFS && id <= JX_STFD) // D-form: rA only (a is an FPR)
+        return e->b == JX_RA0 ? 0u : 1u << (e->b >> 2);
+    if (id >= JX_LFSX && id <= JX_STFDX) // X-form: rA and rB
+        return (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= JX_LWZX && id < JX_END)
         return (1u << (e->a >> 2)) | (1u << (e->c >> 2)) | (e->b == JX_RA0 ? 0u : 1u << (e->b >> 2));
     if (id >= PPD_LWZ && id <= PPD_STHU && e->b == JX_RA0)
@@ -1418,6 +2325,28 @@ static uint32_t entry_defs(uint16_t id, const pd_entry_t *e) {
     case JX_MCRXR:
     case JX_MTSPR:
         return 0;
+    case JX_FP:
+    case JX_FCMP:
+    case JX_LFS:
+    case JX_LFD:
+    case JX_STFS:
+    case JX_STFD:
+    case JX_LFSX:
+    case JX_LFDX:
+    case JX_STFSX:
+    case JX_STFDX:
+    case JX_STWBRX:
+    case JX_DCBZ:
+        return 0;
+    case JX_LFSU:
+    case JX_LFDU:
+    case JX_STFSU:
+    case JX_LFSUX:
+    case JX_LFDUX:
+    case JX_STFSUX:
+        return 1u << (e->b >> 2); // the updated rA
+    case JX_LWBRX:
+        return 1u << (e->a >> 2);
     case JX_MTMSR:
     case JX_STWCX:
         return 0;
@@ -2489,6 +3418,211 @@ static void emit_insn(uint16_t id, const pd_entry_t *e, uint32_t iw, uint32_t ip
         }
         return;
     }
+    case JX_LFS:
+    case JX_LFSU:
+    case JX_LFD:
+    case JX_LFDU:
+    case JX_LFSX:
+    case JX_LFSUX:
+    case JX_LFDX:
+    case JX_LFDUX: {
+        bool x = id >= JX_LFSX, upd = id == JX_LFSU || id == JX_LFDU || id == JX_LFSUX || id == JX_LFDUX;
+        bool dbl = id == JX_LFD || id == JX_LFDU || id == JX_LFDX || id == JX_LFDUX;
+        emit_fp_gate();
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (x)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        if (dbl)
+            emit_lfd(a, upd ? (int)(b >> 2) : -1);
+        else
+            emit_lfs(a, upd ? (int)(b >> 2) : -1);
+        return;
+    }
+    case JX_STFS:
+    case JX_STFSU:
+    case JX_STFSX:
+    case JX_STFSUX: {
+        bool x = id >= JX_LFSX, upd = id == JX_STFSU || id == JX_STFSUX;
+        emit_fp_gate();
+        emit_stfs_value(a);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (x)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        lset(L_EA);
+        emit_align_gate();
+        lget(L_EA);
+        emit_store(4, true, upd ? (int)(b >> 2) : -1);
+        if (upd) {
+            lget(L_EA);
+            lset(RD(b));
+        }
+        return;
+    }
+    case JX_STFD:
+    case JX_STFDX:
+        emit_fp_gate();
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * a);
+        lset(L_D0);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        if (id == JX_STFDX)
+            lget(RD(c));
+        else
+            iconst(c);
+        op(W_ADD);
+        emit_stfd();
+        return;
+    case JX_LWBRX: // the word, little-endian
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        emit_load(4, false);
+        emit_bswap32();
+        lset(RD(a));
+        return;
+    case JX_STWBRX:
+        lget(RD(a));
+        emit_bswap32();
+        lset(L_T3);
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        emit_store(4, true, -1);
+        return;
+    case JX_DCBZ: // ppc_jit_dcbz(ea): 1 when it did nothing (leave at the instruction)
+        if (b == JX_RA0)
+            iconst(0);
+        else
+            lget(RD(b));
+        lget(RD(c));
+        op(W_ADD);
+        iconst(0);
+        iconst(0);
+        op(W_CALL);
+        uleb(3);
+        emit_deopt_if();
+        return;
+    case JX_FP: // ppc_jit_fp: 1 when it did nothing (leave at the instruction)
+        if (fp_inline_op(c) >= 0) {
+            emit_fp_inline(c, fp_inline_op(c));
+            return;
+        }
+        if (emit_fp_move_inline(c) || emit_fctiwz_inline(c))
+            return;
+        iconst(c);
+        iconst(0);
+        iconst(0);
+        op(W_CALL);
+        uleb(2);
+        emit_deopt_if();
+        return;
+    case JX_FCMP: { // inline when ordered, else ppc_jit_fp's compare mode: 1 (leave) or 0x10 | the CR field
+        uint32_t sh = 28 - 4 * a;
+        // ppc_fcmp's ordered path, with FP available and its exceptions
+        // off (where the helper runs at all): c from the comparison (-0 ==
+        // +0), FPSCR[FPCC] = c, CR field = c; nothing else changes (FPCC is
+        // no exception bit, so the summary bits stay as derived).  A NaN
+        // operand takes the helper (VXSNAN / VXVC).
+        op(W_BLOCK); // $done
+        put(BT_VOID);
+        g_depth++;
+        op(W_BLOCK); // $slow
+        put(BT_VOID);
+        g_depth++;
+        g_fp_slow = g_depth;
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, msr));
+        iconst(PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1);
+        op(W_AND);
+        iconst(PPC_MSR_FP);
+        op(W_NE);
+        br_slow_if();
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RA(c));
+        op(W_F64_REINTERPRET);
+        lset(L_F0);
+        lget(L_P);
+        mem(W_I64_LOAD, 3, offsetof(ppc_t, fpr) + 8u * PPC_RB(c));
+        op(W_F64_REINTERPRET);
+        lset(L_F1);
+        lget(L_F0); // a NaN is unequal to itself
+        lget(L_F0);
+        op(W_F64_NE);
+        lget(L_F1);
+        lget(L_F1);
+        op(W_F64_NE);
+        op(W_OR);
+        br_slow_if();
+        iconst(8); // a < b ? 8 : a > b ? 4 : 2
+        iconst(4);
+        iconst(2);
+        lget(L_F0);
+        lget(L_F1);
+        op(W_F64_GT);
+        op(W_SELECT);
+        lget(L_F0);
+        lget(L_F1);
+        op(W_F64_LT);
+        op(W_SELECT);
+        lset(L_T3);
+        lget(L_P);
+        lget(L_P);
+        mem(W_LOAD, 2, offsetof(ppc_t, fpscr));
+        iconst(~PPC_FPSCR_FPCC);
+        op(W_AND);
+        lget(L_T3);
+        iconst(12);
+        op(W_SHL);
+        op(W_OR);
+        mem(W_STORE, 2, offsetof(ppc_t, fpscr));
+        op(W_BR); // to $done, with the CR merge below it
+        uleb(1);
+        op(W_END); // $slow: the helper
+        g_depth--;
+        iconst(c);
+        iconst(1);
+        iconst(0);
+        op(W_CALL);
+        uleb(2);
+        ltee(L_T3);
+        iconst(1);
+        op(W_EQ);
+        emit_deopt_if();
+        op(W_END); // $done: the field in L_T3 either way
+        g_depth--;
+        lget(L_CR);
+        iconst(~(0xFu << sh));
+        op(W_AND);
+        lget(L_T3);
+        iconst(0xFu);
+        op(W_AND);
+        iconst(sh);
+        op(W_SHL);
+        op(W_OR);
+        lset(L_CR);
+        return;
+    }
     default:
         break;
     }
@@ -2604,16 +3738,25 @@ static uint32_t translate(void) {
     put(BT_I32);
     close_sized(s);
     // Imports: the code-store helper (function 0); the time-base helper
-    // (function 1); the memory (shared in the pthreads build); the
-    // emulator's function table (chaining)
+    // (function 1); the FP helper (function 2); the dcbz helper (function
+    // 3); the memory (shared in the pthreads build); the emulator's
+    // function table (chaining)
     s = open_section(2);
-    uleb(4);
+    uleb(6);
     put_name("e");
     put_name("s");
     put(0x00);
     uleb(1);
     put_name("e");
     put_name("b");
+    put(0x00);
+    uleb(1);
+    put_name("e");
+    put_name("f");
+    put(0x00);
+    uleb(1);
+    put_name("e");
+    put_name("z");
     put(0x00);
     uleb(1);
     put_name("e");
@@ -2644,16 +3787,20 @@ static uint32_t translate(void) {
     uleb(1);
     put_name("f");
     put(0x00);
-    uleb(2); // after the two imported helpers
+    uleb(4); // after the four imported helpers
     close_sized(s);
     s = open_section(10);
     uleb(1 + JH_N);
     uint32_t body = g_len;
     for (int i = 0; i < 5; i++)
         put(0);
-    uleb(1);
+    uleb(3);
     uleb(L_COUNT - NPARAMS);
     put(BT_I32);
+    uleb(L_F0 - L_D0);
+    put(BT_I64);
+    uleb(L_ALL - L_F0);
+    put(BT_F64);
 
     // Prologue: the registers the region names, CR/XER/LR/CTR, the memory
     // system's tables, the fold allowance
@@ -2730,13 +3877,16 @@ static uint32_t translate(void) {
         // Guard: still valid, the budget leaves a slot to spare, a fold
         // left for the branch; otherwise leave at the block's start
         g_block_mask = g_block_defs = 0; // (nothing loaded yet: nothing to store)
-        iconst(addr_of(&U.bvalid[b]));
-        mem(W_LOAD8U, 0, 0);
-        op(W_EQZ);
+        if (U.guarded) { // (a chunk never written stops as a whole instead: §3.7)
+            iconst(addr_of(&U.bvalid[b]));
+            mem(W_LOAD8U, 0, 0);
+            op(W_EQZ);
+        }
         lget(L_BUDGET);
         iconst(bl->n);
         op(W_LE_U);
-        op(W_OR);
+        if (U.guarded)
+            op(W_OR);
         if (bl->branch) {
             lget(L_FOLDS);
             op(W_EQZ);
@@ -2770,7 +3920,8 @@ static uint32_t translate(void) {
             }
             uint16_t id = g_ids[x];
             access |= (id >= PPD_LWZ && id <= PPD_STHU) || (id >= JX_LWZX && id <= JX_STBUX) || id == JX_LMW ||
-                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX;
+                      id == JX_STMW || id == PPD_ISYNC || id == JX_MTMSR || id == JX_LWARX || id == JX_STWCX ||
+                      (id >= JX_LFS && id <= JX_FCMP) || id == JX_DCBZ;
         }
         for (uint32_t r = 0; r < 32; r++) {
             if (!(g_block_mask & (1u << r)))
@@ -2853,6 +4004,21 @@ static uint32_t translate(void) {
         emit_helper(h);
     g_jb[JB_PROLOGUE] += g_len - len_h;
     close_sized(s);
+    // The name section: the translation is named after its first block's
+    // address, so a CPU profile tells the translations apart
+    char fname[16];
+    snprintf(fname, sizeof fname, "ppc_%08x", U.pages[g_blocks[0].page].lpage + 4u * g_blocks[0].start);
+    s = open_section(0);
+    put_name("name");
+    put(1); // function names
+    uint32_t sub = g_len;
+    for (int i = 0; i < 5; i++)
+        put(0);
+    uleb(1);
+    uleb(4);
+    put_name(fname);
+    close_sized(sub);
+    close_sized(s);
     return nb;
 }
 
@@ -2865,7 +4031,7 @@ static uint32_t translate(void) {
 EM_JS(uint32_t, jit_instantiate, (const uint8_t *p, uint32_t n, uint32_t slot), {
     var table = wasmExports['__indirect_function_table'];
     var mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], z: wasmExports['ppc_jit_dcbz'], t: table } });
     var idx = slot;
     table.set(idx, inst.exports.f);
     return idx;
@@ -2889,7 +4055,7 @@ EM_JS(uint32_t, jit_install_async, (uint32_t token, uint32_t slot), {
         return 0;
     mods.delete(token);
     var table = wasmExports['__indirect_function_table'];
-    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], t: table } });
+    var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, s: wasmExports['ppc_jit_code_store'], b: wasmExports['ppc_jit_tb'], f: wasmExports['ppc_jit_fp'], z: wasmExports['ppc_jit_dcbz'], t: table } });
     table.set(slot, inst.exports.f);
     return slot;
 });
@@ -2957,6 +4123,9 @@ typedef struct jit_slot {
 
 typedef struct jit_chunk {
     uint32_t fn; // the function (table index), 0 = none
+    uint32_t fn_dead; // the function while the chunk is dead (fn 0): revalidated or released later
+    bool guarded; // translated with per-block valid-flag tests: it was invalidated before
+    bool dead; // a code write hit it since its translation and its blocks carry no tests: not entered
     jt_ref_t refs[JIT_REGION_PAGES]; // read by the function: its maps of the member pages
     uint16_t *maps[JIT_REGION_PAGES]; // per member page: block per leader word (NONE16)
     uint8_t *bvalid; // per block, 1 = valid
@@ -3022,8 +4191,30 @@ static void skip_word(uint32_t pc, uint32_t msr) {
 // Counters (the `jit` node)
 static struct {
     uint64_t compiles, functions, bytes, calls, deopts, block_invals, regions, insns, lookups, deferred;
+    uint64_t rfi_skips; // entries not counted: the word an rfi returned to
+    uint64_t async_issued, async_landed, async_dropped; // jit.async compiles
     double compile_ms;
 } g_st;
+
+void ppc_jit_perf(ppc_jit_perf_t *out) {
+    *out = (ppc_jit_perf_t){.on = g_ppc_jit_on,
+                            .async = g_async != 0,
+                            .budget_pct = g_budget_pct,
+                            .compiles = g_st.compiles,
+                            .functions = g_st.functions,
+                            .bytes = g_st.bytes,
+                            .calls = g_st.calls,
+                            .deopts = g_st.deopts,
+                            .block_invals = g_st.block_invals,
+                            .regions = g_st.regions,
+                            .insns = g_st.insns,
+                            .lookups = g_st.lookups,
+                            .deferred = g_st.deferred,
+                            .async_issued = g_st.async_issued,
+                            .async_landed = g_st.async_landed,
+                            .async_dropped = g_st.async_dropped,
+                            .compile_ms = g_st.compile_ms};
+}
 
 void ppc_jit_status(ppc_jit_status_t *out) {
     *out = (ppc_jit_status_t){.on = g_ppc_jit_on,
@@ -3055,7 +4246,9 @@ static void region_drop_code(jit_region_t *R) {
     for (uint32_t c = 0; c < R->nchunks; c++) {
         jit_chunk_t *ch = &R->chunk[c];
         release_fn(ch->fn);
-        ch->fn = 0;
+        release_fn(ch->fn_dead);
+        ch->fn = ch->fn_dead = 0;
+        ch->guarded = ch->dead = false;
         ch->pending = 0;
         ch->nb = 0;
         ch->sig = 0;
@@ -3156,14 +4349,19 @@ static uint32_t install_fn(uint32_t token, uint32_t msr) {
             release_fn(base + t);
     }
     uint32_t slot = g_free_slots[--g_nfree];
+    double t0 = emscripten_get_now();
     uint32_t fn = token ? jit_install_async(token, slot) : jit_instantiate(g_buf, g_len, slot);
     if (!fn) {
         g_free_slots[g_nfree++] = slot;
         return 0;
     }
+    double t1 = emscripten_get_now();
     static ppc_t scratch;
     scratch.msr = msr;
     ((jit_fn_t)(uintptr_t)fn)(&scratch, 0, 0, 0);
+    if (g_trace == 7)
+        printf("jit: install split ms: instantiate %.1f first call %.1f (%s)\n", t1 - t0, emscripten_get_now() - t1,
+               token ? "async" : "sync");
     return fn;
 }
 
@@ -3180,21 +4378,31 @@ static void pending_add(uint32_t token, jit_region_t *R, uint32_t ci, uint32_t m
 EMSCRIPTEN_KEEPALIVE void ppc_jit_ready(uint32_t token);
 void ppc_jit_ready(uint32_t token) {
     uint32_t i = token % JIT_PENDING;
+    crumb_set(CRUMB_JIT_PENDING, (uint32_t)(g_st.async_issued - g_st.async_landed - g_st.async_dropped - 1));
     if (g_pending[i].token != token) {
+        g_st.async_dropped++;
         jit_drop_async(token);
         return;
     }
     g_pending[i].token = 0;
     jit_chunk_t *ch = &g_pending[i].R->chunk[g_pending[i].ci];
     if (ch->pending != token) {
+        g_st.async_dropped++;
         jit_drop_async(token);
         return;
     }
+    crumb_phase_t outer = crumb_enter(CRUMB_JIT_INSTALL);
     double t0 = emscripten_get_now();
     ch->pending = 0;
     ch->fn = install_fn(token, g_pending[i].msr);
+    if (ch->dead) { // written while it compiled: not entered until it is retranslated
+        ch->fn_dead = ch->fn;
+        ch->fn = 0;
+    }
     g_st.compile_ms += emscripten_get_now() - t0;
+    g_st.async_landed++;
     memset(g_ppc_jit_skip, 0, sizeof g_ppc_jit_skip); // its entries are open now
+    crumb_leave(outer);
 }
 
 static double g_t_start; // when translation began (the governor's clock)
@@ -3208,6 +4416,10 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     static uint32_t slot_page[JIT_REGION_PAGES]; // unit index -> region page
     static uint8_t leader[JIT_REGION_PAGES][JIT_PAGE_INSNS];
     static uint8_t reached[JIT_REGION_PAGES][JIT_PAGE_INSNS];
+    // A word the walk stopped at without reaching it (rewritten, or never
+    // decoded): expanded once, or every branch into a run of them would walk
+    // the whole run again (quadratic: 227 M pushes, seconds, on Quake III)
+    static uint8_t walked[JIT_REGION_PAGES][JIT_PAGE_INSNS];
     static uint8_t cleader[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's leaders
     static uint16_t ccov[JIT_REGION_PAGES][JIT_PAGE_INSNS]; // one chunk's coverage
     static uint32_t stack[2 * JIT_REGION_PAGES * JIT_PAGE_INSNS];
@@ -3269,6 +4481,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
         memset(leader[n], 0, JIT_PAGE_INSNS);
         memset(reached[n], 0, JIT_PAGE_INSNS);
+        memset(walked[n], 0, JIT_PAGE_INSNS);
         // What the predecoded tier has run on the page: a word it never
         // decoded never executed (the pool decodes at dispatch), and code
         // that never ran is not worth a translation.  (A peek at the pool's
@@ -3284,6 +4497,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     // Reachability from the entry points over the direct control flow:
     // every entry point, branch target and fall-through leads a block
     uint32_t sp = 0;
+    uint64_t dbg_pushes = 0, dbg_steps = 0; // jit.trace = 7
 #define PUSH(addr_)                                                                                                    \
     do {                                                                                                               \
         uint32_t a_ = (addr_), o_ = a_ - lbase;                                                                        \
@@ -3291,8 +4505,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             sp < sizeof stack / sizeof stack[0]) {                                                                     \
             uint32_t s_ = (uint32_t)U.slot[o_ >> MEM_PAGE_SHIFT], i_ = (o_ & MEM_PAGE_MASK) >> 2;                      \
             leader[s_][i_] = 1;                                                                                        \
-            if (!reached[s_][i_])                                                                                      \
-                stack[sp++] = s_ * JIT_PAGE_INSNS + i_;                                                                \
+            if (!reached[s_][i_] && !walked[s_][i_])                                                                   \
+                stack[sp++] = s_ * JIT_PAGE_INSNS + i_, dbg_pushes++;                                                  \
         }                                                                                                              \
     } while (0)
     for (uint32_t u = 0; u < n; u++) {
@@ -3310,13 +4524,19 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
             // (nor is a word the guest keeps rewriting -- the 68K emulator
             // toggles some of its own branches -- or every rewrite would
             // retranslate its chunk: the predecoded loop runs it)
-            if (reached[u][i] || (ran[u] && ran[u][i].id == PD_UNDECODED && s->owner[i] == NONE8))
+            if (reached[u][i] || walked[u][i])
                 break;
+            if (ran[u] && ran[u][i].id == PD_UNDECODED && s->owner[i] == NONE8) {
+                walked[u][i] = 1;
+                break;
+            }
             if (s->unstable[i]) {
+                walked[u][i] = 1;
                 PUSH(s->lpage + 4 * i + 4); // (code: it runs; the predecoded loop comes back after it)
                 break;
             }
             reached[u][i] = 1;
+            dbg_steps++;
             uint32_t w = s->words[i], a = s->lpage + 4 * i;
             pd_entry_t e;
             uint16_t id = s->ids[i];
@@ -3339,6 +4559,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         }
     }
 #undef PUSH
+    if (g_trace == 7)
+        printf("jit: reach %.1f ms, %llu pushes, %llu steps, n=%u\n", emscripten_get_now() - tp,
+               (unsigned long long)dbg_pushes, (unsigned long long)dbg_steps, n);
     g_prof[1] += emscripten_get_now() - tp, tp = emscripten_get_now();
     // Chunks: a reached word keeps its chunk from one translation to the
     // next, so code that did not change keeps its function; code reached
@@ -3377,7 +4600,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                     continue;
                 }
                 if (c == NONE8 || (leader[u][i] && total[c] >= g_chunk_cap)) {
-                    for (c = 0; c < JIT_MAX_CHUNKS && (used[c] || (c < R->nchunks && R->chunk[c].fn && !fresh)); c++)
+                    for (c = 0; c < JIT_MAX_CHUNKS &&
+                                (used[c] || (c < R->nchunks && (R->chunk[c].fn || R->chunk[c].fn_dead) && !fresh));
+                         c++)
                         ;
                     if (c == JIT_MAX_CHUNKS) {
                         out = true;
@@ -3410,7 +4635,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
     U.n = n;
     uint32_t nchunks = 0;
     for (uint32_t ci = 0; ci < JIT_MAX_CHUNKS; ci++)
-        if (used[ci] || (ci < R->nchunks && R->chunk[ci].fn))
+        if (used[ci] || (ci < R->nchunks && (R->chunk[ci].fn || R->chunk[ci].fn_dead)))
             nchunks = ci + 1;
     R->nchunks = nchunks;
     g_prof[2] += emscripten_get_now() - tp, tp = emscripten_get_now();
@@ -3456,7 +4681,9 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         uint32_t words = nwords[ci];
         if (!used[ci]) { // no pages any more
             release_fn(ch->fn);
-            ch->fn = 0;
+            release_fn(ch->fn_dead);
+            ch->fn = ch->fn_dead = 0;
+            ch->guarded = ch->dead = false;
             ch->pending = 0;
             ch->empty = false;
             ch->nb = 0;
@@ -3468,13 +4695,18 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         // its blocks): the function is still right, the new entries just
         // are not translated yet.  It is retranslated for them only every
         // so often, the interval doubling with each of its translations.
-        bool built = ch->fn || ch->pending || ch->empty;
+        bool built = ch->fn || ch->fn_dead || ch->pending || ch->empty;
         bool split = built && ch->sigw == sigws[ci] &&
                      R->ncompiles - ch->last_regen < (JIT_SPLIT_COMPILES << (ch->regens < 10 ? ch->regens : 10));
         if (built && (ch->sig == sig || split)) {
             // Unchanged words: keep the function; the words are the ones it
             // was translated from, so every block is valid again
             memset(ch->bvalid, 1, ch->nb + 1);
+            if (ch->dead) { // ... and so is the chunk
+                ch->dead = false;
+                if (!ch->fn && ch->fn_dead)
+                    ch->fn = ch->fn_dead, ch->fn_dead = 0;
+            }
             continue;
         }
         if (g_trace == 6) {
@@ -3487,7 +4719,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
                             break;
                         }
             printf("jit:   chunk %u at %08x, %u words (was %u), %s\n", ci, first, words, ch->nwords,
-                   ch->fn ? (ch->sigw == sigws[ci] ? "split" : "changed") : "new");
+                   ch->fn || ch->fn_dead ? (ch->sigw == sigws[ci] ? "split" : "changed") : "new");
         }
         ch->nwords = words;
         ch->empty = false;
@@ -3495,10 +4727,15 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         ch->regens++;
         ch->last_regen = R->ncompiles;
         g_regen++;
-        g_regen_new += !ch->fn && !ch->pending;
+        g_regen_new += !ch->fn && !ch->fn_dead && !ch->pending;
         release_fn(ch->fn);
-        ch->fn = 0;
+        release_fn(ch->fn_dead);
+        ch->fn = ch->fn_dead = 0;
         ch->pending = 0; // (a compile in flight is dropped when it lands)
+        // Written since its translation: from now on its blocks test their
+        // valid flags, so a write stops only the block it hits (§3.7)
+        ch->guarded = ch->guarded || ch->dead;
+        ch->dead = false;
         ch->nb = 0;
         ch->sig = sig;
         memset(ch->refs, 0, sizeof ch->refs);
@@ -3533,6 +4770,7 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         memset(ch->bvalid, 1, words + 1);
         U.refs = ch->refs;
         U.bvalid = ch->bvalid;
+        U.guarded = ch->guarded;
         g_prof[3] += emscripten_get_now() - tp, tp = emscripten_get_now();
         uint32_t nb = translate();
         g_prof[4] += emscripten_get_now() - tp, tp = emscripten_get_now();
@@ -3576,6 +4814,8 @@ static void compile_region(jit_region_t *R, ppc_t *p) {
         if (g_async) {
             ch->pending = ++g_token ? g_token : ++g_token;
             pending_add(ch->pending, R, ci, p->msr);
+            g_st.async_issued++;
+            crumb_set(CRUMB_JIT_PENDING, (uint32_t)(g_st.async_issued - g_st.async_landed - g_st.async_dropped));
             jit_compile_async(g_buf, g_len, ch->pending);
         } else {
             ch->fn = install_fn(0, p->msr);
@@ -3681,7 +4921,7 @@ static uint32_t deopt_ea(ppc_t *p) {
     if (!s)
         return 0;
     uint32_t w = s->words[(p->pc & MEM_PAGE_MASK) >> 2], op = w >> 26, ra = (w >> 16) & 31u;
-    if (op >= 32 && op <= 45)
+    if (op >= 32 && op <= 55) // the D-forms: integer, lmw/stmw, FP
         return (ra ? p->gpr[ra] : 0) + (uint32_t)(int32_t)(int16_t)w;
     return 0;
 }
@@ -3744,8 +4984,11 @@ static void exit_hist_dump(ppc_t *p) {
                g_xh[j].deopt, why, w);
         if (g_xh[j].deopt) {
             uint32_t ea = g_xh[j].ea;
-            printf(" ea=%08x r=%lx w=%lx", ea, (unsigned long)g_active_read[(ea & g_address_mask) >> MEM_PAGE_SHIFT],
-                   (unsigned long)g_active_write[(ea & g_address_mask) >> MEM_PAGE_SHIFT]);
+            uintptr_t re = g_active_read[(ea & g_address_mask) >> MEM_PAGE_SHIFT];
+            printf(" ea=%08x r=%lx w=%lx%s", ea, (unsigned long)re,
+                   (unsigned long)g_active_write[(ea & g_address_mask) >> MEM_PAGE_SHIFT],
+                   MEM_ENTRY_IS_RAM(re) && memory_host_is_code(MEM_ENTRY_HOST(re, ea & g_address_mask)) ? " code page"
+                                                                                                        : "");
         }
         printf("\n");
     }
@@ -3869,9 +5112,22 @@ bool ppc_jit_enter(ppc_t *p, uint32_t *instructions, uint64_t *folds_left, int *
                 (ppc_jit_cold_t){(pc & ~(uint32_t)MEM_PAGE_MASK) | 4u | (key & 3u), budget, R->heat[k], g_threshold};
             return false;
         }
-        if (member && s->extra[idx] < JIT_ENTRY_HOT && ++s->extra[idx] == JIT_ENTRY_HOT) {
-            // a new entry point (one entered rarely is not worth a translation)
-            R->want = true;
+        if (member && s->extra[idx] < JIT_ENTRY_HOT) {
+            // A new entry point (one entered rarely is not worth a
+            // translation) -- unless the loop got here by an rfi: an
+            // interrupt lands on any word of hot code, and counting its
+            // return made a leader of every word of the hottest routines
+            // within seconds (one-instruction blocks, for good).  The loop
+            // runs on from the return to the next leader instead.
+            if (pc == g_ppc_rfi_pc)
+                g_st.rfi_skips++;
+            else if (++s->extra[idx] == JIT_ENTRY_HOT) {
+                R->want = true;
+                if (g_trace == 6)
+                    printf("jit: leader %08x prev %08x id %u ipc %08x rfi %08x exit %u\n", pc,
+                           idx ? s->words[idx - 1] : 0, idx ? s->ids[idx - 1] : 0, p->instruction_pc, g_ppc_rfi_pc,
+                           g_ppc_jit_exit);
+            }
         }
         if (member && s->extra[idx] >= JIT_ENTRY_HOT && R->cool)
             skip_word(pc, msr); // counted: nothing more until the region is translated
@@ -3970,6 +5226,210 @@ int32_t ppc_jit_tb(uint32_t budget, uint32_t upper, uint32_t unused) {
     return (int32_t)(upper ? (uint32_t)(tb >> 32) : (uint32_t)tb);
 }
 
+// dcbz from translated code (JX_DCBZ), `ea` unmasked: the block zeroed when
+// it is plain memory behind a live write entry (ppc_dcbz_host), else 1 --
+// nothing done, leave at it: the predecoded loop raises the alignment
+// exception or the DSI, makes it a no-op, holds a device's line or fills
+// the entry.  A page with translated code has no RAM write entry, so the
+// zeroing never reaches a translation.
+EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2);
+int32_t ppc_jit_dcbz(uint32_t ea, uint32_t unused1, uint32_t unused2) {
+    (void)unused1, (void)unused2;
+    uint8_t *host = ppc_dcbz_host(g_wa_p, ea & ~31u);
+    if (!host)
+        return 1;
+    memset(host, 0, 32);
+    return 0;
+}
+
+// FP arithmetic and moves from translated code (JX_FP): what the decoder
+// runs for the word, or 1 -- nothing done, leave at it -- when FP is
+// unavailable or an FP exception is enabled (the predecoded loop raises
+// what is due).  The form was checked at translation (jit_fp_form), and Rc
+// is clear, so CR, which the translation holds in a local, is untouched.
+// `mode` 1 is a compare (JX_FCMP): ppc_fcmp, its CR field returned as
+// 0x10 | field for the translation to merge into its CR.
+EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused);
+// jit.trace = 14: the FP helper's calls by opcode (op << 10 | the extended
+// opcode; the five-bit one for A-forms), printed at jit.trace = 15 -- what
+// the inline FP paths leave to it
+static struct {
+    uint32_t key, n;
+} g_fph[256];
+// An arithmetic word's operands, why the inline path left it: 1 a zero
+// operand, 2 another special one (denormal, infinity, NaN), 0 neither (the
+// exponent envelope's edges, a double-rounding tie, a long product)
+static uint32_t fph_reason(const ppc_t *p, uint32_t iw) {
+    uint32_t xo5 = (iw >> 1) & 31u, r = 0;
+    uint32_t regs[3] = {PPC_RA(iw), PPC_RB(iw), PPC_FRC(iw)};
+    bool use[3] = {true, xo5 != 25, xo5 == 25 || xo5 >= 28};
+    for (int i = 0; i < 3; i++) {
+        if (!use[i])
+            continue;
+        uint64_t x = p->fpr[regs[i]];
+        uint32_t e = (uint32_t)(x >> 52) & 0x7FFu;
+        if ((x & 0x7FFFFFFFFFFFFFFFull) == 0)
+            r = 1;
+        else if ((e == 0 || e == 0x7FFu) && r == 0)
+            r = 2;
+    }
+    return r;
+}
+static void fph_note(uint32_t iw) {
+    uint32_t op = iw >> 26, xo5 = (iw >> 1) & 31u; // A-forms: op 59, and op 63 with xo5 >= 18
+    uint32_t key = op << 10 | (op == 59 || xo5 >= 18 ? xo5 : (iw >> 1) & 0x3FFu);
+    if (fp_inline_op(iw) >= 0)
+        key |= (1u + fph_reason(g_wa_p, iw)) << 16; // 1 other, 2 zero, 3 special
+    for (uint32_t h = (key * 2654435761u) >> 24, j = 0; j < 256; j++, h = (h + 1) & 255u)
+        if (!g_fph[h].n || g_fph[h].key == key) {
+            g_fph[h].key = key;
+            g_fph[h].n++;
+            return;
+        }
+}
+static int fph_cmp(const void *a, const void *b) {
+    uint32_t x = ((const uint32_t *)a)[1], y = ((const uint32_t *)b)[1];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void fph_dump(void) {
+    qsort(g_fph, 256, sizeof g_fph[0], fph_cmp);
+    uint64_t tot = 0;
+    for (uint32_t j = 0; j < 256; j++)
+        tot += g_fph[j].n;
+    printf("jit fp helper: %llu calls\n", (unsigned long long)tot);
+    for (uint32_t j = 0; j < 20 && g_fph[j].n; j++)
+        printf("  op %2u xo %4u %-8s: %10u (%4.1f%%)\n", (g_fph[j].key >> 10) & 63u, g_fph[j].key & 0x3FFu,
+               (const char *[]){"", "other", "zero", "special"}[g_fph[j].key >> 16], g_fph[j].n,
+               100.0 * g_fph[j].n / (double)(tot ? tot : 1));
+    memset(g_fph, 0, sizeof g_fph);
+}
+
+// jit.trace = 17 (set before the code is translated): every inline FP
+// arithmetic word checks itself against the C kernel -- mode 2 before it
+// runs (the kernel's result and FPSCR noted, the state restored), mode 3
+// after (compared); mismatches are printed, the totals with jit.trace = 18
+static struct {
+    bool valid;
+    uint32_t iw;
+    uint64_t in[3], t, fpscr0; // the operands, the kernel's result
+    uint32_t fpscr;
+    uint64_t checks, bad;
+} g_fpchk;
+static int32_t fp_check(ppc_t *p, uint32_t iw, uint32_t mode) {
+    uint32_t rt = PPC_RT(iw);
+    if (mode == 2) {
+        g_fpchk.valid = (p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) == PPC_MSR_FP;
+        if (!g_fpchk.valid)
+            return 0;
+        uint64_t t0 = p->fpr[rt];
+        uint32_t f0 = p->fpscr;
+        g_fpchk.iw = iw;
+        g_fpchk.in[0] = p->fpr[PPC_RA(iw)], g_fpchk.in[1] = p->fpr[PPC_RB(iw)], g_fpchk.in[2] = p->fpr[PPC_FRC(iw)];
+        g_fpchk.fpscr0 = f0;
+        ppc_jit_fp(iw, 0, 0);
+        g_fpchk.t = p->fpr[rt], g_fpchk.fpscr = p->fpscr;
+        p->fpr[rt] = t0, p->fpscr = f0;
+        return 0;
+    }
+    if (!g_fpchk.valid || g_fpchk.iw != iw)
+        return 0;
+    g_fpchk.valid = false;
+    g_fpchk.checks++;
+    if (p->fpr[rt] != g_fpchk.t || p->fpscr != g_fpchk.fpscr) {
+        if (g_fpchk.bad++ < 64)
+            printf("jit fp check: %08x a=%016llx b=%016llx c=%016llx fpscr=%08x: inline %016llx %08x, kernel "
+                   "%016llx %08x\n",
+                   iw, (unsigned long long)g_fpchk.in[0], (unsigned long long)g_fpchk.in[1],
+                   (unsigned long long)g_fpchk.in[2], (uint32_t)g_fpchk.fpscr0, (unsigned long long)p->fpr[rt],
+                   p->fpscr, (unsigned long long)g_fpchk.t, g_fpchk.fpscr);
+    }
+    return 0;
+}
+
+int32_t ppc_jit_fp(uint32_t iw, uint32_t mode, uint32_t unused) {
+    (void)unused;
+    ppc_t *p = g_wa_p;
+    if (mode >= 2)
+        return fp_check(p, iw, mode);
+    if (g_trace == 14)
+        fph_note(iw);
+    if ((p->msr & (PPC_MSR_FP | PPC_MSR_FE0 | PPC_MSR_FE1)) != PPC_MSR_FP)
+        return 1;
+    if (mode == 1) {
+        uint32_t cr = p->cr, sh = 28u - 4u * PPC_CRFD(iw);
+        ppc_fcmp(p, iw, ((iw >> 1) & 0x3FFu) == 32);
+        uint32_t field = (p->cr >> sh) & 0xFu;
+        p->cr = cr; // the translation's CR local is the live one
+        return (int32_t)(0x10u | field);
+    }
+    bool single = (iw >> 26) == 59;
+    if (!single) {
+        uint64_t *t = &p->fpr[PPC_RT(iw)], b = p->fpr[PPC_RB(iw)];
+        switch ((iw >> 1) & 0x3FFu) {
+        case 72: // fmr
+            *t = b;
+            return 0;
+        case 40: // fneg
+            *t = b ^ 0x8000000000000000ull;
+            return 0;
+        case 264: // fabs
+            *t = b & 0x7FFFFFFFFFFFFFFFull;
+            return 0;
+        case 136: // fnabs
+            *t = b | 0x8000000000000000ull;
+            return 0;
+        case 12:
+            ppc_do_frsp(p, iw);
+            return 0;
+        case 14:
+            ppc_do_fctiw(p, iw, false);
+            return 0;
+        case 15:
+            ppc_do_fctiw(p, iw, true);
+            return 0;
+        default:
+            break;
+        }
+    }
+    switch ((iw >> 1) & 31u) {
+    case 18:
+        ppc_fp_arith(p, iw, PPC_SF_DIV, single);
+        return 0;
+    case 20:
+        ppc_fp_arith(p, iw, PPC_SF_SUB, single);
+        return 0;
+    case 21:
+        ppc_fp_arith(p, iw, PPC_SF_ADD, single);
+        return 0;
+    case 25:
+        ppc_fp_arith(p, iw, PPC_SF_MUL, single);
+        return 0;
+    case 28:
+        ppc_fp_arith(p, iw, PPC_SF_MSUB, single);
+        return 0;
+    case 29:
+        ppc_fp_arith(p, iw, PPC_SF_MADD, single);
+        return 0;
+    case 30:
+        ppc_fp_arith(p, iw, PPC_SF_NMSUB, single);
+        return 0;
+    case 31:
+        ppc_fp_arith(p, iw, PPC_SF_NMADD, single);
+        return 0;
+    case 23:
+        ppc_do_fsel(p, iw);
+        return 0;
+    case 24:
+        ppc_do_fres(p, iw);
+        return 0;
+    case 26:
+        ppc_do_frsqrte(p, iw);
+        return 0;
+    default:
+        return 1;
+    }
+}
+
 EMSCRIPTEN_KEEPALIVE int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size);
 int32_t ppc_jit_code_store(uint32_t ea, uint32_t value, uint32_t size) {
     uint32_t page = ea >> MEM_PAGE_SHIFT;
@@ -4026,6 +5486,42 @@ static struct {
 } g_wa_pend[64];
 static uint32_t g_wa_npend;
 static uint64_t g_wa_hooks, g_wa_hook_bytes, g_wa_len[4];
+// Hook calls per code page (region, page): whether the tier has a member
+// there, and how many came from translated code (ppc_jit_code_store)
+#define WA_PAGES 1024u
+static struct {
+    const uint8_t *page;
+    int region;
+    uint32_t pg, n, from_jit;
+    bool member;
+} g_wa_pg[WA_PAGES];
+static void wa_page_note(int r, uint32_t pg, const uint8_t *page) {
+    uint32_t h = (uint32_t)(((uintptr_t)page >> MEM_PAGE_SHIFT) * 2654435761u) >> 22;
+    for (uint32_t j = 0; j < WA_PAGES; j++, h = (h + 1) & (WA_PAGES - 1)) {
+        if (g_wa_pg[h].page && g_wa_pg[h].page != page)
+            continue;
+        if (!g_wa_pg[h].page) {
+            g_wa_pg[h].page = page, g_wa_pg[h].region = r, g_wa_pg[h].pg = pg;
+            for (jit_slot_t *s = g_by_host[host_hash(page)]; s; s = s->next_host)
+                g_wa_pg[h].member |= s->host == page;
+        }
+        g_wa_pg[h].n++;
+        g_wa_pg[h].from_jit += g_wa_src == 1;
+        return;
+    }
+}
+static int wa_page_cmp(const void *a, const void *b) {
+    uint32_t x = ((const typeof(g_wa_pg[0]) *)a)->n, y = ((const typeof(g_wa_pg[0]) *)b)->n;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void wa_page_dump(void) {
+    qsort(g_wa_pg, WA_PAGES, sizeof g_wa_pg[0], wa_page_cmp);
+    printf("hook calls by code page (region:offset, the RAM region's offset is the physical address):\n");
+    for (uint32_t j = 0; j < 30 && g_wa_pg[j].n; j++)
+        printf("  %d:%08x %10u calls, %10u from translated code, %s\n", g_wa_pg[j].region,
+               g_wa_pg[j].pg << MEM_PAGE_SHIFT, g_wa_pg[j].n, g_wa_pg[j].from_jit,
+               g_wa_pg[j].member ? "a member page" : "not translated");
+}
 // Invalidating writes per million guest instructions since jit.trace = 11
 #define WA_TL 4096u
 static uint64_t g_wa_t0 = UINT64_MAX;
@@ -4157,6 +5653,7 @@ static void wa_dump(void) {
     printf("jit writes: %llu hook calls, %llu bytes; lengths 1-4: %llu, 8-31: %llu, 32: %llu, >32: %llu\n",
            (unsigned long long)g_wa_hooks, (unsigned long long)g_wa_hook_bytes, (unsigned long long)g_wa_len[0],
            (unsigned long long)g_wa_len[1], (unsigned long long)g_wa_len[2], (unsigned long long)g_wa_len[3]);
+    wa_page_dump();
     for (int t = 0; t < 2; t++) {
         wa_ent_t *tab = t ? g_wa_pcs : g_wa_words;
         qsort(tab, WA_SIZE, sizeof *tab, wa_cmp);
@@ -4253,6 +5750,8 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
     if (r < 0)
         return;
     const uint8_t *page = g_mem_code_regions[r].base + ((uintptr_t)pg << MEM_PAGE_SHIFT);
+    if (g_trace == 11)
+        wa_page_note(r, pg, page);
     for (jit_slot_t *s = g_by_host[host_hash(page)]; s; s = s->next_host) {
         if (s->host != page)
             continue;
@@ -4282,6 +5781,14 @@ void ppc_jit_code_written(const uint8_t *host, uint32_t len) {
                            LOAD_BE32(s->host + 4 * w));
                 s->last_hit = (uint16_t)w;
                 R->chunk[c].bvalid[b] = 0;
+                if (!R->chunk[c].guarded && !R->chunk[c].dead) {
+                    // Its blocks carry no valid-flag test: the whole chunk
+                    // stops (the dispatcher and the chain stubs read fn)
+                    jit_chunk_t *ch = &R->chunk[c];
+                    ch->dead = true;
+                    if (ch->fn)
+                        ch->fn_dead = ch->fn, ch->fn = 0;
+                }
                 R->stale++;
                 g_st.block_invals++;
                 hit = true;
@@ -4312,6 +5819,9 @@ void ppc_jit_reset(void) {}
 void ppc_jit_status(ppc_jit_status_t *out) {
     *out = (ppc_jit_status_t){0};
 }
+void ppc_jit_perf(ppc_jit_perf_t *out) {
+    *out = (ppc_jit_perf_t){0};
+}
 
 #endif // __EMSCRIPTEN__
 
@@ -4337,6 +5847,8 @@ enum {
     JA_INSNS,
     JA_LOOKUPS,
     JA_DEFERRED,
+    JA_RFI_SKIPS,
+    JA_DIRECT,
     JA_ASYNC,
     JA_BUDGET,
     JA_REGS
@@ -4388,6 +5900,10 @@ static value_t jit_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_st.lookups);
     case JA_DEFERRED:
         return val_uint(8, g_st.deferred);
+    case JA_RFI_SKIPS:
+        return val_uint(8, g_st.rfi_skips);
+    case JA_DIRECT:
+        return val_uint(4, g_direct);
     case JA_ASYNC:
         return val_uint(4, g_async);
 #endif
@@ -4444,6 +5960,12 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         ppc_jit_reset();
 #endif
         return val_none();
+    case JA_DIRECT:
+#ifdef __EMSCRIPTEN__
+        g_direct = in.u ? 1 : 0;
+        ppc_jit_reset();
+#endif
+        return val_none();
     case JA_TRACE:
 #ifdef __EMSCRIPTEN__
         if (in.u == 3 && g_last_p) {
@@ -4452,6 +5974,15 @@ static value_t jit_attr_set(struct object *self, const member_t *m, value_t in) 
         }
         if (in.u == 12) {
             wa_dump();
+            return val_none();
+        }
+        if (in.u == 15) {
+            fph_dump();
+            return val_none();
+        }
+        if (in.u == 18) {
+            printf("jit fp check: %llu checked, %llu mismatches\n", (unsigned long long)g_fpchk.checks,
+                   (unsigned long long)g_fpchk.bad);
             return val_none();
         }
         if (in.u == 13) {
@@ -4508,14 +6039,18 @@ static const member_t jit_members[] = {
     JIT_ATTR("instructions", JA_INSNS, "budget slots consumed inside translated code", NULL),
     JIT_ATTR("lookups", JA_LOOKUPS, "times the predecoded loop asked for a translation", NULL),
     JIT_ATTR("deferred", JA_DEFERRED, "translations the governor put off (jit.budget)", NULL),
+    JIT_ATTR("rfi_skips", JA_RFI_SKIPS, "entries not counted: the word an rfi returned to", NULL),
     JIT_ATTR("async", JA_ASYNC, "1 = compile off the core thread, install between ticks (default except under Node)",
              jit_attr_set),
     JIT_ATTR("budget", JA_BUDGET, "the share of time, in percent, translating may take (100: no limit)", jit_attr_set),
     JIT_ATTR("regs", JA_REGS, "0 = guest registers in locals per block, 1 = per function", jit_attr_set),
+    JIT_ATTR("direct", JA_DIRECT,
+             "1 = a forward branch inside a chunk goes to its block directly, 0 = through the dispatcher",
+             jit_attr_set),
     {.kind = MK_METHOD,
-                                                                                                  .name = "reset",
-                                                                                                  .doc = "Drop every translation",
-                                                                                                  .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = jit_method_reset, .ui_flags = MM_MUTATE}},
+       .name = "reset",
+       .doc = "Drop every translation",
+       .method = {.args = NULL, .nargs = 0, .result = VK_NONE, .fn = jit_method_reset, .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t jit_class = {
