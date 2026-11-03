@@ -7,7 +7,8 @@
 # (`<id>_generic`, `variant_of` the card), which always runs the emulator's
 # generated ROM and needs no file.  A configuration document naming the
 # variant seats the card with rom=substitute, even with Apple's ROM offered
-# (#346).  The harness offers the .vrom files beside the ROM, so Apple's
+# (#346).  The SE/30's built-in video, no slot card, takes the choice as
+# the machine option video_rom (apple | substitute).  The harness offers the .vrom files beside the ROM, so Apple's
 # ROMs are stored here.  No guest code runs.
 
 TEST_NAME := Display card generic video ROM variants

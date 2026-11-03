@@ -64,6 +64,11 @@ card's ROM with **Load ROM...** to use the original. A card marked **ROM
 needed** cannot be added until its ROM is loaded: choose it, and the form
 says which ROM it needs and offers **Load ROM...**.
 
+Each NuBus display card is also listed as **… · Substitute ROM**: the same
+card, always on Granny Smith's own declaration ROM, even after Apple's is
+loaded (to compare the two, for example). On the SE/30 the same choice is
+the **Video ROM** option (§1): **Apple's** or **Substitute ROM**.
+
 ## 4. Floppy drives
 
 Each drive has a menu:

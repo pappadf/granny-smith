@@ -169,8 +169,10 @@ Selection and identification:
   card naming the variant seats the card with `rom=substitute`, so the
   generated ROM can be chosen even with Apple's stored (v0.8.0's
   "(generic video ROM)" kinds; #346). The SE/30's built-in video is not a
-  slot card and has no variant yet; a `slots=` entry's `rom=substitute`
-  still selects its substitute.
+  slot card: its choice is the machine option `video_rom` (`apple`, the
+  default — Apple's when stored, else the substitute — or `substitute`),
+  listed on every model whose built-in video pseudo-slot card has a
+  substitute ROM.
 - `custom=WxHxD` in a slot entry (`custom_mode=` for the first socket; the
   8•24 today) boots the card's default monitor at a user-chosen resolution
   on the substitute ROM: the generated records carry a video sResource at

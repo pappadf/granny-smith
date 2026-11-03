@@ -149,6 +149,26 @@ static const config_option_decl_t k_imagewriter_option_serial_a = {
     .default_value = "none",
 };
 
+static const config_value_decl_t k_video_rom_values[] = {
+    {.id = "apple", .label = "Apple's"},
+    {.id = "substitute", .label = "Substitute ROM"},
+    {.id = NULL},
+};
+
+// The built-in video's declaration ROM, on a machine whose built-in video
+// is a NuBus pseudo-slot card with a substitute ROM (the SE/30): Apple's when
+// its .vrom is stored (else the substitute, as before), or always the
+// emulator's generated one (#346).  The slot cards' choice is their
+// substitute-ROM variant instead.
+static const config_option_decl_t k_video_rom_option = {
+    .id = "video_rom",
+    .label = "Video ROM",
+    .detail = "The built-in video's declaration ROM: Apple's (the substitute when it is not uploaded), or always "
+              "the emulator's substitute ROM.",
+    .values = k_video_rom_values,
+    .default_value = "apple",
+};
+
 static const config_value_decl_t k_addressing_values[] = {
     {.id = "24", .label = "24-bit"},
     {.id = "32", .label = "32-bit"},
@@ -202,8 +222,11 @@ static const config_option_decl_t *addressing_option(const hw_profile_t *p) {
     return NULL;
 }
 
-// The family's declared options plus AppleTalk, the ImageWriter and the
-// addressing mode, in
+static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p);
+static bool builtin_video_has_substitute(const hw_profile_t *p);
+
+// The family's declared options plus AppleTalk, the ImageWriter, the
+// addressing mode and the built-in video's ROM, in
 // display order (memory is separate: its values are computed).  Writes up
 // to `max` and returns the count.
 static int scalar_options(const hw_profile_t *p, const config_option_decl_t **out, int max) {
@@ -217,6 +240,8 @@ static int scalar_options(const hw_profile_t *p, const config_option_decl_t **ou
     const config_option_decl_t *a = addressing_option(p);
     if (a && n < max)
         out[n++] = a;
+    if (builtin_video_has_substitute(p) && n < max)
+        out[n++] = &k_video_rom_option;
     return n;
 }
 
@@ -876,6 +901,13 @@ static const nubus_slot_decl_t *builtin_video_slot(const hw_profile_t *p) {
             return d;
     }
     return NULL;
+}
+
+// Does the machine's built-in video run a declaration ROM it has a
+// substitute for (the SE/30's), so its ROM is a choice?
+static bool builtin_video_has_substitute(const hw_profile_t *p) {
+    const nubus_slot_decl_t *d = builtin_video_slot(p);
+    return d && nubus_has_generic(nubus_card_find(d->builtin_card_id));
 }
 
 // The catalogue ids the built-in port takes, "none" left out.
@@ -2207,6 +2239,20 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
     }
     if (legacy->video_sense >= 0 && (err = override_sense(p, legacy->video_sense, out), val_is_error(&err)))
         goto done;
+
+    // The built-in video on its substitute ROM: its pseudo-slot's entry says so
+    for (int i = 0; i < d->n_options; i++) {
+        if (strcmp(d->options[i].id, "video_rom") != 0 || strcmp(d->options[i].value, "substitute") != 0)
+            continue;
+        const nubus_slot_decl_t *bv = builtin_video_slot(p);
+        slot_opts_t *e = bv ? entry_for(out, bv->slot) : NULL;
+        if (!e) {
+            err = bad("options.video_rom: the built-in video has no slot entry");
+            goto done;
+        }
+        e->rom[0] = '\0'; // the substitute, never a file
+        e->substitute = true;
+    }
 
     // Everything else straight across.
     out->ram_kb = d->ram_kb;
