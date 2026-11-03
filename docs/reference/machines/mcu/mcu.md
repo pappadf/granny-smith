@@ -303,6 +303,11 @@ status register in the YANCC"* [1] p. 12, [2] p. 13 — and the interrupt mappin
 error at **CPU level 7, shared with the NMI** (*"NMI/YANCC err"*, [1] Table 2-7 p. 38, [2]
 Table 2-7 p. 41; §5.1). The control/status register's address is published — *"YANCC controls"*
 at **$50028000–$50029FFF** [4] Table 16-5 p. 375 — but its width and bit layout are not (§7).
+MacTest Pro's NuBus Controller test (Macintosh Tests Vol. 2 v7.0.1) shows part of the layout: it
+treats the file as one bit per longword (bit *n* in bit 0 of the long at offset 4*n*), arms bit 10,
+sets bit 7 twenty-five times and expects twenty-five level-7 interrupts, its handler clearing bit 7
+each time — so bit 7 behaves as the error flag and bit 10 as its interrupt enable. The emulator
+raises level 7 while both are set; nothing on the modelled bus sets the flag by itself.
 YANCC is also the recipient of the PDS slot claim: a pseudoslot PDS card notifies *"the NuBus
 controller that it is using the NuBus space"* by asserting /PDS.SLOT.E.EN, so YANCC ignores
 accesses to slot $E [1] Table 2-3 p. 30, [4] §"Pseudoslot design guidelines" p. 376. The

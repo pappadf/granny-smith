@@ -294,6 +294,8 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
 // -- must drive delivery through the scheduler rather than widen this
 // function.  cpu_poll_interrupt() below is the entry point for that.
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
+    if (value == 7 && cpu->ipl != 7)
+        cpu->nmi_edge = 1; // level 7 is edge-sensitive (cpu_check_interrupt)
     cpu->ipl = value;
 }
 

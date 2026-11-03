@@ -340,13 +340,20 @@ static void run_channel(dbdma_t *d, int n) {
             uint32_t len = (req == 1 || req == 2) ? req : 4;
             if (req != len)
                 LOG(2, "ch%d quad with reqCount $%04X treated as 4 bytes", n, req);
+            // One bus transaction of `len` bytes, not a byte stream: the
+            // target is typically a device register that acts on the
+            // whole quadlet (a codec command through the AWACS codec
+            // control register).  cmdDep's low byte is the lowest address.
             if (cmd == CMD_STORE_QUAD) {
-                uint8_t raw[4] = {(uint8_t)w[2], (uint8_t)(w[2] >> 8), (uint8_t)(w[2] >> 16), (uint8_t)(w[2] >> 24)};
-                dma_mem_write_block(&d->mem, w[1], raw, len);
+                uint32_t v = 0;
+                for (uint32_t i = 0; i < len; i++)
+                    v = (v << 8) | ((w[2] >> (8 * i)) & 0xFFu);
+                dma_mem_write(&d->mem, w[1], v, len);
             } else {
-                uint8_t raw[4] = {0, 0, 0, 0};
-                dma_mem_read_block(&d->mem, w[1], raw, len);
-                desc_store32(d, c->cmdptr + 8, RD_LE32(raw)); // into cmdDep
+                uint32_t v = dma_mem_read(&d->mem, w[1], len), q = 0;
+                for (uint32_t i = 0; i < len; i++)
+                    q |= ((v >> (8 * (len - 1 - i))) & 0xFFu) << (8 * i);
+                desc_store32(d, c->cmdptr + 8, q); // into cmdDep
             }
             // cmdDep carries the quad, so these commands have no branch
             // target; a set b-modifier is a driver bug — log, don't jump.
@@ -383,6 +390,14 @@ static void run_channel(dbdma_t *d, int n) {
         }
 
         uint32_t desc_addr = c->cmdptr;
+        // Every completed command but STOP writes its result word, the
+        // active bit set in xferStatus: the done flag drivers poll
+        // (docs/reference/machines/tnt/dbdma.md §3.5).  NOP and the quad
+        // commands move no data, so resCount is 0 (cursor is 0 here).
+        // MacTest Pro's codec control test runs a STORE_QUAD with no
+        // interrupt and polls for exactly this.
+        if (!wrote_result && cmd != CMD_STOP)
+            result_writeback(d, n, desc_addr, 0);
         if (advance) {
             c->cmdptr = taken ? w[2] : c->cmdptr + 16;
             c->cursor = 0;
@@ -390,12 +405,6 @@ static void run_channel(dbdma_t *d, int n) {
         // Interrupt AFTER write-back (and after cmdptr advance, so a
         // handler reading commandPtrLo sees the post-command position).
         if (cond_eval(i_mod, c->intr_sel, devstat(d, n))) {
-            if (!wrote_result && cmd != CMD_STOP) {
-                // NOP/quad interrupts still stamp the result field so a
-                // completion handler finds a fresh status there (cursor
-                // is 0 here, so resCount reads 0).
-                result_writeback(d, n, desc_addr, 0);
-            }
             LOG(3, "ch%d interrupt at $%08X", n, desc_addr);
             if (d->irq)
                 d->irq(d->irq_ctx, n);
@@ -482,6 +491,8 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
             partial_writeback(d, chan);
             c->status &= ~(DBDMA_ACTIVE | DBDMA_DEAD);
             c->cursor = 0;
+            if (d->port[chan].stop)
+                d->port[chan].stop(d->port[chan].ctx);
         }
         // WAKE restarts a channel parked by STOP (self-clearing): the
         // overwritten STOP descriptor is refetched from cmdptr.

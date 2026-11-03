@@ -93,7 +93,9 @@ levels("iisi", 9216, "iisi-36b7fb6c.rom", 30000000, true)
 levels("q700", 8192, "q700-q900-420dbff3.rom", 70000000, true)
 levels("q900", 8192, "q700-q900-420dbff3.rom", 70000000, true)
 levels("q950", 8192, "q950-3dc27823.rom", 70000000, true)
-levels("q840av", 8192, "q840av-q660av-5bf10fd1.rom", 120000000, true)
+# The AVs' start-up waits on Cuda, which answers at the real part's ~65 us per
+# byte: the 840AV reaches the Mac OS start-up after ~125 M instructions.
+levels("q840av", 8192, "q840av-q660av-5bf10fd1.rom", 160000000, true)
 levels("q660av", 8192, "q840av-q660av-5bf10fd1.rom", 100000000, true)
 levels("pm6100", 16384, "pm6100-pm7100-pm8100-9feb69b3.rom", 2000000, false)
 levels("pm7100", 16384, "pm6100-pm7100-pm8100-9feb69b3.rom", 250000000, true)

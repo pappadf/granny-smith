@@ -271,6 +271,14 @@ static void pump_out(mesh_t *m) {
     if (!m->connected)
         return; // no target: bytes stay in the FIFO
     while (m->remaining > 0 && byte_fifo_count(&m->fifo) > 0) {
+        if (m->active == CMD_DATAOUT && m->bus && scsi_get_bus_phase(m->bus) != scsi_data_out) {
+            // The target took fewer bytes than the count and changed phase:
+            // the rest stay in the FIFO and the sequence ends in a phase
+            // mismatch, as on the DMA path (mesh_port_out).
+            m->active = 0;
+            raise_exception(m, EXC_PHASEMM); // target left DATA OUT early
+            return;
+        }
         uint8_t b = fifo_pop(m);
         if (m->active == CMD_MSGOUT) {
             LOG(3, "msgout byte $%02X absorbed", b);

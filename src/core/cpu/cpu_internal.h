@@ -48,6 +48,11 @@ struct cpu {
 
     // Interrupt priority level (from PAL to CPU)
     uint32_t ipl;
+    // Level 7 is edge-sensitive: the 68000 family takes it once each time
+    // the request rises to 7 from a lower level, whatever the mask.  Set by
+    // cpu_set_ipl on that rising transition, consumed when the level-7
+    // exception is taken.
+    uint32_t nmi_edge;
 
     // CPU model (CPU_MODEL_68000 or CPU_MODEL_68030)
     int cpu_model;
@@ -1111,13 +1116,20 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
 }
 
 // Check if a pending interrupt should be serviced.  Level 7 is non-maskable on
-// the 68000 (taken even when the interrupt mask is 7) — the Lisa's parity-error
-// NMI relies on this; levels 1-6 are gated by the mask as usual.
-// Called at sprint boundaries and from write_sr; almost always false.
+// the 68000 family (taken even when the interrupt mask is 7) — the Lisa's
+// parity-error NMI relies on this — but it is also edge-sensitive: it is taken
+// once per rise to level 7 (nmi_edge), not again at every boundary while the
+// request stays at 7.  A level-7 handler that runs with the line still high
+// (it clears the source part-way through, as MacTest Pro's Quadra YANCC
+// error-interrupt test does) must not be re-entered.  Levels 1-6 are gated by
+// the mask as usual.  Called at sprint boundaries and from write_sr; almost
+// always false.
 static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
-    if (__builtin_expect(cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7, 0)) {
+    if (__builtin_expect(cpu->ipl > cpu->interrupt_mask || (cpu->ipl == 7 && cpu->nmi_edge), 0)) {
         uint16_t sr = cpu_get_sr(cpu);
         cpu->stopped = 0; // an interrupt resumes a STOP-halted CPU
+        if (cpu->ipl == 7)
+            cpu->nmi_edge = 0;
         cpu->interrupt_mask = cpu->ipl;
         exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030
     }

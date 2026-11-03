@@ -39,6 +39,11 @@
 // memory_io_penalty a no-op anyway.)
 sprint_io_t g_sprint_io;
 
+void memory_signal_bus_error(uint32_t addr, bool write) {
+    (void)addr;
+    (void)write;
+}
+
 const memory_interface_t *via_get_memory_interface(via_t *v) {
     (void)v;
     return NULL;

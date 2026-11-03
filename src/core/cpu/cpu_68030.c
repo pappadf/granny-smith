@@ -514,6 +514,7 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // mask is 7 from here on, so a CPU left stopped would sleep forever.
     cpu->stopped = 0;
     cpu->ipl = 0;
+    cpu->nmi_edge = 0;
     cpu->last_bus_error_pc = 0;
     g_bus_error_pending = false;
     cpu->ssp = memory_read_uint32(0x00000000); // SSP from vector 0 (ROM via overlay)

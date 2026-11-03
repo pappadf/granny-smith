@@ -73,6 +73,14 @@ consumes it before it is looking, `CudaInit` never sees its acknowledge, and
 the ROM reaches `DeadCuda` and plays death chimes. So Cuda-initiated bytes go
 through a scheduled delayed push.
 
+Each further response byte is paced too: Cuda clocks it one byte time
+(`CUDA_BYTE_NS`, 65 µs — the "byte transfer nominal ~65 µs incl. handshake"
+of the reference) after the host's ByteAck toggle, not inside it.  A RdTime
+round trip then costs about ten byte times, as on the real part, which code
+that times Cuda by iteration count relies on: MacTest Pro's Keyboard
+Controller test waits for two RTC ticks out of one 4096-call RdTime budget
+and failed when every call took a fifth of a millisecond.
+
 The mirror-image hazard: a *stale* delayed push must never land inside the
 next transaction, or it sets the SR interrupt out of phase and garbles the
 byte stream. The polled `CudaRdXByte` path (used for the very early PRAM reads,

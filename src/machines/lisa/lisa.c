@@ -239,9 +239,9 @@ static void lisa_update_ipl(config_t *cfg, int level, bool active) {
 // Parity NMI (level 7)
 // ============================================================
 
-// Deassert the parity NMI a short time after asserting it.  The level-based IPL
-// model would otherwise re-fire forever; the boot ROM's idempotent parity
-// handler tolerates the few NMIs that occur in this window.
+// Deassert the parity NMI a short time after asserting it.  Level 7 is
+// edge-sensitive (cpu_check_interrupt), so it fires once per assertion; the
+// release re-arms it for the next parity error.
 static void lisa_nmi_off(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;

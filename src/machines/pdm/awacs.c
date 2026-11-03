@@ -49,6 +49,11 @@ LOG_USE_CATEGORY_NAME("awacs");
 #define AWACS_OUT_HALF0 0x10000u
 #define AWACS_OUT_HALF1 0x12000u
 
+// Codec status bytes (+$04/+$05): A/D valid with error 0; revision 2,
+// manufacturer 1.
+#define AWACS_STAT_VALID 0x40u
+#define AWACS_STAT_ID    0x21u
+
 // Codec sample rate for the whole engine, from the shared rate field in the
 // OUTPUT control register (+$10 bits 2:1): the drivers program %10 = 44 100
 // and %00 = 22 050, and read it back as `(+$10 & $FE) == $04 ? 44100 :
@@ -196,6 +201,17 @@ uint8_t pdm_awacs_read(config_t *cfg, uint32_t off) {
     if (off >= 0x20)
         return 0;
     switch (off) {
+    case 0x04:
+        // Codec status, bits 23:16 of the ASCO status aux field the codec
+        // returns every frame: expand, A/D valid, overflow L/R, error
+        // number.  The serial link runs continuously, so the field is
+        // always valid and, with no malformed command, error 0.
+        return AWACS_STAT_VALID;
+    case 0x05:
+        // Status bits 15:8: revision (7:4) and manufacturer (3:0).  The
+        // original AWACS reports revision 2 (Screamer, on later machines,
+        // reports 3); MacTest Pro's Sound Status test requires exactly $21.
+        return AWACS_STAT_ID;
     case 0x0C:
     case 0x0D:
     case 0x0E: {
