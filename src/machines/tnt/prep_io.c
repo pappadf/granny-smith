@@ -129,6 +129,11 @@ typedef struct tnt_prep_io {
     memory_interface_t iface;
     uint8_t port92;
     uint8_t port850;
+    // Does the bridge reverse the byte lanes to memory in little-endian mode,
+    // as a PReP host bridge does (machine.prep.lane_reversal, default on)?
+    // Off models a Macintosh's memory: the CPU's munge is all there is, so
+    // the window itself undoes it (munged()) and ISA byte order applies.
+    bool lane_reversal;
     prep_uart_t com1;
     prep_rtc_t rtc;
     prep_kbc_t kbc;
@@ -711,7 +716,8 @@ static void prep_out8(tnt_prep_io_t *p, uint32_t port, uint8_t v) {
     case 0x92:
         if ((v ^ p->port92) & PREP_PORT92_LE) {
             LOG(1, "port $92: %s-endian", (v & PREP_PORT92_LE) ? "little" : "big");
-            ppc_set_le_bridge((v & PREP_PORT92_LE) != 0);
+            if (p->lane_reversal)
+                ppc_set_le_bridge((v & PREP_PORT92_LE) != 0);
         }
         p->port92 = v;
         tnt_gc_recompute(p->cfg); // who drives the CPU's interrupt line may have changed
@@ -725,6 +731,14 @@ static void prep_out8(tnt_prep_io_t *p, uint32_t port, uint8_t v) {
     }
     p->unknown_writes++;
     LOG(2, "out8 $%04X = $%02X (no device)", port, v);
+}
+
+// Little-endian mode without memory lane reversal (a Macintosh): the CPU
+// hands over its munged address (byte ^7, halfword ^6, word ^4) and the
+// register's bytes in big-endian order, so the window undoes the munge and
+// reverses the bytes -- what Bandit does for PCI with its lanes reversed.
+static bool munged(const tnt_prep_io_t *p) {
+    return !p->lane_reversal && (p->port92 & PREP_PORT92_LE);
 }
 
 // Every access is split into bytes: the ISA side is a byte bus, and PCI
@@ -741,28 +755,55 @@ static void io_out(tnt_prep_io_t *p, uint32_t offset, uint8_t v) {
         prep_out8(p, prep_port(p, offset, 1), v);
 }
 static uint8_t io_read8(void *ctx, uint32_t offset) {
-    return io_in(ctx, offset);
+    tnt_prep_io_t *p = ctx;
+    return io_in(p, munged(p) ? offset ^ 7u : offset);
 }
-// The bus interface's value convention is big-endian: the byte at the
-// lowest address is the most significant (the core has already swapped an
-// LE-mode access).
+// Otherwise the bus interface's value convention is big-endian: the byte at
+// the lowest address is the most significant (behind a lane-reversing
+// bridge the core has already swapped an LE-mode access).
 static uint16_t io_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((io_in(ctx, offset) << 8) | io_in(ctx, offset + 1));
+    tnt_prep_io_t *p = ctx;
+    if (munged(p)) {
+        offset ^= 6u;
+        return (uint16_t)(io_in(p, offset) | (io_in(p, offset + 1) << 8));
+    }
+    return (uint16_t)((io_in(p, offset) << 8) | io_in(p, offset + 1));
 }
 static uint32_t io_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)io_in(ctx, offset) << 24) | ((uint32_t)io_in(ctx, offset + 1) << 16) |
-           ((uint32_t)io_in(ctx, offset + 2) << 8) | (uint32_t)io_in(ctx, offset + 3);
+    tnt_prep_io_t *p = ctx;
+    if (munged(p)) {
+        offset ^= 4u;
+        return (uint32_t)io_in(p, offset) | ((uint32_t)io_in(p, offset + 1) << 8) |
+               ((uint32_t)io_in(p, offset + 2) << 16) | ((uint32_t)io_in(p, offset + 3) << 24);
+    }
+    return ((uint32_t)io_in(p, offset) << 24) | ((uint32_t)io_in(p, offset + 1) << 16) |
+           ((uint32_t)io_in(p, offset + 2) << 8) | (uint32_t)io_in(p, offset + 3);
 }
 static void io_write8(void *ctx, uint32_t offset, uint8_t v) {
-    io_out(ctx, offset, v);
+    tnt_prep_io_t *p = ctx;
+    io_out(p, munged(p) ? offset ^ 7u : offset, v);
 }
 static void io_write16(void *ctx, uint32_t offset, uint16_t v) {
-    io_out(ctx, offset, (uint8_t)(v >> 8));
-    io_out(ctx, offset + 1, (uint8_t)v);
+    tnt_prep_io_t *p = ctx;
+    if (munged(p)) {
+        offset ^= 6u;
+        io_out(p, offset, (uint8_t)v);
+        io_out(p, offset + 1, (uint8_t)(v >> 8));
+        return;
+    }
+    io_out(p, offset, (uint8_t)(v >> 8));
+    io_out(p, offset + 1, (uint8_t)v);
 }
 static void io_write32(void *ctx, uint32_t offset, uint32_t v) {
+    tnt_prep_io_t *p = ctx;
+    if (munged(p)) {
+        offset ^= 4u;
+        for (unsigned i = 0; i < 4; i++)
+            io_out(p, offset + i, (uint8_t)(v >> (8 * i)));
+        return;
+    }
     for (unsigned i = 0; i < 4; i++)
-        io_out(ctx, offset + i, (uint8_t)(v >> (24 - 8 * i)));
+        io_out(p, offset + i, (uint8_t)(v >> (24 - 8 * i)));
 }
 // Inspection never touches the UART's queues.
 static uint8_t io_peek8(void *ctx, uint32_t offset) {
@@ -773,7 +814,8 @@ static uint8_t io_peek8(void *ctx, uint32_t offset) {
 
 static uint8_t iack_read8(void *ctx, uint32_t offset) {
     tnt_prep_io_t *p = ctx;
-    return offset == 0xFF0u ? pic_iack(p) : 0xFF;
+    // $BFFFFFF0, or the byte a munged lbz of it reaches ($...F7).
+    return (offset & ~7u) == 0xFF0u ? pic_iack(p) : 0xFF;
 }
 static uint16_t iack_read16(void *ctx, uint32_t offset) {
     return (uint16_t)((iack_read8(ctx, offset) << 8) | 0xFF);
@@ -823,15 +865,59 @@ static DEF_GETTER(prep_attr_unknown) {
     return val_uint(8, g_prep ? g_prep->unknown_reads + g_prep->unknown_writes : 0);
 }
 
+static DEF_GETTER(prep_attr_lanes) {
+    (void)self;
+    return val_bool(g_prep ? g_prep->lane_reversal : true);
+}
+static DEF_SETTER(prep_set_lanes) {
+    (void)self;
+    if (!g_prep)
+        return val_err("prep_io not enabled");
+    g_prep->lane_reversal = val_as_bool(&in);
+    ppc_set_le_bridge(g_prep->lane_reversal && (g_prep->port92 & PREP_PORT92_LE));
+    return val_none();
+}
+
+// Put Bandit 1 in little-endian mode -- its byte lanes reversed, as Open
+// Firmware's `little-endian? true` leaves them for NT -- by a config cycle
+// to its own mode-select register (device 11, $50; BIG_ENDIAN is bit 24).
+static DEF_METHOD(prep_method_bandit_le) {
+    (void)self;
+    if (!g_prep)
+        return val_err("prep_io not enabled");
+    pci_bus_t *bus = prep_bus(g_prep);
+    if (!bus)
+        return val_err("no Bandit 1");
+    bool le = argc < 1 || val_as_bool(&argv[0]);
+    uint8_t b3 = (uint8_t)(pci_bus_cfg_read(bus, 11, 0, 0x50) >> 24);
+    b3 = le ? (uint8_t)(b3 & ~1u) : (uint8_t)(b3 | 1u);
+    pci_bus_cfg_write(bus, 11, 0, 0x50, 3, b3);
+    return val_bool(le);
+}
+static const arg_decl_t prep_bandit_le_args[] = {
+    {.name = "little",
+     .kind = VK_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "reverse the lanes (default true)"},
+};
+
 static const member_t prep_members[] = {
+    {.kind = MK_ATTR,
+     .name = "lane_reversal",
+     .doc = "Does the bridge reverse the byte lanes to memory in LE mode, as PReP's does (true), or not, as a Mac's "
+            "Hammerhead does not (false)?",                                                                   .attr = {.type = VK_BOOL, .get = prep_attr_lanes, .set = prep_set_lanes}},
+    {.kind = MK_METHOD,
+     .name = "bandit_little_endian",
+     .doc = "Set Bandit 1's byte lanes reversed (true) or straight (false) through its mode-select register",
+     .method = {.args = prep_bandit_le_args, .nargs = 1, .result = VK_BOOL, .fn = prep_method_bandit_le}                                                                              },
     {.kind = MK_ATTR,
      .name = "port92",
      .doc = "System Control Port A; bit 1 is the bridge's little-endian mode",
-     .attr = {.type = VK_UINT, .get = prep_attr_port92} },
+     .attr = {.type = VK_UINT, .get = prep_attr_port92}                                                                                                                               },
     {.kind = MK_ATTR,
      .name = "unknown",
      .doc = "Accesses to ports no device answers (logged under `prep` at level 1)",
-     .attr = {.type = VK_UINT, .get = prep_attr_unknown}},
+     .attr = {.type = VK_UINT, .get = prep_attr_unknown}                                                                                                                              },
 };
 static const class_desc_t prep_class = {
     .name = "prep_io",
@@ -937,6 +1023,7 @@ void tnt_prep_io_init(config_t *cfg) {
         return;
     p->cfg = cfg;
     p->rtc.reg_b = 0x02; // 24-hour, BCD
+    p->lane_reversal = true;
     p->kbc.cmd_byte = 0x65; // translate, both interrupts enabled, SYS
     p->iface.read_uint8 = io_read8;
     p->iface.read_uint16 = io_read16;

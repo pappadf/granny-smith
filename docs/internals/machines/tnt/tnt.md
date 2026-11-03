@@ -1095,6 +1095,16 @@ it on:
   true little-endian memory.  Hammerhead never does this; it is the reason
   PReP binaries cannot run unchanged on any Macintosh.
 
+`machine.prep.lane_reversal = false` drops that reversal -- a Macintosh's
+memory -- and the window undoes the CPU's munge itself (ISA byte order, as
+Bandit does for PCI with its lanes reversed); `machine.prep.bandit_little_endian()`
+reverses Bandit 1's lanes by a config cycle, and `machine.memory.byte_reverse`
+converts a RAM image between the two layouts.  Restoring a checkpoint taken
+at the OS/2 loader's hand-off from its big-endian stub, converting RAM with
+`byte_reverse(0, ram, 8)` and running with the reversal off reaches exactly
+the same point as the reversing run: the dependency on PReP's lane reversal
+is the stub's, not the loader's or the microkernel's.
+
 Not checkpointed.  With it, the OS/2 loader (booted by hand into RAM, with
 synthesised PReP residual data) reads its configuration from the CD over
 its own 53C810 SCRIPTS, and the IBM Microkernel starts its servers and its

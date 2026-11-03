@@ -258,6 +258,31 @@ static const arg_decl_t mem_load_args[] = {
      .doc = "bytes to copy (0 = to end of file)"},
 };
 
+// `memory.byte_reverse(addr, len, group)` -- reverse the bytes of every
+// `group`-byte unit in [addr, addr+len), through the debug path (physical
+// on PowerPC).  For moving a memory image between byte orders: group 8 turns
+// a true little-endian image into the layout a munging 60x expects.
+static DEF_METHOD(method_mem_byte_reverse) {
+    uint32_t addr = (uint32_t)argv[0].u;
+    uint32_t len = (uint32_t)argv[1].u;
+    uint32_t g = (uint32_t)argv[2].u;
+    if (g < 2 || g > 16 || (len % g))
+        return val_err("memory.byte_reverse: group must be 2..16 and divide len");
+    uint8_t buf[16];
+    for (uint32_t a = addr; a - addr < len; a += g) {
+        for (uint32_t i = 0; i < g; i++)
+            buf[i] = memory_debug_read_uint8(a + i);
+        for (uint32_t i = 0; i < g; i++)
+            memory_debug_write_uint8(a + i, buf[g - 1 - i]);
+    }
+    return val_uint(4, len / g);
+}
+static const arg_decl_t mem_byte_reverse_args[] = {
+    {.name = "addr", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "first byte"},
+    {.name = "len", .kind = VK_UINT, .presentation_flags = VFLAG_HEX, .doc = "bytes (a multiple of group)"},
+    {.name = "group", .kind = VK_UINT, .doc = "unit size in bytes (2..16)"},
+};
+
 static DEF_GETTER(attr_mem_slowpath_count) {
     return val_uint(8, g_mem_slowpath_count);
 }
@@ -320,6 +345,15 @@ static const member_t memory_members[] = {
      .doc = "Copy a host file's bytes into guest memory (debug write path)",
      .method =
          {.result_doc = "bytes copied", .args = mem_load_args, .nargs = 4, .result = VK_UINT, .fn = method_mem_load}},
+    {.kind = MK_METHOD,
+     .name = "byte_reverse",
+     .examples = EXAMPLES("machine.memory.byte_reverse 0 0x4000000 8"),
+     .doc = "Reverse the bytes of every group-byte unit in a range (debug write path)",
+     .method = {.result_doc = "units reversed",
+                .args = mem_byte_reverse_args,
+                .nargs = 3,
+                .result = VK_UINT,
+                .fn = method_mem_byte_reverse}},
 };
 
 static const class_desc_t memory_class = {
