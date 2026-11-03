@@ -4,9 +4,9 @@
 // awacs.c
 // The TNT AWACS sound face: Grand Central's DAVbus cell at island
 // +$14000 (the shared model in core/peripherals/davbus.c, AWACS codec
-// variant) with its output on DBDMA channel 8.  This file is the family
-// wiring; the register file, codec shadows and channel pacing live in the
-// cell.
+// variant) with its output on DBDMA channel 8 and its record path on
+// channel 9.  This file is the family wiring; the register file, codec
+// shadows and channel pacing live in the cell.
 
 #include "tnt.h"
 
@@ -22,6 +22,10 @@ static davbus_host_t *awacs_host(config_t *cfg) {
     h->sched = cfg->scheduler;
     h->dbdma = st->dbdma;
     h->out_chan = 8;
+    // The record channel runs (silence): Mac OS 8.6+ stops recording by
+    // setting S0 and waiting for the program to reach STOP (issue #211).
+    h->input = true;
+    h->in_chan = 9;
     h->cpu_hz = cfg->machine->freq;
     h->screamer = false;
     return h;

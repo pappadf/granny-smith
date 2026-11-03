@@ -159,7 +159,11 @@ The board model is the chipset skeleton plus the DMA architecture:
   which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
   polls for completion, so a stalling channel would hang the boot in
-  firmware.  A channel's interrupt command asserts a LEVEL on Grand
+  firmware.  Audio-in (channel 9) is attached to the DAVbus record
+  path, which delivers silence at the codec rate: Mac OS 8.6 and 9 stop
+  recording at startup by setting S0 and polling `channelStatus` until
+  the program's conditional branch reaches STOP, so a stalled channel 9
+  froze the splash screen (#211).  A channel's interrupt command asserts a LEVEL on Grand
   Central source n that the host's Clear write acknowledges (see "The
   interrupt fabric").  (Reference:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
