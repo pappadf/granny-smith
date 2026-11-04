@@ -1219,6 +1219,137 @@ static const class_desc_t com1_class = {
     .n_members = sizeof(com1_members) / sizeof(com1_members[0]),
 };
 
+// --- the address-use tap (GS_PREP_TAP=1): an experiment's instrument --------
+//
+// Which PReP addresses does the guest actually use, and from where?  Every
+// access to the window, the interrupt acknowledge and Bandit 1's PReP
+// windows -- and, with GS_PREP_ALIAS=1, to a relocated copy of each
+// (tnt_prep_alias) -- is classified; the first access to each 64 KB block
+// is logged with its PC, and each region's count at every power of two.
+
+typedef struct {
+    uint32_t lo, hi; // inclusive
+    const char *name;
+    uint64_t n;
+} prep_tap_region_t;
+
+static prep_tap_region_t g_tap_regions[] = {
+    {0x80000000u, 0x807FFFFFu, "isa",           0},
+    {0x80800000u, 0x80FFFFFFu, "cfg",           0},
+    {0xBFFFF000u, 0xBFFFFFFFu, "iack",          0},
+    {0xA0000000u, 0xBF7FFFFFu, "pci-io",        0},
+    {0xC0000000u, 0xCFFFFFFFu, "pci-mem",       0},
+    {0x40000000u, 0x407FFFFFu, "isa@alias",     0},
+    {0x40800000u, 0x40FFFFFFu, "cfg@alias",     0},
+    {0x7FFFF000u, 0x7FFFFFFFu, "iack@alias",    0},
+    {0x60000000u, 0x7F7FFFFFu, "pci-io@alias",  0},
+    {0xD0000000u, 0xDEFFFFFFu, "pci-mem@alias", 0},
+};
+#define TAP_BLOCKS 2048u
+static uint32_t g_tap_block[TAP_BLOCKS];
+static unsigned g_tap_nblocks;
+static bool g_tap_on;
+
+static void prep_tap(uint32_t phys, bool write) {
+    prep_tap_region_t *r = NULL;
+    for (size_t i = 0; i < sizeof g_tap_regions / sizeof g_tap_regions[0]; i++)
+        if (phys >= g_tap_regions[i].lo && phys <= g_tap_regions[i].hi) {
+            r = &g_tap_regions[i];
+            break;
+        }
+    if (!r)
+        return;
+    uint32_t pc = (g_prep && g_prep->cfg && g_prep->cfg->ppc) ? ppc_get_pc(g_prep->cfg->ppc) : 0;
+    r->n++;
+    uint32_t blk = phys >> 16;
+    bool seen = false;
+    for (unsigned i = 0; i < g_tap_nblocks; i++)
+        if (g_tap_block[i] == blk) {
+            seen = true;
+            break;
+        }
+    if (!seen && g_tap_nblocks < TAP_BLOCKS) {
+        g_tap_block[g_tap_nblocks++] = blk;
+        LOG(0, "TAP first %-13s %s $%08X pc=%08X", r->name, write ? "W" : "R", phys, pc);
+    }
+    if ((r->n & (r->n - 1)) == 0 && r->n >= 16)
+        LOG(0, "TAP count %-13s %llu (last $%08X pc=%08X)", r->name, (unsigned long long)r->n, phys, pc);
+}
+
+// A tapped copy of a memory_map interface at `base`.
+typedef struct {
+    memory_interface_t iface;
+    const memory_interface_t *inner;
+    void *ctx;
+    uint32_t base;
+} prep_tapped_t;
+
+#define TAPPED(t) ((prep_tapped_t *)(t))
+static uint8_t tapped_read8(void *t, uint32_t o) {
+    prep_tap(TAPPED(t)->base + o, false);
+    return TAPPED(t)->inner->read_uint8(TAPPED(t)->ctx, o);
+}
+static uint16_t tapped_read16(void *t, uint32_t o) {
+    prep_tap(TAPPED(t)->base + o, false);
+    return TAPPED(t)->inner->read_uint16(TAPPED(t)->ctx, o);
+}
+static uint32_t tapped_read32(void *t, uint32_t o) {
+    prep_tap(TAPPED(t)->base + o, false);
+    return TAPPED(t)->inner->read_uint32(TAPPED(t)->ctx, o);
+}
+static void tapped_write8(void *t, uint32_t o, uint8_t v) {
+    prep_tap(TAPPED(t)->base + o, true);
+    TAPPED(t)->inner->write_uint8(TAPPED(t)->ctx, o, v);
+}
+static void tapped_write16(void *t, uint32_t o, uint16_t v) {
+    prep_tap(TAPPED(t)->base + o, true);
+    TAPPED(t)->inner->write_uint16(TAPPED(t)->ctx, o, v);
+}
+static void tapped_write32(void *t, uint32_t o, uint32_t v) {
+    prep_tap(TAPPED(t)->base + o, true);
+    TAPPED(t)->inner->write_uint32(TAPPED(t)->ctx, o, v);
+}
+static uint8_t tapped_peek8(void *t, uint32_t o) {
+    const prep_tapped_t *x = t;
+    return x->inner->peek_uint8 ? x->inner->peek_uint8(x->ctx, o) : 0xFF;
+}
+
+// Map `inner` at `base`, through the tap when it is on.
+static void prep_map(config_t *cfg, uint32_t base, uint32_t size, const char *name, memory_interface_t *inner,
+                     void *ctx) {
+    if (!g_tap_on) {
+        memory_map_add(cfg->memory_map, base, size, name, inner, ctx);
+        return;
+    }
+    prep_tapped_t *t = calloc(1, sizeof *t);
+    if (!t)
+        return;
+    t->inner = inner;
+    t->ctx = ctx;
+    t->base = base;
+    t->iface = (memory_interface_t){.read_uint8 = tapped_read8,
+                                    .read_uint16 = tapped_read16,
+                                    .read_uint32 = tapped_read32,
+                                    .write_uint8 = tapped_write8,
+                                    .write_uint16 = tapped_write16,
+                                    .write_uint32 = tapped_write32,
+                                    .peek_uint8 = tapped_peek8};
+    memory_map_add(cfg->memory_map, base, size, name, &t->iface, t);
+}
+
+static bool env_on(const char *name) {
+    const char *e = getenv(name);
+    return e && strcmp(e, "1") == 0;
+}
+
+// GS_PREP_ALIAS=1: the window and the interrupt acknowledge also answer at
+// $40000000 and $7FFFF000 (bandit.c adds the PCI windows' copies), so a
+// guest told -- by its residual data -- that they are elsewhere keeps running
+// and the tap shows whether it listened.
+bool tnt_prep_alias_enabled(void) {
+    return env_on("GS_PREP_ALIAS");
+}
+
 // --- lifetime ----------------------------------------------------------------
 
 // The option, or GS_PREP_IO=1 in the environment.  The environment is how a
@@ -1248,14 +1379,21 @@ void tnt_prep_io_init(config_t *cfg) {
     p->iface.write_uint16 = io_write16;
     p->iface.write_uint32 = io_write32;
     p->iface.peek_uint8 = io_peek8;
-    memory_map_add(cfg->memory_map, PREP_IO_BASE, PREP_IO_SIZE, "PReP I/O window", &p->iface, p);
+    g_tap_on = env_on("GS_PREP_TAP");
+    if (g_tap_on)
+        pci_window_tap = prep_tap;
+    prep_map(cfg, PREP_IO_BASE, PREP_IO_SIZE, "PReP I/O window", &p->iface, p);
+    if (tnt_prep_alias_enabled())
+        prep_map(cfg, 0x40000000u, PREP_IO_SIZE, "PReP I/O window (alias)", &p->iface, p);
     p->iack_iface.read_uint8 = iack_read8;
     p->iack_iface.read_uint16 = iack_read16;
     p->iack_iface.read_uint32 = iack_read32;
     p->iack_iface.write_uint8 = iack_write8;
     p->iack_iface.write_uint16 = iack_write16;
     p->iack_iface.write_uint32 = iack_write32;
-    memory_map_add(cfg->memory_map, 0xBFFFF000u, MEM_PAGE_SIZE, "PReP interrupt acknowledge", &p->iack_iface, p);
+    prep_map(cfg, 0xBFFFF000u, MEM_PAGE_SIZE, "PReP interrupt acknowledge", &p->iack_iface, p);
+    if (tnt_prep_alias_enabled())
+        prep_map(cfg, 0x7FFFF000u, MEM_PAGE_SIZE, "PReP interrupt acknowledge (alias)", &p->iack_iface, p);
     p->node = object_new(&prep_class, p, "prep");
     if (p->node) {
         object_attach(machine_object(), p->node);
@@ -1282,6 +1420,8 @@ void tnt_prep_io_teardown(config_t *cfg) {
     }
     if (g_prep == p)
         g_prep = NULL;
+    // The tap hook stays: a reset builds the new window before it tears the
+    // old one down, and prep_tap copes with no window.
     ppc_set_le_bridge(false);
     free(p);
     st->prep = NULL;

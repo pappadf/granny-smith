@@ -40,7 +40,7 @@ static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s);
 
 #define PCI_MAX_BUSES     4
 #define PCI_MAX_DEVICES   32 // IDSEL AD11..AD31 (0..10 never exist)
-#define PCI_MAX_WINDOWS   6 // a Bandit has three; the Network Server's PReP window adds two more
+#define PCI_MAX_WINDOWS   8 // a Bandit has three; the Network Server's PReP window adds two more
 #define PCI_WINDOW_RANGES (PCI_MAX_DEVICES * (PCI_BAR_SLOTS + PCI_FIXED_REGIONS))
 #define PCI_MAX_SLOTS     16 // slot numbers are 1-based
 
@@ -77,6 +77,14 @@ typedef struct pci_window {
 // region declared, a device seated.  Every window's decode table rebuilds
 // on its next access after a bump.
 static uint32_t g_pci_decode_gen = 1;
+
+// The address-use tap (pci.h): NULL unless an experiment installs one.
+void (*pci_window_tap)(uint32_t phys, bool write) = NULL;
+#define WINDOW_TAP(w, offset, write)                                                                                   \
+    do {                                                                                                               \
+        if (__builtin_expect(pci_window_tap != NULL, 0))                                                               \
+            pci_window_tap((w)->map_base + (offset), (write));                                                         \
+    } while (0)
 
 struct pci_bus {
     pci_root_t *root;
@@ -329,6 +337,8 @@ static uint32_t decode_read32(const pci_decode_t *d, uint32_t sub, bool peek) {
 // inspection never raises a bus error.
 static uint32_t window_read(const pci_window_t *w, uint32_t offset, uint32_t size, bool peek) {
     pci_decode_t d;
+    if (!peek)
+        WINDOW_TAP(w, offset, false);
     offset = lane_offset(w, offset, size);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         if (!peek)
@@ -367,6 +377,7 @@ static uint32_t window_peek32(void *ctx, uint32_t offset) {
 static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    WINDOW_TAP(w, offset, true);
     offset = lane_offset(w, offset, 1);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
@@ -378,6 +389,7 @@ static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
 static void window_write16(void *ctx, uint32_t offset, uint16_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    WINDOW_TAP(w, offset, true);
     offset = lane_offset(w, offset, 2);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
@@ -389,6 +401,7 @@ static void window_write16(void *ctx, uint32_t offset, uint16_t value) {
 static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    WINDOW_TAP(w, offset, true);
     offset = lane_offset(w, offset, 4);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
@@ -428,6 +441,7 @@ static bool window_resolve_page(const memory_interface_t *iface, void *ctx, uint
     if (!out)
         return true;
     const pci_window_t *w = (const pci_window_t *)ctx;
+    WINDOW_TAP(w, offset, false);
     uint32_t a0 = window_pci_addr(w, offset), a1 = window_pci_addr(w, offset + MEM_PAGE_SIZE - 1);
     if (a1 - a0 != MEM_PAGE_SIZE - 1)
         return false;

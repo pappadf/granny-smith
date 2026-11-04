@@ -563,6 +563,15 @@ void tnt_bandit_claim_memory(config_t *cfg) {
         // software probes empty slots and ranges on that assumption.
         pci_bus_set_window_quiet_abort(bandit1->bus, 0xA0000000u);
         pci_bus_set_window_quiet_abort(bandit1->bus, 0xC0000000u);
+        // The relocation experiment's copies (prep_io.c, GS_PREP_ALIAS=1).
+        if (tnt_prep_alias_enabled()) {
+            pci_bus_add_window(bandit1->bus, PCI_SPACE_IO, 0x60000000u, 0x1F800000u, 0x20000000u, 0xFFFFFFFFu,
+                               "PReP PCI I/O (alias)");
+            pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, 0xD0000000u, 0x0F000000u, 0x00000000u, 0x0FFFFFFFu,
+                               "PReP PCI memory (alias)");
+            pci_bus_set_window_quiet_abort(bandit1->bus, 0x60000000u);
+            pci_bus_set_window_quiet_abort(bandit1->bus, 0xD0000000u);
+        }
         // And PReP bus masters address memory at PCI $80000000 + physical.
         pci_bus_set_dma_offset(bandit1->bus, 0x80000000u);
     } else if (bandit1)

@@ -125,6 +125,11 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
 // experimental PReP window, where software probes empty PCI space.
 void pci_bus_set_window_quiet_abort(pci_bus_t *bus, uint32_t map_base);
 
+// An experiment's address-use tap: when set, called with the physical
+// address of every guest access a PCI window takes (and of every page the
+// fast tables resolve through one).  NULL normally.
+extern void (*pci_window_tap)(uint32_t phys, bool write);
+
 // Introspection for a bridge window: the interface the bus claimed the
 // window's physical range with, and its context.  The family gets these
 // for free through memory_map_add; they are exported so a test (or a

@@ -423,6 +423,7 @@ extern const storage_device_decl_t ans_default_storage[];
 // The experimental PReP-compatibility window (prep_io.c), built when the
 // machine's `prep_io` option is "on" (or GS_PREP_IO=1, for restores).
 bool tnt_prep_io_enabled(config_t *cfg);
+bool tnt_prep_alias_enabled(void); // the relocation experiment (GS_PREP_ALIAS=1)
 void tnt_prep_io_init(config_t *cfg);
 void tnt_prep_io_teardown(config_t *cfg);
 bool tnt_prep_io_owns_irq(config_t *cfg); // the guest put the bridge in PReP mode: the 8259 pair drives the CPU
