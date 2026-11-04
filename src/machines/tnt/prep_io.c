@@ -708,6 +708,12 @@ static uint8_t prep_in8(tnt_prep_io_t *p, uint32_t port) {
     switch (port) {
     case 0x60: {
         uint8_t v = kbc_data_read(&p->kbc);
+        // Reading the output buffer clears OBF, which drops the 8042's
+        // interrupt output; the next queued byte then sets it again.  On the
+        // edge-triggered 8259 input OS/2 uses, that pulse is the only way a
+        // second byte is ever announced.
+        prep_irq(p, 1, false);
+        prep_irq(p, 12, false);
         kbc_irq(p);
         return v;
     }
@@ -1062,6 +1068,39 @@ static DEF_METHOD(prep_method_load_state) {
     return val_bool(true);
 }
 
+// machine.prep.kbd_send("1C 9C"): queue bytes in the 8042's output buffer,
+// as the keyboard would send them, and raise IRQ 1.  The bytes are what the
+// guest reads from port $60: with the command byte's translate bit set
+// (the power-on $65, which OS/2 keeps) that is scan code set 1, so Enter is
+// 1C (make) and 9C (break).
+static DEF_METHOD(prep_method_kbd_send) {
+    (void)self;
+    if (!g_prep)
+        return val_err("prep_io not enabled");
+    if (argc != 1 || argv[0].kind != VK_STRING || !argv[0].s)
+        return val_err("kbd_send: expected a string of hex bytes");
+    unsigned n = 0;
+    const char *q = argv[0].s;
+    while (*q) {
+        while (*q == ' ' || *q == ',')
+            q++;
+        if (!*q)
+            break;
+        char *end;
+        unsigned long b = strtoul(q, &end, 16);
+        if (end == q || b > 0xFF)
+            return val_err("kbd_send: bad hex byte");
+        kbc_push(&g_prep->kbc, (uint8_t)b, false);
+        n++;
+        q = end;
+    }
+    kbc_irq(g_prep);
+    return val_uint(4, n);
+}
+static const arg_decl_t prep_kbd_args[] = {
+    {.name = "bytes", .kind = VK_STRING, .doc = "hex bytes, space-separated (scan code set 1 with translation on)"},
+};
+
 static const arg_decl_t prep_state_args[] = {
     {.name = "path", .kind = VK_STRING, .doc = "the side file"},
 };
@@ -1079,6 +1118,10 @@ static const member_t prep_members[] = {
      .name = "port92",
      .doc = "System Control Port A; bit 1 is the bridge's little-endian mode",
      .attr = {.type = VK_UINT, .get = prep_attr_port92}                                                                                                                               },
+    {.kind = MK_METHOD,
+     .name = "kbd_send",
+     .doc = "Queue keyboard bytes in the 8042's output buffer and raise IRQ 1",
+     .method = {.args = prep_kbd_args, .nargs = 1, .result = VK_UINT, .fn = prep_method_kbd_send}                                                                                     },
     {.kind = MK_METHOD,
      .name = "save_state",
      .doc = "Write the window's device state (8259s, UART registers, RTC, 8042, NVRAM) to a side file",

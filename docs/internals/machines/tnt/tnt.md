@@ -1124,6 +1124,13 @@ at the OS/2 loader's hand-off from its big-endian stub, converting RAM with
 the same point as the reversing run: the dependency on PReP's lane reversal
 is the stub's, not the loader's or the microkernel's.
 
+`machine.prep.kbd_send("1C 9C")` queues bytes in the 8042's output buffer
+as the keyboard would send them (scan code set 1, since the command byte's
+translate bit is on) and raises IRQ 1.  Reading `$60` drops the 8042's
+interrupt output before the next byte raises it again, a pulse an
+edge-triggered 8259 input needs to see a second byte.  With it, OS/2's
+installer can be driven from a script.
+
 Not checkpointed: `machine.prep.save_state(path)` writes the window's
 device state (8259s, UART registers, RTC, 8042, NVRAM) to a side file, and
 `machine.prep.load_state(path)` reads it back after restoring the
