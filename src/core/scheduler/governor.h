@@ -31,6 +31,7 @@ typedef struct governor {
     int pressure_ticks; // consecutive governor ticks under pressure (behind real time, or audio drained)
     double pressure_secs; // ...and the host seconds those ticks spanned
     double audio_secs; // consecutive host seconds the audio ring has reported below GOV_AUDIO_LOW
+    double saturated_secs; // consecutive host time above the ceiling while keeping up
     bool primed; // first governor tick since the reset seen (it starts the ladder at the floor)
 } governor_t;
 

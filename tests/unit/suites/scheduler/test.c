@@ -1187,6 +1187,34 @@ TEST(test_governor_spike_backoff) {
     teardown(s);
 }
 
+// Saturated without falling behind: a host where the current rung costs 97%
+// of every frame keeps up -- the accumulator never caps -- but leaves nothing
+// for the rest of the thread (input, the screen, the network), and the page
+// gets jumpy.  Seen in a browser tab whose guest grew heavier when a volume
+// was mounted from another tab: 60 ticks a second at 2x, 985 ms of each
+// second emulating, and the governor held 2x.  Sitting above the ceiling for
+// a sustained second backs off, to a rung projected under the target.
+TEST(test_governor_backs_off_when_saturated_but_keeping_up) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    test_set_mode(s, schedule_accelerated);
+    test_set_max_speed(s, 2.0);
+    g_host.secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+    double now = 0.0;
+    gov_drive(&now, 60, false); // the start: floor, then 1x
+    gov_drive(&now, 8 * 60, false);
+    ASSERT_TRUE(speed_now(s, pf1) > 1.9); // at the 2x cap
+
+    // 2x now costs 97% of the frame: never behind, never any headroom
+    g_host.secs_per_instr = 0.97 * VBL_PERIOD / (2.0 * (double)pf1);
+    gov_drive_until(&now, now + 3.0);
+    double settled = speed_now(s, pf1);
+    ASSERT_TRUE(settled < 1.6); // backed off (1.5x: 0.73 of the frame)
+    ASSERT_TRUE(settled > 1.4);
+    teardown(s);
+}
+
 // Audio-ring pressure: a host ring that stays drained forces a back-off even
 // when the measured utilization is comfortable -- but not a ring briefly
 // below half (a sound starting or ending); a recovered ring lets it climb
@@ -1954,6 +1982,7 @@ int main(void) {
     RUN(test_governor_paced_tops_out_at_authentic);
     RUN(test_governor_recovers_to_authentic);
     RUN(test_governor_short_hitch_costs_nothing);
+    RUN(test_governor_backs_off_when_saturated_but_keeping_up);
     RUN(test_governor_spike_backoff);
     RUN(test_governor_audio_pressure);
     RUN(test_governor_max_speed_cap);

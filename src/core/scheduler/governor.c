@@ -67,10 +67,18 @@
 // speed is audible.  A lone over-budget tick does not get the EWMA there
 // (0.3 -> 0.9 on a clipped sample), two in a row with the accumulator still
 // catching up do not count as behind.
-#define GOV_BACKOFF_TICKS 3
-#define GOV_BACKOFF_SECS  0.25
-#define GOV_UTIL_RELEVANT 0.5
-#define GOV_UTIL_OVER     1.0
+// Saturated: the utilization EWMA above GOV_UTIL_CEILING for this long of
+// consecutive host time backs off too, even with the host keeping up.  At
+// 0.97 of every frame the accumulator never caps, but nothing is left for
+// the rest of the thread -- input, the screen, the network -- and the page
+// stutters (a browser tab at 2x, 985 ms of each second emulating, held 2x).
+// The governor never climbs into the band above the ceiling; this brings it
+// back down when the guest's load moves it there.
+#define GOV_SATURATED_SECS 1.0
+#define GOV_BACKOFF_TICKS  3
+#define GOV_BACKOFF_SECS   0.25
+#define GOV_UTIL_RELEVANT  0.5
+#define GOV_UTIL_OVER      1.0
 
 // Quantized speed steps (x256): 0.25x, 0.375x, 0.5x, 0.625x, 0.75x, 0.875x,
 // 1x, 1.5x, 2x, 3x, 4x, 6x, 8x -- every value exact in x256.  Eighths below
@@ -122,6 +130,7 @@ void governor_reset(governor_t *g) {
     g->pressure_ticks = 0;
     g->pressure_secs = 0.0;
     g->audio_secs = 0.0;
+    g->saturated_secs = 0.0;
     g->primed = false;
 }
 
@@ -141,6 +150,9 @@ uint32_t governor_speed_x256(const governor_t *g) {
 //     straight to the highest rung the measurement projects under the target
 //     -- the multiplicative decrease that keeps a spike from becoming a
 //     spiral, without a lone hitch costing anything;
+//   - above 1x, back off as well once the EWMA has sat above
+//     GOV_UTIL_CEILING for GOV_SATURATED_SECS, the host keeping up or not:
+//     no headroom is left for the rest of the thread;
 //   - climb only after the dwell (GOV_DWELL_SECS at and above 1x,
 //     GOV_DWELL_SLOW_SECS below it), outside the post-back-off holdoff, with
 //     no pressure and the EWMA under the ceiling, and only as far as the
@@ -208,9 +220,14 @@ bool governor_tick(governor_t *g, const host_pacing_t *pacing, double host_secs_
     g->pressure_ticks = pressure ? g->pressure_ticks + 1 : 0;
     g->pressure_secs = pressure ? g->pressure_secs + elapsed_secs : 0.0;
 
+    g->saturated_secs = g->util_ewma > GOV_UTIL_CEILING ? g->saturated_secs + elapsed_secs : 0.0;
+
     int new_rung = g->rung;
     bool over = behind && g->util_ewma > GOV_UTIL_OVER; // the frame loop alone does not fit
-    if ((g->pressure_ticks >= GOV_BACKOFF_TICKS || g->pressure_secs >= GOV_BACKOFF_SECS || over) &&
+    // Only above 1x: below it, a host that keeps up is what the authentic
+    // speed needs; being behind still backs it off
+    bool saturated = g->saturated_secs >= GOV_SATURATED_SECS && g->rung > GOV_RUNG_ONE;
+    if ((g->pressure_ticks >= GOV_BACKOFF_TICKS || g->pressure_secs >= GOV_BACKOFF_SECS || over || saturated) &&
         new_rung > min_rung) {
         // Back off to the highest rung projected under the target -- at
         // least one rung, since the host said this one does not fit
@@ -221,6 +238,7 @@ bool governor_tick(governor_t *g, const host_pacing_t *pacing, double host_secs_
         g->pressure_ticks = 0;
         g->pressure_secs = 0.0;
         g->audio_secs = 0.0;
+        g->saturated_secs = 0.0;
         g->holdoff_secs = GOV_HOLDOFF_SECS;
     } else if (!pressure && !audio_low && g->util_ewma < GOV_UTIL_CEILING && new_rung < max_rung &&
                g->holdoff_secs <= 0.0 &&
