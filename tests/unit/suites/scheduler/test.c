@@ -1193,7 +1193,8 @@ TEST(test_governor_spike_backoff) {
 // gets jumpy.  Seen in a browser tab whose guest grew heavier when a volume
 // was mounted from another tab: 60 ticks a second at 2x, 985 ms of each
 // second emulating, and the governor held 2x.  Sitting above the ceiling for
-// a sustained second backs off, to a rung projected under the target.
+// ~0.1 s (about 0.2 s from the load's onset, the EWMA rising first) backs
+// off, to a rung projected under the target.
 TEST(test_governor_backs_off_when_saturated_but_keeping_up) {
     uint64_t pf1 = authentic_per_frame();
 
@@ -1206,9 +1207,11 @@ TEST(test_governor_backs_off_when_saturated_but_keeping_up) {
     gov_drive(&now, 8 * 60, false);
     ASSERT_TRUE(speed_now(s, pf1) > 1.9); // at the 2x cap
 
-    // 2x now costs 97% of the frame: never behind, never any headroom
+    // 2x now costs 97% of the frame: never behind, never any headroom.
+    // Audio breaks up first, so the back-off must come within a fraction of
+    // a second, not after one.
     g_host.secs_per_instr = 0.97 * VBL_PERIOD / (2.0 * (double)pf1);
-    gov_drive_until(&now, now + 3.0);
+    gov_drive_until(&now, now + 0.3);
     double settled = speed_now(s, pf1);
     ASSERT_TRUE(settled < 1.6); // backed off (1.5x: 0.73 of the frame)
     ASSERT_TRUE(settled > 1.4);

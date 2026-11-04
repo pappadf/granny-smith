@@ -71,10 +71,14 @@
 // consecutive host time backs off too, even with the host keeping up.  At
 // 0.97 of every frame the accumulator never caps, but nothing is left for
 // the rest of the thread -- input, the screen, the network -- and the page
-// stutters (a browser tab at 2x, 985 ms of each second emulating, held 2x).
+// stutters (a browser tab at 2x, 985 ms of each second emulating, held 2x);
+// audio is the first to break up, so this must act in a fraction of a
+// second.  Six ticks at 60 Hz: a lone hitch does not get the EWMA over the
+// ceiling at all (0.3 -> 0.895 on a clipped sample), and a sustained 0.97
+// crosses it within about five ticks, so the back-off lands in ~0.2 s.
 // The governor never climbs into the band above the ceiling; this brings it
 // back down when the guest's load moves it there.
-#define GOV_SATURATED_SECS 1.0
+#define GOV_SATURATED_SECS 0.1
 #define GOV_BACKOFF_TICKS  3
 #define GOV_BACKOFF_SECS   0.25
 #define GOV_UTIL_RELEVANT  0.5
