@@ -63,6 +63,7 @@
 //
 // Not checkpointed: an experiment's state.
 
+#include "cirrus54m30.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -143,6 +144,7 @@ typedef struct tnt_prep_io {
     uint16_t nv_index;
     uint8_t nvram[8192];
     uint64_t unknown_reads, unknown_writes;
+    uint32_t cf8; // PCI configuration mechanism #1's address register ($CF8)
     struct object *node, *com1_node;
 } tnt_prep_io_t;
 
@@ -558,6 +560,19 @@ static pci_bus_t *prep_bus(tnt_prep_io_t *p) {
             return st->bridge[i].bus;
     return NULL;
 }
+#define PREP_VIDEO_DEV 0x0F // the 54M30's IDSEL on Bandit 1
+
+// The 54M30, made to identify as a CL-GD5434.  Called on every path that
+// reaches it through the window, so a restored checkpoint (which does not
+// carry the window's state) gets the presentation back on first use.
+static pci_device_t *prep_video(tnt_prep_io_t *p) {
+    pci_bus_t *bus = prep_bus(p);
+    pci_device_t *dev = bus ? pci_bus_device(bus, PREP_VIDEO_DEV) : NULL;
+    if (dev && !cirrus54m30_present_as_5434(dev))
+        dev = NULL;
+    return dev;
+}
+
 static bool prep_cfg_decode(uint32_t off, int *dev, uint32_t *fn, uint32_t *reg) {
     uint32_t sel = (off >> 11) & 0xFFu;
     if (!sel || (sel & (sel - 1)))
@@ -567,8 +582,14 @@ static bool prep_cfg_decode(uint32_t off, int *dev, uint32_t *fn, uint32_t *reg)
     // Server's second 53C825A is not shown (a driver that found it would
     // drive it at whatever I/O BAR Open Firmware left, $800, which on a PReP
     // machine is IBM's planar register block).
+    //
+    // Slot 13 is the Network Server's on-board Cirrus 54M30 (Bandit 1
+    // device $0F), presented as the CL-GD5434 OS/2's video server knows
+    // (RDF.STZ's "A81013"; see cirrus54m30.c, "Presenting as a CL-GD5434").
     if (slot == 12)
         *dev = 0x11;
+    else if (slot == 13)
+        *dev = PREP_VIDEO_DEV;
     else
         return false;
     *fn = (off >> 8) & 7u;
@@ -583,9 +604,13 @@ static uint8_t prep_cfg_in8(tnt_prep_io_t *p, uint32_t off) {
         LOG(2, "cfg read  $%06X: no IDSEL", off);
         return 0xFF;
     }
+    if (dev == PREP_VIDEO_DEV && !prep_video(p))
+        return 0xFF;
     uint32_t dw = pci_bus_cfg_read(bus, dev, fn, reg);
     if (dev == 0x11 && (reg & 0xFCu) == 0 && (dw & 0xFFFFu) == 0x1000u)
         dw = 0x00011000u; // present the Sandalfoot's 53C810 (see the header)
+    if (dev == PREP_VIDEO_DEV && (reg & 0xFCu) == 0 && (dw & 0xFFFFu) == 0x1013u)
+        dw = 0x00A81013u; // present a CL-GD5434
     uint8_t v = (uint8_t)(dw >> (8 * (reg & 3)));
     LOG(2, "cfg read  dev %d fn %u reg $%02X -> $%02X", dev, fn, reg, v);
     return v;
@@ -596,8 +621,27 @@ static void prep_cfg_out8(tnt_prep_io_t *p, uint32_t off, uint8_t v) {
     pci_bus_t *bus = prep_bus(p);
     if (!bus || !prep_cfg_decode(off, &dev, &fn, &reg))
         return;
+    if (dev == PREP_VIDEO_DEV && !prep_video(p))
+        return;
     LOG(2, "cfg write dev %d fn %u reg $%02X = $%02X", dev, fn, reg, v);
     pci_bus_cfg_write(bus, dev, fn, reg, reg & 3, v);
+}
+
+// PCI configuration mechanism #1: an address register at $CF8 and a data
+// window at $CFC.  A Sandalfoot has none -- it has only the direct-mapped
+// window above -- but OS/2's video server walks the PCI bus only through
+// it, on the planars it knows have one ("pci_access_device" in
+// PPC_INFO.STZ; the re-mastered CD adds it to the Sandalfoot's stanza).
+// Device number N is IDSEL AD(N), so it lands on the same slot the
+// direct-mapped window calls N, and both mechanisms see the same devices.
+// Bus 0 only; anything else reads all-ones, as an empty slot does.
+static bool prep_cf8_offset(tnt_prep_io_t *p, uint32_t k, uint32_t *off) {
+    uint32_t a = p->cf8;
+    uint32_t dev = (a >> 11) & 0x1Fu;
+    if (!(a & 0x80000000u) || ((a >> 16) & 0xFFu) != 0 || dev < 11 || dev > 18)
+        return false;
+    *off = (1u << (dev - 11 + 11)) | (((a >> 8) & 7u) << 8) | ((a & 0xFCu) + k);
+    return true;
 }
 
 // Is `port` inside an I/O BAR a Bandit 1 device has enabled?  Only those are
@@ -623,11 +667,44 @@ static bool prep_pci_io_claimed(tnt_prep_io_t *p, uint32_t port) {
     return false;
 }
 
+// The VGA ports, $3B0-$3DF: the 54M30 answers them at those PCI I/O
+// addresses itself (a strapped decode, not a BAR), so they go to Bandit 1 --
+// but only while its command register enables I/O space, the gate on that
+// decode as on any VGA part.  Otherwise they are empty ISA ports and float,
+// as on a PReP machine: forwarded, they would reach a Bandit window nothing
+// claims, and a Bandit answers that with a machine check (OS/2's hardware
+// probe reads $3BA with the card's I/O decode still off).
+#define PREP_VGA_LO 0x3B0u
+#define PREP_VGA_HI 0x3DFu
+static bool prep_vga_port(tnt_prep_io_t *p, uint32_t port) {
+    if (port < PREP_VGA_LO || port > PREP_VGA_HI || !prep_video(p))
+        return false;
+    pci_bus_t *bus = prep_bus(p);
+    return (pci_bus_cfg_read(bus, PREP_VIDEO_DEV, 0, 0x04) & 1u) != 0; // I/O space enable
+}
+
+static bool munged(tnt_prep_io_t *p);
+
+// A port forwarded to Bandit 1's own I/O window.  This window has already
+// undone the CPU's munge (munged()), but Bandit's window applies its lane
+// reversal to whatever arrives, as to any CPU access: hand it the address
+// the CPU would have used, or every byte lands on its lane-mirror (the VGA
+// sequencer index $3C4 on $3C3).
+static uint32_t prep_bandit_port(tnt_prep_io_t *p, uint32_t port) {
+    return TNT_BANDIT1_BASE + (munged(p) ? port ^ 7u : port);
+}
+
 static uint8_t prep_in8(tnt_prep_io_t *p, uint32_t port) {
-    if (prep_pci_io_claimed(p, port))
-        return memory_read_uint8(TNT_BANDIT1_BASE + port);
+    if (prep_pci_io_claimed(p, port) || prep_vga_port(p, port))
+        return memory_read_uint8(prep_bandit_port(p, port));
     if (port >= 0x3F8 && port <= 0x3FF)
         return uart_read(&p->com1, port - 0x3F8);
+    if (port >= 0xCF8 && port <= 0xCFB)
+        return (uint8_t)(p->cf8 >> (8 * (port - 0xCF8)));
+    if (port >= 0xCFC && port <= 0xCFF) {
+        uint32_t off;
+        return prep_cf8_offset(p, port - 0xCFC, &off) ? prep_cfg_in8(p, off) : 0xFF;
+    }
     switch (port) {
     case 0x60: {
         uint8_t v = kbc_data_read(&p->kbc);
@@ -671,12 +748,23 @@ static uint8_t prep_in8(tnt_prep_io_t *p, uint32_t port) {
 }
 
 static void prep_out8(tnt_prep_io_t *p, uint32_t port, uint8_t v) {
-    if (prep_pci_io_claimed(p, port)) {
-        memory_write_uint8(TNT_BANDIT1_BASE + port, v);
+    if (prep_pci_io_claimed(p, port) || prep_vga_port(p, port)) {
+        memory_write_uint8(prep_bandit_port(p, port), v);
         return;
     }
     if (port >= 0x3F8 && port <= 0x3FF) {
         uart_write(&p->com1, port - 0x3F8, v);
+        return;
+    }
+    if (port >= 0xCF8 && port <= 0xCFB) {
+        unsigned sh = 8 * (port - 0xCF8);
+        p->cf8 = (p->cf8 & ~(0xFFu << sh)) | ((uint32_t)v << sh);
+        return;
+    }
+    if (port >= 0xCFC && port <= 0xCFF) {
+        uint32_t off;
+        if (prep_cf8_offset(p, port - 0xCFC, &off))
+            prep_cfg_out8(p, off, v);
         return;
     }
     switch (port) {
@@ -932,7 +1020,8 @@ static const arg_decl_t prep_bandit_le_args[] = {
     X(kbc) \
     X(pic) \
     X(nv_index) \
-    X(nvram)
+    X(nvram) \
+    X(cf8)
 // clang-format on
 
 static DEF_METHOD(prep_method_save_state) {

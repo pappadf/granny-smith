@@ -40,7 +40,7 @@ static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s);
 
 #define PCI_MAX_BUSES     4
 #define PCI_MAX_DEVICES   32 // IDSEL AD11..AD31 (0..10 never exist)
-#define PCI_MAX_WINDOWS   4
+#define PCI_MAX_WINDOWS   6 // a Bandit has three; the Network Server's PReP window adds two more
 #define PCI_WINDOW_RANGES (PCI_MAX_DEVICES * (PCI_BAR_SLOTS + PCI_FIXED_REGIONS))
 #define PCI_MAX_SLOTS     16 // slot numbers are 1-based
 
@@ -63,6 +63,7 @@ typedef struct pci_window {
     uint32_t size;
     uint32_t pci_base; // PCI address of `map_base`
     uint32_t pci_mask; // address bits the bridge actually drives
+    bool quiet_abort; // a master abort here reads all-ones and drops writes (pci_bus_set_window_quiet_abort)
     char what[32];
     memory_interface_t iface;
     // The decode table: every region that decodes in this window's space,
@@ -284,6 +285,8 @@ static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
     // A bridge that terminates master aborts quietly (Grackle with TEA/MCP
     // reporting off) still reads all-ones and drops the write; it just
     // does not take the machine check.
+    if (w->quiet_abort)
+        return;
     if (w->bus->abort_faults && !w->bus->abort_faults(w->bus->abort_ctx, write))
         return;
     memory_signal_bus_error(w->map_base + offset, write);
@@ -438,6 +441,12 @@ static bool window_resolve_page(const memory_interface_t *iface, void *ctx, uint
     out->sub_base = d0.sub;
     out->lane_reverse = w->bus->lane_reverse ? 1 : 0;
     return true;
+}
+
+void pci_bus_set_window_quiet_abort(pci_bus_t *bus, uint32_t map_base) {
+    for (int i = 0; bus && i < bus->window_count; i++)
+        if (bus->window[i].map_base == map_base)
+            bus->window[i].quiet_abort = true;
 }
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,

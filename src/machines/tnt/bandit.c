@@ -552,6 +552,17 @@ void tnt_bandit_claim_memory(config_t *cfg) {
         // the bottom 16 MB is prep_io.c's ISA window.
         pci_bus_add_window(bandit1->bus, PCI_SPACE_IO, 0xA0000000u, 0x1F800000u, 0x20000000u, 0xFFFFFFFFu,
                            "PReP PCI I/O (Bandit 1)");
+        // PReP's PCI memory space is the CPU's $C0000000 and up, at PCI
+        // address CPU - $C0000000.  OS/2's hardware database puts a display
+        // adapter's memory at PCI $02000000 and its VGA window at $A0000,
+        // neither of which Bandit's Mac-style windows reach.  256 MB is
+        // ample: nothing PReP software assigns lands above it.
+        pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, 0xC0000000u, 0x10000000u, 0x00000000u, 0x0FFFFFFFu,
+                           "PReP PCI memory (Bandit 1)");
+        // A PReP host bridge master-aborts quietly (all-ones), and PReP
+        // software probes empty slots and ranges on that assumption.
+        pci_bus_set_window_quiet_abort(bandit1->bus, 0xA0000000u);
+        pci_bus_set_window_quiet_abort(bandit1->bus, 0xC0000000u);
         // And PReP bus masters address memory at PCI $80000000 + physical.
         pci_bus_set_dma_offset(bandit1->bus, 0x80000000u);
     } else if (bandit1)

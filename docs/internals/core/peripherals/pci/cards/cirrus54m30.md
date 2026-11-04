@@ -103,6 +103,28 @@ source and the system-memory BLT, plus the memory-mapped register block at
 finished by the time the write that set the start bit returns, and a driver
 polling the busy bit sees completion on its first read.
 
+## Presenting as a CL-GD5434 (the experimental PReP window)
+
+`cirrus54m30_present_as_5434()` (`cirrus54m30.h`) is the one hook the
+Network Server's experimental PReP window (`tnt/prep_io.c`) uses. OS/2 Warp
+(PowerPC Edition) knows a single Alpine-family PCI adapter, the CL-GD5434
+(PCI ID `$00A81013`, `cirrus.pmi`). The window shows this part as one: it
+reports that PCI device ID in PReP slot 13, and the hook makes the chip
+agree in two places:
+
+- CR27 reads `$A8`, the 5434's ID, because a Cirrus driver identifies the
+  die from CR27.
+- The legacy VGA memory window decodes at PCI `$A0000` (a fixed memory
+  region, gated by the command register's memory enable). A PReP host
+  bridge reaches it at CPU `$C00A0000`. Bandit cannot reach it, which is why
+  the Mac side mirrors the window into BAR0 instead (above). It is the same
+  128 KB either way.
+
+Everything else is still the 5430: SR15 reports 1 MB, which matches the
+DRAM, and the 5434's 64-bit memory interface and 2 MB modes are not
+modelled. The flag is not checkpointed; the window sets it again on first
+use.
+
 ## Tests
 
 [`tests/unit/suites/cirrus54m30/`](../../../../../../tests/unit/suites/cirrus54m30/test.c)

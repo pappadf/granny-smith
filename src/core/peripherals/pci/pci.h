@@ -118,6 +118,13 @@ pci_bus_t *pci_bus_by_index(pci_root_t *root, int index);
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
                         uint32_t pci_mask, const char *what);
 
+// Make the window at `map_base` terminate master aborts quietly: an access
+// no device claims reads all-ones and drops writes, instead of the
+// recoverable transfer error (machine check) a Bandit takes.  For a window
+// that models a different bridge's address space -- the Network Server's
+// experimental PReP window, where software probes empty PCI space.
+void pci_bus_set_window_quiet_abort(pci_bus_t *bus, uint32_t map_base);
+
 // Introspection for a bridge window: the interface the bus claimed the
 // window's physical range with, and its context.  The family gets these
 // for free through memory_map_add; they are exported so a test (or a

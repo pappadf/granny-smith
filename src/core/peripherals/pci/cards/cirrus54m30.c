@@ -46,6 +46,7 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
+#include "cirrus54m30.h"
 #include "checkpoint.h"
 #include "display.h"
 #include "display_class.h"
@@ -133,7 +134,8 @@ static const pci_config_decl_t c54m30_decl = {
 // CR27, "ID": read-only, bits 7:2 the device and 1:0 the die revision.
 // $A0 is the CL-GD5430 (the GD5430/5440-family die this card carries, and
 // the value that agrees with its $00A0 PCI device ID), revision 0.
-#define C54M30_CR27_ID 0xA0u
+#define C54M30_CR27_ID      0xA0u
+#define C54M30_CR27_ID_5434 0xA8u // the CL-GD5434, revision 0 (see "Presenting as a CL-GD5434")
 // SR15, "DRAM Control": bits 3:0 report how much display memory the board
 // fits — 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB, 5 = 3 MB, 4 = 4 MB.
 // A driver sizes its mode list from this field instead of probing, so it
@@ -199,6 +201,10 @@ typedef struct c54m30 {
     c54m30_blt_t blt; // the BitBLT engine's only state that outlives a register write
     uint32_t win_logged; // accesses to the legacy-window mirror logged loudly so far
     display_fb_node_t fb_node; // instance data for the shared framebuffer class
+    // Presented as a CL-GD5434 (cirrus54m30_present_as_5434).  Not
+    // checkpointed: the PReP window sets it again whenever it is in use.
+    bool as_5434;
+    memory_interface_t legacy_if; // the $A0000 window, decoded only as a 5434
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -963,7 +969,7 @@ static uint8_t io_rd8(c54m30_t *c, uint32_t offset, bool peek, uint8_t *pelmask_
         return c->seq[c->seq_index & (C54M30_SEQ_REGS - 1u)];
     case C54M30_CRTC_DATA:
         if ((c->crtc_index & (C54M30_CRTC_REGS - 1u)) == 0x27u)
-            return C54M30_CR27_ID;
+            return c->as_5434 ? C54M30_CR27_ID_5434 : C54M30_CR27_ID;
         return c->crtc[c->crtc_index & (C54M30_CRTC_REGS - 1u)];
     case C54M30_GR_DATA:
         return c->gr[c->gr_index & (C54M30_GR_REGS - 1u)];
@@ -1475,6 +1481,85 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_ima
 
     LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;
+}
+
+// ============================================================
+// Presenting as a CL-GD5434
+// ============================================================
+// IBM's OS/2 Warp (PowerPC Edition) knows four PCI display adapters, and the
+// only Alpine-family one is the CL-GD5434 ("STB Nitro Cirrus 5434 PCI",
+// PCI ID $00A81013, driver cirrus.pmi).  Its hardware database (RDF.STZ,
+// "A81013") gives the part the standard VGA ports, the legacy window at
+// $A0000-$BFFFF and 16 MB of display memory.  The Network Server's
+// experimental PReP window (tnt/prep_io.c) shows this part to it in that
+// guise: the window reports the PCI device ID, and this hook makes the
+// chip itself agree.
+//
+// - CR27 reads $A8, the 5434's ID ("bits 7:2 the device", Alpine TRM 9.40),
+//   because a Cirrus driver identifies the die from CR27, not from PCI.
+// - The legacy VGA memory window decodes at PCI $A0000, as a real part
+//   does on a PCI bus that forwards those addresses.  PReP's host bridge
+//   does (CPU $C0000000 + PCI address); Bandit does not, which is why the
+//   Mac side mirrors the window into BAR0 (C54M30_WIN_BASE) instead.
+//   The same 128 KB is reached either way.
+//
+// The die is otherwise the 5430's.  The register map is family-wide
+// (Alpine TRM), but the 5434's 64-bit memory interface, its 2 MB and its
+// deeper modes are not modelled: SR15 still reports 1 MB, so a driver sees
+// a 1 MB 5434.
+static uint8_t legacy_read8(void *ctx, uint32_t offset) {
+    return fb_read8(ctx, C54M30_WIN_BASE + offset);
+}
+static uint8_t legacy_peek8(void *ctx, uint32_t offset) {
+    return fb_peek8(ctx, C54M30_WIN_BASE + offset);
+}
+static void legacy_write8(void *ctx, uint32_t offset, uint8_t value) {
+    fb_write8(ctx, C54M30_WIN_BASE + offset, value);
+}
+static uint16_t legacy_read16(void *ctx, uint32_t offset) {
+    return fb_read16(ctx, C54M30_WIN_BASE + offset);
+}
+static uint16_t legacy_peek16(void *ctx, uint32_t offset) {
+    return fb_peek16(ctx, C54M30_WIN_BASE + offset);
+}
+static void legacy_write16(void *ctx, uint32_t offset, uint16_t value) {
+    fb_write16(ctx, C54M30_WIN_BASE + offset, value);
+}
+static uint32_t legacy_read32(void *ctx, uint32_t offset) {
+    return fb_read32(ctx, C54M30_WIN_BASE + offset);
+}
+static uint32_t legacy_peek32(void *ctx, uint32_t offset) {
+    return fb_peek32(ctx, C54M30_WIN_BASE + offset);
+}
+static void legacy_write32(void *ctx, uint32_t offset, uint32_t value) {
+    fb_write32(ctx, C54M30_WIN_BASE + offset, value);
+}
+
+#define C54M30_LEGACY_MEM_BASE 0x000A0000u // $A0000-$BFFFF
+
+bool cirrus54m30_present_as_5434(struct pci_device *dev) {
+    if (!dev || dev->decl != &c54m30_decl || !dev->priv)
+        return false;
+    c54m30_t *c = (c54m30_t *)dev->priv;
+    if (c->as_5434)
+        return true;
+    c->as_5434 = true;
+    c->legacy_if = (memory_interface_t){
+        .read_uint8 = legacy_read8,
+        .read_uint16 = legacy_read16,
+        .read_uint32 = legacy_read32,
+        .write_uint8 = legacy_write8,
+        .write_uint16 = legacy_write16,
+        .write_uint32 = legacy_write32,
+        .peek_uint8 = legacy_peek8,
+        .peek_uint16 = legacy_peek16,
+        .peek_uint32 = legacy_peek32,
+    };
+    pci_device_add_fixed_region(dev, PCI_SPACE_MEM, C54M30_LEGACY_MEM_BASE, C54M30_WIN_SPAN, 0, 0, &c->legacy_if, c);
+    pci_device_regions_changed(dev);
+    LOG(1, "54M30: presented as a CL-GD5434 (CR27 $%02X, VGA memory at PCI $%05X)", C54M30_CR27_ID_5434,
+        C54M30_LEGACY_MEM_BASE);
+    return true;
 }
 
 // The framebuffer node, shared with every other display source

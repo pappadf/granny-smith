@@ -1085,10 +1085,24 @@ it on:
   first 53C825A (presented with the 53C810's device ID).  The second is not
   shown: a Sandalfoot has one on-board SCSI controller, and a driver that
   found it drove it at the I/O BAR Open Firmware left, `$800`, which on a
-  PReP machine is IBM's planar register block.
+  PReP machine is IBM's planar register block.  Slot 13 is the on-board
+  Cirrus 54M30, presented as the CL-GD5434 OS/2's video server supports
+  (cirrus54m30.md, "Presenting as a CL-GD5434").
+- Ports `$CF8`/`$CFC` are PCI configuration mechanism #1, onto the same
+  slots (device N is slot N).  A Sandalfoot has no such thing, but OS/2's
+  video server walks the bus only through it, on planars whose stanza lists
+  a `pci_access_device`.
+- Ports `$3B0-$3DF` go to Bandit 1's PCI I/O, where the 54M30 decodes them
+  itself, while its command register enables I/O space.  Otherwise they
+  float like any empty ISA port.
 - `$A0000000-$BF7FFFFF` is a second Bandit 1 I/O window carrying all 32
   address bits (PReP puts I/O BARs at `$20000000`), and bus masters see
   memory at PCI `$80000000` (`pci_bus_set_dma_offset`).
+- `$C0000000-$CFFFFFFF` is PReP's PCI memory, at PCI address CPU −
+  `$C0000000` (OS/2 puts a display adapter's memory at PCI `$02000000`).
+  Both PReP windows terminate master aborts quietly
+  (`pci_bus_set_window_quiet_abort`): an unclaimed access reads all-ones,
+  as on a PReP host bridge, rather than taking Bandit's machine check.
 - `$BFFFFFF0` is the interrupt acknowledge; once the guest sets port `$92`'s
   endian bit the 8259 pair drives the CPU's external interrupt, with the
   53C825As (Grand Central 22/26) on ISA IRQ 13/15.
