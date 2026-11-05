@@ -233,6 +233,17 @@ def row_pm6100_xpt_lock() {
     check_desktop("goldens/pm6100-7.5.3-640x480x8-bare-finder.png")
 }
 
+# The golden's menu-title positions depend on the System heap's contents,
+# and so on the size of the injected driver.  The 7.5.3 MBDF calls
+# _StringWidth on the Apple menu title through a pointer into the
+# unlocked MenuInfo.  On this boot that call runs the System heap out of
+# master pointers.  The new master-pointer block moves the MenuInfo, and
+# the title is then measured from the stale copy, which by then holds a
+# free master-pointer link (low byte $38, '8': 8 px, not the apple's
+# 11 px).  The titles to its right sit 3 px further left than they would
+# without the move.  That is the guest's own bug and real hardware does
+# the same with the same heap, so a GSDisk change that grows or shrinks
+# the System heap can move them again.
 def row_pm7500_753() {
     boot_desktop("pm7500-753", "pm7500", $ROM_TNT, 16384, $vol753, "goldens/pm7500-7.5.3-640x480x8-bare-finder.png", 1500000000)
 }
