@@ -21,6 +21,10 @@ for the device-info block), with
   only by the real VIA2 pins: CMD/ (PB4) edges sequence the phases; the device
   presents the state byte on the no-handshake port-A register and clocks
   command/status/data bytes on the handshaked register; BSY (PB1 + CA1) follows.
+  During a handshake both registers read the state byte and take the reply,
+  since both drive the same port-A pins: the boot ROM and the OS use the
+  no-handshake register, but MacWorks XL's boot block uses the handshaked one
+  (issue #210: before this, it read $FF and stopped with boot error 23).
   Commands: read (0), write (1/2). On-wire block = **532 bytes (20-byte tag + 512
   data)**; a read streams 4 status bytes + the block, a write streams the block
   then (after a handshake) 4 status bytes. Block **$FFFFFF** returns the

@@ -108,7 +108,11 @@ assert_contains iicx '"nubus":true'   "iicx has nubus"
 
 # --- Card ROMs: a card names its declaration ROM and whether the emulator
 # can stand in for it; built-in video is a display device, not a card.
-assert_contains iicx '"id":"mdc_8_24","label":"Macintosh Display Card 8•24","class":"display"' "iicx 8·24 video card"
+# A card that runs either ROM is listed once per ROM (#346): on its real
+# vROM while that is offered (the harness offers the .vrom files beside the
+# ROM), and on the generic one always.
+assert_contains iicx '"id":"mdc_8_24","label":"Macintosh Display Card 8•24 (real video ROM)","class":"display"' "iicx 8·24 video card"
+assert_contains iicx '"id":"mdc_8_24_generic","label":"Macintosh Display Card 8•24 (generic video ROM)","class":"display"' "iicx 8·24 on its generic video ROM"
 assert_contains iicx '"rom":{"kind":"vrom","substitute":true}' "iicx card has a vROM with a substitute"
 assert_contains iici '"builtin":{"id":"builtin","label":"Built-in video","detail":"RBV"' "iici built-in RBV video"
 assert_absent iici '"id":"builtin_rbv_video"' "iici built-in video is not a card"

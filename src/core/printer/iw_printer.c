@@ -144,10 +144,11 @@ struct iw_printer {
     pdf_writer_t *pdf; // this job's document, from its first page
     char status[128]; // room for the job's title (PRINTER_TITLE_MAX)
     iw_title_fn title_fn; // the machine's title source, or NULL
+    bool network; // the AppleTalk ImageWriter: always on LocalTalk, never serial
     struct object *object;
 };
 
-// The machine's printer when it sits on LocalTalk
+// The printer on LocalTalk: the AppleTalk ImageWriter
 static iw_printer_t *g_localtalk;
 
 static const class_desc_t iw_printer_class;
@@ -802,19 +803,24 @@ static void restore(iw_printer_t *p, checkpoint_t *cp) {
     }
 }
 
-iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_port_wiring_t wiring[2],
-                             checkpoint_t *checkpoint) {
+// Build a printer: the machine's serial one, or (`network`) the AppleTalk
+// ImageWriter, an ImageWriter II with the LocalTalk Option card.
+static iw_printer_t *printer_build(struct scheduler *scheduler, scc_t *scc, const iw_port_wiring_t wiring[2],
+                                   checkpoint_t *checkpoint, bool network) {
     iw_printer_t *p = calloc(1, sizeof(*p));
     if (!p)
         return NULL;
     p->scheduler = scheduler;
     p->scc = scc;
+    p->network = network;
     if (wiring)
         memcpy(p->wiring, wiring, sizeof(p->wiring));
+    // Each printer's events under its own name, so a restore tells them apart
+    const char *ev = network ? "atalk_imagewriter" : "imagewriter";
     if (scheduler) {
-        scheduler_new_event_type(scheduler, "imagewriter", p, "process", &process_event);
-        scheduler_new_event_type(scheduler, "imagewriter", p, "idle", &idle_event);
-        scheduler_new_event_type(scheduler, "imagewriter", p, "reply", &reply_event);
+        scheduler_new_event_type(scheduler, ev, p, "process", &process_event);
+        scheduler_new_event_type(scheduler, ev, p, "idle", &idle_event);
+        scheduler_new_event_type(scheduler, ev, p, "reply", &reply_event);
     }
     if (checkpoint) {
         restore(p, checkpoint);
@@ -824,23 +830,40 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
         interp_setup(p);
         snprintf(p->job.last_outcome, sizeof(p->job.last_outcome), "%s", "");
     }
+    // The AppleTalk ImageWriter is an ImageWriter II on LocalTalk, whatever a
+    // checkpoint says; the serial printer is never on LocalTalk
+    if (network) {
+        p->set.icfg.model = IW_MODEL_IW2;
+        p->set.connection = IW_CONN_LOCALTALK;
+        p->set.icfg.dip2 |= IW_DIP2_OPTION;
+    } else if (p->set.connection == IW_CONN_LOCALTALK) {
+        p->set.connection = IW_CONN_NONE;
+        p->set.icfg.dip2 &= (uint8_t)~IW_DIP2_OPTION;
+    }
     // The cable is configuration: plug back in
     port_attach(p, true);
     update_status(p);
 
     p->object = object_new(&iw_printer_class, p, "imagewriter");
     if (p->object) {
-        object_set_label(p->object, "ImageWriter");
-        object_attach(machine_object(), p->object);
+        object_set_label(p->object, network ? "AppleTalk ImageWriter" : "ImageWriter");
+        object_attach(network ? atalk_object() : machine_object(), p->object);
     }
     return p;
 }
 
+iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_port_wiring_t wiring[2],
+                             checkpoint_t *checkpoint) {
+    return printer_build(scheduler, scc, wiring, checkpoint, false);
+}
+
+iw_printer_t *iw_printer_new_network(struct scheduler *scheduler, checkpoint_t *checkpoint) {
+    return printer_build(scheduler, NULL, NULL, checkpoint, true);
+}
+
 bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn) {
-    if (!p || model >= IW_MODEL_COUNT || conn >= IW_CONN_COUNT)
-        return false;
-    if (conn == IW_CONN_LOCALTALK && (model != IW_MODEL_IW2 || (g_localtalk && g_localtalk != p)))
-        return false;
+    if (!p || p->network || model >= IW_MODEL_COUNT || conn >= IW_CONN_COUNT || conn == IW_CONN_LOCALTALK)
+        return false; // the LocalTalk card is the AppleTalk ImageWriter's
     // Unplug, swap the printer, power it on, then plug it in where it goes
     port_attach(p, false);
     p->set.icfg.model = model;
@@ -931,7 +954,8 @@ static DEF_SETTER(attr_model_set) {
     if (model == p->set.icfg.model)
         return val_none();
     if (model == IW_MODEL_IW1 && p->set.connection == IW_CONN_LOCALTALK)
-        return val_err("model: the LocalTalk Option card fits only the ImageWriter II");
+        return val_err(
+            "model: the AppleTalk ImageWriter is an ImageWriter II (the LocalTalk Option card fits no other)");
     // A different printer on the same cable: unplug, swap, power on, plug in
     port_attach(p, false);
     p->set.icfg.model = model;
@@ -956,8 +980,13 @@ static DEF_SETTER(attr_connection_set) {
     value_free(&in);
     if (conn < 0)
         return val_err("connection: expected none, serial-a, serial-b or localtalk");
-    if (conn == IW_CONN_LOCALTALK && iw_printer_localtalk() && iw_printer_localtalk() != p)
-        return val_err("connection: another printer is on LocalTalk");
+    // The two printers are independent: the AppleTalk one is always on the
+    // network, the machine's on a serial port or none
+    if (p->network && conn != IW_CONN_LOCALTALK)
+        return val_err("connection: the AppleTalk ImageWriter is always on LocalTalk");
+    if (!p->network && conn == IW_CONN_LOCALTALK)
+        return val_err("connection: the printer on AppleTalk is appletalk.imagewriter; this one takes none, serial-a "
+                       "or serial-b");
     if (!set_connection(p, (iw_connection_t)conn))
         return val_err("connection: the LocalTalk Option card fits only the ImageWriter II");
     update_status(p);
@@ -1334,8 +1363,8 @@ static const member_t iw_printer_members[] = {
      .attr = {.type = VK_STRING, .get = attr_model, .set = attr_model_set}},
     {.kind = MK_ATTR,
      .name = "connection",
-     .doc = "Where it is plugged in: none, serial-a, serial-b, or localtalk (the ImageWriter II's LocalTalk "
-            "Option card, printing over AppleTalk)", .examples = EXAMPLES("machine.imagewriter.connection = \"serial-b\""),
+     .doc = "Where it is plugged in: none, serial-a or serial-b (machine.imagewriter); always localtalk, the "
+            "LocalTalk Option card, for appletalk.imagewriter", .examples = EXAMPLES("machine.imagewriter.connection = \"serial-b\""),
      .attr = {.type = VK_STRING, .get = attr_connection, .set = attr_connection_set}},
     {.kind = MK_ATTR,
      .name = "localtalk_name",

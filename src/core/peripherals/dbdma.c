@@ -428,6 +428,23 @@ static void partial_writeback(dbdma_t *d, int n) {
     result_writeback(d, n, c->cmdptr, w[0] & 0xFFFFu);
 }
 
+// Flush status update: an executing INPUT command reports its progress
+// even with no bytes received yet (xferStatus carries ACTIVE|FLUSH, the
+// partial-status mark) — serial receive drivers flush and poll the
+// descriptor's result word for it (CHRP I/O Device Reference §15.4.3).
+static void flush_writeback(dbdma_t *d, int n) {
+    dbdma_chan_t *c = &d->chan[n];
+    if (c->cursor != 0 || !(c->status & DBDMA_ACTIVE) || !dma_mem_port_bound(&d->mem)) {
+        partial_writeback(d, n);
+        return;
+    }
+    uint32_t w[4];
+    desc_fetch(d, c->cmdptr, w);
+    uint32_t cmd = (w[0] >> 28) & 0xFu;
+    if (cmd == CMD_INPUT_MORE || cmd == CMD_INPUT_LAST)
+        result_writeback(d, n, c->cmdptr, w[0] & 0xFFFFu);
+}
+
 uint32_t dbdma_reg_read(dbdma_t *d, int chan, uint32_t offset) {
     assert(chan >= 0 && chan < d->nchan);
     dbdma_chan_t *c = &d->chan[chan];
@@ -505,7 +522,7 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
         // — there is no buffered data in this model, so it is complete
         // synchronously.
         if (c->status & DBDMA_FLUSH) {
-            partial_writeback(d, chan);
+            flush_writeback(d, chan);
             c->status &= ~(uint32_t)DBDMA_FLUSH;
         }
         run_channel(d, chan);

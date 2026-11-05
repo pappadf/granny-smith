@@ -166,13 +166,26 @@ The board model is the chipset skeleton plus the DMA architecture:
   sends a device address through the bus's 16/32-bit path, so a codec
   command through the AWACS codec-control register reaches it whole.
   A port may supply a `stop` hook, called when software clears RUN, to
-  drop what the device buffered for the abandoned program.  A channel
-  whose device port is not attached yet
+  drop what the device buffered for the abandoned program.  FLUSH on an
+  executing INPUT command writes its result word even when nothing has
+  arrived (xferStatus ACTIVE|FLUSH, full residual): the Mac OS 9 serial
+  driver flushes its receive channel and polls that word, and froze the
+  beige G3's startup without it (#212).  A channel whose device port is
+  not attached yet
   stalls its data commands honestly — except audio-out (channel 8),
   which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
   polls for completion, so a stalling channel would hang the boot in
-  firmware.  A channel's interrupt command asserts a LEVEL on Grand
+  firmware.  Audio-in (channel 9) is attached to the DAVbus record
+  path, which delivers silence at the codec rate: Mac OS 8.6 and 9 stop
+  recording at startup by setting S0 and polling `channelStatus` until
+  the program's conditional branch reaches STOP, so a stalled channel 9
+  froze the splash screen (#211).  The codec status word reports
+  revision 2 (AWACS): with revision 0, Mac OS 9's GC AWACs plug-in
+  declined the part, the "GC AWACs Input" driver's open failed, and its
+  failure path kept using freed globals, which corrupted the system
+  heap and stopped 9.0.4 (v2 ROM, 64 MB) on the splash with a bus
+  error.  A channel's interrupt command asserts a LEVEL on Grand
   Central source n that the host's Clear write acknowledges (see "The
   interrupt fabric").  (Reference:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel

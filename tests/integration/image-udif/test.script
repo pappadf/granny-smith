@@ -51,10 +51,11 @@ assert files.path_size("${$WORK_DIR}/exported.img") == files.path_size($raw) "ex
 # setting.
 assert files.cache.image_misses > 0 "the UDIF chunks were decoded through the image cache"
 assert files.cache.image_hits > 0 "re-reading decoded chunks was served from the image cache"
-assert files.cache.image_memory_bytes <= files.cache.image_mb * 1048576 "the image cache holds no more than its budget"
+assert files.cache.image_memory_bytes <= files.cache.image_budget_mb * 1048576 "the image cache holds no more than its budget"
+assert files.cache.image_budget_mb >= files.cache.image_mb "the budget in force is never below image_mb"
 files.cache.image_mb = 1
 assert files.cache.image_mb == 1 "the image budget is settable"
-assert files.cache.image_memory_bytes <= 1048576 "a smaller image budget evicts at once"
+assert files.cache.image_memory_bytes <= files.cache.image_budget_mb * 1048576 "a smaller image budget evicts at once"
 assert files.cache.memory_bytes <= files.cache.memory_mb * 1048576 "the cache holds no more than its budget"
 files.cache.memory_mb = 1
 assert files.cache.memory_mb == 1 "the memory budget is settable"

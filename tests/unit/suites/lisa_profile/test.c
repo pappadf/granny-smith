@@ -174,12 +174,39 @@ TEST(test_decline_aborts) {
     lisa_profile_delete(pf);
 }
 
+// One handshake the way MacWorks XL's boot block does it: the state byte read
+// and the reply written through the handshaked register, not the no-handshake
+// one.  Both registers drive the same port-A pins (issue #210).
+static uint8_t handshake_strobed(lisa_profile_t *pf, uint8_t reply) {
+    lisa_profile_portb(pf, CMD_ASSERT);
+    uint8_t state = lisa_profile_porta_read(pf, true);
+    lisa_profile_porta_write(pf, reply, true);
+    lisa_profile_portb(pf, CMD_DEASSERT);
+    return state;
+}
+
+TEST(test_handshake_through_strobed_register) {
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
+    ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
+    ASSERT_EQ_INT(handshake_strobed(pf, 0x55), 0x01);
+    send_command(pf, 0x00 /*read*/, 0xFFFFFF);
+    ASSERT_EQ_INT(handshake_strobed(pf, 0x55), 0x02);
+    uint8_t buf[PRO_RDLEN];
+    for (int i = 0; i < PRO_RDLEN; i++)
+        buf[i] = lisa_profile_porta_read(pf, true);
+    for (int i = 0; i < 4; i++)
+        ASSERT_EQ_INT(buf[i], 0); // status OK
+    ASSERT_TRUE(memcmp(&buf[4], "PROFILE", 7) == 0); // the reply was taken as $55
+    lisa_profile_delete(pf);
+}
+
 int main(void) {
     RUN(test_attach_detection);
     RUN(test_device_info_block);
     RUN(test_write_read_roundtrip);
     RUN(test_unreadable_block_reports_crc_error);
     RUN(test_decline_aborts);
+    RUN(test_handshake_through_strobed_register);
     printf("[PASS] All ProFile tests passed\n");
     return 0;
 }

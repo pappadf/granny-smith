@@ -66,11 +66,14 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await seated.getByRole('button', { name: /^Remove/ }).click();
   await expect(page.locator('.item-row[data-card]')).toHaveCount(0);
   await page.getByTestId('cfg-add-card').click();
-  // One entry per real card: the 8•24, the 24AC and the 8•24 GC.  A card
-  // whose vROM was not uploaded boots its substitute ROM; none is a file.
+  // One entry per declaration ROM (#346): every card on its generic ROM,
+  // and the 8•24 and 24AC, whose vROMs are stored, on their real ones too
+  // (the 8•24 GC's is not, so it has no real entry); none is a file.
   const card = page.locator('#cfg-add-card');
-  await expect(card.locator('option')).toHaveCount(3);
-  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(1);
+  await expect(card.locator('option')).toHaveCount(5);
+  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(2);
+  await expect(card.locator('option', { hasText: '24AC (real video ROM)' })).toHaveCount(1);
+  await expect(card.locator('option', { hasText: 'GC (real video ROM)' })).toHaveCount(0);
   await expect(card.locator('option', { hasText: '.vrom' })).toHaveCount(0);
   await card.selectOption('display_card_24ac');
   await page.locator('#cfg-add-card-slot').selectOption(slot ?? '');
