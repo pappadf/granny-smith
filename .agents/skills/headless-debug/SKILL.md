@@ -353,6 +353,10 @@ rather than `files.cat` for binary data.
   the handler's second instruction.
 - After a client disconnects mid-run, the next connection's first `while`
   loop can abort at once with `interrupted`. Re-send it.
+- `machine.scc.a.sent()` keeps **64 KB** of what the guest transmitted since
+  the last drain and drops the rest (`sent_dropped` counts). A probe that
+  drains every few billion instructions sees the console "stop" mid-line
+  while the guest is fine; drain every 20 M or so, as `nt_ldr` does.
 
 ## See also
 
