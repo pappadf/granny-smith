@@ -86,6 +86,7 @@ struct config {
     // The machine's ImageWriter (iw_printer.h), on a serial port or LocalTalk;
     // NULL on a machine without an SCC.
     struct iw_printer *imagewriter;
+    struct iw_printer *atalk_imagewriter; // the AppleTalk ImageWriter (machines with AppleTalk)
     scsi_t *scsi;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)

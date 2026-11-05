@@ -100,6 +100,8 @@ export interface Card {
   rom: { kind: string; substitute: boolean } | null;
   status: 'ok' | 'substitute' | 'unavailable';
   reason?: string;
+  // A NuBus card's substitute-ROM variant (`<card>_generic`) names its card.
+  variant_of?: string;
   monitors: string[];
   // Startup video modes per monitor ("WxHxD" ids, labels from the core).
   modes: Record<string, Choice[]>;

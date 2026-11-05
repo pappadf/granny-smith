@@ -2110,8 +2110,13 @@ static DEF_GETTER(cache_attr_image_mb) {
 static DEF_SETTER(cache_attr_image_mb_set) {
     if (in.u < 1 || in.u > 1u << 16)
         return val_err("files.cache.image_mb: %llu out of range (1..65536)", (unsigned long long)in.u);
-    chunk_cache_set_budgets(chunk_cache_images(), (size_t)(in.u << 20), 0);
+    chunk_cache_images_set_budget(chunk_cache_images(), (size_t)(in.u << 20));
     return val_none();
+}
+
+// The image budget in force: image_mb, raised for images with large chunks.
+static DEF_GETTER(cache_attr_image_budget_mb) {
+    return val_uint(8, cache_mib(chunk_cache_effective_budget(chunk_cache_images())));
 }
 
 // One counter of chunk_cache_stats, picked by the member's name.
@@ -2144,15 +2149,19 @@ static const member_t files_cache_members[] = {
     {.kind = MK_ATTR,
      .name = "memory_mb",
      .doc = "Memory the chunk cache may hold, in MiB (decoded chunks of compressed images and archive members)",
-     .attr = {.type = VK_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}},
+     .attr = {.type = VK_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}                                                                                                                                    },
     {.kind = MK_ATTR,
      .name = "spill_mb",
      .doc = "Scratch space evicted chunks may spill to, in MiB; 0 is unbounded",
-     .attr = {.type = VK_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
+     .attr = {.type = VK_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}                                                                                                                                      },
     {.kind = MK_ATTR,
      .name = "image_mb",
      .doc = "Memory, in MiB, for decoded chunks of compressed disk images (UDIF, NDIF); never spilled",
-     .attr = {.type = VK_UINT, .get = cache_attr_image_mb, .set = cache_attr_image_mb_set}  },
+     .attr = {.type = VK_UINT, .get = cache_attr_image_mb, .set = cache_attr_image_mb_set}                                                                                                                                      },
+    {.kind = MK_ATTR,
+     .name = "image_budget_mb",
+     .doc = "The image budget in force, in MiB: image_mb is sized for 64 KiB chunks and is raised to hold as many "
+            "chunks of an image whose chunks are larger (up to 256 MiB)",                                        .attr = {.type = VK_UINT, .get = cache_attr_image_budget_mb, .set = NULL, .presentation_flags = VFLAG_VOLATILE}},
     CACHE_STAT("memory_bytes", "Bytes of chunks held in memory now"),
     CACHE_STAT("spill_bytes", "Bytes of chunks in spill files now"),
     CACHE_STAT("hits", "Reads served without decoding again (memory or spill)"),
