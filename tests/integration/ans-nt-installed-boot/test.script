@@ -6,8 +6,9 @@
 # the powermac-nt-hal wiki gives a person: at `0 >`,
 #
 #   load fd:,\setup.of       once per machine: little-endian mode, reset
-#   load fd:,\bootdisk.of    the disk-patched veneer, the ARC environment
-#                            on /options, /chosen bootpath at the disk, go
+#   load fd:,\bootdisk.of    powermac-nt-hal's ARC firmware (arcfw), the
+#                            ARC environment on /options, /chosen bootpath
+#                            at the disk, go
 #
 # each followed by `load-base loadsize eval`.  No CD: an installed system
 # needs none.
@@ -16,7 +17,7 @@
 #
 #   B1  the 2.26NT firmware reaches `0 >` on ttya
 #   B2  setup.of switches to little-endian and the machine comes back
-#   B3  bootdisk.of starts the veneer, OSLOADER loads the kernel, and NT
+#   B3  bootdisk.of starts arcfw, OSLOADER loads the kernel, and NT
 #       runs on the HAL: the ADB driver connects NT's keyboard and mouse
 #       classes, and the boot volume is D: with the system in D:\WINNT
 #   B4  the logon screen ("Press Ctrl + Alt + Delete to log on"), drawn by
@@ -30,7 +31,7 @@
 # class as a secure attention sequence, and the session that follows --
 # a user's profile created, Explorer started -- runs on this machine.
 #
-# BUDGET.  Most of it is the firmware reading the veneer off the floppy a
+# BUDGET.  Most of it is the firmware reading arcfw off the floppy a
 # block at a time and NT's first boot of a fresh profile.  Every wait is
 # capped, and fails at a named rung.
 
@@ -40,7 +41,7 @@ include "../lib/nt.script"
 
 let nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
 let nt_disk = "../../data/systems/winnt_4_0_ppc_ans_512mb.img"
-let nt_floppy = "../../data/systems/ans_nt_boot_floppy_daea7d6.img"
+let nt_floppy = "../../data/systems/ans_nt_boot_floppy_d8b30a2.img"
 
 let K_CONTROL = "0x36"
 let K_OPTION = "0x3A"
@@ -67,7 +68,7 @@ def nt_installed_boot() {
     let boot = nt_load_eval("bootdisk", ".of", 20000000)
     $boot = "${$boot}${nt_ldr("", "system path -> 'D:", 400000000000, "B3")}"
     assert contains($boot, "starting the installed Windows NT") "B3: bootdisk.of did not run"
-    assert contains($boot, "Open Firmware ARC Interface") "B3: the veneer did not start"
+    assert contains($boot, "Arcfw 0.1") "B3: arcfw did not start"
     assert contains($boot, "adbport: keyboard class connected") "B3: NT's keyboard class never connected to the ADB driver"
     assert contains($boot, "adbport: mouse class connected") "B3: NT's mouse class never connected to the ADB driver"
     assert contains($boot, "Partition2' -> D:") "B3: NT did not boot from the installed volume"
