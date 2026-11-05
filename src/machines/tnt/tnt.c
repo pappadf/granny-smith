@@ -373,6 +373,45 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
         memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), buf[i]);
 }
 
+// Scalar access (STORE_QUAD/LOAD_QUAD): RAM as the block path; a device
+// register as ONE access of the command's width through the bus, the way
+// the bridge presents it.  Reversed lanes move an aligned 2- or 4-byte
+// unit to the mirrored slot of its doubleword with its bytes reversed.
+static void tnt_dbdma_mem_write1(void *ctx, uint32_t phys, uint32_t value, unsigned width) {
+    config_t *cfg = (config_t *)ctx;
+    if (phys < cfg->ram_size || width == 1 || (phys & (width - 1u))) {
+        uint8_t buf[4];
+        for (unsigned i = 0; i < width; i++)
+            buf[i] = (uint8_t)(value >> ((width - 1 - i) * 8));
+        tnt_dbdma_mem_write(ctx, phys, buf, width);
+        return;
+    }
+    bool rev = gc_lanes_reversed(cfg);
+    if (width == 2)
+        memory_write_uint16_slow(rev ? phys ^ 6u : phys, rev ? __builtin_bswap16((uint16_t)value) : (uint16_t)value);
+    else
+        memory_write_uint32_slow(rev ? phys ^ 4u : phys, rev ? __builtin_bswap32(value) : value);
+}
+
+static uint32_t tnt_dbdma_mem_read1(void *ctx, uint32_t phys, unsigned width) {
+    config_t *cfg = (config_t *)ctx;
+    if (phys < cfg->ram_size || width == 1 || (phys & (width - 1u))) {
+        uint8_t buf[4] = {0, 0, 0, 0};
+        tnt_dbdma_mem_read(ctx, phys, buf, width);
+        uint32_t v = 0;
+        for (unsigned i = 0; i < width; i++)
+            v = (v << 8) | buf[i];
+        return v;
+    }
+    bool rev = gc_lanes_reversed(cfg);
+    if (width == 2) {
+        uint16_t v = memory_read_uint16_slow(rev ? phys ^ 6u : phys);
+        return rev ? __builtin_bswap16(v) : v;
+    }
+    uint32_t v = memory_read_uint32_slow(rev ? phys ^ 4u : phys);
+    return rev ? __builtin_bswap32(v) : v;
+}
+
 // Channel completion -> Grand Central interrupt n (== channel n), an
 // edge event into the fabric.
 // A DBDMA channel interrupt is a LEVEL, not a pulse: the channel holds
@@ -736,6 +775,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
     static const dma_mem_port_t dbdma_port = {
+        .read = tnt_dbdma_mem_read1,
+        .write = tnt_dbdma_mem_write1,
         .read_block = tnt_dbdma_mem_read,
         .write_block = tnt_dbdma_mem_write,
     };

@@ -124,6 +124,12 @@ typedef struct dbdma_port {
     // also end the next one.  `in` returns 0 while a boundary is pending.
     void (*out_last)(void *ctx);
     bool (*in_end)(void *ctx);
+    // Software cleared RUN: whatever the device buffered for this channel
+    // and has not yet moved is abandoned with the program.  Optional.  The
+    // SWIM3 byte ring needs it: an OUTPUT command larger than the sector
+    // tops the ring up past the stream the chip consumes, and the leftover
+    // must not become the start of the next write.
+    void (*stop)(void *ctx);
 } dbdma_port_t;
 
 // === Lifecycle ==============================================================

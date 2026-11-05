@@ -324,10 +324,8 @@ void davbus_write32(davbus_host_t *h, uint32_t offset, uint32_t value) {
 // now reported: the volume as the live output's left attenuation code (C,
 // or A when C is muted), the mute as what the render path applies.
 //
-// in_enabled is false because the input path is not modelled.  The hardware
-// has one -- the TNT sound-control register's bits 0-3 are the Input SubFrame
-// Select field, and an 8500 has a Sound In jack -- so
-// this is a gap to close, not a property of the machine.
+// in_enabled reports the record channel running.  It records silence: there
+// is no host input source behind the codec's ADC yet.
 
 static davbus_t *snd_awacs_ctx(void *ctx) {
     davbus_host_t *h = (davbus_host_t *)ctx;
@@ -363,8 +361,8 @@ static bool davbus_snd_out_enabled(void *ctx) {
 }
 
 static bool davbus_snd_in_enabled(void *ctx) {
-    (void)ctx;
-    return false; // AWACS sound input is not modelled yet
+    davbus_host_t *h = (davbus_host_t *)ctx;
+    return h && h->input && h->dbdma && dbdma_active(h->dbdma, h->in_chan);
 }
 
 static uint64_t davbus_snd_frames(void *ctx) {

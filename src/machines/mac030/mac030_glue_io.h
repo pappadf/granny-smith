@@ -121,6 +121,8 @@ typedef struct mac030_io {
     uint32_t mirror_mask; // addr & mask before decode
     struct config *cfg; // for handler-row (read_fn/write_fn) dispatch
     uint8_t unmapped_read; // value returned on a no-match read (0 GLUE/MDU; 0xFF OSS)
+    uint32_t window_base; // physical base of the I/O window (bus-error addresses)
+    uint32_t berr_lo, berr_hi; // window-relative bus-error span (desc->io_berr_*); lo > hi = none
     // Decode-miss log-once bitmaps, one bit per 4 KB of island (the largest
     // mirror mask any board declares is $3FFFF, so 64 bits covers it).
     // Diagnostic state only, and full of host pointers besides -- this whole
