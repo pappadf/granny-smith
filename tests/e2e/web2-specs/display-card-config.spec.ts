@@ -26,7 +26,6 @@
 import { test, expect } from '../helpers/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
-import { gsEvalInPage } from '../helpers/web2-eval';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const VROM_8_24 = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
@@ -41,10 +40,6 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   // upload's image-revision bump re-scans and identifies them in one pass.
   await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', VROM_8_24);
   await stageOpfsFile(page, '/opfs/images/vrom/display-card-24ac-d8daab87.vrom', VROM_24AC);
-  // Staged behind the upload path's back: offer them, as an upload does
-  // (a card's real-ROM entry is listed only while its vROM is offered).
-  await gsEvalInPage(page, 'catalog.vroms.offer', ['/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom']);
-  await gsEvalInPage(page, 'catalog.vroms.offer', ['/opfs/images/vrom/display-card-24ac-d8daab87.vrom']);
 
   // Upload the IIcx ROM via the Welcome "Load ROM..." button. The persist
   // bumps the image revision, which re-scans the config slide (ROM + the two
