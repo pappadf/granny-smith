@@ -262,10 +262,12 @@ uint32_t davbus_read32(davbus_host_t *h, uint32_t offset) {
             }
             return 0x00403100u;
         }
-        // Valid data, no pending inputs; revision/part zero (plain
-        // AWACS — whether TNT carries a Screamer is an open question;
-        // nothing in the boot path discriminates).
-        return 0x00400000u;
+        // Valid data, no pending inputs, revision 2 = AWACS (Apple
+        // kAWACsAwacsRevision; Linux AWACS_AWACS).  Mac OS 9's GC AWACs
+        // sound-hardware plug-in declines any other revision, and the
+        // sound-input driver's failure path then frees its globals and
+        // keeps using them, corrupting the system heap (issue #211).
+        return 0x00402000u;
     case AWACS_CLIP_COUNT:
         return 0;
     case AWACS_BYTE_SWAP:

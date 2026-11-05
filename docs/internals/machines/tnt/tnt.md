@@ -167,7 +167,12 @@ The board model is the chipset skeleton plus the DMA architecture:
   path, which delivers silence at the codec rate: Mac OS 8.6 and 9 stop
   recording at startup by setting S0 and polling `channelStatus` until
   the program's conditional branch reaches STOP, so a stalled channel 9
-  froze the splash screen (#211).  A channel's interrupt command asserts a LEVEL on Grand
+  froze the splash screen (#211).  The codec status word reports
+  revision 2 (AWACS): with revision 0, Mac OS 9's GC AWACs plug-in
+  declined the part, the "GC AWACs Input" driver's open failed, and its
+  failure path kept using freed globals, which corrupted the system
+  heap and stopped 9.0.4 (v2 ROM, 64 MB) on the splash with a bus
+  error.  A channel's interrupt command asserts a LEVEL on Grand
   Central source n that the host's Clear write acknowledges (see "The
   interrupt fabric").  (Reference:
   [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
