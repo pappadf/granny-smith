@@ -65,6 +65,7 @@
 
 #include "cirrus54m30.h"
 #include "tnt.h"
+#include "../../core/cpu/ppc/ppc_internal.h"
 
 #include "log.h"
 #include "memory.h"
@@ -1249,6 +1250,10 @@ static prep_tap_region_t g_tap_regions[] = {
 static uint32_t g_tap_block[TAP_BLOCKS];
 static unsigned g_tap_nblocks;
 static bool g_tap_on;
+#define TAP_PCS 4096u
+static uint32_t g_tap_pc[TAP_PCS];
+static unsigned g_tap_npcs;
+static bool g_tap_pcs;
 
 static void prep_tap(uint32_t phys, bool write) {
     prep_tap_region_t *r = NULL;
@@ -1271,6 +1276,36 @@ static void prep_tap(uint32_t phys, bool write) {
     if (!seen && g_tap_nblocks < TAP_BLOCKS) {
         g_tap_block[g_tap_nblocks++] = blk;
         LOG(0, "TAP first %-13s %s $%08X pc=%08X", r->name, write ? "W" : "R", phys, pc);
+    }
+    // GS_PREP_TAP_PCS=1: also the first access from each (range, PC), which
+    // lists every site that touches the window.
+    if (g_tap_pcs) {
+        uint32_t key = pc ^ (uint32_t)(r - g_tap_regions) << 28;
+        bool known = false;
+        for (unsigned i = 0; i < g_tap_npcs; i++)
+            if (g_tap_pc[i] == key) {
+                known = true;
+                break;
+            }
+        if (!known && g_tap_npcs < TAP_PCS) {
+            g_tap_pc[g_tap_npcs++] = key;
+            // And the code there, so the module can be found by its bytes:
+            // 32 raw bytes of physical memory around the PC.
+            char code[65] = "";
+            bool ok = false;
+            uint32_t pa = (g_prep && g_prep->cfg && g_prep->cfg->ppc)
+                              ? ppc_mmu_translate_debug(g_prep->cfg->ppc, pc, false, &ok)
+                              : 0;
+            if (ok) {
+                uint32_t base = (pa & ~7u) - 8;
+                for (unsigned i = 0; i < 32; i++) {
+                    bool rok = false;
+                    uint32_t b = memory_debug_read_phys(base + i, 1, &rok);
+                    snprintf(code + 2 * i, 3, "%02x", rok ? b & 0xFF : 0);
+                }
+            }
+            LOG(0, "TAP site %-13s %s $%08X pc=%08X pa=%08X code=%s", r->name, write ? "W" : "R", phys, pc, pa, code);
+        }
     }
     if ((r->n & (r->n - 1)) == 0 && r->n >= 16)
         LOG(0, "TAP count %-13s %llu (last $%08X pc=%08X)", r->name, (unsigned long long)r->n, phys, pc);
@@ -1380,6 +1415,7 @@ void tnt_prep_io_init(config_t *cfg) {
     p->iface.write_uint32 = io_write32;
     p->iface.peek_uint8 = io_peek8;
     g_tap_on = env_on("GS_PREP_TAP");
+    g_tap_pcs = env_on("GS_PREP_TAP_PCS");
     if (g_tap_on)
         pci_window_tap = prep_tap;
     prep_map(cfg, PREP_IO_BASE, PREP_IO_SIZE, "PReP I/O window", &p->iface, p);
