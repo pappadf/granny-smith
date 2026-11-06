@@ -58,8 +58,10 @@ const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
 // and a card for any socket), the two soldered 53C825A channels, and the
 // 53C825A as a socket card.  They are here because the registry is an
 // explicit list and the linker wants every name in it.
-const pci_card_kind_t cirrus_54m30_kind = {
-    .id = "cirrus_54m30", .display_name = "Cirrus Logic 54M30", .attach = PCI_ATTACH_PCI, .card_class = "display"};
+const pci_card_kind_t cirrus_54m30_kind = {.id = "cirrus_54m30",
+                                           .display_name = "Cirrus Logic 54M30 VGA card",
+                                           .attach = PCI_ATTACH_PCI,
+                                           .card_class = "display"};
 const pci_card_kind_t sym53c825_kind = {
     .id = "sym53c825", .display_name = "Symbios 53C825A SCSI card", .attach = PCI_ATTACH_PCI, .card_class = "scsi"};
 const pci_card_kind_t sym53c825_ch0_kind = {.id = "sym53c825_0",

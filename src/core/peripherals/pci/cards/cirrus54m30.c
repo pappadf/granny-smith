@@ -1519,7 +1519,7 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
 // NT's cirrus.sys -- drives it through BAR0 and the legacy VGA window.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
-    .display_name = "Cirrus Logic 54M30",
+    .display_name = "Cirrus Logic 54M30 VGA card",
     .attach = PCI_ATTACH_PCI,
     .card_class = "display",
     .factory = c54m30_factory,
