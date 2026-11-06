@@ -54,6 +54,37 @@ different one the instruction does **not** execute, DSP is rewound to point
 the single most load-bearing behaviour in the set: a driver drives a whole
 transaction by moving one phase at a time and branching on the mismatch.
 
+**Transfer Control** decides on bit 19, "jump if true/false", against
+whatever compares the instruction enables (phase, data, or the carry). With
+no compare the result is *true*, so the transfer happens only with bit 19
+set: `$80080000` is JUMP, and `$80000000` is the NO OP drivers patch in and
+out of a script. IBM's OS/2 PowerPC NCR script keeps one such patchable slot
+per target and turns a slot into a JUMP when it has work queued for that
+target. Taking every compare-less transfer ran straight into the first
+empty slot's destination. With both compares enabled, a true branch needs
+both true and a false branch needs both false (SYM53C825A Data Manual v3.0).
+
+**Select runs on while the target thinks.** "Once the SYM53C825A has won
+arbitration, it fetches the next instruction... the scripts can move to the
+next instruction before the selection has completed. It will continue
+executing SCRIPTS until a SCRIPT that requires a response from the target is
+encountered." The engine waits only at the first instruction that needs one
+(`needs_target`: a block move, a phase-compare transfer, Select, Wait
+Disconnect or Wait Reselect), with DSP past it, and the selection time-out
+reports from there. IBM's OS/2 NCR script disables the target's scheduler
+slot with a Memory Move straight after its SELECT. Halting at the SELECT
+left every absent target's slot armed, so every later doorbell re-selected
+a dead target ahead of the real command, and the boot deadlocked waiting
+for a CD read that was never sent.
+
+**Memory Move** honours DMODE's `SIOM`/`DIOM` bits (source/destination in
+PCI *I/O* space). The one I/O target a script reaches in practice is the
+chip itself, through its own I/O BAR. That is how a script written for the
+53C810, which has no LOAD/STORE, loads DSA from a per-target table, and the
+OS/2 script does it for every slot it scans. Each byte is an ordinary
+register access with its side effects. An I/O cycle to anything else reads
+all ones and goes nowhere, as on a bus where nobody claims it.
+
 Table-indirect addressing (bit 28) fetches both the byte count and the
 buffer address from a structure at `DSA + a 24-bit signed offset`, which is
 what lets SCRIPTS execute an operating system's own I/O data structures
@@ -67,7 +98,11 @@ them:
 * **`ISTAT` is a SUMMARY.** Its `DIP` and `SIP` bits are live views of "does
   `DSTAT` hold anything" and "does `SIST0`/`SIST1` hold anything" — never
   stored state. It is the only register a driver may touch while SCRIPTS
-  are running, which is exactly why polled drivers read it.
+  are running, which is exactly why polled drivers read it. `SIP` drops as
+  soon as the bits are read away, even if only `SIST0` was read: NT's
+  miniport never reads `SIST1` for a `SIST0` cause, and a model that held
+  `SIP` until both were read (the manual's "read SIST0 and SIST1 to clear
+  the SCSI interrupt condition", taken literally) hung its logon.
 * **`DSTAT` / `SIST0` / `SIST1` are CAUSES, and they are READ TO CLEAR.**
   Leave a bit standing and the driver re-interrupts forever; clear it a
   moment too early and the cause is lost. `DSTAT`'s `DFE` bit is the
@@ -180,7 +215,11 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
 
   Parking is the behaviour, not a shortcut around it. With `SIGP` clear
   the part waits; with `SIGP` set it takes the instruction's alternate
-  address and clears the bit. So the engine stops with DSP pointing *at*
+  address and leaves the bit set. "The instructions at the alternate jump
+  address should check the status of SIGP to determine the cause of the
+  jump", and OS/2's script does exactly that with `MOVE CTEST2 TO SFBR;
+  JUMP IF 0x40`. A jump that cleared the bit sent it to its "unexpected
+  interrupt" exit. So the engine stops with DSP pointing *at*
   the instruction and raises nothing, and a write of `SIGP` re-executes
   it. Taking the alternate address unconditionally looks like the
   forgiving choice and is the opposite: a driver's idle script is a short
@@ -287,6 +326,16 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
   are cleared, all the interrupts that came in afterward will move into the
   SIST0, SIST1, and DSTAT." Latching both at once instead hands a driver
   that reads the pair as one 16-bit word two causes in a single word.
+
+  **The pin pulses when the stacked cause moves in.** "After the first
+  interrupt is cleared by reading the appropriate register, the IRQ/ pin
+  will be deasserted for a minimum of three CLKs; the stacked interrupt(s)
+  will move into the SIST0, SIST1, or DSTAT; and the IRQ/ pin will be
+  asserted once again." On a level-triggered input this changes nothing.
+  On an edge-triggered one it is the only way the second interrupt is ever
+  seen: OS/2 PowerPC programs the 8259's IRQ 13 (the SCSI line) as an edge,
+  and a pin held high straight through lost the UDC behind every selection
+  time-out.
 
   **And the unstack must not happen inside one wider read.** The register
   file decomposes a 16-bit access into byte lanes, and an unstack run at
