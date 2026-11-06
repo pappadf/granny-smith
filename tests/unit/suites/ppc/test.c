@@ -1442,8 +1442,15 @@ static void test_604_timebase(void) {
     step1_valid(e_spr(4, 285, 1)); // mtspr tbu,r4
     CHECK_EQ(P->rtcu, 0xAAAAAAAAu);
     CHECK_EQ(P->rtcl, 0xAAAAAAAAu);
+    // The mfspr form of the TB read encodings (268/269) is the same read on
+    // the 60x: IBM's OS/2 PowerPC boot loader uses it.
+    P->rtcl = 0x13579BDFu;
+    step1_valid(e_spr(3, 268, 0)); // mfspr r3,268
+    CHECK_EQ(P->gpr[3], 0x13579BDFu);
+    step1_valid(e_spr(3, 269, 0)); // mfspr r3,269
+    CHECK_EQ(P->gpr[3], 0xAAAAAAAAu);
     // mfspr of the TB write encodings is undefined → illegal (reads go
-    // through mftb only, PEM §2.3.1)
+    // through mftb, or the read encodings above, PEM §2.3.1)
     expect_illegal_604(e_spr(3, 284, 0));
     // mftb with an undefined TBR field traps
     expect_illegal_604(e_spr(3, 270, 0) + (32u << 1));

@@ -262,7 +262,9 @@ precedent).  The deltas, each keyed on `cpu_model`:
   program exception.  The decode tree stays model-blind; the leaves
   decide (`M601()`/`M604()` guards in `ppc_ops.h`).
 - **Time**: TBL/TBU replace the RTC — read via `mftb`/`mftbu` (xo 371,
-  user-readable), written via SPR 284/285 (supervisor), stored in the
+  user-readable), and through `mfspr` 268/269 too, which the 60x decodes
+  as the same read (IBM's OS/2 PowerPC boot loader uses that form),
+  written via SPR 284/285 (supervisor), stored in the
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.
