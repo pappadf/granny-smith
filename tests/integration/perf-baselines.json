@@ -776,6 +776,10 @@
       "instr": 2540000000,
       "tolerance": 0.2
     },
+    "tnt-pci-scsi-card/finder": {
+      "instr": 2500000000,
+      "tolerance": 0.2
+    },
     "tnt-pci-voodoo2": {
       "instr": 400200000,
       "tolerance": 0.2

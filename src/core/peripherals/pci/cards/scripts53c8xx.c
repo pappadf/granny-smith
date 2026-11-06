@@ -1231,6 +1231,11 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
 }
 
 sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
+    // One per channel, since both of the Network Server's chips post their own.
+    return sym53c8xx_new_named(cfg, channel, channel ? "53c825-1" : "53c825-0");
+}
+
+sym53c8xx_t *sym53c8xx_new_named(config_t *cfg, int channel, const char *owner) {
     sym53c8xx_t *s = (sym53c8xx_t *)calloc(1, sizeof(*s));
     if (!s)
         return NULL;
@@ -1248,11 +1253,10 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
     // node came up `status "disabled"` with the chip otherwise perfect.
     s->gpio_strap = 0x01u;
     // The selection time-out is a scheduled event, so the checkpoint has to
-    // know its name (one per channel, since both chips post their own).
+    // know its name, and the name has to be this chip's alone.
     if (cfg && cfg->scheduler) {
-        const char *who = channel ? "53c825-1" : "53c825-0";
-        scheduler_new_event_type(cfg->scheduler, who, s, "select-timeout", select_timeout_event);
-        scheduler_new_event_type(cfg->scheduler, who, s, "script-start", script_start_event);
+        scheduler_new_event_type(cfg->scheduler, owner, s, "select-timeout", select_timeout_event);
+        scheduler_new_event_type(cfg->scheduler, owner, s, "script-start", script_start_event);
     }
     sym53c8xx_chip_reset(s);
     return s;

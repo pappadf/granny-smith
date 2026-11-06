@@ -65,6 +65,17 @@ export function storageBus(profile: MachineProfile, id: string): StorageBus | un
   return profile.storage.find((b) => b.id === id);
 }
 
+// Whether the card in slot `slot` brings a SCSI bus of its own.
+function slotHasCardBus(profile: MachineProfile, doc: ConfigDocument, slot: string): boolean {
+  return doc.cards.some((e) => e.slot === slot && card(profile, e.card)?.scsi_bus === true);
+}
+
+// The buses a device can go on in this configuration: the board's own,
+// and a PCI card's bus while its slot holds a card that brings one.
+export function visibleBuses(profile: MachineProfile, doc: ConfigDocument): StorageBus[] {
+  return profile.storage.filter((b) => !b.card_slot || slotHasCardBus(profile, doc, b.card_slot));
+}
+
 // The position text the core composed for (bus, unit), in its short form
 // ("ID 0", not "ID 0 · Internal hard disk bay"): the dialog names units by
 // number alone.
@@ -338,6 +349,11 @@ export function removeCard(
   const wasConnected = connectedDevice(next) === slot;
   next.cards = next.cards.filter((c) => c.slot !== slot);
   delete next.displays[slot];
+  // A card's bus goes with the card, and the devices on it.
+  if (profile.storage.some((b) => b.card_slot === slot)) {
+    next.storage = next.storage.filter((d) => d.bus !== slot);
+    if (next.startup?.bus === slot) next.startup = firstStartupDevice(profile, next);
+  }
   if (wasConnected) {
     const first = displayDevices(profile, next)[0];
     if (first) return connectTo(profile, next, first.id);

@@ -143,6 +143,9 @@ So `big_endian` is **false** for this board, and it stays a construction
 parameter rather than a constant because it is a wiring fact: the
 `SYM53C825AJ` variant is little-endian *only* (its `BIG_LIT` pin is replaced
 by a JTAG signal), and a socketed 53C8xx on another board may differ.
+(The `sym53c825` socket card -- the same model on its own SCSI bus, see
+[`pci.md`](../../pci.md#a-card-that-brings-its-own-scsi-bus) -- is a PC card
+and keeps `false`.)
 
 Two consequences:
 
