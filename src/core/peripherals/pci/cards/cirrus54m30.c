@@ -33,7 +33,9 @@
 //
 // NO EXPANSION ROM, AND NO INTERRUPT.  Unlike the Mach64 GX, this card's
 // Open Firmware node is built by `54m30-config` in the MAIN ROM, so there
-// is no FCode PROM to provision and the expansion-ROM BAR reads zero.  And
+// is no FCode PROM to provision and the expansion-ROM BAR reads zero.  (In
+// another machine's PCI socket the same holds: the card brings no FCode,
+// so only an OS with its own driver uses it.)  And
 // Apple states plainly that the part has no interrupt line — allocating it
 // a Grand Central external would corrupt the interrupt map.
 //
@@ -1509,12 +1511,16 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
     pci_card_set_framebuffer_object(dev, fb);
 }
 
-// BUILTIN: soldered down on the Network Server logic board, instantiable
-// only where a machine's slot table names it.
+// A PCI device like any other: soldered down on the Network Server logic
+// board, where the slot table names it, and offered on every PCI socket
+// besides.  In a socket it is a PC card in a Mac: with no FCode PROM, Open
+// Firmware and the Mac OS leave it alone (a Mac's own video stays the
+// console), and an operating system with its own Cirrus driver -- Windows
+// NT's cirrus.sys -- drives it through BAR0 and the legacy VGA window.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
-    .display_name = "Built-in video",
-    .attach = PCI_ATTACH_BUILTIN,
+    .display_name = "Cirrus Logic 54M30 VGA card",
+    .attach = PCI_ATTACH_PCI,
     .card_class = "display",
     .factory = c54m30_factory,
     .attach_objects = c54m30_attach_objects,

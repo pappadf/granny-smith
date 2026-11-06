@@ -532,6 +532,9 @@ static void tnt_fwscsi_attach(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     struct scsi *bus[2] = {cfg->scsi, st->scsi2};
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        // A 53C825A card in a socket brings its own bus (machine_card_scsi_buses).
+        if (d->kind == PCI_SLOT_SOCKET)
+            continue;
         sym53c8xx_t *chip = sym53c8xx_from_device(pci_slot_device(cfg->pci, d->slot));
         if (!chip)
             continue;
@@ -934,6 +937,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // the slot walk, so this runs after it — and after the buses exist,
     // which is why it is here rather than in the card factory.
     tnt_fwscsi_attach(cfg);
+    // And every card in a socket that brings a SCSI bus of its own.
+    machine_card_scsi_buses(cfg, cp);
 
     // Finish: the debugger.
     cfg->debugger = debug_init();

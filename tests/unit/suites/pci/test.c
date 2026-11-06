@@ -53,14 +53,17 @@ const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
                                            .display_name = "ATI 3D Rage Pro (on-board)",
                                            .attach = PCI_ATTACH_BUILTIN,
                                            .card_class = "display"};
-// ...and the three soldered-down devices of the Apple Network Server, whose
-// real drivers live in cards/cirrus54m30.c and cards/sym53c825.c.  All
-// BUILTIN, so they never appear in a socket-fit row; they are here because
-// the registry is an explicit list and the linker wants every name in it.
+// ...and the Apple Network Server's devices, whose real drivers live in
+// cards/cirrus54m30.c and cards/sym53c825.c: the 54M30 (soldered there,
+// and a card for any socket), the two soldered 53C825A channels, and the
+// 53C825A as a socket card.  They are here because the registry is an
+// explicit list and the linker wants every name in it.
 const pci_card_kind_t cirrus_54m30_kind = {.id = "cirrus_54m30",
-                                           .display_name = "Cirrus Logic 54M30 on-board video",
-                                           .attach = PCI_ATTACH_BUILTIN,
+                                           .display_name = "Cirrus Logic 54M30 VGA card",
+                                           .attach = PCI_ATTACH_PCI,
                                            .card_class = "display"};
+const pci_card_kind_t sym53c825_kind = {
+    .id = "sym53c825", .display_name = "Symbios 53C825A SCSI card", .attach = PCI_ATTACH_PCI, .card_class = "scsi"};
 const pci_card_kind_t sym53c825_ch0_kind = {.id = "sym53c825_0",
                                             .display_name = "Symbios 53C825A fast/wide SCSI (channel 0)",
                                             .attach = PCI_ATTACH_BUILTIN,

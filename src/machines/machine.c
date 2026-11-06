@@ -13,6 +13,7 @@
 #include "image.h"
 #include "json_value.h"
 #include "log.h"
+#include "machine_parts.h"
 #include "nubus.h"
 #include "object.h"
 #include "out.h"
@@ -130,6 +131,8 @@ const char *media_bus_name(media_bus_t bus) {
         return "profile";
     case MEDIA_BUS_ATA:
         return "ata";
+    case MEDIA_BUS_CARD:
+        return "card"; // each card's bus is "pci_<slot>": media_bay_value names it
     }
     return "scsi";
 }
@@ -197,9 +200,46 @@ struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const c
     return bus;
 }
 
+// A card bus's checkpoint part: the bus and its drives.
+static void card_scsi_part_save(void *obj, checkpoint_t *cp) {
+    scsi_checkpoint(obj, cp);
+}
+
+void machine_card_scsi_buses(struct config *cfg, checkpoint_t *cp) {
+    for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        // Only a socket: a soldered controller is wired to the board's own bus.
+        if (d->kind != PCI_SLOT_SOCKET || d->slot >= CARD_SCSI_SLOTS)
+            continue;
+        const pci_card_kind_t *kind = pci_slot_kind(cfg->pci, d->slot);
+        pci_device_t *dev = pci_slot_device(cfg->pci, d->slot);
+        if (!kind || !dev || !kind->attach_scsi_bus)
+            continue;
+        // The storage id and the object name.  Static: the bus object keeps
+        // the pointer, not a copy.
+        static char names[CARD_SCSI_SLOTS][8];
+        char *name = names[d->slot];
+        snprintf(name, sizeof names[0], "pci_%d", d->slot);
+        machine_part_begin(cfg, cp, name);
+        scsi_t *bus = machine_scsi_bus_init(cfg, cp, name);
+        machine_part(cfg, cp, name, card_scsi_part_save, bus);
+        cfg->card_scsi[d->slot] = bus;
+        kind->attach_scsi_bus(dev, bus);
+        LOG(1, "%s: SCSI bus of the card in %s", name, d->label ? d->label : "the slot");
+    }
+}
+
 // A bay as the attach verbs answer it: {bus, id, label}.
 static value_t media_bay_value(const media_bay_t *bay) {
     value_map_builder_t *b = val_map_new();
+    if (bay->bus == MEDIA_BUS_CARD) {
+        // A slot card's bus, by the id eject_media and the configuration use.
+        char id[16];
+        snprintf(id, sizeof id, "pci_%d", bay->unit / CARD_SCSI_IDS);
+        val_map_put(b, "bus", val_str(id));
+        val_map_put(b, "id", val_int((int64_t)(bay->unit % CARD_SCSI_IDS)));
+        val_map_put(b, "label", val_str(bay->label ? bay->label : ""));
+        return val_map_finish(b);
+    }
     val_map_put(b, "bus", val_str(media_bus_name(bay->bus)));
     val_map_put(b, "id", val_int((int64_t)bay->unit));
     val_map_put(b, "label", val_str(bay->label ? bay->label : ""));
@@ -904,10 +944,18 @@ static DEF_METHOD(machine_method_eject_media) {
     if (!cfg || !cfg->machine)
         return val_err("machine.eject_media: no machine is running");
     media_bus_t bus;
-    if (!media_bus_parse(argv[0].s, &bus))
-        return val_err("machine.eject_media: unknown bus '%s' (floppy, scsi, scsi2 or profile)", argv[0].s);
     int unit = (argc >= 2 && argv[1].kind == VK_INT) ? (int)argv[1].i : 0;
-    int rc = system_media_eject(cfg, bus, unit);
+    int at = unit; // the unit on the media bus
+    const storage_bus_decl_t *card = machine_storage_bus(cfg->machine, argv[0].s);
+    if (card && card->media_bus == MEDIA_BUS_CARD) {
+        // A slot card's bus ("pci_1"): its SCSI id, offset to that card.
+        if (unit < 0 || unit > 6)
+            return val_err("machine.eject_media: \"%s\" has no SCSI id %d", card->label, unit);
+        bus = MEDIA_BUS_CARD;
+        at += card->media_unit_base;
+    } else if (!media_bus_parse(argv[0].s, &bus))
+        return val_err("machine.eject_media: unknown bus '%s' (floppy, scsi, scsi2, profile or pci_<slot>)", argv[0].s);
+    int rc = system_media_eject(cfg, bus, at);
     if (rc == -2)
         return val_err("machine.eject_media: the guest has locked %s %d", argv[0].s, unit);
     if (rc != 0)
@@ -954,7 +1002,10 @@ static const arg_decl_t machine_attach_media_args[] = {
 };
 
 static const arg_decl_t machine_eject_media_args[] = {
-    {.name = "bus", .kind = VK_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "floppy, scsi, scsi2 or profile"},
+    {.name = "bus",
+     .kind = VK_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "floppy, scsi, scsi2, profile or pci_<slot>"},
     {.name = "id",
      .kind = VK_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,

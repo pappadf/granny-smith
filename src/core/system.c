@@ -1466,6 +1466,11 @@ void system_destroy(config_t *config) {
         pci_root_delete(config->pci);
         config->pci = NULL;
     }
+    // The buses PCI slot cards brought: their cards are gone, now them.
+    for (int i = 0; i < CARD_SCSI_SLOTS; i++) {
+        scsi_delete(config->card_scsi[i]);
+        config->card_scsi[i] = NULL;
+    }
     if (config->nubus) {
         nubus_delete(config->nubus);
         config->nubus = NULL;
@@ -1672,9 +1677,20 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
         return 0;
     case MEDIA_BUS_SCSI:
         return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
+    case MEDIA_BUS_CARD: {
+        media_slot_t on_card = *slot;
+        on_card.unit = slot->unit % CARD_SCSI_IDS; // the SCSI id on that card's bus
+        return system_media_attach_scsi_bus(cfg, system_card_scsi_bus(cfg, slot->unit), &on_card);
+    }
     default:
         return -1;
     }
+}
+
+// The SCSI bus of the PCI slot card a MEDIA_BUS_CARD unit names, or NULL.
+struct scsi *system_card_scsi_bus(config_t *cfg, int unit) {
+    int slot = unit / CARD_SCSI_IDS;
+    return (cfg && unit >= 0 && slot < CARD_SCSI_SLOTS) ? cfg->card_scsi[slot] : NULL;
 }
 
 // Attach one opened medium to a named SCSI bus: a machine may have more than
@@ -1724,6 +1740,8 @@ bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
         return sys_fd_is_inserted(cfg, unit);
     case MEDIA_BUS_SCSI:
         return system_media_present_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_CARD:
+        return system_media_present_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
         return false;
     }
@@ -1735,12 +1753,16 @@ int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
         return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
     case MEDIA_BUS_SCSI:
         return system_media_eject_scsi_bus(cfg->scsi, unit);
+    case MEDIA_BUS_CARD:
+        return system_media_eject_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     default:
         return -1;
     }
 }
 
 image_t *system_media_image_std(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_CARD)
+        return system_media_image_scsi_bus(system_card_scsi_bus(cfg, unit), unit % CARD_SCSI_IDS);
     return bus == MEDIA_BUS_SCSI ? system_media_image_scsi_bus(cfg->scsi, unit) : NULL;
 }
 

@@ -866,7 +866,7 @@
 
         {#if profile.storage.length > 0}
           <SectionHeading class="config-section" rule>Storage</SectionHeading>
-          {#each profile.storage as bus (bus.id)}
+          {#each mc.visibleBuses(profile, doc) as bus (bus.id)}
             {@const onBus = doc.storage
               .map((d, index) => ({ d, index }))
               .filter((x) => x.d.bus === bus.id)}

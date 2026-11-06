@@ -51,6 +51,8 @@ typedef struct pci_device pci_device_t;
 
 // Per-device vtable.  Every hook is optional; NULL hooks are skipped by
 // the bus controller.
+struct scsi; // peripherals/scsi.h
+
 typedef struct pci_device_ops {
     // Construction / destruction.  Returns 0 on success.
     int (*init)(pci_device_t *dev, config_t *cfg, checkpoint_t *cp);
@@ -235,6 +237,13 @@ typedef struct pci_card_kind {
     // Voodoo2's "Rendering" option).  catalog.profile lists only the card it
     // names; the kind stays registered so a document or checkpoint may name it.
     const char *variant_of;
+
+    // A card that brings its own SCSI bus (a 53C825A in a socket): the
+    // machine builds the bus, "pci_<slot>", after the slot walk and hands it
+    // over here (machine_card_scsi_buses).  NULL: the card brings no bus.  A
+    // soldered controller wired to the board's own bus leaves it NULL, and
+    // the board binds it instead.
+    void (*attach_scsi_bus)(pci_device_t *dev, struct scsi *bus);
 } pci_card_kind_t;
 
 // The card whose expansion ROM a kind uses: a variant runs the ROM of the
