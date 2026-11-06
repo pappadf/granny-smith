@@ -620,6 +620,12 @@ and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
 drives). This is the first machine here where a SCSI id does not identify a
 device on its own, and `scsi_init_named` exists for it.
 
+The bays say where a drive physically sits, not which IDs a channel has:
+either channel takes a drive at any ID 0-6 (7 is the 53C825A's own). An ID
+with no bay of its own on that channel is a free address, as ID 0 on
+channel 1 already was for the Windows NT boot disk, and OS/2 PPC's disk at
+ID 6 on channel 0 is another.
+
 ## Where Open Firmware puts a built-in device's BARs
 
 Each Bandit forwards 16 MB of PCI memory one-to-one at its base + 16 MB —
