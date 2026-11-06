@@ -162,6 +162,21 @@ bool pci_bus_lane_reverse(const struct pci_bus *bus) {
     return false;
 }
 
+// ...and the I/O BAR an I/O-space Memory Move (DMODE SIOM/DIOM) decodes
+// against.  The mock device is unconfigured, so no I/O cycle is claimed.
+bool pci_cfg_bar_enabled(const struct pci_device *dev, int bar);
+bool pci_cfg_bar_enabled(const struct pci_device *dev, int bar) {
+    (void)dev;
+    (void)bar;
+    return false;
+}
+uint32_t pci_cfg_bar_base(const struct pci_device *dev, int bar);
+uint32_t pci_cfg_bar_base(const struct pci_device *dev, int bar) {
+    (void)dev;
+    (void)bar;
+    return 0;
+}
+
 // sym53c825.c is linked for its register file (the engine and the host share
 // one set of accessors), which drags in the two PCI entry points it uses to
 // publish its BAR windows and reset its config header.  Neither is on any path
@@ -371,7 +386,15 @@ static uint8_t take_sist0(void) {
 #define IO_SET(bits)             ((1u << 30) | (3u << 27) | (bits))
 #define RW(opc, op, reg, imm)                                                                                          \
     ((1u << 30) | ((uint32_t)(opc) << 27) | ((uint32_t)(op) << 24) | ((uint32_t)(reg) << 16) | ((uint32_t)(imm) << 8))
-#define TC(opc, flags) ((2u << 30) | ((uint32_t)(opc) << 27) | (flags))
+// A transfer with no compare and no carry test is unconditional only with
+// "jump if true" set -- the assembler's JUMP/CALL/RETURN/INT are $80080000,
+// $88080000, $90080000, $98080000.  Clear, the compare result (true) never
+// matches, and the instruction is the NO OP $80000000.  TC() supplies the bit
+// for the unconditional forms; TC_NOP spells out the other.
+#define TC(opc, flags)                                                                                                 \
+    ((2u << 30) | ((uint32_t)(opc) << 27) | (flags) |                                                                  \
+     (((flags) & (TC_CMP_DATA | TC_CMP_PHASE | TC_CARRY)) ? 0u : TC_IF_TRUE))
+#define TC_NOP(opc)    ((2u << 30) | ((uint32_t)(opc) << 27))
 #define MEMORY_MOVE(n) ((6u << 29) | ((n) & 0x00FFFFFFu))
 #define LOAD(reg, n)   ((7u << 29) | (1u << 24) | ((uint32_t)(reg) << 16) | ((n) & 7u))
 #define STORE(reg, n)  ((7u << 29) | ((uint32_t)(reg) << 16) | ((n) & 7u))
@@ -746,8 +769,10 @@ TEST(test_bus_reset_ends_everything) {
 }
 
 // SIGP is the doorbell that gets it moving again: the parked instruction
-// is re-executed, sees the bit, CLEARS it, and takes its alternate
-// address.  A driver signals work exactly this way.
+// is re-executed, sees the bit, and takes its alternate address.  The jump
+// leaves SIGP set -- "the instructions at the alternate jump address should
+// check the status of SIGP", which is "polled and reset via CTEST2"
+// (SYM53C825A Data Manual v3.0).  A driver signals work exactly this way.
 TEST(test_io_wait_reselect_sigp) {
     setup();
     put_insn_word(0x1000, IO_WAIT_RESELECT);
@@ -759,9 +784,12 @@ TEST(test_io_wait_reselect_sigp) {
     run_at(0x1000);
 
     ASSERT_TRUE(!s_c->waiting_reselect);
-    ASSERT_TRUE(!(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP));
+    ASSERT_TRUE(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP);
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
     ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x5A5A5A5A);
+    // CTEST2 bit 6 mirrors SIGP, and the read clears it.
+    ASSERT_TRUE(sym53c8xx_reg_read(s_c, SYM825_CTEST2) & 0x40u);
+    ASSERT_TRUE(!(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP));
 }
 
 // ============================================================================
@@ -865,6 +893,24 @@ TEST(test_transfer_control_relative) {
     put_insn_word(0x1094, 0x22222222u);
     run_at(0x1000);
     ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x22222222);
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
+}
+
+// $80000000 is the NO OP drivers patch to and from JUMP ($80080000): with no
+// compare the result is true and "jump if false" never takes it.  IBM's OS/2
+// PowerPC NCR script scans one such patchable slot per target.
+TEST(test_transfer_control_nop) {
+    setup();
+    put_insn_word(0x1000, TC_NOP(0)); // NO OP
+    put_insn_word(0x1004, 0x1800);
+    put_insn_word(0x1008, TC_NOP(3)); // an INT that never fires
+    put_insn_word(0x100C, 0xDEADDEADu);
+    put_insn_word(0x1010, TC(3, 0));
+    put_insn_word(0x1014, 0x66666666u);
+    put_insn_word(0x1800, TC(3, 0));
+    put_insn_word(0x1804, 0x77777777u);
+    run_at(0x1000);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x66666666);
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
 }
 
@@ -1444,6 +1490,7 @@ int main(void) {
     RUN(test_read_write_bad_register);
     RUN(test_transfer_control_jump_and_call);
     RUN(test_transfer_control_relative);
+    RUN(test_transfer_control_nop);
     RUN(test_transfer_control_conditions);
     RUN(test_transfer_control_interrupt_on_the_fly);
     RUN(test_memory_move);
