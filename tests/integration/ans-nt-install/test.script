@@ -88,7 +88,7 @@ include "../lib/ans.script"
 include "../lib/nt.script"
 
 let nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
-let nt_floppy = "../../data/systems/ans_nt_boot_floppy_d8b30a2.img"
+let nt_floppy = "../../data/systems/ans_nt_boot_floppy_1741579.img"
 let nt_root = "${$EXTRA_MEDIA}/windows-nt-ppc-ans"
 let nt_cd = "${$nt_root}/nt4-ppc.iso"
 let nt_disk = "${$nt_root}/nt-disk-blank.img"
@@ -194,7 +194,7 @@ def nt_install() {
     nt_key($K_RETURN)
     let rst = nt_prompt(60000000000)
     assert contains($rst, "HalReturnToFirmware") "N8: NT did not restart through the HAL"
-    assert contains($rst, "OpenFirmware2.26") "N8: the firmware did not come back after NT's restart"
+    assert nt_firmware_banner($rst) "N8: the firmware did not come back after NT's restart"
     echo "N8: text-mode Setup completed; NT restarted the machine through Cuda"
 
     # N9 — the installed system: bootdisk.of (arcfw again, the ARC

@@ -13,7 +13,11 @@
       "tolerance": 0.2
     },
     "ans-nt-installed-boot/desktop": {
-      "instr": 8306450000,
+      "instr": 8366450000,
+      "tolerance": 0.2
+    },
+    "ans-nt-stock-boot/desktop": {
+      "instr": 6936450000,
       "tolerance": 0.2
     },
     "ans-rom-catalog/ans500-962f6c13-50348b3d0126096b": {
