@@ -433,7 +433,7 @@ extern const builtin_video_desc_t ans_builtin_video;
      .kind = STORAGE_KIND_SCSI,                                                                                        \
      .wide = true,                                                                                                     \
      .media_bus = MEDIA_BUS_SCSI,                                                                                      \
-     .units = 0x0Fu,                                                                                                   \
+     .units = MAC_SCSI_UNITS,                                                                                          \
      .reserved = 0x80u,                                                                                                \
      .bays = ans_bays_bus0,                                                                                            \
      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
