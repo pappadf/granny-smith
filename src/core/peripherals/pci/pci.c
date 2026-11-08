@@ -115,6 +115,7 @@ extern const pci_card_kind_t tnt_control_kind; // machines/tnt/control.c
 extern const pci_card_kind_t mach64_gx_kind; // peripherals/pci/cards/mach64gx.c
 extern const pci_card_kind_t ati_rage_pro_kind; // ...the beige G3's on-board Rage Pro
 extern const pci_card_kind_t cirrus_54m30_kind; // peripherals/pci/cards/cirrus54m30.c
+extern const pci_card_kind_t sym53c825_kind; // peripherals/pci/cards/sym53c825.c (the slot card)
 // The Network Server's two fast/wide SCSI controllers.  Two kinds rather
 // than one because a factory takes no channel argument and the board's two
 // controllers are genuinely distinct devices — different IDSELs, different
@@ -128,9 +129,19 @@ extern const pci_card_kind_t rage128_webgpu_kind; // ...the same card, its 3D dr
 extern const pci_card_kind_t qd3d_kind; // peripherals/pci/cards/qd3d.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,   &mach64_gx_kind,      &cirrus_54m30_kind,   &sym53c825_ch0_kind,
-    &sym53c825_ch1_kind, &voodoo2_kind,        &voodoo2_webgpu_kind, &ati_rage_pro_kind,
-    &rage128_kind,       &rage128_webgpu_kind, &qd3d_kind,           NULL,
+    &tnt_control_kind,
+    &mach64_gx_kind,
+    &cirrus_54m30_kind,
+    &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind,
+    &voodoo2_kind,
+    &voodoo2_webgpu_kind,
+    &ati_rage_pro_kind,
+    &rage128_kind,
+    &rage128_webgpu_kind,
+    &qd3d_kind,
+    &sym53c825_kind,
+    NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {

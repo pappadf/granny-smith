@@ -149,6 +149,20 @@ describe('URL configuration parameters', () => {
     expect(apply('plus', 'startup=none')).toEqual({ config: null, warnings: [] });
   });
 
+  it("storage= takes a PCI card's bus; the core checks the card is seated", () => {
+    const p = profile('pm9500');
+    p.storage.push({
+      ...p.storage[0],
+      id: 'pci_2',
+      label: 'SCSI card in PCI slot 2',
+      card_slot: 'pci_2',
+    });
+    const settings = parseUrlMediaParams(new URLSearchParams('storage=pci_2:0:hd')).settings;
+    const { config, warnings } = applyUrlConfig(p, null, settings);
+    expect(warnings).toEqual([]);
+    expect(config).toMatchObject({ storage: [{ bus: 'pci_2', unit: 0, type: 'hd' }] });
+  });
+
   it('a storage= the model cannot take is reported and left out', () => {
     expect(apply('pmg3dt', 'storage=ide9:0:hd')).toEqual({
       config: null,

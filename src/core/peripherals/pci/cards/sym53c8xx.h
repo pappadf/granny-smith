@@ -176,7 +176,7 @@ typedef struct sym53c8xx {
     // members by hand and lost the rest: the stacked interrupt causes, the
     // whole message session, the synchronous/wide agreement, the DMA FIFO
     // lanes, the parked-on-reselect flag and the instruction counter.
-    int channel; // 0 or 1 — which of the board's two controllers
+    int channel; // 0 or 1 — which of the board's two controllers; -1 for a slot card on its own bus
     bool big_endian;
     uint8_t gpio_strap;
     uint8_t reg[SYM825_REGS];
@@ -223,6 +223,7 @@ typedef struct sym53c8xx {
     struct pci_device *dev; // the seated PCI device (back-pointer)
     config_t *cfg; // the machine, for host-memory access
     struct scsi *bus;
+    char label[24]; // what the seated device is called ("53C825A #0", "53C825A (slot 1)")
     memory_interface_t regs_if; // BAR 0 (I/O) and BAR 1 (memory)
     memory_interface_t ram_if; // BAR 2 (SCRIPTS RAM)
 } sym53c8xx_t;
@@ -230,6 +231,9 @@ typedef struct sym53c8xx {
 // === Lifecycle ==============================================================
 
 sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel);
+// The same with the name its scheduler events are registered under, which
+// must be unique per chip: a slot card is named for its slot.
+sym53c8xx_t *sym53c8xx_new_named(config_t *cfg, int channel, const char *owner);
 void sym53c8xx_delete(sym53c8xx_t *s);
 // Power-on / SRST state.  Clears the register file and the engine but NOT
 // the SCRIPTS RAM, which is memory the host owns.

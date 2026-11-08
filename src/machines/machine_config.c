@@ -332,12 +332,80 @@ static const char *floppy_default_type(const floppy_slot_t *s) {
 // Storage
 // ============================================================================
 
+// The bus a card in PCI socket `slot` brings, as a storage bus: "pci_<slot>",
+// a narrow SCSI bus (the card is ID 7), hard disks and CD-ROM drives.  Built
+// on first use, one per slot number; whether the configuration actually
+// seats a card with a bus there is check_card_buses' business.
+static const storage_bus_decl_t *card_bus_decl(int slot) {
+    static storage_bus_decl_t decls[CARD_SCSI_SLOTS];
+    static char ids[CARD_SCSI_SLOTS][8], labels[CARD_SCSI_SLOTS][32];
+    if (slot <= 0 || slot >= CARD_SCSI_SLOTS)
+        return NULL;
+    storage_bus_decl_t *b = &decls[slot];
+    if (!b->id) {
+        snprintf(ids[slot], sizeof ids[slot], "pci_%d", slot);
+        snprintf(labels[slot], sizeof labels[slot], "SCSI card in PCI slot %d", slot);
+        *b = (storage_bus_decl_t){.id = ids[slot],
+                                  .label = labels[slot],
+                                  .kind = STORAGE_KIND_SCSI,
+                                  .media_bus = MEDIA_BUS_CARD,
+                                  .media_unit_base = slot * CARD_SCSI_IDS, // one media bus for every card
+                                  .units = 0x7Fu, // IDs 0-6
+                                  .reserved = 0x80u, // ID 7 is the card
+                                  .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD};
+    }
+    return b;
+}
+
+// "pci_<slot>" for a PCI socket the model has, else NULL.
+static const storage_bus_decl_t *card_bus(const hw_profile_t *p, const char *id) {
+    int slot = 0, len = 0;
+    if (!id || sscanf(id, "pci_%d%n", &slot, &len) != 1 || id[len] != '\0')
+        return NULL;
+    for (const pci_slot_decl_t *d = p->pci_slots; d && d->slot; d++)
+        if (d->slot == slot && d->kind == PCI_SLOT_SOCKET)
+            return card_bus_decl(slot);
+    return NULL;
+}
+
 const storage_bus_decl_t *machine_storage_bus(const hw_profile_t *p, const char *id) {
     for (const storage_bus_decl_t *b = p->storage; id && b && b->id; b++) {
         if (strcmp(b->id, id) == 0)
             return b;
     }
-    return NULL;
+    // A bus a card in one of the model's PCI sockets brings.
+    return card_bus(p, id);
+}
+
+static value_t bad(const char *fmt, ...) __attribute__((format(printf, 1, 2))); // defined below
+
+// Every storage device on a card's bus needs a card there that brings one:
+// "pci_1" is the SCSI bus of the 53C825A in PCI slot 1, and nothing without it.
+static value_t check_card_buses(const hw_profile_t *p, const machine_build_opts_t *o, int n_storage,
+                                const machine_storage_dev_t *storage) {
+    for (int i = 0; i < n_storage; i++) {
+        const storage_bus_decl_t *b = card_bus(p, storage[i].bus);
+        if (!b)
+            continue;
+        int slot = b->media_unit_base / CARD_SCSI_IDS;
+        const char *card = NULL;
+        for (int k = 0; k < o->n_slots; k++)
+            if (o->slots[k].slot == slot && !o->slots[k].empty && o->slots[k].card[0])
+                card = o->slots[k].card;
+        for (const pci_slot_decl_t *d = p->pci_slots; !card && d && d->slot; d++) {
+            bool emptied = false;
+            for (int k = 0; k < o->n_slots; k++)
+                emptied |= o->slots[k].slot == slot && o->slots[k].empty;
+            if (d->slot == slot && !emptied)
+                card = d->default_card; // the socket's factory card
+        }
+        const pci_card_kind_t *k = card ? pci_card_find(card) : NULL;
+        if (!k || !k->attach_scsi_bus)
+            return bad(
+                "storage: \"%s\" needs a SCSI card in PCI slot %d (pci_card=sym53c825 or slots=\"%d=sym53c825\")",
+                b->label, slot, slot);
+    }
+    return val_none();
 }
 
 bool machine_storage_media_bay(const hw_profile_t *p, const char *bus_id, int unit, media_bay_t *out) {
@@ -490,9 +558,13 @@ static value_t blank_disks_value(const storage_bus_decl_t *b) {
     return vl_finish(&l);
 }
 
-static value_t storage_bus_value(const storage_bus_decl_t *b) {
+static value_t storage_bus_value(const storage_bus_decl_t *b, bool card) {
     value_map_builder_t *m = val_map_new();
     val_map_put(m, "id", val_str(b->id));
+    // A card's bus exists only while a card that brings one is in the slot
+    // of the same id (catalog cards' scsi_bus): a frontend shows it then.
+    if (card)
+        val_map_put(m, "card_slot", val_str(b->id));
     val_map_put(m, "label", val_str(b->label));
     if (b->detail)
         val_map_put(m, "detail", val_str(b->detail));
@@ -841,6 +913,9 @@ static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns)
         val_map_put(b, "label", val_str((*k)->display_name));
         val_map_put(b, "class", val_str(pci_class(*k)));
         val_map_put(b, "fits", vl_finish(&fits));
+        // The card brings a SCSI bus of its own: storage bus "<its slot id>".
+        if ((*k)->attach_scsi_bus)
+            val_map_put(b, "scsi_bus", val_bool(true));
         if ((*k)->requires_prom) {
             value_map_builder_t *r = val_map_new();
             val_map_put(r, "kind", val_str("prom"));
@@ -1295,7 +1370,11 @@ void machine_config_put_tree(const hw_profile_t *p, value_map_builder_t *b) {
 
     vlist_t buses = {0};
     for (const storage_bus_decl_t *s = p->storage; s && s->id; s++)
-        vl_push(&buses, storage_bus_value(s));
+        vl_push(&buses, storage_bus_value(s, false));
+    // Then the bus each PCI socket's card may bring.
+    for (const pci_slot_decl_t *d = p->pci_slots; d && d->slot; d++)
+        if (d->kind == PCI_SLOT_SOCKET && card_bus_decl(d->slot))
+            vl_push(&buses, storage_bus_value(card_bus_decl(d->slot), true));
     val_map_put(b, "storage", vl_finish(&buses));
 
     socket_t socks[SOCKETS_MAX];
@@ -2273,6 +2352,10 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         e->rom[0] = '\0'; // the substitute, never a file
         e->substitute = true;
     }
+
+    // A card's bus needs that card (storage was read before the cards).
+    if ((err = check_card_buses(p, out, d->n_storage, d->storage), val_is_error(&err)))
+        goto done;
 
     // Everything else straight across.
     out->ram_kb = d->ram_kb;
