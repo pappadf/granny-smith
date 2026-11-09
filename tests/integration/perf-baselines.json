@@ -269,7 +269,7 @@
       "tolerance": 0.2
     },
     "suite-ans/ans500-diag-floppy": {
-      "instr": 10215000000,
+      "instr": 7715000000,
       "tolerance": 0.2
     },
     "suite-ans/ans500-of-console": {
