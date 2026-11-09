@@ -121,7 +121,7 @@ const hw_profile_t machine_iix = {
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     // No built-in video, as on the IIcx: the screen is the NuBus card in
     // slot $9.  The default is the Display Card 8•24 (1989), a later card
     // than the IIx (1988) but one it takes; the card kind requires its

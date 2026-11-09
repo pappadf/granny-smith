@@ -1224,6 +1224,7 @@ void scsi_add_cd_drive(scsi_t *bus, int id, const scsi_cd_drive_t *drive) {
     GS_ASSERTF(id >= 0 && id < 7, "scsi_add_cd_drive: id %d is not a target slot", id);
     scsi_add_device(bus, id, drive->vendor, drive->product, drive->revision, NULL, scsi_dev_cdrom, drive->block_size,
                     true);
+    bus->cd_drive[id] = drive; // the model itself, even one not in the catalogue
 }
 
 scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
@@ -1272,6 +1273,13 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
                 scsi->devices[i].default_block_size = scsi->devices[i].block_size;
             if (scsi->devices[i].type == scsi_dev_none && scsi->devices[i].vendor_id[0] != 0)
                 scsi->devices[i].type = scsi_dev_hd;
+            // A CD-ROM drive's model is a pointer, so it is not in the block:
+            // re-derive it from the INQUIRY identity, which is.
+            scsi->cd_drive[i] = scsi->devices[i].type == scsi_dev_cdrom
+                                    ? scsi_cd_drive_by_identity((const char *)scsi->devices[i].vendor_id,
+                                                                (const char *)scsi->devices[i].product_id,
+                                                                (const char *)scsi->devices[i].revision)
+                                    : NULL;
 
             // The medium: re-opened by name.  medium_present is deliberately
             // recomputed rather than restored -- it means "is there an image in

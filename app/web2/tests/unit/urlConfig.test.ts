@@ -124,6 +124,14 @@ describe('URL configuration parameters', () => {
     expect(config).not.toHaveProperty('startup');
   });
 
+  it("storage= carries a CD-ROM drive's model on its type", () => {
+    const { config, warnings } = apply('pm9500', 'storage=scsi:3:cd@AppleCD1200i');
+    expect(warnings).toEqual([]);
+    expect(config).toMatchObject({
+      storage: [{ bus: 'scsi', unit: 3, type: 'cd', model: 'applecd1200i' }],
+    });
+  });
+
   it('storage= takes the headless drive= separator too, and startup=', () => {
     const { config } = apply('pmg3dt', 'storage=scsi:0:hd;scsi:1:hd&startup=scsi:1');
     expect(config).toMatchObject({

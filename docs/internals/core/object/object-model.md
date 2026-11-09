@@ -839,7 +839,11 @@ absent key is the model's default, and within `options`, `floppies` and
 `displays` an absent member takes its default (an absent display device
 is unplugged when another one is connected).  `"storage": []` is a
 machine with no drives; `"startup": null` is "no default startup device"
-(the ROM searches).  `startup` may also name a `partition`: the startup
+(the ROM searches).  A CD-ROM drive on a SCSI bus may name its drive
+`model` -- `{"bus": "scsi", "unit": 3, "type": "cd", "model": "applecd600i"}`
+-- one of the Apple drives `docs/internals/core/peripherals/scsi_cdrom.md`
+§1.1 lists; absent, it is the profile's (`hw_profile_t.cdrom_drive`).
+`startup` may also name a `partition`: the startup
 volume's partition number on that disk as attached (`files.partitions`),
 which a family whose firmware boots a partition seeds (the G3's Open
 Firmware `boot-device`, for an ATA disk); the others ignore it.  A `model` member must agree with `model=`.  Images
@@ -848,7 +852,8 @@ position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
 n)` and `attach_cdrom(path)` name the default configuration's Nth hard
 disk and its CD-ROM drive).  `machine.storage` lists the devices the
 running machine was built with -- `{bus, bus_label, unit, position, type,
-present, media, filename}` each, kept with the machine and in its
+present, media, filename}` each, and `model` and `model_name` for a SCSI
+CD-ROM drive, kept with the machine and in its
 checkpoint -- which is what the web app's Images panel offers an image to.
 `media` is the device's bay as `attach_media` answers it (`{bus, id,
 label}`, what `machine.eject_media` takes) and `filename` the source path of
@@ -901,7 +906,7 @@ call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-
 | `model=<id>` | `model` | Defaults to the first entry of the ROM's compatible list (for the Universal ROM, `se30`). An id outside that list is refused with the list printed (`headless_main.c:1303-1326`). |
 | `ram=<kb>` | `ram` | Parsed with `strtoul`. A non-number becomes `0`, which means the model default (`headless_main.c:1156`). |
 | `config=<file or JSON>` | `config` | A file holding the document, or the document itself. |
-| `drive=<bus>:<unit>:<type>[:<image>]` | `config.storage` | Repeatable: adds a drive to the default configuration's (or `config`'s), with its image attached after the boot. |
+| `drive=<bus>:<unit>:<type>[:<image>]` | `config.storage` | Repeatable: adds a drive to the default configuration's (or `config`'s), with its image attached after the boot. A CD-ROM drive's type may name its model, `cd@applecd600i`. |
 | `fd1=<image>` (or a second `fd=`) | `config.floppies` | Puts a drive at the second position when the default configuration leaves it empty. |
 | `video_card=<id>` | `video_card` | |
 | `slots=<spec>` | `slots` | |

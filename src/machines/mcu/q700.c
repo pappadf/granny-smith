@@ -272,7 +272,7 @@ const hw_profile_t machine_q700 = {
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
     .builtin_video = &mcu_builtin_video_q700,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
 
     .nubus_slots = q700_nubus_slots,
 

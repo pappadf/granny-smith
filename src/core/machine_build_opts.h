@@ -97,13 +97,16 @@ typedef struct machine_option_value {
 // One storage device the document configures: a drive of `type`
 // (STORAGE_DEV_HD / STORAGE_DEV_CD, machine_config_decl.h) at `unit` on the
 // bus the profile names `bus`.  CD-ROM drives are built with the bus; a hard
-// disk is a position its image is attached to after the boot.
-#define MACHINE_STORAGE_MAX     24
-#define MACHINE_STORAGE_BUS_MAX 12
+// disk is a position its image is attached to after the boot.  A SCSI CD-ROM
+// drive may name its drive model (scsi_cd_drive_find); "" is the profile's.
+#define MACHINE_STORAGE_MAX       24
+#define MACHINE_STORAGE_BUS_MAX   12
+#define MACHINE_STORAGE_MODEL_MAX 24
 typedef struct machine_storage_dev {
     char bus[MACHINE_STORAGE_BUS_MAX];
     int unit;
     unsigned type;
+    char model[MACHINE_STORAGE_MODEL_MAX]; // CD-ROM drive model id, "" = the profile's
 } machine_storage_dev_t;
 
 // The startup device the document names: the device the family's seeding

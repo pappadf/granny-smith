@@ -50,10 +50,3 @@ const storage_device_decl_t mac_default_storage_hd0_cd3[] = {
     {.bus = "scsi", .unit = 3, .type = STORAGE_DEV_CD},
     {0},
 };
-
-const struct scsi_cd_drive mac_cdrom_drive_applecd = {
-    .vendor = "SONY",
-    .product = "CD-ROM CDU-8002",
-    .revision = "1.8g",
-    .block_size = 2048,
-};

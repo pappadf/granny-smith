@@ -46,15 +46,62 @@ typedef enum scsi_phase {
 // core_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
-// The CD-ROM drive a machine takes: the identity it answers INQUIRY with and
-// its logical block size.  Declared by the profile (hw_profile_t.cdrom_drive),
-// never invented by the code that seats it.
+// What one firmware lineage of CD-ROM drive answers where drives differ.
+//
+// Apple's drives ran Apple firmware on Sony and Matsushita mechanisms, and the
+// firmware generation -- not the speed, not the mechanism -- decides how a
+// drive presents itself.  Every drive of a family runs the same command code;
+// only these answers change between families.  Everything else a CD-ROM does
+// is common to all of them and lives once, in scsi_cdrom.c and scsi_bus.c.
+typedef struct scsi_cd_family {
+    const char *id; // short name, e.g. "sony-scsi1"
+    uint8_t inquiry_version; // INQUIRY byte 2: ANSI version (1 SCSI-1, 2 SCSI-2)
+    uint8_t inquiry_format; // INQUIRY byte 3: response data format
+    uint8_t inquiry_flags; // INQUIRY byte 7: capability bits (Sync, Linked, ...)
+    uint8_t no_medium_asc; // NOT READY additional sense code for an empty bay
+    uint8_t no_medium_ascq; // ... and its qualifier
+    uint8_t removal_prevented_asc; // ILLEGAL REQUEST code for an eject refused by PREVENT
+    uint8_t removal_prevented_ascq; // ... and its qualifier
+} scsi_cd_family_t;
+
+// The CD-ROM drive a machine takes: one Apple drive product -- the identity it
+// answers INQUIRY with and its logical block size -- on its firmware family.
+// Declared by the profile (hw_profile_t.cdrom_drive) or chosen by a storage
+// entry's "model", never invented by the code that seats it.
 typedef struct scsi_cd_drive {
+    const char *id; // configuration name, e.g. "applecd600i"
+    const char *name; // Apple's product name, e.g. "AppleCD 600i"
     const char *vendor; // INQUIRY vendor, e.g. "SONY"
     const char *product; // INQUIRY product
     const char *revision; // INQUIRY revision
     uint16_t block_size; // logical block size presented (2048)
+    const scsi_cd_family_t *family; // how the firmware answers where families differ
 } scsi_cd_drive_t;
+
+// Apple's SCSI CD-ROM drives (scsi_cdrom.c, where each is documented).
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_sc_plus;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_300i;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_300i_plus;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_600i;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_600i_sony;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_1200i;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_1600i;
+extern const scsi_cd_drive_t scsi_cd_drive_applecd_24x;
+
+// Every drive above, in catalogue order, NULL-terminated.
+extern const scsi_cd_drive_t *const scsi_cd_drives[];
+
+// The drive whose configuration name is `id`, or NULL.
+const scsi_cd_drive_t *scsi_cd_drive_find(const char *id);
+
+// The drive that answers INQUIRY with this vendor, product and revision, or
+// NULL.  Trailing spaces are ignored, so the padded fields a device record
+// holds match the bare strings of a descriptor.
+const scsi_cd_drive_t *scsi_cd_drive_by_identity(const char *vendor, const char *product, const char *revision);
+
+// The drive seated at target `which` of `bus`, or NULL when that target is not
+// a CD-ROM drive or presents an identity no descriptor has.
+const scsi_cd_drive_t *scsi_cd_drive_at(const scsi_t *bus, unsigned which);
 
 // Put an empty CD-ROM drive `drive` at target `id` of a bus being built.
 // SCSI is not hot-plug -- the guest's CD driver claims its targets at the

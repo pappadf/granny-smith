@@ -58,7 +58,7 @@ const hw_profile_t machine_pmg3dt = {
     .default_storage = gossamer_default_storage,
     .appletalk = true,
     .builtin_video = &gossamer_builtin_video,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = gossamer_pci_slots,

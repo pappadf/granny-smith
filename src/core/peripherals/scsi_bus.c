@@ -462,14 +462,20 @@ static bool scsi_cmd_needs_medium(uint8_t opcode) {
 
 // Which "there is no medium" code does THIS device speak?
 //
-// The CD-ROM we advertise is a SONY CDU-8002, and its manual's NOT READY (2h)
-// table has no 0x3A at all -- an empty bay is the vendor code 0xB0, "Caddy not
-// inserted in drive" (CDU-541 manual, sense code tables), which is what Apple's
-// CD-ROM driver was written to expect.  Every other device type gets the
-// standard code: X3.131-1994 table 71 lists 3Ah MEDIUM NOT PRESENT for device
-// types "DTL WRSOM", direct-access among them.
-static uint8_t scsi_no_medium_asc(const scsi_t *scsi, int target) {
-    return scsi->devices[target].type == scsi_dev_cdrom ? ASC_SONY_CADDY_NOT_INSERTED : ASC_MEDIUM_NOT_PRESENT;
+// A CD-ROM drive speaks its firmware family's: a SONY caddy drive's manual has
+// no 0x3A in its NOT READY (2h) table at all -- an empty bay is the vendor
+// code 0xB0, "Caddy not inserted in drive" (CDU-541 manual, sense code tables),
+// which is what Apple's CD-ROM driver was written to expect from those drives
+// -- while a SCSI-2 tray drive answers 3Ah (scsi_cdrom.c).  Every other device
+// type gets the standard code: X3.131-1994 table 71 lists 3Ah MEDIUM NOT
+// PRESENT for device types "DTL WRSOM", direct-access among them.
+void scsi_check_no_medium(scsi_t *scsi, int target) {
+    if (scsi->devices[target].type == scsi_dev_cdrom) {
+        const scsi_cd_family_t *fam = scsi_cd_family_at(scsi, target);
+        scsi_check_condition(scsi, SENSE_NOT_READY, fam->no_medium_asc, fam->no_medium_ascq);
+    } else {
+        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+    }
 }
 
 // Can every block of [off, off + cnt) be read back from `img`?  Read in
@@ -631,7 +637,7 @@ void run_cmd(scsi_t *scsi) {
     if (!scsi->devices[target].medium_present) {
         bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
         if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, scsi_no_medium_asc(scsi, target), 0x00);
+            scsi_check_no_medium(scsi, target);
             return;
         }
     }
@@ -647,7 +653,7 @@ void run_cmd(scsi_t *scsi) {
         // one with no volume mounted "normally returns CHECK CONDITION status
         // and sets the sense key to NOT READY".
         if (!scsi->devices[target].medium_present) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, scsi_no_medium_asc(scsi, target), 0x00);
+            scsi_check_no_medium(scsi, target);
         } else {
             phase_status(scsi, STATUS_GOOD);
         }
@@ -1053,6 +1059,16 @@ void run_cmd(scsi_t *scsi) {
             scsi->buf.data[3] = 0x01; // response data format: CCS
             scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             // Bytes 5-7: zero
+            // ...except on a CD-ROM drive, whose firmware family says which
+            // SCSI it speaks and what it can do: a SCSI-2 tray drive's ROM
+            // reads 02 02 here and sets Sync and Linked in byte 7.
+            if (is_cdrom) {
+                const scsi_cd_family_t *fam = scsi_cd_family_at(scsi, target);
+                scsi->buf.data[2] = fam->inquiry_version; // ANSI version
+                scsi->buf.data[3] = fam->inquiry_format; // response data format
+                if (scsi->cmd.tl >= 8)
+                    scsi->buf.data[7] = fam->inquiry_flags; // Sync, Linked, ...
+            }
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
                 memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
@@ -1763,9 +1779,16 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
     else
         memset(scsi->devices[scsi_id].revision, ' ', 4);
 
+    // A CD-ROM drive is the drive model its identity names, which is how a
+    // disc inserted later keeps the drive's answers.  An identity no model
+    // has leaves NULL, and the target answers as the SONY SCSI-1 family.
+    scsi->cd_drive[scsi_id] = type == scsi_dev_cdrom ? scsi_cd_drive_by_identity(vendor, product, revision) : NULL;
+
     // Inserting a caddy and recovering its TOC is the media-change cause the
     // CDU-541 manual 4.1.3 names, and 0x28 "Not ready to ready transition
-    // (caddy inserted)" is the code it reports.  Stage it here, where the cause
+    // (caddy inserted)" is the code it reports.  SCSI-2 gives a tray drive the
+    // same code, 28h/00h NOT READY TO READY TRANSITION (X3.131-1994 table 71),
+    // so it is the same for every drive family.  Stage it here, where the cause
     // is known, so the UNIT ATTENTION gate in run_cmd can simply report what is
     // pending instead of guessing.
     if (type == scsi_dev_cdrom && image != NULL) {

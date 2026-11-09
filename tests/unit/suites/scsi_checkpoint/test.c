@@ -515,9 +515,30 @@ TEST(test_a_restore_brings_the_cd_drives_back) {
     scsi_delete(c);
 }
 
+// A drive's model is a pointer and stays out of the saved block, so a restore
+// must find it again from the INQUIRY identity it did save: an AppleCD 600i
+// comes back answering as a SCSI-2 tray drive, not as the default SONY.
+TEST(test_a_restore_keeps_the_cd_drive_model) {
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
+    ASSERT_TRUE(a != NULL);
+    scsi_add_cd_drive(a, 3, &scsi_cd_drive_applecd_600i);
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+    g_cp_errors = 0;
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_TRUE(scsi_cd_drive_at(b, 3) == &scsi_cd_drive_applecd_600i);
+    ASSERT_TRUE(scsi_cd_drive_at(b, 0) == NULL); // not a CD-ROM drive
+    scsi_delete(b);
+    scsi_delete(a);
+}
+
 int main(void) {
     RUN(test_device_state_survives_a_round_trip);
     RUN(test_a_restore_brings_the_cd_drives_back);
+    RUN(test_a_restore_keeps_the_cd_drive_model);
     RUN(test_a_pending_data_out_settle_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
     RUN(test_restored_transfer_buffer_covers_its_max);
