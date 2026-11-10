@@ -456,6 +456,9 @@ static inline void cpu_dwrite32(cpu_t *restrict cpu, uint32_t addr, uint32_t x) 
 #endif
 
 // Read an 8-bit value from the effective address specified in the opcode.
+// A faulting read through (An)+ or -(An) leaves An where it was, as the
+// write_ea_* helpers do: a PMMU fault restarts the instruction (Format $B /
+// $7 retry), and the restart must step An once, not twice.
 // The read_ea_* helpers trust the caller's VALID_EA check (an unvalidated
 // mode would read a dummy address); validating again here would put a
 // second test on every operand read of the hot path.
@@ -467,8 +470,13 @@ static inline __attribute__((always_inline)) uint8_t read_ea_8(cpu_t *restrict c
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else
-        return memory_read_uint8(calculate_ea(cpu, 1, mode, reg, increment));
+    else {
+        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
+        uint8_t v = memory_read_uint8(calculate_ea(cpu, 1, mode, reg, increment));
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = an;
+        return v;
+    }
 }
 
 // Read a 16-bit value from the effective address specified in the opcode
@@ -480,8 +488,13 @@ static inline __attribute__((always_inline)) uint16_t read_ea_16(cpu_t *restrict
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else
-        return cpu_dread16(cpu, calculate_ea(cpu, 2, mode, reg, increment));
+    else {
+        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
+        uint16_t v = cpu_dread16(cpu, calculate_ea(cpu, 2, mode, reg, increment));
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = an;
+        return v;
+    }
 }
 
 // Read a 32-bit value from the effective address specified in the opcode
@@ -493,8 +506,13 @@ static inline __attribute__((always_inline)) uint32_t read_ea_32(cpu_t *restrict
         return cpu->d[opcode & 7];
     else if (mode == 1)
         return cpu->a[opcode & 7];
-    else
-        return cpu_dread32(cpu, calculate_ea(cpu, 4, mode, reg, increment));
+    else {
+        uint32_t an = cpu->a[reg]; // (An)+ / -(An): put back if the read faults
+        uint32_t v = cpu_dread32(cpu, calculate_ea(cpu, 4, mode, reg, increment));
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = an;
+        return v;
+    }
 }
 
 // Write an 8-bit value to the effective address specified by mode and register
@@ -984,6 +1002,30 @@ static inline void bus_error_double_fault(cpu_t *restrict cpu, uint32_t faulting
 static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *restrict cpu, uint32_t fault_addr,
                                                                       uint32_t rw) {
     uint32_t faulting_pc = cpu->instruction_pc;
+    // The retry restarts the instruction, so it must find the registers as
+    // they were when the instruction began.  On hardware the 68030 suspends
+    // the instruction at the fault and continues the bus cycle after RTE
+    // (Linux's bus_error030 relies on that), and the 68040 restarts one whose
+    // results were never written.  Here the op body has run on with a garbage
+    // operand (all ones), so put back what it overwrote, from the copy taken
+    // when the fault latched (memory.c):
+    //   - every data register: an effective address never changes one, so
+    //     the copy holds the pre-instruction value;
+    //   - the destination of MOVEA/ADDA/SUBA, which ld.so and libc read in
+    //     their own effective address or sum (SUBA.L 32(A5),A0 left A0 one
+    //     off; MOVEA.L (0,A0,D2.L*4),A0 retried from A0 = $FFFFFFFF).
+    // Other address registers stay as the op body left them: an (An)+ or
+    // -(An) step is rolled back by the access helpers themselves.
+    if (g_bus_fault_regs_valid) {
+        g_bus_fault_regs_valid = false;
+        memcpy(cpu->d, g_bus_fault_regs, 8 * sizeof(uint32_t));
+        uint16_t op = memory_debug_read_uint16(faulting_pc);
+        unsigned an = (op >> 9) & 7u;
+        bool movea = (op & 0xE1C0u) == 0x2040u; // 0010/0011 rrr 001 <ea>: MOVEA.L / MOVEA.W
+        bool adda_suba = (op & 0xB0C0u) == 0x90C0u; // 1101/1001 rrr s11 <ea>
+        if (movea || adda_suba)
+            cpu->a[an] = g_bus_fault_regs[8 + an];
+    }
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
 
@@ -1041,6 +1083,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // its handler may legitimately retry the instruction.
     bool addr_err = g_bus_error_is_address;
     g_bus_error_is_address = false;
+    g_bus_fault_regs_valid = false; // skip semantics: nothing restarts, the copy is moot
     if (addr_err) {
         // Back to the state at the fault (see m68k_raise_address_error).
         memcpy(cpu->d, g_m68k_fault_regs, sizeof g_m68k_fault_regs);
@@ -1348,6 +1391,19 @@ static inline void f_trap(cpu_t *restrict cpu, uint16_t opcode) {
     // mis-detected as a double bus error → HALT → GLU reset → POST → SCC poll.
     // (Headless scheduler.run happened to have the page ready on retry, so it
     // booted — masking the bug.)  See memory project_iifx_aux_8bpp_scc_iop_hang.
+    // A PMMU fault on a LATER word of the instruction -- an extension word on
+    // the next, not-yet-mapped page -- also wins over the line-F trap: the
+    // decoder saw the faulted fetch's all-ones word and took it for an
+    // invalid encoding.  Taking the trap anyway entered supervisor state with
+    // the fault still pending, and the epilogue then delivered it as a
+    // supervisor fault at a user PC: Linux oopsed ("Bad PC value") in xfwm4
+    // on an FPU instruction straddling a page boundary on a 68040.
+    if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_is_pmmu && g_bus_error_address != cpu->instruction_pc &&
+        g_bus_error_address - cpu->instruction_pc < 22u) {
+        g_bus_error_pending = false;
+        exception_bus_error_retry(cpu, g_bus_error_address, 1);
+        return;
+    }
     if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
         bool is_pmmu = g_bus_error_is_pmmu;
         g_bus_error_pending = false;

@@ -212,6 +212,15 @@ struct adb {
     // transceiver's behaviour.
     uint8_t last_poll_addr;
 
+    // Whether the host's most recent command was a Talk R0.  Only then is
+    // there a command for the idle transceiver to repeat: after a Listen (an
+    // LED update, an address move), a Flush or a Talk R1-R3, a device with
+    // data shows as a Service Request and the host polls for it.  Linux 2.2's
+    // Mac II ADB driver files every idle-poll reply under the last command it
+    // sent; a keyboard report delivered after its Listen R2 came back tagged
+    // as register 2 and the key-down was dropped.
+    bool last_cmd_talk_r0;
+
     // Aborted-keyboard-Talk recovery.  prepare_kbd_reply destructively dequeues
     // up to 2 bytes whenever the ROM issues a Talk R0 to the keyboard — but the
     // ROM probes the keyboard during its SRQ scan and may transition CMD->IDLE
@@ -1016,6 +1025,9 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
 
     LOG(2, "adb_decode_command: cmd=0x%02X (%s R%d) addr=%d", cmd, type_names[type], reg, addr);
 
+    // Only a Talk R0 is repeated by the idle transceiver (see last_cmd_talk_r0)
+    adb->last_cmd_talk_r0 = (type == CMD_TYPE_TALK && reg == 0);
+
     // Clear any previous reply and listen state before processing the new command
     adb->reply_len = 0;
     adb->reply_index = 0;
@@ -1183,7 +1195,7 @@ static void xcvr_idle_talk(adb_t *adb) {
     // Talk times out and the transceiver sees another device's SRQ.  The
     // Talk starts once a poll period is up since the last one (adb.h).
     uint8_t addr = adb->last_poll_addr;
-    int bytes = device_has_pending_data(adb, addr) ? report_bytes(adb, addr) : 0;
+    int bytes = adb->last_cmd_talk_r0 && device_has_pending_data(adb, addr) ? report_bytes(adb, addr) : 0;
     double now = scheduler_time_ns(adb->scheduler);
     uint64_t wait = adb_poll_wait_ns(now, adb->idle_talk_start_ns, ADB_POLL_PERIOD_NS);
     adb->idle_talk_start_ns = now + (double)wait;
@@ -1243,7 +1255,7 @@ static void adb_idle_talk_event(void *source, uint64_t data) {
 
     // Always repeat the last Talk R0 target, matching real transceiver behaviour.
     uint8_t poll_addr = adb->last_poll_addr;
-    bool polled_device_has_data = device_has_pending_data(adb, poll_addr);
+    bool polled_device_has_data = adb->last_cmd_talk_r0 && device_has_pending_data(adb, poll_addr);
 
     // There is something to do only if the polled device answers, or if some
     // other device is SERVICE-REQUESTING.  The second half is where Register
@@ -1252,7 +1264,10 @@ static void adb_idle_talk_event(void *source, uint64_t data) {
     // stays quiet until that device is polled again.  Before bit 13 was real
     // state the test here was has_pending_data(), which could not tell the
     // difference.
-    if (!polled_device_has_data && !other_device_service_requesting(adb, poll_addr)) {
+    // With no Talk R0 to repeat, the last-polled device's own data is an SRQ
+    // like anyone else's.
+    uint8_t srq_except = adb->last_cmd_talk_r0 ? poll_addr : 0xFF;
+    if (!polled_device_has_data && !other_device_service_requesting(adb, srq_except)) {
         // The real transceiver gets no response and stays quiet.  Don't fire
         // IFR_SR — the ROM remains waiting, and so does the model: new data
         // for the polled device schedules the next answer.

@@ -225,6 +225,12 @@ bool mmu_pload(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervi
 uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
                           uint32_t *desc_addr_out);
 
+// PTEST with its level field: level 0 searches the ATC (TT0/TT1 apply), levels
+// 1-7 search the tables to at most that many descriptors and ignore TT0/TT1
+// (MC68030UM Table 9-3).  mmu_test_address is the level-0 form.
+uint16_t mmu_ptest(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor, unsigned level,
+                   uint32_t *desc_addr_out);
+
 // Check transparent translation registers (TT0/TT1).
 // Returns true if address matches a TT register (bypass table walk).
 bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);

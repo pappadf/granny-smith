@@ -681,6 +681,16 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // transition to status at that point (via TCR write or here).
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
             phase_status(scsi, STATUS_GOOD);
+        // Bytes still to come: leaving DMA mode releases the ACK the chip
+        // held for the last byte it latched, and the target answers with REQ
+        // for the next one (NCR 5380 DMA mode: ACK stays asserted "until DACK
+        // ... or the DMA MODE bit is reset").  The pseudo-DMA reads dropped
+        // REQ per byte; without this, a host that moves a block per DMA arm
+        // and the rest by PIO -- Linux's NCR5380 core, which ends every arm
+        // with a PIO read of the last byte -- waits for a REQ that never
+        // comes.
+        else if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0 && !(scsi->chip5380->reg.icr & ICR_ACK))
+            scsi->bus.req = true;
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
@@ -804,7 +814,16 @@ static uint8_t reg_read(scsi_t *scsi, uint32_t addr, bool peek) {
         // that STATUS phase would present (phase lines, REQ and BSY asserted)
         // without making the transition.
         uint8_t val;
-        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && peek)
+        // Not while the initiator still holds ACK on the last byte: the
+        // target may change phase and raise the next REQ only once ACK is
+        // false (ANSI X3.131-1986 S5.1.5.1, the REQ/ACK interlock).  Linux's
+        // NCR5380 core asserts ACK and spins until REQ drops; switching to
+        // STATUS here re-raised REQ under it and the loop never ended.  The
+        // ACK release (write_icr) makes the transition instead.
+        bool ack_held = (scsi->chip5380->reg.icr & ICR_ACK) != 0;
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && ack_held)
+            val = csr_from_bus(scsi, peek);
+        else if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && peek)
             val = (uint8_t)((scsi_phase_wire_bits(scsi_status) << 2) | CSR_REQ | CSR_BSY |
                             (scsi->chip5380->reg.csr & (CSR_SEL | CSR_RST)));
         else {

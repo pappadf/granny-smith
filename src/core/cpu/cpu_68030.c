@@ -365,7 +365,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {
             uint32_t desc_addr = 0;
-            uint16_t status = mmu_test_address(mmu, ea, write, fc_supervisor, &desc_addr);
+            uint16_t status = mmu_ptest(mmu, ea, write, fc_supervisor, level, &desc_addr);
             mmu->mmusr = status;
             // A-reg output: per MC68030UM, when the A-reg field is specified,
             // the CPU writes the physical address of the last descriptor
@@ -571,6 +571,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     cpu_select_soa(cpu->supervisor);                                                                                   \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    g_bus_fault_regfile = cpu->d; /* d[8] then a[8]: copied when an MMU fault latches */                               \
     cpu_check_interrupt(cpu);                                                                                          \
     /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
     /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \

@@ -2668,7 +2668,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     case 5: // 101: FMOVEM control registers (CR -> EA)
         if (!fpu_movem_control(cpu, fpu, opcode, ext_word)) {
             // Invalid encoding (e.g. multi-register with Dn) → F-line exception
-            exception(cpu, 0x2C, cpu->instruction_pc, cpu_get_sr(cpu));
+            f_trap(cpu, opcode); // a pending fetch fault on ext_word wins (f_trap)
             return;
         }
         // FMOVEM does not update FPIAR or accrued exception bits
@@ -2678,7 +2678,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     case 7: // 111: FMOVEM data registers
         if (!fpu_movem_data(cpu, fpu, opcode, ext_word)) {
             // Invalid EA mode for FMOVEM data → F-line exception
-            exception(cpu, 0x2C, cpu->instruction_pc, cpu_get_sr(cpu));
+            f_trap(cpu, opcode); // a pending fetch fault on ext_word wins (f_trap)
             return;
         }
         // FMOVEM does not update FPIAR or accrued exception bits

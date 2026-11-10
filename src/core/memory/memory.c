@@ -101,6 +101,17 @@ bool g_bus_error_is_pmmu = false;
 bool g_bus_error_is_address = false;
 uint32_t g_m68k_fault_regs[16]; // the 68000 register file at the address error (cpu_internal.h)
 uint8_t g_m68k_fault_ccr;
+uint32_t *g_bus_fault_regfile = NULL; // see memory.h
+uint32_t g_bus_fault_regs[16];
+bool g_bus_fault_regs_valid = false;
+
+// Copy the running 68K's register file as it stands at a latched MMU fault.
+static inline void bus_fault_snapshot_regs(void) {
+    if (g_bus_fault_regfile) {
+        memcpy(g_bus_fault_regs, g_bus_fault_regfile, sizeof g_bus_fault_regs);
+        g_bus_fault_regs_valid = true;
+    }
+}
 uint32_t *g_bus_error_instr_ptr = NULL;
 // Physical page-fill hook for machines whose page table is NOT owned by a
 // 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
@@ -1148,6 +1159,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
             g_bus_error_address = addr;
             g_bus_error_rw = true; // read
             g_bus_error_fc = supervisor ? 5 : 1;
+            bus_fault_snapshot_regs();
             memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return fill; // unmapped physical reads $FF
@@ -1645,6 +1657,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             g_bus_error_address = addr;
             g_bus_error_rw = false; // write
             g_bus_error_fc = supervisor ? 5 : 1;
+            bus_fault_snapshot_regs();
             memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return;
