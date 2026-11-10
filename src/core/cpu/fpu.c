@@ -721,6 +721,18 @@ fpu_unpacked_t fpu_rom_constant(unsigned offset) {
 // Source operand loading from EA
 // ============================================================================
 
+// A PMMU fault on an FPU operand restarts the instruction (Format $B / $7
+// retry), so an (An)+ / -(An) the effective address already stepped goes back
+// -- as read_ea_* / write_ea_* do for the integer unit.  FMOVEM's register
+// lists commit An only once every transfer has succeeded, for the same
+// reason: glib's `FMOVEM.X FP2,-(SP)` prologue faulting on a new stack page
+// pushed twice, left every frame offset 12 bytes off, and xfce4-terminal
+// died in libfontconfig on a pointer read out of the wrong slot.
+static inline void fpu_ea_fault_rollback(cpu_t *cpu, unsigned ea_mode, unsigned ea_reg, uint32_t an) {
+    if (__builtin_expect(g_bus_error_pending, 0) && (ea_mode == 3 || ea_mode == 4))
+        cpu->a[ea_reg] = an;
+}
+
 // Load a value from the effective address in the given format
 static float80_reg_t fpu_load_ea(cpu_t *cpu, uint16_t opcode, unsigned format) {
     unsigned ea_mode = (opcode >> 3) & 7;
@@ -736,10 +748,12 @@ static float80_reg_t fpu_load_ea(cpu_t *cpu, uint16_t opcode, unsigned format) {
         return fpu_from_single(bits);
     }
     case 2: { // Extended (12 bytes)
+        uint32_t an = cpu->a[ea_reg];
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
         uint32_t w0 = memory_read_uint32(ea);
         uint32_t w1 = memory_read_uint32(ea + 4);
         uint32_t w2 = memory_read_uint32(ea + 8);
+        fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         return fpu_from_extended(w0, w1, w2);
     }
     case 4: { // Word integer (2 bytes)
@@ -747,8 +761,10 @@ static float80_reg_t fpu_load_ea(cpu_t *cpu, uint16_t opcode, unsigned format) {
         return fpu_from_int16(v);
     }
     case 5: { // Double (8 bytes)
+        uint32_t an = cpu->a[ea_reg];
         uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
         uint64_t bits = ((uint64_t)memory_read_uint32(ea) << 32) | memory_read_uint32(ea + 4);
+        fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         return fpu_from_double(bits);
     }
     case 6: { // Byte integer (1 byte)
@@ -757,10 +773,12 @@ static float80_reg_t fpu_load_ea(cpu_t *cpu, uint16_t opcode, unsigned format) {
     }
     case 3: // Packed decimal (12 bytes)
     case 7: {
+        uint32_t an = cpu->a[ea_reg];
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
         uint32_t w0 = memory_read_uint32(ea);
         uint32_t w1 = memory_read_uint32(ea + 4);
         uint32_t w2 = memory_read_uint32(ea + 8);
+        fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         return fpu_from_packed(cpu->fpu, w0, w1, w2);
     }
     default:
@@ -804,10 +822,12 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
             store_val = fpu_pack(fpu, fpu_unpack(val));
         uint32_t w0, w1, w2;
         fpu_to_extended(store_val, &w0, &w1, &w2);
+        uint32_t an = cpu->a[ea_reg];
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
         memory_write_uint32(ea, w0);
         memory_write_uint32(ea + 4, w1);
         memory_write_uint32(ea + 8, w2);
+        fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         break;
     }
     case 4: { // Word integer
@@ -817,9 +837,11 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
     }
     case 5: { // Double (8 bytes)
         uint64_t bits = fpu_to_double(fpu, val);
+        uint32_t an = cpu->a[ea_reg];
         uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
         memory_write_uint32(ea, (uint32_t)(bits >> 32));
         memory_write_uint32(ea + 4, (uint32_t)(bits & 0xFFFFFFFF));
+        fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         break;
     }
     case 6: { // Byte integer
@@ -916,7 +938,8 @@ static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16
                     addr += FP_REG_SIZE;
                 }
             }
-            cpu->a[ea_reg] = addr;
+            if (!g_bus_error_pending) // a fault restarts the instruction: An unmoved
+                cpu->a[ea_reg] = addr;
         } else {
             // Other EA modes (control alterable)
             uint32_t addr = calculate_ea(cpu, 0, ea_mode, ea_reg, true);
@@ -945,7 +968,8 @@ static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16
                     memory_write_uint32(addr + 8, w2);
                 }
             }
-            cpu->a[ea_reg] = addr;
+            if (!g_bus_error_pending) // a fault restarts the instruction: An unmoved
+                cpu->a[ea_reg] = addr;
         } else {
             // Other EA modes (control alterable)
             uint32_t addr = calculate_ea(cpu, 0, ea_mode, ea_reg, true);
@@ -1013,7 +1037,8 @@ static bool fpu_movem_control(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uin
                 addr -= 4;
                 memory_write_uint32(addr, fpu->fpcr);
             }
-            cpu->a[ea_reg] = addr;
+            if (!g_bus_error_pending) // a fault restarts the instruction: An unmoved
+                cpu->a[ea_reg] = addr;
         } else {
             uint32_t addr = calculate_ea(cpu, (uint32_t)total_size, ea_mode, ea_reg, true);
             if (regsel & 4) {
@@ -1046,7 +1071,8 @@ static bool fpu_movem_control(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uin
                 fpu->fpiar = memory_read_uint32(addr);
                 addr += 4;
             }
-            cpu->a[ea_reg] = addr;
+            if (!g_bus_error_pending) // a fault restarts the instruction: An unmoved
+                cpu->a[ea_reg] = addr;
         } else if (ea_mode == 0) {
             // Dn - single register only
             uint32_t val = cpu->d[ea_reg];
@@ -2615,6 +2641,10 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
                 return;
             }
             float80_reg_t src_val = fpu_load_ea(cpu, opcode, src_spec);
+            // A faulted operand read stops the instruction here: the retry
+            // computes from the real operand, and must find FPn unchanged.
+            if (__builtin_expect(g_bus_error_pending, 0))
+                return;
             fpu_execute_op_prec(fpu, op, src_val, dst_reg, op_prec);
         }
         break;
@@ -2654,10 +2684,12 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
             unsigned ea_reg = opcode & 7;
             uint32_t w0, w1, w2;
             fpu_to_packed(fpu, fpu->fp[src_fpn], k_factor, &w0, &w1, &w2);
+            uint32_t an = cpu->a[ea_reg];
             uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
             memory_write_uint32(ea, w0);
             memory_write_uint32(ea + 4, w1);
             memory_write_uint32(ea + 8, w2);
+            fpu_ea_fault_rollback(cpu, ea_mode, ea_reg, an);
         } else {
             fpu_store_ea(cpu, fpu, opcode, fpu->fp[src_fpn], format);
         }

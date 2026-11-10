@@ -293,6 +293,63 @@ TEST(fsave_predec_fault_leaves_an) {
     teardown_mmu(cpu, mmu);
 }
 
+TEST(fmovem_predec_fault_leaves_an) {
+    // FMOVEM.X FP2,-(A0) with the 12-byte frame in the invalid page: A0
+    // keeps its value, so the retry pushes FP2 once (glib's function
+    // prologues: `FMOVEM.X FP2,-(SP)` on a fresh stack page).
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    if (!cpu->fpu)
+        cpu->fpu = fpu_init();
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF220); // FMOVEM.X <list>,-(A0)
+    store_be16(ram + 0x3F02, 0xE004); // predecrement list: FP2
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4100;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x4100);
+    teardown_mmu(cpu, mmu);
+}
+
+TEST(fadd_x_postinc_fault_leaves_an_and_fpn) {
+    // FADD.X (A0)+,FP0 reading from the invalid page: A0 stays, and FP0 is
+    // not combined with the all-ones operand the faulted read returned --
+    // the retry must add the real operand to the real FP0.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    if (!cpu->fpu)
+        cpu->fpu = fpu_init();
+    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
+    fpu->fp[0].exponent = 0x3FFF; // 1.0
+    fpu->fp[0].mantissa = 0x8000000000000000ull;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    store_be16(ram + 0x3F00, 0xF218); // FADD.X (A0)+,FP0
+    store_be16(ram + 0x3F02, 0x4822);
+    cpu->pc = 0x3F00;
+    cpu->a[0] = 0x4000;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->halted = 0;
+    run_one(cpu);
+    run_one(cpu);
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x4000);
+    ASSERT_EQ_INT((int)fpu->fp[0].exponent, 0x3FFF);
+    ASSERT_TRUE(fpu->fp[0].mantissa == 0x8000000000000000ull);
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -308,6 +365,8 @@ int main(void) {
     RUN(unlk_pop_fault_leaves_an_and_sp);
     RUN(movem_postinc_fault_leaves_an);
     RUN(fsave_predec_fault_leaves_an);
+    RUN(fmovem_predec_fault_leaves_an);
+    RUN(fadd_x_postinc_fault_leaves_an_and_fpn);
 
     test_harness_destroy(ctx);
     return 0;
