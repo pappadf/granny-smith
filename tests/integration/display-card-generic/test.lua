@@ -53,7 +53,7 @@ assert(machine.nubus.slot[9].card.substitute, "the generic 8•24 GC runs Apple'
 
 -- The SE/30's built-in video is no slot card: its ROM is the video_rom option
 assert(catalog.default_config("se30").options.video_rom == "real", "the SE/30 does not default to its real video ROM")
-assert(gs.try(function() return catalog.default_config("iicx").options.video_rom end, "absent") == "absent", "a IIcx has no built-in video ROM choice")
+assert((gs.try(function() return catalog.default_config("iicx").options.video_rom end, "absent") or "absent") == "absent", "a IIcx has no built-in video ROM choice")
 assert(machine.boot{model = "se30", rom = ROM}, "the SE/30 boots")
 assert(machine.nubus.slot[14].card.substitute == false, "the SE/30 does not run Apple's video ROM")
 assert(machine.boot{model = "se30", rom = ROM, config = "{\"options\":{\"video_rom\":\"generic\"}}"}, "the SE/30 on its substitute video ROM boots")

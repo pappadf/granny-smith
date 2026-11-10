@@ -1491,6 +1491,15 @@ class Converter:
                 # table lookup is nil when the key is missing, not an error.
                 if e[0] == "index" and e[1][0] == "var":
                     return "(%s or %s)" % (self.expr(e, scope)[0], self.expr(fb, scope)[0])
+                # try(f(...).key, fallback): the old language raised on a key
+                # the returned map lacks; Lua reads nil, so the fallback must
+                # also stand in for nil (errors from the call still fall back).
+                root = e
+                while root[0] in ("member", "index"):
+                    root = root[1]
+                if e[0] in ("member", "index") and root[0] == "call":
+                    fbt = self.expr(fb, scope)[0]
+                    return "(gs.try(function() return %s end, %s) or %s)" % (self.expr(e, scope)[0], fbt, fbt)
                 return "gs.try(function() return %s end, %s)" % (self.expr(e, scope)[0], self.expr(fb, scope)[0])
             if name == "range" and not named:
                 self.port("range() builtin used as a value")
