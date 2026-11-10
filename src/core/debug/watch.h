@@ -35,8 +35,8 @@ typedef void (*watch_reporter_fn)(void *ctx, char *buf, size_t size);
 void watch_add_reporter(watch_reporter_fn fn, void *ctx);
 void watch_remove_reporter(void *ctx);
 
-// Seconds between two status lines; 0 turns the line off (the detectors
-// stay on).  The `log.status_every` attribute.
+// Seconds between two status lines; 0 (the default) turns the line off (the
+// detectors stay on).  The `log.status_every` attribute.
 uint32_t watch_get_interval(void);
 void watch_set_interval(uint32_t seconds);
 

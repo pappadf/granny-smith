@@ -160,8 +160,8 @@ first `LOG_ALERT_BURST` and then every `LOG_ALERT_EVERY`-th, so a failing disk
 in a retry loop cannot flood the console. `log.alerts` counts them.
 
 The machine watch (`watch.c`, polled from the browser's main loop) adds
-`log_status` lines: once every `log.status_every` seconds (60 by default; 0
-turns it off) it prints run state, PC, MIPS and the JIT's share, disk
+`log_status` lines: once every `log.status_every` seconds (0 by default, which
+is off; it is opt-in, like `log.perf_every`) it prints run state, PC, MIPS and the JIT's share, disk
 reads/writes per drive kind, the Mac OS `Ticks`, `CurApName` and `DSErrCode`,
 the screen's geometry and whether it is one flat colour, `checkpoint.auto`
 and the alert count. `log.status()` prints the line now. Its detectors raise
