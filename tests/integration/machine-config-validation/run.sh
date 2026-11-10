@@ -95,6 +95,9 @@ boot_case v7-mode iici "$IICI" \
     '{"cards":[{"slot":"nubus_c","card":"mdc_8_24"}],"displays":{"nubus_c":{"monitor":"13in_rgb","mode":"1152x870x8"}}}' \
     'displays.nubus_c: mode "1152x870x8" is not one of'
 boot_case v7-builtin-mode iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x8"}}}' OK
+# A socketed Cirrus 54M30 takes a VGA monitor, moved off the built-in video.
+boot_case v7-pci-vga pm8500 "$TNT" \
+    '{"cards":[{"slot":"pci_3","card":"cirrus_54m30"}],"displays":{"pci_3":{"monitor":"vga"}}}' OK
 boot_case v7-builtin-depth iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x16"}}}' \
     'displays.builtin: mode "640x480x16" is not one of the built-in video'"'"'s modes on that monitor'
 

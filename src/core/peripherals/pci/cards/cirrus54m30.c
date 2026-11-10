@@ -1512,12 +1512,6 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
     pci_card_set_framebuffer_object(dev, fb);
 }
 
-// A PCI device like any other: soldered down on the Network Server logic
-// board, where the slot table names it, and offered on every PCI socket
-// besides.  In a socket it is a PC card in a Mac: with no FCode PROM, Open
-// Firmware and the Mac OS leave it alone (a Mac's own video stays the
-// console), and an operating system with its own Cirrus driver -- Windows
-// NT's cirrus.sys -- drives it through BAR0 and the legacy VGA window.
 // The monitor a socketed card can drive.  Without one the configuration
 // could not plug a monitor into the card at all: the screen stayed on the
 // Mac's own video, which an operating system driving the 54M30 (OS/2 Warp
@@ -1530,6 +1524,12 @@ static const struct nubus_monitor c54m30_monitors[] = {
     {.id = NULL},
 };
 
+// A PCI device like any other: soldered down on the Network Server logic
+// board, where the slot table names it, and offered on every PCI socket
+// besides.  In a socket it is a PC card in a Mac: with no FCode PROM, Open
+// Firmware and the Mac OS leave it alone (a Mac's own video stays the
+// console), and an operating system with its own Cirrus driver -- Windows
+// NT's cirrus.sys -- drives it through BAR0 and the legacy VGA window.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
     .display_name = "Cirrus Logic 54M30 VGA card",
