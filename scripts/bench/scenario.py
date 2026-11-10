@@ -5,7 +5,8 @@
 
 Times what a user waits for -- a menu opening, a window's genie into the
 Dock -- rather than a CPU-bound window.  A scenario is a script in
-tests/bench/ (osx-interactive.script, g3-boot-desktop.script) that boots to a state and saves a
+tests/bench/ (osx-interactive.script, g3-boot-desktop.script,
+pm8500-boot-desktop.script) that boots to a state and saves a
 checkpoint (MODE=boot), then loads it and plays its interactions, each a
 fixed stretch of scheduler slots, printing one @@SCEN line per interaction
 with its host wall time and the guest instructions it retired (MODE=run).
@@ -61,6 +62,12 @@ SCENARIOS = {
         "model": "pmg3dt",
         "ram": 262144,
         "disk": "systems/mac_os_9_2_1_516mb_g3.img",
+    },
+    "pm8500-boot-desktop": {
+        "rom": "roms/pm7500-pm8500-pm9500-96cd923d.rom",
+        "model": "pm8500",
+        "ram": 32768,
+        "disk": "systems/system_7_6_170mb_24ac.img",
     },
 }
 

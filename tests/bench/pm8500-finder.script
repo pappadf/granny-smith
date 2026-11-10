@@ -1,8 +1,9 @@
 # pm8500-finder — the 604 core: a Power Macintosh 8500 (120 MHz 604, Control
 # video) at the System 7.6 desktop, the suite-tnt image, 4 G instructions
 # after power-on (suite-tnt's budget for the same boot).  The desktop's
-# idle loop is mostly 68K code under the ROM's emulator, with native
-# Toolbox and driver code between.  The image's first-boot dialog (Energy
+# idle loop is mostly 68K code under the DR (dynamic recompilation) 68K
+# emulator -- PowerPC code it generates into RAM -- with native Toolbox and
+# driver code between.  The image's first-boot dialog (Energy
 # Saver) is in front, so the guard checks the emulator, not the Finder.
 
 def bench_boot() {

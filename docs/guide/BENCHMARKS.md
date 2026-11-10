@@ -304,9 +304,36 @@ all.  It covers what the CPU-bound rows' windows leave out: device polling,
 code loading (the code-page marks) and the 68K emulator.  The guard is the
 whole screen's checksum at the desktop.
 
+`pm8500-boot-desktop` is a whole System 7.6 boot on the Power Macintosh
+8500 (604, 32 MB; gs-test-data `systems/system_7_6_170mb_24ac.img`, the
+suite-tnt disk), checkpointed at power-on and run in three fixed stretches:
+start-up (0.6 G scheduler slots: ROM, Open Firmware, POST, the disk's
+driver and mount), system (1.3 G: System 7.6 starting, much native PowerPC
+code in RAM, the desktop drawn by its end) and desktop (2.1 G, with the
+Energy Saver first-boot message in front).  It is the workload of the DR
+(dynamic recompilation) 68K emulator, which writes PowerPC code into its
+translation cache and runs it there: on the desktop the PC is in the
+emulator's runtime and cache more than half the time, and the cache is
+flushed every few seconds of guest time.  That is code written while it
+runs, which the translation tier leaves to the predecoded tier
+(`docs/internals/core/cpu/ppc/ppc_jit.md`, volatile pages), so the
+desktop stretch shows what the DR emulator costs the tier: on the first
+runs about 47 % of its instructions ran translated, against 60-70 % in
+the system stretch.  `@@SCEN` lines carry `jit_instr` (instructions run
+translated) and `jit_invals` (blocks invalidated by code writes) beside
+the time.  The guards: the startup volume mounted and no system error
+after the system stretch, and the desktop's checksum (without the menu
+bar's clock) at the end.
+
+Unlike `osx-interactive`, the two boot scenarios play no input: they time
+fixed stretches of a boot and of the state it settles in.
+
 ```bash
 python3 scripts/bench/scenario.py --scenario g3-boot-desktop \
     --bin native=build/headless-fast/gs-headless --configs predecode,switch --runs 3
+python3 scripts/bench/scenario.py --scenario pm8500-boot-desktop \
+    --bin native=build/headless-fast/gs-headless \
+    --bin node=build/headless-fast-node/gs-headless --runs 3
 ```
 
 The runner boots each binary once (a checkpoint refuses another build),
