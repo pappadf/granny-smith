@@ -125,7 +125,7 @@ const hw_profile_t machine_pm7500 = {
     .storage = tnt_storage_7500,
     .default_storage = tnt_default_storage,
     .appletalk = true,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_600i,
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,

@@ -309,6 +309,7 @@ static void print_usage(const char *program) {
     printf("                  (see catalog.default_config); the arguments here are shorthand\n");
     printf("  drive=<spec>    add a drive, bus:unit:type[:image] (type hd or cd; repeatable),\n");
     printf("                  e.g. drive=scsi:4:hd:data.img drive=scsi2:2:cd\n");
+    printf("                  a CD-ROM drive may name its model: drive=scsi:3:cd@applecd600i\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
     printf("                  default: the machine's default card\n");
     printf("  slots=<spec>    expansion-slot cards, 'SLOT=CARD[,key=value]*;...'\n");
@@ -1591,15 +1592,18 @@ int main(int argc, char *argv[]) {
         *unit++ = '\0';
         *type++ = '\0';
         *image++ = '\0';
+        char *model = strchr(type, '@'); // "cd@<model>": the drive's model, already built
+        if (model)
+            *model = '\0';
+        bool cd = strcmp(type, "cd") == 0;
         media_bay_t bay;
         if (!machine_storage_media_bay(active, bus, (int)strtol(unit, NULL, 10), &bay) ||
-            system_media_attach_path(system_config(), &bay, strcmp(type, "cd") == 0, image, attach_err,
-                                     sizeof(attach_err)) != 0) {
+            system_media_attach_path(system_config(), &bay, cd, image, attach_err, sizeof(attach_err)) != 0) {
             fprintf(stderr, "Error: drive=%s: %s\n", drive_args[i], attach_err);
             goto out;
         }
         if (!quiet)
-            printf("Attached %s: %s (%s unit %s)\n", strcmp(type, "cd") == 0 ? "CD-ROM" : "HD", image, bus, unit);
+            printf("Attached %s: %s (%s unit %s)\n", cd ? "CD-ROM" : "HD", image, bus, unit);
     }
 
     // The CD, into the model's CD bay (profile_cdrom_bay: its cdrom_id -- 3 on

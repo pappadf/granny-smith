@@ -164,12 +164,12 @@
 // reset raises on every target (ANSI X3.131-1986 S6.1.3).
 #define ASC_POWER_ON_OR_RESET  0x29
 #define ASC_MEDIUM_NOT_PRESENT 0x3A
-// The drive we advertise is a SONY CD-ROM CDU-8002 (the profiles' CD bay
-// declaration, mac_cdrom_drive_applecd), so its sense
-// vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
-// (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
-// inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM
-// driver was written against these drives, so 0xB0 is what it expects to see.
+// The SONY caddy drives (the AppleCD SC Plus's CDU-8002 and the families
+// before SCSI-2 tray loading, scsi_cdrom.c) speak the CDU-541 manual's sense
+// vocabulary, not SCSI-2's.  That manual's NOT READY (2h) table has no 0x3A at
+// all -- an empty bay is vendor code 0xB0, "Caddy not inserted in drive"
+// (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM driver was written
+// against these drives, so 0xB0 is what it expects to see from them.
 #define ASC_SONY_CADDY_NOT_INSERTED 0xB0
 // Refusing an eject because PREVENT MEDIUM REMOVAL is latched.  CDU-541 manual
 // S5.2.33: "the sense key will be set to ILLEGAL REQUEST, and the additional
@@ -177,7 +177,11 @@
 // numbers 0x80.  SCSI-2's 0x53/0x02 MEDIUM REMOVAL PREVENTED is a different
 // vocabulary and does not appear anywhere in this drive's tables.
 #define ASC_SONY_PREVENT_BIT_SET 0x80
-#define ASC_INCOMPATIBLE_MEDIUM  0x30
+// The SCSI-2 counterpart, for the tray drives: X3.131-1994 table 71,
+// 53h/02h MEDIUM REMOVAL PREVENTED, device types "DT WR OM".
+#define ASC_MEDIUM_LOAD_EJECT_FAILED  0x53
+#define ASCQ_MEDIUM_REMOVAL_PREVENTED 0x02
+#define ASC_INCOMPATIBLE_MEDIUM       0x30
 // X3.131-1994 table 71: 11h/00h UNRECOVERED READ ERROR -- the READ-side
 // counterpart of WRITE FAULT, for an in-range read the backing store failed.
 #define ASC_UNRECOVERED_READ_ERROR 0x11
@@ -342,6 +346,13 @@ struct scsi {
     // be a hand-written per-field loop, and what let fields be forgotten.
     // The filename is saved separately and the image re-opened on restore.
     image_t *device_images[8];
+
+    // The CD-ROM drive model at each target: NULL for a target that is not a
+    // CD-ROM drive, or one whose identity matches no descriptor (it answers as
+    // the SONY SCSI-1 family, the behaviour every drive had before models).
+    // A pointer, so it stays out of the saved block; a restore re-derives it
+    // from the restored INQUIRY identity, which is saved.
+    const scsi_cd_drive_t *cd_drive[8];
 
     // An armed selection time-out, if a controller is waiting on one.
     //
@@ -569,5 +580,14 @@ void scsi_set_sense(scsi_t *scsi, int target, uint8_t key, uint8_t asc, uint8_t 
 
 // Return CHECK CONDITION with sense data already set
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq);
+
+// The firmware family of the CD-ROM drive at `target` (scsi_cdrom.c).  A
+// CD-ROM target with no known drive model answers as the SONY SCSI-1 family.
+const scsi_cd_family_t *scsi_cd_family_at(const scsi_t *scsi, int target);
+
+// End the current command with the NOT READY answer `target` gives when it
+// holds no medium: its drive family's code for a CD-ROM, SCSI-2's 3Ah MEDIUM
+// NOT PRESENT for every other device (scsi_bus.c).
+void scsi_check_no_medium(scsi_t *scsi, int target);
 
 #endif // SCSI_INTERNAL_H

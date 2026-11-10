@@ -50,7 +50,7 @@ const hw_profile_t machine_pm6100 = {
     .storage = mac_storage_scsi_cd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_300i_plus,
 
     // No NuBus without the optional PDS adapter card, which carries the
     // bridge itself — so this model declares no slots AND no BART: the

@@ -20,6 +20,7 @@
 #include "nubus.h"
 #include "prom.h"
 #include "rtc.h"
+#include "scsi.h"
 #include "value.h"
 #include "vrom.h"
 #include "nubus/card.h"
@@ -1290,6 +1291,8 @@ static value_t doc_value(const hw_profile_t *p, const doc_t *d) {
         val_map_put(e, "bus", val_str(d->storage[i].bus));
         val_map_put(e, "unit", val_int(d->storage[i].unit));
         val_map_put(e, "type", val_str(storage_type_id(d->storage[i].type)));
+        if (d->storage[i].model[0])
+            val_map_put(e, "model", val_str(d->storage[i].model));
         vl_push(&st, val_map_finish(e));
     }
     val_map_put(b, "storage", vl_finish(&st));
@@ -1531,7 +1534,7 @@ static value_t read_storage(const hw_profile_t *p, const value_t *l, doc_t *d) {
         const value_t *e = &l->list.items[i];
         if (e->kind != VK_MAP)
             return bad("storage[%zu]: expected an object", i);
-        static const char *const keys[] = {"bus", "unit", "type", NULL};
+        static const char *const keys[] = {"bus", "unit", "type", "model", NULL};
         value_t err = check_keys(e, "storage[]", keys);
         if (val_is_error(&err))
             return err;
@@ -1554,6 +1557,14 @@ static value_t read_storage(const hw_profile_t *p, const value_t *l, doc_t *d) {
             return bad("storage[%zu]: unit %lld on \"%s\" is reserved", i, (long long)unit, b->label);
         if (!(b->accepts & type))
             return bad("storage[%zu]: \"%s\" takes no %s", i, b->label, storage_type_label(type));
+        // A SCSI CD-ROM drive may name its model; nothing else has one.
+        const char *model = map_str(e, "model");
+        if (model && *model) {
+            if (type != STORAGE_DEV_CD || b->kind != STORAGE_KIND_SCSI)
+                return bad("storage[%zu]: only a CD-ROM drive on a SCSI bus has a model", i);
+            if (!scsi_cd_drive_find(model))
+                return bad("storage[%zu]: no CD-ROM drive model '%s'", i, model);
+        }
         for (int j = 0; j < d->n_storage; j++) {
             const machine_storage_dev_t *o = &d->storage[j];
             if (o->unit != unit)
@@ -1574,6 +1585,7 @@ static value_t read_storage(const hw_profile_t *p, const value_t *l, doc_t *d) {
         copy_str(o->bus, sizeof o->bus, b->id);
         o->unit = (int)unit;
         o->type = type;
+        copy_str(o->model, sizeof o->model, model ? model : "");
     }
     return val_none();
 }
@@ -1584,7 +1596,8 @@ static int n_floppies_max(const hw_profile_t *p) {
     return n > 2 ? 2 : n;
 }
 
-// The headless drive= shorthand, "bus:unit:type[;...]", appended to storage
+// The headless drive= shorthand, "bus:unit:type[;...]", appended to storage;
+// a CD-ROM drive's type may name its model, "cd@applecd600i"
 // and checked as the document's own entries are.
 static value_t add_drives(const hw_profile_t *p, const char *spec, doc_t *d) {
     value_t *items = NULL;
@@ -1595,6 +1608,8 @@ static value_t add_drives(const hw_profile_t *p, const char *spec, doc_t *d) {
         val_map_put(b, "bus", val_str(d->storage[i].bus));
         val_map_put(b, "unit", val_int(d->storage[i].unit));
         val_map_put(b, "type", val_str(storage_type_id(d->storage[i].type)));
+        if (d->storage[i].model[0])
+            val_map_put(b, "model", val_str(d->storage[i].model));
         val_list_push(&items, &n, &cap, val_map_finish(b));
     }
     char buf[512];
@@ -1613,10 +1628,15 @@ static value_t add_drives(const hw_profile_t *p, const char *spec, doc_t *d) {
         }
         *unit++ = '\0';
         *type++ = '\0';
+        char *model = strchr(type, '@'); // "cd@applecd600i": a CD-ROM drive's model
+        if (model)
+            *model++ = '\0';
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "bus", val_str(bus));
         val_map_put(b, "unit", val_int(strtol(unit, NULL, 10)));
         val_map_put(b, "type", val_str(type));
+        if (model)
+            val_map_put(b, "model", val_str(model));
         val_list_push(&items, &n, &cap, val_map_finish(b));
     }
     value_t l = val_list(items, n);

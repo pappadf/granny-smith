@@ -407,6 +407,15 @@ def row_qd3d_thousands() {
     double_click(39, 92)
     scheduler.run 600000000
     assert current_app_is("Gerbils!") "Gerbils! is not the current application"
+    # Gerbils! switches the card to 16-bpp output once its first frame is
+    # under way, and how soon depends on everything the boot did before it
+    # (a different CD-ROM drive moves it by a couple of hundred million
+    # instructions), so wait for the switch; the ceiling is a hang detector.
+    let n16 = 0
+    while $n16 < 30 && (machine.pci.slot[1].card.renderer.dma_control & 0x0C00) != 0x0C00 {
+        scheduler.run 100000000
+        $n16 = $n16 + 1
+    }
     assert (machine.pci.slot[1].card.renderer.dma_control & 0x0C00) == 0x0C00 "the card is not producing 16-bpp output (DMACONTROL ${machine.pci.slot[1].card.renderer.dma_control:04x})"
     check_ex("goldens/qd3d-thousands.png", 0, 500, 20, 640)
     frames_flow("Gerbils! at thousands")

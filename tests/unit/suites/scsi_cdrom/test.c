@@ -287,9 +287,9 @@ TEST(read6_past_end_still_refused) {
 // one of the causes at all.
 // ===========================================================================
 //
-// AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive we advertise is a
-// SONY CD-ROM CDU-8002 (the profiles' mac_cdrom_drive_applecd), so its sense
-// vocabulary is the one that applies, not SCSI-2's.  The unit attention condition arises on power-on, a
+// AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive these tests seat is
+// a SONY CD-ROM CDU-8002 (the AppleCD SC Plus), so its sense vocabulary is the
+// one that applies, not SCSI-2's.  The unit attention condition arises on power-on, a
 // reset, "the insertion of a caddy with the successful recovery of the table
 // of contents", or MODE SELECT from another initiator.  Its UNIT ATTENTION
 // (6h) table holds exactly three codes: 0x28 caddy inserted, 0x29 power-on or
@@ -1244,6 +1244,213 @@ TEST(mode_select_with_no_block_length_leaves_the_size_alone) {
     scsi_delete(scsi);
 }
 
+// ===========================================================================
+// Drive models: one command implementation, answers per firmware family.
+// ===========================================================================
+//
+// AUTHORITY: the INQUIRY header bytes are read from each drive's Apple
+// firmware ROM.  The SCSI-2 tray drives' empty-bay and removal-prevented codes
+// are X3.131-1994 tables 74 and 71; the SONY drives' are the CDU-541 manual's.
+
+// Seat `drive` empty at TARGET, the way a machine builds its bus, then insert
+// the scratch disc the way an attach does: by the identity the drive has.
+static scsi_t *seat_model(const scsi_cd_drive_t *drive, bool with_disc) {
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
+    ASSERT_TRUE(scsi != NULL);
+    scsi_add_cd_drive(scsi, TARGET, drive);
+    if (with_disc) {
+        image_t *img = image_open_readonly(g_path);
+        ASSERT_TRUE(img != NULL);
+        scsi_add_device(scsi, TARGET, drive->vendor, drive->product, drive->revision, img, scsi_dev_cdrom,
+                        drive->block_size, true);
+    }
+    return scsi;
+}
+
+// The standard INQUIRY response, all 36 bytes.
+static void inquiry36(scsi_t *scsi, uint8_t out[36]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x12, 0x00, 0x00, 0x00, 36, 0x00};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_data_in, scsi_get_bus_phase(scsi));
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        if (n < 36)
+            out[n++] = b;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(36, (int)n);
+}
+
+// Issue `cdb` and return the sense it left: key, ASC, ASCQ.
+static void sense_after(scsi_t *scsi, const uint8_t cdb[6], uint8_t out[3]) {
+    ASSERT_EQ_INT(scsi_status, issue_cdb6(scsi, cdb));
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    out[0] = sense[2] & 0x0F;
+    out[1] = sense[12];
+    out[2] = sense[13];
+}
+
+// The catalogue is well formed: unique ids, a family each, strings that fit
+// their INQUIRY fields, and every drive found again by its own identity.
+TEST(every_drive_model_is_found_by_id_and_identity) {
+    int n = 0;
+    for (int i = 0; scsi_cd_drives[i]; i++, n++) {
+        const scsi_cd_drive_t *d = scsi_cd_drives[i];
+        ASSERT_TRUE(d->family != NULL);
+        ASSERT_TRUE(strlen(d->vendor) <= 8);
+        ASSERT_TRUE(strlen(d->product) <= 16);
+        ASSERT_TRUE(strlen(d->revision) <= 4);
+        ASSERT_EQ_INT(2048, d->block_size);
+        ASSERT_TRUE(scsi_cd_drive_find(d->id) == d);
+        ASSERT_TRUE(scsi_cd_drive_by_identity(d->vendor, d->product, d->revision) == d);
+        for (int j = 0; j < i; j++)
+            ASSERT_TRUE(strcmp(scsi_cd_drives[j]->id, d->id) != 0);
+    }
+    ASSERT_EQ_INT(8, n);
+    ASSERT_TRUE(scsi_cd_drive_find("no-such-drive") == NULL);
+    // A device record holds the fields space-padded; they still match.
+    ASSERT_TRUE(scsi_cd_drive_by_identity("MATSHITA", "CD-ROM CR-8005A ", "4.0i") == &scsi_cd_drive_applecd_600i);
+}
+
+// The AppleCD SC Plus answers exactly as every drive did before models: a
+// SCSI-1 CCS header with byte 7 clear.  Pins the regression.
+TEST(sc_plus_inquiry_is_unchanged_scsi1) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_sc_plus, true);
+    uint8_t q[36] = {0};
+    inquiry36(scsi, q);
+    static const uint8_t hdr[8] = {0x05, 0x80, 0x01, 0x01, 0x1F, 0x00, 0x00, 0x00};
+    ASSERT_TRUE(memcmp(q, hdr, 8) == 0);
+    ASSERT_TRUE(memcmp(q + 8, "SONY    CD-ROM CDU-8002 1.8g", 28) == 0);
+    scsi_delete(scsi);
+}
+
+// The AppleCD 600i's firmware ROM reads 05 80 02 02 1F 00 00 18 and then
+// MATSHITA / CD-ROM CR-8005A / 4.0i.
+TEST(applecd_600i_inquiry_matches_its_firmware) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_600i, false);
+    uint8_t q[36] = {0};
+    inquiry36(scsi, q);
+    static const uint8_t hdr[8] = {0x05, 0x80, 0x02, 0x02, 0x1F, 0x00, 0x00, 0x18};
+    ASSERT_TRUE(memcmp(q, hdr, 8) == 0);
+    ASSERT_TRUE(memcmp(q + 8, "MATSHITACD-ROM CR-8005A 4.0i", 28) == 0);
+    scsi_delete(scsi);
+}
+
+// The AppleCD 300i is SCSI-2 with the CCS response format: 02 01, and 18h.
+TEST(applecd_300i_inquiry_matches_its_firmware) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_300i, false);
+    uint8_t q[36] = {0};
+    inquiry36(scsi, q);
+    static const uint8_t hdr[8] = {0x05, 0x80, 0x02, 0x01, 0x1F, 0x00, 0x00, 0x18};
+    ASSERT_TRUE(memcmp(q, hdr, 8) == 0);
+    ASSERT_TRUE(memcmp(q + 8, "SONY    CD-ROM CDU-8003A1.9a", 28) == 0);
+    scsi_delete(scsi);
+}
+
+// An empty SCSI-2 tray drive answers every medium command with NOT READY,
+// 3Ah MEDIUM NOT PRESENT -- TEST UNIT READY, READ CAPACITY, START UNIT and
+// PREVENT alike, through the one shared code path.
+TEST(empty_tray_drive_reports_medium_not_present) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_600i, false);
+    static const uint8_t cdbs[][6] = {
+        {0x00, 0, 0, 0, 0, 0}, // TEST UNIT READY
+        {0x1B, 0, 0, 0, 1, 0}, // START UNIT
+        {0x1E, 0, 0, 0, 1, 0}, // PREVENT MEDIUM REMOVAL
+    };
+    for (size_t i = 0; i < sizeof cdbs / sizeof cdbs[0]; i++) {
+        uint8_t k[3];
+        sense_after(scsi, cdbs[i], k);
+        ASSERT_EQ_INT(SENSE_NOT_READY, k[0]);
+        ASSERT_EQ_INT(ASC_MEDIUM_NOT_PRESENT, k[1]);
+        ASSERT_EQ_INT(0x00, k[2]);
+    }
+    // READ CAPACITY is a ten-byte command.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t rc[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, rc[i]);
+    ASSERT_EQ_INT(scsi_status, scsi_get_bus_phase(scsi));
+    scsi_external_status_byte(scsi);
+    scsi_external_message_byte(scsi);
+    scsi_external_release(scsi);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(SENSE_NOT_READY, sense[2] & 0x0F);
+    ASSERT_EQ_INT(ASC_MEDIUM_NOT_PRESENT, sense[12]);
+    scsi_delete(scsi);
+}
+
+// ...while the SONY caddy drives keep the vendor code, B0h.
+TEST(empty_caddy_drives_report_caddy_not_inserted) {
+    const scsi_cd_drive_t *caddies[] = {&scsi_cd_drive_applecd_sc_plus, &scsi_cd_drive_applecd_300i};
+    for (size_t i = 0; i < 2; i++) {
+        scsi_t *scsi = seat_model(caddies[i], false);
+        const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+        uint8_t k[3];
+        sense_after(scsi, tur, k);
+        ASSERT_EQ_INT(SENSE_NOT_READY, k[0]);
+        ASSERT_EQ_INT(ASC_SONY_CADDY_NOT_INSERTED, k[1]);
+        scsi_delete(scsi);
+    }
+}
+
+// A disc arriving in a tray drive raises the same UNIT ATTENTION as a caddy:
+// 28h/00h is SCSI-2's NOT READY TO READY TRANSITION too.
+TEST(tray_drive_insert_raises_not_ready_to_ready) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_600i, true);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(SENSE_UNIT_ATTENTION, sense[2] & 0x0F);
+    ASSERT_EQ_INT(0x28, sense[12]);
+    ASSERT_EQ_INT(0x00, sense[13]);
+    scsi_delete(scsi);
+}
+
+// A tray drive refuses a prevented eject with SCSI-2's 53h/02h MEDIUM REMOVAL
+// PREVENTED, not the Sony 80h.
+TEST(tray_drive_prevented_eject_reports_removal_prevented) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_600i, true);
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    issue_cdb6(scsi, tur); // burn the insert's UNIT ATTENTION
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(SENSE_ILLEGAL_REQUEST, sense[2] & 0x0F);
+    ASSERT_EQ_INT(ASC_MEDIUM_LOAD_EJECT_FAILED, sense[12]);
+    ASSERT_EQ_INT(ASCQ_MEDIUM_REMOVAL_PREVENTED, sense[13]);
+    scsi_delete(scsi);
+}
+
+// The model belongs to the drive, not the disc: eject and insert again, and
+// the 600i still answers as itself.
+TEST(drive_model_survives_eject_and_reinsert) {
+    scsi_t *scsi = seat_model(&scsi_cd_drive_applecd_600i, true);
+    ASSERT_TRUE(scsi_cd_drive_at(scsi, TARGET) == &scsi_cd_drive_applecd_600i);
+    ASSERT_EQ_INT(1, scsi_eject_device(scsi, TARGET));
+    ASSERT_TRUE(scsi_cd_drive_at(scsi, TARGET) == &scsi_cd_drive_applecd_600i);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "MATSHITA", "CD-ROM CR-8005A", "4.0i", img, scsi_dev_cdrom, CD_BLOCK, true);
+    ASSERT_TRUE(scsi_cd_drive_at(scsi, TARGET) == &scsi_cd_drive_applecd_600i);
+    scsi_delete(scsi);
+}
+
+// A hard disk is not a CD-ROM drive and has no model; its empty answer is the
+// standard 3Ah whatever drives share the bus.
+TEST(a_hard_disk_has_no_drive_model) {
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
+    ASSERT_TRUE(scsi != NULL);
+    scsi_add_device(scsi, 0, "QUANTUM", "P80S 980-80-94xx", "A.2", NULL, scsi_dev_hd, 512, false);
+    ASSERT_TRUE(scsi_cd_drive_at(scsi, 0) == NULL);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(cd_drive_is_built_with_the_bus);
@@ -1285,6 +1492,16 @@ int main(void) {
     RUN(inquiry_standard_is_36_bytes);
     RUN(inquiry_evpd_unsupported_page_is_refused);
     RUN(inquiry_evpd_page_zero_lists_itself);
+    RUN(every_drive_model_is_found_by_id_and_identity);
+    RUN(sc_plus_inquiry_is_unchanged_scsi1);
+    RUN(applecd_600i_inquiry_matches_its_firmware);
+    RUN(applecd_300i_inquiry_matches_its_firmware);
+    RUN(empty_tray_drive_reports_medium_not_present);
+    RUN(empty_caddy_drives_report_caddy_not_inserted);
+    RUN(tray_drive_insert_raises_not_ready_to_ready);
+    RUN(tray_drive_prevented_eject_reports_removal_prevented);
+    RUN(drive_model_survives_eject_and_reinsert);
+    RUN(a_hard_disk_has_no_drive_model);
     unlink(g_path);
     printf("[scsi_cdrom] all tests passed\n");
     return 0;

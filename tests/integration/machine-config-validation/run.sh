@@ -61,6 +61,12 @@ boot_case v3-shared q900 "$Q900" \
     'storage[1]: ID 1 · External on "External SCSI" is already used on "Internal SCSI" (shared ID space)'
 boot_case v3-type lisa "$LISA" '{"storage":[{"bus":"profile","unit":0,"type":"cd"}]}' \
     'storage[0]: "ProFile port" takes no CD-ROM drive'
+# ...and a SCSI CD-ROM drive may name a drive model the catalogue has; nothing
+# else has a model.
+boot_case v3-cd-model iici "$IICI" '{"storage":[{"bus":"scsi","unit":3,"type":"cd","model":"nope"}]}' \
+    "storage[0]: no CD-ROM drive model 'nope'"
+boot_case v3-hd-model iici "$IICI" '{"storage":[{"bus":"scsi","unit":0,"type":"hd","model":"applecd600i"}]}' \
+    'storage[0]: only a CD-ROM drive on a SCSI bus has a model'
 
 # V4: a slot the model has, a card that fits it, one card per slot.
 boot_case v4-slot iici "$IICI" '{"cards":[{"slot":"nubus_9","card":"mdc_8_24"}]}' \
@@ -123,6 +129,20 @@ n=$((n + 1))
 if ! grep -qx 'NV 0 bootr|true|600000' "$WORK_DIR/v10-set.out"; then
     echo "FAIL: v10-set: expected the document's variables in NVRAM"
     sed -n '/running/,$p' "$WORK_DIR/v10-set.out" | head -5
+    fail=1
+fi
+
+# A CD-ROM drive's model is the drive the bus is built with: an AppleCD 600i
+# in a IIci answers INQUIRY as one (the product field is space-padded to its
+# sixteen bytes), and machine.storage names it.
+script="$WORK_DIR/cd-model.script"
+printf 'machine.boot model="iici" rom="%s" config="{\\"storage\\":[{\\"bus\\":\\"scsi\\",\\"unit\\":3,\\"type\\":\\"cd\\",\\"model\\":\\"applecd600i\\"}]}"\n' "$IICI" > "$script"
+printf '%s\n' 'echo "CD ${machine.storage[0].model}|${machine.scsi.device[3].vendor}|${machine.scsi.device[3].product}"' quit >> "$script"
+"$HEADLESS_BIN" rom="$IICI" script="$script" --speed=turbo > "$WORK_DIR/cd-model.out" 2>&1 || true
+n=$((n + 1))
+if ! grep -qx 'CD applecd600i|MATSHITA|CD-ROM CR-8005A ' "$WORK_DIR/cd-model.out"; then
+    echo "FAIL: cd-model: expected the configured AppleCD 600i on scsi unit 3"
+    sed -n '/running/,$p' "$WORK_DIR/cd-model.out" | head -5
     fail=1
 fi
 

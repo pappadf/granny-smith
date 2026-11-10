@@ -50,6 +50,11 @@ const METADATA = {
 
 const CORS = { 'access-control-allow-origin': '*' };
 
+// The archive is unpacked on the core's I/O worker after the page has
+// answered its fetch, and appletalk.remote.requests lists only what the page
+// still owes, so wait_remote() can return before the folder exists; the
+// script waits for the unpacked System file itself (the ceiling is a hang
+// detector) rather than guessing how long the host thread takes.
 const SCRIPT = `machine.boot model="plus" rom="/opfs/images/rom/4D1F8172" config="{\\"options\\":{\\"appletalk\\":\\"inactive\\"}}"
 scheduler.stop
 scheduler.mode = "turbo"
@@ -137,6 +142,12 @@ scheduler.run 20000000
 wait_remote()
 scheduler.run 60000000
 afp_open(237, 110)
+let unpacked = 0
+while !files.path_exists("${CACHE}/MacTest_Disk/System") {
+    assert $unpacked < 4000000000 "the archive was not unpacked"
+    scheduler.run 1000000
+    $unpacked = $unpacked + 1000000
+}
 echo "remote: issued=\${appletalk.remote.issued} failed=\${appletalk.remote.failed} readme=\${files.path_size("${CACHE}/Read Me")} system=\${files.path_exists("${CACHE}/MacTest_Disk/System")}"
 `;
 

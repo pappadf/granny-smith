@@ -1769,7 +1769,7 @@ const hw_profile_t machine_iifx = {
     .storage = mac_storage_scsi_hd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,
-    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .cdrom_drive = &scsi_cd_drive_applecd_sc_plus,
 
     .nubus_slots = iifx_slots,
 
