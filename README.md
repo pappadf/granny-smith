@@ -45,7 +45,6 @@ NuBus display cards fit any machine with free slots, even one with built-in vide
 - **Apple QuickDraw 3D Accelerator Card** (also known as "Gotham")
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
-- 
 
 ## Emulated Printers
 
