@@ -40,9 +40,12 @@ NuBus display cards fit any machine with free slots, even one with built-in vide
 
 - **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
 - **ATI Rage Pro** (the beige G3's on-board video)
+- **ATI Rage 128** (full 2D and 3D with WebGPU acceleration)
 - **3dfx Voodoo2** (full 3D with WebGPU acceleration)
+- **Apple QuickDraw 3D Accelerator Card** (also known as "Gotham")
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
+- 
 
 ## Emulated Printers
 
@@ -66,12 +69,12 @@ The emulated computer models have been tested with various combinations of the f
 - **MkLinux DR3**
 - **AIX 4.1.5**
 - **Windows NT 4.0 (PowerPC)** (on the Apple Network Server)
+- **OS/2 (PowerPC Edition)** (on ANS and Power Macintosh 8500)
 
 
 ## Work In Progress
 
 - Power Macintosh 9500MP running BeOS
-- ATI Rage 128
 
 ## Project Principles
 
