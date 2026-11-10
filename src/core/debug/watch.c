@@ -63,7 +63,7 @@ typedef struct {
 } watch_t;
 
 static watch_t g_watch;
-static uint32_t g_interval_s = 60; // log.status_every
+static uint32_t g_interval_s; // log.status_every (0: off; opt-in, like perf_every)
 static uint32_t g_perf_s; // log.perf_every (0: off)
 
 // The tick's parts since the last perf line (watch_note_phase)

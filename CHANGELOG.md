@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MOOF floppy images** — Applesauce `.moof` bitstream (and flux) captures of 400K and 800K Mac disks insert, boot and browse like any floppy image: their GCR tracks are decoded to sectors and tags when the image opens. `disk.export` to a `.moof` name writes one. Beyond Dark Castle from the moof-a-day collection plays on the Plus.
 
 ### Changed
+- **The periodic `[status]` line on the Terminal is off by default** — `log.status_every` starts at 0; set it to a number of seconds for the machine watch's status line (run state, PC, MIPS, disk I/O, Mac OS Ticks and application, screen, alerts), or call `log.status` for one line now. The watch's own alerts (a Mac OS system error, frozen Ticks, a stuck CPU, a blocked emulator thread) are unchanged.
 - **Faster bus-master writes into device memory** — a PCI card's DMA into another device (the QuickDraw 3D card's frames into the built-in video's VRAM) resolves each page once instead of taking the slow path per byte; same bytes, same order.
 
 ### Fixed
