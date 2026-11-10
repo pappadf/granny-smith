@@ -28,6 +28,7 @@ const SERIAL = [
   'perf-headbase.spec.ts',
   'perf-jit.spec.ts',
   'perf-osx-interactive.spec.ts',
+  'perf-boot-governor.spec.ts',
   'perf-quake3-gpu.spec.ts',
   'av-camera.spec.ts',
   'av-microphone.spec.ts',
